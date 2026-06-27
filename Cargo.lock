@@ -122,6 +122,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump19-forge-forgejo"
+version = "0.1.0"
+dependencies = [
+ "pump19-contract",
+ "pump19-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "pump19-judgement"
 version = "0.1.0"
 dependencies = [
