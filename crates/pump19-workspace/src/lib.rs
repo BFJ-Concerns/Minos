@@ -11,12 +11,15 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
+    process::{Command, ExitStatus, Stdio},
 };
 
+use pump19_contract::RunKind;
 use pump19_core::{
-    CoreError, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+    CoreError, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation, WorkspaceLease,
+    WorkspaceProvider, WorkspaceRequest,
 };
 use thiserror::Error;
 
@@ -56,6 +59,17 @@ pub trait ContainerRuntime {
     /// Returns an error when the runtime cannot create the container with the
     /// requested isolation settings.
     fn create(&mut self, spec: &ContainerSpec) -> Result<(), WorkspaceError>;
+
+    /// Executes a command inside a running workspace container.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime cannot start or collect the command.
+    fn exec(
+        &mut self,
+        container_id: &str,
+        request: &WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, WorkspaceError>;
 
     /// Removes the configured container workspace.
     ///
@@ -102,6 +116,34 @@ impl ContainerRuntime for CommandRuntime {
         let mut command = self.command();
         command.args(create_args(spec));
         run_command(command, "create workspace container")
+    }
+
+    fn exec(
+        &mut self,
+        container_id: &str,
+        request: &WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, WorkspaceError> {
+        let mut command = self.command();
+        command.args(exec_args(container_id, request));
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|source| WorkspaceError::Runtime(format!("execute in workspace: {source}")))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(&request.stdin).map_err(|source| {
+                WorkspaceError::Runtime(format!("write workspace stdin: {source}"))
+            })?;
+        }
+        let output = child.wait_with_output().map_err(|source| {
+            WorkspaceError::Runtime(format!("collect workspace output: {source}"))
+        })?;
+        Ok(WorkspaceExecOutput {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
     }
 
     fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
@@ -409,6 +451,20 @@ where
         self.prepare_container(&request)
             .map_err(|error| CoreError::Workspace(error.to_string()))
     }
+
+    fn exec(
+        &mut self,
+        lease: &WorkspaceLease,
+        request: WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, CoreError> {
+        self.runtime
+            .exec(&lease.id, &request)
+            .map_err(|error| CoreError::Workspace(error.to_string()))
+    }
+
+    fn cleanup(&mut self, lease: &WorkspaceLease) -> Result<(), CoreError> {
+        Self::cleanup(self, lease).map_err(|error| CoreError::Workspace(error.to_string()))
+    }
 }
 
 impl<R> ContainerWorkspaceProvider<R>
@@ -439,6 +495,8 @@ where
             isolation: WorkspaceIsolation {
                 isolated: true,
                 credential_free: true,
+                egress_bounded: true,
+                resource_bounded: true,
                 ephemeral: true,
             },
         })
@@ -504,12 +562,12 @@ fn container_id(request: &WorkspaceRequest) -> String {
     id.trim_matches('-').to_owned()
 }
 
-const fn run_kind_slug(kind: pump19_core::RunKind) -> &'static str {
+const fn run_kind_slug(kind: RunKind) -> &'static str {
     match kind {
-        pump19_core::RunKind::Review => "review",
-        pump19_core::RunKind::Judge => "judge",
-        pump19_core::RunKind::Fix => "fix",
-        pump19_core::RunKind::Finish => "finish",
+        RunKind::Review => "review",
+        RunKind::Judge => "judge",
+        RunKind::Fix => "fix",
+        RunKind::Finish => "finish",
     }
 }
 
@@ -528,7 +586,8 @@ fn sanitise_component(value: &str) -> String {
 
 fn create_args(spec: &ContainerSpec) -> Vec<String> {
     let mut args = vec![
-        "create".to_owned(),
+        "run".to_owned(),
+        "--detach".to_owned(),
         "--name".to_owned(),
         spec.id.clone(),
         "--network=none".to_owned(),
@@ -560,6 +619,19 @@ fn create_args(spec: &ContainerSpec) -> Vec<String> {
     args
 }
 
+fn exec_args(container_id: &str, request: &WorkspaceExecRequest) -> Vec<String> {
+    let mut args = vec![
+        "exec".to_owned(),
+        "--workdir".to_owned(),
+        request.cwd_inside_container.clone(),
+    ];
+    args.extend(env_args(&request.env_delta));
+    args.push(container_id.to_owned());
+    args.push(request.program.clone());
+    args.extend(request.args.iter().cloned());
+    args
+}
+
 fn env_args(env: &BTreeMap<String, String>) -> Vec<String> {
     env.iter()
         .flat_map(|(key, value)| ["--env".to_owned(), format!("{key}={value}")])
@@ -575,7 +647,7 @@ mod tests {
     use std::cell::RefCell;
 
     use pump19_contract::{PullRequestRef, RunId};
-    use pump19_core::{RunKind, WorkspaceProvider as _};
+    use pump19_core::WorkspaceProvider as _;
     use tempfile::TempDir;
 
     use super::*;
@@ -583,6 +655,7 @@ mod tests {
     #[derive(Default, Debug)]
     struct RecordingRuntime {
         created: RefCell<Vec<ContainerSpec>>,
+        execs: RefCell<Vec<(String, WorkspaceExecRequest)>>,
         removed: RefCell<Vec<String>>,
         fail_create: Option<String>,
     }
@@ -594,6 +667,21 @@ mod tests {
             }
             self.created.borrow_mut().push(spec.clone());
             Ok(())
+        }
+
+        fn exec(
+            &mut self,
+            container_id: &str,
+            request: &WorkspaceExecRequest,
+        ) -> Result<WorkspaceExecOutput, WorkspaceError> {
+            self.execs
+                .borrow_mut()
+                .push((container_id.to_owned(), request.clone()));
+            Ok(WorkspaceExecOutput {
+                exit_code: 0,
+                stdout: b"ok".to_vec(),
+                stderr: Vec::new(),
+            })
         }
 
         fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
@@ -682,6 +770,55 @@ mod tests {
             spec.resources.workspace_bytes
         )));
         assert!(args.contains(&tmpfs_arg("/tmp", spec.resources.tmp_bytes)));
+    }
+
+    #[test]
+    fn exec_args_run_inside_workspace_container() {
+        let mut request = WorkspaceExecRequest {
+            program: "cargo".to_owned(),
+            args: vec!["test".to_owned()],
+            stdin: Vec::new(),
+            env_delta: BTreeMap::new(),
+            cwd_inside_container: DEFAULT_CONTAINER_WORKDIR.to_owned(),
+        };
+        request
+            .env_delta
+            .insert("RUST_LOG".to_owned(), "debug".to_owned());
+
+        let args = exec_args("container-1", &request);
+
+        assert_eq!(args[0], "exec");
+        assert!(args.contains(&"--workdir".to_owned()));
+        assert!(args.contains(&DEFAULT_CONTAINER_WORKDIR.to_owned()));
+        assert!(args.contains(&"RUST_LOG=debug".to_owned()));
+        assert!(args.contains(&"container-1".to_owned()));
+        assert!(args.contains(&"cargo".to_owned()));
+        assert!(args.contains(&"test".to_owned()));
+    }
+
+    #[test]
+    fn provider_exec_delegates_to_runtime_with_lease_container_id() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut provider = provider(temp.path());
+        let lease = provider.prepare(request()).expect("prepare");
+        let exec_request = WorkspaceExecRequest {
+            program: "sh".to_owned(),
+            args: vec!["-c".to_owned(), "pwd".to_owned()],
+            stdin: Vec::new(),
+            env_delta: BTreeMap::new(),
+            cwd_inside_container: DEFAULT_CONTAINER_WORKDIR.to_owned(),
+        };
+
+        let output = WorkspaceProvider::exec(&mut provider, &lease, exec_request)
+            .expect("exec in workspace");
+
+        assert!(output.success());
+        assert_eq!(provider.runtime().execs.borrow().len(), 1);
+        assert_eq!(provider.runtime().execs.borrow()[0].0, lease.id);
+        assert_eq!(
+            provider.runtime().execs.borrow()[0].1.cwd_inside_container,
+            DEFAULT_CONTAINER_WORKDIR
+        );
     }
 
     #[test]

@@ -1,134 +1,9 @@
-use pump19_contract::{ActorCapability, ActorRef, DecisionVerdict, FinishLabel, PullRequestRef};
-use thiserror::Error;
-
-use crate::credentialed::{
-    ForgejoClientError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
+use pump19_core::{
+    AuthorisationContext, AuthorisedComment, AuthorisedLabel, AuthorisedMerge, ForgeOperationError,
+    ForgeOperationReceipt, ForgeOperations, MergeMethod,
 };
 
-/// Authorisation evidence the core passes with an already-approved forge operation.
-///
-/// The adapter records and shape-validates this context; it must not reinterpret
-/// the evidence as permission to decide whether the operation is allowed.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AuthorisationEvidence {
-    ActorCapability {
-        actor: ActorRef,
-        capability: ActorCapability,
-    },
-    Decision {
-        decision_id: String,
-        verdict: DecisionVerdict,
-    },
-    FinishLabelAuthority {
-        label: FinishLabel,
-    },
-    MergeGateCleanAndCurrent {
-        facts_head_sha: String,
-    },
-}
-
-/// Core-issued authorisation context for one forge side effect.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorisationContext {
-    pub pr: PullRequestRef,
-    pub observed_head_sha: String,
-    pub idempotency_key: String,
-    pub actor: ActorRef,
-    pub reason: String,
-    pub evidence: Vec<AuthorisationEvidence>,
-}
-
-/// Authorised request to post a PR comment.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorisedComment {
-    pub authorisation: AuthorisationContext,
-    pub body: String,
-}
-
-/// Authorised request to apply a PR label.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorisedLabel {
-    pub authorisation: AuthorisationContext,
-    pub label: String,
-}
-
-/// Authorised request to merge a PR.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorisedMerge {
-    pub authorisation: AuthorisationContext,
-    pub method: MergeMethod,
-}
-
-/// Merge method requested from Forgejo.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MergeMethod {
-    Merge,
-    Squash,
-    Rebase,
-}
-
-impl MergeMethod {
-    #[must_use]
-    pub const fn as_forgejo_str(self) -> &'static str {
-        match self {
-            Self::Merge => "merge",
-            Self::Squash => "squash",
-            Self::Rebase => "rebase",
-        }
-    }
-}
-
-/// Receipt returned by an outbound forge operation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ForgeOperationReceipt {
-    pub operation_id: String,
-    pub idempotency_key: String,
-}
-
-/// Proposed core-facing seam for executing already-authorised forge side effects.
-pub trait ForgeOperations {
-    /// Posts an authorised PR comment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when authorisation context is malformed or Forgejo rejects
-    /// the operation.
-    fn post_comment(
-        &mut self,
-        request: AuthorisedComment,
-    ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
-
-    /// Applies an authorised PR label.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when authorisation context is malformed or Forgejo rejects
-    /// the operation.
-    fn apply_label(
-        &mut self,
-        request: AuthorisedLabel,
-    ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
-
-    /// Merges an authorised PR.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when authorisation context is malformed or Forgejo rejects
-    /// the operation.
-    fn merge(
-        &mut self,
-        request: AuthorisedMerge,
-    ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
-}
-
-/// Errors raised by the outbound operation seam.
-#[derive(Debug, Error)]
-pub enum ForgeOperationError {
-    #[error("authorised forge operation has invalid shape: {0}")]
-    InvalidRequest(&'static str),
-    #[error("credentialed Forgejo client failed: {0}")]
-    Client(#[from] ForgejoClientError),
-}
+use crate::credentialed::{ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt};
 
 /// Forgejo implementation of the proposed `ForgeOperations` seam.
 #[derive(Clone, Debug)]
@@ -158,11 +33,14 @@ where
     ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
         validate_authorisation(&request.authorisation)?;
         validate_non_empty(&request.body, "comment body is empty")?;
-        let receipt = self.client.post_pr_comment(
-            &request.authorisation.pr,
-            &request.body,
-            &metadata(&request.authorisation),
-        )?;
+        let receipt = self
+            .client
+            .post_pr_comment(
+                &request.authorisation.pr,
+                &request.body,
+                &metadata(&request.authorisation),
+            )
+            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -172,11 +50,14 @@ where
     ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
         validate_authorisation(&request.authorisation)?;
         validate_non_empty(&request.label, "label is empty")?;
-        let receipt = self.client.apply_pr_label(
-            &request.authorisation.pr,
-            &request.label,
-            &metadata(&request.authorisation),
-        )?;
+        let receipt = self
+            .client
+            .apply_pr_label(
+                &request.authorisation.pr,
+                &request.label,
+                &metadata(&request.authorisation),
+            )
+            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -185,12 +66,23 @@ where
         request: AuthorisedMerge,
     ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
         validate_authorisation(&request.authorisation)?;
-        let receipt = self.client.merge_pr(
-            &request.authorisation.pr,
-            request.method.as_forgejo_str(),
-            &metadata(&request.authorisation),
-        )?;
+        let receipt = self
+            .client
+            .merge_pr(
+                &request.authorisation.pr,
+                merge_method_as_forgejo_str(request.method),
+                &metadata(&request.authorisation),
+            )
+            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
         Ok(receipt_for(receipt, &request.authorisation))
+    }
+}
+
+const fn merge_method_as_forgejo_str(method: MergeMethod) -> &'static str {
+    match method {
+        MergeMethod::Merge => "merge",
+        MergeMethod::Squash => "squash",
+        MergeMethod::Rebase => "rebase",
     }
 }
 
@@ -236,9 +128,11 @@ fn receipt_for(
 
 #[cfg(test)]
 mod tests {
-    use pump19_contract::ActorCapability;
+    use pump19_contract::{ActorCapability, ActorRef, PullRequestRef};
+    use pump19_core::AuthorisationEvidence;
 
     use super::*;
+    use crate::ForgejoClientError;
 
     #[derive(Debug, Default)]
     struct FakeClient {

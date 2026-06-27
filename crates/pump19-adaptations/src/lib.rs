@@ -14,8 +14,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use pump19_contract::{ContractVersion, Extensions};
-use pump19_core::{AgentPlan, Criteria, RunKind, TriggerRule};
+use pump19_contract::{ContractVersion, Extensions, RunKind};
+use pump19_core::{AgentPlan, Criteria, TriggerRule};
 use pump19_judgement::{
     JudgementBrief, ReviewerConfig, default_reviewer_config, load_judgement_briefs_from_dir,
     load_reviewer_config_from_path, write_baseline_briefs_to_dir,
@@ -640,13 +640,13 @@ mod tests {
     use pump19_contract::{
         AgentId, AgentRole, BranchCurrency, ContractEvent, ContractVersion, EventPayload,
         Extensions, ForgeFacts, Mergeability, ModelFamily, ModelLineage, PullRequestRef,
-        ReviewCleanliness, Revision, RunOutcome, SessionId,
+        ReviewCleanliness, Revision, RunKind, RunOutcome, SessionId,
     };
     use pump19_core::{
         AgentLaunchSpec, AgentLaunchTarget, Core, CoreError, Criteria, DispatchOutcome, EventKind,
-        EventSource, JsonRunStateStore, LaunchProof, PreparedAgent, RunKind, RunLaunchOutcome,
-        RunLaunchRequest, RunLauncher, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider,
-        WorkspaceRequest,
+        EventSource, JsonRunStateStore, LaunchProof, PreparedAgent, RunLaunchOutcome,
+        RunLaunchRequest, RunLauncher, WorkspaceExecOutput, WorkspaceExecRequest,
+        WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
     };
     use pump19_judgement::{IntentApp, IntentSpec, judgement_prompt};
     use tempfile::tempdir;
@@ -864,9 +864,27 @@ mod tests {
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: true,
+                    egress_bounded: true,
+                    resource_bounded: true,
                     ephemeral: true,
                 },
             })
+        }
+
+        fn exec(
+            &mut self,
+            _lease: &WorkspaceLease,
+            _request: WorkspaceExecRequest,
+        ) -> Result<WorkspaceExecOutput, CoreError> {
+            Ok(WorkspaceExecOutput {
+                exit_code: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+
+        fn cleanup(&mut self, _lease: &WorkspaceLease) -> Result<(), CoreError> {
+            Ok(())
         }
     }
 
@@ -886,6 +904,7 @@ mod tests {
         fn launch_run(
             &mut self,
             _request: RunLaunchRequest,
+            _workspace: &mut dyn WorkspaceExecutor,
         ) -> Result<RunLaunchOutcome, CoreError> {
             Ok(RunLaunchOutcome {
                 outcome: RunOutcome::Succeeded,

@@ -7,22 +7,20 @@ use pump19_contract::{
     CertaintyClass, Confidence, ContractEvent, ContractVersion, DecisionSubject, DecisionVerdict,
     EventPayload, Extensions, Finding, FindingId, FindingLocation, FinishLabel, ForgeFacts,
     Mergeability, ModelFamily, ModelLineage, ModelProvenance, PatchChange, PrRunState,
-    ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision, RunId, RunOutcome,
-    RunStatus, SessionFreshness, SessionId, Severity,
+    ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision, RunId, RunKind,
+    RunOutcome, RunStatus, SessionFreshness, SessionId, Severity,
 };
 use pump19_core::{
     AgentLaunchSpec, AgentLaunchTarget, AgentPlan, Core, CoreError, Criteria, DispatchOutcome,
-    EventKind, EventSource, LaunchProof, LaunchRefusal, PreparedAgent, RunKind, RunLaunchOutcome,
+    EventKind, EventSource, LaunchProof, LaunchRefusal, PreparedAgent, RunLaunchOutcome,
     RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore, StateCriterion, TriggerRule,
-    WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+    WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
+    WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
 };
 use pump19_forge_forgejo::{
     ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
     ForgejoMergeability, ForgejoNormalisationConfig, ForgejoPullRequestSnapshot,
     ForgejoReviewCleanliness, NormalisationError, contract_event, forge_facts,
-};
-use pump19_judgement::{
-    IntentApp, IntentSpec, IntentStatement, JudgementBrief, Reviewer, ReviewerConfig, save_intent,
 };
 use pump19_runs::{
     FinishRunBody, FixRunBody, JsonCommandFixBody, JsonCommandJudgeBody, JudgeRunBody,
@@ -51,6 +49,22 @@ struct EstateWorkspaceProvider {
 impl WorkspaceProvider for EstateWorkspaceProvider {
     fn prepare(&mut self, _request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
         Ok(self.lease.clone())
+    }
+
+    fn exec(
+        &mut self,
+        _lease: &WorkspaceLease,
+        _request: WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, CoreError> {
+        Ok(WorkspaceExecOutput {
+            exit_code: 0,
+            stdout: b"[]".to_vec(),
+            stderr: Vec::new(),
+        })
+    }
+
+    fn cleanup(&mut self, _lease: &WorkspaceLease) -> Result<(), CoreError> {
+        Ok(())
     }
 }
 
@@ -86,7 +100,11 @@ impl RunLauncher for RecordingLauncher {
         })
     }
 
-    fn launch_run(&mut self, request: RunLaunchRequest) -> Result<RunLaunchOutcome, CoreError> {
+    fn launch_run(
+        &mut self,
+        request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
         self.launched.borrow_mut().push(request);
         Ok(RunLaunchOutcome {
             outcome: RunOutcome::Succeeded,
@@ -101,13 +119,61 @@ impl RunLauncher for RecordingLauncher {
 #[derive(Clone, Debug, Default)]
 struct RecordingRuntime {
     created: Rc<RefCell<Vec<ContainerSpec>>>,
+    execs: Rc<RefCell<Vec<WorkspaceExecRequest>>>,
     removed: Rc<RefCell<Vec<String>>>,
+}
+
+#[derive(Debug)]
+struct EstateExecutor {
+    outputs: Vec<WorkspaceExecOutput>,
+    execs: Vec<WorkspaceExecRequest>,
+}
+
+impl EstateExecutor {
+    const fn new(outputs: Vec<WorkspaceExecOutput>) -> Self {
+        Self {
+            outputs,
+            execs: Vec::new(),
+        }
+    }
+
+    fn json(stdout: &str) -> WorkspaceExecOutput {
+        WorkspaceExecOutput {
+            exit_code: 0,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+}
+
+impl WorkspaceExecutor for EstateExecutor {
+    fn exec(
+        &mut self,
+        _lease: &WorkspaceLease,
+        request: WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, CoreError> {
+        self.execs.push(request);
+        Ok(self.outputs.remove(0))
+    }
 }
 
 impl ContainerRuntime for RecordingRuntime {
     fn create(&mut self, spec: &ContainerSpec) -> Result<(), WorkspaceError> {
         self.created.borrow_mut().push(spec.clone());
         Ok(())
+    }
+
+    fn exec(
+        &mut self,
+        _container_id: &str,
+        request: &WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, WorkspaceError> {
+        self.execs.borrow_mut().push(request.clone());
+        Ok(WorkspaceExecOutput {
+            exit_code: 0,
+            stdout: b"[]".to_vec(),
+            stderr: Vec::new(),
+        })
     }
 
     fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
@@ -136,7 +202,11 @@ impl RunLauncher for PlannedLauncher {
         })
     }
 
-    fn launch_run(&mut self, _request: RunLaunchRequest) -> Result<RunLaunchOutcome, CoreError> {
+    fn launch_run(
+        &mut self,
+        _request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
         self.launches += 1;
         Ok(RunLaunchOutcome {
             outcome: RunOutcome::Succeeded,
@@ -275,6 +345,8 @@ fn workspace(root: PathBuf) -> WorkspaceLease {
         isolation: WorkspaceIsolation {
             isolated: true,
             credential_free: true,
+            egress_bounded: true,
+            resource_bounded: true,
             ephemeral: true,
         },
     }
@@ -444,6 +516,7 @@ fn run_request(run_kind: RunKind, provenance: Vec<ModelProvenance>) -> RunLaunch
             id: "run-completed".to_owned(),
             payload: EventPayload::RunCompleted {
                 run_id: RunId("previous-run".to_owned()),
+                run_kind: None,
                 outcome: RunOutcome::Succeeded,
             },
             extensions: extensions(),
@@ -545,7 +618,6 @@ fn core_launch_gate_refuses_each_soundness_violation_and_launches_independent_se
 #[test]
 fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let review_workspace = tempdir().expect("review workspace");
-    install_review_workspace(review_workspace.path());
     let mut review = JudgementReviewBody;
     let review_request = RunLaunchRequest {
         run_kind: RunKind::Review,
@@ -556,9 +628,35 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         ],
         ..run_request(RunKind::Review, Vec::new())
     };
+    let judgement_json = serde_json::to_string(&pump19_judgement::JudgementRun {
+        status: pump19_judgement::JudgementStatus::Failed,
+        model_families: vec!["codex".to_owned(), "claude".to_owned()],
+        briefs: vec![pump19_judgement::JudgementBriefResult {
+            brief_id: "purpose".to_owned(),
+            status: pump19_judgement::JudgementStatus::Failed,
+            reviews: vec![
+                pump19_judgement::ReviewerResult {
+                    agent_id: "reviewer-codex".to_owned(),
+                    model_family: "codex".to_owned(),
+                    status: pump19_judgement::JudgementStatus::Failed,
+                    stdout: "PUMP19_JUDGEMENT: FAIL stale merge state".to_owned(),
+                    stderr: String::new(),
+                },
+                pump19_judgement::ReviewerResult {
+                    agent_id: "reviewer-claude".to_owned(),
+                    model_family: "claude".to_owned(),
+                    status: pump19_judgement::JudgementStatus::Passed,
+                    stdout: "PUMP19_JUDGEMENT: PASS no concern".to_owned(),
+                    stderr: String::new(),
+                },
+            ],
+        }],
+    })
+    .expect("judgement serialises");
+    let mut review_executor = EstateExecutor::new(vec![EstateExecutor::json(&judgement_json)]);
 
     let findings = review
-        .run_review(&review_request)
+        .run_review(&review_request, &mut review_executor)
         .expect("review body maps judgement failures");
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].source_brief, "purpose");
@@ -570,6 +668,9 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let mut judge = JsonCommandJudgeBody::new(json_stdout_command(
         r#"[{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]"#,
     ));
+    let mut judge_executor = EstateExecutor::new(vec![EstateExecutor::json(
+        r#"[{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]"#,
+    )]);
     let judge_request = run_request(
         RunKind::Judge,
         vec![verified_provenance(
@@ -579,7 +680,7 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         )],
     );
     let decisions = judge
-        .run_judge(&judge_request)
+        .run_judge(&judge_request, &mut judge_executor)
         .expect("judge body emits decisions");
     assert_eq!(decisions.len(), 1);
     assert_eq!(decisions[0].verdict, DecisionVerdict::Material);
@@ -591,6 +692,9 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let mut fix = JsonCommandFixBody::new(json_stdout_command(
         r#"{"kind":"description","summary":"fixed stale merge gate"}"#,
     ));
+    let mut fix_executor = EstateExecutor::new(vec![EstateExecutor::json(
+        r#"{"kind":"description","summary":"fixed stale merge gate"}"#,
+    )]);
     let mut fix_request = run_request(
         RunKind::Fix,
         vec![verified_provenance(
@@ -600,7 +704,9 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         )],
     );
     fix_request.state.decisions = decisions;
-    let patches = fix.run_fix(&fix_request).expect("fix body emits patch");
+    let patches = fix
+        .run_fix(&fix_request, &mut fix_executor)
+        .expect("fix body emits patch");
     assert_eq!(
         patches[0].answers_findings,
         vec![FindingId("finding-material-1".to_owned())]
@@ -612,9 +718,10 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
 
     let mut finish = MergeGateFinishBody;
     let finish_request = run_request(RunKind::Finish, Vec::new());
+    let mut finish_executor = EstateExecutor::new(Vec::new());
     assert_eq!(
         finish
-            .run_finish(&finish_request)
+            .run_finish(&finish_request, &mut finish_executor)
             .expect("finish body uses merge gate"),
         RunOutcome::Succeeded
     );
@@ -730,12 +837,8 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
 }
 
 #[test]
-fn workspace_lease_boundary_is_currently_assertion_only_for_run_bodies() {
+fn review_run_body_executes_through_workspace_executor() {
     let host_workspace = tempdir().expect("host workspace");
-    install_review_workspace(host_workspace.path());
-    let marker = host_workspace.path().join("host-visible-marker.txt");
-    std::fs::write(&marker, "visible from host path").expect("write marker");
-
     let mut review = JudgementReviewBody;
     let request = RunLaunchRequest {
         run_kind: RunKind::Review,
@@ -746,20 +849,40 @@ fn workspace_lease_boundary_is_currently_assertion_only_for_run_bodies() {
         ],
         ..run_request(RunKind::Review, Vec::new())
     };
+    let judgement_json = serde_json::to_string(&pump19_judgement::JudgementRun {
+        status: pump19_judgement::JudgementStatus::Failed,
+        model_families: vec!["codex".to_owned(), "claude".to_owned()],
+        briefs: vec![pump19_judgement::JudgementBriefResult {
+            brief_id: "purpose".to_owned(),
+            status: pump19_judgement::JudgementStatus::Failed,
+            reviews: vec![pump19_judgement::ReviewerResult {
+                agent_id: "reviewer-codex".to_owned(),
+                model_family: "codex".to_owned(),
+                status: pump19_judgement::JudgementStatus::Failed,
+                stdout: "PUMP19_JUDGEMENT: FAIL stale state".to_owned(),
+                stderr: String::new(),
+            }],
+        }],
+    })
+    .expect("judgement serialises");
+    let mut executor = EstateExecutor::new(vec![EstateExecutor::json(&judgement_json)]);
 
     let findings = review
-        .run_review(&request)
-        .expect("review body executes against lease root");
+        .run_review(&request, &mut executor)
+        .expect("review body executes inside workspace");
 
     assert_eq!(findings.len(), 1);
-    assert!(marker.exists());
+    assert_eq!(executor.execs.len(), 1);
+    assert_eq!(executor.execs[0].program, "pump19-judgement-run");
+    assert_eq!(executor.execs[0].cwd_inside_container, "/workspace");
 }
 
 #[test]
-fn real_workspace_provider_prepares_container_but_launcher_still_receives_host_control_path() {
+fn real_workspace_provider_prepares_container_and_cleans_up_after_launch() {
     let root = tempdir().expect("workspace root");
     let runtime = RecordingRuntime::default();
     let created_specs = Rc::clone(&runtime.created);
+    let removed_containers = Rc::clone(&runtime.removed);
     let provider = ContainerWorkspaceProvider::with_runtime(
         WorkspaceConfig::new(root.path(), "localhost/pump19-workspace:stable"),
         runtime,
@@ -798,75 +921,16 @@ fn real_workspace_provider_prepares_container_but_launcher_still_receives_host_c
     assert_eq!(spec.security.privilege, PrivilegeMode::NoNewPrivileges);
     assert!(!spec.env.keys().any(|key| key.contains("TOKEN")));
     assert_eq!(spec.workdir, "/workspace");
+    assert_eq!(
+        removed_containers.borrow().as_slice(),
+        std::slice::from_ref(&spec.id)
+    );
 
     let launch_requests = launch_requests.borrow();
     let request = launch_requests.first().expect("run launched");
     assert!(request.workspace.isolation.present());
     assert!(request.workspace.root.starts_with(root.path()));
     assert_ne!(request.workspace.root, PathBuf::from("/workspace"));
-}
-
-fn install_review_workspace(root: &std::path::Path) {
-    save_intent(
-        root,
-        &IntentSpec {
-            app: IntentApp {
-                slug: "widgets".to_owned(),
-                name: "Widgets".to_owned(),
-                purpose: "Exercise real Pump-19 review body".to_owned(),
-                author_agent_id: Some("author-agent".to_owned()),
-            },
-            invariants: Vec::new(),
-            behaviours: vec![IntentStatement {
-                id: "purpose".to_owned(),
-                statement: "The implementation should be reviewed.".to_owned(),
-            }],
-        },
-    )
-    .expect("save intent");
-    write_toml(
-        &root.join("verification/judgement/purpose.toml"),
-        &JudgementBrief {
-            id: "purpose".to_owned(),
-            title: "Purpose".to_owned(),
-            intent_ref: "behaviours.purpose".to_owned(),
-            brief: "Fail one reviewer to produce a contract finding.".to_owned(),
-            evidence_paths: Vec::new(),
-        },
-    );
-    write_toml(
-        &root.join("verification/reviewers.toml"),
-        &ReviewerConfig {
-            reviewers: vec![
-                Reviewer {
-                    agent_id: "reviewer-codex".to_owned(),
-                    model_family: "codex".to_owned(),
-                    command: vec![
-                        "sh".to_owned(),
-                        "-c".to_owned(),
-                        "printf '%s\n' 'PUMP19_JUDGEMENT: FAIL stale merge state'".to_owned(),
-                    ],
-                },
-                Reviewer {
-                    agent_id: "reviewer-claude".to_owned(),
-                    model_family: "claude".to_owned(),
-                    command: vec![
-                        "sh".to_owned(),
-                        "-c".to_owned(),
-                        "printf '%s\n' 'PUMP19_JUDGEMENT: PASS no concern'".to_owned(),
-                    ],
-                },
-            ],
-        },
-    );
-}
-
-fn write_toml<T: serde::Serialize>(path: &std::path::Path, value: &T) {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).expect("create parent");
-    }
-    let text = toml::to_string_pretty(value).expect("serialise toml");
-    std::fs::write(path, text).expect("write toml");
 }
 
 fn json_stdout_command(json: &str) -> Vec<String> {

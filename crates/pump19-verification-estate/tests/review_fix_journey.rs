@@ -290,6 +290,7 @@ fn material_review_finding_drives_fix_then_fresh_rereview_until_minor_convergenc
         id: "event-fix-completed-pass-1".to_owned(),
         payload: EventPayload::RunCompleted {
             run_id: fix_patch.run_id.clone(),
+            run_kind: Some(pump19_contract::RunKind::Fix),
             outcome: RunOutcome::Succeeded,
         },
         extensions: extensions(),
