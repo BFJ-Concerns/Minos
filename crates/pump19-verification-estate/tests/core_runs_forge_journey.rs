@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use pump19_contract::{
     ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
@@ -26,6 +26,10 @@ use pump19_runs::{
     FinishRunBody, FixRunBody, JsonCommandFixBody, JsonCommandJudgeBody, JudgeRunBody,
     JudgementReviewBody, MergeGateFinishBody, ReviewRunBody,
 };
+use pump19_workspace::{
+    CapabilityPolicy, ContainerRuntime, ContainerSpec, ContainerWorkspaceProvider, NetworkPolicy,
+    PrivilegeMode, RootFilesystem, WorkspaceConfig, WorkspaceError,
+};
 use tempfile::tempdir;
 
 #[derive(Clone, Debug, Default)]
@@ -52,6 +56,62 @@ impl WorkspaceProvider for EstateWorkspaceProvider {
 struct PlannedLauncher {
     proofs: Vec<LaunchProof>,
     launches: usize,
+}
+
+#[derive(Clone, Debug)]
+struct RecordingLauncher {
+    proofs: Rc<RefCell<Vec<LaunchProof>>>,
+    launched: Rc<RefCell<Vec<RunLaunchRequest>>>,
+}
+
+impl RecordingLauncher {
+    fn new(proofs: Vec<LaunchProof>) -> Self {
+        Self {
+            proofs: Rc::new(RefCell::new(proofs)),
+            launched: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+}
+
+impl RunLauncher for RecordingLauncher {
+    fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
+        let proof = self.proofs.borrow_mut().remove(0);
+        Ok(PreparedAgent {
+            agent_id: spec.target.agent_id,
+            role: spec.target.role,
+            session_id: SessionId(format!("session-{}", spec.pass_index)),
+            proof,
+        })
+    }
+
+    fn launch_run(&mut self, request: RunLaunchRequest) -> Result<RunLaunchOutcome, CoreError> {
+        self.launched.borrow_mut().push(request);
+        Ok(RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: Vec::new(),
+            decisions: Vec::new(),
+            patches: Vec::new(),
+            token_usage: None,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecordingRuntime {
+    created: Rc<RefCell<Vec<ContainerSpec>>>,
+    removed: Rc<RefCell<Vec<String>>>,
+}
+
+impl ContainerRuntime for RecordingRuntime {
+    fn create(&mut self, spec: &ContainerSpec) -> Result<(), WorkspaceError> {
+        self.created.borrow_mut().push(spec.clone());
+        Ok(())
+    }
+
+    fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
+        self.removed.borrow_mut().push(container_id.to_owned());
+        Ok(())
+    }
 }
 
 impl PlannedLauncher {
@@ -683,6 +743,57 @@ fn workspace_lease_boundary_is_currently_assertion_only_for_run_bodies() {
 
     assert_eq!(findings.len(), 1);
     assert!(marker.exists());
+}
+
+#[test]
+fn real_workspace_provider_prepares_container_but_launcher_still_receives_host_control_path() {
+    let root = tempdir().expect("workspace root");
+    let runtime = RecordingRuntime::default();
+    let created_specs = Rc::clone(&runtime.created);
+    let provider = ContainerWorkspaceProvider::with_runtime(
+        WorkspaceConfig::new(root.path(), "localhost/pump19-workspace:stable"),
+        runtime,
+    );
+    let launcher = RecordingLauncher::new(vec![
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+    ]);
+    let launched = Rc::clone(&launcher.launched);
+    let event = opened_event(contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Dirty,
+        Vec::new(),
+    ));
+    let mut core = Core::new(
+        EmptyEventSource,
+        provider,
+        launcher,
+        EstateStateStore::empty(),
+    );
+
+    let outcomes = core
+        .process_event(&event, &[review_rule(standard_plan())])
+        .expect("core processes with real workspace provider");
+
+    assert!(matches!(
+        outcomes.as_slice(),
+        [DispatchOutcome::Launched { .. }]
+    ));
+    let specs = created_specs.borrow();
+    let spec = specs.first().expect("container spec created");
+    assert_eq!(spec.network, NetworkPolicy::Disabled);
+    assert_eq!(spec.security.root_filesystem, RootFilesystem::ReadOnly);
+    assert_eq!(spec.security.capabilities, CapabilityPolicy::DropAll);
+    assert_eq!(spec.security.privilege, PrivilegeMode::NoNewPrivileges);
+    assert!(!spec.env.keys().any(|key| key.contains("TOKEN")));
+    assert_eq!(spec.workdir, "/workspace");
+
+    let launched = launched.borrow();
+    let request = launched.first().expect("run launched");
+    assert!(request.workspace.isolation.present());
+    assert!(request.workspace.root.starts_with(root.path()));
+    assert_ne!(request.workspace.root, PathBuf::from("/workspace"));
 }
 
 fn install_review_workspace(root: &std::path::Path) {

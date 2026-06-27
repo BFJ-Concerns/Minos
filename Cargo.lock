@@ -165,6 +165,7 @@ dependencies = [
  "pump19-forge-forgejo",
  "pump19-judgement",
  "pump19-runs",
+ "pump19-workspace",
  "serde",
  "serde_json",
  "tempfile",
