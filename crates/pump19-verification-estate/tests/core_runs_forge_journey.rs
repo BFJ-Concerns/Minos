@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::unwrap_used)]
+
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use pump19_contract::{
@@ -115,7 +117,7 @@ impl ContainerRuntime for RecordingRuntime {
 }
 
 impl PlannedLauncher {
-    fn new(proofs: Vec<LaunchProof>) -> Self {
+    const fn new(proofs: Vec<LaunchProof>) -> Self {
         Self {
             proofs,
             launches: 0,
@@ -152,7 +154,7 @@ struct EstateStateStore {
 }
 
 impl EstateStateStore {
-    fn empty() -> Self {
+    const fn empty() -> Self {
         Self { states: Vec::new() }
     }
 
@@ -209,11 +211,11 @@ impl RunStateStore for EstateStateStore {
     }
 }
 
-fn version() -> ContractVersion {
+const fn version() -> ContractVersion {
     ContractVersion::current()
 }
 
-fn extensions() -> Extensions {
+const fn extensions() -> Extensions {
     Extensions::new()
 }
 
@@ -341,8 +343,12 @@ fn refusal_for(agent_plan: AgentPlan, proofs: Vec<LaunchProof>) -> LaunchRefusal
     let outcomes = core
         .process_event(&event, &[review_rule(agent_plan)])
         .expect("process event");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [DispatchOutcome::Refused { .. }]
+    ));
     let [DispatchOutcome::Refused { reason, .. }] = outcomes.as_slice() else {
-        panic!("expected one refused outcome, got {outcomes:?}");
+        unreachable!("asserted refused outcome shape");
     };
     reason.clone()
 }
@@ -593,7 +599,7 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
             "codex",
         )],
     );
-    fix_request.state.decisions = decisions.clone();
+    fix_request.state.decisions = decisions;
     let patches = fix.run_fix(&fix_request).expect("fix body emits patch");
     assert_eq!(
         patches[0].answers_findings,
@@ -642,8 +648,12 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
     )
     .expect("normalise activity")
     .expect("PR event is relevant");
+    assert!(matches!(
+        event.payload,
+        EventPayload::PullRequestOpened { .. }
+    ));
     let EventPayload::PullRequestOpened { facts } = &event.payload else {
-        panic!("expected pull-request event");
+        unreachable!("asserted pull-request event shape");
     };
     assert_eq!(facts.branch_currency, BranchCurrency::Current);
     assert!(facts.actor_permissions.iter().any(|permission| {
@@ -759,7 +769,7 @@ fn real_workspace_provider_prepares_container_but_launcher_still_receives_host_c
         LaunchProof::EstablishedFresh,
         LaunchProof::EstablishedFresh,
     ]);
-    let launched = Rc::clone(&launcher.launched);
+    let launch_requests = Rc::clone(&launcher.launched);
     let event = opened_event(contract_facts(
         BranchCurrency::Current,
         ReviewCleanliness::Dirty,
@@ -789,8 +799,8 @@ fn real_workspace_provider_prepares_container_but_launcher_still_receives_host_c
     assert!(!spec.env.keys().any(|key| key.contains("TOKEN")));
     assert_eq!(spec.workdir, "/workspace");
 
-    let launched = launched.borrow();
-    let request = launched.first().expect("run launched");
+    let launch_requests = launch_requests.borrow();
+    let request = launch_requests.first().expect("run launched");
     assert!(request.workspace.isolation.present());
     assert!(request.workspace.root.starts_with(root.path()));
     assert_ne!(request.workspace.root, PathBuf::from("/workspace"));

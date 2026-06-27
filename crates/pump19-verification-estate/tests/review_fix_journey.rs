@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::unwrap_used)]
+
 use std::collections::BTreeSet;
 
 use pump19_contract::{
@@ -11,11 +13,11 @@ use pump19_contract::{
     merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
 };
 
-fn version() -> ContractVersion {
+const fn version() -> ContractVersion {
     ContractVersion::current()
 }
 
-fn extensions() -> Extensions {
+const fn extensions() -> Extensions {
     Extensions::new()
 }
 
@@ -198,7 +200,7 @@ fn posted_comment(id: &str, finding_id: &FindingId) -> Comment {
     }
 }
 
-fn finding_id_from_decision(decision: &Decision) -> Option<&FindingId> {
+const fn finding_id_from_decision(decision: &Decision) -> Option<&FindingId> {
     match &decision.subject {
         DecisionSubject::Finding { finding_id } => Some(finding_id),
         DecisionSubject::FindingSet { .. } => None,
@@ -281,7 +283,7 @@ fn material_review_finding_drives_fix_then_fresh_rereview_until_minor_convergenc
         Some(&material.id)
     );
     assert_eq!(fix_patch.answers_findings, vec![material.id.clone()]);
-    assert_eq!(material_comment.finding_ids, vec![material.id.clone()]);
+    assert_eq!(material_comment.finding_ids, vec![material.id]);
 
     let fix_completed = ContractEvent {
         contract_version: version(),
@@ -331,7 +333,7 @@ fn material_review_finding_drives_fix_then_fresh_rereview_until_minor_convergenc
 
     let mut pass_two_launch_provenance = pass_two_reviewers.clone();
     pass_two_launch_provenance.push(pass_two_judge.clone());
-    pass_two_launch_provenance.push(fix_patch.provenance.clone());
+    pass_two_launch_provenance.push(fix_patch.provenance);
     assert!(has_two_verified_reviewer_families(
         &pass_two_launch_provenance
     ));
