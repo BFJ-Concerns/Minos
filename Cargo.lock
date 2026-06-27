@@ -111,6 +111,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump19-core"
+version = "0.1.0"
+dependencies = [
+ "pump19-contract",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "pump19-forge-forgejo"
+version = "0.1.0"
+dependencies = [
+ "pump19-contract",
+ "pump19-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "pump19-judgement"
 version = "0.1.0"
 dependencies = [
@@ -119,6 +141,19 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "pump19-runs"
+version = "0.1.0"
+dependencies = [
+ "pump19-contract",
+ "pump19-core",
+ "pump19-judgement",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
