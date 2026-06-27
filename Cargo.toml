@@ -6,6 +6,7 @@ members = [
     "crates/pump19-judgement",
     "crates/pump19-runs",
     "crates/pump19-workspace",
+    "crates/pump19-verification-estate",
 ]
 resolver = "3"
 

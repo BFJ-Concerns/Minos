@@ -157,6 +157,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump19-verification-estate"
+version = "0.1.0"
+dependencies = [
+ "pump19-contract",
+ "pump19-core",
+ "pump19-forge-forgejo",
+ "pump19-judgement",
+ "pump19-runs",
+ "pump19-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "pump19-workspace"
 version = "0.1.0"
 dependencies = [
