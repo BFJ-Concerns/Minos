@@ -1,0 +1,767 @@
+#![forbid(unsafe_code)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "contract conformance tests use direct fixture assertions"
+    )
+)]
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Open extension data carried by every contract artefact.
+///
+/// Extensions are deliberately opaque to the core contract. They let adaptations
+/// carry forge-specific or organisation-specific data without turning those needs
+/// into new required fields.
+pub type Extensions = BTreeMap<String, Value>;
+
+/// The first public contract version for the review-and-fix service.
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 0 };
+
+/// A version marker present on every top-level contract artefact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContractVersion {
+    pub major: u16,
+    pub minor: u16,
+}
+
+impl ContractVersion {
+    /// Returns the version produced by this crate.
+    #[must_use]
+    pub const fn current() -> Self {
+        CURRENT_CONTRACT_VERSION
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentId(pub String);
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CommentId(pub String);
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FindingId(pub String);
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelFamily(pub String);
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PatchId(pub String);
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RunId(pub String);
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SessionId(pub String);
+
+/// The role an agent played in the review-and-fix loop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    Reviewer,
+    Fixer,
+    Judge,
+    Finish,
+}
+
+/// The model metadata the core has either verified or failed to verify.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModelProvenance {
+    pub contract_version: ContractVersion,
+    pub agent_id: AgentId,
+    pub role: AgentRole,
+    pub session_id: SessionId,
+    pub freshness: SessionFreshness,
+    pub verification: ProvenanceVerification,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+impl ModelProvenance {
+    /// Returns the verified model family, or `None` when provenance is unverified.
+    #[must_use]
+    pub const fn verified_family(&self) -> Option<&ModelFamily> {
+        match &self.verification {
+            ProvenanceVerification::Verified { lineage, .. } => Some(&lineage.family),
+            ProvenanceVerification::Unverified { .. } => None,
+        }
+    }
+}
+
+/// A fresh session is established by the core at launch time, not self-reported.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum SessionFreshness {
+    FreshForPass { pass_index: u32 },
+    Reused { original_session_id: SessionId },
+    Unknown { reason: String },
+}
+
+/// Verified provenance makes the family non-optional.
+///
+/// That removes the illegal state "verified, but no family", which would be a
+/// dangerous thing for the independence predicates to interpret.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum ProvenanceVerification {
+    Verified {
+        vendor: String,
+        control_plane: String,
+        lineage: ModelLineage,
+    },
+    Unverified {
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModelLineage {
+    pub family: ModelFamily,
+    pub model: String,
+}
+
+/// A review finding raised by an independent reviewer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Finding {
+    pub contract_version: ContractVersion,
+    pub id: FindingId,
+    pub dedup_key: String,
+    pub source_brief: String,
+    pub dimension: String,
+    pub summary: String,
+    pub severity: Severity,
+    pub confidence: Confidence,
+    pub certainty: CertaintyClass,
+    pub provenance: ModelProvenance,
+    pub locations: Vec<FindingLocation>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Confidence {
+    Low,
+    Medium,
+    High,
+}
+
+/// The certainty tier carried by every finding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertaintyClass {
+    Advisory,
+    Blocking,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum FindingLocation {
+    File {
+        path: String,
+        line: Option<u32>,
+        range: Option<SourceRange>,
+    },
+    General {
+        description: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourceRange {
+    pub start_line: u32,
+    pub start_column: Option<u32>,
+    pub end_line: u32,
+    pub end_column: Option<u32>,
+}
+
+/// A fix run's patch for one or more findings.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Patch {
+    pub contract_version: ContractVersion,
+    pub id: PatchId,
+    pub run_id: RunId,
+    pub commit_sha: String,
+    pub idempotency_key: String,
+    pub answers_findings: Vec<FindingId>,
+    pub change: PatchChange,
+    pub provenance: ModelProvenance,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PatchChange {
+    UnifiedDiff { diff: String },
+    Description { summary: String },
+}
+
+/// Normalised data for a comment that an adaptation may render and post.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Comment {
+    pub contract_version: ContractVersion,
+    pub id: CommentId,
+    pub finding_ids: Vec<FindingId>,
+    pub target: CommentTarget,
+    pub payload: CommentPayload,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum CommentTarget {
+    PullRequest { pr: PullRequestRef },
+    FindingLocation { finding_id: FindingId },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CommentPayload {
+    pub summary: String,
+    pub details: Vec<String>,
+}
+
+/// The significance judge's decision over one finding or a set of findings.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Decision {
+    pub contract_version: ContractVersion,
+    pub id: String,
+    pub subject: DecisionSubject,
+    pub verdict: DecisionVerdict,
+    pub rationale: String,
+    pub provenance: ModelProvenance,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DecisionSubject {
+    Finding { finding_id: FindingId },
+    FindingSet { finding_ids: Vec<FindingId> },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionVerdict {
+    Material,
+    Minor,
+}
+
+/// Durable per-PR run state keyed to a pull request and commit SHA.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PrRunState {
+    pub contract_version: ContractVersion,
+    pub pr: PullRequestRef,
+    pub commit_sha: String,
+    pub pass_index: u32,
+    pub status: RunStatus,
+    pub findings: Vec<Finding>,
+    pub decisions: Vec<Decision>,
+    pub patches: Vec<Patch>,
+    pub ceiling: Option<RunCeiling>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+/// Optional runaway guard. `None` means the core has no ceiling enabled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RunCeiling {
+    pub max_passes: Option<u32>,
+    pub token_budget: Option<u64>,
+}
+
+/// Forge-neutral facts the core needs for label authority and merge gating.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ForgeFacts {
+    pub contract_version: ContractVersion,
+    pub pr: PullRequestRef,
+    pub head: Revision,
+    pub base: Revision,
+    pub branch_currency: BranchCurrency,
+    pub cleanliness: ReviewCleanliness,
+    pub mergeability: Mergeability,
+    pub finish_label: Option<FinishLabel>,
+    pub actor_permissions: Vec<ActorPermissions>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PullRequestRef {
+    pub repository: String,
+    pub id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Revision {
+    pub sha: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchCurrency {
+    Current,
+    Stale,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewCleanliness {
+    Clean,
+    Dirty,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mergeability {
+    Mergeable,
+    Conflicting,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FinishLabel {
+    pub name: String,
+    pub applied_by: ActorRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ActorRef {
+    pub id: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ActorPermissions {
+    pub actor: ActorRef,
+    pub capabilities: BTreeSet<ActorCapability>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorCapability {
+    ApplyFinishLabel,
+    Merge,
+}
+
+/// A small event vocabulary for criteria-triggered runs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContractEvent {
+    pub contract_version: ContractVersion,
+    pub id: String,
+    pub payload: EventPayload,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+pub enum EventPayload {
+    PullRequestOpened {
+        facts: ForgeFacts,
+    },
+    PullRequestUpdated {
+        facts: ForgeFacts,
+    },
+    RunCompleted {
+        run_id: RunId,
+        outcome: RunOutcome,
+    },
+    LabelApplied {
+        pr: PullRequestRef,
+        label: FinishLabel,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+/// True when the reviewer set spans at least two verified model families.
+#[must_use]
+pub fn has_two_verified_reviewer_families(provenances: &[ModelProvenance]) -> bool {
+    let families = provenances
+        .iter()
+        .filter(|provenance| provenance.role == AgentRole::Reviewer)
+        .filter_map(ModelProvenance::verified_family)
+        .collect::<BTreeSet<_>>();
+    families.len() >= 2
+}
+
+/// True when no recorded reviewer also appears as a fixer.
+#[must_use]
+pub fn reviewers_disjoint_from_fixers(provenances: &[ModelProvenance]) -> bool {
+    let reviewers = provenances
+        .iter()
+        .filter(|provenance| provenance.role == AgentRole::Reviewer)
+        .map(|provenance| &provenance.agent_id)
+        .collect::<BTreeSet<_>>();
+    let fixers = provenances
+        .iter()
+        .filter(|provenance| provenance.role == AgentRole::Fixer)
+        .map(|provenance| &provenance.agent_id)
+        .collect::<BTreeSet<_>>();
+    reviewers.is_disjoint(&fixers)
+}
+
+/// True when the judge is verified and shares neither agent id nor family with reviewers.
+#[must_use]
+pub fn judge_independent_of_reviewers(
+    judge: &ModelProvenance,
+    reviewers: &[ModelProvenance],
+) -> bool {
+    if judge.role != AgentRole::Judge {
+        return false;
+    }
+    let Some(judge_family) = judge.verified_family() else {
+        return false;
+    };
+    for reviewer in reviewers
+        .iter()
+        .filter(|provenance| provenance.role == AgentRole::Reviewer)
+    {
+        if reviewer.agent_id == judge.agent_id {
+            return false;
+        }
+        let Some(reviewer_family) = reviewer.verified_family() else {
+            return false;
+        };
+        if reviewer_family == judge_family {
+            return false;
+        }
+    }
+    true
+}
+
+/// True when every supplied agent session is fresh for the requested pass.
+#[must_use]
+pub fn sessions_fresh_for_pass(provenances: &[ModelProvenance], pass_index: u32) -> bool {
+    provenances.iter().all(|provenance| {
+        matches!(
+            provenance.freshness,
+            SessionFreshness::FreshForPass { pass_index: freshness_pass } if freshness_pass == pass_index
+        )
+    })
+}
+
+/// True when the core's merge gate can pass on contract facts alone.
+#[must_use]
+pub const fn merge_gate_clean_and_current(facts: &ForgeFacts) -> bool {
+    matches!(facts.cleanliness, ReviewCleanliness::Clean)
+        && matches!(facts.branch_currency, BranchCurrency::Current)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde::{Serialize, de::DeserializeOwned};
+    use serde_json::json;
+
+    use super::{
+        ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
+        CertaintyClass, Comment, CommentId, CommentPayload, CommentTarget, Confidence,
+        ContractEvent, ContractVersion, Decision, DecisionSubject, DecisionVerdict, EventPayload,
+        Finding, FindingId, FindingLocation, FinishLabel, ForgeFacts, Mergeability, ModelFamily,
+        ModelLineage, ModelProvenance, Patch, PatchChange, PatchId, ProvenanceVerification,
+        PullRequestRef, ReviewCleanliness, Revision, RunCeiling, RunId, RunOutcome, RunStatus,
+        SessionFreshness, SessionId, Severity, SourceRange, has_two_verified_reviewer_families,
+        judge_independent_of_reviewers, merge_gate_clean_and_current,
+        reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
+    };
+
+    fn round_trip<T>(value: &T)
+    where
+        T: Clone + std::fmt::Debug + PartialEq + Serialize + DeserializeOwned,
+    {
+        let encoded = serde_json::to_string(value).expect("serialise fixture");
+        let decoded = serde_json::from_str::<T>(&encoded).expect("deserialise fixture");
+        assert_eq!(decoded, value.clone());
+    }
+
+    fn version() -> ContractVersion {
+        ContractVersion::current()
+    }
+
+    fn pr() -> PullRequestRef {
+        PullRequestRef {
+            repository: "acme/widgets".to_owned(),
+            id: "42".to_owned(),
+        }
+    }
+
+    fn actor(id: &str) -> ActorRef {
+        ActorRef {
+            id: id.to_owned(),
+            display_name: id.to_owned(),
+        }
+    }
+
+    fn extensions() -> super::Extensions {
+        BTreeMap::new()
+    }
+
+    fn verified_provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelProvenance {
+        ModelProvenance {
+            contract_version: version(),
+            agent_id: AgentId(agent_id.to_owned()),
+            role,
+            session_id: SessionId(format!("{agent_id}-session")),
+            freshness: SessionFreshness::FreshForPass { pass_index: 1 },
+            verification: ProvenanceVerification::Verified {
+                vendor: "local".to_owned(),
+                control_plane: "pump19-core".to_owned(),
+                lineage: ModelLineage {
+                    family: ModelFamily(family.to_owned()),
+                    model: format!("{family}-2026"),
+                },
+            },
+            extensions: extensions(),
+        }
+    }
+
+    fn finding() -> Finding {
+        Finding {
+            contract_version: version(),
+            id: FindingId("finding-1".to_owned()),
+            dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
+            source_brief: "correctness".to_owned(),
+            dimension: "soundness".to_owned(),
+            summary: "The update accepts stale review state.".to_owned(),
+            severity: Severity::High,
+            confidence: Confidence::High,
+            certainty: CertaintyClass::Advisory,
+            provenance: verified_provenance("codex-reviewer", AgentRole::Reviewer, "codex"),
+            locations: vec![FindingLocation::File {
+                path: "src/lib.rs".to_owned(),
+                line: Some(12),
+                range: Some(SourceRange {
+                    start_line: 12,
+                    start_column: Some(5),
+                    end_line: 15,
+                    end_column: Some(9),
+                }),
+            }],
+            extensions: extensions(),
+        }
+    }
+
+    fn patch() -> Patch {
+        Patch {
+            contract_version: version(),
+            id: PatchId("patch-1".to_owned()),
+            run_id: RunId("run-fix-1".to_owned()),
+            commit_sha: "abc123".to_owned(),
+            idempotency_key: "run-fix-1:abc123:finding-1".to_owned(),
+            answers_findings: vec![FindingId("finding-1".to_owned())],
+            change: PatchChange::UnifiedDiff {
+                diff: "--- a/src/lib.rs\n+++ b/src/lib.rs\n".to_owned(),
+            },
+            provenance: verified_provenance("fixer", AgentRole::Fixer, "codex"),
+            extensions: extensions(),
+        }
+    }
+
+    fn decision() -> Decision {
+        Decision {
+            contract_version: version(),
+            id: "decision-1".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: FindingId("finding-1".to_owned()),
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "The finding affects merge safety.".to_owned(),
+            provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+            extensions: extensions(),
+        }
+    }
+
+    fn forge_facts() -> ForgeFacts {
+        ForgeFacts {
+            contract_version: version(),
+            pr: pr(),
+            head: Revision {
+                sha: "abc123".to_owned(),
+            },
+            base: Revision {
+                sha: "def456".to_owned(),
+            },
+            branch_currency: BranchCurrency::Current,
+            cleanliness: ReviewCleanliness::Clean,
+            mergeability: Mergeability::Mergeable,
+            finish_label: Some(FinishLabel {
+                name: "pump19-finish".to_owned(),
+                applied_by: actor("core"),
+            }),
+            actor_permissions: vec![ActorPermissions {
+                actor: actor("core"),
+                capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
+                    .into_iter()
+                    .collect(),
+            }],
+            extensions: extensions(),
+        }
+    }
+
+    #[test]
+    fn contract_artifacts_round_trip_through_json() {
+        let comment = Comment {
+            contract_version: version(),
+            id: CommentId("comment-1".to_owned()),
+            finding_ids: vec![FindingId("finding-1".to_owned())],
+            target: CommentTarget::PullRequest { pr: pr() },
+            payload: CommentPayload {
+                summary: "Stale review state".to_owned(),
+                details: vec!["The merge gate needs fresh facts.".to_owned()],
+            },
+            extensions: extensions(),
+        };
+        let run_state = super::PrRunState {
+            contract_version: version(),
+            pr: pr(),
+            commit_sha: "abc123".to_owned(),
+            pass_index: 1,
+            status: RunStatus::Completed,
+            findings: vec![finding()],
+            decisions: vec![decision()],
+            patches: vec![patch()],
+            ceiling: Some(RunCeiling {
+                max_passes: Some(5),
+                token_budget: None,
+            }),
+            extensions: extensions(),
+        };
+        let event = ContractEvent {
+            contract_version: version(),
+            id: "event-1".to_owned(),
+            payload: EventPayload::RunCompleted {
+                run_id: RunId("run-review-1".to_owned()),
+                outcome: RunOutcome::Succeeded,
+            },
+            extensions: extensions(),
+        };
+
+        round_trip(&finding());
+        round_trip(&patch());
+        round_trip(&comment);
+        round_trip(&decision());
+        round_trip(&run_state);
+        round_trip(&verified_provenance(
+            "codex-reviewer",
+            AgentRole::Reviewer,
+            "codex",
+        ));
+        round_trip(&forge_facts());
+        round_trip(&event);
+    }
+
+    #[test]
+    fn open_extensions_survive_unknown_json() {
+        let payload = json!({
+            "contract_version": { "major": 1, "minor": 0 },
+            "id": "finding-1",
+            "dedup_key": "brief:correctness:path:src/lib.rs:12",
+            "source_brief": "correctness",
+            "dimension": "soundness",
+            "summary": "The update accepts stale review state.",
+            "severity": "high",
+            "confidence": "high",
+            "certainty": "advisory",
+            "provenance": verified_provenance("codex-reviewer", AgentRole::Reviewer, "codex"),
+            "locations": [{ "kind": "general", "description": "whole change" }],
+            "extensions": {
+                "forgejo.thread": { "id": 99, "state": "open" },
+                "reviewer.raw": ["line one", "line two"]
+            }
+        });
+        let finding = serde_json::from_value::<Finding>(payload).expect("deserialise finding");
+        assert_eq!(
+            finding.extensions["forgejo.thread"],
+            json!({ "id": 99, "state": "open" })
+        );
+
+        let encoded = serde_json::to_value(&finding).expect("serialise finding");
+        assert_eq!(
+            encoded["extensions"]["reviewer.raw"],
+            json!(["line one", "line two"])
+        );
+    }
+
+    #[test]
+    fn soundness_predicates_are_expressible_from_contract_types() {
+        let reviewers = vec![
+            verified_provenance("codex-reviewer", AgentRole::Reviewer, "codex"),
+            verified_provenance("claude-reviewer", AgentRole::Reviewer, "claude"),
+        ];
+        let fixer = verified_provenance("fixer", AgentRole::Fixer, "codex");
+        let judge = verified_provenance("judge", AgentRole::Judge, "gemini");
+        let mut all_provenance = reviewers.clone();
+        all_provenance.push(fixer);
+        all_provenance.push(judge.clone());
+
+        assert!(has_two_verified_reviewer_families(&all_provenance));
+        assert!(reviewers_disjoint_from_fixers(&all_provenance));
+        assert!(judge_independent_of_reviewers(&judge, &reviewers));
+        assert!(sessions_fresh_for_pass(&all_provenance, 1));
+        assert!(merge_gate_clean_and_current(&forge_facts()));
+    }
+
+    #[test]
+    fn unverified_provenance_does_not_count_as_a_reviewer_family() {
+        let unverified = ModelProvenance {
+            contract_version: version(),
+            agent_id: AgentId("unknown-reviewer".to_owned()),
+            role: AgentRole::Reviewer,
+            session_id: SessionId("unknown-session".to_owned()),
+            freshness: SessionFreshness::Unknown {
+                reason: "adapter did not provide launch proof".to_owned(),
+            },
+            verification: ProvenanceVerification::Unverified {
+                reason: "core could not verify provider lineage".to_owned(),
+            },
+            extensions: extensions(),
+        };
+        let provenances = vec![
+            verified_provenance("codex-reviewer", AgentRole::Reviewer, "codex"),
+            unverified,
+        ];
+
+        assert!(!has_two_verified_reviewer_families(&provenances));
+    }
+}

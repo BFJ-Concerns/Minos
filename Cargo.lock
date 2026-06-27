@@ -103,6 +103,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump19-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pump19-judgement"
 version = "0.1.0"
 dependencies = [
