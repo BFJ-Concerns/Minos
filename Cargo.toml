@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/pump19-adaptations",
     "crates/pump19-contract",
     "crates/pump19-core",
     "crates/pump19-forge-forgejo",

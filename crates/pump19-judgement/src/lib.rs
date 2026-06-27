@@ -28,8 +28,6 @@ const PROMPT_TOKEN: &str = "{prompt}";
 const BRIEF_ID_TOKEN: &str = "{brief_id}";
 const JUDGEMENT_PASS_TOKEN: &str = "PUMP19_JUDGEMENT: PASS";
 const JUDGEMENT_FAIL_TOKEN: &str = "PUMP19_JUDGEMENT: FAIL";
-const LEGACY_WIDGET_PASS_TOKEN: &str = "WIDGET_JUDGEMENT: PASS";
-const LEGACY_WIDGET_FAIL_TOKEN: &str = "WIDGET_JUDGEMENT: FAIL";
 
 /// Errors raised while loading, preparing, or running judgement review.
 #[derive(Debug, Error)]
@@ -253,46 +251,46 @@ pub fn install_standalone(
     )?;
 
     write_baseline_briefs(root)?;
-    write_toml(
-        &reviewer_config_path(root),
-        &ReviewerConfig {
-            reviewers: vec![
-                Reviewer {
-                    agent_id: "codex-reviewer".to_owned(),
-                    model_family: "codex".to_owned(),
-                    command: vec![
-                        "codex".to_owned(),
-                        "exec".to_owned(),
-                        "--sandbox".to_owned(),
-                        "read-only".to_owned(),
-                        "--ignore-rules".to_owned(),
-                        PROMPT_TOKEN.to_owned(),
-                    ],
-                },
-                Reviewer {
-                    agent_id: "claude-reviewer".to_owned(),
-                    model_family: "claude".to_owned(),
-                    command: vec![
-                        "claude".to_owned(),
-                        "--print".to_owned(),
-                        "--permission-mode".to_owned(),
-                        "dontAsk".to_owned(),
-                        PROMPT_TOKEN.to_owned(),
-                    ],
-                },
-            ],
-        },
-    )?;
+    write_toml(&reviewer_config_path(root), &default_reviewer_config())?;
     Ok(())
 }
 
-/// Writes Pump-19's baseline judgement briefs.
-///
-/// # Errors
-///
-/// Returns an error when any brief file cannot be serialised or written.
-pub fn write_baseline_briefs(root: &Path) -> Result<(), JudgementError> {
-    let briefs = [
+/// Returns Pump-19's default cross-family reviewer command configuration.
+#[must_use]
+pub fn default_reviewer_config() -> ReviewerConfig {
+    ReviewerConfig {
+        reviewers: vec![
+            Reviewer {
+                agent_id: "codex-reviewer".to_owned(),
+                model_family: "codex".to_owned(),
+                command: vec![
+                    "codex".to_owned(),
+                    "exec".to_owned(),
+                    "--sandbox".to_owned(),
+                    "read-only".to_owned(),
+                    "--ignore-rules".to_owned(),
+                    PROMPT_TOKEN.to_owned(),
+                ],
+            },
+            Reviewer {
+                agent_id: "claude-reviewer".to_owned(),
+                model_family: "claude".to_owned(),
+                command: vec![
+                    "claude".to_owned(),
+                    "--print".to_owned(),
+                    "--permission-mode".to_owned(),
+                    "dontAsk".to_owned(),
+                    PROMPT_TOKEN.to_owned(),
+                ],
+            },
+        ],
+    }
+}
+
+/// Returns Pump-19's compact baseline judgement briefs.
+#[must_use]
+pub fn baseline_judgement_briefs() -> Vec<JudgementBrief> {
+    vec![
         JudgementBrief {
             id: "reviewer-independence".to_owned(),
             title: "Reviewer independence".to_owned(),
@@ -317,12 +315,26 @@ pub fn write_baseline_briefs(root: &Path) -> Result<(), JudgementError> {
                 .to_owned(),
             evidence_paths: Vec::new(),
         },
-    ];
-    for brief in briefs {
-        write_toml(
-            &judgement_dir(root).join(format!("{}.toml", brief.id)),
-            &brief,
-        )?;
+    ]
+}
+
+/// Writes Pump-19's baseline judgement briefs.
+///
+/// # Errors
+///
+/// Returns an error when any brief file cannot be serialised or written.
+pub fn write_baseline_briefs(root: &Path) -> Result<(), JudgementError> {
+    write_baseline_briefs_to_dir(&judgement_dir(root))
+}
+
+/// Writes Pump-19's baseline judgement briefs to a supplied directory.
+///
+/// # Errors
+///
+/// Returns an error when any brief file cannot be serialised or written.
+pub fn write_baseline_briefs_to_dir(dir: &Path) -> Result<(), JudgementError> {
+    for brief in baseline_judgement_briefs() {
+        write_toml(&dir.join(format!("{}.toml", brief.id)), &brief)?;
     }
     Ok(())
 }
@@ -428,15 +440,10 @@ pub fn run_reviewer(
     let stderr = String::from_utf8(output.stderr).map_err(|_| JudgementError::NonUtf8Stderr {
         label: reviewer.agent_id.clone(),
     })?;
-    let reviewer_passed = stdout.contains(JUDGEMENT_PASS_TOKEN)
-        || stderr.contains(JUDGEMENT_PASS_TOKEN)
-        || stdout.contains(LEGACY_WIDGET_PASS_TOKEN)
-        || stderr.contains(LEGACY_WIDGET_PASS_TOKEN);
-    let reviewer_failed = stdout.contains(JUDGEMENT_FAIL_TOKEN)
-        || stderr.contains(JUDGEMENT_FAIL_TOKEN)
-        // Widget-era reviewer commands may still exist in early migration fixtures.
-        || stdout.contains(LEGACY_WIDGET_FAIL_TOKEN)
-        || stderr.contains(LEGACY_WIDGET_FAIL_TOKEN);
+    let reviewer_passed =
+        stdout.contains(JUDGEMENT_PASS_TOKEN) || stderr.contains(JUDGEMENT_PASS_TOKEN);
+    let reviewer_failed =
+        stdout.contains(JUDGEMENT_FAIL_TOKEN) || stderr.contains(JUDGEMENT_FAIL_TOKEN);
     let status = if !output.status.success()
         || reviewer_failed
         // Reviewers must say what they decided. A silent zero exit is operationally
@@ -542,7 +549,7 @@ pub fn validate_reviewers(
 ///
 /// Returns an error when the directory cannot be read or a brief cannot be parsed.
 pub fn load_judgement_briefs(root: &Path) -> Result<Vec<JudgementBrief>, JudgementError> {
-    load_toml_dir(&judgement_dir(root))
+    load_judgement_briefs_from_dir(&judgement_dir(root))
 }
 
 /// Loads reviewer configuration from `verification/reviewers.toml`.
@@ -551,7 +558,25 @@ pub fn load_judgement_briefs(root: &Path) -> Result<Vec<JudgementBrief>, Judgeme
 ///
 /// Returns an error when the file cannot be read or parsed.
 pub fn load_reviewer_config(root: &Path) -> Result<ReviewerConfig, JudgementError> {
-    read_toml(&reviewer_config_path(root))
+    load_reviewer_config_from_path(&reviewer_config_path(root))
+}
+
+/// Loads judgement briefs from a supplied directory.
+///
+/// # Errors
+///
+/// Returns an error when the directory cannot be read or a brief cannot be parsed.
+pub fn load_judgement_briefs_from_dir(dir: &Path) -> Result<Vec<JudgementBrief>, JudgementError> {
+    load_toml_dir(dir)
+}
+
+/// Loads reviewer configuration from a supplied TOML file.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or parsed.
+pub fn load_reviewer_config_from_path(path: &Path) -> Result<ReviewerConfig, JudgementError> {
+    read_toml(path)
 }
 
 /// Writes a JSON run artifact under `verification/runs`.
@@ -841,8 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_widget_pass_token_still_passes_during_extraction()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn legacy_widget_pass_token_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let result = super::run_reviewer(
             dir.path(),
@@ -859,7 +883,7 @@ mod tests {
             "prompt",
         )?;
 
-        assert_eq!(result.status, JudgementStatus::Passed);
+        assert_eq!(result.status, JudgementStatus::Failed);
         Ok(())
     }
 

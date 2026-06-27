@@ -103,6 +103,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump19-adaptations"
+version = "0.1.0"
+dependencies = [
+ "pump19-contract",
+ "pump19-core",
+ "pump19-judgement",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "pump19-contract"
 version = "0.1.0"
 dependencies = [
