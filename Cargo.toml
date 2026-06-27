@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/pump19-contract", "crates/pump19-judgement"]
+members = [
+    "crates/pump19-contract",
+    "crates/pump19-judgement",
+    "crates/pump19-verification-estate",
+]
 resolver = "3"
 
 [workspace.package]
