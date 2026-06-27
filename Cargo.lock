@@ -111,6 +111,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump19-core"
+version = "0.1.0"
+dependencies = [
+ "pump19-contract",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "pump19-judgement"
 version = "0.1.0"
 dependencies = [
