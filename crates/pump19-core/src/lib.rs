@@ -436,6 +436,7 @@ pub struct TriggerRule {
 #[serde(rename_all = "snake_case")]
 pub enum RunKind {
     Review,
+    Judge,
     Fix,
     Finish,
 }
@@ -1179,6 +1180,38 @@ mod tests {
         }
     }
 
+    fn verified_provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelProvenance {
+        establish_provenance(
+            &target(agent_id, role, family),
+            PreparedAgent {
+                agent_id: AgentId(agent_id.to_owned()),
+                role,
+                session_id: SessionId(format!("{agent_id}-session")),
+                proof: LaunchProof::EstablishedFresh,
+            },
+            1,
+        )
+    }
+
+    fn finding_from(agent_id: &str, family: &str, id: &str) -> Finding {
+        Finding {
+            contract_version: ContractVersion::current(),
+            id: pump19_contract::FindingId(id.to_owned()),
+            dedup_key: format!("brief:{agent_id}:{id}"),
+            source_brief: "review".to_owned(),
+            dimension: "correctness".to_owned(),
+            summary: "A material review finding.".to_owned(),
+            severity: pump19_contract::Severity::High,
+            confidence: pump19_contract::Confidence::High,
+            certainty: pump19_contract::CertaintyClass::Advisory,
+            provenance: verified_provenance(agent_id, AgentRole::Reviewer, family),
+            locations: vec![pump19_contract::FindingLocation::General {
+                description: "whole change".to_owned(),
+            }],
+            extensions: BTreeMap::new(),
+        }
+    }
+
     fn independent_rule() -> TriggerRule {
         TriggerRule {
             id: "review".to_owned(),
@@ -1219,6 +1252,66 @@ mod tests {
             .process_event(&event(), &[rule])
             .expect("process event");
         (outcomes, core.launcher.launched)
+    }
+
+    #[test]
+    fn judge_run_uses_historical_reviewers_for_independence_gate() {
+        let review_run_id = RunId("event-1:review:1".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.status = RunStatus::Completed;
+        state.extensions.insert(
+            EXT_RUNNING_RUN_ID.to_owned(),
+            Value::String(review_run_id.0.clone()),
+        );
+        state
+            .findings
+            .push(finding_from("reviewer-codex", "codex", "finding-1"));
+        state
+            .findings
+            .push(finding_from("reviewer-claude", "claude", "finding-2"));
+
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save state");
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+            },
+            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
+            store,
+        );
+        let event = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "event-judge".to_owned(),
+            payload: EventPayload::RunCompleted {
+                run_id: review_run_id,
+                outcome: RunOutcome::Succeeded,
+            },
+            extensions: BTreeMap::new(),
+        };
+        let rule = TriggerRule {
+            id: "judge".to_owned(),
+            run_kind: RunKind::Judge,
+            criteria: Criteria::Event {
+                event: EventKind::RunCompleted {
+                    outcome: Some(RunOutcome::Succeeded),
+                },
+            },
+            agent_plan: AgentPlan {
+                reviewers: Vec::new(),
+                fixers: Vec::new(),
+                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                finishers: Vec::new(),
+            },
+        };
+
+        let outcomes = core.process_event(&event, &[rule]).expect("process event");
+
+        assert_eq!(core.launcher.launched, 1);
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge"
+        ));
     }
 
     #[test]

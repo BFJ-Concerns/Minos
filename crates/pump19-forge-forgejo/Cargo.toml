@@ -1,0 +1,15 @@
+[package]
+name = "pump19-forge-forgejo"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pump19-contract = { path = "../pump19-contract" }
+pump19-core = { path = "../pump19-core" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

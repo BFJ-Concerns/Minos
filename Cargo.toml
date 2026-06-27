@@ -2,7 +2,10 @@
 members = [
     "crates/pump19-contract",
     "crates/pump19-core",
+    "crates/pump19-forge-forgejo",
     "crates/pump19-judgement",
+    "crates/pump19-runs",
+    "crates/pump19-workspace",
 ]
 resolver = "3"
 
