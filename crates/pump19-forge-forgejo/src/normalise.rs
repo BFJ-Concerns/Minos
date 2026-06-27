@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use pump19_contract::{
     ActorCapability, ActorPermissions, ActorRef, BranchCurrency, ContractEvent, ContractVersion,
     EventPayload, Extensions, FinishLabel, ForgeFacts, Mergeability, PullRequestRef,
-    ReviewCleanliness, Revision, RunId, RunOutcome,
+    ReviewCleanliness, Revision, RunId, RunKind, RunOutcome,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -124,6 +124,8 @@ pub enum ForgejoActivity {
     RunCompleted {
         event_id: String,
         run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_kind: Option<RunKind>,
         outcome: RunOutcome,
     },
 }
@@ -255,12 +257,14 @@ pub fn contract_event(
         ForgejoActivity::RunCompleted {
             event_id,
             run_id,
+            run_kind,
             outcome,
         } => Ok(Some(ContractEvent {
             contract_version: ContractVersion::current(),
             id: event_id.clone(),
             payload: EventPayload::RunCompleted {
                 run_id: RunId(run_id.clone()),
+                run_kind: *run_kind,
                 outcome: *outcome,
             },
             extensions: event_extensions("run_completed"),

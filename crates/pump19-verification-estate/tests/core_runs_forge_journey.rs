@@ -7,26 +7,26 @@ use pump19_contract::{
     CertaintyClass, Confidence, ContractEvent, ContractVersion, DecisionSubject, DecisionVerdict,
     EventPayload, Extensions, Finding, FindingId, FindingLocation, FinishLabel, ForgeFacts,
     Mergeability, ModelFamily, ModelLineage, ModelProvenance, PatchChange, PrRunState,
-    ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision, RunId, RunOutcome,
-    RunStatus, SessionFreshness, SessionId, Severity,
+    ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision, RunId, RunKind,
+    RunOutcome, RunStatus, SessionFreshness, SessionId, Severity,
 };
 use pump19_core::{
-    AgentLaunchSpec, AgentLaunchTarget, AgentPlan, Core, CoreError, Criteria, DispatchOutcome,
-    EventKind, EventSource, LaunchProof, LaunchRefusal, PreparedAgent, RunKind, RunLaunchOutcome,
-    RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore, StateCriterion, TriggerRule,
-    WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+    AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence, AuthorisedComment,
+    AuthorisedLabel, AuthorisedMerge, Core, CoreError, Criteria, DispatchOutcome, EventKind,
+    EventSource, ForgeOperationError, ForgeOperationReceipt, ForgeOperations, LaunchProof,
+    LaunchRefusal, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey,
+    RunStateStore, StateCriterion, TriggerRule, WorkspaceExecOutput, WorkspaceExecRequest,
+    WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
 };
 use pump19_forge_forgejo::{
     ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
     ForgejoMergeability, ForgejoNormalisationConfig, ForgejoPullRequestSnapshot,
     ForgejoReviewCleanliness, NormalisationError, contract_event, forge_facts,
 };
-use pump19_judgement::{
-    IntentApp, IntentSpec, IntentStatement, JudgementBrief, Reviewer, ReviewerConfig, save_intent,
-};
 use pump19_runs::{
-    FinishRunBody, FixRunBody, JsonCommandFixBody, JsonCommandJudgeBody, JudgeRunBody,
-    JudgementReviewBody, MergeGateFinishBody, ReviewRunBody,
+    AgentSessionPreparer, FinishRunBody, FixRunBody, JsonCommandFixBody, JsonCommandJudgeBody,
+    JudgeRunBody, JudgementReviewBody, MergeGateFinishBody, Pump19RunLauncher, ReviewRunBody,
+    RunBodyError,
 };
 use pump19_workspace::{
     CapabilityPolicy, ContainerRuntime, ContainerSpec, ContainerWorkspaceProvider, NetworkPolicy,
@@ -52,6 +52,22 @@ impl WorkspaceProvider for EstateWorkspaceProvider {
     fn prepare(&mut self, _request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
         Ok(self.lease.clone())
     }
+
+    fn exec(
+        &mut self,
+        _lease: &WorkspaceLease,
+        _request: WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, CoreError> {
+        Ok(WorkspaceExecOutput {
+            exit_code: 0,
+            stdout: b"[]".to_vec(),
+            stderr: Vec::new(),
+        })
+    }
+
+    fn cleanup(&mut self, _lease: &WorkspaceLease) -> Result<(), CoreError> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +80,51 @@ struct PlannedLauncher {
 struct RecordingLauncher {
     proofs: Rc<RefCell<Vec<LaunchProof>>>,
     launched: Rc<RefCell<Vec<RunLaunchRequest>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecordingForgeOperations {
+    comments: Rc<RefCell<Vec<AuthorisedComment>>>,
+    labels: Rc<RefCell<Vec<AuthorisedLabel>>>,
+    merges: Rc<RefCell<Vec<AuthorisedMerge>>>,
+}
+
+impl ForgeOperations for RecordingForgeOperations {
+    fn post_comment(
+        &mut self,
+        request: AuthorisedComment,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        let idempotency_key = request.authorisation.idempotency_key.clone();
+        self.comments.borrow_mut().push(request);
+        Ok(ForgeOperationReceipt {
+            operation_id: "comment".to_owned(),
+            idempotency_key,
+        })
+    }
+
+    fn apply_label(
+        &mut self,
+        request: AuthorisedLabel,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        let idempotency_key = request.authorisation.idempotency_key.clone();
+        self.labels.borrow_mut().push(request);
+        Ok(ForgeOperationReceipt {
+            operation_id: "label".to_owned(),
+            idempotency_key,
+        })
+    }
+
+    fn merge(
+        &mut self,
+        request: AuthorisedMerge,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        let idempotency_key = request.authorisation.idempotency_key.clone();
+        self.merges.borrow_mut().push(request);
+        Ok(ForgeOperationReceipt {
+            operation_id: "merge".to_owned(),
+            idempotency_key,
+        })
+    }
 }
 
 impl RecordingLauncher {
@@ -86,7 +147,11 @@ impl RunLauncher for RecordingLauncher {
         })
     }
 
-    fn launch_run(&mut self, request: RunLaunchRequest) -> Result<RunLaunchOutcome, CoreError> {
+    fn launch_run(
+        &mut self,
+        request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
         self.launched.borrow_mut().push(request);
         Ok(RunLaunchOutcome {
             outcome: RunOutcome::Succeeded,
@@ -101,7 +166,43 @@ impl RunLauncher for RecordingLauncher {
 #[derive(Clone, Debug, Default)]
 struct RecordingRuntime {
     created: Rc<RefCell<Vec<ContainerSpec>>>,
+    execs: Rc<RefCell<Vec<(String, WorkspaceExecRequest)>>>,
     removed: Rc<RefCell<Vec<String>>>,
+    outputs: Rc<RefCell<Vec<WorkspaceExecOutput>>>,
+}
+
+#[derive(Debug)]
+struct EstateExecutor {
+    outputs: Vec<WorkspaceExecOutput>,
+    execs: Vec<WorkspaceExecRequest>,
+}
+
+impl EstateExecutor {
+    const fn new(outputs: Vec<WorkspaceExecOutput>) -> Self {
+        Self {
+            outputs,
+            execs: Vec::new(),
+        }
+    }
+
+    fn json(stdout: &str) -> WorkspaceExecOutput {
+        WorkspaceExecOutput {
+            exit_code: 0,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+}
+
+impl WorkspaceExecutor for EstateExecutor {
+    fn exec(
+        &mut self,
+        _lease: &WorkspaceLease,
+        request: WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, CoreError> {
+        self.execs.push(request);
+        Ok(self.outputs.remove(0))
+    }
 }
 
 impl ContainerRuntime for RecordingRuntime {
@@ -110,9 +211,76 @@ impl ContainerRuntime for RecordingRuntime {
         Ok(())
     }
 
+    fn exec(
+        &mut self,
+        container_id: &str,
+        request: &WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, WorkspaceError> {
+        self.execs
+            .borrow_mut()
+            .push((container_id.to_owned(), request.clone()));
+        Ok(self
+            .outputs
+            .borrow_mut()
+            .pop()
+            .unwrap_or_else(|| WorkspaceExecOutput {
+                exit_code: 0,
+                stdout: b"[]".to_vec(),
+                stderr: Vec::new(),
+            }))
+    }
+
     fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
         self.removed.borrow_mut().push(container_id.to_owned());
         Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct EstateLoopLauncher;
+
+#[derive(Debug)]
+struct EstateSessions;
+
+impl AgentSessionPreparer for EstateSessions {
+    fn prepare(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, RunBodyError> {
+        Ok(PreparedAgent {
+            agent_id: spec.target.agent_id,
+            role: spec.target.role,
+            session_id: SessionId(format!("session-{}", spec.pass_index)),
+            proof: LaunchProof::EstablishedFresh,
+        })
+    }
+}
+
+impl RunLauncher for EstateLoopLauncher {
+    fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
+        let agent_id = spec.target.agent_id.clone();
+        Ok(PreparedAgent {
+            agent_id: spec.target.agent_id,
+            role: spec.target.role,
+            session_id: SessionId(format!("session-{}-{}", spec.pass_index, agent_id.0)),
+            proof: LaunchProof::EstablishedFresh,
+        })
+    }
+
+    fn launch_run(
+        &mut self,
+        request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
+        match request.run_kind {
+            RunKind::Review => Ok(review_outcome(&request)),
+            RunKind::Judge => Ok(judge_outcome(&request)),
+            RunKind::Fix => Ok(fix_outcome(&request)),
+            RunKind::Finish => Ok(RunLaunchOutcome {
+                outcome: RunOutcome::Succeeded,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                token_usage: None,
+            }),
+        }
     }
 }
 
@@ -136,7 +304,11 @@ impl RunLauncher for PlannedLauncher {
         })
     }
 
-    fn launch_run(&mut self, _request: RunLaunchRequest) -> Result<RunLaunchOutcome, CoreError> {
+    fn launch_run(
+        &mut self,
+        _request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
         self.launches += 1;
         Ok(RunLaunchOutcome {
             outcome: RunOutcome::Succeeded,
@@ -259,11 +431,35 @@ fn contract_facts(
     }
 }
 
+fn core_actor_permissions() -> Vec<ActorPermissions> {
+    vec![ActorPermissions {
+        actor: actor("pump19-core"),
+        capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
+            .into_iter()
+            .collect(),
+    }]
+}
+
 fn opened_event(facts: ForgeFacts) -> ContractEvent {
     ContractEvent {
         contract_version: version(),
         id: "forgejo-pr-opened".to_owned(),
         payload: EventPayload::PullRequestOpened { facts },
+        extensions: extensions(),
+    }
+}
+
+fn finish_label_event() -> ContractEvent {
+    ContractEvent {
+        contract_version: version(),
+        id: "finish-label".to_owned(),
+        payload: EventPayload::LabelApplied {
+            pr: pr(),
+            label: FinishLabel {
+                name: "pump19-finish".to_owned(),
+                applied_by: actor("pump19-core"),
+            },
+        },
         extensions: extensions(),
     }
 }
@@ -275,6 +471,8 @@ fn workspace(root: PathBuf) -> WorkspaceLease {
         isolation: WorkspaceIsolation {
             isolated: true,
             credential_free: true,
+            egress_bounded: true,
+            resource_bounded: true,
             ephemeral: true,
         },
     }
@@ -314,6 +512,103 @@ fn review_rule(agent_plan: AgentPlan) -> TriggerRule {
         },
         agent_plan,
     }
+}
+
+fn review_after_fix_rule() -> TriggerRule {
+    TriggerRule {
+        id: "review-after-fix".to_owned(),
+        run_kind: RunKind::Review,
+        criteria: Criteria::Event {
+            event: EventKind::RunCompleted {
+                run_kind: Some(RunKind::Fix),
+                outcome: Some(RunOutcome::Succeeded),
+            },
+        },
+        agent_plan: AgentPlan {
+            reviewers: vec![
+                target("reviewer-codex", AgentRole::Reviewer, "codex"),
+                target("reviewer-claude", AgentRole::Reviewer, "claude"),
+            ],
+            fixers: Vec::new(),
+            judge: None,
+            finishers: Vec::new(),
+        },
+    }
+}
+
+fn judge_after_review_rule() -> TriggerRule {
+    TriggerRule {
+        id: "judge-after-review".to_owned(),
+        run_kind: RunKind::Judge,
+        criteria: Criteria::Event {
+            event: EventKind::RunCompleted {
+                run_kind: Some(RunKind::Review),
+                outcome: Some(RunOutcome::Succeeded),
+            },
+        },
+        agent_plan: AgentPlan {
+            reviewers: Vec::new(),
+            fixers: Vec::new(),
+            judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+            finishers: Vec::new(),
+        },
+    }
+}
+
+fn fix_after_material_judge_rule() -> TriggerRule {
+    TriggerRule {
+        id: "fix-after-material-judge".to_owned(),
+        run_kind: RunKind::Fix,
+        criteria: Criteria::All {
+            criteria: vec![
+                Criteria::Event {
+                    event: EventKind::RunCompleted {
+                        run_kind: Some(RunKind::Judge),
+                        outcome: Some(RunOutcome::Succeeded),
+                    },
+                },
+                Criteria::State {
+                    state: StateCriterion::HasMaterialDecision,
+                },
+            ],
+        },
+        agent_plan: AgentPlan {
+            reviewers: Vec::new(),
+            fixers: vec![target("fixer-codex", AgentRole::Fixer, "codex")],
+            judge: None,
+            finishers: Vec::new(),
+        },
+    }
+}
+
+fn finish_on_label_rule() -> TriggerRule {
+    TriggerRule {
+        id: "finish-on-label".to_owned(),
+        run_kind: RunKind::Finish,
+        criteria: Criteria::All {
+            criteria: vec![
+                Criteria::Event {
+                    event: EventKind::LabelApplied {
+                        name: Some("pump19-finish".to_owned()),
+                    },
+                },
+                Criteria::State {
+                    state: StateCriterion::CleanAndCurrent,
+                },
+            ],
+        },
+        agent_plan: AgentPlan::default(),
+    }
+}
+
+fn loop_rules() -> Vec<TriggerRule> {
+    vec![
+        review_rule(standard_plan()),
+        review_after_fix_rule(),
+        judge_after_review_rule(),
+        fix_after_material_judge_rule(),
+        finish_on_label_rule(),
+    ]
 }
 
 fn core_with(
@@ -409,6 +704,136 @@ fn finding() -> Finding {
     }
 }
 
+fn finding_with(id: &str, provenance: ModelProvenance, pass_index: u32) -> Finding {
+    Finding {
+        contract_version: version(),
+        id: FindingId(id.to_owned()),
+        dedup_key: format!("loop:{id}"),
+        source_brief: "loop".to_owned(),
+        dimension: "correctness".to_owned(),
+        summary: format!("finding for pass {pass_index}"),
+        severity: Severity::High,
+        confidence: Confidence::High,
+        certainty: CertaintyClass::Advisory,
+        provenance,
+        locations: vec![FindingLocation::General {
+            description: "whole change".to_owned(),
+        }],
+        extensions: extensions(),
+    }
+}
+
+fn review_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
+    let reviewers = request
+        .provenance
+        .iter()
+        .filter(|provenance| provenance.role == AgentRole::Reviewer)
+        .cloned()
+        .collect::<Vec<_>>();
+    let first = reviewers.first().expect("first reviewer").clone();
+    let second = reviewers.get(1).expect("second reviewer").clone();
+    let judged_id = if request.state.pass_index == 1 {
+        "finding-material"
+    } else {
+        "finding-minor"
+    };
+    let supporting_id = if request.state.pass_index == 1 {
+        "finding-supporting"
+    } else {
+        "finding-minor-supporting"
+    };
+    RunLaunchOutcome {
+        outcome: RunOutcome::Succeeded,
+        findings: vec![
+            finding_with(supporting_id, first, request.state.pass_index),
+            finding_with(judged_id, second, request.state.pass_index),
+        ],
+        decisions: Vec::new(),
+        patches: Vec::new(),
+        token_usage: None,
+    }
+}
+
+fn judge_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
+    let judge = request
+        .provenance
+        .iter()
+        .find(|provenance| provenance.role == AgentRole::Judge)
+        .expect("judge provenance")
+        .clone();
+    let verdict = if request.state.pass_index == 1 {
+        DecisionVerdict::Material
+    } else {
+        DecisionVerdict::Minor
+    };
+    let finding = request.state.findings.last().expect("finding to judge");
+    RunLaunchOutcome {
+        outcome: RunOutcome::Succeeded,
+        findings: Vec::new(),
+        decisions: vec![pump19_contract::Decision {
+            contract_version: version(),
+            id: format!("decision-pass-{}", request.state.pass_index),
+            subject: DecisionSubject::Finding {
+                finding_id: finding.id.clone(),
+            },
+            verdict,
+            rationale: "deterministic loop verdict".to_owned(),
+            provenance: judge,
+            extensions: extensions(),
+        }],
+        patches: Vec::new(),
+        token_usage: None,
+    }
+}
+
+fn fix_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
+    let fixer = request
+        .provenance
+        .iter()
+        .find(|provenance| provenance.role == AgentRole::Fixer)
+        .expect("fixer provenance")
+        .clone();
+    RunLaunchOutcome {
+        outcome: RunOutcome::Succeeded,
+        findings: Vec::new(),
+        decisions: Vec::new(),
+        patches: vec![pump19_contract::Patch {
+            contract_version: version(),
+            id: pump19_contract::PatchId("patch-material".to_owned()),
+            run_id: request.run_id.clone(),
+            commit_sha: request.state.commit_sha.clone(),
+            idempotency_key: "patch-material".to_owned(),
+            answers_findings: vec![FindingId("finding-material".to_owned())],
+            change: PatchChange::Description {
+                summary: "fixed material finding".to_owned(),
+            },
+            provenance: fixer,
+            extensions: extensions(),
+        }],
+        token_usage: None,
+    }
+}
+
+fn run_completed_event(id: &str, run_id: RunId, run_kind: RunKind) -> ContractEvent {
+    ContractEvent {
+        contract_version: version(),
+        id: id.to_owned(),
+        payload: EventPayload::RunCompleted {
+            run_id,
+            run_kind: Some(run_kind),
+            outcome: RunOutcome::Succeeded,
+        },
+        extensions: extensions(),
+    }
+}
+
+fn launched_run_id(outcomes: &[DispatchOutcome]) -> Option<RunId> {
+    let [DispatchOutcome::Launched { run_id, .. }] = outcomes else {
+        return None;
+    };
+    Some(run_id.clone())
+}
+
 fn run_state() -> PrRunState {
     let facts = contract_facts(
         BranchCurrency::Current,
@@ -444,6 +869,7 @@ fn run_request(run_kind: RunKind, provenance: Vec<ModelProvenance>) -> RunLaunch
             id: "run-completed".to_owned(),
             payload: EventPayload::RunCompleted {
                 run_id: RunId("previous-run".to_owned()),
+                run_kind: None,
                 outcome: RunOutcome::Succeeded,
             },
             extensions: extensions(),
@@ -543,9 +969,104 @@ fn core_launch_gate_refuses_each_soundness_violation_and_launches_independent_se
 }
 
 #[test]
+fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let merges = Rc::clone(&forge_operations.merges);
+    let facts = contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Clean,
+        core_actor_permissions(),
+    );
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-verification-loop")),
+        },
+        EstateLoopLauncher,
+        EstateStateStore::empty(),
+        forge_operations,
+    );
+    let rules = loop_rules();
+
+    let outcomes = core
+        .process_event(&opened_event(facts), &rules)
+        .expect("PR open launches review");
+    let review_one = launched_run_id(&outcomes).expect("review launched");
+
+    let outcomes = core
+        .process_event(
+            &run_completed_event("review-one-done", review_one, RunKind::Review),
+            &rules,
+        )
+        .expect("review completion launches judge");
+    let judge_one = launched_run_id(&outcomes).expect("judge launched");
+    assert_eq!(comments.borrow().len(), 1);
+    assert!(matches!(
+        comments.borrow()[0].authorisation.evidence.as_slice(),
+        [
+            AuthorisationEvidence::Decision {
+                verdict: DecisionVerdict::Material,
+                ..
+            },
+            AuthorisationEvidence::Finding { .. }
+        ]
+    ));
+
+    let outcomes = core
+        .process_event(
+            &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
+            &rules,
+        )
+        .expect("material judge completion launches fix");
+    let fix_one = launched_run_id(&outcomes).expect("fix launched");
+
+    let outcomes = core
+        .process_event(
+            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
+            &rules,
+        )
+        .expect("fix completion launches fresh review");
+    let review_two = launched_run_id(&outcomes).expect("second review launched");
+
+    let outcomes = core
+        .process_event(
+            &run_completed_event("review-two-done", review_two, RunKind::Review),
+            &rules,
+        )
+        .expect("second review completion launches judge");
+    let judge_two = launched_run_id(&outcomes).expect("second judge launched");
+
+    let no_fix = core
+        .process_event(
+            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+            &rules,
+        )
+        .expect("minor judge completion is processed");
+    assert!(no_fix.is_empty());
+    assert_eq!(comments.borrow().len(), 1);
+
+    let outcomes = core
+        .process_event(&finish_label_event(), &rules)
+        .expect("finish label launches finish");
+    let finish = launched_run_id(&outcomes).expect("finish launched");
+    assert!(finish.0.contains("finish-on-label"));
+    assert_eq!(merges.borrow().len(), 1);
+    assert!(
+        merges.borrow()[0]
+            .authorisation
+            .evidence
+            .iter()
+            .any(|evidence| matches!(
+                evidence,
+                AuthorisationEvidence::MergeGateCleanAndCurrent { .. }
+            ))
+    );
+}
+
+#[test]
 fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let review_workspace = tempdir().expect("review workspace");
-    install_review_workspace(review_workspace.path());
     let mut review = JudgementReviewBody;
     let review_request = RunLaunchRequest {
         run_kind: RunKind::Review,
@@ -556,9 +1077,35 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         ],
         ..run_request(RunKind::Review, Vec::new())
     };
+    let judgement_json = serde_json::to_string(&pump19_judgement::JudgementRun {
+        status: pump19_judgement::JudgementStatus::Failed,
+        model_families: vec!["codex".to_owned(), "claude".to_owned()],
+        briefs: vec![pump19_judgement::JudgementBriefResult {
+            brief_id: "purpose".to_owned(),
+            status: pump19_judgement::JudgementStatus::Failed,
+            reviews: vec![
+                pump19_judgement::ReviewerResult {
+                    agent_id: "reviewer-codex".to_owned(),
+                    model_family: "codex".to_owned(),
+                    status: pump19_judgement::JudgementStatus::Failed,
+                    stdout: "PUMP19_JUDGEMENT: FAIL stale merge state".to_owned(),
+                    stderr: String::new(),
+                },
+                pump19_judgement::ReviewerResult {
+                    agent_id: "reviewer-claude".to_owned(),
+                    model_family: "claude".to_owned(),
+                    status: pump19_judgement::JudgementStatus::Passed,
+                    stdout: "PUMP19_JUDGEMENT: PASS no concern".to_owned(),
+                    stderr: String::new(),
+                },
+            ],
+        }],
+    })
+    .expect("judgement serialises");
+    let mut review_executor = EstateExecutor::new(vec![EstateExecutor::json(&judgement_json)]);
 
     let findings = review
-        .run_review(&review_request)
+        .run_review(&review_request, &mut review_executor)
         .expect("review body maps judgement failures");
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].source_brief, "purpose");
@@ -570,6 +1117,9 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let mut judge = JsonCommandJudgeBody::new(json_stdout_command(
         r#"[{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]"#,
     ));
+    let mut judge_executor = EstateExecutor::new(vec![EstateExecutor::json(
+        r#"[{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]"#,
+    )]);
     let judge_request = run_request(
         RunKind::Judge,
         vec![verified_provenance(
@@ -579,7 +1129,7 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         )],
     );
     let decisions = judge
-        .run_judge(&judge_request)
+        .run_judge(&judge_request, &mut judge_executor)
         .expect("judge body emits decisions");
     assert_eq!(decisions.len(), 1);
     assert_eq!(decisions[0].verdict, DecisionVerdict::Material);
@@ -591,6 +1141,9 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let mut fix = JsonCommandFixBody::new(json_stdout_command(
         r#"{"kind":"description","summary":"fixed stale merge gate"}"#,
     ));
+    let mut fix_executor = EstateExecutor::new(vec![EstateExecutor::json(
+        r#"{"kind":"description","summary":"fixed stale merge gate"}"#,
+    )]);
     let mut fix_request = run_request(
         RunKind::Fix,
         vec![verified_provenance(
@@ -600,7 +1153,9 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         )],
     );
     fix_request.state.decisions = decisions;
-    let patches = fix.run_fix(&fix_request).expect("fix body emits patch");
+    let patches = fix
+        .run_fix(&fix_request, &mut fix_executor)
+        .expect("fix body emits patch");
     assert_eq!(
         patches[0].answers_findings,
         vec![FindingId("finding-material-1".to_owned())]
@@ -612,9 +1167,10 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
 
     let mut finish = MergeGateFinishBody;
     let finish_request = run_request(RunKind::Finish, Vec::new());
+    let mut finish_executor = EstateExecutor::new(Vec::new());
     assert_eq!(
         finish
-            .run_finish(&finish_request)
+            .run_finish(&finish_request, &mut finish_executor)
             .expect("finish body uses merge gate"),
         RunOutcome::Succeeded
     );
@@ -730,12 +1286,8 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
 }
 
 #[test]
-fn workspace_lease_boundary_is_currently_assertion_only_for_run_bodies() {
+fn review_run_body_executes_through_workspace_executor() {
     let host_workspace = tempdir().expect("host workspace");
-    install_review_workspace(host_workspace.path());
-    let marker = host_workspace.path().join("host-visible-marker.txt");
-    std::fs::write(&marker, "visible from host path").expect("write marker");
-
     let mut review = JudgementReviewBody;
     let request = RunLaunchRequest {
         run_kind: RunKind::Review,
@@ -746,20 +1298,40 @@ fn workspace_lease_boundary_is_currently_assertion_only_for_run_bodies() {
         ],
         ..run_request(RunKind::Review, Vec::new())
     };
+    let judgement_json = serde_json::to_string(&pump19_judgement::JudgementRun {
+        status: pump19_judgement::JudgementStatus::Failed,
+        model_families: vec!["codex".to_owned(), "claude".to_owned()],
+        briefs: vec![pump19_judgement::JudgementBriefResult {
+            brief_id: "purpose".to_owned(),
+            status: pump19_judgement::JudgementStatus::Failed,
+            reviews: vec![pump19_judgement::ReviewerResult {
+                agent_id: "reviewer-codex".to_owned(),
+                model_family: "codex".to_owned(),
+                status: pump19_judgement::JudgementStatus::Failed,
+                stdout: "PUMP19_JUDGEMENT: FAIL stale state".to_owned(),
+                stderr: String::new(),
+            }],
+        }],
+    })
+    .expect("judgement serialises");
+    let mut executor = EstateExecutor::new(vec![EstateExecutor::json(&judgement_json)]);
 
     let findings = review
-        .run_review(&request)
-        .expect("review body executes against lease root");
+        .run_review(&request, &mut executor)
+        .expect("review body executes inside workspace");
 
     assert_eq!(findings.len(), 1);
-    assert!(marker.exists());
+    assert_eq!(executor.execs.len(), 1);
+    assert_eq!(executor.execs[0].program, "pump19-judgement-run");
+    assert_eq!(executor.execs[0].cwd_inside_container, "/workspace");
 }
 
 #[test]
-fn real_workspace_provider_prepares_container_but_launcher_still_receives_host_control_path() {
+fn real_workspace_provider_prepares_container_and_cleans_up_after_launch() {
     let root = tempdir().expect("workspace root");
     let runtime = RecordingRuntime::default();
     let created_specs = Rc::clone(&runtime.created);
+    let removed_containers = Rc::clone(&runtime.removed);
     let provider = ContainerWorkspaceProvider::with_runtime(
         WorkspaceConfig::new(root.path(), "localhost/pump19-workspace:stable"),
         runtime,
@@ -798,6 +1370,10 @@ fn real_workspace_provider_prepares_container_but_launcher_still_receives_host_c
     assert_eq!(spec.security.privilege, PrivilegeMode::NoNewPrivileges);
     assert!(!spec.env.keys().any(|key| key.contains("TOKEN")));
     assert_eq!(spec.workdir, "/workspace");
+    assert_eq!(
+        removed_containers.borrow().as_slice(),
+        std::slice::from_ref(&spec.id)
+    );
 
     let launch_requests = launch_requests.borrow();
     let request = launch_requests.first().expect("run launched");
@@ -806,67 +1382,77 @@ fn real_workspace_provider_prepares_container_but_launcher_still_receives_host_c
     assert_ne!(request.workspace.root, PathBuf::from("/workspace"));
 }
 
-fn install_review_workspace(root: &std::path::Path) {
-    save_intent(
-        root,
-        &IntentSpec {
-            app: IntentApp {
-                slug: "widgets".to_owned(),
-                name: "Widgets".to_owned(),
-                purpose: "Exercise real Pump-19 review body".to_owned(),
-                author_agent_id: Some("author-agent".to_owned()),
-            },
-            invariants: Vec::new(),
-            behaviours: vec![IntentStatement {
-                id: "purpose".to_owned(),
-                statement: "The implementation should be reviewed.".to_owned(),
+#[test]
+fn real_workspace_provider_executes_review_body_inside_container() {
+    let root = tempdir().expect("workspace root");
+    let judgement_json = serde_json::to_string(&pump19_judgement::JudgementRun {
+        status: pump19_judgement::JudgementStatus::Failed,
+        model_families: vec!["codex".to_owned(), "claude".to_owned()],
+        briefs: vec![pump19_judgement::JudgementBriefResult {
+            brief_id: "purpose".to_owned(),
+            status: pump19_judgement::JudgementStatus::Failed,
+            reviews: vec![pump19_judgement::ReviewerResult {
+                agent_id: "reviewer-codex".to_owned(),
+                model_family: "codex".to_owned(),
+                status: pump19_judgement::JudgementStatus::Failed,
+                stdout: "PUMP19_JUDGEMENT: FAIL stale state".to_owned(),
+                stderr: String::new(),
             }],
-        },
-    )
-    .expect("save intent");
-    write_toml(
-        &root.join("verification/judgement/purpose.toml"),
-        &JudgementBrief {
-            id: "purpose".to_owned(),
-            title: "Purpose".to_owned(),
-            intent_ref: "behaviours.purpose".to_owned(),
-            brief: "Fail one reviewer to produce a contract finding.".to_owned(),
-            evidence_paths: Vec::new(),
-        },
+        }],
+    })
+    .expect("judgement serialises");
+    let runtime = RecordingRuntime::default();
+    runtime.outputs.borrow_mut().push(WorkspaceExecOutput {
+        exit_code: 0,
+        stdout: judgement_json.into_bytes(),
+        stderr: Vec::new(),
+    });
+    let created_specs = Rc::clone(&runtime.created);
+    let execs = Rc::clone(&runtime.execs);
+    let removed_containers = Rc::clone(&runtime.removed);
+    let provider = ContainerWorkspaceProvider::with_runtime(
+        WorkspaceConfig::new(root.path(), "localhost/pump19-workspace:stable"),
+        runtime,
     );
-    write_toml(
-        &root.join("verification/reviewers.toml"),
-        &ReviewerConfig {
-            reviewers: vec![
-                Reviewer {
-                    agent_id: "reviewer-codex".to_owned(),
-                    model_family: "codex".to_owned(),
-                    command: vec![
-                        "sh".to_owned(),
-                        "-c".to_owned(),
-                        "printf '%s\n' 'PUMP19_JUDGEMENT: FAIL stale merge state'".to_owned(),
-                    ],
-                },
-                Reviewer {
-                    agent_id: "reviewer-claude".to_owned(),
-                    model_family: "claude".to_owned(),
-                    command: vec![
-                        "sh".to_owned(),
-                        "-c".to_owned(),
-                        "printf '%s\n' 'PUMP19_JUDGEMENT: PASS no concern'".to_owned(),
-                    ],
-                },
-            ],
-        },
+    let launcher = Pump19RunLauncher::new(
+        EstateSessions,
+        JudgementReviewBody,
+        JsonCommandJudgeBody::new(vec!["judge-json".to_owned()]),
+        JsonCommandFixBody::new(vec!["fix-json".to_owned()]),
+        MergeGateFinishBody,
     );
-}
+    let facts = contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Dirty,
+        Vec::new(),
+    );
+    let mut core = Core::new(
+        EmptyEventSource,
+        provider,
+        launcher,
+        EstateStateStore::empty(),
+    );
 
-fn write_toml<T: serde::Serialize>(path: &std::path::Path, value: &T) {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).expect("create parent");
-    }
-    let text = toml::to_string_pretty(value).expect("serialise toml");
-    std::fs::write(path, text).expect("write toml");
+    let outcomes = core
+        .process_event(&opened_event(facts), &[review_rule(standard_plan())])
+        .expect("core launches review through real workspace provider");
+
+    assert!(matches!(
+        outcomes.as_slice(),
+        [DispatchOutcome::Launched { .. }]
+    ));
+    let specs = created_specs.borrow();
+    let spec = specs.first().expect("container spec created");
+    let execs = execs.borrow();
+    let (container_id, exec_request) = execs.first().expect("workspace exec called");
+    assert_eq!(container_id, &spec.id);
+    assert_eq!(exec_request.program, "pump19-judgement-run");
+    assert_eq!(exec_request.cwd_inside_container, "/workspace");
+    assert!(exec_request.stdin.starts_with(b"{"));
+    assert_eq!(
+        removed_containers.borrow().as_slice(),
+        std::slice::from_ref(&spec.id)
+    );
 }
 
 fn json_stdout_command(json: &str) -> Vec<String> {

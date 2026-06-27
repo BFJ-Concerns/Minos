@@ -8,24 +8,18 @@
     )
 )]
 
-use std::{
-    collections::BTreeMap,
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::collections::BTreeMap;
 
 use pump19_contract::{
     AgentId, AgentRole, CertaintyClass, Confidence, ContractVersion, Decision, DecisionSubject,
     DecisionVerdict, Extensions, Finding, FindingId, FindingLocation, ForgeFacts, ModelProvenance,
-    Patch, PatchChange, PatchId, RunId, RunOutcome, Severity,
+    Patch, PatchChange, PatchId, RunId, RunKind, RunOutcome, Severity,
 };
 use pump19_core::{
-    AgentLaunchSpec, CoreError, PreparedAgent, RunKind, RunLaunchOutcome, RunLaunchRequest,
-    RunLauncher,
+    AgentLaunchSpec, CoreError, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher,
+    WorkspaceExecRequest, WorkspaceExecutor,
 };
-use pump19_judgement::{
-    JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult, run_judgement,
-};
+use pump19_judgement::{JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -34,6 +28,7 @@ const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_RAW_STDOUT: &str = "pump19.runs.raw_stdout";
 const EXT_RAW_STDERR: &str = "pump19.runs.raw_stderr";
 const EXT_MODEL_FAMILY: &str = "pump19.runs.model_family";
+const WORKSPACE_CWD: &str = "/workspace";
 
 /// Errors raised while preparing sessions or executing run bodies.
 #[derive(Debug, Error)]
@@ -52,12 +47,8 @@ pub enum RunBodyError {
     InvalidForgeFacts(#[source] serde_json::Error),
     #[error("command is empty")]
     EmptyCommand,
-    #[error("command {program:?} failed to start: {source}")]
-    CommandStart {
-        program: String,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("workspace execution failed: {0}")]
+    Workspace(String),
     #[error("command {program:?} failed: {stderr}")]
     CommandFailed { program: String, stderr: String },
     #[error("command {program:?} produced non-UTF-8 stdout")]
@@ -91,7 +82,11 @@ pub trait ReviewRunBody {
     ///
     /// Returns an error when review cannot execute or its output cannot be mapped
     /// onto contract findings.
-    fn run_review(&mut self, request: &RunLaunchRequest) -> Result<Vec<Finding>, RunBodyError>;
+    fn run_review(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<Vec<Finding>, RunBodyError>;
 }
 
 /// Executes a significance-judge run after the core has passed the launch gate.
@@ -101,7 +96,11 @@ pub trait JudgeRunBody {
     /// # Errors
     ///
     /// Returns an error when judging cannot execute or decisions cannot be built.
-    fn run_judge(&mut self, request: &RunLaunchRequest) -> Result<Vec<Decision>, RunBodyError>;
+    fn run_judge(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<Vec<Decision>, RunBodyError>;
 }
 
 /// Executes a fix run after the core has passed the launch gate.
@@ -111,7 +110,11 @@ pub trait FixRunBody {
     /// # Errors
     ///
     /// Returns an error when fixing cannot execute or patch artefacts cannot be built.
-    fn run_fix(&mut self, request: &RunLaunchRequest) -> Result<Vec<Patch>, RunBodyError>;
+    fn run_fix(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<Vec<Patch>, RunBodyError>;
 }
 
 /// Executes a finish run after the core has passed the launch gate.
@@ -121,7 +124,11 @@ pub trait FinishRunBody {
     /// # Errors
     ///
     /// Returns an error when required forge facts are absent or malformed.
-    fn run_finish(&mut self, request: &RunLaunchRequest) -> Result<RunOutcome, RunBodyError>;
+    fn run_finish(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunOutcome, RunBodyError>;
 }
 
 /// `RunLauncher` implementation composed from narrow, testable run-body seams.
@@ -161,45 +168,55 @@ where
             .map_err(|error| CoreError::Launcher(error.to_string()))
     }
 
-    fn launch_run(&mut self, request: RunLaunchRequest) -> Result<RunLaunchOutcome, CoreError> {
+    fn launch_run(
+        &mut self,
+        request: RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
         let result = match request.run_kind {
-            RunKind::Review => self
-                .review
-                .run_review(&request)
-                .map(|findings| RunLaunchOutcome {
-                    outcome: RunOutcome::Succeeded,
-                    findings,
-                    decisions: Vec::new(),
-                    patches: Vec::new(),
-                    token_usage: None,
-                }),
-            RunKind::Judge => self
-                .judge
-                .run_judge(&request)
-                .map(|decisions| RunLaunchOutcome {
+            RunKind::Review => {
+                self.review
+                    .run_review(&request, workspace)
+                    .map(|findings| RunLaunchOutcome {
+                        outcome: RunOutcome::Succeeded,
+                        findings,
+                        decisions: Vec::new(),
+                        patches: Vec::new(),
+                        token_usage: None,
+                    })
+            }
+            RunKind::Judge => {
+                self.judge
+                    .run_judge(&request, workspace)
+                    .map(|decisions| RunLaunchOutcome {
+                        outcome: RunOutcome::Succeeded,
+                        findings: Vec::new(),
+                        decisions,
+                        patches: Vec::new(),
+                        token_usage: None,
+                    })
+            }
+            RunKind::Fix => self
+                .fix
+                .run_fix(&request, workspace)
+                .map(|patches| RunLaunchOutcome {
                     outcome: RunOutcome::Succeeded,
                     findings: Vec::new(),
-                    decisions,
-                    patches: Vec::new(),
-                    token_usage: None,
-                }),
-            RunKind::Fix => self.fix.run_fix(&request).map(|patches| RunLaunchOutcome {
-                outcome: RunOutcome::Succeeded,
-                findings: Vec::new(),
-                decisions: Vec::new(),
-                patches,
-                token_usage: None,
-            }),
-            RunKind::Finish => self
-                .finish
-                .run_finish(&request)
-                .map(|outcome| RunLaunchOutcome {
-                    outcome,
-                    findings: Vec::new(),
                     decisions: Vec::new(),
-                    patches: Vec::new(),
+                    patches,
                     token_usage: None,
                 }),
+            RunKind::Finish => {
+                self.finish
+                    .run_finish(&request, workspace)
+                    .map(|outcome| RunLaunchOutcome {
+                        outcome,
+                        findings: Vec::new(),
+                        decisions: Vec::new(),
+                        patches: Vec::new(),
+                        token_usage: None,
+                    })
+            }
         };
         result.map_err(|error| CoreError::Launcher(error.to_string()))
     }
@@ -210,8 +227,22 @@ where
 pub struct JudgementReviewBody;
 
 impl ReviewRunBody for JudgementReviewBody {
-    fn run_review(&mut self, request: &RunLaunchRequest) -> Result<Vec<Finding>, RunBodyError> {
-        let run = run_judgement(&request.workspace.root)?;
+    fn run_review(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<Vec<Finding>, RunBodyError> {
+        let input = json!({
+            "run_id": request.run_id,
+            "pr": request.state.pr,
+            "commit_sha": request.state.commit_sha,
+        });
+        let run = run_workspace_json_command::<JudgementRun>(
+            workspace,
+            request,
+            &["pump19-judgement-run".to_owned()],
+            &input,
+        )?;
         findings_from_judgement(request, &run)
     }
 }
@@ -230,7 +261,11 @@ impl JsonCommandJudgeBody {
 }
 
 impl JudgeRunBody for JsonCommandJudgeBody {
-    fn run_judge(&mut self, request: &RunLaunchRequest) -> Result<Vec<Decision>, RunBodyError> {
+    fn run_judge(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<Vec<Decision>, RunBodyError> {
         let provenance = provenance_for_role(request, AgentRole::Judge)?;
         let input = json!({
             "run_id": request.run_id,
@@ -238,7 +273,12 @@ impl JudgeRunBody for JsonCommandJudgeBody {
             "commit_sha": request.state.commit_sha,
             "findings": request.state.findings,
         });
-        let outputs = run_json_command::<Vec<JudgeDecisionOutput>>(&self.command, &input)?;
+        let outputs = run_workspace_json_command::<Vec<JudgeDecisionOutput>>(
+            workspace,
+            request,
+            &self.command,
+            &input,
+        )?;
         Ok(outputs
             .into_iter()
             .map(|output| output.into_decision(&request.run_id, &provenance))
@@ -260,7 +300,11 @@ impl JsonCommandFixBody {
 }
 
 impl FixRunBody for JsonCommandFixBody {
-    fn run_fix(&mut self, request: &RunLaunchRequest) -> Result<Vec<Patch>, RunBodyError> {
+    fn run_fix(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<Vec<Patch>, RunBodyError> {
         let findings = material_findings(request);
         if findings.is_empty() {
             return Ok(Vec::new());
@@ -272,7 +316,8 @@ impl FixRunBody for JsonCommandFixBody {
             "commit_sha": request.state.commit_sha,
             "material_findings": findings,
         });
-        let change = run_json_command::<PatchChange>(&self.command, &input)?;
+        let change =
+            run_workspace_json_command::<PatchChange>(workspace, request, &self.command, &input)?;
         Ok(vec![patch_from_change(
             request, findings, change, provenance,
         )])
@@ -284,7 +329,11 @@ impl FixRunBody for JsonCommandFixBody {
 pub struct MergeGateFinishBody;
 
 impl FinishRunBody for MergeGateFinishBody {
-    fn run_finish(&mut self, request: &RunLaunchRequest) -> Result<RunOutcome, RunBodyError> {
+    fn run_finish(
+        &mut self,
+        request: &RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunOutcome, RunBodyError> {
         let facts = forge_facts(request)?;
         if pump19_contract::merge_gate_clean_and_current(&facts) {
             Ok(RunOutcome::Succeeded)
@@ -498,46 +547,41 @@ fn stable_id<'a>(prefix: &str, parts: impl IntoIterator<Item = &'a str>) -> Stri
     format!("{prefix}-{hash:016x}")
 }
 
-fn run_json_command<T>(command: &[String], input: &Value) -> Result<T, RunBodyError>
+fn run_workspace_json_command<T>(
+    workspace: &mut dyn WorkspaceExecutor,
+    request: &RunLaunchRequest,
+    command: &[String],
+    input: &Value,
+) -> Result<T, RunBodyError>
 where
     T: for<'de> Deserialize<'de>,
 {
     let (program, args) = command.split_first().ok_or(RunBodyError::EmptyCommand)?;
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| RunBodyError::CommandStart {
-            program: program.clone(),
-            source,
-        })?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        serde_json::to_writer(&mut *stdin, input).map_err(|source| RunBodyError::CommandJson {
-            program: program.clone(),
-            source,
-        })?;
-        stdin
-            .write_all(b"\n")
-            .map_err(|source| RunBodyError::CommandStart {
+    let mut stdin = serde_json::to_vec(input).map_err(|source| RunBodyError::CommandJson {
+        program: program.clone(),
+        source,
+    })?;
+    stdin.push(b'\n');
+    let output = workspace
+        .exec(
+            &request.workspace,
+            WorkspaceExecRequest {
                 program: program.clone(),
-                source,
-            })?;
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|source| RunBodyError::CommandStart {
-            program: program.clone(),
-            source,
-        })?;
+                args: args.to_vec(),
+                stdin,
+                env_delta: BTreeMap::new(),
+                cwd_inside_container: WORKSPACE_CWD.to_owned(),
+            },
+        )
+        .map_err(|error| RunBodyError::Workspace(error.to_string()))?;
+    let success = output.success();
     let stdout = String::from_utf8(output.stdout).map_err(|_| RunBodyError::NonUtf8Stdout {
         program: program.clone(),
     })?;
     let stderr = String::from_utf8(output.stderr).map_err(|_| RunBodyError::NonUtf8Stderr {
         program: program.clone(),
     })?;
-    if !output.status.success() {
+    if !success {
         return Err(RunBodyError::CommandFailed {
             program: program.clone(),
             stderr,
@@ -551,17 +595,54 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{collections::VecDeque, path::PathBuf};
 
     use pump19_contract::{
         DecisionSubject, ModelFamily, ModelLineage, ProvenanceVerification, PullRequestRef,
         RunStatus, SessionFreshness, SessionId,
     };
-    use pump19_core::{LaunchProof, WorkspaceIsolation, WorkspaceLease};
+    use pump19_core::{LaunchProof, WorkspaceExecOutput, WorkspaceIsolation, WorkspaceLease};
     use pump19_judgement::ReviewerResult;
     use serde_json::json;
 
     use super::*;
+
+    #[derive(Debug, Default)]
+    struct FakeWorkspace {
+        outputs: VecDeque<WorkspaceExecOutput>,
+        execs: Vec<WorkspaceExecRequest>,
+    }
+
+    impl FakeWorkspace {
+        fn with_stdout(stdout: impl Into<Vec<u8>>) -> Self {
+            Self {
+                outputs: VecDeque::from([WorkspaceExecOutput {
+                    exit_code: 0,
+                    stdout: stdout.into(),
+                    stderr: Vec::new(),
+                }]),
+                execs: Vec::new(),
+            }
+        }
+    }
+
+    impl WorkspaceExecutor for FakeWorkspace {
+        fn exec(
+            &mut self,
+            _lease: &WorkspaceLease,
+            request: WorkspaceExecRequest,
+        ) -> Result<WorkspaceExecOutput, CoreError> {
+            self.execs.push(request);
+            Ok(self
+                .outputs
+                .pop_front()
+                .unwrap_or_else(|| WorkspaceExecOutput {
+                    exit_code: 0,
+                    stdout: b"[]".to_vec(),
+                    stderr: Vec::new(),
+                }))
+        }
+    }
 
     #[derive(Debug)]
     struct FakeSessions;
@@ -586,6 +667,7 @@ mod tests {
         fn run_review(
             &mut self,
             _request: &RunLaunchRequest,
+            _workspace: &mut dyn WorkspaceExecutor,
         ) -> Result<Vec<Finding>, RunBodyError> {
             Ok(self.findings.clone())
         }
@@ -597,7 +679,11 @@ mod tests {
     }
 
     impl JudgeRunBody for FakeJudge {
-        fn run_judge(&mut self, request: &RunLaunchRequest) -> Result<Vec<Decision>, RunBodyError> {
+        fn run_judge(
+            &mut self,
+            request: &RunLaunchRequest,
+            _workspace: &mut dyn WorkspaceExecutor,
+        ) -> Result<Vec<Decision>, RunBodyError> {
             let provenance = provenance_for_role(request, AgentRole::Judge)?;
             Ok(request
                 .state
@@ -625,7 +711,11 @@ mod tests {
     struct FakeFix;
 
     impl FixRunBody for FakeFix {
-        fn run_fix(&mut self, request: &RunLaunchRequest) -> Result<Vec<Patch>, RunBodyError> {
+        fn run_fix(
+            &mut self,
+            request: &RunLaunchRequest,
+            _workspace: &mut dyn WorkspaceExecutor,
+        ) -> Result<Vec<Patch>, RunBodyError> {
             let provenance = provenance_for_role(request, AgentRole::Fixer)?;
             let findings = material_findings(request);
             Ok(vec![patch_from_change(
@@ -667,6 +757,7 @@ mod tests {
                 id: "event-1".to_owned(),
                 payload: pump19_contract::EventPayload::RunCompleted {
                     run_id: RunId("previous-run".to_owned()),
+                    run_kind: None,
                     outcome: RunOutcome::Succeeded,
                 },
                 extensions: BTreeMap::new(),
@@ -692,6 +783,8 @@ mod tests {
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: true,
+                    egress_bounded: true,
+                    resource_bounded: true,
                     ephemeral: true,
                 },
             },
@@ -753,6 +846,42 @@ mod tests {
     }
 
     #[test]
+    fn review_body_executes_judgement_inside_workspace() {
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.run_id = RunId("review-run".to_owned());
+        let run = JudgementRun {
+            status: JudgementStatus::Failed,
+            model_families: vec!["codex".to_owned()],
+            briefs: vec![JudgementBriefResult {
+                brief_id: "purpose".to_owned(),
+                status: JudgementStatus::Failed,
+                reviews: vec![ReviewerResult {
+                    agent_id: "reviewer-codex".to_owned(),
+                    model_family: "codex".to_owned(),
+                    status: JudgementStatus::Failed,
+                    stdout: "PUMP19_JUDGEMENT: FAIL stale state".to_owned(),
+                    stderr: String::new(),
+                }],
+            }],
+        };
+        let stdout = serde_json::to_vec(&run).expect("serialise judgement run");
+        let mut workspace = FakeWorkspace::with_stdout(stdout);
+        let mut body = JudgementReviewBody;
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("review body uses executor");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(workspace.execs.len(), 1);
+        assert_eq!(workspace.execs[0].program, "pump19-judgement-run");
+        assert_eq!(workspace.execs[0].cwd_inside_container, WORKSPACE_CWD);
+    }
+
+    #[test]
     fn judge_run_produces_material_decisions_for_findings() {
         let mut req = request(
             RunKind::Judge,
@@ -770,8 +899,11 @@ mod tests {
             FakeFix,
             MergeGateFinishBody,
         );
+        let mut workspace = FakeWorkspace::default();
 
-        let outcome = launcher.launch_run(req).expect("launch judge");
+        let outcome = launcher
+            .launch_run(req, &mut workspace)
+            .expect("launch judge");
 
         assert_eq!(outcome.outcome, RunOutcome::Succeeded);
         assert_eq!(outcome.decisions.len(), 1);
@@ -807,8 +939,11 @@ mod tests {
             FakeFix,
             MergeGateFinishBody,
         );
+        let mut workspace = FakeWorkspace::default();
 
-        let outcome = launcher.launch_run(req).expect("launch fix");
+        let outcome = launcher
+            .launch_run(req, &mut workspace)
+            .expect("launch fix");
 
         assert_eq!(outcome.patches.len(), 1);
         assert_eq!(
@@ -836,8 +971,9 @@ mod tests {
             }),
         );
         let mut finish = MergeGateFinishBody;
+        let mut workspace = FakeWorkspace::default();
 
-        let outcome = finish.run_finish(&req).expect("finish");
+        let outcome = finish.run_finish(&req, &mut workspace).expect("finish");
 
         assert_eq!(outcome, RunOutcome::Succeeded);
     }
@@ -860,18 +996,17 @@ mod tests {
             provenance: provenance("judge", AgentRole::Judge, "gemini"),
             extensions: BTreeMap::new(),
         });
-        let mut fix = JsonCommandFixBody::new(vec![
-            "sh".to_owned(),
-            "-c".to_owned(),
-            "cat >/dev/null; printf '%s\n' '{\"kind\":\"description\",\"summary\":\"fixed\"}'"
-                .to_owned(),
-        ]);
+        let mut fix = JsonCommandFixBody::new(vec!["fix-json".to_owned()]);
+        let mut workspace =
+            FakeWorkspace::with_stdout(r#"{"kind":"description","summary":"fixed"}"#);
 
-        let patches = fix.run_fix(&req).expect("fix");
+        let patches = fix.run_fix(&req, &mut workspace).expect("fix");
 
         assert!(matches!(
             patches[0].change,
             PatchChange::Description { ref summary } if summary == "fixed"
         ));
+        assert_eq!(workspace.execs[0].program, "fix-json");
+        assert_eq!(workspace.execs[0].cwd_inside_container, WORKSPACE_CWD);
     }
 }

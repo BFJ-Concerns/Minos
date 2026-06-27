@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The first public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 0 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 1 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -73,6 +73,16 @@ pub enum AgentRole {
     Reviewer,
     Fixer,
     Judge,
+    Finish,
+}
+
+/// The independent run types the service can dispatch and compose through events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunKind {
+    Review,
+    Judge,
+    Fix,
     Finish,
 }
 
@@ -397,6 +407,8 @@ pub enum EventPayload {
     },
     RunCompleted {
         run_id: RunId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_kind: Option<RunKind>,
         outcome: RunOutcome,
     },
     LabelApplied {
@@ -672,6 +684,7 @@ mod tests {
             id: "event-1".to_owned(),
             payload: EventPayload::RunCompleted {
                 run_id: RunId("run-review-1".to_owned()),
+                run_kind: Some(super::RunKind::Review),
                 outcome: RunOutcome::Succeeded,
             },
             extensions: extensions(),
@@ -721,6 +734,30 @@ mod tests {
             encoded["extensions"]["reviewer.raw"],
             json!(["line one", "line two"])
         );
+    }
+
+    #[test]
+    fn older_run_completed_payloads_default_to_unknown_run_kind() {
+        let payload = json!({
+            "contract_version": { "major": 1, "minor": 0 },
+            "id": "legacy-run-completed",
+            "payload": {
+                "event": "run_completed",
+                "run_id": "run-review-1",
+                "outcome": "succeeded"
+            }
+        });
+
+        let event = serde_json::from_value::<ContractEvent>(payload).expect("legacy event");
+
+        assert!(matches!(
+            event.payload,
+            EventPayload::RunCompleted {
+                run_kind: None,
+                outcome: RunOutcome::Succeeded,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -23,9 +23,9 @@ pub use normalise::{
     ForgejoPullRequestSnapshot, ForgejoReviewCleanliness, NormalisationError, contract_event,
     forge_facts,
 };
-pub use operations::{
+pub use operations::ForgejoForgeOperations;
+pub use pump19_core::{
     AuthorisationContext, AuthorisationEvidence, AuthorisedComment, AuthorisedLabel,
-    AuthorisedMerge, ForgeOperationError, ForgeOperationReceipt, ForgeOperations,
-    ForgejoForgeOperations, MergeMethod,
+    AuthorisedMerge, ForgeOperationError, ForgeOperationReceipt, ForgeOperations, MergeMethod,
 };
 pub use source::{ForgejoActivitySource, ForgejoEventSource};
