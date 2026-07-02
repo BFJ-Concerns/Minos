@@ -1,4 +1,4 @@
-use pump19_contract::PullRequestRef;
+use pump19_contract::{PatchChange, PatchId, PullRequestRef};
 use thiserror::Error;
 
 /// Forgejo API credential owned by the adapter process.
@@ -40,6 +40,17 @@ pub struct ForgejoCommandMetadata {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForgejoCommandReceipt {
     pub operation_id: String,
+    pub new_head_sha: Option<String>,
+}
+
+/// One fix commit the credentialed client should create and push to the PR head.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForgejoFixCommit {
+    pub patch_id: PatchId,
+    pub message: String,
+    pub author_agent_id: String,
+    pub model_provenance_json: String,
+    pub change: PatchChange,
 }
 
 /// Errors from the credentialed Forgejo client boundary.
@@ -70,6 +81,34 @@ pub trait ForgejoCommandClient {
         metadata: &ForgejoCommandMetadata,
     ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
 
+    /// Updates a PR comment previously created by Pump-19.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Forgejo rejects the request or the client cannot
+    /// reach Forgejo.
+    fn update_pr_comment(
+        &mut self,
+        pr: &PullRequestRef,
+        comment_operation_id: &str,
+        body: &str,
+        metadata: &ForgejoCommandMetadata,
+    ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
+
+    /// Resolves a PR comment previously created by Pump-19.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Forgejo rejects the request or the client cannot
+    /// reach Forgejo.
+    fn resolve_pr_comment(
+        &mut self,
+        pr: &PullRequestRef,
+        comment_operation_id: &str,
+        reason: &str,
+        metadata: &ForgejoCommandMetadata,
+    ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
+
     /// Applies a label to a PR.
     ///
     /// # Errors
@@ -93,6 +132,20 @@ pub trait ForgejoCommandClient {
         &mut self,
         pr: &PullRequestRef,
         method: &str,
+        metadata: &ForgejoCommandMetadata,
+    ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
+
+    /// Pushes ordinary, non-force fix commits to the PR head branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Forgejo rejects the request, the observed head is no
+    /// longer current, or the client cannot reach Forgejo.
+    fn push_fix_commits_to_pr_head(
+        &mut self,
+        pr: &PullRequestRef,
+        expected_head_sha: &str,
+        commits: &[ForgejoFixCommit],
         metadata: &ForgejoCommandMetadata,
     ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
 }

@@ -10,19 +10,21 @@ use std::{
 use pump19_contract::{
     ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
     CertaintyClass, Confidence, ContractEvent, ContractVersion, DecisionSubject, DecisionVerdict,
-    EventPayload, Extensions, Finding, FindingId, FindingLocation, FinishLabel, ForgeFacts,
-    Mergeability, ModelFamily, ModelLineage, ModelProvenance, PatchChange, PrRunState,
-    ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision, RunId, RunKind,
-    RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
+    EventPayload, Extensions, Finding, FindingCommentPublication, FindingCommentStatus, FindingId,
+    FindingLocation, FinishLabel, ForgeFacts, ForgeReceipt, Mergeability, ModelFamily,
+    ModelLineage, ModelProvenance, PatchChange, PrRunState, ProvenanceVerification,
+    PublicationState, PullRequestRef, ReviewCleanliness, Revision, RunId, RunKind, RunOutcome,
+    RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
 };
 use pump19_core::{
     AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence,
-    AuthorisedComment, AuthorisedLabel, AuthorisedMerge, Core, CoreError, Criteria,
-    DispatchOutcome, EventKind, EventSource, ForgeOperationError, ForgeOperationReceipt,
-    ForgeOperations, LaunchProof, LaunchRefusal, PreparedAgent, RunLaunchOutcome, RunLaunchRequest,
-    RunLauncher, RunStateKey, RunStateStore, SkipReason, StateCriterion, TriggerRule,
-    WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
-    WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+    AuthorisedComment, AuthorisedCommentResolution, AuthorisedCommentUpdate, AuthorisedFixPush,
+    AuthorisedLabel, AuthorisedMerge, Core, CoreError, Criteria, DispatchOutcome, EventKind,
+    EventSource, ForgeOperationError, ForgeOperationReceipt, ForgeOperations, LaunchProof,
+    LaunchRefusal, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey,
+    RunStateStore, SkipReason, StateCriterion, TriggerRule, WorkspaceExecOutput,
+    WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider,
+    WorkspaceRequest,
 };
 use pump19_forge_forgejo::{
     ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
@@ -97,8 +99,11 @@ struct FailingLauncher {
 #[derive(Clone, Debug, Default)]
 struct RecordingForgeOperations {
     comments: Rc<RefCell<Vec<AuthorisedComment>>>,
+    comment_updates: Rc<RefCell<Vec<AuthorisedCommentUpdate>>>,
+    comment_resolutions: Rc<RefCell<Vec<AuthorisedCommentResolution>>>,
     labels: Rc<RefCell<Vec<AuthorisedLabel>>>,
     merges: Rc<RefCell<Vec<AuthorisedMerge>>>,
+    fix_pushes: Rc<RefCell<Vec<AuthorisedFixPush>>>,
 }
 
 impl ForgeOperations for RecordingForgeOperations {
@@ -111,6 +116,35 @@ impl ForgeOperations for RecordingForgeOperations {
         Ok(ForgeOperationReceipt {
             operation_id: "comment".to_owned(),
             idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn update_comment(
+        &mut self,
+        request: AuthorisedCommentUpdate,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        let idempotency_key = request.authorisation.idempotency_key.clone();
+        let operation_id = request.comment_operation_id.clone();
+        self.comment_updates.borrow_mut().push(request);
+        Ok(ForgeOperationReceipt {
+            operation_id,
+            idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn resolve_comment(
+        &mut self,
+        request: AuthorisedCommentResolution,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        let idempotency_key = request.authorisation.idempotency_key.clone();
+        let operation_id = request.comment_operation_id.clone();
+        self.comment_resolutions.borrow_mut().push(request);
+        Ok(ForgeOperationReceipt {
+            operation_id,
+            idempotency_key,
+            new_head_sha: None,
         })
     }
 
@@ -123,6 +157,7 @@ impl ForgeOperations for RecordingForgeOperations {
         Ok(ForgeOperationReceipt {
             operation_id: "label".to_owned(),
             idempotency_key,
+            new_head_sha: None,
         })
     }
 
@@ -135,6 +170,20 @@ impl ForgeOperations for RecordingForgeOperations {
         Ok(ForgeOperationReceipt {
             operation_id: "merge".to_owned(),
             idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn push_fix_commits(
+        &mut self,
+        request: AuthorisedFixPush,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        let idempotency_key = request.authorisation.idempotency_key.clone();
+        self.fix_pushes.borrow_mut().push(request);
+        Ok(ForgeOperationReceipt {
+            operation_id: "fix-push".to_owned(),
+            idempotency_key,
+            new_head_sha: Some("head-sha-after-fix".to_owned()),
         })
     }
 }
@@ -587,6 +636,15 @@ fn opened_event(facts: ForgeFacts) -> ContractEvent {
     }
 }
 
+fn updated_event(id: &str, facts: ForgeFacts) -> ContractEvent {
+    ContractEvent {
+        contract_version: version(),
+        id: id.to_owned(),
+        payload: EventPayload::PullRequestUpdated { facts },
+        extensions: extensions(),
+    }
+}
+
 fn finish_label_event() -> ContractEvent {
     ContractEvent {
         contract_version: version(),
@@ -720,28 +778,6 @@ fn review_rule(agent_plan: AgentPlan) -> TriggerRule {
     }
 }
 
-fn review_after_fix_rule() -> TriggerRule {
-    TriggerRule {
-        id: "review-after-fix".to_owned(),
-        run_kind: RunKind::Review,
-        criteria: Criteria::Event {
-            event: EventKind::RunCompleted {
-                run_kind: Some(RunKind::Fix),
-                outcome: Some(RunOutcome::Succeeded),
-            },
-        },
-        agent_plan: AgentPlan {
-            reviewers: vec![
-                target("reviewer-codex", AgentRole::Reviewer, "codex"),
-                target("reviewer-claude", AgentRole::Reviewer, "claude"),
-            ],
-            fixers: Vec::new(),
-            judge: None,
-            finishers: Vec::new(),
-        },
-    }
-}
-
 fn review_on_pr_updated_rule() -> TriggerRule {
     TriggerRule {
         id: "review-on-pr-updated".to_owned(),
@@ -829,7 +865,7 @@ fn finish_on_label_rule() -> TriggerRule {
 fn loop_rules() -> Vec<TriggerRule> {
     vec![
         review_rule(standard_plan()),
-        review_after_fix_rule(),
+        review_on_pr_updated_rule(),
         judge_after_review_rule(),
         fix_after_material_judge_rule(),
         finish_on_label_rule(),
@@ -1117,6 +1153,7 @@ fn run_state() -> PrRunState {
         findings: vec![finding()],
         decisions: Vec::new(),
         patches: Vec::new(),
+        publication: PublicationState::default(),
         ceiling: None,
         extensions,
     }
@@ -1235,6 +1272,8 @@ fn core_launch_gate_refuses_each_soundness_violation_and_launches_independent_se
 fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
+    let comment_resolutions = Rc::clone(&forge_operations.comment_resolutions);
+    let fix_pushes = Rc::clone(&forge_operations.fix_pushes);
     let merges = Rc::clone(&forge_operations.merges);
     let state_store = SharedEstateStateStore::default();
     let state_observer = state_store.clone();
@@ -1291,7 +1330,28 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
             &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
             &rules,
         )
-        .expect("fix completion launches fresh review");
+        .expect("fix completion publishes commits");
+    assert!(outcomes.is_empty());
+    assert_eq!(fix_pushes.borrow().len(), 1);
+    assert_eq!(fix_pushes.borrow()[0].expected_head_sha, "head-sha-1");
+    assert_eq!(fix_pushes.borrow()[0].commits.len(), 1);
+    assert_eq!(
+        fix_pushes.borrow()[0].commits[0].author_agent_id.0,
+        "fixer-codex"
+    );
+
+    let updated_facts = contract_facts_with_head(
+        "head-sha-after-fix",
+        BranchCurrency::Current,
+        ReviewCleanliness::Clean,
+        core_actor_permissions(),
+    );
+    let outcomes = core
+        .process_event(
+            &updated_event("forgejo-pr-updated-after-fix", updated_facts),
+            &rules,
+        )
+        .expect("PR update launches fresh review");
     let review_two = launched_run_id(&outcomes).expect("second review launched");
 
     let outcomes = core
@@ -1310,10 +1370,30 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
         .expect("minor judge completion is processed");
     assert!(no_fix.is_empty());
     assert_eq!(comments.borrow().len(), 1);
+    assert_eq!(comment_resolutions.borrow().len(), 1);
+    assert_eq!(
+        comment_resolutions.borrow()[0].comment_operation_id,
+        "comment"
+    );
     let converged_state = state_observer
         .load_latest_for_pr(&pr())
         .expect("load latest state")
         .expect("converged state");
+    assert_eq!(converged_state.publication.fix_pushes.len(), 1);
+    assert_eq!(
+        converged_state.publication.fix_pushes[0]
+            .receipt
+            .new_head_sha
+            .as_deref(),
+        Some("head-sha-after-fix")
+    );
+    assert!(
+        converged_state
+            .publication
+            .finding_comments
+            .iter()
+            .any(|comment| comment.status == pump19_contract::FindingCommentStatus::Resolved)
+    );
     assert!(
         Criteria::State {
             state: StateCriterion::HasConverged
@@ -1336,6 +1416,99 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
                 evidence,
                 AuthorisationEvidence::MergeGateCleanAndCurrent { .. }
             ))
+    );
+}
+
+#[test]
+fn repeated_material_finding_updates_existing_comment_identity() {
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let comment_updates = Rc::clone(&forge_operations.comment_updates);
+    let mut state = run_state();
+    let material = state.findings[0].clone();
+    state.findings.insert(
+        0,
+        finding_with(
+            "supporting-finding",
+            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            1,
+        ),
+    );
+    state.status = RunStatus::Completed;
+    state.run_history.push(RunRecord {
+        run_id: RunId("review-pass-1".to_owned()),
+        run_kind: RunKind::Review,
+        event_id: "forgejo-pr-opened".to_owned(),
+        rule_id: "review-on-pr-opened".to_owned(),
+        pass_index: 1,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Completed,
+        outcome: Some(RunOutcome::Succeeded),
+    });
+    state.extensions.insert(
+        "pump19.core.running_run_id".to_owned(),
+        serde_json::Value::String("review-pass-1".to_owned()),
+    );
+    state.publication = PublicationState {
+        attempts: Vec::new(),
+        finding_comments: vec![FindingCommentPublication {
+            finding_dedup_key: material.dedup_key.clone(),
+            latest_finding_id: material.id,
+            comment_operation_id: "comment-existing".to_owned(),
+            status: FindingCommentStatus::Open,
+            last_receipt: ForgeReceipt {
+                operation_id: "comment-existing".to_owned(),
+                idempotency_key: "comment-existing-key".to_owned(),
+                new_head_sha: None,
+            },
+        }],
+        fix_pushes: Vec::new(),
+    };
+    let state_store = SharedEstateStateStore::with_state(state);
+    let state_observer = state_store.clone();
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-verification-comment-update")),
+        },
+        EstateLoopLauncher,
+        state_store,
+        forge_operations,
+    );
+
+    let outcomes = core
+        .process_event(
+            &run_completed_event(
+                "review-pass-1-completed",
+                RunId("review-pass-1".to_owned()),
+                RunKind::Review,
+            ),
+            &[judge_after_review_rule()],
+        )
+        .expect("review completion launches judge");
+
+    assert!(
+        launched_run_id(&outcomes).is_some(),
+        "unexpected outcomes: {outcomes:?}"
+    );
+    assert!(comments.borrow().is_empty());
+    assert_eq!(comment_updates.borrow().len(), 1);
+    assert_eq!(
+        comment_updates.borrow()[0].comment_operation_id,
+        "comment-existing"
+    );
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load state")
+        .expect("state saved");
+    assert_eq!(latest.publication.attempts.len(), 1);
+    assert_eq!(
+        latest.publication.finding_comments[0].comment_operation_id,
+        "comment-existing"
+    );
+    assert_eq!(
+        latest.publication.finding_comments[0].status,
+        FindingCommentStatus::Open
     );
 }
 

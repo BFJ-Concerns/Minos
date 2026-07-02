@@ -15,7 +15,7 @@ pub mod source;
 
 pub use credentialed::{
     ForgejoClientError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
-    ForgejoCredential,
+    ForgejoCredential, ForgejoFixCommit,
 };
 pub use normalise::{
     ForgejoActivity, ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency,
@@ -25,7 +25,8 @@ pub use normalise::{
 };
 pub use operations::ForgejoForgeOperations;
 pub use pump19_core::{
-    AuthorisationContext, AuthorisationEvidence, AuthorisedComment, AuthorisedLabel,
+    AuthorisationContext, AuthorisationEvidence, AuthorisedComment, AuthorisedCommentResolution,
+    AuthorisedCommentUpdate, AuthorisedFixCommit, AuthorisedFixPush, AuthorisedLabel,
     AuthorisedMerge, ForgeOperationError, ForgeOperationReceipt, ForgeOperations, MergeMethod,
 };
 pub use source::{ForgejoActivitySource, ForgejoEventSource};

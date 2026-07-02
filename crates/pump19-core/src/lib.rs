@@ -13,11 +13,14 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use pump19_contract::{
     ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
-    DecisionVerdict, EventPayload, Extensions, Finding, FinishLabel, ForgeFacts, LoopPassRecord,
-    ModelLineage, ModelProvenance, Patch, PrRunState, ProvenanceVerification, PullRequestRef,
-    RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId,
-    has_two_verified_reviewer_families, judge_independent_of_reviewers,
-    merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
+    DecisionVerdict, EventPayload, Extensions, Finding, FindingCommentPublication,
+    FindingCommentStatus, FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt,
+    LoopPassRecord, ModelLineage, ModelProvenance, Patch, PrRunState, ProvenanceVerification,
+    PublicationAttempt, PublicationAttemptStatus, PublicationOperation, PublicationState,
+    PublishedFixCommit, PullRequestRef, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
+    RunStatus, SessionFreshness, SessionId, has_two_verified_reviewer_families,
+    judge_independent_of_reviewers, merge_gate_clean_and_current, reviewers_disjoint_from_fixers,
+    sessions_fresh_for_pass,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -133,6 +136,26 @@ pub trait ForgeOperations {
         request: AuthorisedComment,
     ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
 
+    /// Updates an authorised PR comment that the core previously posted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request shape is invalid or the forge rejects it.
+    fn update_comment(
+        &mut self,
+        request: AuthorisedCommentUpdate,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
+
+    /// Resolves an authorised PR comment that the core previously posted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request shape is invalid or the forge rejects it.
+    fn resolve_comment(
+        &mut self,
+        request: AuthorisedCommentResolution,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
+
     /// Applies an authorised PR label.
     ///
     /// # Errors
@@ -152,6 +175,17 @@ pub trait ForgeOperations {
         &mut self,
         request: AuthorisedMerge,
     ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
+
+    /// Pushes authorised fix commits to the pull request head branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request shape is invalid or a plain, non-force
+    /// push cannot be accepted by the forge.
+    fn push_fix_commits(
+        &mut self,
+        request: AuthorisedFixPush,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
 }
 
 /// No-op forge operation implementation for tests and side-effect-free wiring.
@@ -166,6 +200,7 @@ impl ForgeOperations for NoopForgeOperations {
         Ok(ForgeOperationReceipt {
             operation_id: "noop-comment".to_owned(),
             idempotency_key: request.authorisation.idempotency_key,
+            new_head_sha: None,
         })
     }
 
@@ -176,6 +211,29 @@ impl ForgeOperations for NoopForgeOperations {
         Ok(ForgeOperationReceipt {
             operation_id: "noop-label".to_owned(),
             idempotency_key: request.authorisation.idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn update_comment(
+        &mut self,
+        request: AuthorisedCommentUpdate,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        Ok(ForgeOperationReceipt {
+            operation_id: request.comment_operation_id,
+            idempotency_key: request.authorisation.idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn resolve_comment(
+        &mut self,
+        request: AuthorisedCommentResolution,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        Ok(ForgeOperationReceipt {
+            operation_id: request.comment_operation_id,
+            idempotency_key: request.authorisation.idempotency_key,
+            new_head_sha: None,
         })
     }
 
@@ -186,6 +244,18 @@ impl ForgeOperations for NoopForgeOperations {
         Ok(ForgeOperationReceipt {
             operation_id: "noop-merge".to_owned(),
             idempotency_key: request.authorisation.idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn push_fix_commits(
+        &mut self,
+        request: AuthorisedFixPush,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        Ok(ForgeOperationReceipt {
+            operation_id: "noop-fix-push".to_owned(),
+            idempotency_key: request.authorisation.idempotency_key,
+            new_head_sha: Some(request.expected_head_sha),
         })
     }
 }
@@ -203,6 +273,12 @@ pub enum AuthorisationEvidence {
     },
     Finding {
         finding_id: pump19_contract::FindingId,
+    },
+    Patch {
+        patch_id: pump19_contract::PatchId,
+    },
+    RunFailure {
+        run_id: RunId,
     },
     FinishLabelAuthority {
         label: FinishLabel,
@@ -230,6 +306,22 @@ pub struct AuthorisedComment {
     pub body: String,
 }
 
+/// Authorised request to update a PR comment previously posted by the core.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorisedCommentUpdate {
+    pub authorisation: AuthorisationContext,
+    pub comment_operation_id: String,
+    pub body: String,
+}
+
+/// Authorised request to resolve a PR comment previously posted by the core.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorisedCommentResolution {
+    pub authorisation: AuthorisationContext,
+    pub comment_operation_id: String,
+    pub reason: String,
+}
+
 /// Authorised request to apply a PR label.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorisedLabel {
@@ -242,6 +334,23 @@ pub struct AuthorisedLabel {
 pub struct AuthorisedMerge {
     pub authorisation: AuthorisationContext,
     pub method: MergeMethod,
+}
+
+/// Authorised request to turn fix patches into ordinary commits on the PR branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorisedFixPush {
+    pub authorisation: AuthorisationContext,
+    pub expected_head_sha: String,
+    pub commits: Vec<AuthorisedFixCommit>,
+}
+
+/// One attributed fix commit to create in the credentialed push step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorisedFixCommit {
+    pub patch: Patch,
+    pub message: String,
+    pub author_agent_id: AgentId,
+    pub provenance: ModelProvenance,
 }
 
 /// Merge method requested from a forge adapter.
@@ -257,6 +366,7 @@ pub enum MergeMethod {
 pub struct ForgeOperationReceipt {
     pub operation_id: String,
     pub idempotency_key: String,
+    pub new_head_sha: Option<String>,
 }
 
 /// Errors raised by the outbound operation seam.
@@ -469,6 +579,7 @@ where
         let mut next = initial_state_from_facts(facts);
         next.pass_index = latest.pass_index;
         next.ceiling = latest.ceiling;
+        next.publication = latest.publication.clone();
         if latest.status == RunStatus::Completed
             && (!latest.findings.is_empty()
                 || !latest.decisions.is_empty()
@@ -554,7 +665,8 @@ where
                 let message = error.to_string();
                 mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
                 self.state_store.save(&running_state)?;
-                self.surface_failure(&run_id, &running_state, message.as_str())?;
+                self.surface_failure(&run_id, &mut running_state, message.as_str())?;
+                self.state_store.save(&running_state)?;
                 self.workspace_provider.cleanup(&workspace)?;
                 return Err(error);
             }
@@ -578,12 +690,12 @@ where
         apply_run_outcome(&mut running_state, rule.run_kind, outcome);
         self.state_store.save(&running_state)?;
         if let Err(error) =
-            self.apply_authorised_forge_operations(rule.run_kind, &run_id, &running_state)
+            self.apply_authorised_forge_operations(rule.run_kind, &run_id, &mut running_state)
         {
             let message = error.to_string();
             mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
             self.state_store.save(&running_state)?;
-            self.surface_failure(&run_id, &running_state, message.as_str())?;
+            self.surface_failure(&run_id, &mut running_state, message.as_str())?;
             self.workspace_provider.cleanup(&workspace)?;
             return Err(error);
         }
@@ -608,32 +720,43 @@ where
     ) -> Result<(), CoreError> {
         mark_failed(&mut state, event, rule, run_id, message);
         self.state_store.save(&state)?;
-        self.surface_failure(run_id, &state, message)
+        self.surface_failure(run_id, &mut state, message)?;
+        self.state_store.save(&state)
     }
 
     fn surface_failure(
         &mut self,
         run_id: &RunId,
-        state: &PrRunState,
+        state: &mut PrRunState,
         message: &str,
     ) -> Result<(), CoreError> {
         let Some(facts) = forge_facts_from_state(state)? else {
             return Ok(());
         };
-        self.forge_operations
-            .post_comment(AuthorisedComment {
-                authorisation: AuthorisationContext {
-                    pr: state.pr.clone(),
-                    observed_head_sha: facts.head.sha,
-                    idempotency_key: stable_id("forge-failure", [run_id.0.as_str()]),
-                    actor: core_actor(),
-                    reason: "core surfaced failed Pump-19 run".to_owned(),
-                    evidence: Vec::new(),
-                },
-                body: failure_comment(run_id, message),
-            })
-            .map(|_receipt| ())
-            .map_err(|error| CoreError::ForgeOperation(error.to_string()))
+        let idempotency_key = stable_id("forge-failure", [run_id.0.as_str()]);
+        let result = self.forge_operations.post_comment(AuthorisedComment {
+            authorisation: AuthorisationContext {
+                pr: state.pr.clone(),
+                observed_head_sha: facts.head.sha,
+                idempotency_key: idempotency_key.clone(),
+                actor: core_actor(),
+                reason: "core surfaced failed Pump-19 run".to_owned(),
+                evidence: vec![AuthorisationEvidence::RunFailure {
+                    run_id: run_id.clone(),
+                }],
+            },
+            body: failure_comment(run_id, message),
+        });
+        record_publication_attempt(
+            state,
+            run_id,
+            PublicationOperation::PostFailureComment,
+            idempotency_key,
+            result
+                .map(receipt_to_contract)
+                .map_err(|error| error.to_string()),
+        );
+        Ok(())
     }
 
     fn head_was_superseded(&self, state: &PrRunState) -> Result<bool, CoreError> {
@@ -651,72 +774,313 @@ where
         &mut self,
         run_kind: RunKind,
         run_id: &RunId,
-        state: &PrRunState,
+        state: &mut PrRunState,
     ) -> Result<(), CoreError> {
         match run_kind {
             RunKind::Judge => self.post_material_findings(run_id, state),
+            RunKind::Fix => self.push_fix_patches(run_id, state),
             RunKind::Finish if state.status == RunStatus::Completed => {
                 self.merge_finished_pr(run_id, state)
             }
-            RunKind::Review | RunKind::Fix | RunKind::Finish => Ok(()),
+            RunKind::Review | RunKind::Finish => Ok(()),
         }
     }
 
     fn post_material_findings(
         &mut self,
         run_id: &RunId,
-        state: &PrRunState,
+        state: &mut PrRunState,
     ) -> Result<(), CoreError> {
         let Some(facts) = forge_facts_from_state(state)? else {
             return Ok(());
         };
-        for decision in state
-            .decisions
+        let material = material_findings_for_pass(state);
+        let material_keys = material
             .iter()
-            .filter(|decision| decision.verdict == DecisionVerdict::Material)
-            .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
-        {
-            let finding_ids = decision_finding_ids(decision);
-            for finding_id in finding_ids {
-                let Some(finding) = state
-                    .findings
-                    .iter()
-                    .find(|finding| &finding.id == finding_id)
-                else {
-                    continue;
-                };
-                let authorisation = AuthorisationContext {
-                    pr: state.pr.clone(),
-                    observed_head_sha: facts.head.sha.clone(),
-                    idempotency_key: stable_id(
-                        "forge-comment",
-                        [
-                            run_id.0.as_str(),
-                            decision.id.as_str(),
-                            finding.id.0.as_str(),
-                        ],
-                    ),
-                    actor: core_actor(),
-                    reason: "core authorised material finding comment from judge decision"
-                        .to_owned(),
-                    evidence: vec![
-                        AuthorisationEvidence::Decision {
-                            decision_id: decision.id.clone(),
-                            verdict: decision.verdict,
-                        },
-                        AuthorisationEvidence::Finding {
-                            finding_id: finding.id.clone(),
-                        },
-                    ],
-                };
-                self.forge_operations
-                    .post_comment(AuthorisedComment {
-                        authorisation,
-                        body: material_finding_comment(finding, decision),
-                    })
-                    .map_err(|error| CoreError::ForgeOperation(error.to_string()))?;
+            .map(|(finding, _decision)| finding.dedup_key.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for publication in state.publication.finding_comments.clone() {
+            if publication.status == FindingCommentStatus::Open
+                && !material_keys.contains(&publication.finding_dedup_key)
+            {
+                self.resolve_finding_comment(run_id, state, &facts, &publication)?;
             }
         }
+
+        for (finding, decision) in material {
+            if let Some(publication) = state
+                .publication
+                .finding_comments
+                .iter()
+                .find(|publication| publication.finding_dedup_key == finding.dedup_key)
+                .cloned()
+            {
+                self.update_finding_comment(
+                    run_id,
+                    state,
+                    &facts,
+                    &finding,
+                    &decision,
+                    &publication,
+                )?;
+            } else {
+                self.post_finding_comment(run_id, state, &facts, &finding, &decision)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn post_finding_comment(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+        facts: &ForgeFacts,
+        finding: &Finding,
+        decision: &Decision,
+    ) -> Result<(), CoreError> {
+        let idempotency_key = stable_id(
+            "forge-comment",
+            [
+                state.pr.repository.as_str(),
+                state.pr.id.as_str(),
+                finding.dedup_key.as_str(),
+            ],
+        );
+        let authorisation = finding_comment_authorisation(
+            state,
+            facts,
+            idempotency_key.clone(),
+            decision,
+            finding,
+            "core authorised material finding comment from judge decision",
+        );
+        let result = self.forge_operations.post_comment(AuthorisedComment {
+            authorisation,
+            body: material_finding_comment(finding, decision),
+        });
+        let receipt = Self::record_finding_comment_attempt(
+            state,
+            run_id,
+            PublicationOperation::PostFindingComment {
+                finding_id: finding.id.clone(),
+                finding_dedup_key: finding.dedup_key.clone(),
+            },
+            idempotency_key,
+            result,
+        )?;
+        upsert_finding_comment_publication(state, finding, receipt, FindingCommentStatus::Open);
+        Ok(())
+    }
+
+    fn update_finding_comment(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+        facts: &ForgeFacts,
+        finding: &Finding,
+        decision: &Decision,
+        publication: &FindingCommentPublication,
+    ) -> Result<(), CoreError> {
+        let idempotency_key = stable_id(
+            "forge-comment-update",
+            [
+                state.pr.repository.as_str(),
+                state.pr.id.as_str(),
+                finding.dedup_key.as_str(),
+                run_id.0.as_str(),
+            ],
+        );
+        let authorisation = finding_comment_authorisation(
+            state,
+            facts,
+            idempotency_key.clone(),
+            decision,
+            finding,
+            "core authorised material finding comment update from judge decision",
+        );
+        let result = self
+            .forge_operations
+            .update_comment(AuthorisedCommentUpdate {
+                authorisation,
+                comment_operation_id: publication.comment_operation_id.clone(),
+                body: material_finding_comment(finding, decision),
+            });
+        let receipt = Self::record_finding_comment_attempt(
+            state,
+            run_id,
+            PublicationOperation::UpdateFindingComment {
+                finding_id: finding.id.clone(),
+                finding_dedup_key: finding.dedup_key.clone(),
+                comment_operation_id: publication.comment_operation_id.clone(),
+            },
+            idempotency_key,
+            result,
+        )?;
+        upsert_finding_comment_publication(state, finding, receipt, FindingCommentStatus::Open);
+        Ok(())
+    }
+
+    fn resolve_finding_comment(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+        facts: &ForgeFacts,
+        publication: &FindingCommentPublication,
+    ) -> Result<(), CoreError> {
+        let idempotency_key = stable_id(
+            "forge-comment-resolve",
+            [
+                state.pr.repository.as_str(),
+                state.pr.id.as_str(),
+                publication.finding_dedup_key.as_str(),
+                run_id.0.as_str(),
+            ],
+        );
+        let authorisation = AuthorisationContext {
+            pr: state.pr.clone(),
+            observed_head_sha: facts.head.sha.clone(),
+            idempotency_key: idempotency_key.clone(),
+            actor: core_actor(),
+            reason: "core authorised resolving previously material finding comment".to_owned(),
+            evidence: vec![AuthorisationEvidence::Finding {
+                finding_id: publication.latest_finding_id.clone(),
+            }],
+        };
+        let result = self
+            .forge_operations
+            .resolve_comment(AuthorisedCommentResolution {
+                authorisation,
+                comment_operation_id: publication.comment_operation_id.clone(),
+                reason: "finding no longer material on this pass".to_owned(),
+            });
+        let receipt = Self::record_finding_comment_attempt(
+            state,
+            run_id,
+            PublicationOperation::ResolveFindingComment {
+                finding_dedup_key: publication.finding_dedup_key.clone(),
+                comment_operation_id: publication.comment_operation_id.clone(),
+            },
+            idempotency_key,
+            result,
+        )?;
+        if let Some(existing) = state
+            .publication
+            .finding_comments
+            .iter_mut()
+            .find(|existing| existing.finding_dedup_key == publication.finding_dedup_key)
+        {
+            existing.status = FindingCommentStatus::Resolved;
+            existing.last_receipt = receipt;
+        }
+        Ok(())
+    }
+
+    fn record_finding_comment_attempt(
+        state: &mut PrRunState,
+        run_id: &RunId,
+        operation: PublicationOperation,
+        idempotency_key: String,
+        result: Result<ForgeOperationReceipt, ForgeOperationError>,
+    ) -> Result<ForgeReceipt, CoreError> {
+        let receipt = match result {
+            Ok(receipt) => {
+                let receipt = receipt_to_contract(receipt);
+                record_publication_attempt(
+                    state,
+                    run_id,
+                    operation,
+                    idempotency_key,
+                    Ok(receipt.clone()),
+                );
+                receipt
+            }
+            Err(error) => {
+                let message = error.to_string();
+                record_publication_attempt(
+                    state,
+                    run_id,
+                    operation,
+                    idempotency_key,
+                    Err(message.clone()),
+                );
+                return Err(CoreError::ForgeOperation(message));
+            }
+        };
+        Ok(receipt)
+    }
+
+    fn push_fix_patches(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        let Some(facts) = forge_facts_from_state(state)? else {
+            return Ok(());
+        };
+        let patches = fix_patches_for_run(state, run_id);
+        if patches.is_empty()
+            || state
+                .publication
+                .fix_pushes
+                .iter()
+                .any(|push| push.run_id == *run_id)
+        {
+            return Ok(());
+        }
+
+        let patch_ids = patches
+            .iter()
+            .map(|patch| patch.id.clone())
+            .collect::<Vec<_>>();
+        let idempotency_key = stable_id(
+            "forge-fix-push",
+            [
+                state.pr.repository.as_str(),
+                state.pr.id.as_str(),
+                run_id.0.as_str(),
+                facts.head.sha.as_str(),
+            ],
+        );
+        let commits = fix_commits_for_patches(&patches);
+        let authorisation = fix_push_authorisation(state, &facts, &idempotency_key, &patch_ids);
+        let result = self.forge_operations.push_fix_commits(AuthorisedFixPush {
+            authorisation,
+            expected_head_sha: facts.head.sha,
+            commits: commits.clone(),
+        });
+        let receipt = match result {
+            Ok(receipt) => {
+                let receipt = receipt_to_contract(receipt);
+                record_publication_attempt(
+                    state,
+                    run_id,
+                    PublicationOperation::PushFixCommits {
+                        patch_ids: patch_ids.clone(),
+                    },
+                    idempotency_key,
+                    Ok(receipt.clone()),
+                );
+                receipt
+            }
+            Err(error) => {
+                let message = error.to_string();
+                record_publication_attempt(
+                    state,
+                    run_id,
+                    PublicationOperation::PushFixCommits { patch_ids },
+                    idempotency_key,
+                    Err(message.clone()),
+                );
+                return Err(CoreError::ForgeOperation(message));
+            }
+        };
+        state.publication.fix_pushes.push(FixPushPublication {
+            run_id: run_id.clone(),
+            patch_ids,
+            commits: published_fix_commits(commits),
+            receipt,
+        });
         Ok(())
     }
 
@@ -1473,6 +1837,7 @@ fn initial_state_from_facts(facts: &ForgeFacts) -> PrRunState {
         findings: Vec::new(),
         decisions: Vec::new(),
         patches: Vec::new(),
+        publication: PublicationState::default(),
         ceiling: None,
         extensions,
     }
@@ -1544,6 +1909,178 @@ fn decision_finding_ids(decision: &Decision) -> Vec<&pump19_contract::FindingId>
             finding_ids.iter().collect()
         }
     }
+}
+
+fn material_findings_for_pass(state: &PrRunState) -> Vec<(Finding, Decision)> {
+    state
+        .decisions
+        .iter()
+        .filter(|decision| decision.verdict == DecisionVerdict::Material)
+        .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
+        .flat_map(|decision| {
+            decision_finding_ids(decision)
+                .into_iter()
+                .filter_map(|finding_id| {
+                    state
+                        .findings
+                        .iter()
+                        .find(|finding| &finding.id == finding_id)
+                        .map(|finding| (finding.clone(), decision.clone()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn finding_comment_authorisation(
+    state: &PrRunState,
+    facts: &ForgeFacts,
+    idempotency_key: String,
+    decision: &Decision,
+    finding: &Finding,
+    reason: &str,
+) -> AuthorisationContext {
+    AuthorisationContext {
+        pr: state.pr.clone(),
+        observed_head_sha: facts.head.sha.clone(),
+        idempotency_key,
+        actor: core_actor(),
+        reason: reason.to_owned(),
+        evidence: vec![
+            AuthorisationEvidence::Decision {
+                decision_id: decision.id.clone(),
+                verdict: decision.verdict,
+            },
+            AuthorisationEvidence::Finding {
+                finding_id: finding.id.clone(),
+            },
+        ],
+    }
+}
+
+fn upsert_finding_comment_publication(
+    state: &mut PrRunState,
+    finding: &Finding,
+    receipt: ForgeReceipt,
+    status: FindingCommentStatus,
+) {
+    if let Some(existing) = state
+        .publication
+        .finding_comments
+        .iter_mut()
+        .find(|existing| existing.finding_dedup_key == finding.dedup_key)
+    {
+        existing.latest_finding_id = finding.id.clone();
+        existing
+            .comment_operation_id
+            .clone_from(&receipt.operation_id);
+        existing.status = status;
+        existing.last_receipt = receipt;
+        return;
+    }
+    state
+        .publication
+        .finding_comments
+        .push(FindingCommentPublication {
+            finding_dedup_key: finding.dedup_key.clone(),
+            latest_finding_id: finding.id.clone(),
+            comment_operation_id: receipt.operation_id.clone(),
+            status,
+            last_receipt: receipt,
+        });
+}
+
+fn record_publication_attempt(
+    state: &mut PrRunState,
+    run_id: &RunId,
+    operation: PublicationOperation,
+    idempotency_key: String,
+    result: Result<ForgeReceipt, String>,
+) {
+    let (status, receipt, error) = match result {
+        Ok(receipt) => (PublicationAttemptStatus::Succeeded, Some(receipt), None),
+        Err(error) => (PublicationAttemptStatus::Failed, None, Some(error)),
+    };
+    state.publication.attempts.push(PublicationAttempt {
+        contract_version: ContractVersion::current(),
+        run_id: run_id.clone(),
+        operation,
+        idempotency_key,
+        status,
+        receipt,
+        error,
+    });
+}
+
+fn receipt_to_contract(receipt: ForgeOperationReceipt) -> ForgeReceipt {
+    ForgeReceipt {
+        operation_id: receipt.operation_id,
+        idempotency_key: receipt.idempotency_key,
+        new_head_sha: receipt.new_head_sha,
+    }
+}
+
+fn fix_patches_for_run(state: &PrRunState, run_id: &RunId) -> Vec<Patch> {
+    state
+        .loop_history
+        .iter()
+        .rev()
+        .find(|pass| pass.fix_outcome == Some(RunOutcome::Succeeded))
+        .map(|pass| {
+            pass.patches
+                .iter()
+                .filter(|patch| patch.run_id == *run_id)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn fix_commits_for_patches(patches: &[Patch]) -> Vec<AuthorisedFixCommit> {
+    patches
+        .iter()
+        .map(|patch| AuthorisedFixCommit {
+            patch: patch.clone(),
+            message: fix_commit_message(patch),
+            author_agent_id: patch.provenance.agent_id.clone(),
+            provenance: patch.provenance.clone(),
+        })
+        .collect()
+}
+
+fn fix_push_authorisation(
+    state: &PrRunState,
+    facts: &ForgeFacts,
+    idempotency_key: &str,
+    patch_ids: &[pump19_contract::PatchId],
+) -> AuthorisationContext {
+    AuthorisationContext {
+        pr: state.pr.clone(),
+        observed_head_sha: facts.head.sha.clone(),
+        idempotency_key: idempotency_key.to_owned(),
+        actor: core_actor(),
+        reason: "core authorised fix patches as attributed PR-head commits".to_owned(),
+        evidence: patch_ids
+            .iter()
+            .cloned()
+            .map(|patch_id| AuthorisationEvidence::Patch { patch_id })
+            .collect(),
+    }
+}
+
+fn published_fix_commits(commits: Vec<AuthorisedFixCommit>) -> Vec<PublishedFixCommit> {
+    commits
+        .into_iter()
+        .map(|commit| PublishedFixCommit {
+            patch_id: commit.patch.id,
+            author_agent_id: commit.author_agent_id,
+            provenance: commit.provenance,
+        })
+        .collect()
+}
+
+fn fix_commit_message(patch: &Patch) -> String {
+    format!("fix: address Pump-19 finding via {}", patch.id.0)
 }
 
 fn material_finding_comment(finding: &Finding, decision: &Decision) -> String {
@@ -1901,9 +2438,13 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct RecordingForgeOperations {
+        fail_comments: bool,
         comments: Vec<AuthorisedComment>,
+        comment_updates: Vec<AuthorisedCommentUpdate>,
+        comment_resolutions: Vec<AuthorisedCommentResolution>,
         labels: Vec<AuthorisedLabel>,
         merges: Vec<AuthorisedMerge>,
+        fix_pushes: Vec<AuthorisedFixPush>,
     }
 
     impl ForgeOperations for RecordingForgeOperations {
@@ -1911,11 +2452,45 @@ mod tests {
             &mut self,
             request: AuthorisedComment,
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            if self.fail_comments {
+                return Err(ForgeOperationError::Client(
+                    "comment channel unavailable".to_owned(),
+                ));
+            }
             let idempotency_key = request.authorisation.idempotency_key.clone();
             self.comments.push(request);
             Ok(ForgeOperationReceipt {
                 operation_id: "comment".to_owned(),
                 idempotency_key,
+                new_head_sha: None,
+            })
+        }
+
+        fn update_comment(
+            &mut self,
+            request: AuthorisedCommentUpdate,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            let idempotency_key = request.authorisation.idempotency_key.clone();
+            let operation_id = request.comment_operation_id.clone();
+            self.comment_updates.push(request);
+            Ok(ForgeOperationReceipt {
+                operation_id,
+                idempotency_key,
+                new_head_sha: None,
+            })
+        }
+
+        fn resolve_comment(
+            &mut self,
+            request: AuthorisedCommentResolution,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            let idempotency_key = request.authorisation.idempotency_key.clone();
+            let operation_id = request.comment_operation_id.clone();
+            self.comment_resolutions.push(request);
+            Ok(ForgeOperationReceipt {
+                operation_id,
+                idempotency_key,
+                new_head_sha: None,
             })
         }
 
@@ -1928,6 +2503,7 @@ mod tests {
             Ok(ForgeOperationReceipt {
                 operation_id: "label".to_owned(),
                 idempotency_key,
+                new_head_sha: None,
             })
         }
 
@@ -1940,6 +2516,20 @@ mod tests {
             Ok(ForgeOperationReceipt {
                 operation_id: "merge".to_owned(),
                 idempotency_key,
+                new_head_sha: None,
+            })
+        }
+
+        fn push_fix_commits(
+            &mut self,
+            request: AuthorisedFixPush,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            let idempotency_key = request.authorisation.idempotency_key.clone();
+            self.fix_pushes.push(request);
+            Ok(ForgeOperationReceipt {
+                operation_id: "fix-push".to_owned(),
+                idempotency_key,
+                new_head_sha: Some("head-after-fix".to_owned()),
             })
         }
     }
@@ -2729,6 +3319,56 @@ mod tests {
             core.forge_operations.comments[0]
                 .body
                 .contains("launch failed")
+        );
+    }
+
+    #[test]
+    fn failed_failure_comment_attempt_is_recorded_without_masking_run_failure() {
+        let mut launcher = FakeRunLauncher::new(vec![
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+        ]);
+        launcher.fail_launch = true;
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations {
+                fail_comments: true,
+                ..Default::default()
+            },
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("launcher failure is returned");
+
+        assert!(matches!(error, CoreError::Launcher(message) if message == "launch failed"));
+        let saved = core
+            .state_store
+            .load(&RunStateKey {
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+            })
+            .expect("load state")
+            .expect("failed state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert_eq!(saved.publication.attempts.len(), 1);
+        assert_eq!(
+            saved.publication.attempts[0].status,
+            PublicationAttemptStatus::Failed
+        );
+        assert!(
+            saved.publication.attempts[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("comment channel unavailable"))
         );
     }
 

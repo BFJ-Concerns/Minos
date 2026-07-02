@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The current public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 2 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 3 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -221,6 +221,15 @@ pub struct Patch {
     pub extensions: Extensions,
 }
 
+/// A forge operation receipt recorded durably in run state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ForgeReceipt {
+    pub operation_id: String,
+    pub idempotency_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_head_sha: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PatchChange {
@@ -281,6 +290,100 @@ pub enum DecisionVerdict {
     Converged,
 }
 
+/// Durable publication state for everything Pump-19 writes back to a PR.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PublicationState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<PublicationAttempt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finding_comments: Vec<FindingCommentPublication>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fix_pushes: Vec<FixPushPublication>,
+}
+
+impl PublicationState {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.attempts.is_empty() && self.finding_comments.is_empty() && self.fix_pushes.is_empty()
+    }
+}
+
+/// One attempted outbound publication, successful or failed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PublicationAttempt {
+    pub contract_version: ContractVersion,
+    pub run_id: RunId,
+    pub operation: PublicationOperation,
+    pub idempotency_key: String,
+    pub status: PublicationAttemptStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<ForgeReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PublicationOperation {
+    PostFindingComment {
+        finding_id: FindingId,
+        finding_dedup_key: String,
+    },
+    UpdateFindingComment {
+        finding_id: FindingId,
+        finding_dedup_key: String,
+        comment_operation_id: String,
+    },
+    ResolveFindingComment {
+        finding_dedup_key: String,
+        comment_operation_id: String,
+    },
+    PostFailureComment,
+    PushFixCommits {
+        patch_ids: Vec<PatchId>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationAttemptStatus {
+    Succeeded,
+    Failed,
+}
+
+/// The live PR comment currently associated with one stable finding identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FindingCommentPublication {
+    pub finding_dedup_key: String,
+    pub latest_finding_id: FindingId,
+    pub comment_operation_id: String,
+    pub status: FindingCommentStatus,
+    pub last_receipt: ForgeReceipt,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingCommentStatus {
+    Open,
+    Resolved,
+}
+
+/// Durable record of a fix run's credentialed push to the PR head branch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FixPushPublication {
+    pub run_id: RunId,
+    pub patch_ids: Vec<PatchId>,
+    pub commits: Vec<PublishedFixCommit>,
+    pub receipt: ForgeReceipt,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PublishedFixCommit {
+    pub patch_id: PatchId,
+    pub author_agent_id: AgentId,
+    pub provenance: ModelProvenance,
+}
+
 /// Durable per-PR run state keyed to a pull request and commit SHA.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PrRunState {
@@ -302,6 +405,8 @@ pub struct PrRunState {
     pub findings: Vec<Finding>,
     pub decisions: Vec<Decision>,
     pub patches: Vec<Patch>,
+    #[serde(default, skip_serializing_if = "PublicationState::is_empty")]
+    pub publication: PublicationState,
     pub ceiling: Option<RunCeiling>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: Extensions,
@@ -551,11 +656,13 @@ mod tests {
         ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
         CertaintyClass, Comment, CommentId, CommentPayload, CommentTarget, Confidence,
         ContractEvent, ContractVersion, Decision, DecisionSubject, DecisionVerdict, EventPayload,
-        Finding, FindingId, FindingLocation, FinishLabel, ForgeFacts, LoopPassRecord, Mergeability,
+        Finding, FindingCommentPublication, FindingCommentStatus, FindingId, FindingLocation,
+        FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt, LoopPassRecord, Mergeability,
         ModelFamily, ModelLineage, ModelProvenance, Patch, PatchChange, PatchId,
-        ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision, RunCeiling, RunId,
-        RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
-        SourceRange, has_two_verified_reviewer_families, judge_independent_of_reviewers,
+        ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus, PublicationOperation,
+        PublicationState, PublishedFixCommit, PullRequestRef, ReviewCleanliness, Revision,
+        RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId,
+        Severity, SourceRange, has_two_verified_reviewer_families, judge_independent_of_reviewers,
         merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
     };
 
@@ -692,6 +799,52 @@ mod tests {
         }
     }
 
+    fn publication_state() -> PublicationState {
+        PublicationState {
+            attempts: vec![PublicationAttempt {
+                contract_version: version(),
+                run_id: RunId("run-judge-1".to_owned()),
+                operation: PublicationOperation::PostFindingComment {
+                    finding_id: FindingId("finding-1".to_owned()),
+                    finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
+                },
+                idempotency_key: "comment-finding-1".to_owned(),
+                status: PublicationAttemptStatus::Succeeded,
+                receipt: Some(ForgeReceipt {
+                    operation_id: "comment-1".to_owned(),
+                    idempotency_key: "comment-finding-1".to_owned(),
+                    new_head_sha: None,
+                }),
+                error: None,
+            }],
+            finding_comments: vec![FindingCommentPublication {
+                finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
+                latest_finding_id: FindingId("finding-1".to_owned()),
+                comment_operation_id: "comment-1".to_owned(),
+                status: FindingCommentStatus::Open,
+                last_receipt: ForgeReceipt {
+                    operation_id: "comment-1".to_owned(),
+                    idempotency_key: "comment-finding-1".to_owned(),
+                    new_head_sha: None,
+                },
+            }],
+            fix_pushes: vec![FixPushPublication {
+                run_id: RunId("run-fix-1".to_owned()),
+                patch_ids: vec![PatchId("patch-1".to_owned())],
+                commits: vec![PublishedFixCommit {
+                    patch_id: PatchId("patch-1".to_owned()),
+                    author_agent_id: AgentId("fixer".to_owned()),
+                    provenance: verified_provenance("fixer", AgentRole::Fixer, "codex"),
+                }],
+                receipt: ForgeReceipt {
+                    operation_id: "fix-push-1".to_owned(),
+                    idempotency_key: "fix-push-1".to_owned(),
+                    new_head_sha: Some("fed789".to_owned()),
+                },
+            }],
+        }
+    }
+
     #[test]
     fn contract_artifacts_round_trip_through_json() {
         let comment = Comment {
@@ -736,6 +889,7 @@ mod tests {
             findings: vec![finding()],
             decisions: vec![decision()],
             patches: vec![patch()],
+            publication: publication_state(),
             ceiling: Some(RunCeiling {
                 max_passes: Some(5),
                 token_budget: None,
@@ -844,6 +998,7 @@ mod tests {
         assert!(state.run_history.is_empty());
         assert!(state.loop_history.is_empty());
         assert_eq!(state.superseded_by, None);
+        assert!(state.publication.is_empty());
     }
 
     #[test]

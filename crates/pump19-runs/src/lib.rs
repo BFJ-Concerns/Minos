@@ -1246,6 +1246,7 @@ mod tests {
                 findings: Vec::new(),
                 decisions: Vec::new(),
                 patches: Vec::new(),
+                publication: pump19_contract::PublicationState::default(),
                 ceiling: None,
                 extensions: BTreeMap::new(),
             },

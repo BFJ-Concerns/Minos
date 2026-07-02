@@ -8,9 +8,10 @@ use pump19_contract::{
     ContractVersion, Decision, DecisionSubject, DecisionVerdict, EventPayload, Extensions, Finding,
     FindingId, FindingLocation, FinishLabel, ForgeFacts, Mergeability, ModelFamily, ModelLineage,
     ModelProvenance, Patch, PatchChange, PatchId, PrRunState, ProvenanceVerification,
-    PullRequestRef, ReviewCleanliness, Revision, RunId, RunOutcome, RunStatus, SessionFreshness,
-    SessionId, Severity, has_two_verified_reviewer_families, judge_independent_of_reviewers,
-    merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
+    PublicationState, PullRequestRef, ReviewCleanliness, Revision, RunId, RunOutcome, RunStatus,
+    SessionFreshness, SessionId, Severity, has_two_verified_reviewer_families,
+    judge_independent_of_reviewers, merge_gate_clean_and_current, reviewers_disjoint_from_fixers,
+    sessions_fresh_for_pass,
 };
 
 const fn version() -> ContractVersion {
@@ -267,6 +268,7 @@ fn material_review_finding_drives_fix_then_fresh_rereview_until_minor_convergenc
         findings: vec![material.clone()],
         decisions: vec![material_decision.clone()],
         patches: vec![fix_patch.clone()],
+        publication: PublicationState::default(),
         ceiling: None,
         extensions: extensions(),
     };
@@ -339,6 +341,7 @@ fn material_review_finding_drives_fix_then_fresh_rereview_until_minor_convergenc
         findings: vec![minor.clone()],
         decisions: vec![minor_decision.clone()],
         patches: Vec::new(),
+        publication: PublicationState::default(),
         ceiling: None,
         extensions: extensions(),
     };
