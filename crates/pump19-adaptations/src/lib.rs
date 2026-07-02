@@ -17,8 +17,7 @@ use std::{
 use pump19_contract::{ContractVersion, Extensions, RunKind};
 use pump19_core::{AgentPlan, Criteria, TriggerRule};
 use pump19_judgement::{
-    JudgementBrief, ReviewerConfig, default_reviewer_config, load_judgement_briefs_from_dir,
-    load_reviewer_config_from_path, write_baseline_briefs_to_dir,
+    JudgementBrief, load_judgement_briefs_from_dir, write_baseline_briefs_to_dir,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -97,18 +96,6 @@ pub enum AdaptationError {
     EmptyAgentTargetId { rule_id: String },
     #[error("trigger rule {rule_id:?} has an empty agent model family")]
     EmptyAgentModelFamily { rule_id: String },
-    #[error("prompt pack {pack_id:?} has an empty reviewer id")]
-    EmptyReviewerId { pack_id: String },
-    #[error("prompt pack {pack_id:?} reviewer {reviewer_id:?} has an empty model family")]
-    EmptyReviewerFamily {
-        pack_id: String,
-        reviewer_id: String,
-    },
-    #[error("prompt pack {pack_id:?} reviewer {reviewer_id:?} has an empty command")]
-    EmptyReviewerCommand {
-        pack_id: String,
-        reviewer_id: String,
-    },
     #[error("prompt pack {pack_id:?} brief has an empty id")]
     EmptyBriefId { pack_id: String },
     #[error("prompt pack {pack_id:?} brief {brief_id:?} has no prompt text")]
@@ -120,6 +107,10 @@ pub enum AdaptationError {
         pack_id: String,
         template_id: String,
     },
+    #[error("workflow script in pack {pack_id:?} has an empty id")]
+    EmptyWorkflowScriptId { pack_id: String },
+    #[error("workflow script {script_id:?} in pack {pack_id:?} has an empty path")]
+    EmptyWorkflowScriptPath { pack_id: String, script_id: String },
     #[error("mechanical step in pack {pack_id:?} has an empty id")]
     EmptyMechanicalStepId { pack_id: String },
     #[error("mechanical step {step_id:?} custom kind has an empty name")]
@@ -138,7 +129,8 @@ pub struct PromptPackManifest {
     pub id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_templates: Vec<PromptTemplate>,
-    pub reviewers_file: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflow_scripts: Vec<WorkflowScript>,
     pub brief_dir: PathBuf,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: Extensions,
@@ -154,11 +146,20 @@ pub struct PromptTemplate {
     pub extensions: Extensions,
 }
 
+/// A versioned workflow script adaptation invoked by the run body.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowScript {
+    pub id: String,
+    pub run_kind: RunKind,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
 /// Prompt content loaded from a manifest plus existing judgement TOML files.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PromptPack {
     pub manifest: PromptPackManifest,
-    pub reviewers: ReviewerConfig,
     pub briefs: Vec<JudgementBrief>,
 }
 
@@ -227,12 +228,12 @@ pub enum MechanicalExecution {
     },
 }
 
-/// Loads a prompt pack manifest and its referenced judgement configuration.
+/// Loads a prompt pack manifest and its referenced judgement material.
 ///
 /// # Errors
 ///
-/// Returns an error when the manifest, reviewer file, or brief directory cannot
-/// be read, parsed, or validated.
+/// Returns an error when the manifest or brief directory cannot be read, parsed,
+/// or validated.
 pub fn load_prompt_pack(manifest_path: &Path) -> Result<PromptPack, AdaptationError> {
     let manifest = read_toml::<PromptPackManifest>(manifest_path)?;
     validate_header(
@@ -243,13 +244,8 @@ pub fn load_prompt_pack(manifest_path: &Path) -> Result<PromptPack, AdaptationEr
     )?;
 
     let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    let reviewers = load_reviewer_config_from_path(&root.join(&manifest.reviewers_file))?;
     let briefs = load_judgement_briefs_from_dir(&root.join(&manifest.brief_dir))?;
-    let pack = PromptPack {
-        manifest,
-        reviewers,
-        briefs,
-    };
+    let pack = PromptPack { manifest, briefs };
     validate_prompt_pack(&pack)?;
     Ok(pack)
 }
@@ -258,7 +254,7 @@ pub fn load_prompt_pack(manifest_path: &Path) -> Result<PromptPack, AdaptationEr
 ///
 /// # Errors
 ///
-/// Returns an error when the manifest, baseline briefs, or reviewer config cannot
+/// Returns an error when the manifest, baseline briefs, or workflow script cannot
 /// be serialised or written.
 pub fn write_baseline_prompt_pack(root: &Path, id: &str) -> Result<PathBuf, AdaptationError> {
     fs::create_dir_all(root).map_err(|source| AdaptationError::Io {
@@ -267,14 +263,24 @@ pub fn write_baseline_prompt_pack(root: &Path, id: &str) -> Result<PathBuf, Adap
     })?;
     let brief_dir = root.join("briefs");
     write_baseline_briefs_to_dir(&brief_dir)?;
-    let reviewers_file = root.join("reviewers.toml");
-    write_toml(&reviewers_file, &default_reviewer_config())?;
+    let workflow_dir = root.join("workflows");
+    fs::create_dir_all(&workflow_dir).map_err(|source| AdaptationError::Io {
+        path: workflow_dir.display().to_string(),
+        source,
+    })?;
+    for (path, source) in baseline_workflow_sources() {
+        let script_path = root.join(path);
+        fs::write(&script_path, source).map_err(|source| AdaptationError::Io {
+            path: script_path.display().to_string(),
+            source,
+        })?;
+    }
     let manifest = PromptPackManifest {
         schema_version: AdaptationSchemaVersion::current(),
         contract_version: ContractVersion::current(),
         id: id.to_owned(),
         prompt_templates: baseline_prompt_templates(),
-        reviewers_file: PathBuf::from("reviewers.toml"),
+        workflow_scripts: baseline_workflow_scripts(),
         brief_dir: PathBuf::from("briefs"),
         extensions: Extensions::new(),
     };
@@ -344,6 +350,213 @@ pub fn baseline_prompt_templates() -> Vec<PromptTemplate> {
         },
     ]
 }
+
+/// Returns baseline workflow script declarations for review, judge, and fix runs.
+#[must_use]
+pub fn baseline_workflow_scripts() -> Vec<WorkflowScript> {
+    vec![
+        WorkflowScript {
+            id: "review-ensemble".to_owned(),
+            run_kind: RunKind::Review,
+            path: PathBuf::from("workflows/review.js"),
+            extensions: Extensions::new(),
+        },
+        WorkflowScript {
+            id: "judge-ensemble".to_owned(),
+            run_kind: RunKind::Judge,
+            path: PathBuf::from("workflows/judge.js"),
+            extensions: Extensions::new(),
+        },
+        WorkflowScript {
+            id: "fix-ensemble".to_owned(),
+            run_kind: RunKind::Fix,
+            path: PathBuf::from("workflows/fix.js"),
+            extensions: Extensions::new(),
+        },
+    ]
+}
+
+fn baseline_workflow_sources() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("workflows/review.js", REVIEW_WORKFLOW_JS),
+        ("workflows/judge.js", JUDGE_WORKFLOW_JS),
+        ("workflows/fix.js", FIX_WORKFLOW_JS),
+    ]
+}
+
+const REVIEW_WORKFLOW_JS: &str = r#"export const meta = {
+  name: "pump19-review",
+  description: "Run authorised Pump-19 reviewers over judgement briefs"
+};
+
+const reviewSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["status", "stdout", "stderr"],
+  properties: {
+    status: { type: "string", enum: ["passed", "failed"] },
+    stdout: { type: "string" },
+    stderr: { type: "string" }
+  }
+};
+
+function optionsFor(target, label) {
+  return {
+    engine: target.engine,
+    model: target.model,
+    label,
+    schema: reviewSchema,
+    timeoutMs: args.agent_timeout_ms || 300000
+  };
+}
+
+const calls = [];
+for (const brief of args.briefs) {
+  for (const reviewer of args.reviewers) {
+    calls.push({ brief, reviewer });
+  }
+}
+
+const outputs = await parallel(calls.map(({ brief, reviewer }) => () =>
+  agent(
+    `## Task
+Review this Pump-19 judgement brief independently. Return JSON matching the schema.
+
+## Verdict
+Use status "failed" when you find a material concern. Use status "passed" only when the brief is satisfied.
+
+<brief id="${brief.id}">
+${brief.prompt}
+</brief>`,
+    optionsFor(reviewer, `${reviewer.agent_id}:${brief.id}`)
+  )
+));
+
+if (outputs.some((output) => output === null)) {
+  throw new Error("reviewer output failed schema validation");
+}
+
+const briefResults = [];
+for (const brief of args.briefs) {
+  const reviews = [];
+  for (let i = 0; i < calls.length; i += 1) {
+    if (calls[i].brief.id !== brief.id) continue;
+    const reviewer = calls[i].reviewer;
+    const output = outputs[i];
+    reviews.push({
+      agent_id: reviewer.agent_id,
+      model_family: reviewer.model_family,
+      status: output.status,
+      stdout: output.stdout,
+      stderr: output.stderr
+    });
+  }
+  briefResults.push({
+    brief_id: brief.id,
+    status: reviews.some((review) => review.status === "failed") ? "failed" : "passed",
+    reviews
+  });
+}
+
+return {
+  status: briefResults.some((brief) => brief.status === "failed") ? "failed" : "passed",
+  briefs: briefResults,
+  model_families: [...new Set(args.reviewers.map((reviewer) => reviewer.model_family))].sort()
+};
+"#;
+
+const JUDGE_WORKFLOW_JS: &str = r#"export const meta = {
+  name: "pump19-judge",
+  description: "Run the authorised Pump-19 significance judge"
+};
+
+const judgeSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["decisions"],
+  properties: {
+    decisions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["finding_id", "verdict", "rationale"],
+        properties: {
+          finding_id: { type: "string" },
+          verdict: { type: "string", enum: ["material", "minor"] },
+          rationale: { type: "string" }
+        }
+      }
+    }
+  }
+};
+
+const judge = args.judges[0];
+const result = await agent(
+  `## Task
+Judge whether each finding is material enough to justify another fix pass.
+
+<findings>
+${JSON.stringify(args.findings)}
+</findings>
+
+<loop_history>
+${JSON.stringify({ pass_index: args.pass_index, prior_decisions: args.decisions })}
+</loop_history>`,
+  {
+    engine: judge.engine,
+    model: judge.model,
+    label: judge.agent_id,
+    schema: judgeSchema,
+    timeoutMs: args.agent_timeout_ms || 300000
+  }
+);
+
+if (result === null) {
+  throw new Error("judge output failed schema validation");
+}
+
+return result.decisions;
+"#;
+
+const FIX_WORKFLOW_JS: &str = r#"export const meta = {
+  name: "pump19-fix",
+  description: "Run the authorised Pump-19 fixer"
+};
+
+const fixSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "summary"],
+  properties: {
+    kind: { type: "string", enum: ["description"] },
+    summary: { type: "string" }
+  }
+};
+
+const fixer = args.fixers[0];
+const result = await agent(
+  `## Task
+Produce a fix description for the material findings. Return JSON matching the schema.
+
+<material_findings>
+${JSON.stringify(args.material_findings)}
+</material_findings>`,
+  {
+    engine: fixer.engine,
+    model: fixer.model,
+    label: fixer.agent_id,
+    schema: fixSchema,
+    timeoutMs: args.agent_timeout_ms || 300000
+  }
+);
+
+if (result === null) {
+  throw new Error("fixer output failed schema validation");
+}
+
+return result;
+"#;
 
 /// Validates an already-loaded trigger pack.
 ///
@@ -445,7 +658,7 @@ pub fn validate_mechanical_pack(pack: &MechanicalPack) -> Result<(), AdaptationE
 ///
 /// # Errors
 ///
-/// Returns an error when the pack has malformed reviewers, briefs, or prompt templates.
+/// Returns an error when the pack has malformed workflow scripts, briefs, or prompt templates.
 pub fn validate_prompt_pack(pack: &PromptPack) -> Result<(), AdaptationError> {
     let mut template_ids = BTreeSet::new();
     for template in &pack.manifest.prompt_templates {
@@ -468,37 +681,31 @@ pub fn validate_prompt_pack(pack: &PromptPack) -> Result<(), AdaptationError> {
             });
         }
     }
-    if pack.reviewers.reviewers.is_empty() {
+    if pack.manifest.workflow_scripts.is_empty() {
         return Err(AdaptationError::EmptyCollection {
             unit_kind: "prompt pack",
             id: pack.manifest.id.clone(),
-            items: "reviewers",
+            items: "workflow scripts",
         });
     }
-    let mut reviewer_ids = BTreeSet::new();
-    for reviewer in &pack.reviewers.reviewers {
-        if reviewer.agent_id.trim().is_empty() {
-            return Err(AdaptationError::EmptyReviewerId {
+    let mut workflow_ids = BTreeSet::new();
+    for script in &pack.manifest.workflow_scripts {
+        if script.id.trim().is_empty() {
+            return Err(AdaptationError::EmptyWorkflowScriptId {
                 pack_id: pack.manifest.id.clone(),
             });
         }
-        if !reviewer_ids.insert(reviewer.agent_id.clone()) {
+        if !workflow_ids.insert(script.id.clone()) {
             return Err(AdaptationError::DuplicateId {
-                unit_kind: "prompt pack reviewers",
+                unit_kind: "prompt pack workflow scripts",
                 id: pack.manifest.id.clone(),
-                duplicate: reviewer.agent_id.clone(),
+                duplicate: script.id.clone(),
             });
         }
-        if reviewer.model_family.trim().is_empty() {
-            return Err(AdaptationError::EmptyReviewerFamily {
+        if script.path.as_os_str().is_empty() {
+            return Err(AdaptationError::EmptyWorkflowScriptPath {
                 pack_id: pack.manifest.id.clone(),
-                reviewer_id: reviewer.agent_id.clone(),
-            });
-        }
-        if reviewer.command.is_empty() {
-            return Err(AdaptationError::EmptyReviewerCommand {
-                pack_id: pack.manifest.id.clone(),
-                reviewer_id: reviewer.agent_id.clone(),
+                script_id: script.id.clone(),
             });
         }
     }
@@ -643,9 +850,9 @@ mod tests {
         ReviewCleanliness, Revision, RunKind, RunOutcome, SessionId,
     };
     use pump19_core::{
-        AgentLaunchSpec, AgentLaunchTarget, Core, CoreError, Criteria, DispatchOutcome, EventKind,
-        EventSource, JsonRunStateStore, LaunchProof, PreparedAgent, RunLaunchOutcome,
-        RunLaunchRequest, RunLauncher, WorkspaceExecOutput, WorkspaceExecRequest,
+        AgentEngine, AgentLaunchSpec, AgentLaunchTarget, Core, CoreError, Criteria,
+        DispatchOutcome, EventKind, EventSource, JsonRunStateStore, LaunchProof, PreparedAgent,
+        RunLaunchOutcome, RunLaunchRequest, RunLauncher, WorkspaceExecOutput, WorkspaceExecRequest,
         WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
     };
     use pump19_judgement::{IntentApp, IntentSpec, judgement_prompt};
@@ -681,7 +888,7 @@ mod tests {
 
         assert_eq!(pack.manifest.id, "baseline-review");
         assert_eq!(pack.manifest.prompt_templates.len(), 3);
-        assert_eq!(pack.reviewers.reviewers.len(), 2);
+        assert_eq!(pack.manifest.workflow_scripts.len(), 3);
         assert_eq!(pack.briefs.len(), 3);
         assert!(prompt.contains("PUMP19_JUDGEMENT: PASS"));
         assert!(prompt.contains(&pack.briefs[0].brief));
@@ -804,12 +1011,21 @@ mod tests {
         AgentLaunchTarget {
             agent_id: AgentId(id.to_owned()),
             role,
+            engine: engine_for_family(family),
             vendor: "test-vendor".to_owned(),
             control_plane: "test-control".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
                 model: format!("{family}-stable"),
             },
+        }
+    }
+
+    fn engine_for_family(family: &str) -> AgentEngine {
+        match family {
+            "claude" => AgentEngine::Claude,
+            "codex" => AgentEngine::Codex,
+            _ => AgentEngine::Opencode,
         }
     }
 

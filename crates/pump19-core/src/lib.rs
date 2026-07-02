@@ -13,9 +13,9 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use pump19_contract::{
     ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
-    DecisionVerdict, EventPayload, Extensions, Finding, FinishLabel, ForgeFacts, ModelLineage,
-    ModelProvenance, Patch, PrRunState, ProvenanceVerification, PullRequestRef, RunCeiling, RunId,
-    RunKind, RunOutcome, RunStatus, SessionFreshness, SessionId,
+    DecisionVerdict, EventPayload, Extensions, Finding, FinishLabel, ForgeFacts, LoopPassRecord,
+    ModelLineage, ModelProvenance, Patch, PrRunState, ProvenanceVerification, PullRequestRef,
+    RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId,
     has_two_verified_reviewer_families, judge_independent_of_reviewers,
     merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
 };
@@ -29,6 +29,9 @@ const EXT_LAST_RULE_ID: &str = "pump19.core.last_rule_id";
 const EXT_LAST_RUN_KIND: &str = "pump19.core.last_run_kind";
 const EXT_TOKENS_USED: &str = "pump19.core.tokens_used";
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
+const EXT_LAST_FAILURE: &str = "pump19.core.last_failure";
+const CONTROL_COMMIT_SHA: &str = "__pump19_pr_control__";
+const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 
 /// Core errors raised before a launch decision can be made.
 #[derive(Debug, Error)]
@@ -424,15 +427,61 @@ where
         Ok(outcomes)
     }
 
-    fn load_state_for_event(&self, event: &ContractEvent) -> Result<Option<PrRunState>, CoreError> {
+    fn load_state_for_event(
+        &mut self,
+        event: &ContractEvent,
+    ) -> Result<Option<PrRunState>, CoreError> {
         match &event.payload {
             EventPayload::PullRequestOpened { facts }
-            | EventPayload::PullRequestUpdated { facts } => {
-                self.state_store.load(&RunStateKey::from_facts(facts))
-            }
+            | EventPayload::PullRequestUpdated { facts } => self.load_state_for_forge_event(facts),
             EventPayload::LabelApplied { pr, .. } => self.state_store.load_latest_for_pr(pr),
             EventPayload::RunCompleted { run_id, .. } => self.state_store.load_by_run_id(run_id),
         }
+    }
+
+    fn load_state_for_forge_event(
+        &mut self,
+        facts: &ForgeFacts,
+    ) -> Result<Option<PrRunState>, CoreError> {
+        let key = RunStateKey::from_facts(facts);
+        if let Some(state) = self.state_store.load(&key)? {
+            return Ok(Some(state));
+        }
+
+        let Some(mut latest) = self.state_store.load_latest_for_pr(&facts.pr)? else {
+            return Ok(None);
+        };
+        if latest.commit_sha == facts.head.sha {
+            return Ok(Some(latest));
+        }
+
+        if latest.status == RunStatus::Running {
+            latest.status = RunStatus::Superseded;
+            latest.superseded_by = Some(facts.head.sha.clone());
+            latest.current_head_sha = Some(facts.head.sha.clone());
+            if let Some(active_run) = latest.active_run.as_mut() {
+                active_run.status = RunStatus::Superseded;
+                active_run.outcome = Some(RunOutcome::Cancelled);
+            }
+            self.state_store.save(&latest)?;
+        }
+
+        let mut next = initial_state_from_facts(facts);
+        next.pass_index = latest.pass_index;
+        next.ceiling = latest.ceiling;
+        if latest.status == RunStatus::Completed
+            && (!latest.findings.is_empty()
+                || !latest.decisions.is_empty()
+                || !latest.patches.is_empty())
+        {
+            latest.loop_history.push(loop_record_from_state(
+                &latest,
+                latest.patches.clone(),
+                None,
+            ));
+        }
+        next.loop_history = latest.loop_history;
+        Ok(Some(next))
     }
 
     fn dispatch_rule(
@@ -441,27 +490,40 @@ where
         rule: &TriggerRule,
         state: PrRunState,
     ) -> Result<DispatchOutcome, CoreError> {
-        if ceiling_refuses(&state) {
-            return Ok(DispatchOutcome::Refused {
-                rule_id: rule.id.clone(),
-                reason: LaunchRefusal::RunCeilingReached,
-            });
+        if let Some(outcome) = dispatch_precheck(&state, event, rule) {
+            return Ok(outcome);
         }
 
         let run_id = run_id_for(event, rule, state.pass_index);
-        let prepared = self.prepare_provenance(&rule.agent_plan, state.pass_index)?;
-        let workspace = self.workspace_provider.prepare(WorkspaceRequest {
+        let prepared = match self.prepare_provenance(&rule.agent_plan, state.pass_index) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let message = error.to_string();
+                self.record_failed_dispatch(state, event, rule, &run_id, message.as_str())?;
+                return Err(error);
+            }
+        };
+        let workspace = match self.workspace_provider.prepare(WorkspaceRequest {
             run_id: run_id.clone(),
             run_kind: rule.run_kind,
             pr: state.pr.clone(),
             commit_sha: state.commit_sha.clone(),
-        })?;
+        }) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                let message = error.to_string();
+                self.record_failed_dispatch(state, event, rule, &run_id, message.as_str())?;
+                return Err(error);
+            }
+        };
         let mut gate_provenance = collect_state_provenance(&state);
         gate_provenance.extend(prepared.iter().cloned());
 
         if let Some(reason) =
             evaluate_gate(&gate_provenance, &prepared, state.pass_index, &workspace)
         {
+            let failure = format!("launch refused: {reason:?}");
+            self.record_failed_dispatch(state, event, rule, &run_id, failure.as_str())?;
             self.workspace_provider.cleanup(&workspace)?;
             return Ok(DispatchOutcome::Refused {
                 rule_id: rule.id.clone(),
@@ -489,15 +551,39 @@ where
         let outcome = match launch_result {
             Ok(outcome) => outcome,
             Err(error) => {
+                let message = error.to_string();
+                mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
+                self.state_store.save(&running_state)?;
+                self.surface_failure(&run_id, &running_state, message.as_str())?;
                 self.workspace_provider.cleanup(&workspace)?;
                 return Err(error);
             }
         };
 
+        if self.head_was_superseded(&running_state)? {
+            running_state.status = RunStatus::Superseded;
+            running_state.superseded_by = running_state.current_head_sha.clone();
+            if let Some(active_run) = running_state.active_run.as_mut() {
+                active_run.status = RunStatus::Superseded;
+                active_run.outcome = Some(RunOutcome::Cancelled);
+            }
+            self.state_store.save(&running_state)?;
+            self.workspace_provider.cleanup(&workspace)?;
+            return Ok(DispatchOutcome::Launched {
+                rule_id: rule.id.clone(),
+                run_id,
+            });
+        }
+
         apply_run_outcome(&mut running_state, rule.run_kind, outcome);
+        self.state_store.save(&running_state)?;
         if let Err(error) =
             self.apply_authorised_forge_operations(rule.run_kind, &run_id, &running_state)
         {
+            let message = error.to_string();
+            mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
+            self.state_store.save(&running_state)?;
+            self.surface_failure(&run_id, &running_state, message.as_str())?;
             self.workspace_provider.cleanup(&workspace)?;
             return Err(error);
         }
@@ -510,6 +596,55 @@ where
             rule_id: rule.id.clone(),
             run_id,
         })
+    }
+
+    fn record_failed_dispatch(
+        &mut self,
+        mut state: PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        message: &str,
+    ) -> Result<(), CoreError> {
+        mark_failed(&mut state, event, rule, run_id, message);
+        self.state_store.save(&state)?;
+        self.surface_failure(run_id, &state, message)
+    }
+
+    fn surface_failure(
+        &mut self,
+        run_id: &RunId,
+        state: &PrRunState,
+        message: &str,
+    ) -> Result<(), CoreError> {
+        let Some(facts) = forge_facts_from_state(state)? else {
+            return Ok(());
+        };
+        self.forge_operations
+            .post_comment(AuthorisedComment {
+                authorisation: AuthorisationContext {
+                    pr: state.pr.clone(),
+                    observed_head_sha: facts.head.sha,
+                    idempotency_key: stable_id("forge-failure", [run_id.0.as_str()]),
+                    actor: core_actor(),
+                    reason: "core surfaced failed Pump-19 run".to_owned(),
+                    evidence: Vec::new(),
+                },
+                body: failure_comment(run_id, message),
+            })
+            .map(|_receipt| ())
+            .map_err(|error| CoreError::ForgeOperation(error.to_string()))
+    }
+
+    fn head_was_superseded(&self, state: &PrRunState) -> Result<bool, CoreError> {
+        let Some(current) = self.state_store.load_latest_for_pr(&state.pr)? else {
+            return Ok(false);
+        };
+        Ok(current.commit_sha != state.commit_sha
+            || current
+                .current_head_sha
+                .as_deref()
+                .is_some_and(|head| head != state.commit_sha))
     }
 
     fn apply_authorised_forge_operations(
@@ -704,6 +839,14 @@ impl JsonRunStateStore {
         ))
     }
 
+    #[must_use]
+    fn control_path_for(&self, pr: &PullRequestRef) -> PathBuf {
+        self.path_for(&RunStateKey {
+            pr: pr.clone(),
+            commit_sha: CONTROL_COMMIT_SHA.to_owned(),
+        })
+    }
+
     fn all_states(&self) -> Result<Vec<PrRunState>, CoreError> {
         let mut states = Vec::new();
         for entry in fs::read_dir(&self.root).map_err(|source| CoreError::Io {
@@ -752,20 +895,30 @@ impl RunStateStore for JsonRunStateStore {
     }
 
     fn load_latest_for_pr(&self, pr: &PullRequestRef) -> Result<Option<PrRunState>, CoreError> {
+        let control_path = self.control_path_for(pr);
+        if control_path.exists() {
+            let bytes = fs::read(&control_path).map_err(|source| CoreError::Io {
+                path: control_path.display().to_string(),
+                source,
+            })?;
+            return serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|source| CoreError::Json {
+                    path: control_path.display().to_string(),
+                    source,
+                });
+        }
         Ok(self
             .all_states()?
             .into_iter()
             .filter(|state| state.pr == *pr)
+            .filter(|state| state.commit_sha != CONTROL_COMMIT_SHA)
             .max_by_key(|state| state.pass_index))
     }
 
     fn load_by_run_id(&self, run_id: &RunId) -> Result<Option<PrRunState>, CoreError> {
         Ok(self.all_states()?.into_iter().find(|state| {
-            state
-                .extensions
-                .get(EXT_RUNNING_RUN_ID)
-                .and_then(Value::as_str)
-                == Some(run_id.0.as_str())
+            state.commit_sha != CONTROL_COMMIT_SHA && state_records_run(state, run_id)
         }))
     }
 
@@ -781,7 +934,7 @@ impl RunStateStore for JsonRunStateStore {
             path: path.display().to_string(),
             source,
         })?;
-        fs::write(&tmp_path, bytes).map_err(|source| CoreError::Io {
+        fs::write(&tmp_path, &bytes).map_err(|source| CoreError::Io {
             path: tmp_path.display().to_string(),
             source,
         })?;
@@ -789,6 +942,18 @@ impl RunStateStore for JsonRunStateStore {
             path: path.display().to_string(),
             source,
         })?;
+        if state_is_current_pr_control(state) {
+            let control_path = self.control_path_for(&state.pr);
+            let tmp_control_path = control_path.with_extension("json.tmp");
+            fs::write(&tmp_control_path, &bytes).map_err(|source| CoreError::Io {
+                path: tmp_control_path.display().to_string(),
+                source,
+            })?;
+            fs::rename(&tmp_control_path, &control_path).map_err(|source| CoreError::Io {
+                path: control_path.display().to_string(),
+                source,
+            })?;
+        }
         Ok(())
     }
 }
@@ -880,6 +1045,7 @@ impl EventKind {
 #[serde(rename_all = "snake_case")]
 pub enum StateCriterion {
     HasMaterialDecision,
+    HasConverged,
     CleanAndCurrent,
     CeilingAllowsPass,
 }
@@ -896,6 +1062,11 @@ impl StateCriterion {
                 .iter()
                 .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
                 .any(|decision| decision.verdict == DecisionVerdict::Material),
+            Self::HasConverged => state
+                .decisions
+                .iter()
+                .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
+                .any(|decision| decision.verdict == DecisionVerdict::Converged),
             Self::CleanAndCurrent => state
                 .extensions
                 .get(EXT_FORGE_FACTS)
@@ -937,9 +1108,30 @@ impl AgentPlan {
 pub struct AgentLaunchTarget {
     pub agent_id: AgentId,
     pub role: AgentRole,
+    pub engine: AgentEngine,
     pub vendor: String,
     pub control_plane: String,
     pub lineage: ModelLineage,
+}
+
+/// The ensemble engine the core will use for an agent target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEngine {
+    Codex,
+    Claude,
+    Opencode,
+}
+
+impl AgentEngine {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Opencode => "opencode",
+        }
+    }
 }
 
 /// Request to prepare an agent session without starting the run body.
@@ -1088,6 +1280,9 @@ pub enum LaunchRefusal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SkipReason {
     NoRunState,
+    DuplicateDispatch,
+    SerialisedByActiveRun,
+    SupersededHead,
 }
 
 fn establish_provenance(
@@ -1132,6 +1327,12 @@ fn establish_provenance(
         }
     };
 
+    let mut extensions = BTreeMap::new();
+    extensions.insert(
+        EXT_AGENT_ENGINE.to_owned(),
+        Value::String(target.engine.as_str().to_owned()),
+    );
+
     ModelProvenance {
         contract_version: ContractVersion::current(),
         agent_id: target.agent_id.clone(),
@@ -1139,7 +1340,7 @@ fn establish_provenance(
         session_id: prepared.session_id,
         freshness,
         verification,
-        extensions: BTreeMap::new(),
+        extensions,
     }
 }
 
@@ -1249,28 +1450,44 @@ fn initial_state_from_event(event: &ContractEvent) -> Option<PrRunState> {
         }
         EventPayload::LabelApplied { .. } | EventPayload::RunCompleted { .. } => return None,
     };
+    Some(initial_state_from_facts(facts))
+}
+
+#[must_use]
+fn initial_state_from_facts(facts: &ForgeFacts) -> PrRunState {
     let mut extensions = Extensions::new();
     if let Ok(value) = serde_json::to_value(facts) {
         extensions.insert(EXT_FORGE_FACTS.to_owned(), value);
     }
-    Some(PrRunState {
+    PrRunState {
         contract_version: ContractVersion::current(),
         pr: facts.pr.clone(),
         commit_sha: facts.head.sha.clone(),
+        current_head_sha: Some(facts.head.sha.clone()),
         pass_index: 1,
         status: RunStatus::Pending,
+        active_run: None,
+        run_history: Vec::new(),
+        loop_history: Vec::new(),
+        superseded_by: None,
         findings: Vec::new(),
         decisions: Vec::new(),
         patches: Vec::new(),
         ceiling: None,
         extensions,
-    })
+    }
 }
 
 #[must_use]
 fn collect_state_provenance(state: &PrRunState) -> Vec<ModelProvenance> {
-    let mut provenances =
-        Vec::with_capacity(state.findings.len() + state.decisions.len() + state.patches.len());
+    let archived_len = state
+        .loop_history
+        .iter()
+        .map(|pass| pass.findings.len() + pass.decisions.len() + pass.patches.len())
+        .sum::<usize>();
+    let mut provenances = Vec::with_capacity(
+        state.findings.len() + state.decisions.len() + state.patches.len() + archived_len,
+    );
     provenances.extend(
         state
             .findings
@@ -1284,6 +1501,19 @@ fn collect_state_provenance(state: &PrRunState) -> Vec<ModelProvenance> {
             .map(|decision| decision.provenance.clone()),
     );
     provenances.extend(state.patches.iter().map(|patch| patch.provenance.clone()));
+    for pass in &state.loop_history {
+        provenances.extend(
+            pass.findings
+                .iter()
+                .map(|finding| finding.provenance.clone()),
+        );
+        provenances.extend(
+            pass.decisions
+                .iter()
+                .map(|decision| decision.provenance.clone()),
+        );
+        provenances.extend(pass.patches.iter().map(|patch| patch.provenance.clone()));
+    }
     provenances
 }
 
@@ -1321,6 +1551,10 @@ fn material_finding_comment(finding: &Finding, decision: &Decision) -> String {
         "Pump-19 material finding: {}\n\nDecision {}: {}",
         finding.summary, decision.id, decision.rationale
     )
+}
+
+fn failure_comment(run_id: &RunId, message: &str) -> String {
+    format!("Pump-19 run failed: {}\n\n{}", run_id.0, message)
 }
 
 fn actor_has_capability(facts: &ForgeFacts, actor: &ActorRef, capability: ActorCapability) -> bool {
@@ -1375,6 +1609,38 @@ fn token_budget_refuses(ceiling: RunCeiling, extensions: &Extensions) -> bool {
     })
 }
 
+fn dispatch_precheck(
+    state: &PrRunState,
+    event: &ContractEvent,
+    rule: &TriggerRule,
+) -> Option<DispatchOutcome> {
+    if state.status == RunStatus::Superseded {
+        return Some(DispatchOutcome::Skipped {
+            rule_id: rule.id.clone(),
+            reason: SkipReason::SupersededHead,
+        });
+    }
+    if state.status == RunStatus::Running || state.active_run.is_some() {
+        return Some(DispatchOutcome::Skipped {
+            rule_id: rule.id.clone(),
+            reason: SkipReason::SerialisedByActiveRun,
+        });
+    }
+    if state_already_dispatched(state, event, rule) {
+        return Some(DispatchOutcome::Skipped {
+            rule_id: rule.id.clone(),
+            reason: SkipReason::DuplicateDispatch,
+        });
+    }
+    if ceiling_refuses(state) {
+        return Some(DispatchOutcome::Refused {
+            rule_id: rule.id.clone(),
+            reason: LaunchRefusal::RunCeilingReached,
+        });
+    }
+    None
+}
+
 #[must_use]
 fn mark_running(
     mut state: PrRunState,
@@ -1383,6 +1649,16 @@ fn mark_running(
     run_id: &RunId,
 ) -> PrRunState {
     state.status = RunStatus::Running;
+    state.active_run = Some(RunRecord {
+        run_id: run_id.clone(),
+        run_kind: rule.run_kind,
+        event_id: event.id.clone(),
+        rule_id: rule.id.clone(),
+        pass_index: state.pass_index,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Running,
+        outcome: None,
+    });
     state.extensions.insert(
         EXT_RUNNING_RUN_ID.to_owned(),
         Value::String(run_id.0.clone()),
@@ -1401,14 +1677,68 @@ fn mark_running(
     state
 }
 
+fn mark_failed(
+    state: &mut PrRunState,
+    event: &ContractEvent,
+    rule: &TriggerRule,
+    run_id: &RunId,
+    message: &str,
+) {
+    state.status = RunStatus::Failed;
+    state.extensions.insert(
+        EXT_LAST_FAILURE.to_owned(),
+        Value::String(message.to_owned()),
+    );
+    let mut record = state.active_run.take().unwrap_or_else(|| RunRecord {
+        run_id: run_id.clone(),
+        run_kind: rule.run_kind,
+        event_id: event.id.clone(),
+        rule_id: rule.id.clone(),
+        pass_index: state.pass_index,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Failed,
+        outcome: Some(RunOutcome::Failed),
+    });
+    record.status = RunStatus::Failed;
+    record.outcome = Some(RunOutcome::Failed);
+    state.run_history.push(record);
+}
+
 fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaunchOutcome) {
     state.status = match outcome.outcome {
-        RunOutcome::Succeeded => RunStatus::Completed,
+        RunOutcome::Succeeded | RunOutcome::NoOp => RunStatus::Completed,
         RunOutcome::Failed | RunOutcome::Cancelled => RunStatus::Failed,
     };
-    state.findings.extend(outcome.findings);
-    state.decisions.extend(outcome.decisions);
-    state.patches.extend(outcome.patches);
+    if let Some(mut active_run) = state.active_run.take() {
+        active_run.status = state.status;
+        active_run.outcome = Some(outcome.outcome);
+        state.run_history.push(active_run);
+    }
+    match run_kind {
+        RunKind::Review => {
+            state.findings = outcome.findings;
+            state.decisions.clear();
+            state.patches.clear();
+        }
+        RunKind::Judge => {
+            state.decisions = outcome.decisions;
+        }
+        RunKind::Fix => {
+            let patches = outcome.patches;
+            state.patches.clone_from(&patches);
+            if matches!(outcome.outcome, RunOutcome::Succeeded | RunOutcome::NoOp) {
+                state.loop_history.push(loop_record_from_state(
+                    state,
+                    patches,
+                    Some(outcome.outcome),
+                ));
+                state.findings.clear();
+                state.decisions.clear();
+                state.patches.clear();
+            }
+        }
+        RunKind::Finish => {}
+    }
     if run_kind == RunKind::Fix && outcome.outcome == RunOutcome::Succeeded {
         state.pass_index = state.pass_index.saturating_add(1);
     }
@@ -1423,6 +1753,55 @@ fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaun
             Value::Number(serde_json::Number::from(current.saturating_add(tokens))),
         );
     }
+}
+
+fn loop_record_from_state(
+    state: &PrRunState,
+    patches: Vec<Patch>,
+    fix_outcome: Option<RunOutcome>,
+) -> LoopPassRecord {
+    LoopPassRecord {
+        pass_index: state.pass_index,
+        commit_sha: state.commit_sha.clone(),
+        findings: state.findings.clone(),
+        decisions: state.decisions.clone(),
+        patches,
+        judge_verdict: state.decisions.iter().rev().find_map(|decision| {
+            (provenance_pass(&decision.provenance) == Some(state.pass_index))
+                .then_some(decision.verdict)
+        }),
+        fix_outcome,
+    }
+}
+
+fn state_records_run(state: &PrRunState, run_id: &RunId) -> bool {
+    state
+        .active_run
+        .as_ref()
+        .is_some_and(|record| record.run_id == *run_id)
+        || state
+            .run_history
+            .iter()
+            .any(|record| record.run_id == *run_id)
+        || state
+            .extensions
+            .get(EXT_RUNNING_RUN_ID)
+            .and_then(Value::as_str)
+            == Some(run_id.0.as_str())
+}
+
+fn state_already_dispatched(state: &PrRunState, event: &ContractEvent, rule: &TriggerRule) -> bool {
+    state.run_history.iter().any(|record| {
+        record.event_id == event.id && record.rule_id == rule.id && record.run_kind == rule.run_kind
+    })
+}
+
+fn state_is_current_pr_control(state: &PrRunState) -> bool {
+    state.status != RunStatus::Superseded
+        && state
+            .current_head_sha
+            .as_deref()
+            .is_none_or(|head| head == state.commit_sha)
 }
 
 #[must_use]
@@ -1592,18 +1971,19 @@ mod tests {
                         .filter(|provenance| provenance.role == AgentRole::Reviewer)
                         .cloned()
                         .collect::<Vec<_>>();
+                    if request.state.pass_index > 1 {
+                        return Ok(RunLaunchOutcome {
+                            outcome: RunOutcome::Succeeded,
+                            findings: Vec::new(),
+                            decisions: Vec::new(),
+                            patches: Vec::new(),
+                            token_usage: None,
+                        });
+                    }
                     let primary_reviewer = reviewers.first().expect("primary reviewer").clone();
                     let secondary_reviewer = reviewers.get(1).expect("secondary reviewer").clone();
-                    let primary_finding_id = if request.state.pass_index == 1 {
-                        "finding-supporting"
-                    } else {
-                        "finding-minor-supporting"
-                    };
-                    let judged_finding_id = if request.state.pass_index == 1 {
-                        "finding-material"
-                    } else {
-                        "finding-minor"
-                    };
+                    let primary_finding_id = "finding-supporting";
+                    let judged_finding_id = "finding-material";
                     let finding_for = |finding_id: &str, provenance: ModelProvenance| Finding {
                         contract_version: ContractVersion::current(),
                         id: pump19_contract::FindingId(finding_id.to_owned()),
@@ -1638,21 +2018,31 @@ mod tests {
                         .find(|provenance| provenance.role == AgentRole::Judge)
                         .expect("judge provenance")
                         .clone();
-                    let verdict = if request.state.pass_index == 1 {
-                        DecisionVerdict::Material
-                    } else {
-                        DecisionVerdict::Minor
-                    };
-                    let finding = request.state.findings.last().expect("finding to judge");
+                    let (subject, verdict) = request.state.findings.last().map_or_else(
+                        || {
+                            (
+                                DecisionSubject::FindingSet {
+                                    finding_ids: Vec::new(),
+                                },
+                                DecisionVerdict::Converged,
+                            )
+                        },
+                        |finding| {
+                            (
+                                DecisionSubject::Finding {
+                                    finding_id: finding.id.clone(),
+                                },
+                                DecisionVerdict::Material,
+                            )
+                        },
+                    );
                     Ok(RunLaunchOutcome {
                         outcome: RunOutcome::Succeeded,
                         findings: Vec::new(),
                         decisions: vec![Decision {
                             contract_version: ContractVersion::current(),
                             id: format!("decision-pass-{}", request.state.pass_index),
-                            subject: DecisionSubject::Finding {
-                                finding_id: finding.id.clone(),
-                            },
+                            subject,
                             verdict,
                             rationale: "deterministic loop verdict".to_owned(),
                             provenance: judge,
@@ -1773,13 +2163,7 @@ mod tests {
             Ok(self
                 .states
                 .iter()
-                .find(|state| {
-                    state
-                        .extensions
-                        .get(EXT_RUNNING_RUN_ID)
-                        .and_then(Value::as_str)
-                        == Some(run_id.0.as_str())
-                })
+                .find(|state| state_records_run(state, run_id))
                 .cloned())
         }
 
@@ -1806,11 +2190,15 @@ mod tests {
     }
 
     fn facts() -> ForgeFacts {
+        facts_with_head("abc123")
+    }
+
+    fn facts_with_head(head_sha: &str) -> ForgeFacts {
         ForgeFacts {
             contract_version: ContractVersion::current(),
             pr: pr(),
             head: Revision {
-                sha: "abc123".to_owned(),
+                sha: head_sha.to_owned(),
             },
             base: Revision {
                 sha: "def456".to_owned(),
@@ -1851,12 +2239,21 @@ mod tests {
         AgentLaunchTarget {
             agent_id: AgentId(agent_id.to_owned()),
             role,
+            engine: engine_for_family(family),
             vendor: "local".to_owned(),
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
                 model: format!("{family}-2026"),
             },
+        }
+    }
+
+    fn engine_for_family(family: &str) -> AgentEngine {
+        match family {
+            "claude" => AgentEngine::Claude,
+            "codex" => AgentEngine::Codex,
+            _ => AgentEngine::Opencode,
         }
     }
 
@@ -1908,6 +2305,15 @@ mod tests {
                 judge: Some(target("judge", AgentRole::Judge, "gemini")),
                 finishers: Vec::new(),
             },
+        }
+    }
+
+    fn update_review_rule() -> TriggerRule {
+        TriggerRule {
+            criteria: Criteria::Event {
+                event: EventKind::PullRequestUpdated,
+            },
+            ..independent_rule()
         }
     }
 
@@ -2182,6 +2588,151 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_forge_event_dispatches_nothing_twice() {
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+
+        let first = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("first event");
+        let second = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("duplicate event");
+
+        assert!(matches!(
+            first.as_slice(),
+            [DispatchOutcome::Launched { .. }]
+        ));
+        assert_eq!(core.launcher.launched, 1);
+        assert_eq!(
+            second,
+            vec![DispatchOutcome::Skipped {
+                rule_id: "review".to_owned(),
+                reason: SkipReason::DuplicateDispatch,
+            }]
+        );
+    }
+
+    #[test]
+    fn moved_head_supersedes_running_state_and_stale_completion_posts_nothing() {
+        let old_run_id = RunId("event-1:review:1".to_owned());
+        let mut old_state = initial_state_from_event(&event()).expect("initial state");
+        old_state = mark_running(old_state, &event(), &independent_rule(), &old_run_id);
+        let mut store = FakeRunStateStore::default();
+        store.save(&old_state).expect("save old running state");
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            store,
+            RecordingForgeOperations::default(),
+        );
+        let moved = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "event-head-moved".to_owned(),
+            payload: EventPayload::PullRequestUpdated {
+                facts: facts_with_head("new-head-sha"),
+            },
+            extensions: BTreeMap::new(),
+        };
+
+        let moved_outcome = core
+            .process_event(&moved, &[update_review_rule()])
+            .expect("moved head event");
+        let stale_completion = core
+            .process_event(
+                &run_completed_event("old-review-completed", old_run_id, RunKind::Review),
+                &[judge_after_review_rule()],
+            )
+            .expect("stale completion");
+
+        assert!(matches!(
+            moved_outcome.as_slice(),
+            [DispatchOutcome::Launched { .. }]
+        ));
+        let old_saved = core
+            .state_store
+            .load(&RunStateKey {
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+            })
+            .expect("load old")
+            .expect("old state");
+        assert_eq!(old_saved.status, RunStatus::Superseded);
+        assert_eq!(old_saved.superseded_by, Some("new-head-sha".to_owned()));
+        assert_eq!(
+            stale_completion,
+            vec![DispatchOutcome::Skipped {
+                rule_id: "judge-after-review".to_owned(),
+                reason: SkipReason::SupersededHead,
+            }]
+        );
+        assert!(core.forge_operations.comments.is_empty());
+    }
+
+    #[test]
+    fn launch_failure_persists_failed_state_and_surfaces_comment() {
+        let mut launcher = FakeRunLauncher::new(vec![
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+        ]);
+        launcher.fail_launch = true;
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("launcher failure is returned");
+
+        assert!(matches!(error, CoreError::Launcher(message) if message == "launch failed"));
+        let saved = core
+            .state_store
+            .load(&RunStateKey {
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+            })
+            .expect("load state")
+            .expect("failed state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert!(
+            core.forge_operations.comments[0]
+                .body
+                .contains("launch failed")
+        );
+    }
+
+    #[test]
     fn workspace_is_cleaned_after_gate_refusal() {
         let mut core = Core::new(
             FakeEventSource::empty(),
@@ -2307,7 +2858,7 @@ mod tests {
 
         let no_fix = core
             .process_event(
-                &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+                &run_completed_event("judge-two-done", judge_two.clone(), RunKind::Judge),
                 &rules,
             )
             .expect("minor judge completion is processed");
@@ -2315,7 +2866,18 @@ mod tests {
         assert_eq!(
             core.forge_operations.comments.len(),
             1,
-            "pass-one material finding is not reposted after minor convergence"
+            "pass-one material finding is not reposted after convergence"
+        );
+        let converged = core
+            .state_store
+            .load_by_run_id(&judge_two)
+            .expect("load judge-two state")
+            .expect("judge-two state");
+        assert!(
+            Criteria::State {
+                state: StateCriterion::HasConverged
+            }
+            .matches(&event(), Some(&converged))
         );
 
         let finish_label = ContractEvent {
@@ -2611,6 +3173,38 @@ mod tests {
         assert!(
             Criteria::State {
                 state: StateCriterion::HasMaterialDecision
+            }
+            .matches(&event(), Some(&state))
+        );
+    }
+
+    #[test]
+    fn state_criteria_match_recorded_convergence_verdict() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.decisions.push(Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-converged".to_owned(),
+            subject: DecisionSubject::FindingSet {
+                finding_ids: Vec::new(),
+            },
+            verdict: DecisionVerdict::Converged,
+            rationale: "nothing material stands".to_owned(),
+            provenance: establish_provenance(
+                &target("judge", AgentRole::Judge, "gemini"),
+                PreparedAgent {
+                    agent_id: AgentId("judge".to_owned()),
+                    role: AgentRole::Judge,
+                    session_id: SessionId("judge-session".to_owned()),
+                    proof: LaunchProof::EstablishedFresh,
+                },
+                1,
+            ),
+            extensions: BTreeMap::new(),
+        });
+
+        assert!(
+            Criteria::State {
+                state: StateCriterion::HasConverged
             }
             .matches(&event(), Some(&state))
         );

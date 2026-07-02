@@ -20,8 +20,8 @@ use serde_json::Value;
 /// into new required fields.
 pub type Extensions = BTreeMap<String, Value>;
 
-/// The first public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 1 };
+/// The current public contract version for the review-and-fix service.
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 2 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -278,6 +278,7 @@ pub enum DecisionSubject {
 pub enum DecisionVerdict {
     Material,
     Minor,
+    Converged,
 }
 
 /// Durable per-PR run state keyed to a pull request and commit SHA.
@@ -286,8 +287,18 @@ pub struct PrRunState {
     pub contract_version: ContractVersion,
     pub pr: PullRequestRef,
     pub commit_sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_head_sha: Option<String>,
     pub pass_index: u32,
     pub status: RunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run: Option<RunRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run_history: Vec<RunRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loop_history: Vec<LoopPassRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     pub findings: Vec<Finding>,
     pub decisions: Vec<Decision>,
     pub patches: Vec<Patch>,
@@ -303,6 +314,35 @@ pub enum RunStatus {
     Running,
     Completed,
     Failed,
+    Superseded,
+}
+
+/// One launched run recorded inside the PR loop state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RunRecord {
+    pub run_id: RunId,
+    pub run_kind: RunKind,
+    pub event_id: String,
+    pub rule_id: String,
+    pub pass_index: u32,
+    pub commit_sha: String,
+    pub status: RunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<RunOutcome>,
+}
+
+/// Archived working set for one completed loop pass.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LoopPassRecord {
+    pub pass_index: u32,
+    pub commit_sha: String,
+    pub findings: Vec<Finding>,
+    pub decisions: Vec<Decision>,
+    pub patches: Vec<Patch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_verdict: Option<DecisionVerdict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_outcome: Option<RunOutcome>,
 }
 
 /// Optional runaway guard. `None` means the core has no ceiling enabled.
@@ -421,6 +461,7 @@ pub enum EventPayload {
 #[serde(rename_all = "snake_case")]
 pub enum RunOutcome {
     Succeeded,
+    NoOp,
     Failed,
     Cancelled,
 }
@@ -510,12 +551,12 @@ mod tests {
         ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
         CertaintyClass, Comment, CommentId, CommentPayload, CommentTarget, Confidence,
         ContractEvent, ContractVersion, Decision, DecisionSubject, DecisionVerdict, EventPayload,
-        Finding, FindingId, FindingLocation, FinishLabel, ForgeFacts, Mergeability, ModelFamily,
-        ModelLineage, ModelProvenance, Patch, PatchChange, PatchId, ProvenanceVerification,
-        PullRequestRef, ReviewCleanliness, Revision, RunCeiling, RunId, RunOutcome, RunStatus,
-        SessionFreshness, SessionId, Severity, SourceRange, has_two_verified_reviewer_families,
-        judge_independent_of_reviewers, merge_gate_clean_and_current,
-        reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
+        Finding, FindingId, FindingLocation, FinishLabel, ForgeFacts, LoopPassRecord, Mergeability,
+        ModelFamily, ModelLineage, ModelProvenance, Patch, PatchChange, PatchId,
+        ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision, RunCeiling, RunId,
+        RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
+        SourceRange, has_two_verified_reviewer_families, judge_independent_of_reviewers,
+        merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
     };
 
     fn round_trip<T>(value: &T)
@@ -668,8 +709,30 @@ mod tests {
             contract_version: version(),
             pr: pr(),
             commit_sha: "abc123".to_owned(),
+            current_head_sha: Some("abc123".to_owned()),
             pass_index: 1,
             status: RunStatus::Completed,
+            active_run: None,
+            run_history: vec![RunRecord {
+                run_id: RunId("run-review-1".to_owned()),
+                run_kind: RunKind::Review,
+                event_id: "event-1".to_owned(),
+                rule_id: "review".to_owned(),
+                pass_index: 1,
+                commit_sha: "abc123".to_owned(),
+                status: RunStatus::Completed,
+                outcome: Some(RunOutcome::Succeeded),
+            }],
+            loop_history: vec![LoopPassRecord {
+                pass_index: 1,
+                commit_sha: "abc123".to_owned(),
+                findings: vec![finding()],
+                decisions: vec![decision()],
+                patches: vec![patch()],
+                judge_verdict: Some(DecisionVerdict::Material),
+                fix_outcome: Some(RunOutcome::Succeeded),
+            }],
+            superseded_by: None,
             findings: vec![finding()],
             decisions: vec![decision()],
             patches: vec![patch()],
@@ -758,6 +821,29 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn older_run_state_payloads_default_to_empty_loop_controls() {
+        let payload = json!({
+            "contract_version": { "major": 1, "minor": 1 },
+            "pr": { "repository": "acme/widgets", "id": "42" },
+            "commit_sha": "abc123",
+            "pass_index": 1,
+            "status": "completed",
+            "findings": [],
+            "decisions": [],
+            "patches": [],
+            "ceiling": null
+        });
+
+        let state = serde_json::from_value::<super::PrRunState>(payload).expect("legacy state");
+
+        assert_eq!(state.current_head_sha, None);
+        assert_eq!(state.active_run, None);
+        assert!(state.run_history.is_empty());
+        assert!(state.loop_history.is_empty());
+        assert_eq!(state.superseded_by, None);
     }
 
     #[test]

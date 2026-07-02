@@ -8,7 +8,12 @@
     )
 )]
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use pump19_contract::{
     AgentId, AgentRole, CertaintyClass, Confidence, ContractVersion, Decision, DecisionSubject,
@@ -17,9 +22,12 @@ use pump19_contract::{
 };
 use pump19_core::{
     AgentLaunchSpec, CoreError, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher,
-    WorkspaceExecRequest, WorkspaceExecutor,
+    WorkspaceExecutor,
 };
-use pump19_judgement::{JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult};
+use pump19_judgement::{
+    JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult, judgement_prompt,
+    load_intent, load_judgement_briefs,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -28,7 +36,7 @@ const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_RAW_STDOUT: &str = "pump19.runs.raw_stdout";
 const EXT_RAW_STDERR: &str = "pump19.runs.raw_stderr";
 const EXT_MODEL_FAMILY: &str = "pump19.runs.model_family";
-const WORKSPACE_CWD: &str = "/workspace";
+const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 
 /// Errors raised while preparing sessions or executing run bodies.
 #[derive(Debug, Error)]
@@ -45,22 +53,22 @@ pub enum RunBodyError {
     MissingForgeFacts,
     #[error("invalid normalised forge facts: {0}")]
     InvalidForgeFacts(#[source] serde_json::Error),
-    #[error("command is empty")]
-    EmptyCommand,
-    #[error("workspace execution failed: {0}")]
-    Workspace(String),
-    #[error("command {program:?} failed: {stderr}")]
-    CommandFailed { program: String, stderr: String },
-    #[error("command {program:?} produced non-UTF-8 stdout")]
-    NonUtf8Stdout { program: String },
-    #[error("command {program:?} produced non-UTF-8 stderr")]
-    NonUtf8Stderr { program: String },
-    #[error("command {program:?} returned invalid JSON: {source}")]
-    CommandJson {
-        program: String,
+    #[error("ensemble workflow failed: {0}")]
+    Ensemble(String),
+    #[error("ensemble workflow returned invalid JSON: {0}")]
+    EnsembleJson(#[source] serde_json::Error),
+    #[error("ensemble archive is absent at {0}")]
+    MissingEnsembleArchive(String),
+    #[error("ensemble archive is ambiguous under {0}")]
+    AmbiguousEnsembleArchive(String),
+    #[error("ensemble archive is malformed at {path}: {source}")]
+    MalformedEnsembleArchive {
+        path: String,
         #[source]
         source: serde_json::Error,
     },
+    #[error("ensemble archive does not prove the authorised lineup: {0}")]
+    EnsembleArchiveMismatch(String),
 }
 
 /// Prepares a concrete agent session for a core-owned launch target.
@@ -131,6 +139,94 @@ pub trait FinishRunBody {
     ) -> Result<RunOutcome, RunBodyError>;
 }
 
+/// Runs a versioned ensemble workflow on the host and returns its JSON result.
+pub trait EnsembleWorkflowRunner {
+    /// Executes one workflow invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the workflow cannot start, times out, fails, or emits
+    /// output that cannot be reconciled by the caller.
+    fn run_workflow(
+        &mut self,
+        request: EnsembleWorkflowRequest,
+    ) -> Result<EnsembleWorkflowOutput, RunBodyError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnsembleWorkflowConfig {
+    pub script: PathBuf,
+    pub archive_root: PathBuf,
+    pub timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnsembleWorkflowRequest {
+    pub script: PathBuf,
+    pub args: Value,
+    pub archive_dir: PathBuf,
+    pub timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnsembleWorkflowOutput {
+    pub value: Value,
+    pub archive_dir: PathBuf,
+}
+
+/// Thin adapter for the prebuilt ensemble launcher.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostEnsembleWorkflowRunner {
+    node_program: PathBuf,
+    launcher_path: PathBuf,
+}
+
+impl HostEnsembleWorkflowRunner {
+    #[must_use]
+    pub fn new(node_program: impl Into<PathBuf>, launcher_path: impl Into<PathBuf>) -> Self {
+        Self {
+            node_program: node_program.into(),
+            launcher_path: launcher_path.into(),
+        }
+    }
+}
+
+impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
+    fn run_workflow(
+        &mut self,
+        request: EnsembleWorkflowRequest,
+    ) -> Result<EnsembleWorkflowOutput, RunBodyError> {
+        fs::create_dir_all(&request.archive_dir)
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        let json_args = serde_json::to_string(&request.args).map_err(RunBodyError::EnsembleJson)?;
+        let output = Command::new(&self.node_program)
+            .arg(&self.launcher_path)
+            .arg("--json-args")
+            .arg(json_args)
+            .arg("--timeout")
+            .arg(request.timeout_ms.to_string())
+            .arg(&request.script)
+            .env("ENSEMBLE_RUN_RECORD_DIR", &request.archive_dir)
+            .output()
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        let stderr = String::from_utf8(output.stderr)
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        if !output.status.success() {
+            return Err(RunBodyError::Ensemble(format!(
+                "launcher exited with {:?}: {stderr}",
+                output.status.code()
+            )));
+        }
+        let value = serde_json::from_str(&stdout).map_err(RunBodyError::EnsembleJson)?;
+        Ok(EnsembleWorkflowOutput {
+            value,
+            archive_dir: request.archive_dir,
+        })
+    }
+}
+
 /// `RunLauncher` implementation composed from narrow, testable run-body seams.
 #[derive(Debug)]
 pub struct Pump19RunLauncher<S, R, J, F, N> {
@@ -188,19 +284,29 @@ where
             RunKind::Judge => {
                 self.judge
                     .run_judge(&request, workspace)
-                    .map(|decisions| RunLaunchOutcome {
-                        outcome: RunOutcome::Succeeded,
-                        findings: Vec::new(),
-                        decisions,
-                        patches: Vec::new(),
-                        token_usage: None,
+                    .and_then(|mut decisions| {
+                        if decisions.is_empty() && request.state.findings.is_empty() {
+                            let provenance = provenance_for_role(&request, AgentRole::Judge)?;
+                            decisions.push(convergence_decision(&request, &provenance));
+                        }
+                        Ok(RunLaunchOutcome {
+                            outcome: RunOutcome::Succeeded,
+                            findings: Vec::new(),
+                            decisions,
+                            patches: Vec::new(),
+                            token_usage: None,
+                        })
                     })
             }
             RunKind::Fix => self
                 .fix
                 .run_fix(&request, workspace)
                 .map(|patches| RunLaunchOutcome {
-                    outcome: RunOutcome::Succeeded,
+                    outcome: if patches.is_empty() {
+                        RunOutcome::NoOp
+                    } else {
+                        RunOutcome::Succeeded
+                    },
                     findings: Vec::new(),
                     decisions: Vec::new(),
                     patches,
@@ -222,63 +328,105 @@ where
     }
 }
 
-/// Review body backed by the landed `pump19-judgement` crate.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct JudgementReviewBody;
+/// Review body backed by a host-side ensemble workflow.
+#[derive(Clone, Debug)]
+pub struct EnsembleReviewBody<R> {
+    runner: R,
+    config: EnsembleWorkflowConfig,
+}
 
-impl ReviewRunBody for JudgementReviewBody {
+impl<R> EnsembleReviewBody<R> {
+    #[must_use]
+    pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
+        Self { runner, config }
+    }
+}
+
+impl<R> ReviewRunBody for EnsembleReviewBody<R>
+where
+    R: EnsembleWorkflowRunner,
+{
     fn run_review(
         &mut self,
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Finding>, RunBodyError> {
+        let _ = workspace;
+        let intent = load_intent(&request.workspace.root)?;
+        let brief_inputs = load_judgement_briefs(&request.workspace.root)?
+            .into_iter()
+            .map(|brief| {
+                let prompt = judgement_prompt(&request.workspace.root, &intent, &brief)?;
+                Ok(json!({
+                    "id": brief.id,
+                    "title": brief.title,
+                    "prompt": prompt,
+                }))
+            })
+            .collect::<Result<Vec<_>, RunBodyError>>()?;
+        let reviewers = expected_targets(request, AgentRole::Reviewer)?;
         let input = json!({
             "run_id": request.run_id,
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
+            "workspace_root": request.workspace.root,
+            "reviewers": reviewers,
+            "briefs": brief_inputs,
         });
-        let run = run_workspace_json_command::<JudgementRun>(
-            workspace,
-            request,
-            &["pump19-judgement-run".to_owned()],
-            &input,
-        )?;
+        let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
+        reconcile_ensemble_archive(&output.archive_dir, &reviewers)?;
+        let run = serde_json::from_value::<JudgementRun>(output.value)
+            .map_err(RunBodyError::EnsembleJson)?;
         findings_from_judgement(request, &run)
     }
 }
 
-/// Significance judge body backed by an external JSON command.
+/// Significance judge body backed by a host-side ensemble workflow.
 #[derive(Clone, Debug)]
-pub struct JsonCommandJudgeBody {
-    command: Vec<String>,
+pub struct EnsembleJudgeBody<R> {
+    runner: R,
+    config: EnsembleWorkflowConfig,
 }
 
-impl JsonCommandJudgeBody {
+impl<R> EnsembleJudgeBody<R> {
     #[must_use]
-    pub const fn new(command: Vec<String>) -> Self {
-        Self { command }
+    pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
+        Self { runner, config }
     }
 }
 
-impl JudgeRunBody for JsonCommandJudgeBody {
+impl<R> JudgeRunBody for EnsembleJudgeBody<R>
+where
+    R: EnsembleWorkflowRunner,
+{
     fn run_judge(
         &mut self,
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Decision>, RunBodyError> {
+        let _ = workspace;
+        let targets = expected_targets(request, AgentRole::Judge)?;
         let provenance = provenance_for_role(request, AgentRole::Judge)?;
         let input = json!({
             "run_id": request.run_id,
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
+            "workspace_root": request.workspace.root,
+            "judges": targets,
+            "pass_count": request.state.pass_index,
+            "current_findings": request.state.findings,
             "findings": request.state.findings,
+            "prior_verdicts": prior_judge_verdicts(request),
+            "fix_outcomes": prior_fix_outcomes(request),
+            "loop_history": request.state.loop_history,
         });
-        let outputs = run_workspace_json_command::<Vec<JudgeDecisionOutput>>(
-            workspace,
-            request,
-            &self.command,
-            &input,
-        )?;
+        let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
+        reconcile_ensemble_archive(&output.archive_dir, &targets)?;
+        let outputs = serde_json::from_value::<Vec<JudgeDecisionOutput>>(output.value)
+            .map_err(RunBodyError::EnsembleJson)?;
+        if outputs.is_empty() && request.state.findings.is_empty() {
+            return Ok(vec![convergence_decision(request, &provenance)]);
+        }
         Ok(outputs
             .into_iter()
             .map(|output| output.into_decision(&request.run_id, &provenance))
@@ -286,38 +434,48 @@ impl JudgeRunBody for JsonCommandJudgeBody {
     }
 }
 
-/// Fix body backed by an external JSON command.
+/// Fix body backed by a host-side ensemble workflow.
 #[derive(Clone, Debug)]
-pub struct JsonCommandFixBody {
-    command: Vec<String>,
+pub struct EnsembleFixBody<R> {
+    runner: R,
+    config: EnsembleWorkflowConfig,
 }
 
-impl JsonCommandFixBody {
+impl<R> EnsembleFixBody<R> {
     #[must_use]
-    pub const fn new(command: Vec<String>) -> Self {
-        Self { command }
+    pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
+        Self { runner, config }
     }
 }
 
-impl FixRunBody for JsonCommandFixBody {
+impl<R> FixRunBody for EnsembleFixBody<R>
+where
+    R: EnsembleWorkflowRunner,
+{
     fn run_fix(
         &mut self,
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Patch>, RunBodyError> {
+        let _ = workspace;
         let findings = material_findings(request);
         if findings.is_empty() {
             return Ok(Vec::new());
         }
+        let targets = expected_targets(request, AgentRole::Fixer)?;
         let provenance = provenance_for_role(request, AgentRole::Fixer)?;
         let input = json!({
             "run_id": request.run_id,
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
+            "workspace_root": request.workspace.root,
+            "fixers": targets,
             "material_findings": findings,
         });
-        let change =
-            run_workspace_json_command::<PatchChange>(workspace, request, &self.command, &input)?;
+        let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
+        reconcile_ensemble_archive(&output.archive_dir, &targets)?;
+        let change = serde_json::from_value::<PatchChange>(output.value)
+            .map_err(RunBodyError::EnsembleJson)?;
         Ok(vec![patch_from_change(
             request, findings, change, provenance,
         )])
@@ -363,6 +521,38 @@ impl JudgeDecisionOutput {
             extensions: BTreeMap::new(),
         }
     }
+}
+
+fn convergence_decision(request: &RunLaunchRequest, provenance: &ModelProvenance) -> Decision {
+    Decision {
+        contract_version: ContractVersion::current(),
+        id: stable_id("decision-converged", [request.run_id.0.as_str()]),
+        subject: DecisionSubject::FindingSet {
+            finding_ids: Vec::new(),
+        },
+        verdict: DecisionVerdict::Converged,
+        rationale: "No material findings remain for the current pass.".to_owned(),
+        provenance: provenance.clone(),
+        extensions: BTreeMap::new(),
+    }
+}
+
+fn prior_judge_verdicts(request: &RunLaunchRequest) -> Vec<DecisionVerdict> {
+    request
+        .state
+        .loop_history
+        .iter()
+        .filter_map(|pass| pass.judge_verdict)
+        .collect()
+}
+
+fn prior_fix_outcomes(request: &RunLaunchRequest) -> Vec<RunOutcome> {
+    request
+        .state
+        .loop_history
+        .iter()
+        .filter_map(|pass| pass.fix_outcome)
+        .collect()
 }
 
 fn findings_from_judgement(
@@ -492,6 +682,274 @@ fn patch_from_change(
     }
 }
 
+fn run_ensemble_workflow(
+    runner: &mut dyn EnsembleWorkflowRunner,
+    config: &EnsembleWorkflowConfig,
+    request: &RunLaunchRequest,
+    args: Value,
+) -> Result<EnsembleWorkflowOutput, RunBodyError> {
+    let archive_dir = config
+        .archive_root
+        .join(safe_path_segment(&request.run_id.0));
+    runner.run_workflow(EnsembleWorkflowRequest {
+        script: config.script.clone(),
+        args,
+        archive_dir,
+        timeout_ms: config.timeout_ms,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ExpectedAgentTarget {
+    agent_id: AgentId,
+    role: AgentRole,
+    engine: String,
+    model_family: String,
+    model: String,
+}
+
+fn expected_targets(
+    request: &RunLaunchRequest,
+    role: AgentRole,
+) -> Result<Vec<ExpectedAgentTarget>, RunBodyError> {
+    request
+        .provenance
+        .iter()
+        .filter(|provenance| provenance.role == role)
+        .map(expected_target)
+        .collect()
+}
+
+fn expected_target(provenance: &ModelProvenance) -> Result<ExpectedAgentTarget, RunBodyError> {
+    let engine = provenance
+        .extensions
+        .get(EXT_AGENT_ENGINE)
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            RunBodyError::EnsembleArchiveMismatch(format!(
+                "missing engine for authorised agent {}",
+                provenance.agent_id.0
+            ))
+        })?
+        .to_owned();
+    let pump19_contract::ProvenanceVerification::Verified { lineage, .. } =
+        &provenance.verification
+    else {
+        return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+            "authorised agent {} is not verified",
+            provenance.agent_id.0
+        )));
+    };
+    Ok(ExpectedAgentTarget {
+        agent_id: provenance.agent_id.clone(),
+        role: provenance.role,
+        engine,
+        model_family: lineage.family.0.clone(),
+        model: lineage.model.clone(),
+    })
+}
+
+fn reconcile_ensemble_archive(
+    archive_dir: &Path,
+    expected_targets: &[ExpectedAgentTarget],
+) -> Result<EnsembleArchiveEvidence, RunBodyError> {
+    let manifest_path = find_single_manifest(archive_dir)?;
+    let manifest_text = fs::read_to_string(&manifest_path)
+        .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+    let manifest =
+        serde_json::from_str::<EnsembleRunManifest>(&manifest_text).map_err(|source| {
+            RunBodyError::MalformedEnsembleArchive {
+                path: manifest_path.display().to_string(),
+                source,
+            }
+        })?;
+    if manifest.status != "complete" || manifest.result.exit_code != 0 {
+        return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+            "archive status {:?} with exit code {}",
+            manifest.status, manifest.result.exit_code
+        )));
+    }
+
+    let run_dir = manifest_path
+        .parent()
+        .ok_or_else(|| RunBodyError::MissingEnsembleArchive(archive_dir.display().to_string()))?;
+    let agent_paths = manifest
+        .files
+        .iter()
+        .filter(|file| {
+            file.path
+                .file_name()
+                .is_some_and(|name| name == "agent.json")
+        })
+        .map(|file| run_dir.join(&file.path))
+        .collect::<Vec<_>>();
+    if agent_paths.is_empty() && !expected_targets.is_empty() {
+        return Err(RunBodyError::EnsembleArchiveMismatch(
+            "archive contains no agent records".to_owned(),
+        ));
+    }
+
+    let mut seen = BTreeSet::new();
+    for path in agent_paths {
+        let text =
+            fs::read_to_string(&path).map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        let record = serde_json::from_str::<EnsembleAgentRecord>(&text).map_err(|source| {
+            RunBodyError::MalformedEnsembleArchive {
+                path: path.display().to_string(),
+                source,
+            }
+        })?;
+        let target = expected_for_record(&record, expected_targets)?;
+        if record.status != "complete" {
+            return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                "agent {} ended with status {}",
+                target.agent_id.0, record.status
+            )));
+        }
+        if record.validated_output.is_none() {
+            return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                "agent {} has no schema-validated output",
+                target.agent_id.0
+            )));
+        }
+        if record.engine != target.engine {
+            return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                "agent {} ran engine {} instead of {}",
+                target.agent_id.0, record.engine, target.engine
+            )));
+        }
+        let actual_model = record.resolved_model.as_ref().or(record.model.as_ref());
+        if actual_model != Some(&target.model) {
+            return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                "agent {} ran model {:?} instead of {}",
+                target.agent_id.0, actual_model, target.model
+            )));
+        }
+        seen.insert(target.agent_id.0.clone());
+    }
+
+    for expected in expected_targets {
+        if !seen.contains(&expected.agent_id.0) {
+            return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                "authorised agent {} did not run",
+                expected.agent_id.0
+            )));
+        }
+    }
+
+    Ok(EnsembleArchiveEvidence {
+        archive_dir: archive_dir.to_path_buf(),
+        run_id: manifest.run_id,
+        agents: seen.into_iter().collect(),
+    })
+}
+
+fn expected_for_record<'a>(
+    record: &EnsembleAgentRecord,
+    expected_targets: &'a [ExpectedAgentTarget],
+) -> Result<&'a ExpectedAgentTarget, RunBodyError> {
+    let Some(label) = record.label.as_deref() else {
+        return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+            "agent record {} has no label",
+            record.id
+        )));
+    };
+    let agent_id = label.split(':').next().unwrap_or(label);
+    expected_targets
+        .iter()
+        .find(|target| target.agent_id.0 == agent_id)
+        .ok_or_else(|| {
+            RunBodyError::EnsembleArchiveMismatch(format!(
+                "archive contains unauthorised agent label {label:?}"
+            ))
+        })
+}
+
+fn find_single_manifest(root: &Path) -> Result<PathBuf, RunBodyError> {
+    let mut manifests = Vec::new();
+    collect_manifest_paths(root, &mut manifests)?;
+    match manifests.as_slice() {
+        [] => Err(RunBodyError::MissingEnsembleArchive(
+            root.display().to_string(),
+        )),
+        [manifest] => Ok(manifest.clone()),
+        _ => Err(RunBodyError::AmbiguousEnsembleArchive(
+            root.display().to_string(),
+        )),
+    }
+}
+
+fn collect_manifest_paths(root: &Path, paths: &mut Vec<PathBuf>) -> Result<(), RunBodyError> {
+    if !root.exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(root).map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?
+            .path();
+        if path.is_dir() {
+            collect_manifest_paths(&path, paths)?;
+        } else if path.file_name().is_some_and(|name| name == "manifest.json") {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn safe_path_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnsembleArchiveEvidence {
+    pub archive_dir: PathBuf,
+    pub run_id: String,
+    pub agents: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnsembleRunManifest {
+    files: Vec<EnsembleArchiveFile>,
+    result: EnsembleArchiveResult,
+    run_id: String,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnsembleArchiveFile {
+    path: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnsembleArchiveResult {
+    exit_code: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnsembleAgentRecord {
+    id: u64,
+    engine: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    resolved_model: Option<String>,
+    status: String,
+    #[serde(default)]
+    validated_output: Option<Value>,
+}
+
 fn forge_facts(request: &RunLaunchRequest) -> Result<ForgeFacts, RunBodyError> {
     let value = request
         .state
@@ -547,62 +1005,22 @@ fn stable_id<'a>(prefix: &str, parts: impl IntoIterator<Item = &'a str>) -> Stri
     format!("{prefix}-{hash:016x}")
 }
 
-fn run_workspace_json_command<T>(
-    workspace: &mut dyn WorkspaceExecutor,
-    request: &RunLaunchRequest,
-    command: &[String],
-    input: &Value,
-) -> Result<T, RunBodyError>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let (program, args) = command.split_first().ok_or(RunBodyError::EmptyCommand)?;
-    let mut stdin = serde_json::to_vec(input).map_err(|source| RunBodyError::CommandJson {
-        program: program.clone(),
-        source,
-    })?;
-    stdin.push(b'\n');
-    let output = workspace
-        .exec(
-            &request.workspace,
-            WorkspaceExecRequest {
-                program: program.clone(),
-                args: args.to_vec(),
-                stdin,
-                env_delta: BTreeMap::new(),
-                cwd_inside_container: WORKSPACE_CWD.to_owned(),
-            },
-        )
-        .map_err(|error| RunBodyError::Workspace(error.to_string()))?;
-    let success = output.success();
-    let stdout = String::from_utf8(output.stdout).map_err(|_| RunBodyError::NonUtf8Stdout {
-        program: program.clone(),
-    })?;
-    let stderr = String::from_utf8(output.stderr).map_err(|_| RunBodyError::NonUtf8Stderr {
-        program: program.clone(),
-    })?;
-    if !success {
-        return Err(RunBodyError::CommandFailed {
-            program: program.clone(),
-            stderr,
-        });
-    }
-    serde_json::from_str(&stdout).map_err(|source| RunBodyError::CommandJson {
-        program: program.clone(),
-        source,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, path::PathBuf};
+    use std::{
+        collections::VecDeque,
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use pump19_contract::{
-        DecisionSubject, ModelFamily, ModelLineage, ProvenanceVerification, PullRequestRef,
-        RunStatus, SessionFreshness, SessionId,
+        DecisionSubject, LoopPassRecord, ModelFamily, ModelLineage, ProvenanceVerification,
+        PullRequestRef, RunStatus, SessionFreshness, SessionId,
     };
-    use pump19_core::{LaunchProof, WorkspaceExecOutput, WorkspaceIsolation, WorkspaceLease};
-    use pump19_judgement::ReviewerResult;
+    use pump19_core::{
+        LaunchProof, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation, WorkspaceLease,
+    };
+    use pump19_judgement::{ReviewerResult, install_standalone};
     use serde_json::json;
 
     use super::*;
@@ -611,19 +1029,6 @@ mod tests {
     struct FakeWorkspace {
         outputs: VecDeque<WorkspaceExecOutput>,
         execs: Vec<WorkspaceExecRequest>,
-    }
-
-    impl FakeWorkspace {
-        fn with_stdout(stdout: impl Into<Vec<u8>>) -> Self {
-            Self {
-                outputs: VecDeque::from([WorkspaceExecOutput {
-                    exit_code: 0,
-                    stdout: stdout.into(),
-                    stderr: Vec::new(),
-                }]),
-                execs: Vec::new(),
-            }
-        }
     }
 
     impl WorkspaceExecutor for FakeWorkspace {
@@ -641,6 +1046,60 @@ mod tests {
                     stdout: b"[]".to_vec(),
                     stderr: Vec::new(),
                 }))
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ArchiveAgentFixture {
+        label: String,
+        engine: String,
+        model: String,
+        status: String,
+        validated_output: Option<Value>,
+    }
+
+    #[derive(Debug)]
+    struct FakeEnsembleRunner {
+        value: Value,
+        agents: Vec<ArchiveAgentFixture>,
+        requests: Vec<EnsembleWorkflowRequest>,
+    }
+
+    impl FakeEnsembleRunner {
+        fn new(value: Value, agents: Vec<ArchiveAgentFixture>) -> Self {
+            Self {
+                value,
+                agents,
+                requests: Vec::new(),
+            }
+        }
+    }
+
+    impl EnsembleWorkflowRunner for FakeEnsembleRunner {
+        fn run_workflow(
+            &mut self,
+            request: EnsembleWorkflowRequest,
+        ) -> Result<EnsembleWorkflowOutput, RunBodyError> {
+            write_archive(&request.archive_dir, &self.agents);
+            self.requests.push(request.clone());
+            Ok(EnsembleWorkflowOutput {
+                value: self.value.clone(),
+                archive_dir: request.archive_dir,
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingEnsembleRunner {
+        message: String,
+    }
+
+    impl EnsembleWorkflowRunner for FailingEnsembleRunner {
+        fn run_workflow(
+            &mut self,
+            _request: EnsembleWorkflowRequest,
+        ) -> Result<EnsembleWorkflowOutput, RunBodyError> {
+            Err(RunBodyError::Ensemble(self.message.clone()))
         }
     }
 
@@ -718,6 +1177,9 @@ mod tests {
         ) -> Result<Vec<Patch>, RunBodyError> {
             let provenance = provenance_for_role(request, AgentRole::Fixer)?;
             let findings = material_findings(request);
+            if findings.is_empty() {
+                return Ok(Vec::new());
+            }
             Ok(vec![patch_from_change(
                 request,
                 findings,
@@ -730,6 +1192,11 @@ mod tests {
     }
 
     fn provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelProvenance {
+        let mut extensions = BTreeMap::new();
+        extensions.insert(
+            EXT_AGENT_ENGINE.to_owned(),
+            Value::String(engine_for_family(family).to_owned()),
+        );
         ModelProvenance {
             contract_version: ContractVersion::current(),
             agent_id: AgentId(agent_id.to_owned()),
@@ -744,7 +1211,7 @@ mod tests {
                     model: format!("{family}-2026"),
                 },
             },
-            extensions: BTreeMap::new(),
+            extensions,
         }
     }
 
@@ -769,8 +1236,13 @@ mod tests {
                     id: "42".to_owned(),
                 },
                 commit_sha: "abc123".to_owned(),
+                current_head_sha: Some("abc123".to_owned()),
                 pass_index: 1,
                 status: RunStatus::Running,
+                active_run: None,
+                run_history: Vec::new(),
+                loop_history: Vec::new(),
+                superseded_by: None,
                 findings: Vec::new(),
                 decisions: Vec::new(),
                 patches: Vec::new(),
@@ -811,6 +1283,75 @@ mod tests {
         }
     }
 
+    fn engine_for_family(family: &str) -> &'static str {
+        match family {
+            "claude" => "claude",
+            "codex" => "codex",
+            _ => "opencode",
+        }
+    }
+
+    fn archive_agent(agent_id: &str, family: &str) -> ArchiveAgentFixture {
+        ArchiveAgentFixture {
+            label: format!("{agent_id}:purpose"),
+            engine: engine_for_family(family).to_owned(),
+            model: format!("{family}-2026"),
+            status: "complete".to_owned(),
+            validated_output: Some(json!({"ok": true})),
+        }
+    }
+
+    fn ensemble_config(root: &Path) -> EnsembleWorkflowConfig {
+        EnsembleWorkflowConfig {
+            script: root.join("workflow.js"),
+            archive_root: root.join("archives"),
+            timeout_ms: 5_000,
+        }
+    }
+
+    fn write_archive(root: &Path, agents: &[ArchiveAgentFixture]) {
+        let run_dir = root.join("runs/cwd/test/test-run");
+        fs::create_dir_all(run_dir.join("agents")).expect("create archive agents");
+        let files = agents
+            .iter()
+            .enumerate()
+            .map(|(index, agent)| {
+                let agent_dir = run_dir.join(format!("agents/{:06}", index + 1));
+                fs::create_dir_all(&agent_dir).expect("create agent dir");
+                let path = format!("agents/{:06}/agent.json", index + 1);
+                let record = json!({
+                    "id": index + 1,
+                    "kind": "agent_record",
+                    "engine": agent.engine,
+                    "label": agent.label,
+                    "model": agent.model,
+                    "resolved_model": agent.model,
+                    "status": agent.status,
+                    "validated_output": agent.validated_output,
+                });
+                fs::write(
+                    agent_dir.join("agent.json"),
+                    serde_json::to_string_pretty(&record).expect("serialise agent"),
+                )
+                .expect("write agent");
+                json!({"path": path, "sha256": "fixture", "size": 1})
+            })
+            .collect::<Vec<_>>();
+        let manifest = json!({
+            "kind": "run_manifest",
+            "schema_version": 1,
+            "status": "complete",
+            "run_id": "cwd:test:test-run",
+            "result": {"archive_path": "result.json", "exit_code": 0},
+            "files": files,
+        });
+        fs::write(
+            run_dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).expect("serialise manifest"),
+        )
+        .expect("write manifest");
+    }
+
     #[test]
     fn review_maps_failed_judgement_to_advisory_finding() {
         let mut req = request(
@@ -846,12 +1387,22 @@ mod tests {
     }
 
     #[test]
-    fn review_body_executes_judgement_inside_workspace() {
+    fn review_body_runs_host_ensemble_and_reconciles_archive() {
+        let root = tempfile::tempdir().expect("workspace root");
+        install_standalone(
+            root.path(),
+            "sample",
+            "Sample",
+            "Prove ensemble review body",
+            None,
+        )
+        .expect("install judgement files");
         let mut req = request(
             RunKind::Review,
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.run_id = RunId("review-run".to_owned());
+        req.workspace.root = root.path().to_path_buf();
         let run = JudgementRun {
             status: JudgementStatus::Failed,
             model_families: vec!["codex".to_owned()],
@@ -867,18 +1418,144 @@ mod tests {
                 }],
             }],
         };
-        let stdout = serde_json::to_vec(&run).expect("serialise judgement run");
-        let mut workspace = FakeWorkspace::with_stdout(stdout);
-        let mut body = JudgementReviewBody;
+        let value = serde_json::to_value(run).expect("serialise judgement run");
+        let runner = FakeEnsembleRunner::new(value, vec![archive_agent("reviewer-codex", "codex")]);
+        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
 
         let findings = body
             .run_review(&req, &mut workspace)
-            .expect("review body uses executor");
+            .expect("review body uses ensemble");
 
         assert_eq!(findings.len(), 1);
-        assert_eq!(workspace.execs.len(), 1);
-        assert_eq!(workspace.execs[0].program, "pump19-judgement-run");
-        assert_eq!(workspace.execs[0].cwd_inside_container, WORKSPACE_CWD);
+        assert!(workspace.execs.is_empty());
+        assert_eq!(body.runner.requests.len(), 1);
+        assert!(body.runner.requests[0].archive_dir.ends_with("review-run"));
+    }
+
+    #[test]
+    fn review_body_fails_closed_on_malformed_workflow_output() {
+        let root = tempfile::tempdir().expect("workspace root");
+        install_standalone(
+            root.path(),
+            "sample",
+            "Sample",
+            "Prove malformed output",
+            None,
+        )
+        .expect("install judgement files");
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let runner = FakeEnsembleRunner::new(
+            json!({"not": "a judgement run"}),
+            vec![archive_agent("reviewer-codex", "codex")],
+        );
+        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("malformed output fails closed");
+
+        assert!(matches!(error, RunBodyError::EnsembleJson(_)));
+    }
+
+    #[test]
+    fn archive_schema_null_output_fails_closed() {
+        let root = tempfile::tempdir().expect("workspace root");
+        install_standalone(root.path(), "sample", "Sample", "Prove null archive", None)
+            .expect("install judgement files");
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let mut agent = archive_agent("reviewer-codex", "codex");
+        agent.validated_output = None;
+        let runner = FakeEnsembleRunner::new(
+            serde_json::to_value(JudgementRun {
+                status: JudgementStatus::Passed,
+                model_families: vec!["codex".to_owned()],
+                briefs: Vec::new(),
+            })
+            .expect("serialise judgement run"),
+            vec![agent],
+        );
+        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("schema-null archive fails closed");
+
+        assert!(
+            matches!(error, RunBodyError::EnsembleArchiveMismatch(message) if message.contains("schema-validated"))
+        );
+    }
+
+    #[test]
+    fn archive_engine_mismatch_fails_closed() {
+        let root = tempfile::tempdir().expect("workspace root");
+        install_standalone(
+            root.path(),
+            "sample",
+            "Sample",
+            "Prove mismatch archive",
+            None,
+        )
+        .expect("install judgement files");
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let mut agent = archive_agent("reviewer-codex", "codex");
+        agent.engine = "claude".to_owned();
+        let runner = FakeEnsembleRunner::new(
+            serde_json::to_value(JudgementRun {
+                status: JudgementStatus::Passed,
+                model_families: vec!["codex".to_owned()],
+                briefs: Vec::new(),
+            })
+            .expect("serialise judgement run"),
+            vec![agent],
+        );
+        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("engine mismatch fails closed");
+
+        assert!(
+            matches!(error, RunBodyError::EnsembleArchiveMismatch(message) if message.contains("ran engine"))
+        );
+    }
+
+    #[test]
+    fn workflow_timeout_error_fails_closed() {
+        let root = tempfile::tempdir().expect("workspace root");
+        install_standalone(root.path(), "sample", "Sample", "Prove timeout", None)
+            .expect("install judgement files");
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let runner = FailingEnsembleRunner {
+            message: "workflow timed out".to_owned(),
+        };
+        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("timeout fails closed");
+
+        assert!(matches!(error, RunBodyError::Ensemble(message) if message.contains("timed out")));
     }
 
     #[test]
@@ -908,6 +1585,98 @@ mod tests {
         assert_eq!(outcome.outcome, RunOutcome::Succeeded);
         assert_eq!(outcome.decisions.len(), 1);
         assert_eq!(outcome.decisions[0].verdict, DecisionVerdict::Material);
+    }
+
+    #[test]
+    fn judge_workflow_receives_loop_history_without_stale_findings_as_current() {
+        let root = tempfile::tempdir().expect("judge root");
+        let mut req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "gemini")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let stale = finding();
+        req.state.loop_history.push(LoopPassRecord {
+            pass_index: 1,
+            commit_sha: "old-sha".to_owned(),
+            findings: vec![stale.clone()],
+            decisions: vec![Decision {
+                contract_version: ContractVersion::current(),
+                id: "decision-old".to_owned(),
+                subject: DecisionSubject::Finding {
+                    finding_id: stale.id,
+                },
+                verdict: DecisionVerdict::Material,
+                rationale: "was material".to_owned(),
+                provenance: provenance("judge-old", AgentRole::Judge, "gemini"),
+                extensions: BTreeMap::new(),
+            }],
+            patches: Vec::new(),
+            judge_verdict: Some(DecisionVerdict::Material),
+            fix_outcome: Some(RunOutcome::Succeeded),
+        });
+        req.state.pass_index = 2;
+        req.state.findings.push(finding());
+        let runner = FakeEnsembleRunner::new(
+            json!([{"finding_id":"finding-1","verdict":"minor","rationale":"below threshold"}]),
+            vec![archive_agent("judge", "gemini")],
+        );
+        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let decisions = judge.run_judge(&req, &mut workspace).expect("judge");
+
+        assert_eq!(decisions.len(), 1);
+        let workflow_args = &judge.runner.requests[0].args;
+        assert_eq!(workflow_args["pass_count"], json!(2));
+        assert_eq!(
+            workflow_args["current_findings"]
+                .as_array()
+                .expect("current")
+                .len(),
+            1
+        );
+        assert_eq!(
+            workflow_args["findings"].as_array().expect("compat").len(),
+            1
+        );
+        assert_eq!(
+            workflow_args["loop_history"]
+                .as_array()
+                .expect("history")
+                .len(),
+            1
+        );
+        assert_eq!(workflow_args["prior_verdicts"], json!(["material"]));
+        assert_eq!(workflow_args["fix_outcomes"], json!(["succeeded"]));
+    }
+
+    #[test]
+    fn judge_run_with_no_current_findings_records_convergence() {
+        let req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "gemini")],
+        );
+        let mut launcher = Pump19RunLauncher::new(
+            FakeSessions,
+            FakeReview {
+                findings: Vec::new(),
+            },
+            FakeJudge {
+                verdict: DecisionVerdict::Material,
+            },
+            FakeFix,
+            MergeGateFinishBody,
+        );
+        let mut workspace = FakeWorkspace::default();
+
+        let outcome = launcher
+            .launch_run(req, &mut workspace)
+            .expect("launch judge");
+
+        assert_eq!(outcome.outcome, RunOutcome::Succeeded);
+        assert_eq!(outcome.decisions.len(), 1);
+        assert_eq!(outcome.decisions[0].verdict, DecisionVerdict::Converged);
     }
 
     #[test]
@@ -954,6 +1723,33 @@ mod tests {
     }
 
     #[test]
+    fn fix_run_that_executes_without_material_findings_is_no_op() {
+        let req = request(
+            RunKind::Fix,
+            vec![provenance("fixer", AgentRole::Fixer, "codex")],
+        );
+        let mut launcher = Pump19RunLauncher::new(
+            FakeSessions,
+            FakeReview {
+                findings: Vec::new(),
+            },
+            FakeJudge {
+                verdict: DecisionVerdict::Minor,
+            },
+            FakeFix,
+            MergeGateFinishBody,
+        );
+        let mut workspace = FakeWorkspace::default();
+
+        let outcome = launcher
+            .launch_run(req, &mut workspace)
+            .expect("launch fix");
+
+        assert_eq!(outcome.outcome, RunOutcome::NoOp);
+        assert!(outcome.patches.is_empty());
+    }
+
+    #[test]
     fn finish_uses_contract_clean_and_current_gate_without_forge_side_effects() {
         let mut req = request(RunKind::Finish, Vec::new());
         req.state.extensions.insert(
@@ -976,37 +1772,5 @@ mod tests {
         let outcome = finish.run_finish(&req, &mut workspace).expect("finish");
 
         assert_eq!(outcome, RunOutcome::Succeeded);
-    }
-
-    #[test]
-    fn json_command_fix_body_reads_patch_change_from_stdout() {
-        let mut req = request(
-            RunKind::Fix,
-            vec![provenance("fixer", AgentRole::Fixer, "codex")],
-        );
-        req.state.findings.push(finding());
-        req.state.decisions.push(Decision {
-            contract_version: ContractVersion::current(),
-            id: "decision-1".to_owned(),
-            subject: DecisionSubject::Finding {
-                finding_id: FindingId("finding-1".to_owned()),
-            },
-            verdict: DecisionVerdict::Material,
-            rationale: "worth fixing".to_owned(),
-            provenance: provenance("judge", AgentRole::Judge, "gemini"),
-            extensions: BTreeMap::new(),
-        });
-        let mut fix = JsonCommandFixBody::new(vec!["fix-json".to_owned()]);
-        let mut workspace =
-            FakeWorkspace::with_stdout(r#"{"kind":"description","summary":"fixed"}"#);
-
-        let patches = fix.run_fix(&req, &mut workspace).expect("fix");
-
-        assert!(matches!(
-            patches[0].change,
-            PatchChange::Description { ref summary } if summary == "fixed"
-        ));
-        assert_eq!(workspace.execs[0].program, "fix-json");
-        assert_eq!(workspace.execs[0].cwd_inside_container, WORKSPACE_CWD);
     }
 }
