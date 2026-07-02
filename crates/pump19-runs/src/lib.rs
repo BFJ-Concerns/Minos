@@ -645,14 +645,7 @@ fn finding_from_review(
     let summary = first_line(&review.stdout)
         .or_else(|| first_line(&review.stderr))
         .unwrap_or_else(|| format!("Judgement brief {} failed.", brief.brief_id));
-    let dedup_key = stable_id(
-        "judgement",
-        [
-            brief.brief_id.as_str(),
-            review.agent_id.as_str(),
-            summary.as_str(),
-        ],
-    );
+    let dedup_key = finding_dedup_key(brief);
     let mut extensions = Extensions::new();
     extensions.insert(
         EXT_RAW_STDOUT.to_owned(),
@@ -690,6 +683,10 @@ fn finding_from_review(
         }],
         extensions,
     })
+}
+
+fn finding_dedup_key(brief: &JudgementBriefResult) -> String {
+    stable_id("judgement", [brief.brief_id.as_str(), "general"])
 }
 
 fn material_findings(request: &RunLaunchRequest) -> Vec<&Finding> {
@@ -1474,6 +1471,44 @@ mod tests {
             AgentId("reviewer-codex".to_owned())
         );
         assert_eq!(findings[0].source_brief, "purpose");
+    }
+
+    #[test]
+    fn review_finding_dedup_key_is_stable_across_reviewer_rewording() {
+        let mut first = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        first.run_id = RunId("review-run-1".to_owned());
+        let mut second = first.clone();
+        second.run_id = RunId("review-run-2".to_owned());
+        let run = |stdout: &str| JudgementRun {
+            status: JudgementStatus::Failed,
+            model_families: vec!["codex".to_owned()],
+            briefs: vec![JudgementBriefResult {
+                brief_id: "purpose".to_owned(),
+                status: JudgementStatus::Failed,
+                reviews: vec![ReviewerResult {
+                    agent_id: "reviewer-codex".to_owned(),
+                    model_family: "codex".to_owned(),
+                    status: JudgementStatus::Failed,
+                    stdout: stdout.to_owned(),
+                    stderr: String::new(),
+                }],
+            }],
+        };
+
+        let first_findings =
+            findings_from_judgement(&first, &run("PUMP19_JUDGEMENT: FAIL stale state"))
+                .expect("first findings");
+        let second_findings = findings_from_judgement(
+            &second,
+            &run("PUMP19_JUDGEMENT: FAIL old review state accepted"),
+        )
+        .expect("second findings");
+
+        assert_ne!(first_findings[0].id, second_findings[0].id);
+        assert_eq!(first_findings[0].dedup_key, second_findings[0].dedup_key);
     }
 
     #[test]

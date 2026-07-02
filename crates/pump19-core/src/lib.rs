@@ -19,12 +19,12 @@ use pump19_contract::{
     ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
     DecisionVerdict, EventPayload, Extensions, Finding, FindingCommentPublication,
     FindingCommentStatus, FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt,
-    LoopPassRecord, ModelFamily, ModelLineage, ModelProvenance, Patch, PrRunState,
-    ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus, PublicationOperation,
-    PublicationState, PublishedFixCommit, PullRequestRef, RunCeiling, RunId, RunKind, RunOutcome,
-    RunRecord, RunStatus, SessionFreshness, SessionId, has_two_verified_reviewer_families,
-    judge_independent_of_reviewers, merge_gate_clean_and_current, reviewers_disjoint_from_fixers,
-    sessions_fresh_for_pass,
+    LoopPassRecord, MergePublication, ModelFamily, ModelLineage, ModelProvenance, Patch,
+    PrRunState, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
+    PublicationOperation, PublicationState, PublishedFixCommit, PullRequestRef, RunCeiling, RunId,
+    RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId,
+    has_two_verified_reviewer_families, judge_independent_of_reviewers,
+    merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -792,6 +792,7 @@ where
                 .map(receipt_to_contract)
                 .map_err(|error| error.to_string()),
         );
+        self.state_store.save(state)?;
         Ok(())
     }
 
@@ -896,7 +897,7 @@ where
             authorisation,
             body: material_finding_comment(finding, decision),
         });
-        let receipt = Self::record_finding_comment_attempt(
+        let receipt = self.record_finding_comment_attempt(
             state,
             run_id,
             PublicationOperation::PostFindingComment {
@@ -907,6 +908,7 @@ where
             result,
         )?;
         upsert_finding_comment_publication(state, finding, receipt, FindingCommentStatus::Open);
+        self.state_store.save(state)?;
         Ok(())
     }
 
@@ -943,7 +945,7 @@ where
                 comment_operation_id: publication.comment_operation_id.clone(),
                 body: material_finding_comment(finding, decision),
             });
-        let receipt = Self::record_finding_comment_attempt(
+        let receipt = self.record_finding_comment_attempt(
             state,
             run_id,
             PublicationOperation::UpdateFindingComment {
@@ -955,6 +957,7 @@ where
             result,
         )?;
         upsert_finding_comment_publication(state, finding, receipt, FindingCommentStatus::Open);
+        self.state_store.save(state)?;
         Ok(())
     }
 
@@ -991,7 +994,7 @@ where
                 comment_operation_id: publication.comment_operation_id.clone(),
                 reason: "finding no longer material on this pass".to_owned(),
             });
-        let receipt = Self::record_finding_comment_attempt(
+        let receipt = self.record_finding_comment_attempt(
             state,
             run_id,
             PublicationOperation::ResolveFindingComment {
@@ -1010,10 +1013,12 @@ where
             existing.status = FindingCommentStatus::Resolved;
             existing.last_receipt = receipt;
         }
+        self.state_store.save(state)?;
         Ok(())
     }
 
     fn record_finding_comment_attempt(
+        &mut self,
         state: &mut PrRunState,
         run_id: &RunId,
         operation: PublicationOperation,
@@ -1041,6 +1046,7 @@ where
                     idempotency_key,
                     Err(message.clone()),
                 );
+                self.state_store.save(state)?;
                 return Err(CoreError::ForgeOperation(message));
             }
         };
@@ -1109,6 +1115,7 @@ where
                     idempotency_key,
                     Err(message.clone()),
                 );
+                self.state_store.save(state)?;
                 return Err(CoreError::ForgeOperation(message));
             }
         };
@@ -1118,10 +1125,15 @@ where
             commits: published_fix_commits(commits),
             receipt,
         });
+        self.state_store.save(state)?;
         Ok(())
     }
 
-    fn merge_finished_pr(&mut self, run_id: &RunId, state: &PrRunState) -> Result<(), CoreError> {
+    fn merge_finished_pr(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
         let facts = forge_facts_from_state(state)?
             .ok_or_else(|| CoreError::ForgeOperation("missing forge facts for merge".to_owned()))?;
         if !merge_gate_clean_and_current(&facts) {
@@ -1137,10 +1149,12 @@ where
                 "finish label actor lacks merge capability".to_owned(),
             ));
         }
+        let idempotency_key =
+            stable_id("forge-merge", [run_id.0.as_str(), facts.head.sha.as_str()]);
         let authorisation = AuthorisationContext {
             pr: state.pr.clone(),
             observed_head_sha: facts.head.sha.clone(),
-            idempotency_key: stable_id("forge-merge", [run_id.0.as_str(), facts.head.sha.as_str()]),
+            idempotency_key: idempotency_key.clone(),
             actor: label.applied_by.clone(),
             reason: "core authorised merge from clean/current facts and finish label authority"
                 .to_owned(),
@@ -1157,12 +1171,40 @@ where
                 },
             ],
         };
-        self.forge_operations
-            .merge(AuthorisedMerge {
-                authorisation,
-                method: MergeMethod::Squash,
-            })
-            .map_err(|error| CoreError::ForgeOperation(error.to_string()))?;
+        let result = self.forge_operations.merge(AuthorisedMerge {
+            authorisation,
+            method: MergeMethod::Squash,
+        });
+        let receipt = match result {
+            Ok(receipt) => {
+                let receipt = receipt_to_contract(receipt);
+                record_publication_attempt(
+                    state,
+                    run_id,
+                    PublicationOperation::MergePullRequest,
+                    idempotency_key,
+                    Ok(receipt.clone()),
+                );
+                receipt
+            }
+            Err(error) => {
+                let message = error.to_string();
+                record_publication_attempt(
+                    state,
+                    run_id,
+                    PublicationOperation::MergePullRequest,
+                    idempotency_key,
+                    Err(message.clone()),
+                );
+                self.state_store.save(state)?;
+                return Err(CoreError::ForgeOperation(message));
+            }
+        };
+        state.publication.merges.push(MergePublication {
+            run_id: run_id.clone(),
+            receipt,
+        });
+        self.state_store.save(state)?;
         Ok(())
     }
 
@@ -2226,7 +2268,24 @@ fn published_fix_commits(commits: Vec<AuthorisedFixCommit>) -> Vec<PublishedFixC
 }
 
 fn fix_commit_message(patch: &Patch) -> String {
-    format!("fix: address Pump-19 finding via {}", patch.id.0)
+    let subject = match &patch.change {
+        pump19_contract::PatchChange::Description { summary } => {
+            format!("fix: {summary}")
+        }
+        pump19_contract::PatchChange::UnifiedDiff { .. } => {
+            format!("fix: apply Pump-19 patch {}", patch.id.0)
+        }
+    };
+    let findings = patch
+        .answers_findings
+        .iter()
+        .map(|finding_id| finding_id.0.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{subject}\n\nPump-19 patch: {}\nAnswers findings: {}",
+        patch.id.0, findings
+    )
 }
 
 fn material_finding_comment(finding: &Finding, decision: &Decision) -> String {
@@ -3963,7 +4022,7 @@ mod tests {
     fn process_event_drives_review_fix_rereview_finish_loop() {
         let rules = vec![
             independent_rule(),
-            review_on_fix_rule(),
+            update_review_rule(),
             judge_after_review_rule(),
             fix_after_material_judge_rule(),
             finish_on_label_rule(),
@@ -4017,7 +4076,31 @@ mod tests {
                 &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
                 &rules,
             )
-            .expect("fix completion launches fresh review");
+            .expect("fix completion publishes patches");
+        assert!(outcomes.is_empty());
+        assert_eq!(core.forge_operations.fix_pushes.len(), 1);
+        assert!(
+            core.forge_operations.fix_pushes[0].commits[0]
+                .message
+                .contains("fix: fixed material finding")
+        );
+        assert!(
+            core.forge_operations.fix_pushes[0].commits[0]
+                .message
+                .contains("Answers findings: finding-material")
+        );
+
+        let update_event = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "fix-push-updated-pr".to_owned(),
+            payload: EventPayload::PullRequestUpdated {
+                facts: facts_with_head("head-after-fix"),
+            },
+            extensions: BTreeMap::new(),
+        };
+        let outcomes = core
+            .process_event(&update_event, &rules)
+            .expect("PR update launches fresh review");
         let review_two = launched_run_id(&outcomes).expect("second review launched");
         let outcomes = core
             .process_event(
@@ -4066,6 +4149,12 @@ mod tests {
         let finish = launched_run_id(&outcomes).expect("finish launched");
         assert!(finish.0.contains("finish-on-label"));
         assert_eq!(core.forge_operations.merges.len(), 1);
+        let finished = core
+            .state_store
+            .load_by_run_id(&finish)
+            .expect("load finish state")
+            .expect("finish state");
+        assert_eq!(finished.publication.merges.len(), 1);
         assert!(
             core.forge_operations.merges[0]
                 .authorisation

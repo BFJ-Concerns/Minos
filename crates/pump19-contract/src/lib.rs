@@ -299,12 +299,17 @@ pub struct PublicationState {
     pub finding_comments: Vec<FindingCommentPublication>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fix_pushes: Vec<FixPushPublication>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merges: Vec<MergePublication>,
 }
 
 impl PublicationState {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.attempts.is_empty() && self.finding_comments.is_empty() && self.fix_pushes.is_empty()
+        self.attempts.is_empty()
+            && self.finding_comments.is_empty()
+            && self.fix_pushes.is_empty()
+            && self.merges.is_empty()
     }
 }
 
@@ -342,6 +347,7 @@ pub enum PublicationOperation {
     PushFixCommits {
         patch_ids: Vec<PatchId>,
     },
+    MergePullRequest,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -374,6 +380,13 @@ pub struct FixPushPublication {
     pub run_id: RunId,
     pub patch_ids: Vec<PatchId>,
     pub commits: Vec<PublishedFixCommit>,
+    pub receipt: ForgeReceipt,
+}
+
+/// Durable record of an authorised merge applied to the pull request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergePublication {
+    pub run_id: RunId,
     pub receipt: ForgeReceipt,
 }
 
@@ -657,13 +670,14 @@ mod tests {
         CertaintyClass, Comment, CommentId, CommentPayload, CommentTarget, Confidence,
         ContractEvent, ContractVersion, Decision, DecisionSubject, DecisionVerdict, EventPayload,
         Finding, FindingCommentPublication, FindingCommentStatus, FindingId, FindingLocation,
-        FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt, LoopPassRecord, Mergeability,
-        ModelFamily, ModelLineage, ModelProvenance, Patch, PatchChange, PatchId,
-        ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus, PublicationOperation,
-        PublicationState, PublishedFixCommit, PullRequestRef, ReviewCleanliness, Revision,
-        RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId,
-        Severity, SourceRange, has_two_verified_reviewer_families, judge_independent_of_reviewers,
-        merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
+        FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt, LoopPassRecord,
+        MergePublication, Mergeability, ModelFamily, ModelLineage, ModelProvenance, Patch,
+        PatchChange, PatchId, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
+        PublicationOperation, PublicationState, PublishedFixCommit, PullRequestRef,
+        ReviewCleanliness, Revision, RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunStatus,
+        SessionFreshness, SessionId, Severity, SourceRange, has_two_verified_reviewer_families,
+        judge_independent_of_reviewers, merge_gate_clean_and_current,
+        reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
     };
 
     fn round_trip<T>(value: &T)
@@ -842,6 +856,14 @@ mod tests {
                     new_head_sha: Some("fed789".to_owned()),
                 },
             }],
+            merges: vec![MergePublication {
+                run_id: RunId("run-finish-1".to_owned()),
+                receipt: ForgeReceipt {
+                    operation_id: "merge-1".to_owned(),
+                    idempotency_key: "merge-1-key".to_owned(),
+                    new_head_sha: None,
+                },
+            }],
         }
     }
 
@@ -998,6 +1020,35 @@ mod tests {
         assert!(state.run_history.is_empty());
         assert!(state.loop_history.is_empty());
         assert_eq!(state.superseded_by, None);
+        assert!(state.publication.is_empty());
+    }
+
+    #[test]
+    fn v1_2_run_state_payloads_default_to_empty_publication_state() {
+        let payload = json!({
+            "contract_version": { "major": 1, "minor": 2 },
+            "pr": { "repository": "acme/widgets", "id": "42" },
+            "commit_sha": "abc123",
+            "current_head_sha": "abc123",
+            "pass_index": 2,
+            "status": "completed",
+            "active_run": null,
+            "run_history": [],
+            "loop_history": [],
+            "superseded_by": null,
+            "findings": [],
+            "decisions": [],
+            "patches": [],
+            "ceiling": null
+        });
+
+        let state = serde_json::from_value::<super::PrRunState>(payload).expect("v1.2 state");
+
+        assert_eq!(
+            state.contract_version,
+            ContractVersion { major: 1, minor: 2 }
+        );
+        assert_eq!(state.current_head_sha.as_deref(), Some("abc123"));
         assert!(state.publication.is_empty());
     }
 

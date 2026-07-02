@@ -1519,6 +1519,7 @@ fn repeated_material_finding_updates_existing_comment_identity() {
             },
         }],
         fix_pushes: Vec::new(),
+        merges: Vec::new(),
     };
     let state_store = SharedEstateStateStore::with_state(state);
     let state_observer = state_store.clone();
