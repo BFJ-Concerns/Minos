@@ -14,9 +14,9 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 use pump19_contract::{
     ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
     DecisionVerdict, EventPayload, Extensions, Finding, FinishLabel, ForgeFacts, LoopPassRecord,
-    ModelLineage, ModelProvenance, Patch, PrRunState, ProvenanceVerification, PullRequestRef,
-    RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId,
-    has_two_verified_reviewer_families, judge_independent_of_reviewers,
+    ModelFamily, ModelLineage, ModelProvenance, Patch, PrRunState, ProvenanceVerification,
+    PullRequestRef, RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness,
+    SessionId, has_two_verified_reviewer_families, judge_independent_of_reviewers,
     merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
 };
 use serde::{Deserialize, Serialize};
@@ -1346,10 +1346,109 @@ fn establish_provenance(
 
 #[must_use]
 fn verified_from_target(target: &AgentLaunchTarget) -> ProvenanceVerification {
+    if let Err(reason) = verify_engine_lineage(target) {
+        return ProvenanceVerification::Unverified { reason };
+    }
     ProvenanceVerification::Verified {
         vendor: target.vendor.clone(),
         control_plane: target.control_plane.clone(),
         lineage: target.lineage.clone(),
+    }
+}
+
+fn verify_engine_lineage(target: &AgentLaunchTarget) -> Result<(), String> {
+    let Some(mapped_family) = mapped_family_for_engine_model(target.engine, &target.lineage.model)
+    else {
+        return Err(format!(
+            "engine {} cannot map model {:?} to a trusted model family",
+            target.engine.as_str(),
+            target.lineage.model
+        ));
+    };
+    if mapped_family == target.lineage.family {
+        Ok(())
+    } else {
+        Err(format!(
+            "engine {} with model {:?} maps to family {:?}, not declared family {:?}",
+            target.engine.as_str(),
+            target.lineage.model,
+            mapped_family.0,
+            target.lineage.family.0
+        ))
+    }
+}
+
+fn mapped_family_for_engine_model(engine: AgentEngine, model: &str) -> Option<ModelFamily> {
+    let model = model.trim().to_ascii_lowercase();
+    if model.is_empty() {
+        return None;
+    }
+    match engine {
+        AgentEngine::Codex => codex_engine_family(&model),
+        AgentEngine::Claude => claude_engine_family(&model),
+        AgentEngine::Opencode => opencode_engine_family(&model),
+    }
+    .map(|family| ModelFamily(family.to_owned()))
+}
+
+fn codex_engine_family(model: &str) -> Option<&'static str> {
+    if model.starts_with("codex")
+        || model.starts_with("gpt-")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("o5")
+        || model.starts_with("openai/")
+    {
+        Some("codex")
+    } else {
+        None
+    }
+}
+
+fn claude_engine_family(model: &str) -> Option<&'static str> {
+    if model.starts_with("claude") || model.starts_with("anthropic/claude") {
+        Some("claude")
+    } else {
+        None
+    }
+}
+
+fn opencode_engine_family(model: &str) -> Option<&'static str> {
+    let model = model
+        .strip_prefix("anthropic/")
+        .or_else(|| model.strip_prefix("openai/"))
+        .or_else(|| model.strip_prefix("google/"))
+        .or_else(|| model.strip_prefix("mistral/"))
+        .or_else(|| model.strip_prefix("openrouter/"))
+        .or_else(|| model.strip_prefix("groq/"))
+        .or_else(|| model.strip_prefix("xai/"))
+        .or_else(|| model.strip_prefix("ollama/"))
+        .unwrap_or(model);
+    if model.starts_with("claude") {
+        Some("claude")
+    } else if model.starts_with("codex")
+        || model.starts_with("gpt-")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("o5")
+    {
+        Some("codex")
+    } else if model.starts_with("gemini") || model.starts_with("palm") {
+        Some("gemini")
+    } else if model.starts_with("mistral") || model.starts_with("mixtral") {
+        Some("mistral")
+    } else if model.starts_with("llama") || model.starts_with("meta-llama") {
+        Some("llama")
+    } else if model.starts_with("qwen") {
+        Some("qwen")
+    } else if model.starts_with("deepseek") {
+        Some("deepseek")
+    } else if model.starts_with("grok") {
+        Some("grok")
+    } else {
+        None
     }
 }
 
@@ -2952,6 +3051,27 @@ mod tests {
             vec![DispatchOutcome::Refused {
                 rule_id: "review".to_owned(),
                 reason: LaunchRefusal::MissingIndependentJudge,
+            }]
+        );
+    }
+
+    #[test]
+    fn engine_model_family_mismatch_is_refused_before_launch() {
+        let mut rule = independent_rule();
+        rule.agent_plan.reviewers[1].engine = AgentEngine::Codex;
+        let (outcomes, launched) = run(rule, Vec::new());
+
+        assert_eq!(launched, 0);
+        assert_eq!(
+            outcomes,
+            vec![DispatchOutcome::Refused {
+                rule_id: "review".to_owned(),
+                reason: LaunchRefusal::UnverifiedProvenance {
+                    agent_id: AgentId("reviewer-claude".to_owned()),
+                    reason:
+                        "engine codex cannot map model \"claude-2026\" to a trusted model family"
+                            .to_owned(),
+                },
             }]
         );
     }
