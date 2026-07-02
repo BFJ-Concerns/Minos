@@ -135,6 +135,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump19-daemon"
+version = "0.1.0"
+dependencies = [
+ "pump19-adaptations",
+ "pump19-contract",
+ "pump19-core",
+ "pump19-forge-forgejo",
+ "pump19-runs",
+ "pump19-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "pump19-forge-forgejo"
 version = "0.1.0"
 dependencies = [

@@ -29,4 +29,7 @@ pub use pump19_core::{
     AuthorisedCommentUpdate, AuthorisedFixCommit, AuthorisedFixPush, AuthorisedLabel,
     AuthorisedMerge, ForgeOperationError, ForgeOperationReceipt, ForgeOperations, MergeMethod,
 };
-pub use source::{ForgejoActivitySource, ForgejoEventSource};
+pub use source::{
+    ForgejoActivityError, ForgejoActivitySource, ForgejoEventSource, ForgejoPollingClient,
+    ForgejoPollingConfig, PollingForgejoActivitySource,
+};
