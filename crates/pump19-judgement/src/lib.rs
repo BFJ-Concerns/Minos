@@ -9,12 +9,9 @@
 )]
 
 use std::{
-    collections::BTreeSet,
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -23,9 +20,6 @@ use thiserror::Error;
 const INTENT_FILE: &str = "pump19.intent.toml";
 const VERIFICATION_DIR: &str = "verification";
 const JUDGEMENT_DIR: &str = "judgement";
-const REVIEWERS_FILE: &str = "reviewers.toml";
-const PROMPT_TOKEN: &str = "{prompt}";
-const BRIEF_ID_TOKEN: &str = "{brief_id}";
 const JUDGEMENT_PASS_TOKEN: &str = "PUMP19_JUDGEMENT: PASS";
 const JUDGEMENT_FAIL_TOKEN: &str = "PUMP19_JUDGEMENT: FAIL";
 
@@ -48,27 +42,6 @@ pub enum JudgementError {
     SerialiseToml(#[from] toml::ser::Error),
     #[error("JSON serialise error: {0}")]
     SerialiseJson(#[from] serde_json::Error),
-    #[error("reviewer {agent_id:?} has an empty command")]
-    EmptyReviewerCommand { agent_id: String },
-    #[error("reviewer {agent_id:?} is the recorded author {author_agent_id:?}")]
-    ReviewerIsAuthor {
-        agent_id: String,
-        author_agent_id: String,
-    },
-    #[error("judgement reviewers must span at least two model families; got {families:?}")]
-    NotEnoughModelFamilies { families: Vec<String> },
-    #[error("judgement command for {label:?} failed to start: {source}")]
-    CommandStart {
-        label: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("judgement command for {label:?} produced non-UTF-8 stdout")]
-    NonUtf8Stdout { label: String },
-    #[error("judgement command for {label:?} produced non-UTF-8 stderr")]
-    NonUtf8Stderr { label: String },
-    #[error("system clock is before UNIX epoch")]
-    Clock,
 }
 
 /// The machine-readable intent needed by judgement prompts.
@@ -109,24 +82,6 @@ pub struct JudgementBrief {
     pub brief: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_paths: Vec<String>,
-}
-
-/// Reviewer launch configuration.
-///
-/// This remains a working default surface for U1. Later adaptation units own the
-/// user-configurable prompt and command policy; the invariant enforcement here is
-/// intentionally not delegated to that future surface.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ReviewerConfig {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reviewers: Vec<Reviewer>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Reviewer {
-    pub agent_id: String,
-    pub model_family: String,
-    pub command: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -174,11 +129,6 @@ pub fn verification_dir(root: &Path) -> PathBuf {
 #[must_use]
 pub fn judgement_dir(root: &Path) -> PathBuf {
     verification_dir(root).join(JUDGEMENT_DIR)
-}
-
-#[must_use]
-pub fn reviewer_config_path(root: &Path) -> PathBuf {
-    verification_dir(root).join(REVIEWERS_FILE)
 }
 
 /// Loads the subject's stated intent from `pump19.intent.toml`.
@@ -251,40 +201,7 @@ pub fn install_standalone(
     )?;
 
     write_baseline_briefs(root)?;
-    write_toml(&reviewer_config_path(root), &default_reviewer_config())?;
     Ok(())
-}
-
-/// Returns Pump-19's default cross-family reviewer command configuration.
-#[must_use]
-pub fn default_reviewer_config() -> ReviewerConfig {
-    ReviewerConfig {
-        reviewers: vec![
-            Reviewer {
-                agent_id: "codex-reviewer".to_owned(),
-                model_family: "codex".to_owned(),
-                command: vec![
-                    "codex".to_owned(),
-                    "exec".to_owned(),
-                    "--sandbox".to_owned(),
-                    "read-only".to_owned(),
-                    "--ignore-rules".to_owned(),
-                    PROMPT_TOKEN.to_owned(),
-                ],
-            },
-            Reviewer {
-                agent_id: "claude-reviewer".to_owned(),
-                model_family: "claude".to_owned(),
-                command: vec![
-                    "claude".to_owned(),
-                    "--print".to_owned(),
-                    "--permission-mode".to_owned(),
-                    "dontAsk".to_owned(),
-                    PROMPT_TOKEN.to_owned(),
-                ],
-            },
-        ],
-    }
 }
 
 /// Returns Pump-19's compact baseline judgement briefs.
@@ -337,130 +254,6 @@ pub fn write_baseline_briefs_to_dir(dir: &Path) -> Result<(), JudgementError> {
         write_toml(&dir.join(format!("{}.toml", brief.id)), &brief)?;
     }
     Ok(())
-}
-
-/// Runs all judgement briefs through the configured independent reviewers.
-///
-/// # Errors
-///
-/// Returns an error when files cannot be read, reviewer independence is invalid, or a reviewer
-/// command cannot run.
-pub fn run_judgement(root: &Path) -> Result<JudgementRun, JudgementError> {
-    let intent = load_intent(root)?;
-    let reviewers = load_reviewer_config(root)?;
-    validate_reviewers(&intent, &reviewers)?;
-    let briefs = load_judgement_briefs(root)?;
-    let mut brief_results = Vec::new();
-    for brief in briefs {
-        brief_results.push(run_brief(root, &intent, &reviewers.reviewers, &brief)?);
-    }
-    let status = if brief_results
-        .iter()
-        .any(|result| result.status == JudgementStatus::Failed)
-    {
-        JudgementStatus::Failed
-    } else {
-        JudgementStatus::Passed
-    };
-    let families = reviewer_families(&reviewers.reviewers);
-    Ok(JudgementRun {
-        status,
-        briefs: brief_results,
-        model_families: families,
-    })
-}
-
-/// Runs one brief through every configured reviewer.
-///
-/// # Errors
-///
-/// Returns an error when evidence cannot be read or a reviewer command cannot run.
-pub fn run_brief(
-    root: &Path,
-    intent: &IntentSpec,
-    reviewers: &[Reviewer],
-    brief: &JudgementBrief,
-) -> Result<JudgementBriefResult, JudgementError> {
-    let prompt = judgement_prompt(root, intent, brief)?;
-    let mut reviews = Vec::new();
-    for reviewer in reviewers {
-        reviews.push(run_reviewer(root, reviewer, &brief.id, &prompt)?);
-    }
-    let status = if reviews
-        .iter()
-        .any(|review| review.status == JudgementStatus::Failed)
-    {
-        JudgementStatus::Failed
-    } else {
-        JudgementStatus::Passed
-    };
-    Ok(JudgementBriefResult {
-        brief_id: brief.id.clone(),
-        status,
-        reviews,
-    })
-}
-
-/// Runs one reviewer command with the prompt and brief-id tokens expanded.
-///
-/// # Errors
-///
-/// Returns an error when the command is empty, cannot start, or emits non-UTF-8 output.
-pub fn run_reviewer(
-    root: &Path,
-    reviewer: &Reviewer,
-    brief_id: &str,
-    prompt: &str,
-) -> Result<ReviewerResult, JudgementError> {
-    let (program, args) =
-        reviewer
-            .command
-            .split_first()
-            .ok_or_else(|| JudgementError::EmptyReviewerCommand {
-                agent_id: reviewer.agent_id.clone(),
-            })?;
-    let expanded_args = args
-        .iter()
-        .map(|arg| {
-            arg.replace(PROMPT_TOKEN, prompt)
-                .replace(BRIEF_ID_TOKEN, brief_id)
-        })
-        .collect::<Vec<_>>();
-    let output = Command::new(program)
-        .args(expanded_args)
-        .current_dir(root)
-        .output()
-        .map_err(|source| JudgementError::CommandStart {
-            label: reviewer.agent_id.clone(),
-            source,
-        })?;
-    let stdout = String::from_utf8(output.stdout).map_err(|_| JudgementError::NonUtf8Stdout {
-        label: reviewer.agent_id.clone(),
-    })?;
-    let stderr = String::from_utf8(output.stderr).map_err(|_| JudgementError::NonUtf8Stderr {
-        label: reviewer.agent_id.clone(),
-    })?;
-    let reviewer_passed =
-        stdout.contains(JUDGEMENT_PASS_TOKEN) || stderr.contains(JUDGEMENT_PASS_TOKEN);
-    let reviewer_failed =
-        stdout.contains(JUDGEMENT_FAIL_TOKEN) || stderr.contains(JUDGEMENT_FAIL_TOKEN);
-    let status = if !output.status.success()
-        || reviewer_failed
-        // Reviewers must say what they decided. A silent zero exit is operationally
-        // successful, but it is not a judgement.
-        || !reviewer_passed
-    {
-        JudgementStatus::Failed
-    } else {
-        JudgementStatus::Passed
-    };
-    Ok(ReviewerResult {
-        agent_id: reviewer.agent_id.clone(),
-        model_family: reviewer.model_family.clone(),
-        status,
-        stdout,
-        stderr,
-    })
 }
 
 /// Builds the prompt given to an independent judgement reviewer.
@@ -516,33 +309,6 @@ pub fn evidence_text(root: &Path, brief: &JudgementBrief) -> Result<String, Judg
     Ok(text)
 }
 
-/// Validates that judgement reviewers are independent of the author and span model families.
-///
-/// # Errors
-///
-/// Returns an error when a reviewer is the recorded author or fewer than two model families are
-/// configured.
-pub fn validate_reviewers(
-    intent: &IntentSpec,
-    config: &ReviewerConfig,
-) -> Result<(), JudgementError> {
-    if let Some(author) = &intent.app.author_agent_id {
-        for reviewer in &config.reviewers {
-            if &reviewer.agent_id == author {
-                return Err(JudgementError::ReviewerIsAuthor {
-                    agent_id: reviewer.agent_id.clone(),
-                    author_agent_id: author.clone(),
-                });
-            }
-        }
-    }
-    let families = reviewer_families(&config.reviewers);
-    if families.len() < 2 {
-        return Err(JudgementError::NotEnoughModelFamilies { families });
-    }
-    Ok(())
-}
-
 /// Loads judgement briefs from `verification/judgement/*.toml`.
 ///
 /// # Errors
@@ -552,15 +318,6 @@ pub fn load_judgement_briefs(root: &Path) -> Result<Vec<JudgementBrief>, Judgeme
     load_judgement_briefs_from_dir(&judgement_dir(root))
 }
 
-/// Loads reviewer configuration from `verification/reviewers.toml`.
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read or parsed.
-pub fn load_reviewer_config(root: &Path) -> Result<ReviewerConfig, JudgementError> {
-    load_reviewer_config_from_path(&reviewer_config_path(root))
-}
-
 /// Loads judgement briefs from a supplied directory.
 ///
 /// # Errors
@@ -568,52 +325,6 @@ pub fn load_reviewer_config(root: &Path) -> Result<ReviewerConfig, JudgementErro
 /// Returns an error when the directory cannot be read or a brief cannot be parsed.
 pub fn load_judgement_briefs_from_dir(dir: &Path) -> Result<Vec<JudgementBrief>, JudgementError> {
     load_toml_dir(dir)
-}
-
-/// Loads reviewer configuration from a supplied TOML file.
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read or parsed.
-pub fn load_reviewer_config_from_path(path: &Path) -> Result<ReviewerConfig, JudgementError> {
-    read_toml(path)
-}
-
-/// Writes a JSON run artifact under `verification/runs`.
-///
-/// # Errors
-///
-/// Returns an error when the runs directory cannot be created, the value cannot be serialised, or
-/// the artifact cannot be written.
-pub fn write_json_run<T>(root: &Path, prefix: &str, value: &T) -> Result<PathBuf, JudgementError>
-where
-    T: Serialize,
-{
-    let runs = verification_dir(root).join("runs");
-    fs::create_dir_all(&runs).map_err(|source| JudgementError::Io {
-        path: runs.display().to_string(),
-        source,
-    })?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| JudgementError::Clock)?
-        .as_secs();
-    let path = runs.join(format!("{prefix}-{now}.json"));
-    let text = serde_json::to_string_pretty(value)?;
-    fs::write(&path, text).map_err(|source| JudgementError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
-    Ok(path)
-}
-
-fn reviewer_families(reviewers: &[Reviewer]) -> Vec<String> {
-    reviewers
-        .iter()
-        .map(|reviewer| reviewer.model_family.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }
 
 fn load_toml_dir<T>(dir: &Path) -> Result<Vec<T>, JudgementError>
@@ -677,10 +388,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        IntentApp, IntentSpec, IntentStatement, JudgementBrief, JudgementError, JudgementStatus,
-        Reviewer, ReviewerConfig, install_standalone, judgement_dir, judgement_prompt,
-        load_judgement_briefs, load_reviewer_config, run_judgement, save_intent,
-        validate_reviewers, write_toml,
+        IntentApp, IntentSpec, IntentStatement, JudgementBrief, install_standalone, judgement_dir,
+        judgement_prompt, load_judgement_briefs, save_intent, write_toml,
     };
 
     fn intent(author_agent_id: Option<&str>) -> IntentSpec {
@@ -700,54 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn judgement_reviewers_must_exclude_recorded_author() {
-        let intent = intent(Some("author"));
-        let config = ReviewerConfig {
-            reviewers: vec![
-                Reviewer {
-                    agent_id: "author".to_owned(),
-                    model_family: "codex".to_owned(),
-                    command: vec!["true".to_owned()],
-                },
-                Reviewer {
-                    agent_id: "claude-reviewer".to_owned(),
-                    model_family: "claude".to_owned(),
-                    command: vec!["true".to_owned()],
-                },
-            ],
-        };
-
-        assert!(matches!(
-            validate_reviewers(&intent, &config),
-            Err(JudgementError::ReviewerIsAuthor { .. })
-        ));
-    }
-
-    #[test]
-    fn judgement_reviewers_must_span_model_families() {
-        let config = ReviewerConfig {
-            reviewers: vec![
-                Reviewer {
-                    agent_id: "codex-a".to_owned(),
-                    model_family: "codex".to_owned(),
-                    command: vec!["true".to_owned()],
-                },
-                Reviewer {
-                    agent_id: "codex-b".to_owned(),
-                    model_family: "codex".to_owned(),
-                    command: vec!["true".to_owned()],
-                },
-            ],
-        };
-
-        assert!(matches!(
-            validate_reviewers(&intent(Some("author")), &config),
-            Err(JudgementError::NotEnoughModelFamilies { .. })
-        ));
-    }
-
-    #[test]
-    fn standalone_install_writes_intent_reviewers_and_baseline_briefs()
+    fn standalone_install_writes_intent_and_baseline_briefs()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         install_standalone(
@@ -759,14 +421,12 @@ mod tests {
         )?;
 
         assert!(dir.path().join("pump19.intent.toml").exists());
-        assert!(dir.path().join("verification/reviewers.toml").exists());
         assert!(
             dir.path()
                 .join("verification/judgement/reviewer-independence.toml")
                 .exists()
         );
         assert_eq!(load_judgement_briefs(dir.path())?.len(), 3);
-        assert_eq!(load_reviewer_config(dir.path())?.reviewers.len(), 2);
         Ok(())
     }
 
@@ -794,8 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn judgement_run_loads_toml_and_dispatches_reviewers() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn judgement_briefs_load_from_toml() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         save_intent(dir.path(), &intent(Some("author")))?;
         write_toml(
@@ -808,100 +467,11 @@ mod tests {
                 evidence_paths: Vec::new(),
             },
         )?;
-        write_toml(
-            &dir.path().join("verification/reviewers.toml"),
-            &ReviewerConfig {
-                reviewers: vec![
-                    Reviewer {
-                        agent_id: "codex-reviewer".to_owned(),
-                        model_family: "codex".to_owned(),
-                        command: vec![
-                            "sh".to_owned(),
-                            "-c".to_owned(),
-                            "printf '%s\\n' 'PUMP19_JUDGEMENT: PASS codex'".to_owned(),
-                        ],
-                    },
-                    Reviewer {
-                        agent_id: "claude-reviewer".to_owned(),
-                        model_family: "claude".to_owned(),
-                        command: vec![
-                            "sh".to_owned(),
-                            "-c".to_owned(),
-                            "printf '%s\\n' 'PUMP19_JUDGEMENT: PASS claude'".to_owned(),
-                        ],
-                    },
-                ],
-            },
-        )?;
 
-        let run = run_judgement(dir.path())?;
+        let briefs = load_judgement_briefs(dir.path())?;
 
-        assert_eq!(run.status, JudgementStatus::Passed);
-        assert_eq!(run.model_families, ["claude", "codex"]);
-        assert_eq!(run.briefs.len(), 1);
-        assert_eq!(run.briefs[0].reviews.len(), 2);
-        Ok(())
-    }
-
-    #[test]
-    fn reviewer_fail_token_fails_the_brief() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
-        let result = super::run_reviewer(
-            dir.path(),
-            &Reviewer {
-                agent_id: "codex-reviewer".to_owned(),
-                model_family: "codex".to_owned(),
-                command: vec![
-                    "sh".to_owned(),
-                    "-c".to_owned(),
-                    "printf '%s\\n' 'PUMP19_JUDGEMENT: FAIL found risk'".to_owned(),
-                ],
-            },
-            "purpose",
-            "prompt",
-        )?;
-
-        assert_eq!(result.status, JudgementStatus::Failed);
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_widget_pass_token_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
-        let result = super::run_reviewer(
-            dir.path(),
-            &Reviewer {
-                agent_id: "legacy-reviewer".to_owned(),
-                model_family: "widget-era".to_owned(),
-                command: vec![
-                    "sh".to_owned(),
-                    "-c".to_owned(),
-                    "printf '%s\\n' 'WIDGET_JUDGEMENT: PASS no issue'".to_owned(),
-                ],
-            },
-            "purpose",
-            "prompt",
-        )?;
-
-        assert_eq!(result.status, JudgementStatus::Failed);
-        Ok(())
-    }
-
-    #[test]
-    fn reviewer_without_explicit_verdict_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
-        let result = super::run_reviewer(
-            dir.path(),
-            &Reviewer {
-                agent_id: "quiet-reviewer".to_owned(),
-                model_family: "quiet".to_owned(),
-                command: vec!["true".to_owned()],
-            },
-            "purpose",
-            "prompt",
-        )?;
-
-        assert_eq!(result.status, JudgementStatus::Failed);
+        assert_eq!(briefs.len(), 1);
+        assert_eq!(briefs[0].id, "purpose");
         Ok(())
     }
 }

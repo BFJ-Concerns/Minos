@@ -1,6 +1,11 @@
 #![allow(clippy::expect_used, clippy::too_many_lines, clippy::unwrap_used)]
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    fs,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use pump19_contract::{
     ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
@@ -11,12 +16,13 @@ use pump19_contract::{
     RunOutcome, RunStatus, SessionFreshness, SessionId, Severity,
 };
 use pump19_core::{
-    AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence, AuthorisedComment,
-    AuthorisedLabel, AuthorisedMerge, Core, CoreError, Criteria, DispatchOutcome, EventKind,
-    EventSource, ForgeOperationError, ForgeOperationReceipt, ForgeOperations, LaunchProof,
-    LaunchRefusal, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey,
-    RunStateStore, StateCriterion, TriggerRule, WorkspaceExecOutput, WorkspaceExecRequest,
-    WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+    AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence,
+    AuthorisedComment, AuthorisedLabel, AuthorisedMerge, Core, CoreError, Criteria,
+    DispatchOutcome, EventKind, EventSource, ForgeOperationError, ForgeOperationReceipt,
+    ForgeOperations, LaunchProof, LaunchRefusal, PreparedAgent, RunLaunchOutcome, RunLaunchRequest,
+    RunLauncher, RunStateKey, RunStateStore, StateCriterion, TriggerRule, WorkspaceExecOutput,
+    WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider,
+    WorkspaceRequest,
 };
 use pump19_forge_forgejo::{
     ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
@@ -24,14 +30,15 @@ use pump19_forge_forgejo::{
     ForgejoReviewCleanliness, NormalisationError, contract_event, forge_facts,
 };
 use pump19_runs::{
-    AgentSessionPreparer, FinishRunBody, FixRunBody, JsonCommandFixBody, JsonCommandJudgeBody,
-    JudgeRunBody, JudgementReviewBody, MergeGateFinishBody, Pump19RunLauncher, ReviewRunBody,
-    RunBodyError,
+    EnsembleFixBody, EnsembleJudgeBody, EnsembleReviewBody, EnsembleWorkflowConfig,
+    EnsembleWorkflowOutput, EnsembleWorkflowRequest, EnsembleWorkflowRunner, FinishRunBody,
+    FixRunBody, JudgeRunBody, MergeGateFinishBody, ReviewRunBody, RunBodyError,
 };
 use pump19_workspace::{
     CapabilityPolicy, ContainerRuntime, ContainerSpec, ContainerWorkspaceProvider, NetworkPolicy,
     PrivilegeMode, RootFilesystem, WorkspaceConfig, WorkspaceError,
 };
+use serde_json::{Value, json};
 use tempfile::tempdir;
 
 #[derive(Clone, Debug, Default)]
@@ -184,14 +191,6 @@ impl EstateExecutor {
             execs: Vec::new(),
         }
     }
-
-    fn json(stdout: &str) -> WorkspaceExecOutput {
-        WorkspaceExecOutput {
-            exit_code: 0,
-            stdout: stdout.as_bytes().to_vec(),
-            stderr: Vec::new(),
-        }
-    }
 }
 
 impl WorkspaceExecutor for EstateExecutor {
@@ -202,6 +201,44 @@ impl WorkspaceExecutor for EstateExecutor {
     ) -> Result<WorkspaceExecOutput, CoreError> {
         self.execs.push(request);
         Ok(self.outputs.remove(0))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ArchiveAgentFixture {
+    label: String,
+    engine: String,
+    model: String,
+}
+
+#[derive(Debug)]
+struct EstateEnsembleRunner {
+    value: Value,
+    agents: Vec<ArchiveAgentFixture>,
+    requests: Rc<RefCell<Vec<EnsembleWorkflowRequest>>>,
+}
+
+impl EstateEnsembleRunner {
+    fn new(value: Value, agents: Vec<ArchiveAgentFixture>) -> Self {
+        Self {
+            value,
+            agents,
+            requests: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+}
+
+impl EnsembleWorkflowRunner for EstateEnsembleRunner {
+    fn run_workflow(
+        &mut self,
+        request: EnsembleWorkflowRequest,
+    ) -> Result<EnsembleWorkflowOutput, RunBodyError> {
+        write_archive(&request.archive_dir, &self.agents);
+        self.requests.borrow_mut().push(request.clone());
+        Ok(EnsembleWorkflowOutput {
+            value: self.value.clone(),
+            archive_dir: request.archive_dir,
+        })
     }
 }
 
@@ -238,20 +275,6 @@ impl ContainerRuntime for RecordingRuntime {
 
 #[derive(Debug, Default)]
 struct EstateLoopLauncher;
-
-#[derive(Debug)]
-struct EstateSessions;
-
-impl AgentSessionPreparer for EstateSessions {
-    fn prepare(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, RunBodyError> {
-        Ok(PreparedAgent {
-            agent_id: spec.target.agent_id,
-            role: spec.target.role,
-            session_id: SessionId(format!("session-{}", spec.pass_index)),
-            proof: LaunchProof::EstablishedFresh,
-        })
-    }
-}
 
 impl RunLauncher for EstateLoopLauncher {
     fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
@@ -482,6 +505,7 @@ fn target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
     AgentLaunchTarget {
         agent_id: AgentId(agent_id.to_owned()),
         role,
+        engine: engine_for_family(family),
         vendor: "local".to_owned(),
         control_plane: "pump19-core".to_owned(),
         lineage: ModelLineage {
@@ -489,6 +513,73 @@ fn target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
             model: format!("{family}-2026-06"),
         },
     }
+}
+
+fn engine_for_family(family: &str) -> AgentEngine {
+    match family {
+        "claude" => AgentEngine::Claude,
+        "codex" => AgentEngine::Codex,
+        _ => AgentEngine::Opencode,
+    }
+}
+
+fn archive_agent(agent_id: &str, family: &str) -> ArchiveAgentFixture {
+    ArchiveAgentFixture {
+        label: format!("{agent_id}:purpose"),
+        engine: engine_for_family(family).as_str().to_owned(),
+        model: format!("{family}-2026-06"),
+    }
+}
+
+fn ensemble_config(root: &Path, run_kind: &str) -> EnsembleWorkflowConfig {
+    EnsembleWorkflowConfig {
+        script: root.join(format!("{run_kind}.js")),
+        archive_root: root.join("archives"),
+        timeout_ms: 5_000,
+    }
+}
+
+fn write_archive(root: &Path, agents: &[ArchiveAgentFixture]) {
+    let run_dir = root.join("runs/cwd/test/test-run");
+    fs::create_dir_all(run_dir.join("agents")).expect("create archive agents");
+    let files = agents
+        .iter()
+        .enumerate()
+        .map(|(index, agent)| {
+            let agent_dir = run_dir.join(format!("agents/{:06}", index + 1));
+            fs::create_dir_all(&agent_dir).expect("create agent dir");
+            let path = format!("agents/{:06}/agent.json", index + 1);
+            let record = json!({
+                "id": index + 1,
+                "kind": "agent_record",
+                "engine": agent.engine,
+                "label": agent.label,
+                "model": agent.model,
+                "resolved_model": agent.model,
+                "status": "complete",
+                "validated_output": {"ok": true},
+            });
+            fs::write(
+                agent_dir.join("agent.json"),
+                serde_json::to_string_pretty(&record).expect("serialise agent"),
+            )
+            .expect("write agent");
+            json!({"path": path, "sha256": "fixture", "size": 1})
+        })
+        .collect::<Vec<_>>();
+    let manifest = json!({
+        "kind": "run_manifest",
+        "schema_version": 1,
+        "status": "complete",
+        "run_id": "cwd:test:test-run",
+        "result": {"archive_path": "result.json", "exit_code": 0},
+        "files": files,
+    });
+    fs::write(
+        run_dir.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest).expect("serialise manifest"),
+    )
+    .expect("write manifest");
 }
 
 fn standard_plan() -> AgentPlan {
@@ -667,6 +758,11 @@ fn verified_launches(agent_plan: AgentPlan) -> Vec<DispatchOutcome> {
 }
 
 fn verified_provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelProvenance {
+    let mut extensions = extensions();
+    extensions.insert(
+        "pump19.core.agent_engine".to_owned(),
+        Value::String(engine_for_family(family).as_str().to_owned()),
+    );
     ModelProvenance {
         contract_version: version(),
         agent_id: AgentId(agent_id.to_owned()),
@@ -681,7 +777,7 @@ fn verified_provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelPr
                 model: format!("{family}-2026-06"),
             },
         },
-        extensions: extensions(),
+        extensions,
     }
 }
 
@@ -1072,17 +1168,15 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
 #[test]
 fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let review_workspace = tempdir().expect("review workspace");
-    let mut review = JudgementReviewBody;
-    let review_request = RunLaunchRequest {
-        run_kind: RunKind::Review,
-        workspace: workspace(review_workspace.path().to_path_buf()),
-        provenance: vec![
-            verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
-            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
-        ],
-        ..run_request(RunKind::Review, Vec::new())
-    };
-    let judgement_json = serde_json::to_string(&pump19_judgement::JudgementRun {
+    pump19_judgement::install_standalone(
+        review_workspace.path(),
+        "sample",
+        "Sample",
+        "Prove estate ensemble run bodies",
+        None,
+    )
+    .expect("install judgement material");
+    let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
         status: pump19_judgement::JudgementStatus::Failed,
         model_families: vec!["codex".to_owned(), "claude".to_owned()],
         briefs: vec![pump19_judgement::JudgementBriefResult {
@@ -1107,7 +1201,26 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         }],
     })
     .expect("judgement serialises");
-    let mut review_executor = EstateExecutor::new(vec![EstateExecutor::json(&judgement_json)]);
+    let mut review = EnsembleReviewBody::new(
+        EstateEnsembleRunner::new(
+            judgement_value,
+            vec![
+                archive_agent("reviewer-codex", "codex"),
+                archive_agent("reviewer-claude", "claude"),
+            ],
+        ),
+        ensemble_config(review_workspace.path(), "review"),
+    );
+    let review_request = RunLaunchRequest {
+        run_kind: RunKind::Review,
+        workspace: workspace(review_workspace.path().to_path_buf()),
+        provenance: vec![
+            verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+        ],
+        ..run_request(RunKind::Review, Vec::new())
+    };
+    let mut review_executor = EstateExecutor::new(Vec::new());
 
     let findings = review
         .run_review(&review_request, &mut review_executor)
@@ -1118,13 +1231,17 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         findings[0].provenance.agent_id,
         AgentId("reviewer-codex".to_owned())
     );
+    assert!(review_executor.execs.is_empty());
 
-    let mut judge = JsonCommandJudgeBody::new(json_stdout_command(
-        r#"[{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]"#,
-    ));
-    let mut judge_executor = EstateExecutor::new(vec![EstateExecutor::json(
-        r#"[{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]"#,
-    )]);
+    let judge_workspace = tempdir().expect("judge workspace");
+    let mut judge = EnsembleJudgeBody::new(
+        EstateEnsembleRunner::new(
+            json!([{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]),
+            vec![archive_agent("judge-gemini", "gemini")],
+        ),
+        ensemble_config(judge_workspace.path(), "judge"),
+    );
+    let mut judge_executor = EstateExecutor::new(Vec::new());
     let judge_request = run_request(
         RunKind::Judge,
         vec![verified_provenance(
@@ -1142,13 +1259,17 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         decisions[0].subject,
         DecisionSubject::Finding { ref finding_id } if finding_id == &FindingId("finding-material-1".to_owned())
     ));
+    assert!(judge_executor.execs.is_empty());
 
-    let mut fix = JsonCommandFixBody::new(json_stdout_command(
-        r#"{"kind":"description","summary":"fixed stale merge gate"}"#,
-    ));
-    let mut fix_executor = EstateExecutor::new(vec![EstateExecutor::json(
-        r#"{"kind":"description","summary":"fixed stale merge gate"}"#,
-    )]);
+    let fix_workspace = tempdir().expect("fix workspace");
+    let mut fix = EnsembleFixBody::new(
+        EstateEnsembleRunner::new(
+            json!({"kind":"description","summary":"fixed stale merge gate"}),
+            vec![archive_agent("fixer-codex", "codex")],
+        ),
+        ensemble_config(fix_workspace.path(), "fix"),
+    );
+    let mut fix_executor = EstateExecutor::new(Vec::new());
     let mut fix_request = run_request(
         RunKind::Fix,
         vec![verified_provenance(
@@ -1169,6 +1290,7 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
         patches[0].change,
         PatchChange::Description { ref summary } if summary == "fixed stale merge gate"
     ));
+    assert!(fix_executor.execs.is_empty());
 
     let mut finish = MergeGateFinishBody;
     let finish_request = run_request(RunKind::Finish, Vec::new());
@@ -1292,19 +1414,17 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
 }
 
 #[test]
-fn review_run_body_executes_through_workspace_executor() {
+fn review_run_body_uses_host_ensemble_not_workspace_executor() {
     let host_workspace = tempdir().expect("host workspace");
-    let mut review = JudgementReviewBody;
-    let request = RunLaunchRequest {
-        run_kind: RunKind::Review,
-        workspace: workspace(host_workspace.path().to_path_buf()),
-        provenance: vec![
-            verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
-            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
-        ],
-        ..run_request(RunKind::Review, Vec::new())
-    };
-    let judgement_json = serde_json::to_string(&pump19_judgement::JudgementRun {
+    pump19_judgement::install_standalone(
+        host_workspace.path(),
+        "sample",
+        "Sample",
+        "Prove host ensemble review",
+        None,
+    )
+    .expect("install judgement material");
+    let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
         status: pump19_judgement::JudgementStatus::Failed,
         model_families: vec!["codex".to_owned(), "claude".to_owned()],
         briefs: vec![pump19_judgement::JudgementBriefResult {
@@ -1320,16 +1440,33 @@ fn review_run_body_executes_through_workspace_executor() {
         }],
     })
     .expect("judgement serialises");
-    let mut executor = EstateExecutor::new(vec![EstateExecutor::json(&judgement_json)]);
+    let mut review = EnsembleReviewBody::new(
+        EstateEnsembleRunner::new(
+            judgement_value,
+            vec![
+                archive_agent("reviewer-codex", "codex"),
+                archive_agent("reviewer-claude", "claude"),
+            ],
+        ),
+        ensemble_config(host_workspace.path(), "review"),
+    );
+    let request = RunLaunchRequest {
+        run_kind: RunKind::Review,
+        workspace: workspace(host_workspace.path().to_path_buf()),
+        provenance: vec![
+            verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+        ],
+        ..run_request(RunKind::Review, Vec::new())
+    };
+    let mut executor = EstateExecutor::new(Vec::new());
 
     let findings = review
         .run_review(&request, &mut executor)
-        .expect("review body executes inside workspace");
+        .expect("review body executes through host ensemble");
 
     assert_eq!(findings.len(), 1);
-    assert_eq!(executor.execs.len(), 1);
-    assert_eq!(executor.execs[0].program, "pump19-judgement-run");
-    assert_eq!(executor.execs[0].cwd_inside_container, "/workspace");
+    assert!(executor.execs.is_empty());
 }
 
 #[test]
@@ -1337,6 +1474,7 @@ fn real_workspace_provider_prepares_container_and_cleans_up_after_launch() {
     let root = tempdir().expect("workspace root");
     let runtime = RecordingRuntime::default();
     let created_specs = Rc::clone(&runtime.created);
+    let execs = Rc::clone(&runtime.execs);
     let removed_containers = Rc::clone(&runtime.removed);
     let provider = ContainerWorkspaceProvider::with_runtime(
         WorkspaceConfig::new(root.path(), "localhost/pump19-workspace:stable"),
@@ -1380,96 +1518,13 @@ fn real_workspace_provider_prepares_container_and_cleans_up_after_launch() {
         removed_containers.borrow().as_slice(),
         std::slice::from_ref(&spec.id)
     );
+    assert!(execs.borrow().is_empty());
 
     let launch_requests = launch_requests.borrow();
     let request = launch_requests.first().expect("run launched");
     assert!(request.workspace.isolation.present());
     assert!(request.workspace.root.starts_with(root.path()));
     assert_ne!(request.workspace.root, PathBuf::from("/workspace"));
-}
-
-#[test]
-fn real_workspace_provider_executes_review_body_inside_container() {
-    let root = tempdir().expect("workspace root");
-    let judgement_json = serde_json::to_string(&pump19_judgement::JudgementRun {
-        status: pump19_judgement::JudgementStatus::Failed,
-        model_families: vec!["codex".to_owned(), "claude".to_owned()],
-        briefs: vec![pump19_judgement::JudgementBriefResult {
-            brief_id: "purpose".to_owned(),
-            status: pump19_judgement::JudgementStatus::Failed,
-            reviews: vec![pump19_judgement::ReviewerResult {
-                agent_id: "reviewer-codex".to_owned(),
-                model_family: "codex".to_owned(),
-                status: pump19_judgement::JudgementStatus::Failed,
-                stdout: "PUMP19_JUDGEMENT: FAIL stale state".to_owned(),
-                stderr: String::new(),
-            }],
-        }],
-    })
-    .expect("judgement serialises");
-    let runtime = RecordingRuntime::default();
-    runtime.outputs.borrow_mut().push(WorkspaceExecOutput {
-        exit_code: 0,
-        stdout: judgement_json.into_bytes(),
-        stderr: Vec::new(),
-    });
-    let created_specs = Rc::clone(&runtime.created);
-    let execs = Rc::clone(&runtime.execs);
-    let removed_containers = Rc::clone(&runtime.removed);
-    let provider = ContainerWorkspaceProvider::with_runtime(
-        WorkspaceConfig::new(root.path(), "localhost/pump19-workspace:stable"),
-        runtime,
-    );
-    let launcher = Pump19RunLauncher::new(
-        EstateSessions,
-        JudgementReviewBody,
-        JsonCommandJudgeBody::new(vec!["judge-json".to_owned()]),
-        JsonCommandFixBody::new(vec!["fix-json".to_owned()]),
-        MergeGateFinishBody,
-    );
-    let facts = contract_facts(
-        BranchCurrency::Current,
-        ReviewCleanliness::Dirty,
-        Vec::new(),
-    );
-    let mut core = Core::new(
-        EmptyEventSource,
-        provider,
-        launcher,
-        EstateStateStore::empty(),
-    );
-
-    let outcomes = core
-        .process_event(&opened_event(facts), &[review_rule(standard_plan())])
-        .expect("core launches review through real workspace provider");
-
-    assert!(matches!(
-        outcomes.as_slice(),
-        [DispatchOutcome::Launched { .. }]
-    ));
-    let specs = created_specs.borrow();
-    let spec = specs.first().expect("container spec created");
-    let execs = execs.borrow();
-    let (container_id, exec_request) = execs.first().expect("workspace exec called");
-    assert_eq!(container_id, &spec.id);
-    assert_eq!(exec_request.program, "pump19-judgement-run");
-    assert_eq!(exec_request.cwd_inside_container, "/workspace");
-    assert!(exec_request.stdin.starts_with(b"{"));
-    assert_eq!(
-        removed_containers.borrow().as_slice(),
-        std::slice::from_ref(&spec.id)
-    );
-}
-
-fn json_stdout_command(json: &str) -> Vec<String> {
-    vec![
-        "sh".to_owned(),
-        "-c".to_owned(),
-        format!(
-            "cat >/dev/null; printf '%s\n' '{}'",
-            json.replace('\'', "'\\''")
-        ),
-    ]
 }
 
 fn forgejo_snapshot(

@@ -31,6 +31,7 @@ const EXT_TOKENS_USED: &str = "pump19.core.tokens_used";
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_LAST_FAILURE: &str = "pump19.core.last_failure";
 const CONTROL_COMMIT_SHA: &str = "__pump19_pr_control__";
+const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 
 /// Core errors raised before a launch decision can be made.
 #[derive(Debug, Error)]
@@ -1107,9 +1108,30 @@ impl AgentPlan {
 pub struct AgentLaunchTarget {
     pub agent_id: AgentId,
     pub role: AgentRole,
+    pub engine: AgentEngine,
     pub vendor: String,
     pub control_plane: String,
     pub lineage: ModelLineage,
+}
+
+/// The ensemble engine the core will use for an agent target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEngine {
+    Codex,
+    Claude,
+    Opencode,
+}
+
+impl AgentEngine {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Opencode => "opencode",
+        }
+    }
 }
 
 /// Request to prepare an agent session without starting the run body.
@@ -1305,6 +1327,12 @@ fn establish_provenance(
         }
     };
 
+    let mut extensions = BTreeMap::new();
+    extensions.insert(
+        EXT_AGENT_ENGINE.to_owned(),
+        Value::String(target.engine.as_str().to_owned()),
+    );
+
     ModelProvenance {
         contract_version: ContractVersion::current(),
         agent_id: target.agent_id.clone(),
@@ -1312,7 +1340,7 @@ fn establish_provenance(
         session_id: prepared.session_id,
         freshness,
         verification,
-        extensions: BTreeMap::new(),
+        extensions,
     }
 }
 
@@ -2211,12 +2239,21 @@ mod tests {
         AgentLaunchTarget {
             agent_id: AgentId(agent_id.to_owned()),
             role,
+            engine: engine_for_family(family),
             vendor: "local".to_owned(),
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
                 model: format!("{family}-2026"),
             },
+        }
+    }
+
+    fn engine_for_family(family: &str) -> AgentEngine {
+        match family {
+            "claude" => AgentEngine::Claude,
+            "codex" => AgentEngine::Codex,
+            _ => AgentEngine::Opencode,
         }
     }
 
