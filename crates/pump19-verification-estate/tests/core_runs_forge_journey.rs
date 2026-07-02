@@ -32,9 +32,10 @@ use pump19_forge_forgejo::{
     ForgejoReviewCleanliness, NormalisationError, contract_event, forge_facts,
 };
 use pump19_runs::{
-    EnsembleFixBody, EnsembleJudgeBody, EnsembleReviewBody, EnsembleWorkflowConfig,
-    EnsembleWorkflowOutput, EnsembleWorkflowRequest, EnsembleWorkflowRunner, FinishRunBody,
-    FixRunBody, JudgeRunBody, MergeGateFinishBody, ReviewRunBody, RunBodyError,
+    AgentSessionPreparer, EnsembleFixBody, EnsembleJudgeBody, EnsembleReviewBody,
+    EnsembleWorkflowConfig, EnsembleWorkflowOutput, EnsembleWorkflowRequest,
+    EnsembleWorkflowRunner, FinishRunBody, FixRunBody, JudgeRunBody, MergeGateFinishBody,
+    Pump19RunLauncher, ReviewRunBody, RunBodyError,
 };
 use pump19_workspace::{
     CapabilityPolicy, ContainerRuntime, ContainerSpec, ContainerWorkspaceProvider, NetworkPolicy,
@@ -260,6 +261,7 @@ struct RecordingRuntime {
     execs: Rc<RefCell<Vec<(String, WorkspaceExecRequest)>>>,
     removed: Rc<RefCell<Vec<String>>>,
     outputs: Rc<RefCell<Vec<WorkspaceExecOutput>>>,
+    seed_judgement_workspace: bool,
 }
 
 #[derive(Debug)]
@@ -310,6 +312,10 @@ impl EstateEnsembleRunner {
             requests: Rc::new(RefCell::new(Vec::new())),
         }
     }
+
+    fn requests(&self) -> Rc<RefCell<Vec<EnsembleWorkflowRequest>>> {
+        Rc::clone(&self.requests)
+    }
 }
 
 impl EnsembleWorkflowRunner for EstateEnsembleRunner {
@@ -328,6 +334,16 @@ impl EnsembleWorkflowRunner for EstateEnsembleRunner {
 
 impl ContainerRuntime for RecordingRuntime {
     fn create(&mut self, spec: &ContainerSpec) -> Result<(), WorkspaceError> {
+        if self.seed_judgement_workspace {
+            pump19_judgement::install_standalone(
+                &spec.host_control_dir,
+                "sample",
+                "Sample",
+                "Prove composed host ensemble review",
+                None,
+            )
+            .map_err(|error| WorkspaceError::Runtime(error.to_string()))?;
+        }
         self.created.borrow_mut().push(spec.clone());
         Ok(())
     }
@@ -357,8 +373,31 @@ impl ContainerRuntime for RecordingRuntime {
     }
 }
 
+impl RecordingRuntime {
+    fn with_judgement_workspace() -> Self {
+        Self {
+            seed_judgement_workspace: true,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct EstateLoopLauncher;
+
+#[derive(Debug)]
+struct EstateSessions;
+
+impl AgentSessionPreparer for EstateSessions {
+    fn prepare(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, RunBodyError> {
+        Ok(PreparedAgent {
+            agent_id: spec.target.agent_id,
+            role: spec.target.role,
+            session_id: SessionId(format!("session-{}", spec.pass_index)),
+            proof: LaunchProof::EstablishedFresh,
+        })
+    }
+}
 
 impl RunLauncher for EstateLoopLauncher {
     fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
@@ -2088,6 +2127,114 @@ fn real_workspace_provider_prepares_container_and_cleans_up_after_launch() {
     assert!(request.workspace.isolation.present());
     assert!(request.workspace.root.starts_with(root.path()));
     assert_ne!(request.workspace.root, PathBuf::from("/workspace"));
+}
+
+#[test]
+fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
+    let root = tempdir().expect("workspace root");
+    let runtime = RecordingRuntime::with_judgement_workspace();
+    let created_specs = Rc::clone(&runtime.created);
+    let execs = Rc::clone(&runtime.execs);
+    let provider = ContainerWorkspaceProvider::with_runtime(
+        WorkspaceConfig::new(root.path(), "localhost/pump19-workspace:stable"),
+        runtime,
+    );
+    let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
+        status: pump19_judgement::JudgementStatus::Failed,
+        model_families: vec!["codex".to_owned(), "claude".to_owned()],
+        briefs: vec![pump19_judgement::JudgementBriefResult {
+            brief_id: "purpose".to_owned(),
+            status: pump19_judgement::JudgementStatus::Failed,
+            reviews: vec![pump19_judgement::ReviewerResult {
+                agent_id: "reviewer-codex".to_owned(),
+                model_family: "codex".to_owned(),
+                status: pump19_judgement::JudgementStatus::Failed,
+                stdout: "PUMP19_JUDGEMENT: FAIL composed seam".to_owned(),
+                stderr: String::new(),
+            }],
+        }],
+    })
+    .expect("judgement serialises");
+    let review_runner = EstateEnsembleRunner::new(
+        judgement_value,
+        vec![
+            archive_agent("reviewer-codex", "codex"),
+            archive_agent("reviewer-claude", "claude"),
+        ],
+    );
+    let review_requests = review_runner.requests();
+    let launcher = Pump19RunLauncher::new(
+        EstateSessions,
+        EnsembleReviewBody::new(review_runner, ensemble_config(root.path(), "review")),
+        EnsembleJudgeBody::new(
+            EstateEnsembleRunner::new(json!([]), vec![archive_agent("judge-gemini", "gemini")]),
+            ensemble_config(root.path(), "judge"),
+        ),
+        EnsembleFixBody::new(
+            EstateEnsembleRunner::new(
+                json!({"kind":"description","summary":"unused"}),
+                vec![archive_agent("fixer-codex", "codex")],
+            ),
+            ensemble_config(root.path(), "fix"),
+        ),
+        MergeGateFinishBody,
+    );
+    let state_store = SharedEstateStateStore::default();
+    let state_observer = state_store.clone();
+    let event = opened_event(contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Dirty,
+        Vec::new(),
+    ));
+    let mut core = Core::new(EmptyEventSource, provider, launcher, state_store);
+
+    let outcomes = core
+        .process_event(&event, &[review_rule(standard_plan())])
+        .expect("core launches real ensemble review through real provider");
+
+    assert!(matches!(
+        outcomes.as_slice(),
+        [DispatchOutcome::Launched { .. }]
+    ));
+    let specs = created_specs.borrow();
+    let spec = specs.first().expect("container spec created");
+    assert_eq!(spec.network, NetworkPolicy::Disabled);
+    assert_eq!(spec.security.root_filesystem, RootFilesystem::ReadOnly);
+    assert_eq!(spec.security.capabilities, CapabilityPolicy::DropAll);
+    assert_eq!(spec.security.privilege, PrivilegeMode::NoNewPrivileges);
+    assert_eq!(spec.workdir, "/workspace");
+    assert!(execs.borrow().is_empty());
+
+    let requests = review_requests.borrow();
+    let request = requests.first().expect("ensemble workflow invoked");
+    assert_eq!(request.script, root.path().join("review.js"));
+    assert_eq!(request.timeout_ms, 5_000);
+    assert!(
+        request
+            .archive_dir
+            .starts_with(root.path().join("archives"))
+    );
+    assert_eq!(
+        request.args["workspace_root"].as_str(),
+        Some(spec.host_control_dir.to_string_lossy().as_ref())
+    );
+    assert_ne!(
+        request.args["workspace_root"].as_str(),
+        Some("/workspace"),
+        "ensemble runs host-side against the lease root, not inside the container workdir"
+    );
+
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest state")
+        .expect("review state");
+    assert_eq!(latest.status, RunStatus::Completed);
+    assert_eq!(latest.findings.len(), 1);
+    assert_eq!(latest.findings[0].source_brief, "purpose");
+    assert_eq!(
+        latest.findings[0].provenance.agent_id,
+        AgentId("reviewer-codex".to_owned())
+    );
 }
 
 fn forgejo_snapshot(
