@@ -849,8 +849,13 @@ fn run_state() -> PrRunState {
         contract_version: version(),
         pr: pr(),
         commit_sha: "head-sha-1".to_owned(),
+        current_head_sha: Some("head-sha-1".to_owned()),
         pass_index: 1,
         status: RunStatus::Running,
+        active_run: None,
+        run_history: Vec::new(),
+        loop_history: Vec::new(),
+        superseded_by: None,
         findings: vec![finding()],
         decisions: Vec::new(),
         patches: Vec::new(),
@@ -1220,6 +1225,7 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
     }));
 
     let mut state = run_state();
+    state.status = RunStatus::Completed;
     state.extensions.insert(
         "pump19.core.forge_facts".to_owned(),
         serde_json::to_value(facts).expect("facts serialise"),

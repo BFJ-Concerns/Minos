@@ -188,19 +188,29 @@ where
             RunKind::Judge => {
                 self.judge
                     .run_judge(&request, workspace)
-                    .map(|decisions| RunLaunchOutcome {
-                        outcome: RunOutcome::Succeeded,
-                        findings: Vec::new(),
-                        decisions,
-                        patches: Vec::new(),
-                        token_usage: None,
+                    .and_then(|mut decisions| {
+                        if decisions.is_empty() && request.state.findings.is_empty() {
+                            let provenance = provenance_for_role(&request, AgentRole::Judge)?;
+                            decisions.push(convergence_decision(&request, &provenance));
+                        }
+                        Ok(RunLaunchOutcome {
+                            outcome: RunOutcome::Succeeded,
+                            findings: Vec::new(),
+                            decisions,
+                            patches: Vec::new(),
+                            token_usage: None,
+                        })
                     })
             }
             RunKind::Fix => self
                 .fix
                 .run_fix(&request, workspace)
                 .map(|patches| RunLaunchOutcome {
-                    outcome: RunOutcome::Succeeded,
+                    outcome: if patches.is_empty() {
+                        RunOutcome::NoOp
+                    } else {
+                        RunOutcome::Succeeded
+                    },
                     findings: Vec::new(),
                     decisions: Vec::new(),
                     patches,
@@ -271,7 +281,12 @@ impl JudgeRunBody for JsonCommandJudgeBody {
             "run_id": request.run_id,
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
+            "pass_count": request.state.pass_index,
+            "current_findings": request.state.findings,
             "findings": request.state.findings,
+            "prior_verdicts": prior_judge_verdicts(request),
+            "fix_outcomes": prior_fix_outcomes(request),
+            "loop_history": request.state.loop_history,
         });
         let outputs = run_workspace_json_command::<Vec<JudgeDecisionOutput>>(
             workspace,
@@ -279,6 +294,9 @@ impl JudgeRunBody for JsonCommandJudgeBody {
             &self.command,
             &input,
         )?;
+        if outputs.is_empty() && request.state.findings.is_empty() {
+            return Ok(vec![convergence_decision(request, &provenance)]);
+        }
         Ok(outputs
             .into_iter()
             .map(|output| output.into_decision(&request.run_id, &provenance))
@@ -363,6 +381,38 @@ impl JudgeDecisionOutput {
             extensions: BTreeMap::new(),
         }
     }
+}
+
+fn convergence_decision(request: &RunLaunchRequest, provenance: &ModelProvenance) -> Decision {
+    Decision {
+        contract_version: ContractVersion::current(),
+        id: stable_id("decision-converged", [request.run_id.0.as_str()]),
+        subject: DecisionSubject::FindingSet {
+            finding_ids: Vec::new(),
+        },
+        verdict: DecisionVerdict::Converged,
+        rationale: "No material findings remain for the current pass.".to_owned(),
+        provenance: provenance.clone(),
+        extensions: BTreeMap::new(),
+    }
+}
+
+fn prior_judge_verdicts(request: &RunLaunchRequest) -> Vec<DecisionVerdict> {
+    request
+        .state
+        .loop_history
+        .iter()
+        .filter_map(|pass| pass.judge_verdict)
+        .collect()
+}
+
+fn prior_fix_outcomes(request: &RunLaunchRequest) -> Vec<RunOutcome> {
+    request
+        .state
+        .loop_history
+        .iter()
+        .filter_map(|pass| pass.fix_outcome)
+        .collect()
 }
 
 fn findings_from_judgement(
@@ -598,8 +648,8 @@ mod tests {
     use std::{collections::VecDeque, path::PathBuf};
 
     use pump19_contract::{
-        DecisionSubject, ModelFamily, ModelLineage, ProvenanceVerification, PullRequestRef,
-        RunStatus, SessionFreshness, SessionId,
+        DecisionSubject, LoopPassRecord, ModelFamily, ModelLineage, ProvenanceVerification,
+        PullRequestRef, RunStatus, SessionFreshness, SessionId,
     };
     use pump19_core::{LaunchProof, WorkspaceExecOutput, WorkspaceIsolation, WorkspaceLease};
     use pump19_judgement::ReviewerResult;
@@ -718,6 +768,9 @@ mod tests {
         ) -> Result<Vec<Patch>, RunBodyError> {
             let provenance = provenance_for_role(request, AgentRole::Fixer)?;
             let findings = material_findings(request);
+            if findings.is_empty() {
+                return Ok(Vec::new());
+            }
             Ok(vec![patch_from_change(
                 request,
                 findings,
@@ -769,8 +822,13 @@ mod tests {
                     id: "42".to_owned(),
                 },
                 commit_sha: "abc123".to_owned(),
+                current_head_sha: Some("abc123".to_owned()),
                 pass_index: 1,
                 status: RunStatus::Running,
+                active_run: None,
+                run_history: Vec::new(),
+                loop_history: Vec::new(),
+                superseded_by: None,
                 findings: Vec::new(),
                 decisions: Vec::new(),
                 patches: Vec::new(),
@@ -911,6 +969,82 @@ mod tests {
     }
 
     #[test]
+    fn judge_command_receives_loop_history_without_stale_findings_as_current() {
+        let mut req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "gemini")],
+        );
+        let stale = finding();
+        req.state.loop_history.push(LoopPassRecord {
+            pass_index: 1,
+            commit_sha: "old-sha".to_owned(),
+            findings: vec![stale.clone()],
+            decisions: vec![Decision {
+                contract_version: ContractVersion::current(),
+                id: "decision-old".to_owned(),
+                subject: DecisionSubject::Finding {
+                    finding_id: stale.id,
+                },
+                verdict: DecisionVerdict::Material,
+                rationale: "was material".to_owned(),
+                provenance: provenance("judge-old", AgentRole::Judge, "gemini"),
+                extensions: BTreeMap::new(),
+            }],
+            patches: Vec::new(),
+            judge_verdict: Some(DecisionVerdict::Material),
+            fix_outcome: Some(RunOutcome::Succeeded),
+        });
+        req.state.pass_index = 2;
+        req.state.findings.push(finding());
+        let mut judge = JsonCommandJudgeBody::new(vec!["judge-json".to_owned()]);
+        let mut workspace = FakeWorkspace::with_stdout(
+            r#"[{"finding_id":"finding-1","verdict":"minor","rationale":"below threshold"}]"#,
+        );
+
+        let decisions = judge.run_judge(&req, &mut workspace).expect("judge");
+
+        assert_eq!(decisions.len(), 1);
+        let stdin: Value = serde_json::from_slice(&workspace.execs[0].stdin).expect("judge stdin");
+        assert_eq!(stdin["pass_count"], json!(2));
+        assert_eq!(
+            stdin["current_findings"].as_array().expect("current").len(),
+            1
+        );
+        assert_eq!(stdin["findings"].as_array().expect("compat").len(), 1);
+        assert_eq!(stdin["loop_history"].as_array().expect("history").len(), 1);
+        assert_eq!(stdin["prior_verdicts"], json!(["material"]));
+        assert_eq!(stdin["fix_outcomes"], json!(["succeeded"]));
+    }
+
+    #[test]
+    fn judge_run_with_no_current_findings_records_convergence() {
+        let req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "gemini")],
+        );
+        let mut launcher = Pump19RunLauncher::new(
+            FakeSessions,
+            FakeReview {
+                findings: Vec::new(),
+            },
+            FakeJudge {
+                verdict: DecisionVerdict::Material,
+            },
+            FakeFix,
+            MergeGateFinishBody,
+        );
+        let mut workspace = FakeWorkspace::default();
+
+        let outcome = launcher
+            .launch_run(req, &mut workspace)
+            .expect("launch judge");
+
+        assert_eq!(outcome.outcome, RunOutcome::Succeeded);
+        assert_eq!(outcome.decisions.len(), 1);
+        assert_eq!(outcome.decisions[0].verdict, DecisionVerdict::Converged);
+    }
+
+    #[test]
     fn fix_run_emits_patch_answering_material_findings() {
         let mut req = request(
             RunKind::Fix,
@@ -951,6 +1085,33 @@ mod tests {
             vec![FindingId("finding-1".to_owned())]
         );
         assert!(outcome.patches[0].idempotency_key.contains("patch-"));
+    }
+
+    #[test]
+    fn fix_run_that_executes_without_material_findings_is_no_op() {
+        let req = request(
+            RunKind::Fix,
+            vec![provenance("fixer", AgentRole::Fixer, "codex")],
+        );
+        let mut launcher = Pump19RunLauncher::new(
+            FakeSessions,
+            FakeReview {
+                findings: Vec::new(),
+            },
+            FakeJudge {
+                verdict: DecisionVerdict::Minor,
+            },
+            FakeFix,
+            MergeGateFinishBody,
+        );
+        let mut workspace = FakeWorkspace::default();
+
+        let outcome = launcher
+            .launch_run(req, &mut workspace)
+            .expect("launch fix");
+
+        assert_eq!(outcome.outcome, RunOutcome::NoOp);
+        assert!(outcome.patches.is_empty());
     }
 
     #[test]
