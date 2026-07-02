@@ -10,7 +10,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -37,6 +37,58 @@ const EXT_RAW_STDOUT: &str = "pump19.runs.raw_stdout";
 const EXT_RAW_STDERR: &str = "pump19.runs.raw_stderr";
 const EXT_MODEL_FAMILY: &str = "pump19.runs.model_family";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
+const ENSEMBLE_ENV_EXACT_ALLOWLIST: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_VERSION",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CODEX_HOME",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "GOOGLE_VERTEX_LOCATION",
+    "GROQ_API_KEY",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOGNAME",
+    "MISTRAL_API_KEY",
+    "NODE_EXTRA_CA_CERTS",
+    "OPENAI_API_BASE",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_ORGANIZATION",
+    "OPENAI_PROJECT",
+    "OPENROUTER_API_KEY",
+    "OPENCODE_CONFIG_DIR",
+    "PATH",
+    "SHELL",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USER",
+    "XAI_API_KEY",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+];
 
 /// Errors raised while preparing sessions or executing run bodies.
 #[derive(Debug, Error)]
@@ -200,6 +252,8 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
         let json_args = serde_json::to_string(&request.args).map_err(RunBodyError::EnsembleJson)?;
         let output = Command::new(&self.node_program)
+            .env_clear()
+            .envs(filtered_ensemble_env(env::vars()))
             .arg(&self.launcher_path)
             .arg("--json-args")
             .arg(json_args)
@@ -225,6 +279,18 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             archive_dir: request.archive_dir,
         })
     }
+}
+
+fn filtered_ensemble_env(
+    vars: impl IntoIterator<Item = (String, String)>,
+) -> BTreeMap<String, String> {
+    vars.into_iter()
+        .filter(|(name, _value)| ensemble_env_allowed(name))
+        .collect()
+}
+
+fn ensemble_env_allowed(name: &str) -> bool {
+    ENSEMBLE_ENV_EXACT_ALLOWLIST.contains(&name)
 }
 
 /// `RunLauncher` implementation composed from narrow, testable run-body seams.
@@ -1025,6 +1091,29 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn host_runner_env_filter_keeps_model_auth_and_drops_forge_credentials() {
+        let env = filtered_ensemble_env([
+            ("PATH".to_owned(), "/usr/bin".to_owned()),
+            ("HOME".to_owned(), "/home/pump19".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "openai".to_owned()),
+            ("ANTHROPIC_API_KEY".to_owned(), "anthropic".to_owned()),
+            ("GEMINI_API_KEY".to_owned(), "gemini".to_owned()),
+            ("FORGEJO_TOKEN".to_owned(), "forgejo".to_owned()),
+            ("GITEA_TOKEN".to_owned(), "gitea".to_owned()),
+            ("GITHUB_TOKEN".to_owned(), "github".to_owned()),
+        ]);
+
+        assert_eq!(env.get("OPENAI_API_KEY"), Some(&"openai".to_owned()));
+        assert_eq!(env.get("ANTHROPIC_API_KEY"), Some(&"anthropic".to_owned()));
+        assert_eq!(env.get("GEMINI_API_KEY"), Some(&"gemini".to_owned()));
+        assert_eq!(env.get("PATH"), Some(&"/usr/bin".to_owned()));
+        assert_eq!(env.get("HOME"), Some(&"/home/pump19".to_owned()));
+        assert!(!env.contains_key("FORGEJO_TOKEN"));
+        assert!(!env.contains_key("GITEA_TOKEN"));
+        assert!(!env.contains_key("GITHUB_TOKEN"));
+    }
+
     #[derive(Debug, Default)]
     struct FakeWorkspace {
         outputs: VecDeque<WorkspaceExecOutput>,
@@ -1246,6 +1335,7 @@ mod tests {
                 findings: Vec::new(),
                 decisions: Vec::new(),
                 patches: Vec::new(),
+                publication: pump19_contract::PublicationState::default(),
                 ceiling: None,
                 extensions: BTreeMap::new(),
             },
@@ -1536,7 +1626,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_timeout_error_fails_closed() {
+    fn runner_error_propagates_as_workflow_failure() {
         let root = tempfile::tempdir().expect("workspace root");
         install_standalone(root.path(), "sample", "Sample", "Prove timeout", None)
             .expect("install judgement files");
@@ -1553,7 +1643,7 @@ mod tests {
 
         let error = body
             .run_review(&req, &mut workspace)
-            .expect_err("timeout fails closed");
+            .expect_err("runner errors fail closed");
 
         assert!(matches!(error, RunBodyError::Ensemble(message) if message.contains("timed out")));
     }
