@@ -2,6 +2,7 @@
 
 use std::{
     cell::RefCell,
+    collections::VecDeque,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -27,9 +28,11 @@ use pump19_core::{
     WorkspaceRequest,
 };
 use pump19_forge_forgejo::{
-    ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
-    ForgejoMergeability, ForgejoNormalisationConfig, ForgejoPullRequestSnapshot,
-    ForgejoReviewCleanliness, NormalisationError, contract_event, forge_facts,
+    ForgejoActivityError, ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency,
+    ForgejoEventSource, ForgejoLabelApplication, ForgejoMergeability, ForgejoNormalisationConfig,
+    ForgejoPollingClient, ForgejoPollingConfig, ForgejoPullRequestSnapshot,
+    ForgejoReviewCleanliness, NormalisationError, PollingForgejoActivitySource, contract_event,
+    forge_facts,
 };
 use pump19_runs::{
     AgentSessionPreparer, EnsembleFixBody, EnsembleJudgeBody, EnsembleReviewBody,
@@ -50,6 +53,20 @@ struct EmptyEventSource;
 impl EventSource for EmptyEventSource {
     fn next_event(&mut self) -> Result<Option<ContractEvent>, CoreError> {
         Ok(None)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct EstatePollingClient {
+    polls: VecDeque<Vec<ForgejoPullRequestSnapshot>>,
+}
+
+impl ForgejoPollingClient for EstatePollingClient {
+    fn open_pull_requests(
+        &mut self,
+        _repository: &str,
+    ) -> Result<Vec<ForgejoPullRequestSnapshot>, ForgejoActivityError> {
+        Ok(self.polls.pop_front().unwrap_or_default())
     }
 }
 
@@ -1552,6 +1569,147 @@ fn repeated_material_finding_updates_existing_comment_identity() {
 }
 
 #[test]
+fn minor_judge_finding_is_recorded_but_suppressed_from_pr_publication() {
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let comment_updates = Rc::clone(&forge_operations.comment_updates);
+    let comment_resolutions = Rc::clone(&forge_operations.comment_resolutions);
+    let mut state = run_state();
+    state.status = RunStatus::Completed;
+    state.pass_index = 2;
+    state.findings = vec![
+        finding_with(
+            "minor-codex",
+            verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+            2,
+        ),
+        finding_with(
+            "minor-claude",
+            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            2,
+        ),
+    ];
+    state.run_history.push(RunRecord {
+        run_id: RunId("review-pass-2".to_owned()),
+        run_kind: RunKind::Review,
+        event_id: "forgejo-pr-updated-after-fix".to_owned(),
+        rule_id: "review-on-pr-updated".to_owned(),
+        pass_index: 2,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Completed,
+        outcome: Some(RunOutcome::Succeeded),
+    });
+    state.extensions.insert(
+        "pump19.core.running_run_id".to_owned(),
+        serde_json::Value::String("review-pass-2".to_owned()),
+    );
+    let state_store = SharedEstateStateStore::with_state(state);
+    let state_observer = state_store.clone();
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-verification-suppressed-finding")),
+        },
+        EstateLoopLauncher,
+        state_store,
+        forge_operations,
+    );
+
+    let outcomes = core
+        .process_event(
+            &run_completed_event(
+                "review-pass-2-completed",
+                RunId("review-pass-2".to_owned()),
+                RunKind::Review,
+            ),
+            &[judge_after_review_rule()],
+        )
+        .expect("review completion launches judge");
+
+    assert!(launched_run_id(&outcomes).is_some());
+    assert!(comments.borrow().is_empty());
+    assert!(comment_updates.borrow().is_empty());
+    assert!(comment_resolutions.borrow().is_empty());
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load state")
+        .expect("state saved");
+    assert!(
+        latest
+            .decisions
+            .iter()
+            .any(|decision| decision.verdict == DecisionVerdict::Minor)
+    );
+    assert!(latest.publication.attempts.is_empty());
+    assert!(latest.publication.finding_comments.is_empty());
+}
+
+#[test]
+fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let comment_resolutions = Rc::clone(&forge_operations.comment_resolutions);
+    let fix_pushes = Rc::clone(&forge_operations.fix_pushes);
+    let state_store = SharedEstateStateStore::default();
+    let state_observer = state_store.clone();
+    let polling = PollingForgejoActivitySource::new(
+        EstatePollingClient {
+            polls: VecDeque::from([
+                vec![polling_snapshot("head-sha-1")],
+                vec![polling_snapshot("head-sha-after-fix")],
+                Vec::new(),
+            ]),
+        },
+        ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
+    );
+    let source = ForgejoEventSource::new(polling, ForgejoNormalisationConfig::new("pump19-finish"));
+    let mut core = Core::with_forge_operations(
+        source,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-verification-daemon-loop")),
+        },
+        EstateLoopLauncher,
+        state_store,
+        forge_operations,
+    );
+
+    let batches = core
+        .drain_available(&loop_rules())
+        .expect("polling ingress drains self-emitted loop");
+
+    assert_eq!(
+        batches
+            .iter()
+            .filter(|batch| matches!(batch.as_slice(), [DispatchOutcome::Launched { .. }]))
+            .count(),
+        5,
+        "review, judge, fix, re-review, and final judge should launch without external completion echoes"
+    );
+    assert_eq!(comments.borrow().len(), 1);
+    assert_eq!(fix_pushes.borrow().len(), 1);
+    assert_eq!(fix_pushes.borrow()[0].expected_head_sha, "head-sha-1");
+    assert_eq!(comment_resolutions.borrow().len(), 1);
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest")
+        .expect("latest state");
+    assert_eq!(latest.commit_sha, "head-sha-after-fix");
+    assert_eq!(
+        latest.publication.fix_pushes[0]
+            .receipt
+            .new_head_sha
+            .as_deref(),
+        Some("head-sha-after-fix")
+    );
+    assert!(
+        Criteria::State {
+            state: StateCriterion::HasConverged
+        }
+        .matches(&finish_label_event(), Some(&latest))
+    );
+}
+
+#[test]
 fn duplicate_pr_event_is_idempotent_and_does_not_launch_a_second_run() {
     let state_store = SharedEstateStateStore::default();
     let launcher = RecordingLauncher::new(vec![
@@ -2256,5 +2414,26 @@ fn forgejo_snapshot(
             applied_by: finish_actor,
         }],
         actor_permissions,
+    }
+}
+
+fn polling_snapshot(head_sha: &str) -> ForgejoPullRequestSnapshot {
+    ForgejoPullRequestSnapshot {
+        repository: "acme/widgets".to_owned(),
+        id: "42".to_owned(),
+        head_sha: head_sha.to_owned(),
+        base_sha: "base-sha-1".to_owned(),
+        branch_currency: ForgejoBranchCurrency::Current,
+        cleanliness: ForgejoReviewCleanliness::Clean,
+        mergeability: ForgejoMergeability::Mergeable,
+        labels: Vec::new(),
+        actor_permissions: vec![ForgejoActorPermission {
+            actor: ForgejoActor {
+                id: "pump19-core".to_owned(),
+                display_name: "Pump-19 Core".to_owned(),
+            },
+            can_apply_finish_label: true,
+            can_merge: true,
+        }],
     }
 }
