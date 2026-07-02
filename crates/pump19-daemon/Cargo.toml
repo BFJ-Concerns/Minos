@@ -11,6 +11,7 @@ pump19-core = { path = "../pump19-core" }
 pump19-forge-forgejo = { path = "../pump19-forge-forgejo" }
 pump19-runs = { path = "../pump19-runs" }
 pump19-workspace = { path = "../pump19-workspace" }
+ctrlc = { version = "3.5.2", features = ["termination"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

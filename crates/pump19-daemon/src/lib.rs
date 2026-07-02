@@ -14,6 +14,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -37,6 +41,7 @@ use pump19_runs::{
 };
 use pump19_workspace::{CommandRuntime, ContainerWorkspaceProvider, WorkspaceConfig};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use thiserror::Error;
 
 /// Errors raised while loading, composing, or running the daemon.
@@ -62,6 +67,8 @@ pub enum DaemonError {
     Core(#[from] CoreError),
     #[error("workflow script for {0:?} is missing from the prompt pack")]
     MissingWorkflowScript(RunKind),
+    #[error("signal handler setup failed: {0}")]
+    Signal(String),
 }
 
 /// Deployment configuration for one Pump-19 daemon process.
@@ -162,12 +169,44 @@ impl Shutdown for NeverShutdown {
     }
 }
 
+/// Shutdown check backed by SIGINT/SIGTERM.
+#[derive(Clone, Debug)]
+pub struct SignalShutdown {
+    requested: Arc<AtomicBool>,
+}
+
+impl SignalShutdown {
+    /// Installs a process signal handler that flips the daemon shutdown flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the process already has an incompatible ctrl-c
+    /// handler or the platform cannot install the handler.
+    pub fn install() -> Result<Self, DaemonError> {
+        let requested = Arc::new(AtomicBool::new(false));
+        let handler_requested = Arc::clone(&requested);
+        ctrlc::set_handler(move || {
+            handler_requested.store(true, Ordering::SeqCst);
+        })
+        .map_err(|error| DaemonError::Signal(error.to_string()))?;
+        Ok(Self { requested })
+    }
+}
+
+impl Shutdown for SignalShutdown {
+    fn should_shutdown(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+}
+
 /// Summary of a daemon run.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DaemonRunSummary {
     pub events_processed: usize,
     pub launches: usize,
     pub quiet_polls: u32,
+    pub recovered_completion_events: usize,
+    pub dispatch_errors_continued: usize,
     pub stopped_by_shutdown: bool,
 }
 
@@ -179,7 +218,20 @@ pub struct DaemonRunSummary {
 pub fn run_from_config(config: DaemonConfig) -> Result<(), DaemonError> {
     let rules = load_rules(&config)?;
     let mut daemon = build_daemon(config)?;
-    let _summary = daemon.run(&rules, &NeverShutdown)?;
+    let shutdown = SignalShutdown::install()?;
+    let summary = daemon.run(&rules, &shutdown)?;
+    log_daemon_event(
+        "info",
+        "daemon_summary",
+        &json!({
+            "events_processed": summary.events_processed,
+            "launches": summary.launches,
+            "quiet_polls": summary.quiet_polls,
+            "recovered_completion_events": summary.recovered_completion_events,
+            "dispatch_errors_continued": summary.dispatch_errors_continued,
+            "stopped_by_shutdown": summary.stopped_by_shutdown,
+        }),
+    );
     Ok(())
 }
 
@@ -224,29 +276,124 @@ where
         shutdown: &dyn Shutdown,
     ) -> Result<DaemonRunSummary, DaemonError> {
         let mut summary = DaemonRunSummary::default();
+        self.rederive_pending_completions(&mut summary)?;
         loop {
             if shutdown.should_shutdown() {
                 summary.stopped_by_shutdown = true;
+                log_daemon_event(
+                    "info",
+                    "shutdown_requested",
+                    &json!({
+                        "events_processed": summary.events_processed,
+                        "pending_events": self.core.pending_event_count(),
+                    }),
+                );
                 return Ok(summary);
             }
-            if let Some(outcomes) = self.core.run_next(rules)? {
-                summary.events_processed += 1;
-                summary.launches += outcomes
-                    .iter()
-                    .filter(|outcome| matches!(outcome, DispatchOutcome::Launched { .. }))
-                    .count();
-                summary.quiet_polls = 0;
-            } else {
-                summary.quiet_polls = summary.quiet_polls.saturating_add(1);
-                if self
-                    .stop_after_quiet_polls
-                    .is_some_and(|limit| summary.quiet_polls >= limit)
-                {
-                    return Ok(summary);
+            match self.core.run_next(rules) {
+                Ok(Some(outcomes)) => {
+                    let launched = outcomes
+                        .iter()
+                        .filter(|outcome| matches!(outcome, DispatchOutcome::Launched { .. }))
+                        .count();
+                    summary.events_processed += 1;
+                    summary.launches += launched;
+                    summary.quiet_polls = 0;
+                    log_daemon_event(
+                        "info",
+                        "dispatch_outcomes",
+                        &json!({
+                            "event_index": summary.events_processed,
+                            "launches": launched,
+                            "outcomes": outcomes.iter().map(dispatch_outcome_log).collect::<Vec<_>>(),
+                            "pending_events": self.core.pending_event_count(),
+                        }),
+                    );
                 }
-                thread::sleep(self.poll_interval);
+                Ok(None) => {
+                    if self.rederive_pending_completions(&mut summary)? {
+                        continue;
+                    }
+                    summary.quiet_polls = summary.quiet_polls.saturating_add(1);
+                    log_daemon_event(
+                        "info",
+                        "quiet_poll",
+                        &json!({
+                            "quiet_polls": summary.quiet_polls,
+                            "stop_after_quiet_polls": self.stop_after_quiet_polls,
+                        }),
+                    );
+                    if self
+                        .stop_after_quiet_polls
+                        .is_some_and(|limit| summary.quiet_polls >= limit)
+                    {
+                        return Ok(summary);
+                    }
+                    thread::sleep(self.poll_interval);
+                }
+                Err(error) if core_error_is_daemon_fatal(&error) => {
+                    log_daemon_event(
+                        "error",
+                        "daemon_fatal_core_error",
+                        &json!({
+                            "class": core_error_class(&error),
+                            "error": error.to_string(),
+                        }),
+                    );
+                    return Err(DaemonError::Core(error));
+                }
+                Err(error) => {
+                    summary.dispatch_errors_continued += 1;
+                    let retry_after_poll_interval = matches!(error, CoreError::EventSource(_));
+                    if retry_after_poll_interval {
+                        summary.quiet_polls = summary.quiet_polls.saturating_add(1);
+                    } else {
+                        summary.quiet_polls = 0;
+                    }
+                    log_daemon_event(
+                        "error",
+                        "dispatch_error_continued",
+                        &json!({
+                            "class": core_error_class(&error),
+                            "error": error.to_string(),
+                            "continued_errors": summary.dispatch_errors_continued,
+                            "retry_after_poll_interval": retry_after_poll_interval,
+                        }),
+                    );
+                    if retry_after_poll_interval {
+                        if self
+                            .stop_after_quiet_polls
+                            .is_some_and(|limit| summary.quiet_polls >= limit)
+                        {
+                            return Ok(summary);
+                        }
+                        thread::sleep(self.poll_interval);
+                    }
+                }
             }
         }
+    }
+
+    fn rederive_pending_completions(
+        &mut self,
+        summary: &mut DaemonRunSummary,
+    ) -> Result<bool, DaemonError> {
+        let recovered = self.core.recover_pending_completions()?;
+        if recovered == 0 {
+            return Ok(false);
+        }
+        summary.recovered_completion_events += recovered;
+        summary.quiet_polls = 0;
+        log_daemon_event(
+            "info",
+            "completion_recovery",
+            &json!({
+                "recovered": recovered,
+                "total_recovered": summary.recovered_completion_events,
+                "pending_events": self.core.pending_event_count(),
+            }),
+        );
+        Ok(true)
     }
 }
 
@@ -255,6 +402,10 @@ trait CoreRunner {
         &mut self,
         rules: &[TriggerRule],
     ) -> Result<Option<Vec<DispatchOutcome>>, CoreError>;
+
+    fn recover_pending_completions(&mut self) -> Result<usize, CoreError>;
+
+    fn pending_event_count(&self) -> usize;
 }
 
 impl<E, W, L, S, F> CoreRunner for Core<E, W, L, S, F>
@@ -271,6 +422,77 @@ where
     ) -> Result<Option<Vec<DispatchOutcome>>, CoreError> {
         self.process_next(rules)
     }
+
+    fn recover_pending_completions(&mut self) -> Result<usize, CoreError> {
+        self.rederive_pending_completions()
+    }
+
+    fn pending_event_count(&self) -> usize {
+        Self::pending_event_count(self)
+    }
+}
+
+const fn core_error_is_daemon_fatal(error: &CoreError) -> bool {
+    // Per-event launch/forge/adapter failures are recorded against the PR by the
+    // core before they reach the daemon. Store and serialisation errors are
+    // fatal because continuing would make the persisted run ledger untrustworthy.
+    matches!(
+        error,
+        CoreError::StateStore(_) | CoreError::Io { .. } | CoreError::Json { .. }
+    )
+}
+
+const fn core_error_class(error: &CoreError) -> &'static str {
+    match error {
+        CoreError::EventSource(_) => "event_source",
+        CoreError::Workspace(_) => "workspace",
+        CoreError::Launcher(_) => "launcher",
+        CoreError::StateStore(_) => "state_store",
+        CoreError::ForgeOperation(_) => "forge_operation",
+        CoreError::Io { .. } => "io",
+        CoreError::Json { .. } => "json",
+    }
+}
+
+fn dispatch_outcome_log(outcome: &DispatchOutcome) -> Value {
+    match outcome {
+        DispatchOutcome::Launched { rule_id, run_id } => json!({
+            "outcome": "launched",
+            "rule_id": rule_id,
+            "run_id": run_id.0,
+        }),
+        DispatchOutcome::Superseded {
+            rule_id,
+            run_id,
+            superseded_by,
+        } => json!({
+            "outcome": "superseded",
+            "rule_id": rule_id,
+            "run_id": run_id.0,
+            "superseded_by": superseded_by,
+        }),
+        DispatchOutcome::Refused { rule_id, reason } => json!({
+            "outcome": "refused",
+            "rule_id": rule_id,
+            "reason": format!("{reason:?}"),
+        }),
+        DispatchOutcome::Skipped { rule_id, reason } => json!({
+            "outcome": "skipped",
+            "rule_id": rule_id,
+            "reason": format!("{reason:?}"),
+        }),
+    }
+}
+
+fn log_daemon_event(level: &str, event: &str, fields: &Value) {
+    eprintln!(
+        "{}",
+        json!({
+            "level": level,
+            "event": event,
+            "fields": fields,
+        })
+    );
 }
 
 fn load_rules(config: &DaemonConfig) -> Result<Vec<TriggerRule>, DaemonError> {
@@ -618,15 +840,19 @@ mod tests {
         WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
     };
     use pump19_forge_forgejo::{
-        ForgejoBranchCurrency, ForgejoMergeability, ForgejoReviewCleanliness,
+        ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
+        ForgejoMergeability, ForgejoReviewCleanliness,
     };
     use tempfile::tempdir;
 
     use super::*;
 
+    type StubOutcome = Result<Option<Vec<DispatchOutcome>>, CoreError>;
+
     #[derive(Clone, Debug)]
     struct StubCore {
-        outcomes: Rc<RefCell<Vec<Option<Vec<DispatchOutcome>>>>>,
+        outcomes: Rc<RefCell<Vec<StubOutcome>>>,
+        recovered: Rc<RefCell<Vec<usize>>>,
     }
 
     impl CoreRunner for StubCore {
@@ -634,7 +860,22 @@ mod tests {
             &mut self,
             _rules: &[TriggerRule],
         ) -> Result<Option<Vec<DispatchOutcome>>, CoreError> {
-            Ok(self.outcomes.borrow_mut().remove(0))
+            self.outcomes.borrow_mut().remove(0)
+        }
+
+        fn recover_pending_completions(&mut self) -> Result<usize, CoreError> {
+            Ok(self.recovered.borrow_mut().pop().unwrap_or_default())
+        }
+
+        fn pending_event_count(&self) -> usize {
+            0
+        }
+    }
+
+    fn stub_core(outcomes: Vec<StubOutcome>) -> StubCore {
+        StubCore {
+            outcomes: Rc::new(RefCell::new(outcomes)),
+            recovered: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -843,6 +1084,10 @@ mod tests {
                 .cloned())
         }
 
+        fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+            Ok(self.states.borrow().clone())
+        }
+
         fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
             let mut states = self.states.borrow_mut();
             if let Some(existing) = states.iter_mut().find(|candidate| {
@@ -893,9 +1138,7 @@ mod tests {
     #[test]
     fn run_loop_stops_cleanly_when_quiet() {
         let mut daemon = Pump19Daemon::new(
-            StubCore {
-                outcomes: Rc::new(RefCell::new(vec![None])),
-            },
+            stub_core(vec![Ok(None)]),
             LoopControlConfig {
                 poll_interval_ms: 0,
                 stop_after_quiet_polls: Some(1),
@@ -912,18 +1155,16 @@ mod tests {
     #[test]
     fn run_loop_checks_shutdown_between_events() {
         let mut daemon = Pump19Daemon::new(
-            StubCore {
-                outcomes: Rc::new(RefCell::new(vec![
-                    Some(vec![DispatchOutcome::Launched {
-                        rule_id: "review".to_owned(),
-                        run_id: pump19_contract::RunId("run-review".to_owned()),
-                    }]),
-                    Some(vec![DispatchOutcome::Launched {
-                        rule_id: "judge".to_owned(),
-                        run_id: pump19_contract::RunId("run-judge".to_owned()),
-                    }]),
-                ])),
-            },
+            stub_core(vec![
+                Ok(Some(vec![DispatchOutcome::Launched {
+                    rule_id: "review".to_owned(),
+                    run_id: pump19_contract::RunId("run-review".to_owned()),
+                }])),
+                Ok(Some(vec![DispatchOutcome::Launched {
+                    rule_id: "judge".to_owned(),
+                    run_id: pump19_contract::RunId("run-judge".to_owned()),
+                }])),
+            ]),
             LoopControlConfig {
                 poll_interval_ms: 0,
                 stop_after_quiet_polls: None,
@@ -942,10 +1183,81 @@ mod tests {
     }
 
     #[test]
+    fn run_loop_logs_per_event_errors_and_continues() {
+        let mut daemon = Pump19Daemon::new(
+            stub_core(vec![
+                Err(CoreError::Launcher("agent launch failed".to_owned())),
+                Ok(Some(vec![DispatchOutcome::Launched {
+                    rule_id: "review".to_owned(),
+                    run_id: pump19_contract::RunId("run-review".to_owned()),
+                }])),
+                Ok(None),
+            ]),
+            LoopControlConfig {
+                poll_interval_ms: 0,
+                stop_after_quiet_polls: Some(1),
+            },
+        );
+
+        let summary = daemon.run(&[], &NeverShutdown).expect("run daemon");
+
+        assert_eq!(summary.dispatch_errors_continued, 1);
+        assert_eq!(summary.events_processed, 1);
+        assert_eq!(summary.launches, 1);
+        assert_eq!(summary.quiet_polls, 1);
+    }
+
+    #[test]
+    fn run_loop_treats_store_errors_as_fatal() {
+        let mut daemon = Pump19Daemon::new(
+            stub_core(vec![Err(CoreError::StateStore(
+                "state ledger cannot be trusted".to_owned(),
+            ))]),
+            LoopControlConfig {
+                poll_interval_ms: 0,
+                stop_after_quiet_polls: Some(1),
+            },
+        );
+
+        let error = daemon
+            .run(&[], &NeverShutdown)
+            .expect_err("store error should stop daemon");
+
+        assert!(matches!(error, DaemonError::Core(CoreError::StateStore(_))));
+    }
+
+    #[test]
+    fn run_loop_rederives_completions_before_quiet_polling() {
+        let mut daemon = Pump19Daemon::new(
+            StubCore {
+                outcomes: Rc::new(RefCell::new(vec![
+                    Ok(Some(vec![DispatchOutcome::Launched {
+                        rule_id: "review".to_owned(),
+                        run_id: pump19_contract::RunId("run-review".to_owned()),
+                    }])),
+                    Ok(None),
+                ])),
+                recovered: Rc::new(RefCell::new(vec![0, 1])),
+            },
+            LoopControlConfig {
+                poll_interval_ms: 0,
+                stop_after_quiet_polls: Some(1),
+            },
+        );
+
+        let summary = daemon.run(&[], &NeverShutdown).expect("run daemon");
+
+        assert_eq!(summary.recovered_completion_events, 1);
+        assert_eq!(summary.events_processed, 1);
+        assert_eq!(summary.quiet_polls, 1);
+    }
+
+    #[test]
     fn daemon_drives_loop_from_polled_pr_without_completion_echo() {
         let cleaned = Rc::new(RefCell::new(0));
         let forge_operations = RecordingForgeOperations::default();
         let comments = Rc::clone(&forge_operations.comments);
+        let merges = Rc::clone(&forge_operations.merges);
         let store = SharedStore::default();
         let state_observer = store.clone();
         let polling = PollingForgejoActivitySource::new(
@@ -977,9 +1289,10 @@ mod tests {
             .run(&loop_rules(), &NeverShutdown)
             .expect("run daemon");
 
-        assert_eq!(summary.launches, 5);
-        assert_eq!(*cleaned.borrow(), 5);
+        assert_eq!(summary.launches, 6);
+        assert_eq!(*cleaned.borrow(), 6);
         assert_eq!(comments.borrow().len(), 1);
+        assert_eq!(merges.borrow().len(), 1);
         assert!(matches!(
             comments.borrow()[0].authorisation.evidence.as_slice(),
             [
@@ -1071,8 +1384,21 @@ stop_after_quiet_polls = 1
             branch_currency: ForgejoBranchCurrency::Current,
             cleanliness: ForgejoReviewCleanliness::Clean,
             mergeability: ForgejoMergeability::Mergeable,
-            labels: Vec::new(),
-            actor_permissions: Vec::new(),
+            labels: vec![ForgejoLabelApplication {
+                name: "pump19-finish".to_owned(),
+                applied_by: Some(ForgejoActor {
+                    id: "pump19-core".to_owned(),
+                    display_name: "pump19-core".to_owned(),
+                }),
+            }],
+            actor_permissions: vec![ForgejoActorPermission {
+                actor: ForgejoActor {
+                    id: "pump19-core".to_owned(),
+                    display_name: "pump19-core".to_owned(),
+                },
+                can_apply_finish_label: true,
+                can_merge: true,
+            }],
         }
     }
 
@@ -1217,6 +1543,31 @@ stop_after_quiet_polls = 1
                     fixers: Vec::new(),
                     judge: None,
                     finishers: Vec::new(),
+                },
+            },
+            TriggerRule {
+                id: "finish-on-label".to_owned(),
+                run_kind: RunKind::Finish,
+                criteria: Criteria::All {
+                    criteria: vec![
+                        Criteria::Event {
+                            event: EventKind::LabelApplied {
+                                name: Some("pump19-finish".to_owned()),
+                            },
+                        },
+                        Criteria::State {
+                            state: StateCriterion::HasConverged,
+                        },
+                        Criteria::State {
+                            state: StateCriterion::CleanAndCurrent,
+                        },
+                    ],
+                },
+                agent_plan: AgentPlan {
+                    reviewers: Vec::new(),
+                    fixers: Vec::new(),
+                    judge: None,
+                    finishers: vec![target("finisher-codex", AgentRole::Finish, "codex")],
                 },
             },
         ]

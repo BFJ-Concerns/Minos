@@ -10,7 +10,7 @@
 )]
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     path::PathBuf,
 };
@@ -437,6 +437,20 @@ pub trait RunStateStore {
     /// Returns an error when the store cannot read or decode candidate states.
     fn load_by_run_id(&self, run_id: &RunId) -> Result<Option<PrRunState>, CoreError>;
 
+    /// Loads states that may contain terminal runs whose completion events need
+    /// regenerating after a daemon restart.
+    ///
+    /// Stores that cannot enumerate safely may return an empty list. The JSON
+    /// deployment store implements this so the self-emitted completion queue is
+    /// recoverable from durable state rather than process memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot read or decode candidate states.
+    fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+        Ok(Vec::new())
+    }
+
     /// Saves state durably enough that a crash cannot be mistaken for success.
     ///
     /// # Errors
@@ -450,6 +464,7 @@ pub trait RunStateStore {
 pub struct Core<E, W, L, S, F = NoopForgeOperations> {
     event_source: E,
     pending_events: VecDeque<ContractEvent>,
+    queued_completion_event_ids: BTreeSet<String>,
     workspace_provider: W,
     launcher: L,
     state_store: S,
@@ -494,6 +509,7 @@ where
         Self {
             event_source,
             pending_events: VecDeque::new(),
+            queued_completion_event_ids: BTreeSet::new(),
             workspace_provider,
             launcher,
             state_store,
@@ -536,6 +552,47 @@ where
             batches.push(outcomes);
         }
         Ok(batches)
+    }
+
+    /// Regenerates self-emitted run-completion events from durable run state.
+    ///
+    /// This is the crash-recovery counterpart to the in-process completion queue:
+    /// after a restart, the completed run record is still present in the store,
+    /// so the same stable completion event id can be derived and re-entered into
+    /// ordinary dispatch. Duplicate prechecks then skip any completion that was
+    /// already processed before the crash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state store cannot enumerate or decode candidate
+    /// states for recovery.
+    pub fn rederive_pending_completions(&mut self) -> Result<usize, CoreError> {
+        let pending_ids = self
+            .pending_events
+            .iter()
+            .map(|event| event.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut queued = 0;
+        for state in self.state_store.completion_recovery_states()? {
+            for record in &state.run_history {
+                let Some(event) = run_completed_event_from_record(record) else {
+                    continue;
+                };
+                if pending_ids.contains(&event.id)
+                    || self.queued_completion_event_ids.contains(&event.id)
+                {
+                    continue;
+                }
+                self.queue_completion_event(event);
+                queued += 1;
+            }
+        }
+        Ok(queued)
+    }
+
+    #[must_use]
+    pub fn pending_event_count(&self) -> usize {
+        self.pending_events.len()
     }
 
     /// Evaluates trigger rules for one event and launches only authorised runs.
@@ -737,7 +794,7 @@ where
         save_result?;
         cleanup_result?;
         if let Some(completion_event) = run_completed_event_from_state(&running_state, &run_id) {
-            self.pending_events.push_back(completion_event);
+            self.queue_completion_event(completion_event);
         }
 
         Ok(DispatchOutcome::Launched {
@@ -1224,6 +1281,11 @@ where
         }
         Ok(provenances)
     }
+
+    fn queue_completion_event(&mut self, event: ContractEvent) {
+        self.queued_completion_event_ids.insert(event.id.clone());
+        self.pending_events.push_back(event);
+    }
 }
 
 /// The durable key for a PR run state.
@@ -1368,6 +1430,14 @@ impl RunStateStore for JsonRunStateStore {
         Ok(self.all_states()?.into_iter().find(|state| {
             state.commit_sha != CONTROL_COMMIT_SHA && state_records_run(state, run_id)
         }))
+    }
+
+    fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+        Ok(self
+            .all_states()?
+            .into_iter()
+            .filter(|state| state.commit_sha != CONTROL_COMMIT_SHA)
+            .collect())
     }
 
     fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
@@ -2596,14 +2666,18 @@ fn run_completed_event_from_state(state: &PrRunState, run_id: &RunId) -> Option<
         .iter()
         .rev()
         .find(|record| record.run_id == *run_id)?;
+    run_completed_event_from_record(record)
+}
+
+fn run_completed_event_from_record(record: &RunRecord) -> Option<ContractEvent> {
     let outcome = record.outcome?;
     let mut extensions = Extensions::new();
     extensions.insert(EXT_SELF_EMITTED_EVENT.to_owned(), Value::Bool(true));
     Some(ContractEvent {
         contract_version: ContractVersion::current(),
-        id: stable_id("run-completed", [run_id.0.as_str()]),
+        id: stable_id("run-completed", [record.run_id.0.as_str()]),
         payload: EventPayload::RunCompleted {
-            run_id: run_id.clone(),
+            run_id: record.run_id.clone(),
             run_kind: Some(record.run_kind),
             outcome,
         },
@@ -3095,6 +3169,10 @@ mod tests {
                 .iter()
                 .find(|state| state_records_run(state, run_id))
                 .cloned())
+        }
+
+        fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+            Ok(self.states.clone())
         }
 
         fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
@@ -4234,6 +4312,84 @@ mod tests {
                 rule_id: "judge-after-review".to_owned(),
                 reason: SkipReason::DuplicateDispatch,
             }]
+        );
+    }
+
+    #[test]
+    fn rederived_completions_resume_loop_after_core_restart() {
+        let rules = vec![
+            independent_rule(),
+            review_on_fix_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+        ];
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::from_events(vec![event()]),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+        );
+
+        let opened = core
+            .process_next(&rules)
+            .expect("process opened event")
+            .expect("opened event available");
+        assert!(matches!(
+            opened.as_slice(),
+            [DispatchOutcome::Launched {
+                rule_id,
+                run_id: _
+            }] if rule_id == "review"
+        ));
+        assert_eq!(
+            core.pending_event_count(),
+            1,
+            "the first completion is deliberately still only queued in memory"
+        );
+        let persisted_store = core.state_store.clone();
+        drop(core);
+
+        let mut restarted = Core::with_forge_operations(
+            FakeEventSource::from_events(Vec::new()),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            persisted_store,
+            RecordingForgeOperations::default(),
+        );
+        let recovered = restarted
+            .rederive_pending_completions()
+            .expect("rederive completions from stored run history");
+        assert_eq!(recovered, 1);
+
+        let batches = restarted.drain_available(&rules).expect("resume loop");
+
+        assert_eq!(
+            restarted.workspace_provider.cleaned, 4,
+            "judge, fix, re-review, and final judge resume after restart"
+        );
+        assert_eq!(
+            restarted.forge_operations.comments.len(),
+            1,
+            "the material finding still surfaces once after restart"
+        );
+        assert_eq!(batches.len(), 5);
+        let converged = restarted
+            .state_store
+            .load_latest_for_pr(&pr())
+            .expect("load latest")
+            .expect("converged state");
+        assert!(
+            Criteria::State {
+                state: StateCriterion::HasConverged
+            }
+            .matches(&event(), Some(&converged))
         );
     }
 
