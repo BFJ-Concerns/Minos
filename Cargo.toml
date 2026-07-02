@@ -5,6 +5,7 @@ members = [
     "crates/pump19-core",
     "crates/pump19-forge-forgejo",
     "crates/pump19-judgement",
+    "crates/pump19-daemon",
     "crates/pump19-runs",
     "crates/pump19-workspace",
     "crates/pump19-verification-estate",

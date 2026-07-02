@@ -9,7 +9,11 @@
     )
 )]
 
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fs,
+    path::PathBuf,
+};
 
 use pump19_contract::{
     ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
@@ -33,6 +37,7 @@ const EXT_LAST_RUN_KIND: &str = "pump19.core.last_run_kind";
 const EXT_TOKENS_USED: &str = "pump19.core.tokens_used";
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_LAST_FAILURE: &str = "pump19.core.last_failure";
+const EXT_SELF_EMITTED_EVENT: &str = "pump19.core.self_emitted_event";
 const CONTROL_COMMIT_SHA: &str = "__pump19_pr_control__";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 
@@ -444,6 +449,7 @@ pub trait RunStateStore {
 #[derive(Debug)]
 pub struct Core<E, W, L, S, F = NoopForgeOperations> {
     event_source: E,
+    pending_events: VecDeque<ContractEvent>,
     workspace_provider: W,
     launcher: L,
     state_store: S,
@@ -487,6 +493,7 @@ where
     ) -> Self {
         Self {
             event_source,
+            pending_events: VecDeque::new(),
             workspace_provider,
             launcher,
             state_store,
@@ -504,10 +511,31 @@ where
         &mut self,
         rules: &[TriggerRule],
     ) -> Result<Option<Vec<DispatchOutcome>>, CoreError> {
-        let Some(event) = self.event_source.next_event()? else {
-            return Ok(None);
+        let event = if let Some(event) = self.pending_events.pop_front() {
+            event
+        } else {
+            let Some(event) = self.event_source.next_event()? else {
+                return Ok(None);
+            };
+            event
         };
         self.process_event(&event, rules).map(Some)
+    }
+
+    /// Processes events until both ingress and self-emitted queues are quiet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when event ingestion or dispatch fails.
+    pub fn drain_available(
+        &mut self,
+        rules: &[TriggerRule],
+    ) -> Result<Vec<Vec<DispatchOutcome>>, CoreError> {
+        let mut batches = Vec::new();
+        while let Some(outcomes) = self.process_next(rules)? {
+            batches.push(outcomes);
+        }
+        Ok(batches)
     }
 
     /// Evaluates trigger rules for one event and launches only authorised runs.
@@ -708,6 +736,9 @@ where
         let cleanup_result = self.workspace_provider.cleanup(&workspace);
         save_result?;
         cleanup_result?;
+        if let Some(completion_event) = run_completed_event_from_state(&running_state, &run_id) {
+            self.pending_events.push_back(completion_event);
+        }
 
         Ok(DispatchOutcome::Launched {
             rule_id: rule.id.clone(),
@@ -2500,6 +2531,27 @@ fn state_already_dispatched(
         .any(|record| record.event_id == event.id)
 }
 
+fn run_completed_event_from_state(state: &PrRunState, run_id: &RunId) -> Option<ContractEvent> {
+    let record = state
+        .run_history
+        .iter()
+        .rev()
+        .find(|record| record.run_id == *run_id)?;
+    let outcome = record.outcome?;
+    let mut extensions = Extensions::new();
+    extensions.insert(EXT_SELF_EMITTED_EVENT.to_owned(), Value::Bool(true));
+    Some(ContractEvent {
+        contract_version: ContractVersion::current(),
+        id: stable_id("run-completed", [run_id.0.as_str()]),
+        payload: EventPayload::RunCompleted {
+            run_id: run_id.clone(),
+            run_kind: Some(record.run_kind),
+            outcome,
+        },
+        extensions,
+    })
+}
+
 fn state_is_current_pr_control(state: &PrRunState) -> bool {
     state.status != RunStatus::Superseded
         && state
@@ -2552,6 +2604,12 @@ mod tests {
         fn empty() -> Self {
             Self {
                 events: VecDeque::new(),
+            }
+        }
+
+        fn from_events(events: Vec<ContractEvent>) -> Self {
+            Self {
+                events: VecDeque::from(events),
             }
         }
     }
@@ -4019,6 +4077,75 @@ mod tests {
                 ))
         );
         assert_eq!(core.workspace_provider.cleaned, 6);
+    }
+
+    #[test]
+    fn drain_available_self_emits_run_completions_without_external_echo() {
+        let rules = vec![
+            independent_rule(),
+            review_on_fix_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+        ];
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::from_events(vec![event()]),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+        );
+
+        let batches = core.drain_available(&rules).expect("drain event queue");
+
+        assert_eq!(
+            core.workspace_provider.cleaned, 5,
+            "review, judge, fix, re-review, and final judge all launch from one ingress event"
+        );
+        assert_eq!(
+            core.forge_operations.comments.len(),
+            1,
+            "material findings are still posted exactly once"
+        );
+        assert_eq!(batches.len(), 6);
+        assert!(
+            batches
+                .iter()
+                .filter(|batch| matches!(batch.as_slice(), [DispatchOutcome::Launched { .. }]))
+                .count()
+                == 5
+        );
+        let converged = core
+            .state_store
+            .load_latest_for_pr(&pr())
+            .expect("load latest")
+            .expect("converged state");
+        assert!(
+            Criteria::State {
+                state: StateCriterion::HasConverged
+            }
+            .matches(&event(), Some(&converged))
+        );
+
+        let duplicate = core
+            .process_event(
+                &run_completed_event(
+                    stable_id("run-completed", ["event-1:review:1"]).as_str(),
+                    RunId("event-1:review:1".to_owned()),
+                    RunKind::Review,
+                ),
+                &rules,
+            )
+            .expect("duplicate completion replay");
+        assert_eq!(
+            duplicate,
+            vec![DispatchOutcome::Skipped {
+                rule_id: "judge-after-review".to_owned(),
+                reason: SkipReason::DuplicateDispatch,
+            }]
+        );
     }
 
     #[test]

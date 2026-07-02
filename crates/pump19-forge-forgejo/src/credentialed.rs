@@ -1,4 +1,5 @@
 use pump19_contract::{PatchChange, PatchId, PullRequestRef};
+use serde::Serialize;
 use thiserror::Error;
 
 /// Forgejo API credential owned by the adapter process.
@@ -29,7 +30,7 @@ impl std::fmt::Debug for ForgejoCredential {
 }
 
 /// Metadata the core-authorised operation path passes to Forgejo writes.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ForgejoCommandMetadata {
     pub observed_head_sha: String,
     pub idempotency_key: String,
@@ -44,7 +45,7 @@ pub struct ForgejoCommandReceipt {
 }
 
 /// One fix commit the credentialed client should create and push to the PR head.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ForgejoFixCommit {
     pub patch_id: PatchId,
     pub message: String,
