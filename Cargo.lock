@@ -260,6 +260,7 @@ dependencies = [
  "pump19-adaptations",
  "pump19-contract",
  "pump19-core",
+ "pump19-daemon",
  "pump19-forge-forgejo",
  "pump19-judgement",
  "pump19-runs",
