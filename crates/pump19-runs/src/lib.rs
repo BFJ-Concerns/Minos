@@ -109,6 +109,8 @@ pub enum RunBodyError {
     MissingForgeFacts,
     #[error("invalid normalised forge facts: {0}")]
     InvalidForgeFacts(#[source] serde_json::Error),
+    #[error("merge readiness check failed to execute: {0}")]
+    MergeReadiness(String),
     #[error("ensemble workflow failed: {0}")]
     Ensemble(String),
     #[error("ensemble workflow returned invalid JSON: {0}")]
@@ -703,6 +705,67 @@ impl FinishRunBody for MergeGateFinishBody {
             Ok(RunOutcome::Succeeded)
         } else {
             Ok(RunOutcome::Failed)
+        }
+    }
+}
+
+/// The verdict of a trusted host-side merge-readiness verification.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MergeReadiness {
+    Ready,
+    NotReady { reason: String },
+}
+
+/// Trusted host-side verification that a converged PR is actually ready to
+/// merge — conflict probe against the live base, build, tests — before the
+/// core performs the merge.
+///
+/// A failed *verdict* is `Ok(NotReady)`; `Err` means the check itself could
+/// not execute.
+pub trait MergeReadinessCheck {
+    /// Verifies the PR named by the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the verification cannot execute at all.
+    fn verify(&mut self, request: &RunLaunchRequest) -> Result<MergeReadiness, RunBodyError>;
+}
+
+/// The absent check: no readiness step is configured, so the merge gate alone
+/// decides.
+impl<C: MergeReadinessCheck> MergeReadinessCheck for Option<C> {
+    fn verify(&mut self, request: &RunLaunchRequest) -> Result<MergeReadiness, RunBodyError> {
+        self.as_mut()
+            .map_or(Ok(MergeReadiness::Ready), |check| check.verify(request))
+    }
+}
+
+/// Finish body that applies the contract merge gate and then a configured
+/// merge-readiness verification. The gate is checked first so an unclean or
+/// stale PR never pays for a build.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VerifiedMergeGateFinishBody<C> {
+    check: C,
+}
+
+impl<C> VerifiedMergeGateFinishBody<C> {
+    pub const fn new(check: C) -> Self {
+        Self { check }
+    }
+}
+
+impl<C: MergeReadinessCheck> FinishRunBody for VerifiedMergeGateFinishBody<C> {
+    fn run_finish(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunOutcome, RunBodyError> {
+        if MergeGateFinishBody.run_finish(request, workspace)? != RunOutcome::Succeeded {
+            return Ok(RunOutcome::Failed);
+        }
+        match self.check.verify(request)? {
+            MergeReadiness::Ready => Ok(RunOutcome::Succeeded),
+            MergeReadiness::NotReady { .. } => Ok(RunOutcome::Failed),
         }
     }
 }
@@ -2271,6 +2334,117 @@ mod tests {
         let mut workspace = FakeWorkspace::default();
 
         let outcome = finish.run_finish(&req, &mut workspace).expect("finish");
+
+        assert_eq!(outcome, RunOutcome::Succeeded);
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct FakeReadiness {
+        verdict: Option<MergeReadiness>,
+        calls: u32,
+    }
+
+    impl MergeReadinessCheck for FakeReadiness {
+        fn verify(&mut self, _request: &RunLaunchRequest) -> Result<MergeReadiness, RunBodyError> {
+            self.calls += 1;
+            self.verdict
+                .clone()
+                .ok_or_else(|| RunBodyError::MergeReadiness("readiness exploded".to_owned()))
+        }
+    }
+
+    fn finish_request_with_gate(clean_and_current: bool) -> RunLaunchRequest {
+        let mut req = request(RunKind::Finish, Vec::new());
+        let (currency, cleanliness) = if clean_and_current {
+            ("current", "clean")
+        } else {
+            ("stale", "dirty")
+        };
+        req.state.extensions.insert(
+            EXT_FORGE_FACTS.to_owned(),
+            json!({
+                "contract_version": { "major": 1, "minor": 0 },
+                "pr": { "repository": "acme/widgets", "id": "42" },
+                "head": { "sha": "abc123" },
+                "base": { "sha": "def456" },
+                "branch_currency": currency,
+                "cleanliness": cleanliness,
+                "mergeability": "mergeable",
+                "finish_label": null,
+                "actor_permissions": []
+            }),
+        );
+        req
+    }
+
+    #[test]
+    fn verified_finish_succeeds_when_gate_passes_and_check_is_ready() {
+        let req = finish_request_with_gate(true);
+        let mut finish = VerifiedMergeGateFinishBody::new(FakeReadiness {
+            verdict: Some(MergeReadiness::Ready),
+            calls: 0,
+        });
+
+        let outcome = finish
+            .run_finish(&req, &mut FakeWorkspace::default())
+            .expect("finish");
+
+        assert_eq!(outcome, RunOutcome::Succeeded);
+    }
+
+    #[test]
+    fn verified_finish_fails_when_check_says_not_ready() {
+        let req = finish_request_with_gate(true);
+        let mut finish = VerifiedMergeGateFinishBody::new(FakeReadiness {
+            verdict: Some(MergeReadiness::NotReady {
+                reason: "tests failed".to_owned(),
+            }),
+            calls: 0,
+        });
+
+        let outcome = finish
+            .run_finish(&req, &mut FakeWorkspace::default())
+            .expect("finish");
+
+        assert_eq!(outcome, RunOutcome::Failed);
+    }
+
+    #[test]
+    fn verified_finish_skips_the_check_when_the_gate_fails() {
+        let req = finish_request_with_gate(false);
+        let mut finish = VerifiedMergeGateFinishBody::new(FakeReadiness {
+            verdict: Some(MergeReadiness::Ready),
+            calls: 0,
+        });
+
+        let outcome = finish
+            .run_finish(&req, &mut FakeWorkspace::default())
+            .expect("finish");
+
+        assert_eq!(outcome, RunOutcome::Failed);
+        assert_eq!(finish.check.calls, 0);
+    }
+
+    #[test]
+    fn verified_finish_propagates_check_execution_errors() {
+        let req = finish_request_with_gate(true);
+        let mut finish = VerifiedMergeGateFinishBody::new(FakeReadiness::default());
+
+        let error = finish
+            .run_finish(&req, &mut FakeWorkspace::default())
+            .expect_err("check execution failure surfaces");
+
+        assert!(matches!(error, RunBodyError::MergeReadiness(_)));
+    }
+
+    #[test]
+    fn absent_readiness_check_leaves_the_gate_in_charge() {
+        let req = finish_request_with_gate(true);
+        let mut finish = VerifiedMergeGateFinishBody::new(None::<FakeReadiness>);
+
+        let outcome = finish
+            .run_finish(&req, &mut FakeWorkspace::default())
+            .expect("finish");
 
         assert_eq!(outcome, RunOutcome::Succeeded);
     }

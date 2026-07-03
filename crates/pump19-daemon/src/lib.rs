@@ -40,8 +40,8 @@ use pump19_forge_forgejo::{
 };
 use pump19_runs::{
     AgentSessionPreparer, EnsembleFixBody, EnsembleJudgeBody, EnsembleReviewBody,
-    EnsembleWorkflowConfig, HostEnsembleWorkflowRunner, MergeGateFinishBody, Pump19RunLauncher,
-    RunBodyError,
+    EnsembleWorkflowConfig, HostEnsembleWorkflowRunner, MergeReadiness, MergeReadinessCheck,
+    Pump19RunLauncher, RunBodyError, VerifiedMergeGateFinishBody,
 };
 use pump19_workspace::{CommandRuntime, ContainerWorkspaceProvider, WorkspaceConfig};
 use serde::{Deserialize, Serialize};
@@ -447,7 +447,7 @@ type RuntimeLauncher = Pump19RunLauncher<
     EnsembleReviewBody<HostEnsembleWorkflowRunner>,
     EnsembleJudgeBody<HostEnsembleWorkflowRunner>,
     EnsembleFixBody<HostEnsembleWorkflowRunner>,
-    MergeGateFinishBody,
+    VerifiedMergeGateFinishBody<Option<RuntimeMergeReadiness>>,
 >;
 
 #[derive(Debug)]
@@ -745,7 +745,12 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         .prompt_pack
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let launcher = runtime_launcher(&config.ensemble, &prompt_pack, &prompt_root)?;
+    let launcher = runtime_launcher(
+        &config.ensemble,
+        &prompt_pack,
+        &prompt_root,
+        runtime_merge_readiness(&mechanical_pack),
+    )?;
     let policy = core_policy(&config.forgejo);
     let source_preparer = runtime_source_preparer(&mechanical_pack)?;
     let polling = PollingForgejoActivitySource::new(
@@ -804,6 +809,7 @@ fn runtime_launcher(
     ensemble: &EnsembleDaemonConfig,
     prompt_pack: &PromptPack,
     prompt_root: &Path,
+    merge_readiness: Option<RuntimeMergeReadiness>,
 ) -> Result<RuntimeLauncher, DaemonError> {
     let runner = HostEnsembleWorkflowRunner::new(&ensemble.node_program, &ensemble.launcher_path);
     Ok(Pump19RunLauncher::new(
@@ -820,8 +826,131 @@ fn runtime_launcher(
             runner,
             workflow_config(ensemble, prompt_pack, prompt_root, RunKind::Fix)?,
         ),
-        MergeGateFinishBody,
+        VerifiedMergeGateFinishBody::new(merge_readiness),
     ))
+}
+
+/// The mechanical-pack step name that marks a merge-readiness command.
+const MERGE_READINESS_STEP_NAME: &str = "merge-readiness";
+
+/// Host-side merge-readiness verification backed by a mechanical-pack command.
+///
+/// The command receives run context JSON on stdin and answers with a verdict:
+/// `{"status":"ready"}` or `{"status":"not_ready","detail":"..."}`. A non-zero
+/// exit is an execution failure, not a verdict.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeMergeReadiness {
+    step: MechanicalStep,
+}
+
+#[derive(Serialize)]
+struct MergeReadinessCommandInput<'a> {
+    step_id: &'a str,
+    run_id: &'a str,
+    repository: &'a str,
+    pull_request: &'a str,
+    commit_sha: &'a str,
+    event: &'a pump19_contract::ContractEvent,
+    state: &'a pump19_contract::PrRunState,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+enum MergeReadinessCommandOutput {
+    Ready,
+    NotReady {
+        #[serde(default)]
+        detail: String,
+    },
+}
+
+impl MergeReadinessCheck for RuntimeMergeReadiness {
+    fn verify(
+        &mut self,
+        request: &pump19_core::RunLaunchRequest,
+    ) -> Result<MergeReadiness, RunBodyError> {
+        let input = MergeReadinessCommandInput {
+            step_id: &self.step.id,
+            run_id: &request.run_id.0,
+            repository: &request.state.pr.repository,
+            pull_request: &request.state.pr.id,
+            commit_sha: &request.state.commit_sha,
+            event: &request.event,
+            state: &request.state,
+        };
+        let stdin = serde_json::to_vec(&input).map_err(|error| {
+            RunBodyError::MergeReadiness(format!(
+                "serialise merge readiness input for step {:?}: {error}",
+                self.step.id
+            ))
+        })?;
+        let output = match &self.step.execution {
+            MechanicalExecution::Command { program, args } => {
+                run_json_program(program, args, &stdin).map_err(|error| {
+                    RunBodyError::MergeReadiness(format!(
+                        "merge readiness step {:?} failed: {error}",
+                        self.step.id
+                    ))
+                })?
+            }
+            MechanicalExecution::Container { .. } => {
+                return Err(RunBodyError::MergeReadiness(format!(
+                    "merge readiness step {:?} uses the unsupported container executor",
+                    self.step.id
+                )));
+            }
+        };
+        let verdict =
+            serde_json::from_slice::<MergeReadinessCommandOutput>(&output).map_err(|error| {
+                RunBodyError::MergeReadiness(format!(
+                    "merge readiness step {:?} returned invalid JSON: {error}",
+                    self.step.id
+                ))
+            })?;
+        Ok(match verdict {
+            MergeReadinessCommandOutput::Ready => {
+                log_daemon_event(
+                    "info",
+                    "merge_readiness_ready",
+                    &json!({
+                        "run_id": request.run_id.0,
+                        "repository": request.state.pr.repository,
+                        "pull_request": request.state.pr.id,
+                        "commit_sha": request.state.commit_sha,
+                    }),
+                );
+                MergeReadiness::Ready
+            }
+            MergeReadinessCommandOutput::NotReady { detail } => {
+                log_daemon_event(
+                    "warn",
+                    "merge_readiness_not_ready",
+                    &json!({
+                        "run_id": request.run_id.0,
+                        "repository": request.state.pr.repository,
+                        "pull_request": request.state.pr.id,
+                        "commit_sha": request.state.commit_sha,
+                        "detail": detail,
+                    }),
+                );
+                MergeReadiness::NotReady { reason: detail }
+            }
+        })
+    }
+}
+
+/// Selects the optional merge-readiness command from the mechanical pack.
+fn runtime_merge_readiness(pack: &MechanicalPack) -> Option<RuntimeMergeReadiness> {
+    pack.steps
+        .iter()
+        .find(|step| {
+            matches!(
+                &step.kind,
+                MechanicalStepKind::Custom { name } if name == MERGE_READINESS_STEP_NAME
+            )
+        })
+        .cloned()
+        .map(|step| RuntimeMergeReadiness { step })
 }
 
 fn workflow_config(
@@ -2307,6 +2436,152 @@ stop_after_quiet_polls = 1
             MechanicalExecution::Command { program, .. }
                 if program == "/opt/pump19/examples/deployment/commands/pump19-prepare-source"
         ));
+    }
+
+    fn readiness_pack(step: Option<MechanicalStep>) -> MechanicalPack {
+        MechanicalPack {
+            schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
+            contract_version: ContractVersion::current(),
+            id: "test-mechanics".to_owned(),
+            steps: step.into_iter().collect(),
+            extensions: Extensions::new(),
+        }
+    }
+
+    fn readiness_step(program: &str) -> MechanicalStep {
+        MechanicalStep {
+            id: "merge-readiness".to_owned(),
+            kind: MechanicalStepKind::Custom {
+                name: MERGE_READINESS_STEP_NAME.to_owned(),
+            },
+            execution: MechanicalExecution::Command {
+                program: program.to_owned(),
+                args: Vec::new(),
+            },
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            extensions: Extensions::new(),
+        }
+    }
+
+    fn finish_launch_request() -> pump19_core::RunLaunchRequest {
+        let mut state_extensions = Extensions::new();
+        state_extensions.insert(
+            "pump19.core.forge_facts".to_owned(),
+            serde_json::to_value(contract_facts()).expect("forge facts JSON"),
+        );
+        pump19_core::RunLaunchRequest {
+            run_id: RunId("run-finish-1".to_owned()),
+            run_kind: RunKind::Finish,
+            event: probe_event(),
+            state: PrRunState {
+                contract_version: ContractVersion::current(),
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+                current_head_sha: Some("abc123".to_owned()),
+                pass_index: 1,
+                status: pump19_contract::RunStatus::Pending,
+                active_run: None,
+                run_history: Vec::new(),
+                loop_history: Vec::new(),
+                superseded_by: None,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                publication: PublicationState::default(),
+                ceiling: None,
+                extensions: state_extensions,
+            },
+            workspace: WorkspaceLease {
+                id: "workspace-1".to_owned(),
+                root: PathBuf::from("/tmp/pump19-test-workspace"),
+                isolation: WorkspaceIsolation {
+                    isolated: true,
+                    credential_free: true,
+                    egress_bounded: true,
+                    resource_bounded: true,
+                    ephemeral: true,
+                },
+            },
+            provenance: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn runtime_merge_readiness_selects_only_the_custom_step() {
+        let with_step = readiness_pack(Some(readiness_step("commands/pump19-merge-readiness")));
+        let without_step = readiness_pack(None);
+
+        assert!(runtime_merge_readiness(&with_step).is_some());
+        assert!(runtime_merge_readiness(&without_step).is_none());
+    }
+
+    #[test]
+    fn merge_readiness_command_verdicts_map_to_contract_outcomes() {
+        let dir = tempdir().expect("temp dir");
+        let capture = dir.path().join("input.json");
+        let ready = dir.path().join("ready.sh");
+        fs::write(
+            &ready,
+            format!(
+                "#!/bin/sh\ncat > \"{}\"\nprintf '{{\"status\":\"ready\"}}'\n",
+                capture.display()
+            ),
+        )
+        .expect("write ready script");
+        make_executable(&ready);
+        let not_ready = dir.path().join("not-ready.sh");
+        fs::write(
+            &not_ready,
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"status\":\"not_ready\",\"detail\":\"cargo test failed\"}'\n",
+        )
+        .expect("write not-ready script");
+        make_executable(&not_ready);
+        let request = finish_launch_request();
+
+        let mut check = runtime_merge_readiness(&readiness_pack(Some(readiness_step(
+            ready.to_str().expect("script path"),
+        ))))
+        .expect("readiness check");
+        assert_eq!(
+            check.verify(&request).expect("ready verdict"),
+            MergeReadiness::Ready
+        );
+        let input: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&capture).expect("captured input"))
+                .expect("input JSON");
+        assert_eq!(input["repository"], "acme/widgets");
+        assert_eq!(input["pull_request"], "42");
+        assert_eq!(input["commit_sha"], "abc123");
+
+        let mut check = runtime_merge_readiness(&readiness_pack(Some(readiness_step(
+            not_ready.to_str().expect("script path"),
+        ))))
+        .expect("readiness check");
+        assert_eq!(
+            check.verify(&request).expect("not-ready verdict"),
+            MergeReadiness::NotReady {
+                reason: "cargo test failed".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn merge_readiness_command_execution_failure_is_an_error_not_a_verdict() {
+        let dir = tempdir().expect("temp dir");
+        let script = dir.path().join("broken.sh");
+        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nexit 9\n").expect("write script");
+        make_executable(&script);
+        let mut check = runtime_merge_readiness(&readiness_pack(Some(readiness_step(
+            script.to_str().expect("script path"),
+        ))))
+        .expect("readiness check");
+
+        let error = check
+            .verify(&finish_launch_request())
+            .expect_err("execution failure");
+
+        assert!(matches!(error, RunBodyError::MergeReadiness(_)));
     }
 
     #[test]
