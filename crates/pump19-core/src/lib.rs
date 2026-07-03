@@ -182,6 +182,7 @@ impl SourcePreparer for NoopSourcePreparer {
         Ok(PreparedSource {
             tree: request.workspace.root,
             revision: request.commit_sha,
+            cleanup_root: None,
         })
     }
 }
@@ -1040,7 +1041,14 @@ where
             }
         };
         if let Err(error) = validate_prepared_source(&prepared_source, &state.commit_sha) {
-            cleanup_external_prepared_source(&prepared_source, workspace)?;
+            self.cleanup_prepared_source_or_fail(
+                &prepared_source,
+                state,
+                event,
+                rule,
+                run_id,
+                workspace,
+            )?;
             self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
             return Err(error);
         }
@@ -1048,7 +1056,14 @@ where
             .workspace_provider
             .inject_source(workspace, &prepared_source)
         {
-            cleanup_external_prepared_source(&prepared_source, workspace)?;
+            self.cleanup_prepared_source_or_fail(
+                &prepared_source,
+                state,
+                event,
+                rule,
+                run_id,
+                workspace,
+            )?;
             self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
             return Err(error);
         }
@@ -1057,6 +1072,22 @@ where
             return Err(error);
         }
         if let Err(error) = reject_credential_residue(&workspace.root) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn cleanup_prepared_source_or_fail(
+        &mut self,
+        source: &PreparedSource,
+        state: &PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if let Err(error) = cleanup_external_prepared_source(source, workspace) {
             self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
             return Err(error);
         }
@@ -2054,6 +2085,7 @@ pub struct SourcePreparationRequest {
 pub struct PreparedSource {
     pub tree: PathBuf,
     pub revision: String,
+    pub cleanup_root: Option<PathBuf>,
 }
 
 /// A prepared workspace plus isolation assertion from the trusted provider seam.
@@ -3186,6 +3218,9 @@ fn validate_prepared_source(
             source.revision, expected_revision
         )));
     }
+    if let Some(cleanup_root) = &source.cleanup_root {
+        ensure_source_tree_under_cleanup_root(source, cleanup_root)?;
+    }
     let metadata = fs::metadata(&source.tree).map_err(|error| {
         CoreError::SourcePreparation(format!(
             "prepared source tree {} is not readable: {error}",
@@ -3201,6 +3236,32 @@ fn validate_prepared_source(
     reject_credential_residue(&source.tree)
 }
 
+fn ensure_source_tree_under_cleanup_root(
+    source: &PreparedSource,
+    cleanup_root: &Path,
+) -> Result<(), CoreError> {
+    let canonical_tree = source.tree.canonicalize().map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "inspect prepared source tree {}: {error}",
+            source.tree.display()
+        ))
+    })?;
+    let canonical_root = cleanup_root.canonicalize().map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "inspect trusted cleanup root {}: {error}",
+            cleanup_root.display()
+        ))
+    })?;
+    if canonical_tree.starts_with(&canonical_root) && canonical_tree != canonical_root {
+        return Ok(());
+    }
+    Err(CoreError::SourcePreparation(format!(
+        "prepared source tree {} is outside trusted cleanup root {}",
+        source.tree.display(),
+        cleanup_root.display()
+    )))
+}
+
 fn reject_credential_residue(root: &Path) -> Result<(), CoreError> {
     reject_credential_residue_at(root, root)
 }
@@ -3211,6 +3272,17 @@ fn cleanup_external_prepared_source(
 ) -> Result<(), CoreError> {
     if source.tree == workspace.root || !source.tree.exists() {
         return Ok(());
+    }
+    let Some(cleanup_root) = &source.cleanup_root else {
+        return Err(CoreError::SourcePreparation(format!(
+            "refusing to remove prepared source tree {} without trusted cleanup root",
+            source.tree.display()
+        )));
+    };
+    if let Err(error) = ensure_source_tree_under_cleanup_root(source, cleanup_root) {
+        return Err(CoreError::SourcePreparation(format!(
+            "refusing to remove prepared source tree: {error}"
+        )));
     }
     fs::remove_dir_all(&source.tree).map_err(|error| {
         CoreError::SourcePreparation(format!(
@@ -3357,6 +3429,12 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct OutsideCleanupRootSourcePreparer {
+        tree: PathBuf,
+        cleanup_root: PathBuf,
+    }
+
+    #[derive(Debug)]
     struct FailingSourcePreparer;
 
     impl WorkspaceProvider for FakeWorkspaceProvider {
@@ -3450,6 +3528,20 @@ mod tests {
             Ok(PreparedSource {
                 tree: self.tree.clone(),
                 revision: request.commit_sha,
+                cleanup_root: self.tree.parent().map(Path::to_path_buf),
+            })
+        }
+    }
+
+    impl SourcePreparer for OutsideCleanupRootSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Ok(PreparedSource {
+                tree: self.tree.clone(),
+                revision: request.commit_sha,
+                cleanup_root: Some(self.cleanup_root.clone()),
             })
         }
     }
@@ -4292,6 +4384,64 @@ mod tests {
         assert_eq!(injections.borrow().len(), 1);
         assert!(!prepared_tree.exists());
         assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn source_cleanup_refuses_tree_outside_trusted_preparation_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prepared_tree = temp.path().join("outside-prepared");
+        let trusted_root = temp.path().join("trusted-preparation-root");
+        fs::create_dir_all(prepared_tree.join("src")).expect("create prepared tree");
+        fs::create_dir_all(&trusted_root).expect("create trusted root");
+        fs::write(
+            prepared_tree.join("src/lib.rs"),
+            "pub fn unsafe_tree() {}\n",
+        )
+        .expect("write source");
+        let workspace_root = temp.path().join("workspace");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: workspace_root,
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            OutsideCleanupRootSourcePreparer {
+                tree: prepared_tree.clone(),
+                cleanup_root: trusted_root,
+            },
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("outside cleanup root should fail dispatch");
+
+        assert!(matches!(error, CoreError::SourcePreparation(_)));
+        assert!(prepared_tree.exists());
+        assert_eq!(*cleaned.borrow(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("saved state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert!(
+            saved
+                .extensions
+                .get(EXT_LAST_FAILURE)
+                .and_then(Value::as_str)
+                .expect("last failure")
+                .contains("outside trusted cleanup root")
+        );
     }
 
     #[test]

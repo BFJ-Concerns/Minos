@@ -890,6 +890,7 @@ mod tests {
                 &PreparedSource {
                     tree: source,
                     revision: "abc123".to_owned(),
+                    cleanup_root: None,
                 },
             )
             .expect("inject source");
