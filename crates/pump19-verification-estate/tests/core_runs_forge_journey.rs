@@ -12,8 +12,8 @@ use pump19_contract::{
     ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
     CertaintyClass, Confidence, ContractEvent, ContractVersion, DecisionSubject, DecisionVerdict,
     EventPayload, Extensions, Finding, FindingCommentPublication, FindingCommentStatus, FindingId,
-    FindingLocation, FinishLabel, ForgeFacts, ForgeReceipt, Mergeability, ModelFamily,
-    ModelLineage, ModelProvenance, PatchChange, PrRunState, ProvenanceVerification,
+    FindingLocation, FinishLabel, ForgeFacts, ForgeReceipt, LoopPassRecord, Mergeability,
+    ModelFamily, ModelLineage, ModelProvenance, PatchChange, PrRunState, ProvenanceVerification,
     PublicationState, PullRequestRef, ReviewCleanliness, Revision, RunId, RunKind, RunOutcome,
     RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
 };
@@ -1107,25 +1107,6 @@ fn judge_after_review_rule() -> TriggerRule {
     }
 }
 
-fn judge_after_noop_fix_rule() -> TriggerRule {
-    TriggerRule {
-        id: "judge-after-noop-fix".to_owned(),
-        run_kind: RunKind::Judge,
-        criteria: Criteria::Event {
-            event: EventKind::RunCompleted {
-                run_kind: Some(RunKind::Fix),
-                outcome: Some(RunOutcome::NoOp),
-            },
-        },
-        agent_plan: AgentPlan {
-            reviewers: Vec::new(),
-            fixers: Vec::new(),
-            judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
-            finishers: Vec::new(),
-        },
-    }
-}
-
 fn fix_after_material_judge_rule() -> TriggerRule {
     TriggerRule {
         id: "fix-after-material-judge".to_owned(),
@@ -2095,6 +2076,12 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
 
 #[test]
 fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
+    let trigger_pack_root = tempdir().expect("baseline trigger pack root");
+    let trigger_pack_path =
+        pump19_adaptations::write_baseline_trigger_pack(trigger_pack_root.path(), "estate-loop")
+            .expect("write baseline trigger pack");
+    let rules =
+        pump19_adaptations::load_trigger_rules(&trigger_pack_path).expect("load trigger rules");
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
     let state_store = SharedEstateStateStore::default();
@@ -2110,12 +2097,6 @@ fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
         state_store,
         forge_operations,
     );
-    let rules = vec![
-        review_rule(standard_plan()),
-        judge_after_review_rule(),
-        fix_after_material_judge_rule(),
-        judge_after_noop_fix_rule(),
-    ];
     let facts = contract_facts(
         BranchCurrency::Current,
         ReviewCleanliness::Clean,
@@ -2151,6 +2132,17 @@ fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
         3,
         "review completion should launch judge, material verdict should launch fix, and NoOp fix completion should launch judge"
     );
+    assert!(rules.iter().any(|rule| rule.id == "judge-after-noop-fix"
+        && rule.run_kind == RunKind::Judge
+        && matches!(
+            rule.criteria,
+            Criteria::Event {
+                event: EventKind::RunCompleted {
+                    run_kind: Some(RunKind::Fix),
+                    outcome: Some(RunOutcome::NoOp),
+                }
+            }
+        )));
     assert_eq!(comments.borrow().len(), 1);
     assert!(
         comments.borrow()[0]
@@ -2185,6 +2177,130 @@ fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
             .iter()
             .any(|decision| decision.verdict == DecisionVerdict::Converged)
     );
+}
+
+#[test]
+fn shipped_baseline_trigger_pack_pins_loop_composition() {
+    let root = tempdir().expect("baseline trigger pack root");
+    let pack_path = pump19_adaptations::write_baseline_trigger_pack(root.path(), "estate-baseline")
+        .expect("write baseline trigger pack");
+    let rules = pump19_adaptations::load_trigger_rules(&pack_path).expect("load baseline rules");
+
+    assert_eq!(
+        rules
+            .iter()
+            .map(|rule| rule.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "review-on-pr-change",
+            "judge-after-review",
+            "judge-after-noop-fix",
+            "fix-after-material-judge",
+            "finish-on-label",
+        ]
+    );
+    assert!(rules.iter().any(|rule| {
+        rule.id == "judge-after-noop-fix"
+            && rule.run_kind == RunKind::Judge
+            && matches!(
+                rule.criteria,
+                Criteria::Event {
+                    event: EventKind::RunCompleted {
+                        run_kind: Some(RunKind::Fix),
+                        outcome: Some(RunOutcome::NoOp),
+                    }
+                }
+            )
+            && rule
+                .agent_plan
+                .judge
+                .as_ref()
+                .is_some_and(|target| target.agent_id.0 == "judge-glm")
+    }));
+    let finish = rules
+        .iter()
+        .find(|rule| rule.id == "finish-on-label")
+        .expect("finish rule exists");
+    let Criteria::All { criteria } = &finish.criteria else {
+        assert!(matches!(finish.criteria, Criteria::All { .. }));
+        return;
+    };
+    assert!(criteria.iter().any(|criterion| matches!(
+        criterion,
+        Criteria::State {
+            state: StateCriterion::HasConverged
+        }
+    )));
+    assert!(criteria.iter().any(|criterion| matches!(
+        criterion,
+        Criteria::State {
+            state: StateCriterion::CleanAndCurrent
+        }
+    )));
+}
+
+#[test]
+fn real_judge_body_replays_noop_loop_history_findings() {
+    let root = tempdir().expect("noop judge estate root");
+    let standing = finding();
+    let mut request = run_request(
+        RunKind::Judge,
+        vec![verified_provenance("judge-glm", AgentRole::Judge, "glm")],
+    );
+    request.state.findings.clear();
+    request.state.decisions.clear();
+    request.state.loop_history.push(LoopPassRecord {
+        pass_index: 1,
+        commit_sha: "head-sha-1".to_owned(),
+        findings: vec![standing.clone()],
+        decisions: vec![pump19_contract::Decision {
+            contract_version: version(),
+            id: "decision-before-noop".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: standing.id.clone(),
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "standing before NoOp fix".to_owned(),
+            provenance: verified_provenance("judge-glm", AgentRole::Judge, "glm"),
+            extensions: extensions(),
+        }],
+        patches: Vec::new(),
+        judge_verdict: Some(DecisionVerdict::Material),
+        fix_outcome: Some(RunOutcome::NoOp),
+    });
+    let runner = EstateEnsembleRunner::new(
+        json!([{
+            "finding_id": standing.id.0,
+            "verdict": "minor",
+            "rationale": "NoOp fix exhausted useful changes"
+        }]),
+        vec![archive_agent("judge-glm", "glm")],
+    );
+    let workflow_requests = runner.requests();
+    let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path(), "judge"));
+    let mut executor = EstateExecutor::new(Vec::new());
+
+    let decisions = judge
+        .run_judge(&request, &mut executor)
+        .expect("real judge body replays NoOp history");
+
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].verdict, DecisionVerdict::Minor);
+    assert!(matches!(
+        decisions[0].subject,
+        DecisionSubject::Finding { ref finding_id } if finding_id == &standing.id
+    ));
+    let workflow_args = &workflow_requests.borrow()[0].args;
+    assert_eq!(
+        workflow_args["current_findings"][0]["id"],
+        json!(standing.id.0)
+    );
+    assert_eq!(workflow_args["fix_outcomes"], json!(["no_op"]));
+    assert_eq!(
+        workflow_args["loop_history"][0]["fix_outcome"],
+        json!("no_op")
+    );
+    assert!(executor.execs.is_empty());
 }
 
 #[test]
