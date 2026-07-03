@@ -858,15 +858,32 @@ fn render_prompt_template(
     template: &str,
     variables: &[(&str, String)],
 ) -> Result<String, RunBodyError> {
-    let mut rendered = template.to_owned();
-    for (name, value) in variables {
-        rendered = rendered.replace(&format!("{{{{{name}}}}}"), value);
+    let variable_map = variables
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mut rendered = String::with_capacity(template.len());
+    let mut remaining = template;
+
+    while let Some(start) = remaining.find("{{") {
+        rendered.push_str(&remaining[..start]);
+        let after_start = &remaining[start + 2..];
+        let Some(end) = after_start.find("}}") else {
+            return Err(RunBodyError::PromptTemplate(
+                "unclosed {{placeholder}} in prompt template".to_owned(),
+            ));
+        };
+        let name = after_start[..end].trim();
+        let Some(value) = variable_map.get(name) else {
+            return Err(RunBodyError::PromptTemplate(format!(
+                "unknown {{{{{name}}}}} placeholder in prompt template"
+            )));
+        };
+        rendered.push_str(value);
+        remaining = &after_start[end + 2..];
     }
-    if rendered.contains("{{") || rendered.contains("}}") {
-        return Err(RunBodyError::PromptTemplate(
-            "unresolved {{placeholder}} in prompt template".to_owned(),
-        ));
-    }
+    rendered.push_str(remaining);
+
     Ok(rendered)
 }
 
@@ -1684,6 +1701,41 @@ mod tests {
     }
 
     #[test]
+    fn prompt_template_allows_brace_bearing_variable_content() {
+        let rendered = render_prompt_template(
+            "Evidence:\n{{evidence}}\nFinding:\n{{finding}}",
+            &[
+                (
+                    "evidence",
+                    "Vue template: <h1>{{ title }}</h1>\nLiteral later placeholder: {{finding}}"
+                        .to_owned(),
+                ),
+                ("finding", "actual finding text".to_owned()),
+            ],
+        )
+        .expect("render template");
+
+        assert!(rendered.contains("<h1>{{ title }}</h1>"));
+        assert!(rendered.contains("Literal later placeholder: {{finding}}"));
+        assert!(rendered.contains("Finding:\nactual finding text"));
+    }
+
+    #[test]
+    fn prompt_template_rejects_unknown_template_placeholder_before_rendering_values() {
+        let error = render_prompt_template(
+            "{{known}}\n{{missing}}",
+            &[("known", "content with {{missing}} braces".to_owned())],
+        )
+        .expect_err("unknown template placeholder is rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown {{missing}} placeholder")
+        );
+    }
+
+    #[test]
     fn review_body_fails_closed_on_malformed_workflow_output() {
         let root = tempfile::tempdir().expect("workspace root");
         install_standalone(
@@ -1930,11 +1982,11 @@ mod tests {
         let root = tempfile::tempdir().expect("judge root");
         let mut req = request(
             RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "gemini")],
+            vec![provenance("judge", AgentRole::Judge, "glm")],
         );
         req.workspace.root = root.path().to_path_buf();
         req.state.findings.push(finding());
-        let runner = FakeEnsembleRunner::new(json!([]), vec![archive_agent("judge", "gemini")]);
+        let runner = FakeEnsembleRunner::new(json!([]), vec![archive_agent("judge", "glm")]);
         let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
         let mut workspace = FakeWorkspace::default();
 
