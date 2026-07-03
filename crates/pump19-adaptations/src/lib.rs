@@ -308,6 +308,76 @@ pub fn write_baseline_trigger_pack(root: &Path, id: &str) -> Result<PathBuf, Ada
     Ok(pack_path)
 }
 
+/// Writes the baseline mechanical pack into `root`.
+///
+/// # Errors
+///
+/// Returns an error when the mechanical pack cannot be serialised or written.
+pub fn write_baseline_mechanical_pack(root: &Path, id: &str) -> Result<PathBuf, AdaptationError> {
+    fs::create_dir_all(root).map_err(|source| AdaptationError::Io {
+        path: root.display().to_string(),
+        source,
+    })?;
+    let pack_path = root.join("mechanical.toml");
+    write_toml(&pack_path, &baseline_mechanical_pack(id))?;
+    Ok(pack_path)
+}
+
+/// Paths written by [`write_baseline_deployment_packs`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BaselineDeploymentPackPaths {
+    pub prompt_pack: PathBuf,
+    pub trigger_pack: PathBuf,
+    pub mechanical_pack: PathBuf,
+}
+
+/// Writes all baseline deployment adaptation packs into conventional subdirectories.
+///
+/// # Errors
+///
+/// Returns an error when any baseline pack cannot be serialised or written.
+pub fn write_baseline_deployment_packs(
+    root: &Path,
+) -> Result<BaselineDeploymentPackPaths, AdaptationError> {
+    Ok(BaselineDeploymentPackPaths {
+        prompt_pack: write_baseline_prompt_pack(&root.join("prompt"), "baseline-prompt")?,
+        trigger_pack: write_baseline_trigger_pack(&root.join("trigger"), "baseline-loop")?,
+        mechanical_pack: write_baseline_mechanical_pack(
+            &root.join("mechanical"),
+            "baseline-mechanical",
+        )?,
+    })
+}
+
+/// Returns the baseline mechanical pack used by the deployable example set.
+#[must_use]
+pub fn baseline_mechanical_pack(id: &str) -> MechanicalPack {
+    MechanicalPack {
+        schema_version: AdaptationSchemaVersion::current(),
+        contract_version: ContractVersion::current(),
+        id: id.to_owned(),
+        steps: vec![MechanicalStep {
+            id: "prepare-source".to_owned(),
+            kind: MechanicalStepKind::Checkout,
+            execution: MechanicalExecution::Command {
+                program: "pump19-prepare-source".to_owned(),
+                args: Vec::new(),
+            },
+            inputs: vec![
+                "source_preparation_command_input_json".to_owned(),
+                "forge_repository".to_owned(),
+                "pull_request_head".to_owned(),
+            ],
+            outputs: vec![
+                "prepared_source_tree".to_owned(),
+                "prepared_revision".to_owned(),
+            ],
+            extensions: Extensions::new(),
+        }],
+        extensions: Extensions::new(),
+    }
+}
+
 /// Returns the baseline trigger pack that composes the review/fix/judge loop.
 #[must_use]
 pub fn baseline_trigger_pack(id: &str) -> TriggerPack {
@@ -1051,7 +1121,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
 
     use pump19_contract::{
         AgentId, AgentRole, BranchCurrency, ContractEvent, ContractVersion, EventPayload,
@@ -1068,9 +1138,10 @@ mod tests {
 
     use super::{
         AdaptationError, AdaptationSchemaVersion, MechanicalExecution, MechanicalPack,
-        MechanicalStep, MechanicalStepKind, TriggerPack, baseline_trigger_pack,
-        load_mechanical_pack, load_prompt_pack, load_trigger_rules, write_baseline_prompt_pack,
-        write_baseline_trigger_pack, write_toml,
+        MechanicalStep, MechanicalStepKind, TriggerPack, baseline_mechanical_pack,
+        baseline_trigger_pack, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
+        write_baseline_deployment_packs, write_baseline_mechanical_pack,
+        write_baseline_prompt_pack, write_baseline_trigger_pack, write_toml,
     };
 
     #[test]
@@ -1177,6 +1248,41 @@ mod tests {
     }
 
     #[test]
+    fn baseline_mechanical_pack_pins_source_preparation_contract()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let pack_path = write_baseline_mechanical_pack(dir.path(), "baseline-mechanical")?;
+        let loaded = load_mechanical_pack(&pack_path)?;
+
+        assert_eq!(loaded, baseline_mechanical_pack("baseline-mechanical"));
+        assert!(matches!(
+            loaded.steps.as_slice(),
+            [MechanicalStep {
+                id,
+                kind: MechanicalStepKind::Checkout,
+                execution: MechanicalExecution::Command { program, args },
+                ..
+            }] if id == "prepare-source"
+                && program == "pump19-prepare-source"
+                && args.is_empty()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn checked_in_deployment_packs_are_generated_from_baselines()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generated = tempdir()?;
+        write_baseline_deployment_packs(generated.path())?;
+        let checked_in = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("examples/deployment/adaptations");
+
+        assert_directories_match(generated.path(), &checked_in)?;
+        Ok(())
+    }
+
+    #[test]
     fn wrong_schema_version_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let path = dir.path().join("triggers.toml");
@@ -1227,6 +1333,46 @@ mod tests {
             error,
             AdaptationError::EmptyMechanicalProgram { step_id } if step_id == "publish-comments"
         ));
+        Ok(())
+    }
+
+    fn assert_directories_match(
+        generated: &std::path::Path,
+        checked_in: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let generated_files = sorted_relative_files(generated)?;
+        let checked_in_files = sorted_relative_files(checked_in)?;
+        assert_eq!(generated_files, checked_in_files);
+        for file in generated_files {
+            let generated_text = fs::read_to_string(generated.join(&file))?;
+            let checked_in_text = fs::read_to_string(checked_in.join(&file))?;
+            assert_eq!(generated_text, checked_in_text, "{}", file.display());
+        }
+        Ok(())
+    }
+
+    fn sorted_relative_files(
+        root: &std::path::Path,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        let mut files = Vec::new();
+        collect_relative_files(root, root, &mut files)?;
+        files.sort();
+        Ok(files)
+    }
+
+    fn collect_relative_files(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                collect_relative_files(root, &path, files)?;
+            } else {
+                files.push(path.strip_prefix(root)?.to_path_buf());
+            }
+        }
         Ok(())
     }
 
