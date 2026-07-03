@@ -28,14 +28,14 @@ program = "commands/pump19-forgejo-poll"
 args = ["--base-url", "REPLACE_WITH_FORGEJO_BASE_URL", "--finish-label", "pump19-finish"]
 
 [forgejo.poll_command.env]
-FORGEJO_TOKEN = "REPLACE_WITH_FORGEJO_TOKEN"
+FORGEJO_TOKEN = "env:FORGEJO_TOKEN"
 
 [forgejo.operation_command]
 program = "commands/pump19-forgejo-operation"
 args = ["--base-url", "REPLACE_WITH_FORGEJO_BASE_URL"]
 
 [forgejo.operation_command.env]
-FORGEJO_TOKEN = "REPLACE_WITH_FORGEJO_TOKEN"
+FORGEJO_TOKEN = "env:FORGEJO_TOKEN"
 
 [loop_control]
 # Default: 5000.

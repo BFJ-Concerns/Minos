@@ -9,7 +9,7 @@ adaptation packs for trigger rules, prompt/workflow content and mechanical sourc
 preparation. A complete deployment example lives in
 [`examples/deployment/`](examples/deployment/), with generated baseline packs in
 [`examples/deployment/adaptations/`](examples/deployment/adaptations/) and
-baseline Forgejo command scripts in
+baseline command scripts in
 [`examples/deployment/commands/`](examples/deployment/commands/).
 
 ## Build
@@ -45,6 +45,6 @@ cargo clippy --all-targets --all-features
 cargo test
 ```
 
-The checked-in deployment packs and Forgejo command scripts are generated from
+The checked-in deployment packs and command scripts are generated from
 the baseline writers in `pump19-adaptations`; the test suite regenerates them in
 a temporary directory and compares the result with `examples/deployment/`.

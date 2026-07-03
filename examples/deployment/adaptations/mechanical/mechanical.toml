@@ -25,4 +25,4 @@ kind = "checkout"
 
 [steps.execution]
 executor = "command"
-program = "pump19-prepare-source"
+program = "commands/pump19-prepare-source"

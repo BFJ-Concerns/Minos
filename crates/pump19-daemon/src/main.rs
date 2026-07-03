@@ -2,7 +2,14 @@
 
 use std::path::PathBuf;
 
-fn main() -> Result<(), pump19_daemon::DaemonError> {
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), pump19_daemon::DaemonError> {
     let config_path = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
