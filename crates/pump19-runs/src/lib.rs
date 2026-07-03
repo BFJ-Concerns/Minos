@@ -13,6 +13,8 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
+    thread,
+    time::{Duration, Instant},
 };
 
 use pump19_contract::{
@@ -255,7 +257,7 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
         fs::create_dir_all(&request.archive_dir)
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
         let json_args = serde_json::to_string(&request.args).map_err(RunBodyError::EnsembleJson)?;
-        let output = Command::new(&self.node_program)
+        let mut child = Command::new(&self.node_program)
             .env_clear()
             .envs(filtered_ensemble_env(env::vars()))
             .arg(&self.launcher_path)
@@ -265,7 +267,32 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             .arg(request.timeout_ms.to_string())
             .arg(&request.script)
             .env("ENSEMBLE_RUN_RECORD_DIR", &request.archive_dir)
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
+        loop {
+            if let Some(_status) = child
+                .try_wait()
+                .map_err(|error| RunBodyError::Ensemble(error.to_string()))?
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                child
+                    .kill()
+                    .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+                let _ = child.wait();
+                return Err(RunBodyError::Ensemble(format!(
+                    "launcher exceeded hard timeout of {} ms and was killed",
+                    request.timeout_ms
+                )));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let output = child
+            .wait_with_output()
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
         let stdout = String::from_utf8(output.stdout)
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
@@ -528,6 +555,11 @@ where
             .map_err(RunBodyError::EnsembleJson)?;
         if outputs.is_empty() && request.state.findings.is_empty() {
             return Ok(vec![convergence_decision(request, &provenance)]);
+        }
+        if outputs.is_empty() {
+            return Err(RunBodyError::Ensemble(
+                "judge returned no decisions for standing findings".to_owned(),
+            ));
         }
         Ok(outputs
             .into_iter()
@@ -1762,6 +1794,30 @@ mod tests {
     }
 
     #[test]
+    fn host_runner_kills_launcher_at_hard_timeout() {
+        let root = tempfile::tempdir().expect("host runner root");
+        let launcher = root.path().join("sleep-launcher.sh");
+        fs::write(&launcher, "#!/bin/sh\nsleep 5\n").expect("write launcher");
+        let mut runner = HostEnsembleWorkflowRunner::new("sh", &launcher);
+        let request = EnsembleWorkflowRequest {
+            script: root.path().join("workflow.js"),
+            args: json!({}),
+            archive_dir: root.path().join("archive"),
+            timeout_ms: 50,
+        };
+        let started = Instant::now();
+
+        let error = runner
+            .run_workflow(request)
+            .expect_err("hard timeout should kill launcher");
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            matches!(error, RunBodyError::Ensemble(message) if message.contains("hard timeout"))
+        );
+    }
+
+    #[test]
     fn judge_run_produces_material_decisions_for_findings() {
         let mut req = request(
             RunKind::Judge,
@@ -1852,6 +1908,28 @@ mod tests {
         );
         assert_eq!(workflow_args["prior_verdicts"], json!(["material"]));
         assert_eq!(workflow_args["fix_outcomes"], json!(["succeeded"]));
+    }
+
+    #[test]
+    fn judge_run_fails_when_standing_findings_get_no_decisions() {
+        let root = tempfile::tempdir().expect("judge root");
+        let mut req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "gemini")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        req.state.findings.push(finding());
+        let runner = FakeEnsembleRunner::new(json!([]), vec![archive_agent("judge", "gemini")]);
+        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = judge
+            .run_judge(&req, &mut workspace)
+            .expect_err("empty decisions with findings fail");
+
+        assert!(
+            matches!(error, RunBodyError::Ensemble(message) if message.contains("no decisions"))
+        );
     }
 
     #[test]

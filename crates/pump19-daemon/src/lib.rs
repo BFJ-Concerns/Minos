@@ -23,12 +23,14 @@ use std::{
 };
 
 use pump19_adaptations::{
-    PromptPack, PromptTemplate, WorkflowScript, load_prompt_pack, load_trigger_rules,
+    MechanicalExecution, MechanicalPack, MechanicalStep, MechanicalStepKind, PromptPack,
+    PromptTemplate, WorkflowScript, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
 };
 use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
     AgentLaunchSpec, Core, CoreError, CorePolicy, DispatchOutcome, FinishLabelApplicationPolicy,
-    JsonRunStateStore, LaunchProof, PreparedAgent, TriggerRule,
+    JsonRunStateStore, LaunchProof, PreparedAgent, PreparedSource, SourcePreparationRequest,
+    SourcePreparer, TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -71,6 +73,10 @@ pub enum DaemonError {
     MissingWorkflowScript(RunKind),
     #[error("prompt template for {0:?} is missing from the prompt pack")]
     MissingPromptTemplate(RunKind),
+    #[error("mechanical source preparation step is missing from the mechanical pack")]
+    MissingSourcePreparationStep,
+    #[error("source preparation step {0:?} uses unsupported container execution")]
+    UnsupportedSourcePreparationContainer(String),
     #[error("signal handler setup failed: {0}")]
     Signal(String),
 }
@@ -80,6 +86,7 @@ pub enum DaemonError {
 pub struct DaemonConfig {
     pub trigger_pack: PathBuf,
     pub prompt_pack: PathBuf,
+    pub mechanical_pack: PathBuf,
     pub state_root: PathBuf,
     pub workspace: WorkspaceDaemonConfig,
     pub ensemble: EnsembleDaemonConfig,
@@ -247,6 +254,7 @@ type RuntimeCore = Core<
     RuntimeLauncher,
     JsonRunStateStore,
     ForgejoForgeOperations<CommandForgejoClient>,
+    RuntimeSourcePreparer,
 >;
 
 type RuntimeLauncher = Pump19RunLauncher<
@@ -414,13 +422,14 @@ trait CoreRunner {
     fn pending_event_count(&self) -> usize;
 }
 
-impl<E, W, L, S, F> CoreRunner for Core<E, W, L, S, F>
+impl<E, W, L, S, F, P> CoreRunner for Core<E, W, L, S, F, P>
 where
     E: pump19_core::EventSource,
     W: pump19_core::WorkspaceProvider,
     L: pump19_core::RunLauncher,
     S: pump19_core::RunStateStore,
     F: pump19_core::ForgeOperations,
+    P: pump19_core::SourcePreparer,
 {
     fn run_next(
         &mut self,
@@ -452,6 +461,7 @@ const fn core_error_class(error: &CoreError) -> &'static str {
     match error {
         CoreError::EventSource(_) => "event_source",
         CoreError::Workspace(_) => "workspace",
+        CoreError::SourcePreparation(_) => "source_preparation",
         CoreError::Launcher(_) => "launcher",
         CoreError::StateStore(_) => "state_store",
         CoreError::ForgeOperation(_) => "forge_operation",
@@ -509,12 +519,15 @@ fn load_rules(config: &DaemonConfig) -> Result<Vec<TriggerRule>, DaemonError> {
 fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, DaemonError> {
     let prompt_pack = load_prompt_pack(&config.prompt_pack)
         .map_err(|error| DaemonError::Adaptation(error.to_string()))?;
+    let mechanical_pack = load_mechanical_pack(&config.mechanical_pack)
+        .map_err(|error| DaemonError::Adaptation(error.to_string()))?;
     let prompt_root = config
         .prompt_pack
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let launcher = runtime_launcher(&config.ensemble, &prompt_pack, &prompt_root)?;
     let policy = core_policy(&config.forgejo);
+    let source_preparer = runtime_source_preparer(&mechanical_pack)?;
     let polling = PollingForgejoActivitySource::new(
         CommandPollingClient::new(config.forgejo.poll_command.clone()),
         ForgejoPollingConfig::new(config.forgejo.repositories, &config.forgejo.finish_label),
@@ -530,12 +543,13 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
     let state_store = JsonRunStateStore::new(config.state_root)?;
     let forge_operations =
         ForgejoForgeOperations::new(CommandForgejoClient::new(config.forgejo.operation_command));
-    let core = Core::with_forge_operations_and_policy(
+    let core = Core::with_forge_operations_source_preparer_and_policy(
         event_source,
         workspace,
         launcher,
         state_store,
         forge_operations,
+        source_preparer,
         policy,
     );
     Ok(Pump19Daemon::new(core, config.loop_control))
@@ -610,6 +624,156 @@ fn prompt_template(prompt_pack: &PromptPack, run_kind: RunKind) -> Option<&Promp
         .prompt_templates
         .iter()
         .find(|template| template.run_kind == run_kind)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeSourcePreparer {
+    steps: Vec<MechanicalStep>,
+}
+
+impl RuntimeSourcePreparer {
+    const fn new(steps: Vec<MechanicalStep>) -> Self {
+        Self { steps }
+    }
+}
+
+impl SourcePreparer for RuntimeSourcePreparer {
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError> {
+        let preparation_root = source_preparation_root(&request);
+        if preparation_root.exists() {
+            fs::remove_dir_all(&preparation_root).map_err(|source| {
+                CoreError::SourcePreparation(format!(
+                    "clear source preparation root {}: {source}",
+                    preparation_root.display()
+                ))
+            })?;
+        }
+        fs::create_dir_all(&preparation_root).map_err(|source| {
+            CoreError::SourcePreparation(format!(
+                "create source preparation root {}: {source}",
+                preparation_root.display()
+            ))
+        })?;
+
+        let mut prepared = None;
+        for step in &self.steps {
+            prepared = Some(run_source_preparation_step(
+                step,
+                &request,
+                &preparation_root,
+                prepared.as_ref(),
+            )?);
+        }
+        prepared.ok_or_else(|| {
+            CoreError::SourcePreparation("no source preparation steps configured".to_owned())
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct SourcePreparationCommandInput<'a> {
+    step_id: &'a str,
+    run_id: &'a str,
+    run_kind: RunKind,
+    repository: &'a str,
+    pull_request: &'a str,
+    commit_sha: &'a str,
+    workspace_root: &'a Path,
+    preparation_root: &'a Path,
+    previous_tree: Option<&'a Path>,
+    event: &'a pump19_contract::ContractEvent,
+    state: &'a pump19_contract::PrRunState,
+}
+
+#[derive(Deserialize)]
+struct SourcePreparationCommandOutput {
+    tree: PathBuf,
+    revision: String,
+}
+
+fn runtime_source_preparer(pack: &MechanicalPack) -> Result<RuntimeSourcePreparer, DaemonError> {
+    let steps = pack
+        .steps
+        .iter()
+        .filter(|step| {
+            matches!(
+                step.kind,
+                MechanicalStepKind::Checkout | MechanicalStepKind::Prepare
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if steps.is_empty() {
+        return Err(DaemonError::MissingSourcePreparationStep);
+    }
+    Ok(RuntimeSourcePreparer::new(steps))
+}
+
+fn source_preparation_root(request: &SourcePreparationRequest) -> PathBuf {
+    let parent = request
+        .workspace
+        .root
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    parent.join(format!("{}-source-prep", request.workspace.id))
+}
+
+fn run_source_preparation_step(
+    step: &MechanicalStep,
+    request: &SourcePreparationRequest,
+    preparation_root: &Path,
+    previous: Option<&PreparedSource>,
+) -> Result<PreparedSource, CoreError> {
+    let input = SourcePreparationCommandInput {
+        step_id: &step.id,
+        run_id: &request.run_id.0,
+        run_kind: request.run_kind,
+        repository: &request.pr.repository,
+        pull_request: &request.pr.id,
+        commit_sha: &request.commit_sha,
+        workspace_root: &request.workspace.root,
+        preparation_root,
+        previous_tree: previous.map(|source| source.tree.as_path()),
+        event: &request.event,
+        state: &request.state,
+    };
+    let stdin = serde_json::to_vec(&input).map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "serialise source preparation input for step {:?}: {error}",
+            step.id
+        ))
+    })?;
+    let output = match &step.execution {
+        MechanicalExecution::Command { program, args } => {
+            run_json_program(program, args, &stdin)
+                .map_err(|error| source_step_command_error(&step.id, &error))?
+        }
+        MechanicalExecution::Container { .. } => {
+            return Err(CoreError::SourcePreparation(
+                DaemonError::UnsupportedSourcePreparationContainer(step.id.clone()).to_string(),
+            ));
+        }
+    };
+    let output =
+        serde_json::from_slice::<SourcePreparationCommandOutput>(&output).map_err(|error| {
+            CoreError::SourcePreparation(format!(
+                "source preparation step {:?} returned invalid JSON: {error}",
+                step.id
+            ))
+        })?;
+    Ok(PreparedSource {
+        tree: output.tree,
+        revision: output.revision,
+    })
+}
+
+fn source_step_command_error(step_id: &str, error: &std::io::Error) -> CoreError {
+    CoreError::SourcePreparation(format!(
+        "source preparation step {step_id:?} failed: {error}"
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -841,6 +1005,25 @@ fn run_json_command_with_stdin<'a>(
     command_output(child.wait_with_output()?)
 }
 
+fn run_json_program(
+    program: &str,
+    args: &[String],
+    stdin: &[u8],
+) -> Result<Vec<u8>, std::io::Error> {
+    use std::io::Write as _;
+
+    let mut command = Command::new(program);
+    command.args(args);
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    let mut child = command.spawn()?;
+    if let Some(child_stdin) = child.stdin.as_mut() {
+        child_stdin.write_all(stdin)?;
+    }
+    command_output(child.wait_with_output()?)
+}
+
 fn command_output(output: std::process::Output) -> Result<Vec<u8>, std::io::Error> {
     if output.status.success() {
         return Ok(output.stdout);
@@ -854,14 +1037,19 @@ fn command_output(output: std::process::Output) -> Result<Vec<u8>, std::io::Erro
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, collections::VecDeque, path::PathBuf, rc::Rc};
+    use std::{
+        cell::RefCell,
+        collections::VecDeque,
+        path::{Path, PathBuf},
+        rc::Rc,
+    };
 
     use pump19_contract::{
         ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
         CertaintyClass, Confidence, ContractVersion, Decision, DecisionSubject, DecisionVerdict,
         Extensions, Finding, FindingId, FindingLocation, ForgeFacts, Mergeability, ModelFamily,
-        ModelLineage, Patch, PatchChange, PatchId, PrRunState, ReviewCleanliness, Revision, RunId,
-        RunOutcome, SessionId, Severity,
+        ModelLineage, Patch, PatchChange, PatchId, PrRunState, PublicationState, ReviewCleanliness,
+        Revision, RunId, RunOutcome, SessionId, Severity,
     };
     use pump19_core::{
         AgentEngine, AgentLaunchTarget, AgentPlan, AuthorisationEvidence, AuthorisedComment,
@@ -1294,7 +1482,10 @@ mod tests {
         let state_observer = store.clone();
         let polling = PollingForgejoActivitySource::new(
             FakePollingClient {
-                polls: VecDeque::from([vec![forgejo_snapshot()], vec![forgejo_snapshot()]]),
+                polls: VecDeque::from([
+                    vec![forgejo_snapshot_without_finish_label()],
+                    vec![forgejo_snapshot()],
+                ]),
             },
             ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
         );
@@ -1348,6 +1539,142 @@ mod tests {
     }
 
     #[test]
+    fn runtime_source_preparer_exports_recorded_revision_from_local_bare_repo() {
+        let dir = tempdir().expect("temp dir");
+        let source = dir.path().join("repo");
+        let bare = dir.path().join("repo.git");
+        run_git(["init", source.to_str().expect("source path")]);
+        fs::write(source.join("README.md"), "first\n").expect("write first file");
+        run_git(["-C", source.to_str().expect("source path"), "add", "."]);
+        run_git([
+            "-C",
+            source.to_str().expect("source path"),
+            "-c",
+            "user.name=Pump 19",
+            "-c",
+            "user.email=pump19@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ]);
+        fs::write(source.join("README.md"), "second\n").expect("write second file");
+        run_git(["-C", source.to_str().expect("source path"), "add", "."]);
+        run_git([
+            "-C",
+            source.to_str().expect("source path"),
+            "-c",
+            "user.name=Pump 19",
+            "-c",
+            "user.email=pump19@example.invalid",
+            "commit",
+            "-m",
+            "second",
+        ]);
+        let head = git_stdout([
+            "-C",
+            source.to_str().expect("source path"),
+            "rev-parse",
+            "HEAD",
+        ]);
+        run_git([
+            "clone",
+            "--bare",
+            source.to_str().expect("source path"),
+            bare.to_str().expect("bare path"),
+        ]);
+        let output_tree = dir.path().join("prepared-tree");
+        let script = dir.path().join("prepare-source.sh");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+set -eu
+cat >/dev/null
+mkdir -p "{output_tree}"
+git --git-dir="{bare}" archive "{head}" | tar -x -C "{output_tree}"
+printf '{{"tree":"{output_tree}","revision":"{head}"}}'
+"#,
+                output_tree = output_tree.display(),
+                bare = bare.display(),
+                head = head,
+            ),
+        )
+        .expect("write source prep script");
+        make_executable(&script);
+        let pack = MechanicalPack {
+            schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
+            contract_version: ContractVersion::current(),
+            id: "test-mechanics".to_owned(),
+            steps: vec![MechanicalStep {
+                id: "checkout-source".to_owned(),
+                kind: MechanicalStepKind::Checkout,
+                execution: MechanicalExecution::Command {
+                    program: script.display().to_string(),
+                    args: Vec::new(),
+                },
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                extensions: Extensions::new(),
+            }],
+            extensions: Extensions::new(),
+        };
+        let mut preparer = runtime_source_preparer(&pack).expect("source preparer");
+        let workspace = WorkspaceLease {
+            id: "workspace-1".to_owned(),
+            root: dir.path().join("workspace"),
+            isolation: WorkspaceIsolation {
+                isolated: true,
+                credential_free: true,
+                egress_bounded: true,
+                resource_bounded: true,
+                ephemeral: true,
+            },
+        };
+        let mut state_extensions = Extensions::new();
+        state_extensions.insert(
+            "pump19.core.forge_facts".to_owned(),
+            serde_json::to_value(contract_facts()).expect("forge facts JSON"),
+        );
+        let state = PrRunState {
+            contract_version: ContractVersion::current(),
+            pr: pr(),
+            commit_sha: head.clone(),
+            current_head_sha: Some(head.clone()),
+            pass_index: 1,
+            status: pump19_contract::RunStatus::Pending,
+            active_run: None,
+            run_history: Vec::new(),
+            loop_history: Vec::new(),
+            superseded_by: None,
+            findings: Vec::new(),
+            decisions: Vec::new(),
+            patches: Vec::new(),
+            publication: PublicationState::default(),
+            ceiling: None,
+            extensions: state_extensions,
+        };
+
+        let checkout = preparer
+            .prepare_source(SourcePreparationRequest {
+                run_id: RunId("run-1".to_owned()),
+                run_kind: RunKind::Review,
+                event: probe_event(),
+                state,
+                workspace,
+                pr: pr(),
+                commit_sha: head.clone(),
+            })
+            .expect("prepare source");
+
+        assert_eq!(checkout.revision, head);
+        assert_eq!(
+            fs::read_to_string(checkout.tree.join("README.md")).expect("read prepared source"),
+            "second\n"
+        );
+        assert!(!checkout.tree.join(".git").exists());
+    }
+
+    #[test]
     fn config_loads_from_external_toml() {
         let dir = tempdir().expect("temp dir");
         let path = dir.path().join("pump19.toml");
@@ -1356,6 +1683,7 @@ mod tests {
             r#"
 trigger_pack = "triggers.toml"
 prompt_pack = "prompt-pack.toml"
+mechanical_pack = "mechanical.toml"
 state_root = "state"
 
 [workspace]
@@ -1403,26 +1731,41 @@ stop_after_quiet_polls = 1
                 RuntimeLauncher,
                 JsonRunStateStore,
                 ForgejoForgeOperations<CommandForgejoClient>,
+                RuntimeSourcePreparer,
             >,
         >();
     }
 
     fn forgejo_snapshot() -> ForgejoPullRequestSnapshot {
+        forgejo_snapshot_with_head("head-after-fix", true)
+    }
+
+    fn forgejo_snapshot_without_finish_label() -> ForgejoPullRequestSnapshot {
+        forgejo_snapshot_with_head("abc123", false)
+    }
+
+    fn forgejo_snapshot_with_head(
+        head_sha: &str,
+        include_finish_label: bool,
+    ) -> ForgejoPullRequestSnapshot {
         ForgejoPullRequestSnapshot {
             repository: "acme/widgets".to_owned(),
             id: "42".to_owned(),
-            head_sha: "abc123".to_owned(),
+            head_sha: head_sha.to_owned(),
             base_sha: "def456".to_owned(),
             branch_currency: ForgejoBranchCurrency::Current,
             cleanliness: ForgejoReviewCleanliness::Clean,
             mergeability: ForgejoMergeability::Mergeable,
-            labels: vec![ForgejoLabelApplication {
-                name: "pump19-finish".to_owned(),
-                applied_by: Some(ForgejoActor {
-                    id: "pump19-core".to_owned(),
-                    display_name: "pump19-core".to_owned(),
-                }),
-            }],
+            labels: include_finish_label
+                .then(|| ForgejoLabelApplication {
+                    name: "pump19-finish".to_owned(),
+                    applied_by: Some(ForgejoActor {
+                        id: "pump19-core".to_owned(),
+                        display_name: "pump19-core".to_owned(),
+                    }),
+                })
+                .into_iter()
+                .collect(),
             actor_permissions: vec![ForgejoActorPermission {
                 actor: ForgejoActor {
                     id: "pump19-core".to_owned(),
@@ -1438,6 +1781,39 @@ stop_after_quiet_polls = 1
         pump19_contract::PullRequestRef {
             repository: "acme/widgets".to_owned(),
             id: "42".to_owned(),
+        }
+    }
+
+    fn run_git<const N: usize>(args: [&str; N]) {
+        let output = Command::new("git").args(args).output().expect("run git");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_stdout<const N: usize>(args: [&str; N]) -> String {
+        let output = Command::new("git").args(args).output().expect("run git");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git stdout is UTF-8")
+            .trim()
+            .to_owned()
+    }
+
+    fn make_executable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("chmod script");
         }
     }
 
@@ -1511,10 +1887,17 @@ stop_after_quiet_polls = 1
     fn loop_rules() -> Vec<TriggerRule> {
         vec![
             TriggerRule {
-                id: "review-on-pr-opened".to_owned(),
+                id: "review-on-pr-change".to_owned(),
                 run_kind: RunKind::Review,
-                criteria: Criteria::Event {
-                    event: EventKind::PullRequestOpened,
+                criteria: Criteria::Any {
+                    criteria: vec![
+                        Criteria::Event {
+                            event: EventKind::PullRequestOpened,
+                        },
+                        Criteria::Event {
+                            event: EventKind::PullRequestUpdated,
+                        },
+                    ],
                 },
                 agent_plan: AgentPlan {
                     reviewers: vec![
@@ -1543,6 +1926,22 @@ stop_after_quiet_polls = 1
                 },
             },
             TriggerRule {
+                id: "judge-after-noop-fix".to_owned(),
+                run_kind: RunKind::Judge,
+                criteria: Criteria::Event {
+                    event: EventKind::RunCompleted {
+                        run_kind: Some(RunKind::Fix),
+                        outcome: Some(RunOutcome::NoOp),
+                    },
+                },
+                agent_plan: AgentPlan {
+                    reviewers: Vec::new(),
+                    fixers: Vec::new(),
+                    judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+                    finishers: Vec::new(),
+                },
+            },
+            TriggerRule {
                 id: "fix-after-material-judge".to_owned(),
                 run_kind: RunKind::Fix,
                 criteria: Criteria::All {
@@ -1561,25 +1960,6 @@ stop_after_quiet_polls = 1
                 agent_plan: AgentPlan {
                     reviewers: Vec::new(),
                     fixers: vec![target("fixer-codex", AgentRole::Fixer, "codex")],
-                    judge: None,
-                    finishers: Vec::new(),
-                },
-            },
-            TriggerRule {
-                id: "review-after-fix".to_owned(),
-                run_kind: RunKind::Review,
-                criteria: Criteria::Event {
-                    event: EventKind::RunCompleted {
-                        run_kind: Some(RunKind::Fix),
-                        outcome: Some(RunOutcome::Succeeded),
-                    },
-                },
-                agent_plan: AgentPlan {
-                    reviewers: vec![
-                        target("reviewer-codex", AgentRole::Reviewer, "codex"),
-                        target("reviewer-claude", AgentRole::Reviewer, "claude"),
-                    ],
-                    fixers: Vec::new(),
                     judge: None,
                     finishers: Vec::new(),
                 },

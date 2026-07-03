@@ -524,6 +524,10 @@ if (result === null) {
   throw new Error("judge output failed schema validation");
 }
 
+if ((args.current_findings || args.findings || []).length > 0 && result.decisions.length === 0) {
+  throw new Error("judge returned no decisions for standing findings");
+}
+
 return result.decisions;
 "#;
 
