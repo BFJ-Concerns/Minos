@@ -883,6 +883,13 @@ fn finish_label_actor() -> ActorRef {
     actor("maintainer")
 }
 
+fn core_service_actor() -> ActorRef {
+    ActorRef {
+        id: "pump19-core".to_owned(),
+        display_name: "Pump-19 Core".to_owned(),
+    }
+}
+
 fn contract_facts(
     branch_currency: BranchCurrency,
     cleanliness: ReviewCleanliness,
@@ -926,6 +933,15 @@ fn contract_facts_with_head(
 fn finish_label_actor_permissions() -> Vec<ActorPermissions> {
     vec![ActorPermissions {
         actor: finish_label_actor(),
+        capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
+            .into_iter()
+            .collect(),
+    }]
+}
+
+fn spurious_core_actor_permissions() -> Vec<ActorPermissions> {
+    vec![ActorPermissions {
+        actor: core_service_actor(),
         capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
             .into_iter()
             .collect(),
@@ -1735,6 +1751,7 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
     let finish = launched_run_id(&outcomes).expect("finish launched");
     assert!(finish.0.contains("finish-on-label"));
     assert_eq!(merges.borrow().len(), 1);
+    assert_eq!(merges.borrow()[0].authorisation.actor, finish_label_actor());
     assert!(
         merges.borrow()[0]
             .authorisation
@@ -1743,6 +1760,19 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
             .any(|evidence| matches!(
                 evidence,
                 AuthorisationEvidence::MergeGateCleanAndCurrent { .. }
+            ))
+    );
+    assert!(
+        merges.borrow()[0]
+            .authorisation
+            .evidence
+            .iter()
+            .any(|evidence| matches!(
+                evidence,
+                AuthorisationEvidence::ActorCapability {
+                    actor,
+                    capability: ActorCapability::Merge,
+                } if actor == &finish_label_actor()
             ))
     );
 }
@@ -1757,7 +1787,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
     let mut facts = contract_facts(
         BranchCurrency::Current,
         ReviewCleanliness::Clean,
-        finish_label_actor_permissions(),
+        Vec::new(),
     );
     facts.finish_label = None;
     let mut core = Core::with_forge_operations_and_policy(
@@ -1804,7 +1834,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
         "head-sha-after-fix",
         BranchCurrency::Current,
         ReviewCleanliness::Clean,
-        finish_label_actor_permissions(),
+        Vec::new(),
     );
     updated_facts.finish_label = None;
     let outcomes = core
@@ -1842,8 +1872,11 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
             .extensions
             .get("pump19.core.forge_facts")
             .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
-            .and_then(|facts| facts.finish_label.map(|label| label.name)),
-        Some("pump19-finish".to_owned())
+            .map(|facts| {
+                assert!(facts.actor_permissions.is_empty());
+                facts.finish_label.map(|label| label.name)
+            }),
+        Some(Some("pump19-finish".to_owned()))
     );
     let drained = core
         .drain_available(&rules)
@@ -1851,6 +1884,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
 
     assert_eq!(labels.borrow().len(), 1);
     assert_eq!(labels.borrow()[0].label, "pump19-finish");
+    assert_eq!(labels.borrow()[0].authorisation.actor, core_service_actor());
     assert!(
         labels.borrow()[0]
             .authorisation
@@ -1859,18 +1893,108 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
             .any(|evidence| matches!(
                 evidence,
                 AuthorisationEvidence::ActorCapability {
+                    actor,
                     capability: ActorCapability::ApplyFinishLabel,
                     ..
-                }
+                } if actor == &core_service_actor()
             ))
     );
     assert_eq!(merges.borrow().len(), 1);
+    assert_eq!(merges.borrow()[0].authorisation.actor, core_service_actor());
+    assert!(
+        merges.borrow()[0]
+            .authorisation
+            .evidence
+            .iter()
+            .any(|evidence| matches!(
+                evidence,
+                AuthorisationEvidence::ActorCapability {
+                    actor,
+                    capability: ActorCapability::Merge,
+                } if actor == &core_service_actor()
+            ))
+    );
     assert!(
         drained
             .iter()
             .flatten()
             .any(|outcome| matches!(outcome, DispatchOutcome::Launched { rule_id, .. } if rule_id == "finish-on-label"))
     );
+}
+
+#[test]
+fn spurious_core_finish_label_does_not_merge_without_policy_grant() {
+    let forge_operations = RecordingForgeOperations::default();
+    let merges = Rc::clone(&forge_operations.merges);
+    let mut facts = contract_facts_with_head(
+        "head-sha-1",
+        BranchCurrency::Current,
+        ReviewCleanliness::Clean,
+        spurious_core_actor_permissions(),
+    );
+    facts.finish_label = Some(FinishLabel {
+        name: "pump19-finish".to_owned(),
+        applied_by: core_service_actor(),
+    });
+    let mut state = run_state();
+    state.status = RunStatus::Completed;
+    state.findings = vec![
+        finding_with(
+            "spurious-core-reviewer-codex",
+            verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+            1,
+        ),
+        finding_with(
+            "spurious-core-reviewer-claude",
+            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            1,
+        ),
+    ];
+    state.decisions = vec![pump19_contract::Decision {
+        contract_version: version(),
+        id: "decision-converged-spurious-core".to_owned(),
+        subject: DecisionSubject::FindingSet {
+            finding_ids: Vec::new(),
+        },
+        verdict: DecisionVerdict::Converged,
+        rationale: "estate seeded convergence".to_owned(),
+        provenance: verified_provenance("judge-glm", AgentRole::Judge, "glm"),
+        extensions: extensions(),
+    }];
+    state.extensions.insert(
+        "pump19.core.forge_facts".to_owned(),
+        serde_json::to_value(&facts).expect("serialise forge facts"),
+    );
+    let state_store = SharedEstateStateStore::with_state(state);
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-spurious-core-finish-estate")),
+        },
+        EstateLoopLauncher,
+        state_store,
+        forge_operations,
+    );
+    let event = ContractEvent {
+        contract_version: version(),
+        id: "spurious-core-finish-label".to_owned(),
+        payload: EventPayload::LabelApplied {
+            pr: pr(),
+            label: facts.finish_label.expect("finish label"),
+        },
+        extensions: extensions(),
+    };
+
+    let error = core
+        .process_event(&event, &[finish_on_label_rule()])
+        .expect_err("forge-supplied pump19-core actor is ignored without policy grant");
+
+    assert!(matches!(
+        error,
+        CoreError::ForgeOperation(message)
+            if message == "finish label actor lacks merge capability"
+    ));
+    assert!(merges.borrow().is_empty());
 }
 
 #[test]
