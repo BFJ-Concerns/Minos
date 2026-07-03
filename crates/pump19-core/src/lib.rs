@@ -12,7 +12,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use pump19_contract::{
@@ -48,6 +48,8 @@ pub enum CoreError {
     EventSource(String),
     #[error("workspace provider failed: {0}")]
     Workspace(String),
+    #[error("source preparation failed: {0}")]
+    SourcePreparation(String),
     #[error("run launcher failed: {0}")]
     Launcher(String),
     #[error("state store failed: {0}")]
@@ -86,6 +88,20 @@ pub trait WorkspaceProvider {
     ///
     /// Returns an error when the provider cannot create or describe the workspace.
     fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError>;
+
+    /// Injects a trusted, already-prepared source tree into the workspace boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider cannot make the source visible to
+    /// commands executed inside the isolated workspace.
+    fn inject_source(
+        &mut self,
+        _lease: &WorkspaceLease,
+        _source: &PreparedSource,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
 
     /// Executes a command inside the prepared workspace boundary.
     ///
@@ -127,6 +143,47 @@ pub trait RunLauncher {
         request: RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<RunLaunchOutcome, CoreError>;
+}
+
+/// Checks out and prepares PR source on the trusted side of the workspace boundary.
+pub trait SourcePreparer {
+    /// Returns whether this preparer should run for dispatches.
+    #[must_use]
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    /// Produces a plain, credential-free tree for the requested PR revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when checkout, dependency prefetch, or any mechanical
+    /// preparation step fails.
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError>;
+}
+
+/// Source preparation disabled for tests and configurations that explicitly do
+/// not need source material.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NoopSourcePreparer;
+
+impl SourcePreparer for NoopSourcePreparer {
+    fn enabled(&self) -> bool {
+        false
+    }
+
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError> {
+        Ok(PreparedSource {
+            tree: request.workspace.root,
+            revision: request.commit_sha,
+        })
+    }
 }
 
 /// Executes forge side effects after the core has already authorised them.
@@ -461,7 +518,7 @@ pub trait RunStateStore {
 
 /// Deterministic dispatch-and-enforce core.
 #[derive(Debug)]
-pub struct Core<E, W, L, S, F = NoopForgeOperations> {
+pub struct Core<E, W, L, S, F = NoopForgeOperations, P = NoopSourcePreparer> {
     event_source: E,
     pending_events: VecDeque<ContractEvent>,
     queued_completion_event_ids: BTreeSet<String>,
@@ -469,9 +526,10 @@ pub struct Core<E, W, L, S, F = NoopForgeOperations> {
     launcher: L,
     state_store: S,
     forge_operations: F,
+    source_preparer: P,
 }
 
-impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations>
+impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations, NoopSourcePreparer>
 where
     E: EventSource,
     W: WorkspaceProvider,
@@ -506,6 +564,35 @@ where
         state_store: S,
         forge_operations: F,
     ) -> Self {
+        Self::with_forge_operations_and_source_preparer(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            NoopSourcePreparer,
+        )
+    }
+}
+
+impl<E, W, L, S, F, P> Core<E, W, L, S, F, P>
+where
+    E: EventSource,
+    W: WorkspaceProvider,
+    L: RunLauncher,
+    S: RunStateStore,
+    F: ForgeOperations,
+    P: SourcePreparer,
+{
+    #[must_use]
+    pub const fn with_forge_operations_and_source_preparer(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        source_preparer: P,
+    ) -> Self {
         Self {
             event_source,
             pending_events: VecDeque::new(),
@@ -514,6 +601,7 @@ where
             launcher,
             state_store,
             forge_operations,
+            source_preparer,
         }
     }
 
@@ -736,6 +824,8 @@ where
             });
         }
 
+        self.prepare_and_inject_source(event, rule, &state, &run_id, &workspace)?;
+
         let mut running_state = mark_running(state, event, rule, &run_id);
         if let Err(error) = self.state_store.save(&running_state) {
             self.workspace_provider.cleanup(&workspace)?;
@@ -801,6 +891,72 @@ where
             rule_id: rule.id.clone(),
             run_id,
         })
+    }
+
+    fn prepare_and_inject_source(
+        &mut self,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        state: &PrRunState,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if !self.source_preparer.enabled() {
+            return Ok(());
+        }
+        let prepared_source = match self
+            .source_preparer
+            .prepare_source(SourcePreparationRequest {
+                run_id: run_id.clone(),
+                run_kind: rule.run_kind,
+                event: event.clone(),
+                state: state.clone(),
+                workspace: workspace.clone(),
+                pr: state.pr.clone(),
+                commit_sha: state.commit_sha.clone(),
+            }) {
+            Ok(source) => source,
+            Err(error) => {
+                self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_prepared_source(&prepared_source, &state.commit_sha) {
+            cleanup_external_prepared_source(&prepared_source, workspace)?;
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .workspace_provider
+            .inject_source(workspace, &prepared_source)
+        {
+            cleanup_external_prepared_source(&prepared_source, workspace)?;
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = cleanup_external_prepared_source(&prepared_source, workspace) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = reject_credential_residue(&workspace.root) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn fail_before_run(
+        &mut self,
+        state: &PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+        error: &CoreError,
+    ) -> Result<(), CoreError> {
+        let message = error.to_string();
+        self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str())?;
+        self.workspace_provider.cleanup(workspace)
     }
 
     fn record_failed_dispatch(
@@ -1684,6 +1840,25 @@ pub struct WorkspaceRequest {
     pub run_kind: RunKind,
     pub pr: PullRequestRef,
     pub commit_sha: String,
+}
+
+/// Request made to trusted source preparation before untrusted code can execute.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourcePreparationRequest {
+    pub run_id: RunId,
+    pub run_kind: RunKind,
+    pub event: ContractEvent,
+    pub state: PrRunState,
+    pub workspace: WorkspaceLease,
+    pub pr: PullRequestRef,
+    pub commit_sha: String,
+}
+
+/// A plain source tree prepared outside the credential-free workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedSource {
+    pub tree: PathBuf,
+    pub revision: String,
 }
 
 /// A prepared workspace plus isolation assertion from the trusted provider seam.
@@ -2717,9 +2892,135 @@ fn sanitise_path_component(value: &str) -> String {
         .collect()
 }
 
+fn validate_prepared_source(
+    source: &PreparedSource,
+    expected_revision: &str,
+) -> Result<(), CoreError> {
+    if source.revision != expected_revision {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared revision {} did not match recorded head {}",
+            source.revision, expected_revision
+        )));
+    }
+    let metadata = fs::metadata(&source.tree).map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "prepared source tree {} is not readable: {error}",
+            source.tree.display()
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared source tree {} is not a directory",
+            source.tree.display()
+        )));
+    }
+    reject_credential_residue(&source.tree)
+}
+
+fn reject_credential_residue(root: &Path) -> Result<(), CoreError> {
+    reject_credential_residue_at(root, root)
+}
+
+fn cleanup_external_prepared_source(
+    source: &PreparedSource,
+    workspace: &WorkspaceLease,
+) -> Result<(), CoreError> {
+    if source.tree == workspace.root || !source.tree.exists() {
+        return Ok(());
+    }
+    fs::remove_dir_all(&source.tree).map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "remove trusted preparation tree {}: {error}",
+            source.tree.display()
+        ))
+    })
+}
+
+fn reject_credential_residue_at(root: &Path, path: &Path) -> Result<(), CoreError> {
+    for entry in fs::read_dir(path).map_err(|error| {
+        CoreError::SourcePreparation(format!("read prepared tree {}: {error}", path.display()))
+    })? {
+        let entry = entry.map_err(|error| {
+            CoreError::SourcePreparation(format!("read prepared tree {}: {error}", path.display()))
+        })?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if credential_residue_name(name.as_str()) {
+            return Err(CoreError::SourcePreparation(format!(
+                "prepared source contains credential residue at {}",
+                display_relative(root, &path)
+            )));
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            CoreError::SourcePreparation(format!(
+                "inspect prepared tree {}: {error}",
+                path.display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink() {
+            reject_escaping_symlink(root, &path)?;
+            continue;
+        }
+        if metadata.is_dir() {
+            reject_credential_residue_at(root, &path)?;
+        }
+    }
+    Ok(())
+}
+
+fn credential_residue_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".gitconfig" | ".git-credentials" | ".netrc" | ".ssh"
+    )
+}
+
+fn reject_escaping_symlink(root: &Path, path: &Path) -> Result<(), CoreError> {
+    let target = fs::read_link(path).map_err(|error| {
+        CoreError::SourcePreparation(format!("inspect symlink {}: {error}", path.display()))
+    })?;
+    if target.is_absolute() {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared source contains absolute symlink at {}",
+            display_relative(root, path)
+        )));
+    }
+    let parent = path.parent().unwrap_or(root);
+    let mut depth = parent
+        .strip_prefix(root)
+        .map_or(0, |relative| relative.components().count());
+    for component in target.components() {
+        match component {
+            std::path::Component::ParentDir if depth == 0 => {
+                return Err(CoreError::SourcePreparation(format!(
+                    "prepared source contains escaping symlink at {}",
+                    display_relative(root, path)
+                )));
+            }
+            std::path::Component::ParentDir => depth -= 1,
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::CurDir => {}
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(CoreError::SourcePreparation(format!(
+                    "prepared source contains escaping symlink at {}",
+                    display_relative(root, path)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn display_relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, path::PathBuf};
+    use std::{cell::RefCell, collections::VecDeque, path::PathBuf, rc::Rc};
 
     use pump19_contract::{
         ActorCapability, ActorPermissions, ActorRef, BranchCurrency, DecisionSubject, FinishLabel,
@@ -2759,6 +3060,21 @@ mod tests {
         cleaned: usize,
     }
 
+    #[derive(Debug)]
+    struct SourceWorkspaceProvider {
+        root: PathBuf,
+        cleaned: Rc<RefCell<usize>>,
+        injections: Rc<RefCell<Vec<PreparedSource>>>,
+    }
+
+    #[derive(Debug)]
+    struct TreeSourcePreparer {
+        tree: PathBuf,
+    }
+
+    #[derive(Debug)]
+    struct FailingSourcePreparer;
+
     impl WorkspaceProvider for FakeWorkspaceProvider {
         fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
             Ok(WorkspaceLease {
@@ -2783,6 +3099,85 @@ mod tests {
         fn cleanup(&mut self, _lease: &WorkspaceLease) -> Result<(), CoreError> {
             self.cleaned += 1;
             Ok(())
+        }
+    }
+
+    impl WorkspaceProvider for SourceWorkspaceProvider {
+        fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
+            fs::create_dir_all(&self.root).map_err(|source| CoreError::Io {
+                path: self.root.display().to_string(),
+                source,
+            })?;
+            Ok(WorkspaceLease {
+                id: request.run_id.0,
+                root: self.root.clone(),
+                isolation: WorkspaceIsolation {
+                    isolated: true,
+                    credential_free: true,
+                    egress_bounded: true,
+                    resource_bounded: true,
+                    ephemeral: true,
+                },
+            })
+        }
+
+        fn inject_source(
+            &mut self,
+            _lease: &WorkspaceLease,
+            source: &PreparedSource,
+        ) -> Result<(), CoreError> {
+            fs::create_dir_all(self.root.join("src")).map_err(|error| CoreError::Io {
+                path: self.root.display().to_string(),
+                source: error,
+            })?;
+            fs::copy(source.tree.join("src/lib.rs"), self.root.join("src/lib.rs")).map_err(
+                |error| CoreError::Io {
+                    path: self.root.join("src/lib.rs").display().to_string(),
+                    source: error,
+                },
+            )?;
+            self.injections.borrow_mut().push(source.clone());
+            Ok(())
+        }
+
+        fn exec(
+            &mut self,
+            _lease: &WorkspaceLease,
+            _request: WorkspaceExecRequest,
+        ) -> Result<WorkspaceExecOutput, CoreError> {
+            Ok(WorkspaceExecOutput {
+                exit_code: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+
+        fn cleanup(&mut self, _lease: &WorkspaceLease) -> Result<(), CoreError> {
+            *self.cleaned.borrow_mut() += 1;
+            Ok(())
+        }
+    }
+
+    impl SourcePreparer for TreeSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Ok(PreparedSource {
+                tree: self.tree.clone(),
+                revision: request.commit_sha,
+            })
+        }
+    }
+
+    impl SourcePreparer for FailingSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            _request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Err(CoreError::SourcePreparation(
+                "checkout failed in test".to_owned(),
+            ))
         }
     }
 
@@ -3500,6 +3895,96 @@ mod tests {
             .process_event(&event(), &[rule])
             .expect("process event");
         (outcomes, core.launcher.launched)
+    }
+
+    #[test]
+    fn trusted_source_preparation_injects_tree_before_launch_and_cleans_prepared_tree() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prepared_tree = temp.path().join("prepared");
+        fs::create_dir_all(prepared_tree.join("src")).expect("create prepared tree");
+        fs::write(prepared_tree.join("src/lib.rs"), "pub fn prepared() {}\n")
+            .expect("write source");
+        let workspace_root = temp.path().join("workspace");
+        let cleaned = Rc::new(RefCell::new(0));
+        let injections = Rc::new(RefCell::new(Vec::new()));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: workspace_root.clone(),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::clone(&injections),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            NoopForgeOperations,
+            TreeSourcePreparer {
+                tree: prepared_tree.clone(),
+            },
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("process event");
+
+        assert!(matches!(outcomes[0], DispatchOutcome::Launched { .. }));
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("src/lib.rs")).expect("read injected source"),
+            "pub fn prepared() {}\n"
+        );
+        assert_eq!(injections.borrow().len(), 1);
+        assert!(!prepared_tree.exists());
+        assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn source_preparation_failure_records_surfaces_and_cleans_workspace() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: temp.path().join("workspace"),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("source preparation failure should fail dispatch");
+
+        assert!(matches!(error, CoreError::SourcePreparation(_)));
+        assert_eq!(*cleaned.borrow(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("saved state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert_eq!(saved.run_history.len(), 1);
+        assert_eq!(saved.run_history[0].status, RunStatus::Failed);
+        assert_eq!(saved.publication.attempts.len(), 1);
+        assert_eq!(
+            saved
+                .extensions
+                .get(EXT_LAST_FAILURE)
+                .and_then(Value::as_str),
+            Some("source preparation failed: checkout failed in test")
+        );
     }
 
     #[test]

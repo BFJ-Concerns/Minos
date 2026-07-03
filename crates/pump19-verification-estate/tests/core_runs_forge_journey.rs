@@ -384,6 +384,15 @@ impl ContainerRuntime for RecordingRuntime {
             }))
     }
 
+    fn copy_into(
+        &mut self,
+        _container_id: &str,
+        _host_source: &Path,
+        _container_dest: &str,
+    ) -> Result<(), WorkspaceError> {
+        Ok(())
+    }
+
     fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
         self.removed.borrow_mut().push(container_id.to_owned());
         Ok(())
