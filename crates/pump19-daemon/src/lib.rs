@@ -19,7 +19,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use pump19_adaptations::{
@@ -642,6 +642,7 @@ impl SourcePreparer for RuntimeSourcePreparer {
         &mut self,
         request: SourcePreparationRequest,
     ) -> Result<PreparedSource, CoreError> {
+        let started_at = Instant::now();
         let preparation_root = source_preparation_root(&request);
         if preparation_root.exists() {
             fs::remove_dir_all(&preparation_root).map_err(|source| {
@@ -659,6 +660,7 @@ impl SourcePreparer for RuntimeSourcePreparer {
         })?;
 
         let mut prepared = None;
+        let mut steps_run = Vec::with_capacity(self.steps.len());
         for step in &self.steps {
             prepared = Some(run_source_preparation_step(
                 step,
@@ -666,10 +668,27 @@ impl SourcePreparer for RuntimeSourcePreparer {
                 &preparation_root,
                 prepared.as_ref(),
             )?);
+            steps_run.push(step.id.clone());
         }
-        prepared.ok_or_else(|| {
+        let mut prepared = prepared.ok_or_else(|| {
             CoreError::SourcePreparation("no source preparation steps configured".to_owned())
-        })
+        })?;
+        prepared.cleanup_root = Some(preparation_root.clone());
+        log_daemon_event(
+            "info",
+            "source_preparation_succeeded",
+            &json!({
+                "run_id": request.run_id.0,
+                "run_kind": request.run_kind,
+                "repository": request.pr.repository,
+                "pull_request": request.pr.id,
+                "steps_run": steps_run,
+                "prepared_revision": prepared.revision,
+                "duration_ms": started_at.elapsed().as_millis(),
+                "preparation_root": preparation_root,
+            }),
+        );
+        Ok(prepared)
     }
 }
 
@@ -767,6 +786,7 @@ fn run_source_preparation_step(
     Ok(PreparedSource {
         tree: output.tree,
         revision: output.revision,
+        cleanup_root: None,
     })
 }
 
@@ -1582,7 +1602,10 @@ mod tests {
             source.to_str().expect("source path"),
             bare.to_str().expect("bare path"),
         ]);
-        let output_tree = dir.path().join("prepared-tree");
+        let output_tree = dir
+            .path()
+            .join("workspace-1-source-prep")
+            .join("prepared-tree");
         let script = dir.path().join("prepare-source.sh");
         fs::write(
             &script,
@@ -1672,6 +1695,130 @@ printf '{{"tree":"{output_tree}","revision":"{head}"}}'
             "second\n"
         );
         assert!(!checkout.tree.join(".git").exists());
+    }
+
+    #[test]
+    fn runtime_source_preparer_threads_previous_tree_through_chained_steps() {
+        let dir = tempdir().expect("temp dir");
+        let checkout_tree = dir
+            .path()
+            .join("workspace-1-source-prep")
+            .join("checkout-tree");
+        let prepared_tree = dir
+            .path()
+            .join("workspace-1-source-prep")
+            .join("prepared-tree");
+        let checkout_script = dir.path().join("checkout.sh");
+        let prepare_script = dir.path().join("prepare.sh");
+        fs::write(
+            &checkout_script,
+            format!(
+                r#"#!/bin/sh
+set -eu
+cat >/dev/null
+mkdir -p "{checkout_tree}"
+printf 'checked out\n' > "{checkout_tree}/source.txt"
+printf '{{"tree":"{checkout_tree}","revision":"abc123"}}'
+"#,
+                checkout_tree = checkout_tree.display(),
+            ),
+        )
+        .expect("write checkout script");
+        fs::write(
+            &prepare_script,
+            format!(
+                r#"#!/bin/sh
+set -eu
+input="$(cat)"
+case "$input" in
+  *'"previous_tree":"{checkout_tree}"'*) ;;
+  *) echo "$input" >&2; exit 23 ;;
+esac
+mkdir -p "{prepared_tree}"
+cp "{checkout_tree}/source.txt" "{prepared_tree}/source.txt"
+printf 'prepared\n' >> "{prepared_tree}/source.txt"
+printf '{{"tree":"{prepared_tree}","revision":"abc123"}}'
+"#,
+                checkout_tree = checkout_tree.display(),
+                prepared_tree = prepared_tree.display(),
+            ),
+        )
+        .expect("write prepare script");
+        make_executable(&checkout_script);
+        make_executable(&prepare_script);
+        let pack = MechanicalPack {
+            schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
+            contract_version: ContractVersion::current(),
+            id: "test-mechanics".to_owned(),
+            steps: vec![
+                MechanicalStep {
+                    id: "checkout-source".to_owned(),
+                    kind: MechanicalStepKind::Checkout,
+                    execution: MechanicalExecution::Command {
+                        program: checkout_script.display().to_string(),
+                        args: Vec::new(),
+                    },
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                    extensions: Extensions::new(),
+                },
+                MechanicalStep {
+                    id: "prepare-source".to_owned(),
+                    kind: MechanicalStepKind::Prepare,
+                    execution: MechanicalExecution::Command {
+                        program: prepare_script.display().to_string(),
+                        args: Vec::new(),
+                    },
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                    extensions: Extensions::new(),
+                },
+            ],
+            extensions: Extensions::new(),
+        };
+        let mut preparer = runtime_source_preparer(&pack).expect("source preparer");
+        let workspace = WorkspaceLease {
+            id: "workspace-1".to_owned(),
+            root: dir.path().join("workspace"),
+            isolation: WorkspaceIsolation {
+                isolated: true,
+                credential_free: true,
+                egress_bounded: true,
+                resource_bounded: true,
+                ephemeral: true,
+            },
+        };
+
+        let checkout = preparer
+            .prepare_source(SourcePreparationRequest {
+                run_id: RunId("run-1".to_owned()),
+                run_kind: RunKind::Review,
+                event: probe_event(),
+                state: pending_state("abc123"),
+                workspace: workspace.clone(),
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+            })
+            .expect("prepare source");
+
+        assert_eq!(checkout.tree, prepared_tree);
+        assert_eq!(checkout.revision, "abc123");
+        assert_eq!(
+            fs::read_to_string(checkout.tree.join("source.txt")).expect("read prepared source"),
+            "checked out\nprepared\n"
+        );
+        assert_eq!(
+            checkout.cleanup_root,
+            Some(source_preparation_root(&SourcePreparationRequest {
+                run_id: RunId("run-1".to_owned()),
+                run_kind: RunKind::Review,
+                event: probe_event(),
+                state: pending_state("abc123"),
+                workspace,
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+            }))
+        );
     }
 
     #[test]
@@ -1846,6 +1993,32 @@ stop_after_quiet_polls = 1
                     .collect(),
             }],
             extensions: Extensions::new(),
+        }
+    }
+
+    fn pending_state(head: &str) -> PrRunState {
+        let mut state_extensions = Extensions::new();
+        state_extensions.insert(
+            "pump19.core.forge_facts".to_owned(),
+            serde_json::to_value(contract_facts()).expect("forge facts JSON"),
+        );
+        PrRunState {
+            contract_version: ContractVersion::current(),
+            pr: pr(),
+            commit_sha: head.to_owned(),
+            current_head_sha: Some(head.to_owned()),
+            pass_index: 1,
+            status: pump19_contract::RunStatus::Pending,
+            active_run: None,
+            run_history: Vec::new(),
+            loop_history: Vec::new(),
+            superseded_by: None,
+            findings: Vec::new(),
+            decisions: Vec::new(),
+            patches: Vec::new(),
+            publication: PublicationState::default(),
+            ceiling: None,
+            extensions: state_extensions,
         }
     }
 

@@ -402,6 +402,7 @@ impl SourcePreparer for PreparedTreeSourcePreparer {
         Ok(PreparedSource {
             tree: self.tree.clone(),
             revision: request.commit_sha,
+            cleanup_root: self.tree.parent().map(Path::to_path_buf),
         })
     }
 }
