@@ -21,8 +21,8 @@ use pump19_contract::{
 use pump19_core::{
     AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence,
     AuthorisedComment, AuthorisedCommentResolution, AuthorisedCommentUpdate, AuthorisedFixPush,
-    AuthorisedLabel, AuthorisedMerge, Core, CoreError, CorePolicy, Criteria, DispatchOutcome,
-    EventKind, EventSource, FinishLabelApplicationPolicy, ForgeOperationError,
+    AuthorisedLabel, AuthorisedMerge, CommentRendering, Core, CoreError, CorePolicy, Criteria,
+    DispatchOutcome, EventKind, EventSource, FinishLabelApplicationPolicy, ForgeOperationError,
     ForgeOperationReceipt, ForgeOperations, LaunchProof, LaunchRefusal, PreparedAgent,
     PreparedSource, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore,
     SkipReason, SourcePreparationRequest, SourcePreparer, StateCriterion, TriggerRule,
@@ -1803,6 +1803,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
             finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
                 label: "pump19-finish".to_owned(),
             },
+            comment_rendering: CommentRendering::default(),
         },
     );
     let rules = loop_rules();

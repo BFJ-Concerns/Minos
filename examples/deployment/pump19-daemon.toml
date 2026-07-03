@@ -19,6 +19,9 @@ timeout_ms = 600000
 [forgejo]
 repositories = ["REPLACE_WITH_OWNER/REPOSITORY"]
 finish_label = "pump19-finish"
+# Forge web root for file permalinks in finding comments; omit for plain
+# path:line code spans.
+# web_base_url = "https://forgejo.example"
 # Off by default: when false, a person applies the finish label after convergence.
 # Set true only for repositories where agent-authored code may merge without human review.
 # core_applies_finish_label_on_convergence = false

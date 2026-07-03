@@ -122,7 +122,7 @@ case "$operation" in
     guard_expected_head "$metadata_expected"
     comment_id=$(printf '%s' "$input" | jq -r '.comment_operation_id')
     reason=$(printf '%s' "$input" | jq -r '.reason')
-    body=$(jq -nc --arg reason "$reason" '{body:("Resolved by Pump-19: " + $reason)}')
+    body=$(jq -nc --arg reason "$reason" '{body:("✅ **Addressed by Pump-19** — " + $reason)}')
     response=$(api_json PATCH "/repos/$repository/issues/comments/$comment_id" "$body")
     receipt "$(printf '%s' "$response" | jq -r --arg comment_id "$comment_id" '(.id // $comment_id) | tostring')"
     ;;

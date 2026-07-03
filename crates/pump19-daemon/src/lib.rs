@@ -28,9 +28,9 @@ use pump19_adaptations::{
 };
 use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
-    AgentLaunchSpec, CompletionRecoverySummary, Core, CoreError, CorePolicy, DispatchOutcome,
-    FinishLabelApplicationPolicy, JsonRunStateStore, LaunchProof, PreparedAgent, PreparedSource,
-    SourcePreparationRequest, SourcePreparer, TriggerRule,
+    AgentLaunchSpec, CommentRendering, CompletionRecoverySummary, Core, CoreError, CorePolicy,
+    DispatchOutcome, FinishLabelApplicationPolicy, JsonRunStateStore, LaunchProof, PreparedAgent,
+    PreparedSource, SourcePreparationRequest, SourcePreparer, TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -182,6 +182,10 @@ pub struct ForgejoDaemonConfig {
     pub finish_label: String,
     #[serde(default)]
     pub core_applies_finish_label_on_convergence: bool,
+    /// Forge web root used to render file permalinks in finding comments.
+    /// Absent means comments carry plain `path:line` code spans instead.
+    #[serde(default)]
+    pub web_base_url: Option<String>,
     pub poll_command: CommandConfig,
     pub operation_command: CommandConfig,
 }
@@ -781,14 +785,18 @@ fn resolve_mechanical_command_programs(pack: &mut MechanicalPack, root: &Path) {
 }
 
 fn core_policy(config: &ForgejoDaemonConfig) -> CorePolicy {
-    if config.core_applies_finish_label_on_convergence {
-        CorePolicy {
-            finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
-                label: config.finish_label.clone(),
-            },
+    let finish_label_application = if config.core_applies_finish_label_on_convergence {
+        FinishLabelApplicationPolicy::CoreOnConvergence {
+            label: config.finish_label.clone(),
         }
     } else {
-        CorePolicy::human_gate()
+        FinishLabelApplicationPolicy::HumanOnly
+    };
+    CorePolicy {
+        finish_label_application,
+        comment_rendering: CommentRendering {
+            web_base_url: config.web_base_url.clone(),
+        },
     }
 }
 
@@ -2399,6 +2407,7 @@ exit 75
                 repositories: vec!["acme/widgets".to_owned()],
                 finish_label: "pump19-finish".to_owned(),
                 core_applies_finish_label_on_convergence: false,
+                web_base_url: None,
                 poll_command: CommandConfig {
                     program: PathBuf::from("poll-forgejo"),
                     args: Vec::new(),
