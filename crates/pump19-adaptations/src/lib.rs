@@ -2785,9 +2785,9 @@ esac
         )?;
         let runner_args = dir.path().join("runner-args.txt");
         let stub_runner = dir.path().join("stub-runner");
-        fs::write(
+        super::write_executable_text(
             &stub_runner,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 printf '%s\n' "$@" > "{args_file}"
 echo "stub check output"
@@ -2796,7 +2796,6 @@ exit "${{PUMP19_STUB_RUNNER_STATUS:-0}}"
                 args_file = runner_args.display()
             ),
         )?;
-        set_executable(&stub_runner)?;
         Ok(MergeReadinessFixture {
             command: commands.merge_readiness_command,
             git_root,
@@ -3012,14 +3011,6 @@ done
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    fn set_executable(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-        #[cfg(unix)]
-        {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
-        }
-        Ok(())
     }
 
     fn trigger_pack() -> TriggerPack {

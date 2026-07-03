@@ -770,9 +770,8 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         .prompt_pack
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let launcher = runtime_launcher(
-        &config.ensemble,
-        &config.forgejo.repository_intents,
+    let launcher = runtime_launcher_from_config(
+        &config,
         &prompt_pack,
         &prompt_root,
         runtime_merge_readiness(&mechanical_pack),
@@ -856,6 +855,21 @@ fn runtime_launcher(
         ),
         VerifiedMergeGateFinishBody::new(merge_readiness),
     ))
+}
+
+fn runtime_launcher_from_config(
+    config: &DaemonConfig,
+    prompt_pack: &PromptPack,
+    prompt_root: &Path,
+    merge_readiness: Option<RuntimeMergeReadiness>,
+) -> Result<RuntimeLauncher, DaemonError> {
+    runtime_launcher(
+        &config.ensemble,
+        &config.forgejo.repository_intents,
+        prompt_pack,
+        prompt_root,
+        merge_readiness,
+    )
 }
 
 /// The mechanical-pack step name that marks a merge-readiness command.
@@ -1498,12 +1512,14 @@ mod tests {
         rc::Rc,
     };
 
+    use pump19_adaptations::PromptPackManifest;
     use pump19_contract::{
         ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
         CertaintyClass, Confidence, ContractVersion, Decision, DecisionSubject, DecisionVerdict,
         Extensions, Finding, FindingId, FindingLocation, ForgeFacts, Mergeability, ModelFamily,
-        ModelLineage, Patch, PatchChange, PatchId, PrRunState, PublicationState, ReviewCleanliness,
-        Revision, RunId, RunOutcome, SessionId, Severity,
+        ModelLineage, ModelProvenance, Patch, PatchChange, PatchId, PrRunState,
+        ProvenanceVerification, PublicationState, ReviewCleanliness, Revision, RunId, RunOutcome,
+        SessionFreshness, SessionId, Severity,
     };
     use pump19_core::{
         AgentEngine, AgentLaunchTarget, AgentPlan, AuthorisationEvidence, AuthorisedComment,
@@ -1517,6 +1533,7 @@ mod tests {
         ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
         ForgejoMergeability, ForgejoReviewCleanliness,
     };
+    use pump19_judgement::JudgementBrief;
     use tempfile::tempdir;
 
     use super::*;
@@ -2384,6 +2401,93 @@ stop_after_quiet_polls = 1
     }
 
     #[test]
+    fn daemon_launcher_threads_repository_intent_into_review_prompt() {
+        let dir = tempdir().expect("temp dir");
+        let captured_args = dir.path().join("captured-review-args.json");
+        let fake_node = dir.path().join("fake-node");
+        write_test_executable(&fake_node, &fake_node_launcher_script(&captured_args));
+        let prompt_pack = subject_probe_prompt_pack();
+        let prompt_pack_path = write_prompt_pack_fixture(dir.path(), &prompt_pack);
+        let mechanical_pack_path = pump19_adaptations::write_baseline_mechanical_pack(
+            &dir.path().join("mechanical"),
+            "baseline-mechanical",
+        )
+        .expect("write baseline mechanical pack");
+        let mut config = minimal_config();
+        config.prompt_pack = prompt_pack_path;
+        config.mechanical_pack = mechanical_pack_path;
+        config.state_root = dir.path().join("state");
+        config.ensemble.node_program = fake_node;
+        config.ensemble.launcher_path = PathBuf::from("ignored-launcher.js");
+        config.ensemble.archive_root = dir.path().join("archives");
+        config.forgejo.repository_intents.insert(
+            "acme/widgets".to_owned(),
+            SubjectIntent {
+                slug: "widgets".to_owned(),
+                name: "Acme Widgets".to_owned(),
+                purpose: "Review the configured widget purpose.".to_owned(),
+                invariants: Vec::new(),
+                behaviours: Vec::new(),
+            },
+        );
+        let _daemon = build_daemon(config.clone()).expect("daemon builds with repository intent");
+        let prompt_root = config.prompt_pack.parent().expect("prompt pack has parent");
+        let mut launcher = runtime_launcher_from_config(&config, &prompt_pack, prompt_root, None)
+            .expect("build runtime launcher from daemon config");
+        let mut workspace = FakeWorkspaceProvider {
+            cleaned: Rc::new(RefCell::new(0)),
+        };
+
+        let outcome = launcher
+            .launch_run(
+                RunLaunchRequest {
+                    run_id: RunId("review-run".to_owned()),
+                    run_kind: RunKind::Review,
+                    event: probe_event(),
+                    state: pending_state("abc123"),
+                    workspace: WorkspaceLease {
+                        id: "workspace".to_owned(),
+                        root: dir.path().join("workspace"),
+                        isolation: WorkspaceIsolation {
+                            isolated: true,
+                            credential_free: true,
+                            egress_bounded: true,
+                            resource_bounded: true,
+                            ephemeral: true,
+                        },
+                    },
+                    provenance: vec![
+                        provenance_for_target(target(
+                            "reviewer-codex",
+                            AgentRole::Reviewer,
+                            "codex",
+                        )),
+                        provenance_for_target(target(
+                            "reviewer-claude",
+                            AgentRole::Reviewer,
+                            "claude",
+                        )),
+                    ],
+                },
+                &mut workspace,
+            )
+            .expect("review launch succeeds");
+
+        assert_eq!(outcome.findings.len(), 1);
+        let args: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&captured_args).expect("read captured review args"),
+        )
+        .expect("captured args JSON");
+        let prompt = args["briefs"][0]["prompt"]
+            .as_str()
+            .expect("rendered prompt");
+        assert!(prompt.contains("Acme Widgets"));
+        assert!(prompt.contains("widgets"));
+        assert!(prompt.contains("Review the configured widget purpose."));
+        assert_eq!(args["subject"]["name"].as_str(), Some("Acme Widgets"));
+    }
+
+    #[test]
     fn config_resolves_relative_command_programs_from_toml_file() {
         let dir = tempdir().expect("temp dir");
         let path = dir.path().join("pump19.toml");
@@ -2683,6 +2787,29 @@ exit 75
         ));
     }
 
+    #[test]
+    fn daemon_start_rejects_unfilled_repository_intent_placeholders() {
+        let mut config = minimal_config();
+        config.forgejo.repository_intents.insert(
+            "acme/widgets".to_owned(),
+            SubjectIntent {
+                slug: "widgets".to_owned(),
+                name: "REPLACE_WITH_SUBJECT_NAME".to_owned(),
+                purpose: "Review widgets.".to_owned(),
+                invariants: Vec::new(),
+                behaviours: Vec::new(),
+            },
+        );
+
+        let error = validate_startable_config(&config).expect_err("placeholder should fail");
+
+        assert!(matches!(
+            error,
+            DaemonError::UnfilledPlaceholder { field, .. }
+                if field == "forgejo.repository_intents.acme/widgets.name"
+        ));
+    }
+
     fn assert_core_runner<T: CoreRunner>() {}
 
     #[test]
@@ -2822,6 +2949,145 @@ exit 75
             let mut permissions = fs::metadata(path).expect("script metadata").permissions();
             permissions.set_mode(0o755);
             fs::set_permissions(path, permissions).expect("chmod script");
+        }
+    }
+
+    fn write_test_executable(path: &Path, source: &str) {
+        let temp_path = path.with_extension("tmp");
+        fs::write(&temp_path, source).expect("write executable temp file");
+        make_executable(&temp_path);
+        fs::rename(&temp_path, path).expect("publish executable");
+    }
+
+    fn subject_probe_prompt_pack() -> PromptPack {
+        PromptPack {
+            manifest: PromptPackManifest {
+                schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
+                contract_version: ContractVersion::current(),
+                id: "subject-probe".to_owned(),
+                prompt_templates: vec![
+                    PromptTemplate {
+                        id: "review".to_owned(),
+                        run_kind: RunKind::Review,
+                        template: "Subject: {{subject_name}} ({{subject_slug}})\nPurpose: {{subject_purpose}}\n{{brief_body}}\n{{evidence}}"
+                            .to_owned(),
+                        extensions: Extensions::new(),
+                    },
+                    PromptTemplate {
+                        id: "judge".to_owned(),
+                        run_kind: RunKind::Judge,
+                        template: "{{findings}}".to_owned(),
+                        extensions: Extensions::new(),
+                    },
+                    PromptTemplate {
+                        id: "fix".to_owned(),
+                        run_kind: RunKind::Fix,
+                        template: "{{findings}}".to_owned(),
+                        extensions: Extensions::new(),
+                    },
+                ],
+                workflow_scripts: vec![
+                    WorkflowScript {
+                        id: "review".to_owned(),
+                        run_kind: RunKind::Review,
+                        path: PathBuf::from("review.js"),
+                        extensions: Extensions::new(),
+                    },
+                    WorkflowScript {
+                        id: "judge".to_owned(),
+                        run_kind: RunKind::Judge,
+                        path: PathBuf::from("judge.js"),
+                        extensions: Extensions::new(),
+                    },
+                    WorkflowScript {
+                        id: "fix".to_owned(),
+                        run_kind: RunKind::Fix,
+                        path: PathBuf::from("fix.js"),
+                        extensions: Extensions::new(),
+                    },
+                ],
+                brief_dir: PathBuf::from("briefs"),
+                extensions: Extensions::new(),
+            },
+            briefs: vec![JudgementBrief {
+                id: "purpose".to_owned(),
+                title: "Purpose".to_owned(),
+                intent_ref: "behaviours.purpose".to_owned(),
+                brief: "Judge the configured purpose.".to_owned(),
+                evidence_paths: Vec::new(),
+            }],
+        }
+    }
+
+    fn write_prompt_pack_fixture(root: &Path, pack: &PromptPack) -> PathBuf {
+        let prompt_root = root.join("prompt");
+        let brief_root = prompt_root.join(&pack.manifest.brief_dir);
+        fs::create_dir_all(&brief_root).expect("create prompt fixture");
+        fs::write(
+            prompt_root.join("prompt-pack.toml"),
+            toml::to_string(&pack.manifest).expect("serialise prompt manifest"),
+        )
+        .expect("write prompt manifest");
+        for brief in &pack.briefs {
+            fs::write(
+                brief_root.join(format!("{}.toml", brief.id)),
+                toml::to_string(brief).expect("serialise brief"),
+            )
+            .expect("write brief");
+        }
+        prompt_root.join("prompt-pack.toml")
+    }
+
+    fn fake_node_launcher_script(captured_args: &Path) -> String {
+        format!(
+            r#"#!/bin/sh
+set -eu
+json_args=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json-args)
+      shift
+      json_args=$1
+      ;;
+  esac
+  shift || true
+done
+printf '%s' "$json_args" > "{captured_args}"
+run_dir="$ENSEMBLE_RUN_RECORD_DIR/runs/cwd/test/test-run"
+mkdir -p "$run_dir/agents/000001" "$run_dir/agents/000002"
+cat > "$run_dir/agents/000001/agent.json" <<'JSON'
+{{"id":1,"kind":"agent_record","engine":"codex","label":"reviewer-codex:purpose","model":"codex-2026-06","resolved_model":"codex-2026-06","status":"complete","validated_output":{{"ok":true}}}}
+JSON
+cat > "$run_dir/agents/000002/agent.json" <<'JSON'
+{{"id":2,"kind":"agent_record","engine":"claude","label":"reviewer-claude:purpose","model":"claude-2026-06","resolved_model":"claude-2026-06","status":"complete","validated_output":{{"ok":true}}}}
+JSON
+cat > "$run_dir/manifest.json" <<'JSON'
+{{"kind":"run_manifest","schema_version":1,"status":"complete","run_id":"cwd:test:test-run","result":{{"archive_path":"result.json","exit_code":0}},"files":[{{"path":"agents/000001/agent.json","sha256":"fixture","size":1}},{{"path":"agents/000002/agent.json","sha256":"fixture","size":1}}]}}
+JSON
+printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"failed","reviews":[{{"agent_id":"reviewer-codex","model_family":"codex","status":"failed","stdout":"PUMP19_JUDGEMENT: FAIL configured subject reached prompt","stderr":""}}]}}],"model_families":["codex","claude"]}}'
+"#,
+            captured_args = captured_args.display()
+        )
+    }
+
+    fn provenance_for_target(target: AgentLaunchTarget) -> ModelProvenance {
+        let mut extensions = Extensions::new();
+        extensions.insert(
+            "pump19.core.agent_engine".to_owned(),
+            serde_json::Value::String(target.engine.as_str().to_owned()),
+        );
+        ModelProvenance {
+            contract_version: ContractVersion::current(),
+            agent_id: target.agent_id,
+            role: target.role,
+            session_id: SessionId("daemon-test-session".to_owned()),
+            freshness: SessionFreshness::FreshForPass { pass_index: 1 },
+            verification: ProvenanceVerification::Verified {
+                vendor: target.vendor,
+                control_plane: target.control_plane,
+                lineage: target.lineage,
+            },
+            extensions,
         }
     }
 
