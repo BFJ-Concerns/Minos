@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -41,7 +41,7 @@ use pump19_runs::{
     AgentSessionPreparer, EnsembleFixBody, EnsembleJudgeBody, EnsembleReviewBody,
     EnsembleWorkflowConfig, EnsembleWorkflowOutput, EnsembleWorkflowRequest,
     EnsembleWorkflowRunner, FinishRunBody, FixRunBody, JudgeRunBody, MergeGateFinishBody,
-    Pump19RunLauncher, ReviewRunBody, RunBodyError,
+    Pump19RunLauncher, ReviewRunBody, RunBodyError, SubjectIntent,
 };
 use pump19_workspace::{
     CapabilityPolicy, ContainerRuntime, ContainerSpec, ContainerWorkspaceProvider, NetworkPolicy,
@@ -449,7 +449,6 @@ struct RecordingRuntime {
     execs: Rc<RefCell<Vec<(String, WorkspaceExecRequest)>>>,
     removed: Rc<RefCell<Vec<String>>>,
     outputs: Rc<RefCell<Vec<WorkspaceExecOutput>>>,
-    seed_judgement_workspace: bool,
 }
 
 #[derive(Debug)]
@@ -522,16 +521,6 @@ impl EnsembleWorkflowRunner for EstateEnsembleRunner {
 
 impl ContainerRuntime for RecordingRuntime {
     fn create(&mut self, spec: &ContainerSpec) -> Result<(), WorkspaceError> {
-        if self.seed_judgement_workspace {
-            pump19_judgement::install_standalone(
-                &spec.host_control_dir,
-                "sample",
-                "Sample",
-                "Prove composed host ensemble review",
-                None,
-            )
-            .map_err(|error| WorkspaceError::Runtime(error.to_string()))?;
-        }
         self.created.borrow_mut().push(spec.clone());
         Ok(())
     }
@@ -567,15 +556,6 @@ impl ContainerRuntime for RecordingRuntime {
     fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
         self.removed.borrow_mut().push(container_id.to_owned());
         Ok(())
-    }
-}
-
-impl RecordingRuntime {
-    fn with_judgement_workspace() -> Self {
-        Self {
-            seed_judgement_workspace: true,
-            ..Self::default()
-        }
     }
 }
 
@@ -1040,11 +1020,16 @@ fn archive_agent(agent_id: &str, family: &str) -> ArchiveAgentFixture {
 }
 
 fn ensemble_config(root: &Path, run_kind: &str) -> EnsembleWorkflowConfig {
+    let prompt_template = if run_kind == "review" {
+        "configured estate prompt\n{{subject_name}}\n{{subject_slug}}\n{{subject_purpose}}"
+    } else {
+        "configured estate prompt"
+    };
     EnsembleWorkflowConfig {
         script: root.join(format!("{run_kind}.js")),
         archive_root: root.join("archives"),
         timeout_ms: 5_000,
-        prompt_template: "configured estate prompt".to_owned(),
+        prompt_template: prompt_template.to_owned(),
         briefs: pump19_judgement::baseline_judgement_briefs(),
     }
 }
@@ -3144,14 +3129,6 @@ fn launcher_failure_is_recorded_as_failed_pr_run_state() {
 #[test]
 fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let review_workspace = tempdir().expect("review workspace");
-    pump19_judgement::install_standalone(
-        review_workspace.path(),
-        "sample",
-        "Sample",
-        "Prove estate ensemble run bodies",
-        None,
-    )
-    .expect("install judgement material");
     let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
         status: pump19_judgement::JudgementStatus::Failed,
         model_families: vec!["codex".to_owned(), "claude".to_owned()],
@@ -3388,14 +3365,6 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
 #[test]
 fn review_run_body_uses_host_ensemble_not_workspace_executor() {
     let host_workspace = tempdir().expect("host workspace");
-    pump19_judgement::install_standalone(
-        host_workspace.path(),
-        "sample",
-        "Sample",
-        "Prove host ensemble review",
-        None,
-    )
-    .expect("install judgement material");
     let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
         status: pump19_judgement::JudgementStatus::Failed,
         model_families: vec!["codex".to_owned(), "claude".to_owned()],
@@ -3412,15 +3381,29 @@ fn review_run_body_uses_host_ensemble_not_workspace_executor() {
         }],
     })
     .expect("judgement serialises");
-    let mut review = EnsembleReviewBody::new(
-        EstateEnsembleRunner::new(
-            judgement_value,
-            vec![
-                archive_agent("reviewer-codex", "codex"),
-                archive_agent("reviewer-claude", "claude"),
-            ],
-        ),
+    let runner = EstateEnsembleRunner::new(
+        judgement_value,
+        vec![
+            archive_agent("reviewer-codex", "codex"),
+            archive_agent("reviewer-claude", "claude"),
+        ],
+    );
+    let requests = runner.requests();
+    let mut subject_intents = BTreeMap::new();
+    subject_intents.insert(
+        "acme/widgets".to_owned(),
+        SubjectIntent {
+            slug: "widgets".to_owned(),
+            name: "Acme Widgets".to_owned(),
+            purpose: "Keep the widget service reviewable.".to_owned(),
+            invariants: Vec::new(),
+            behaviours: Vec::new(),
+        },
+    );
+    let mut review = EnsembleReviewBody::with_subject_intents(
+        runner,
         ensemble_config(host_workspace.path(), "review"),
+        subject_intents,
     );
     let request = RunLaunchRequest {
         run_kind: RunKind::Review,
@@ -3439,6 +3422,12 @@ fn review_run_body_uses_host_ensemble_not_workspace_executor() {
 
     assert_eq!(findings.len(), 1);
     assert!(executor.execs.is_empty());
+    let requests = requests.borrow();
+    let prompt = requests[0].args["briefs"][0]["prompt"]
+        .as_str()
+        .expect("rendered prompt");
+    assert!(prompt.contains("Acme Widgets"));
+    assert!(prompt.contains("Keep the widget service reviewable."));
 }
 
 #[test]
@@ -3502,7 +3491,7 @@ fn real_workspace_provider_prepares_container_and_cleans_up_after_launch() {
 #[test]
 fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     let root = tempdir().expect("workspace root");
-    let runtime = RecordingRuntime::with_judgement_workspace();
+    let runtime = RecordingRuntime::default();
     let created_specs = Rc::clone(&runtime.created);
     let execs = Rc::clone(&runtime.execs);
     let provider = ContainerWorkspaceProvider::with_runtime(
@@ -3573,6 +3562,7 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     assert_eq!(spec.security.capabilities, CapabilityPolicy::DropAll);
     assert_eq!(spec.security.privilege, PrivilegeMode::NoNewPrivileges);
     assert_eq!(spec.workdir, "/workspace");
+    assert!(!spec.host_control_dir.join("pump19.intent.toml").exists());
     assert!(execs.borrow().is_empty());
 
     let requests = review_requests.borrow();
@@ -3588,6 +3578,11 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
         request.args["workspace_root"].as_str(),
         Some(spec.host_control_dir.to_string_lossy().as_ref())
     );
+    let prompt = request.args["briefs"][0]["prompt"]
+        .as_str()
+        .expect("rendered prompt");
+    assert!(prompt.contains("acme/widgets"));
+    assert!(prompt.contains("Review changes to acme/widgets"));
     assert_ne!(
         request.args["workspace_root"].as_str(),
         Some("/workspace"),

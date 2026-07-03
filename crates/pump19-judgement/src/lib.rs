@@ -228,7 +228,7 @@ pub fn baseline_judgement_briefs() -> Vec<JudgementBrief> {
             id: "conformance-to-purpose".to_owned(),
             title: "Conformance to stated purpose".to_owned(),
             intent_ref: "behaviours.purpose".to_owned(),
-            brief: "Judge whether the implementation meaningfully serves the stated purpose in pump19.intent.toml."
+            brief: "Judge whether the implementation meaningfully serves the subject purpose supplied in the review prompt."
                 .to_owned(),
             evidence_paths: Vec::new(),
         },

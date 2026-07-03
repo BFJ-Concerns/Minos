@@ -27,8 +27,8 @@ use pump19_core::{
     WorkspaceExecutor,
 };
 use pump19_judgement::{
-    JudgementBrief, JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult,
-    evidence_text, load_intent,
+    IntentStatement, JudgementBrief, JudgementBriefResult, JudgementRun, JudgementStatus,
+    ReviewerResult, evidence_text,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -252,6 +252,36 @@ pub struct EnsembleWorkflowOutput {
     pub archive_dir: PathBuf,
 }
 
+/// Site-side description of the repository under review.
+///
+/// This is operator configuration, not subject-repository state. A bare
+/// repository gets a neutral fallback from its `owner/repo` identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubjectIntent {
+    pub slug: String,
+    pub name: String,
+    pub purpose: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invariants: Vec<IntentStatement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub behaviours: Vec<IntentStatement>,
+}
+
+impl SubjectIntent {
+    #[must_use]
+    pub fn neutral_for_repository(repository: &str) -> Self {
+        Self {
+            slug: repository.to_owned(),
+            name: repository.to_owned(),
+            purpose: format!(
+                "Review changes to {repository} for correctness, safety, maintainability, and alignment with the judgement brief."
+            ),
+            invariants: Vec::new(),
+            behaviours: Vec::new(),
+        }
+    }
+}
+
 /// Thin adapter for the prebuilt ensemble launcher.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostEnsembleWorkflowRunner {
@@ -461,17 +491,35 @@ where
 pub struct EnsembleReviewBody<R> {
     runner: R,
     config: EnsembleWorkflowConfig,
+    subject_intents: BTreeMap<String, SubjectIntent>,
     last_archive_path: Option<String>,
 }
 
 impl<R> EnsembleReviewBody<R> {
     #[must_use]
     pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
+        Self::with_subject_intents(runner, config, BTreeMap::new())
+    }
+
+    #[must_use]
+    pub const fn with_subject_intents(
+        runner: R,
+        config: EnsembleWorkflowConfig,
+        subject_intents: BTreeMap<String, SubjectIntent>,
+    ) -> Self {
         Self {
             runner,
             config,
+            subject_intents,
             last_archive_path: None,
         }
+    }
+
+    fn subject_for_repository(&self, repository: &str) -> SubjectIntent {
+        self.subject_intents
+            .get(repository)
+            .cloned()
+            .unwrap_or_else(|| SubjectIntent::neutral_for_repository(repository))
     }
 }
 
@@ -486,7 +534,7 @@ where
     ) -> Result<Vec<Finding>, RunBodyError> {
         self.last_archive_path = None;
         let _ = workspace;
-        let intent = load_intent(&request.workspace.root)?;
+        let subject = self.subject_for_repository(&request.state.pr.repository);
         let brief_inputs = self
             .config
             .briefs
@@ -499,9 +547,9 @@ where
                         ("brief_id", brief.id.clone()),
                         ("brief_title", brief.title.clone()),
                         ("brief_body", brief.brief.clone()),
-                        ("subject_name", intent.app.name.clone()),
-                        ("subject_slug", intent.app.slug.clone()),
-                        ("subject_purpose", intent.app.purpose.clone()),
+                        ("subject_name", subject.name.clone()),
+                        ("subject_slug", subject.slug.clone()),
+                        ("subject_purpose", subject.purpose.clone()),
                         ("evidence", evidence.clone()),
                     ],
                 )?;
@@ -521,6 +569,7 @@ where
             "commit_sha": request.state.commit_sha,
             "workspace_root": request.workspace.root,
             "reviewers": reviewers,
+            "subject": subject,
             "briefs": brief_inputs,
         });
         let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
@@ -1325,7 +1374,7 @@ fn stable_id<'a>(prefix: &str, parts: impl IntoIterator<Item = &'a str>) -> Stri
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{BTreeMap, VecDeque},
         fs,
         path::{Path, PathBuf},
     };
@@ -1337,7 +1386,7 @@ mod tests {
     use pump19_core::{
         LaunchProof, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation, WorkspaceLease,
     };
-    use pump19_judgement::{ReviewerResult, baseline_judgement_briefs, install_standalone};
+    use pump19_judgement::{ReviewerResult, baseline_judgement_briefs};
     use serde_json::json;
 
     use super::*;
@@ -1770,14 +1819,6 @@ mod tests {
     #[test]
     fn review_body_runs_host_ensemble_and_reconciles_archive() {
         let root = tempfile::tempdir().expect("workspace root");
-        install_standalone(
-            root.path(),
-            "sample",
-            "Sample",
-            "Prove ensemble review body",
-            None,
-        )
-        .expect("install judgement files");
         let mut req = request(
             RunKind::Review,
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
@@ -1820,9 +1861,64 @@ mod tests {
             .as_str()
             .expect("workflow brief prompt");
         assert!(prompt.contains("external review template marker reviewer-independence"));
-        assert!(prompt.contains("Sample"));
+        assert!(prompt.contains("acme/widgets"));
         assert!(prompt.contains("Reviewer independence"));
         assert!(prompt.contains("No separate evidence paths were supplied."));
+        assert_eq!(
+            body.runner.requests[0].args["subject"]["name"].as_str(),
+            Some("acme/widgets")
+        );
+    }
+
+    #[test]
+    fn review_body_uses_configured_pump_side_subject_intent() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.run_id = RunId("review-run".to_owned());
+        req.workspace.root = root.path().to_path_buf();
+        let runner = FakeEnsembleRunner::new(
+            serde_json::to_value(JudgementRun {
+                status: JudgementStatus::Passed,
+                model_families: vec!["codex".to_owned()],
+                briefs: Vec::new(),
+            })
+            .expect("serialise judgement run"),
+            vec![archive_agent("reviewer-codex", "codex")],
+        );
+        let mut config = ensemble_config(root.path());
+        config.prompt_template =
+            "{{subject_name}}\n{{subject_slug}}\n{{subject_purpose}}".to_owned();
+        let mut subject_intents = BTreeMap::new();
+        subject_intents.insert(
+            "acme/widgets".to_owned(),
+            SubjectIntent {
+                slug: "widgets".to_owned(),
+                name: "Acme Widgets".to_owned(),
+                purpose: "Keep widget rendering honest.".to_owned(),
+                invariants: Vec::new(),
+                behaviours: Vec::new(),
+            },
+        );
+        let mut body = EnsembleReviewBody::with_subject_intents(runner, config, subject_intents);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("configured subject does not require workspace intent");
+
+        let request = &body.runner.requests[0];
+        let prompt = request.args["briefs"][0]["prompt"]
+            .as_str()
+            .expect("workflow brief prompt");
+        assert!(prompt.contains("Acme Widgets"));
+        assert!(prompt.contains("widgets"));
+        assert!(prompt.contains("Keep widget rendering honest."));
+        assert_eq!(
+            request.args["subject"]["name"].as_str(),
+            Some("Acme Widgets")
+        );
     }
 
     #[test]
@@ -1863,14 +1959,6 @@ mod tests {
     #[test]
     fn review_body_fails_closed_on_malformed_workflow_output() {
         let root = tempfile::tempdir().expect("workspace root");
-        install_standalone(
-            root.path(),
-            "sample",
-            "Sample",
-            "Prove malformed output",
-            None,
-        )
-        .expect("install judgement files");
         let mut req = request(
             RunKind::Review,
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
@@ -1893,8 +1981,6 @@ mod tests {
     #[test]
     fn archive_schema_null_output_fails_closed() {
         let root = tempfile::tempdir().expect("workspace root");
-        install_standalone(root.path(), "sample", "Sample", "Prove null archive", None)
-            .expect("install judgement files");
         let mut req = request(
             RunKind::Review,
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
@@ -1926,14 +2012,6 @@ mod tests {
     #[test]
     fn archive_engine_mismatch_fails_closed() {
         let root = tempfile::tempdir().expect("workspace root");
-        install_standalone(
-            root.path(),
-            "sample",
-            "Sample",
-            "Prove mismatch archive",
-            None,
-        )
-        .expect("install judgement files");
         let mut req = request(
             RunKind::Review,
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
@@ -1965,8 +2043,6 @@ mod tests {
     #[test]
     fn runner_error_propagates_as_workflow_failure() {
         let root = tempfile::tempdir().expect("workspace root");
-        install_standalone(root.path(), "sample", "Sample", "Prove timeout", None)
-            .expect("install judgement files");
         let mut req = request(
             RunKind::Review,
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],

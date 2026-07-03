@@ -101,6 +101,24 @@ Replace every `REPLACE_*` value before starting the daemon:
 - `--base-url`: the Forgejo instance URL consumed by the baseline command
   arguments.
 
+Repository enrolment is entirely pump-side: putting a slug in
+`forgejo.repositories` is the opt-in. The reviewed repository does not need a
+Pump-19 file in its tree.
+
+Optional per-repository subject intent can be supplied beside the poll list, keyed
+by the same `owner/repository` slug:
+
+```toml
+[forgejo.repository_intents."acme/widgets"]
+name = "Acme Widgets"
+slug = "widgets"
+purpose = "Review changes to the widget service for correctness and maintainability."
+```
+
+When a repository has no entry, Pump-19 renders review prompts with neutral
+subject text derived from the repository slug. Absence is the normal case: it does
+not fail the run and does not produce a failure or refusal comment on the PR.
+
 The example command env entries use `env:FORGEJO_TOKEN`, which means the daemon
 copies `FORGEJO_TOKEN` from its own environment into the command environment
 after placeholder validation. `commands/pump19-prepare-source` also reads
