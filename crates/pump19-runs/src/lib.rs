@@ -25,8 +25,8 @@ use pump19_core::{
     WorkspaceExecutor,
 };
 use pump19_judgement::{
-    JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult, judgement_prompt,
-    load_intent, load_judgement_briefs,
+    JudgementBrief, JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult,
+    evidence_text, load_intent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -121,6 +121,8 @@ pub enum RunBodyError {
     },
     #[error("ensemble archive does not prove the authorised lineup: {0}")]
     EnsembleArchiveMismatch(String),
+    #[error("prompt template failed: {0}")]
+    PromptTemplate(String),
 }
 
 /// Prepares a concrete agent session for a core-owned launch target.
@@ -210,6 +212,8 @@ pub struct EnsembleWorkflowConfig {
     pub script: PathBuf,
     pub archive_root: PathBuf,
     pub timeout_ms: u64,
+    pub prompt_template: String,
+    pub briefs: Vec<JudgementBrief>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -419,14 +423,30 @@ where
     ) -> Result<Vec<Finding>, RunBodyError> {
         let _ = workspace;
         let intent = load_intent(&request.workspace.root)?;
-        let brief_inputs = load_judgement_briefs(&request.workspace.root)?
-            .into_iter()
+        let brief_inputs = self
+            .config
+            .briefs
+            .iter()
             .map(|brief| {
-                let prompt = judgement_prompt(&request.workspace.root, &intent, &brief)?;
+                let evidence = evidence_text(&request.workspace.root, brief)?;
+                let prompt = render_prompt_template(
+                    &self.config.prompt_template,
+                    &[
+                        ("brief_id", brief.id.clone()),
+                        ("brief_title", brief.title.clone()),
+                        ("brief_body", brief.brief.clone()),
+                        ("subject_name", intent.app.name.clone()),
+                        ("subject_slug", intent.app.slug.clone()),
+                        ("subject_purpose", intent.app.purpose.clone()),
+                        ("evidence", evidence.clone()),
+                    ],
+                )?;
                 Ok(json!({
                     "id": brief.id,
                     "title": brief.title,
                     "prompt": prompt,
+                    "brief": brief.brief,
+                    "evidence": evidence,
                 }))
             })
             .collect::<Result<Vec<_>, RunBodyError>>()?;
@@ -473,12 +493,28 @@ where
         let _ = workspace;
         let targets = expected_targets(request, AgentRole::Judge)?;
         let provenance = provenance_for_role(request, AgentRole::Judge)?;
+        let loop_context = json!({
+            "pass_count": request.state.pass_index,
+            "prior_verdicts": prior_judge_verdicts(request),
+            "fix_outcomes": prior_fix_outcomes(request),
+            "loop_history": request.state.loop_history,
+        });
+        let prompt = render_prompt_template(
+            &self.config.prompt_template,
+            &[
+                ("run_id", request.run_id.0.clone()),
+                ("commit_sha", request.state.commit_sha.clone()),
+                ("findings", prompt_json(&request.state.findings)?),
+                ("loop_context", prompt_json(&loop_context)?),
+            ],
+        )?;
         let input = json!({
             "run_id": request.run_id,
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
             "workspace_root": request.workspace.root,
             "judges": targets,
+            "prompt": prompt,
             "pass_count": request.state.pass_index,
             "current_findings": request.state.findings,
             "findings": request.state.findings,
@@ -530,12 +566,21 @@ where
         }
         let targets = expected_targets(request, AgentRole::Fixer)?;
         let provenance = provenance_for_role(request, AgentRole::Fixer)?;
+        let prompt = render_prompt_template(
+            &self.config.prompt_template,
+            &[
+                ("run_id", request.run_id.0.clone()),
+                ("commit_sha", request.state.commit_sha.clone()),
+                ("material_findings", prompt_json(&findings)?),
+            ],
+        )?;
         let input = json!({
             "run_id": request.run_id,
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
             "workspace_root": request.workspace.root,
             "fixers": targets,
+            "prompt": prompt,
             "material_findings": findings,
         });
         let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
@@ -760,6 +805,26 @@ fn run_ensemble_workflow(
         archive_dir,
         timeout_ms: config.timeout_ms,
     })
+}
+
+fn render_prompt_template(
+    template: &str,
+    variables: &[(&str, String)],
+) -> Result<String, RunBodyError> {
+    let mut rendered = template.to_owned();
+    for (name, value) in variables {
+        rendered = rendered.replace(&format!("{{{{{name}}}}}"), value);
+    }
+    if rendered.contains("{{") || rendered.contains("}}") {
+        return Err(RunBodyError::PromptTemplate(
+            "unresolved {{placeholder}} in prompt template".to_owned(),
+        ));
+    }
+    Ok(rendered)
+}
+
+fn prompt_json(value: &impl Serialize) -> Result<String, RunBodyError> {
+    serde_json::to_string_pretty(value).map_err(RunBodyError::EnsembleJson)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1083,7 +1148,7 @@ mod tests {
     use pump19_core::{
         LaunchProof, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation, WorkspaceLease,
     };
-    use pump19_judgement::{ReviewerResult, install_standalone};
+    use pump19_judgement::{ReviewerResult, baseline_judgement_briefs, install_standalone};
     use serde_json::json;
 
     use super::*;
@@ -1393,6 +1458,8 @@ mod tests {
             script: root.join("workflow.js"),
             archive_root: root.join("archives"),
             timeout_ms: 5_000,
+            prompt_template: "configured prompt".to_owned(),
+            briefs: baseline_judgement_briefs(),
         }
     }
 
@@ -1545,7 +1612,11 @@ mod tests {
         };
         let value = serde_json::to_value(run).expect("serialise judgement run");
         let runner = FakeEnsembleRunner::new(value, vec![archive_agent("reviewer-codex", "codex")]);
-        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut config = ensemble_config(root.path());
+        config.prompt_template =
+            "external review template marker {{brief_id}}\n{{subject_name}}\n{{brief_title}}\n{{brief_body}}\n{{evidence}}"
+                .to_owned();
+        let mut body = EnsembleReviewBody::new(runner, config);
         let mut workspace = FakeWorkspace::default();
 
         let findings = body
@@ -1556,6 +1627,13 @@ mod tests {
         assert!(workspace.execs.is_empty());
         assert_eq!(body.runner.requests.len(), 1);
         assert!(body.runner.requests[0].archive_dir.ends_with("review-run"));
+        let prompt = body.runner.requests[0].args["briefs"][0]["prompt"]
+            .as_str()
+            .expect("workflow brief prompt");
+        assert!(prompt.contains("external review template marker reviewer-independence"));
+        assert!(prompt.contains("Sample"));
+        assert!(prompt.contains("Reviewer independence"));
+        assert!(prompt.contains("No separate evidence paths were supplied."));
     }
 
     #[test]
@@ -1687,7 +1765,7 @@ mod tests {
     fn judge_run_produces_material_decisions_for_findings() {
         let mut req = request(
             RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "gemini")],
+            vec![provenance("judge", AgentRole::Judge, "glm")],
         );
         req.state.findings.push(finding());
         let mut launcher = Pump19RunLauncher::new(
@@ -1717,7 +1795,7 @@ mod tests {
         let root = tempfile::tempdir().expect("judge root");
         let mut req = request(
             RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "gemini")],
+            vec![provenance("judge", AgentRole::Judge, "glm")],
         );
         req.workspace.root = root.path().to_path_buf();
         let stale = finding();
@@ -1733,7 +1811,7 @@ mod tests {
                 },
                 verdict: DecisionVerdict::Material,
                 rationale: "was material".to_owned(),
-                provenance: provenance("judge-old", AgentRole::Judge, "gemini"),
+                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
                 extensions: BTreeMap::new(),
             }],
             patches: Vec::new(),
@@ -1744,7 +1822,7 @@ mod tests {
         req.state.findings.push(finding());
         let runner = FakeEnsembleRunner::new(
             json!([{"finding_id":"finding-1","verdict":"minor","rationale":"below threshold"}]),
-            vec![archive_agent("judge", "gemini")],
+            vec![archive_agent("judge", "glm")],
         );
         let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
         let mut workspace = FakeWorkspace::default();
@@ -1780,7 +1858,7 @@ mod tests {
     fn judge_run_with_no_current_findings_records_convergence() {
         let req = request(
             RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "gemini")],
+            vec![provenance("judge", AgentRole::Judge, "glm")],
         );
         let mut launcher = Pump19RunLauncher::new(
             FakeSessions,
@@ -1819,7 +1897,7 @@ mod tests {
             },
             verdict: DecisionVerdict::Material,
             rationale: "worth fixing".to_owned(),
-            provenance: provenance("judge", AgentRole::Judge, "gemini"),
+            provenance: provenance("judge", AgentRole::Judge, "glm"),
             extensions: BTreeMap::new(),
         });
         let mut launcher = Pump19RunLauncher::new(

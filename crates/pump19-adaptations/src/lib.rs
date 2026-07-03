@@ -327,25 +327,53 @@ pub fn baseline_prompt_templates() -> Vec<PromptTemplate> {
         PromptTemplate {
             id: "review-contract-findings".to_owned(),
             run_kind: RunKind::Review,
-            template:
-                "Review the supplied change, contract facts, intent, and judgement briefs; return material findings using the Pump-19 contract."
-                    .to_owned(),
+            template: "You are an independent Pump-19 judgement reviewer.
+Subject: {{subject_name}} ({{subject_slug}})
+Purpose: {{subject_purpose}}
+
+## Task
+Review this Pump-19 judgement brief independently. Return JSON matching the schema.
+
+## Verdict
+Use status \"failed\" when you find a material concern. Use status \"passed\" only when the brief is satisfied.
+
+<brief id=\"{{brief_id}}\" title=\"{{brief_title}}\">
+{{brief_body}}
+</brief>
+
+Evidence:
+{{evidence}}
+
+Reply with PUMP19_JUDGEMENT: PASS or PUMP19_JUDGEMENT: FAIL and one short reason."
+                .to_owned(),
             extensions: Extensions::new(),
         },
         PromptTemplate {
             id: "judge-materiality".to_owned(),
             run_kind: RunKind::Judge,
-            template:
-                "Judge whether each finding is material enough to justify another fix pass; return decisions using the Pump-19 contract."
-                    .to_owned(),
+            template: "## Task
+Judge whether each finding is material enough to justify another fix pass.
+
+<findings>
+{{findings}}
+</findings>
+
+<loop_history>
+{{loop_context}}
+</loop_history>"
+                .to_owned(),
             extensions: Extensions::new(),
         },
         PromptTemplate {
             id: "fix-material-findings".to_owned(),
             run_kind: RunKind::Fix,
-            template:
-                "Fix only the material findings assigned to this pass; return patches using the Pump-19 contract."
-                    .to_owned(),
+            template: "## Task
+Produce a fix description for the material findings. Return JSON matching the schema.
+
+<material_findings>
+{{material_findings}}
+</material_findings>"
+                .to_owned(),
             extensions: Extensions::new(),
         },
     ]
@@ -418,18 +446,7 @@ for (const brief of args.briefs) {
 }
 
 const outputs = await parallel(calls.map(({ brief, reviewer }) => () =>
-  agent(
-    `## Task
-Review this Pump-19 judgement brief independently. Return JSON matching the schema.
-
-## Verdict
-Use status "failed" when you find a material concern. Use status "passed" only when the brief is satisfied.
-
-<brief id="${brief.id}">
-${brief.prompt}
-</brief>`,
-    optionsFor(reviewer, `${reviewer.agent_id}:${brief.id}`)
-  )
+  agent(brief.prompt, optionsFor(reviewer, `${reviewer.agent_id}:${brief.id}`))
 ));
 
 if (outputs.some((output) => output === null)) {
@@ -493,16 +510,7 @@ const judgeSchema = {
 
 const judge = args.judges[0];
 const result = await agent(
-  `## Task
-Judge whether each finding is material enough to justify another fix pass.
-
-<findings>
-${JSON.stringify(args.findings)}
-</findings>
-
-<loop_history>
-${JSON.stringify({ pass_index: args.pass_index, prior_decisions: args.decisions })}
-</loop_history>`,
+  args.prompt,
   {
     engine: judge.engine,
     model: judge.model,
@@ -536,12 +544,7 @@ const fixSchema = {
 
 const fixer = args.fixers[0];
 const result = await agent(
-  `## Task
-Produce a fix description for the material findings. Return JSON matching the schema.
-
-<material_findings>
-${JSON.stringify(args.material_findings)}
-</material_findings>`,
+  args.prompt,
   {
     engine: fixer.engine,
     model: fixer.model,
@@ -660,6 +663,13 @@ pub fn validate_mechanical_pack(pack: &MechanicalPack) -> Result<(), AdaptationE
 ///
 /// Returns an error when the pack has malformed workflow scripts, briefs, or prompt templates.
 pub fn validate_prompt_pack(pack: &PromptPack) -> Result<(), AdaptationError> {
+    if pack.manifest.prompt_templates.is_empty() {
+        return Err(AdaptationError::EmptyCollection {
+            unit_kind: "prompt pack",
+            id: pack.manifest.id.clone(),
+            items: "prompt templates",
+        });
+    }
     let mut template_ids = BTreeSet::new();
     for template in &pack.manifest.prompt_templates {
         if template.id.trim().is_empty() {
@@ -1001,7 +1011,7 @@ mod tests {
                     target("claude-reviewer", AgentRole::Reviewer, "claude"),
                 ],
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             }
         }
@@ -1016,8 +1026,15 @@ mod tests {
             control_plane: "test-control".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-stable"),
+                model: model_for_family(family),
             },
+        }
+    }
+
+    fn model_for_family(family: &str) -> String {
+        match family {
+            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            _ => format!("{family}-stable"),
         }
     }
 

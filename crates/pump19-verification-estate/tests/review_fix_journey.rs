@@ -90,10 +90,17 @@ fn verified_agent(
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-2026-06"),
+                model: model_for_family(family),
             },
         },
         extensions: extensions(),
+    }
+}
+
+fn model_for_family(family: &str) -> String {
+    match family {
+        "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+        _ => format!("{family}-2026-06"),
     }
 }
 
@@ -234,7 +241,7 @@ fn material_review_finding_drives_fix_then_fresh_rereview_until_minor_convergenc
         verified_agent("codex-reviewer-pass-1", AgentRole::Reviewer, "codex", 1),
         verified_agent("claude-reviewer-pass-1", AgentRole::Reviewer, "claude", 1),
     ];
-    let pass_one_judge = verified_agent("gemini-judge-pass-1", AgentRole::Judge, "gemini", 1);
+    let pass_one_judge = verified_agent("glm-judge-pass-1", AgentRole::Judge, "glm", 1);
     let material = finding(
         "finding-stale-merge-state",
         pass_one_reviewers[0].clone(),
@@ -315,7 +322,7 @@ fn material_review_finding_drives_fix_then_fresh_rereview_until_minor_convergenc
         verified_agent("codex-reviewer-pass-2", AgentRole::Reviewer, "codex", 2),
         verified_agent("claude-reviewer-pass-2", AgentRole::Reviewer, "claude", 2),
     ];
-    let pass_two_judge = verified_agent("gemini-judge-pass-2", AgentRole::Judge, "gemini", 2);
+    let pass_two_judge = verified_agent("glm-judge-pass-2", AgentRole::Judge, "glm", 2);
     let minor = finding(
         "finding-wording-only",
         pass_two_reviewers[1].clone(),
@@ -410,7 +417,7 @@ fn launch_story_fails_closed_when_provenance_cannot_establish_independence() {
         verified_agent("codex-reviewer", AgentRole::Reviewer, "codex", 1),
         unverified_agent("claimed-claude-reviewer", AgentRole::Reviewer, 1),
     ];
-    let judge = verified_agent("gemini-judge", AgentRole::Judge, "gemini", 1);
+    let judge = verified_agent("glm-judge", AgentRole::Judge, "glm", 1);
     let reused_fixer = reused_agent(
         "codex-reviewer",
         AgentRole::Fixer,
