@@ -1,0 +1,4 @@
+id = "reviewer-independence"
+title = "Reviewer independence"
+intent_ref = "invariants.reviewer-independence"
+brief = "Judge whether the proposed verification setup preserves reviewer independence from the recorded author and uses at least two model families."

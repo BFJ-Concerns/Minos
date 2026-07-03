@@ -65,6 +65,15 @@ pub enum DaemonError {
         #[source]
         source: toml::de::Error,
     },
+    #[error(
+        "unfilled placeholder in daemon config {path} at {field}: {value:?}; expected {expected}"
+    )]
+    UnfilledPlaceholder {
+        path: String,
+        field: String,
+        value: String,
+        expected: String,
+    },
     #[error("adaptation loading failed: {0}")]
     Adaptation(String),
     #[error("core failed: {0}")]
@@ -84,6 +93,8 @@ pub enum DaemonError {
 /// Deployment configuration for one Pump-19 daemon process.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaemonConfig {
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
     pub trigger_pack: PathBuf,
     pub prompt_pack: PathBuf,
     pub mechanical_pack: PathBuf,
@@ -106,11 +117,32 @@ impl DaemonConfig {
             path: path.display().to_string(),
             source,
         })?;
-        toml::from_str(&text).map_err(|source| DaemonError::Toml {
+        let mut config = toml::from_str::<Self>(&text).map_err(|source| DaemonError::Toml {
             path: path.display().to_string(),
             source,
-        })
+        })?;
+        let root = path.parent().unwrap_or_else(|| Path::new("."));
+        config.source_path = Some(path.to_path_buf());
+        config.resolve_paths_from(root);
+        Ok(config)
     }
+
+    fn resolve_paths_from(&mut self, root: &Path) {
+        self.trigger_pack = resolve_config_path(root, &self.trigger_pack);
+        self.prompt_pack = resolve_config_path(root, &self.prompt_pack);
+        self.mechanical_pack = resolve_config_path(root, &self.mechanical_pack);
+        self.state_root = resolve_config_path(root, &self.state_root);
+        self.workspace.root = resolve_config_path(root, &self.workspace.root);
+        self.ensemble.launcher_path = resolve_config_path(root, &self.ensemble.launcher_path);
+        self.ensemble.archive_root = resolve_config_path(root, &self.ensemble.archive_root);
+    }
+}
+
+fn resolve_config_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    root.join(path)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -232,6 +264,7 @@ pub struct DaemonRunSummary {
 ///
 /// Returns an error when configuration loading, composition, or core dispatch fails.
 pub fn run_from_config(config: DaemonConfig) -> Result<(), DaemonError> {
+    validate_startable_config(&config)?;
     let rules = load_rules(&config)?;
     let mut daemon = build_daemon(config)?;
     let shutdown = SignalShutdown::install()?;
@@ -252,6 +285,92 @@ pub fn run_from_config(config: DaemonConfig) -> Result<(), DaemonError> {
         }),
     );
     Ok(())
+}
+
+fn validate_startable_config(config: &DaemonConfig) -> Result<(), DaemonError> {
+    let config_path = config.source_path.as_ref().map_or_else(
+        || "<in-memory>".to_owned(),
+        |path| path.display().to_string(),
+    );
+    reject_placeholder_path(&config_path, "trigger_pack", &config.trigger_pack)?;
+    reject_placeholder_path(&config_path, "prompt_pack", &config.prompt_pack)?;
+    reject_placeholder_path(&config_path, "mechanical_pack", &config.mechanical_pack)?;
+    reject_placeholder_path(&config_path, "state_root", &config.state_root)?;
+    reject_placeholder_path(&config_path, "workspace.root", &config.workspace.root)?;
+    reject_placeholder(&config_path, "workspace.image", &config.workspace.image)?;
+    reject_placeholder_path(
+        &config_path,
+        "ensemble.node_program",
+        &config.ensemble.node_program,
+    )?;
+    reject_placeholder_path(
+        &config_path,
+        "ensemble.launcher_path",
+        &config.ensemble.launcher_path,
+    )?;
+    reject_placeholder_path(
+        &config_path,
+        "ensemble.archive_root",
+        &config.ensemble.archive_root,
+    )?;
+    for (index, repository) in config.forgejo.repositories.iter().enumerate() {
+        reject_placeholder(
+            &config_path,
+            &format!("forgejo.repositories[{index}]"),
+            repository,
+        )?;
+    }
+    reject_placeholder(
+        &config_path,
+        "forgejo.finish_label",
+        &config.forgejo.finish_label,
+    )?;
+    reject_placeholder_command(
+        &config_path,
+        "forgejo.poll_command",
+        &config.forgejo.poll_command,
+    )?;
+    reject_placeholder_command(
+        &config_path,
+        "forgejo.operation_command",
+        &config.forgejo.operation_command,
+    )?;
+    Ok(())
+}
+
+fn reject_placeholder_command(
+    config_path: &str,
+    field: &str,
+    command: &CommandConfig,
+) -> Result<(), DaemonError> {
+    reject_placeholder_path(config_path, &format!("{field}.program"), &command.program)?;
+    for (index, arg) in command.args.iter().enumerate() {
+        reject_placeholder(config_path, &format!("{field}.args[{index}]"), arg)?;
+    }
+    for (name, value) in &command.env {
+        reject_placeholder(config_path, &format!("{field}.env.{name}"), value)?;
+    }
+    Ok(())
+}
+
+fn reject_placeholder_path(
+    config_path: &str,
+    field: &str,
+    value: &Path,
+) -> Result<(), DaemonError> {
+    reject_placeholder(config_path, field, &value.display().to_string())
+}
+
+fn reject_placeholder(config_path: &str, field: &str, value: &str) -> Result<(), DaemonError> {
+    if !value.contains("REPLACE_") {
+        return Ok(());
+    }
+    Err(DaemonError::UnfilledPlaceholder {
+        path: config_path.to_owned(),
+        field: field.to_owned(),
+        value: value.to_owned(),
+        expected: "replace every REPLACE_* marker before starting the daemon".to_owned(),
+    })
 }
 
 type RuntimeCore = Core<
@@ -1942,6 +2061,51 @@ stop_after_quiet_polls = 1
         assert!(!config.forgejo.core_applies_finish_label_on_convergence);
     }
 
+    #[test]
+    fn deployment_example_config_loads_with_checked_in_packs() {
+        let runtime = tempdir().expect("runtime dir");
+        let mut config =
+            DaemonConfig::load(&deployment_example_config_path()).expect("load deployment example");
+        config.forgejo.repositories = vec!["acme/widgets".to_owned()];
+        config.forgejo.poll_command.args =
+            vec!["--base-url".to_owned(), "http://127.0.0.1:9".to_owned()];
+        config
+            .forgejo
+            .poll_command
+            .env
+            .insert("FORGEJO_TOKEN".to_owned(), "test-token".to_owned());
+        config.forgejo.operation_command.args =
+            vec!["--base-url".to_owned(), "http://127.0.0.1:9".to_owned()];
+        config
+            .forgejo
+            .operation_command
+            .env
+            .insert("FORGEJO_TOKEN".to_owned(), "test-token".to_owned());
+        config.state_root = runtime.path().join("state");
+        config.workspace.root = runtime.path().join("workspaces");
+        config.ensemble.archive_root = runtime.path().join("archives");
+
+        validate_startable_config(&config).expect("filled example is startable");
+        let rules = load_rules(&config).expect("load example trigger rules");
+        let _daemon = build_daemon(config).expect("build daemon from example config");
+
+        assert_eq!(rules.len(), 5);
+    }
+
+    #[test]
+    fn daemon_start_rejects_unfilled_deployment_example_placeholders() {
+        let config =
+            DaemonConfig::load(&deployment_example_config_path()).expect("load deployment example");
+
+        let error = run_from_config(config).expect_err("placeholder should fail before startup");
+
+        assert!(matches!(
+            error,
+            DaemonError::UnfilledPlaceholder { field, .. }
+                if field == "forgejo.repositories[0]"
+        ));
+    }
+
     fn assert_core_runner<T: CoreRunner>() {}
 
     #[test]
@@ -1960,6 +2124,12 @@ stop_after_quiet_polls = 1
 
     fn forgejo_snapshot() -> ForgejoPullRequestSnapshot {
         forgejo_snapshot_with_head("head-after-fix", true)
+    }
+
+    fn deployment_example_config_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("examples/deployment/pump19-daemon.toml")
     }
 
     fn forgejo_snapshot_without_finish_label() -> ForgejoPullRequestSnapshot {

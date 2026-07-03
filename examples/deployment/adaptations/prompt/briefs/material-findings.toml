@@ -1,0 +1,4 @@
+id = "material-findings"
+title = "Material findings"
+intent_ref = "invariants.material-findings"
+brief = "Judge whether the review identifies material correctness, safety, and maintainability issues rather than cosmetic noise."

@@ -1,0 +1,4 @@
+id = "conformance-to-purpose"
+title = "Conformance to stated purpose"
+intent_ref = "behaviours.purpose"
+brief = "Judge whether the implementation meaningfully serves the stated purpose in pump19.intent.toml."

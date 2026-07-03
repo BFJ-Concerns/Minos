@@ -44,7 +44,7 @@ where
                 &request.body,
                 &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(forgejo_error_to_operation_error)?;
+            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -67,7 +67,7 @@ where
                 &request.body,
                 &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(forgejo_error_to_operation_error)?;
+            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -90,7 +90,7 @@ where
                 &request.reason,
                 &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(forgejo_error_to_operation_error)?;
+            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -214,19 +214,6 @@ fn comment_metadata(
         expected_head_sha: Some(expected_head_sha.to_owned()),
         idempotency_key: context.idempotency_key.clone(),
         reason: context.reason.clone(),
-    }
-}
-
-fn forgejo_error_to_operation_error(error: crate::ForgejoClientError) -> ForgeOperationError {
-    match error {
-        crate::ForgejoClientError::HeadMoved {
-            expected_head_sha,
-            actual_head_sha,
-        } => ForgeOperationError::HeadMoved {
-            expected_head_sha,
-            actual_head_sha,
-        },
-        error => ForgeOperationError::Client(error.to_string()),
     }
 }
 

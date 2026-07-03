@@ -1,0 +1,170 @@
+id = "baseline-loop"
+
+[schema_version]
+major = 1
+minor = 0
+
+[contract_version]
+major = 1
+minor = 4
+
+[[rules]]
+id = "review-on-pr-change"
+run_kind = "review"
+
+[rules.criteria]
+kind = "any"
+
+[[rules.criteria.criteria]]
+kind = "event"
+
+[rules.criteria.criteria.event]
+event = "pull_request_opened"
+
+[[rules.criteria.criteria]]
+kind = "event"
+
+[rules.criteria.criteria.event]
+event = "pull_request_updated"
+
+[[rules.agent_plan.reviewers]]
+agent_id = "reviewer-codex"
+role = "reviewer"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.reviewers.lineage]
+family = "codex"
+model = "codex-stable"
+
+[[rules.agent_plan.reviewers]]
+agent_id = "reviewer-claude"
+role = "reviewer"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.reviewers.lineage]
+family = "claude"
+model = "claude-stable"
+
+[rules.agent_plan.judge]
+agent_id = "judge-glm"
+role = "judge"
+engine = "opencode"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.judge.lineage]
+family = "glm"
+model = "openrouter/z-ai/glm-4.6"
+
+[[rules]]
+id = "judge-after-review"
+run_kind = "judge"
+
+[rules.criteria]
+kind = "event"
+
+[rules.criteria.event]
+event = "run_completed"
+run_kind = "review"
+outcome = "succeeded"
+
+[rules.agent_plan.judge]
+agent_id = "judge-glm"
+role = "judge"
+engine = "opencode"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.judge.lineage]
+family = "glm"
+model = "openrouter/z-ai/glm-4.6"
+
+[[rules]]
+id = "judge-after-noop-fix"
+run_kind = "judge"
+
+[rules.criteria]
+kind = "event"
+
+[rules.criteria.event]
+event = "run_completed"
+run_kind = "fix"
+outcome = "no_op"
+
+[rules.agent_plan.judge]
+agent_id = "judge-glm"
+role = "judge"
+engine = "opencode"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.judge.lineage]
+family = "glm"
+model = "openrouter/z-ai/glm-4.6"
+
+[[rules]]
+id = "fix-after-material-judge"
+run_kind = "fix"
+
+[rules.criteria]
+kind = "all"
+
+[[rules.criteria.criteria]]
+kind = "event"
+
+[rules.criteria.criteria.event]
+event = "run_completed"
+run_kind = "judge"
+outcome = "succeeded"
+
+[[rules.criteria.criteria]]
+kind = "state"
+state = "has_material_decision"
+
+[[rules.agent_plan.fixers]]
+agent_id = "fixer-codex"
+role = "fixer"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.fixers.lineage]
+family = "codex"
+model = "codex-stable"
+
+[[rules]]
+id = "finish-on-label"
+run_kind = "finish"
+
+[rules.criteria]
+kind = "all"
+
+[[rules.criteria.criteria]]
+kind = "event"
+
+[rules.criteria.criteria.event]
+event = "label_applied"
+name = "pump19-finish"
+
+[[rules.criteria.criteria]]
+kind = "state"
+state = "has_converged"
+
+[[rules.criteria.criteria]]
+kind = "state"
+state = "clean_and_current"
+
+[[rules.agent_plan.finishers]]
+agent_id = "finisher-codex"
+role = "finish"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.finishers.lineage]
+family = "codex"
+model = "codex-stable"

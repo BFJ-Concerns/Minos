@@ -14,8 +14,9 @@ use pump19_contract::{
     EventPayload, Extensions, Finding, FindingCommentPublication, FindingCommentStatus, FindingId,
     FindingLocation, FinishLabel, ForgeFacts, ForgeReceipt, LoopPassRecord, Mergeability,
     ModelFamily, ModelLineage, ModelProvenance, PatchChange, PrRunState, ProvenanceVerification,
-    PublicationState, PullRequestRef, ReviewCleanliness, Revision, RunId, RunKind, RunOutcome,
-    RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
+    PublicationAttemptStatus, PublicationOperation, PublicationState, PullRequestRef,
+    ReviewCleanliness, Revision, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
+    RunRefusalReason, RunStatus, SessionFreshness, SessionId, Severity,
 };
 use pump19_core::{
     AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence,
@@ -169,6 +170,9 @@ struct RecordingLauncher {
 struct FailingLauncher {
     proofs: Rc<RefCell<Vec<LaunchProof>>>,
 }
+
+#[derive(Clone, Debug)]
+struct RequiredFamilyUnavailableLauncher;
 
 #[derive(Clone, Debug)]
 struct SourceCheckingLauncher {
@@ -392,6 +396,24 @@ impl RunLauncher for FailingLauncher {
         Err(CoreError::Launcher(
             "estate forced launch failure".to_owned(),
         ))
+    }
+}
+
+impl RunLauncher for RequiredFamilyUnavailableLauncher {
+    fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
+        Err(CoreError::RequiredFamilyUnavailable {
+            agent_id: spec.target.agent_id,
+            family: spec.target.lineage.family,
+            reason: "estate required family unavailable".to_owned(),
+        })
+    }
+
+    fn launch_run(
+        &mut self,
+        _request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
+        unreachable!("required-family refusal happens before launch")
     }
 }
 
@@ -2006,7 +2028,10 @@ fn minor_judge_finding_is_recorded_but_suppressed_from_pr_publication() {
         )
         .expect("review completion launches judge");
 
-    assert!(launched_run_id(&outcomes).is_some());
+    assert!(
+        launched_run_id(&outcomes).is_some(),
+        "unexpected outcomes: {outcomes:?}"
+    );
     assert!(comments.borrow().is_empty());
     assert!(comment_updates.borrow().is_empty());
     assert!(comment_resolutions.borrow().is_empty());
@@ -2022,6 +2047,145 @@ fn minor_judge_finding_is_recorded_but_suppressed_from_pr_publication() {
     );
     assert!(latest.publication.attempts.is_empty());
     assert!(latest.publication.finding_comments.is_empty());
+}
+
+#[test]
+fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
+    let mut state = run_state();
+    state.status = RunStatus::Completed;
+    state.pass_index = 1;
+    state.ceiling = Some(RunCeiling {
+        max_passes: Some(1),
+        token_budget: None,
+    });
+    let state_store = SharedEstateStateStore::with_state(state);
+    let observer = state_store.clone();
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let launcher = RecordingLauncher::new(vec![
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+    ]);
+    let recorded_launches = Rc::clone(&launcher.launched);
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-ceiling-publication-estate")),
+        },
+        launcher,
+        state_store,
+        forge_operations,
+    );
+
+    let outcomes = core
+        .process_event(
+            &opened_event(contract_facts(
+                BranchCurrency::Current,
+                ReviewCleanliness::Dirty,
+                Vec::new(),
+            )),
+            &[review_rule(standard_plan())],
+        )
+        .expect("ceiling refusal is handled");
+
+    assert_eq!(
+        outcomes,
+        vec![DispatchOutcome::Refused {
+            rule_id: "review-on-pr-opened".to_owned(),
+            reason: LaunchRefusal::RunCeilingReached,
+        }]
+    );
+    assert!(recorded_launches.borrow().is_empty());
+    assert_eq!(comments.borrow().len(), 1);
+    assert!(comments.borrow()[0].body.contains("RunCeilingReached"));
+    let latest = observer
+        .load_latest_for_pr(&pr())
+        .expect("load state")
+        .expect("state saved");
+    assert_eq!(latest.status, RunStatus::Skipped);
+    assert_eq!(latest.run_history.len(), 1);
+    let record = &latest.run_history[0];
+    assert_eq!(record.status, RunStatus::Skipped);
+    assert_eq!(
+        record.refusal.as_ref().map(|refusal| &refusal.reason),
+        Some(&RunRefusalReason::RunCeilingReached)
+    );
+    assert_eq!(latest.publication.attempts.len(), 1);
+    assert_eq!(
+        latest.publication.attempts[0].status,
+        PublicationAttemptStatus::Succeeded
+    );
+    assert!(matches!(
+        latest.publication.attempts[0].operation,
+        PublicationOperation::PostRefusalComment { .. }
+    ));
+}
+
+#[test]
+fn required_family_unavailable_is_typed_recorded_and_posted_to_the_pr() {
+    let state_store = SharedEstateStateStore::default();
+    let observer = state_store.clone();
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from(
+                "/tmp/pump19-required-family-unavailable-estate",
+            )),
+        },
+        RequiredFamilyUnavailableLauncher,
+        state_store,
+        forge_operations,
+    );
+
+    let outcomes = core
+        .process_event(
+            &opened_event(contract_facts(
+                BranchCurrency::Current,
+                ReviewCleanliness::Dirty,
+                Vec::new(),
+            )),
+            &[review_rule(standard_plan())],
+        )
+        .expect("typed family refusal is handled");
+
+    assert_eq!(
+        outcomes,
+        vec![DispatchOutcome::Refused {
+            rule_id: "review-on-pr-opened".to_owned(),
+            reason: LaunchRefusal::RequiredFamilyUnavailable {
+                agent_id: AgentId("reviewer-codex".to_owned()),
+                family: ModelFamily("codex".to_owned()),
+                reason: "estate required family unavailable".to_owned(),
+            },
+        }]
+    );
+    assert_eq!(comments.borrow().len(), 1);
+    assert!(
+        comments.borrow()[0]
+            .body
+            .contains("RequiredFamilyUnavailable")
+    );
+    let latest = observer
+        .load_latest_for_pr(&pr())
+        .expect("load state")
+        .expect("state saved");
+    assert_eq!(latest.status, RunStatus::Failed);
+    assert_eq!(latest.run_history.len(), 1);
+    assert_eq!(
+        latest.run_history[0]
+            .refusal
+            .as_ref()
+            .map(|refusal| &refusal.reason),
+        Some(&RunRefusalReason::RequiredFamilyUnavailable)
+    );
+    assert_eq!(latest.publication.attempts.len(), 1);
+    assert!(matches!(
+        latest.publication.attempts[0].operation,
+        PublicationOperation::PostFailureComment
+    ));
 }
 
 #[test]
@@ -3268,6 +3432,10 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     assert_eq!(latest.status, RunStatus::Completed);
     assert_eq!(latest.findings.len(), 1);
     assert_eq!(latest.findings[0].source_brief, "purpose");
+    assert_eq!(
+        latest.run_history[0].ensemble_archive_path.as_deref(),
+        Some(request.archive_dir.to_string_lossy().as_ref())
+    );
     assert_eq!(
         latest.findings[0].provenance.agent_id,
         AgentId("reviewer-codex".to_owned())

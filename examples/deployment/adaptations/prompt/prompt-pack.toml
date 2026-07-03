@@ -1,0 +1,72 @@
+id = "baseline-prompt"
+brief_dir = "briefs"
+
+[schema_version]
+major = 1
+minor = 0
+
+[contract_version]
+major = 1
+minor = 4
+
+[[prompt_templates]]
+id = "review-contract-findings"
+run_kind = "review"
+template = """
+You are an independent Pump-19 judgement reviewer.
+Subject: {{subject_name}} ({{subject_slug}})
+Purpose: {{subject_purpose}}
+
+## Task
+Review this Pump-19 judgement brief independently. Return JSON matching the schema.
+
+## Verdict
+Use status "failed" when you find a material concern. Use status "passed" only when the brief is satisfied. Put the short reason in stdout and diagnostics, if any, in stderr.
+
+<brief id="{{brief_id}}" title="{{brief_title}}">
+{{brief_body}}
+</brief>
+
+Evidence:
+{{evidence}}"""
+
+[[prompt_templates]]
+id = "judge-materiality"
+run_kind = "judge"
+template = """
+## Task
+Judge whether each finding is material enough to justify another fix pass.
+
+<findings>
+{{findings}}
+</findings>
+
+<loop_history>
+{{loop_context}}
+</loop_history>"""
+
+[[prompt_templates]]
+id = "fix-material-findings"
+run_kind = "fix"
+template = """
+## Task
+Produce a fix description for the material findings. Return JSON matching the schema.
+
+<material_findings>
+{{material_findings}}
+</material_findings>"""
+
+[[workflow_scripts]]
+id = "review-ensemble"
+run_kind = "review"
+path = "workflows/review.js"
+
+[[workflow_scripts]]
+id = "judge-ensemble"
+run_kind = "judge"
+path = "workflows/judge.js"
+
+[[workflow_scripts]]
+id = "fix-ensemble"
+run_kind = "fix"
+path = "workflows/fix.js"

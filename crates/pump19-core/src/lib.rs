@@ -478,13 +478,6 @@ pub struct ForgeOperationReceipt {
 pub enum ForgeOperationError {
     #[error("authorised forge operation has invalid shape: {0}")]
     InvalidRequest(&'static str),
-    #[error(
-        "PR head moved before publication: expected {expected_head_sha}, actual {actual_head_sha:?}"
-    )]
-    HeadMoved {
-        expected_head_sha: String,
-        actual_head_sha: Option<String>,
-    },
     #[error("credentialed forge client failed: {0}")]
     Client(String),
 }
@@ -1055,6 +1048,7 @@ where
         };
         if let DispatchOutcome::Refused { reason, .. } = &outcome
             && *reason == LaunchRefusal::RunCeilingReached
+            && !has_recorded_ceiling_refusal(state)
         {
             self.record_skipped_refusal(state.clone(), event, rule, run_id, reason)?;
         }
@@ -1658,33 +1652,6 @@ where
                     Ok(receipt.clone()),
                 );
                 receipt
-            }
-            Err(ForgeOperationError::HeadMoved {
-                expected_head_sha,
-                actual_head_sha,
-            }) => {
-                let message = format!(
-                    "publication refused because PR head moved from {expected_head_sha} to {actual_head_sha:?}"
-                );
-                record_refused_publication_attempt(
-                    state,
-                    run_id,
-                    operation,
-                    idempotency_key,
-                    Some(expected_head_sha.clone()),
-                    PublicationRefusal {
-                        reason: PublicationRefusalReason::HeadMoved {
-                            expected_head_sha,
-                            actual_head_sha: actual_head_sha.clone(),
-                        },
-                        message,
-                    },
-                );
-                if let Some(actual_head_sha) = actual_head_sha {
-                    mark_superseded(state, actual_head_sha, None);
-                }
-                self.state_store.save(state)?;
-                return Ok(None);
             }
             Err(error) => {
                 let message = error.to_string();
@@ -3175,31 +3142,6 @@ fn record_surface_comment_attempt(
             Some(expected_head_sha),
             Ok(receipt_to_contract(receipt)),
         ),
-        Err(ForgeOperationError::HeadMoved {
-            expected_head_sha,
-            actual_head_sha,
-        }) => {
-            let message = format!(
-                "publication refused because PR head moved from {expected_head_sha} to {actual_head_sha:?}"
-            );
-            record_refused_publication_attempt(
-                state,
-                run_id,
-                operation,
-                idempotency_key,
-                Some(expected_head_sha.clone()),
-                PublicationRefusal {
-                    reason: PublicationRefusalReason::HeadMoved {
-                        expected_head_sha,
-                        actual_head_sha: actual_head_sha.clone(),
-                    },
-                    message,
-                },
-            );
-            if let Some(actual_head_sha) = actual_head_sha {
-                mark_superseded(state, actual_head_sha, None);
-            }
-        }
         Err(error) => record_publication_attempt(
             state,
             run_id,
@@ -3209,6 +3151,15 @@ fn record_surface_comment_attempt(
             Err(error.to_string()),
         ),
     }
+}
+
+fn has_recorded_ceiling_refusal(state: &PrRunState) -> bool {
+    state.run_history.iter().any(|record| {
+        matches!(
+            record.refusal.as_ref().map(|refusal| &refusal.reason),
+            Some(RunRefusalReason::RunCeilingReached)
+        )
+    })
 }
 
 fn receipt_to_contract(receipt: ForgeOperationReceipt) -> ForgeReceipt {
@@ -3897,8 +3848,8 @@ mod tests {
     };
 
     use pump19_contract::{
-        ActorCapability, ActorPermissions, ActorRef, BranchCurrency, DecisionSubject, FinishLabel,
-        Mergeability, ModelFamily, ReviewCleanliness, Revision,
+        ActorCapability, ActorPermissions, ActorRef, BranchCurrency, DecisionSubject, FindingId,
+        FinishLabel, Mergeability, ModelFamily, ReviewCleanliness, Revision,
     };
 
     use super::*;
@@ -4087,7 +4038,6 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingForgeOperations {
         fail_comments: bool,
-        moved_comment_head: Option<String>,
         comments: Vec<AuthorisedComment>,
         comment_updates: Vec<AuthorisedCommentUpdate>,
         comment_resolutions: Vec<AuthorisedCommentResolution>,
@@ -4106,12 +4056,6 @@ mod tests {
             &mut self,
             request: AuthorisedComment,
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
-            if let Some(actual_head_sha) = &self.moved_comment_head {
-                return Err(ForgeOperationError::HeadMoved {
-                    expected_head_sha: request.expected_head_sha,
-                    actual_head_sha: Some(actual_head_sha.clone()),
-                });
-            }
             if self.fail_comments {
                 return Err(ForgeOperationError::Client(
                     "comment channel unavailable".to_owned(),
@@ -4130,12 +4074,6 @@ mod tests {
             &mut self,
             request: AuthorisedCommentUpdate,
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
-            if let Some(actual_head_sha) = &self.moved_comment_head {
-                return Err(ForgeOperationError::HeadMoved {
-                    expected_head_sha: request.expected_head_sha,
-                    actual_head_sha: Some(actual_head_sha.clone()),
-                });
-            }
             let idempotency_key = request.authorisation.idempotency_key.clone();
             let operation_id = request.comment_operation_id.clone();
             self.comment_updates.push(request);
@@ -4150,12 +4088,6 @@ mod tests {
             &mut self,
             request: AuthorisedCommentResolution,
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
-            if let Some(actual_head_sha) = &self.moved_comment_head {
-                return Err(ForgeOperationError::HeadMoved {
-                    expected_head_sha: request.expected_head_sha,
-                    actual_head_sha: Some(actual_head_sha.clone()),
-                });
-            }
             let idempotency_key = request.authorisation.idempotency_key.clone();
             let operation_id = request.comment_operation_id.clone();
             self.comment_resolutions.push(request);
@@ -5495,79 +5427,39 @@ mod tests {
     }
 
     #[test]
-    fn moved_head_refuses_material_comment_and_records_publication_refusal() {
-        let review_run_id = RunId("event-1:review:1".to_owned());
+    fn known_moved_head_refuses_comment_publication() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
-        state.status = RunStatus::Completed;
-        state.extensions.insert(
-            EXT_RUNNING_RUN_ID.to_owned(),
-            Value::String(review_run_id.0.clone()),
-        );
-        let finding = finding_from("reviewer-codex", "codex", "finding-1");
-        state.findings.push(finding.clone());
-        state
-            .findings
-            .push(finding_from("reviewer-claude", "claude", "finding-2"));
-        let mut store = FakeRunStateStore::default();
-        store.save(&state).expect("save state");
-        let mut launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
-        launcher.outcome = RunLaunchOutcome {
-            outcome: RunOutcome::Succeeded,
-            findings: Vec::new(),
-            decisions: vec![Decision {
-                contract_version: ContractVersion::current(),
-                id: "decision-material".to_owned(),
-                subject: DecisionSubject::Finding {
-                    finding_id: finding.id,
-                },
-                verdict: DecisionVerdict::Material,
-                rationale: "worth another pass".to_owned(),
-                provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
-                extensions: BTreeMap::new(),
-            }],
-            patches: Vec::new(),
-            token_usage: None,
-            ensemble_archive_path: Some("/var/lib/pump19/archives/judge".to_owned()),
-        };
-        let mut core = Core::with_forge_operations(
+        state.current_head_sha = Some("new-head-sha".to_owned());
+        let core = Core::with_forge_operations(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
                 cleaned: 0,
             },
-            launcher,
-            store,
-            RecordingForgeOperations {
-                moved_comment_head: Some("new-head-sha".to_owned()),
-                ..Default::default()
-            },
+            FakeRunLauncher::new(Vec::new()),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
         );
-        let event = run_completed_event("review-one-done", review_run_id, RunKind::Review);
+        let run_id = RunId("run-judge-1".to_owned());
 
-        let outcomes = core
-            .process_event(&event, &[judge_after_review_rule()])
-            .expect("stale comment is a recorded refusal");
+        let refused = core
+            .refuse_comment_if_head_moved(
+                &mut state,
+                &run_id,
+                PublicationOperation::PostFindingComment {
+                    finding_id: FindingId("finding-1".to_owned()),
+                    finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
+                },
+                "comment-finding-1".to_owned(),
+                "abc123".to_owned(),
+            )
+            .expect("head-moved guard");
 
-        assert!(matches!(
-            outcomes.as_slice(),
-            [DispatchOutcome::Launched { .. }]
-        ));
-        assert!(core.forge_operations.comments.is_empty());
-        let run_id = RunId("review-one-done:judge-after-review:1".to_owned());
-        let saved = core
-            .state_store
-            .load_by_run_id(&run_id)
-            .expect("load by run")
-            .expect("judge state");
-        assert_eq!(saved.status, RunStatus::Superseded);
-        assert_eq!(saved.superseded_by.as_deref(), Some("new-head-sha"));
-        assert_eq!(
-            saved.run_history[0].ensemble_archive_path.as_deref(),
-            Some("/var/lib/pump19/archives/judge")
-        );
-        assert!(saved.publication.finding_comments.is_empty());
-        assert_eq!(saved.publication.attempts.len(), 1);
-        let attempt = &saved.publication.attempts[0];
+        assert!(refused);
+        assert_eq!(state.status, RunStatus::Superseded);
+        assert_eq!(state.superseded_by.as_deref(), Some("new-head-sha"));
+        assert_eq!(state.publication.attempts.len(), 1);
+        let attempt = &state.publication.attempts[0];
         assert_eq!(attempt.status, PublicationAttemptStatus::Refused);
         assert_eq!(attempt.expected_head_sha.as_deref(), Some("abc123"));
         assert!(matches!(
@@ -5642,6 +5534,59 @@ mod tests {
             saved.publication.attempts[0].operation,
             PublicationOperation::PostRefusalComment { .. }
         ));
+    }
+
+    #[test]
+    fn run_ceiling_refusal_visibility_is_not_reposted_for_same_pr() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.pass_index = 2;
+        state.ceiling = Some(RunCeiling {
+            max_passes: Some(2),
+            token_budget: None,
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save state");
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            store,
+            RecordingForgeOperations::default(),
+        );
+        let first_event = event();
+        let mut second_event = event();
+        second_event.id = "event-2".to_owned();
+
+        let first_outcomes = core
+            .process_event(&first_event, &[independent_rule()])
+            .expect("first ceiling refusal");
+        let second_outcomes = core
+            .process_event(&second_event, &[independent_rule()])
+            .expect("second ceiling refusal");
+
+        assert_eq!(
+            first_outcomes,
+            vec![DispatchOutcome::Refused {
+                rule_id: "review".to_owned(),
+                reason: LaunchRefusal::RunCeilingReached,
+            }]
+        );
+        assert_eq!(second_outcomes, first_outcomes);
+        assert_eq!(core.launcher.launched, 0);
+        assert_eq!(core.forge_operations.comments.len(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey {
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+            })
+            .expect("load state")
+            .expect("state");
+        assert_eq!(saved.run_history.len(), 1);
+        assert_eq!(saved.publication.attempts.len(), 1);
     }
 
     #[test]

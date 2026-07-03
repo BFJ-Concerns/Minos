@@ -1,0 +1,28 @@
+id = "baseline-mechanical"
+
+[schema_version]
+major = 1
+minor = 0
+
+[contract_version]
+major = 1
+minor = 4
+
+[[steps]]
+id = "prepare-source"
+inputs = [
+    "source_preparation_command_input_json",
+    "forge_repository",
+    "pull_request_head",
+]
+outputs = [
+    "prepared_source_tree",
+    "prepared_revision",
+]
+
+[steps.kind]
+kind = "checkout"
+
+[steps.execution]
+executor = "command"
+program = "pump19-prepare-source"

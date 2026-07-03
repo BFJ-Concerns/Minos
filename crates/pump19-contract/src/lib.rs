@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The current public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 5 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 4 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -726,11 +726,11 @@ mod tests {
         FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt, LoopPassRecord,
         MergePublication, Mergeability, ModelFamily, ModelLineage, ModelProvenance, Patch,
         PatchChange, PatchId, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
-        PublicationOperation, PublicationState, PublishedFixCommit, PullRequestRef,
-        ReviewCleanliness, Revision, RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunStatus,
-        SessionFreshness, SessionId, Severity, SourceRange, has_two_verified_reviewer_families,
-        judge_independent_of_reviewers, merge_gate_clean_and_current,
-        reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
+        PublicationOperation, PublicationRefusal, PublicationRefusalReason, PublicationState,
+        PublishedFixCommit, PullRequestRef, ReviewCleanliness, Revision, RunCeiling, RunId,
+        RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
+        SourceRange, has_two_verified_reviewer_families, judge_independent_of_reviewers,
+        merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
     };
 
     fn round_trip<T>(value: &T)
@@ -1072,6 +1072,79 @@ mod tests {
     }
 
     #[test]
+    fn run_state_round_trips_refused_publication_attempts() {
+        let state = super::PrRunState {
+            contract_version: version(),
+            pr: pr(),
+            commit_sha: "abc123".to_owned(),
+            current_head_sha: Some("def456".to_owned()),
+            pass_index: 2,
+            status: RunStatus::Superseded,
+            active_run: None,
+            run_history: Vec::new(),
+            loop_history: Vec::new(),
+            superseded_by: Some("def456".to_owned()),
+            findings: Vec::new(),
+            decisions: Vec::new(),
+            patches: Vec::new(),
+            publication: PublicationState {
+                attempts: vec![PublicationAttempt {
+                    contract_version: version(),
+                    run_id: RunId("run-judge-2".to_owned()),
+                    operation: PublicationOperation::PostFindingComment {
+                        finding_id: FindingId("finding-1".to_owned()),
+                        finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
+                    },
+                    idempotency_key: "comment-finding-1".to_owned(),
+                    expected_head_sha: Some("abc123".to_owned()),
+                    status: PublicationAttemptStatus::Refused,
+                    receipt: None,
+                    error: Some(
+                        "publication refused because PR head moved from abc123 to Some(\"def456\")"
+                            .to_owned(),
+                    ),
+                    refusal: Some(PublicationRefusal {
+                        reason: PublicationRefusalReason::HeadMoved {
+                            expected_head_sha: "abc123".to_owned(),
+                            actual_head_sha: Some("def456".to_owned()),
+                        },
+                        message:
+                            "publication refused because PR head moved from abc123 to Some(\"def456\")"
+                                .to_owned(),
+                    }),
+                }],
+                finding_comments: Vec::new(),
+                fix_pushes: Vec::new(),
+                merges: Vec::new(),
+            },
+            ceiling: None,
+            extensions: extensions(),
+        };
+
+        let encoded = serde_json::to_value(&state).expect("serialise state");
+        assert_eq!(
+            encoded["publication"]["attempts"][0]["status"],
+            json!("refused")
+        );
+        assert_eq!(
+            encoded["publication"]["attempts"][0]["refusal"]["reason"]["reason"],
+            json!("head_moved")
+        );
+        assert_eq!(
+            encoded["publication"]["attempts"][0]["refusal"]["reason"]["expected_head_sha"],
+            json!("abc123")
+        );
+        assert_eq!(
+            encoded["publication"]["attempts"][0]["refusal"]["reason"]["actual_head_sha"],
+            json!("def456")
+        );
+
+        let decoded =
+            serde_json::from_value::<super::PrRunState>(encoded).expect("deserialise state");
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
     fn open_extensions_survive_unknown_json() {
         let payload = json!({
             "contract_version": { "major": 1, "minor": 0 },
@@ -1190,6 +1263,58 @@ mod tests {
                 .iter()
                 .all(|record| record.refusal.is_none() && record.ensemble_archive_path.is_none())
         );
+    }
+
+    #[test]
+    fn older_publication_attempt_payloads_default_new_fields() {
+        let payload = json!({
+            "contract_version": { "major": 1, "minor": 3 },
+            "pr": { "repository": "acme/widgets", "id": "42" },
+            "commit_sha": "abc123",
+            "current_head_sha": "abc123",
+            "pass_index": 2,
+            "status": "completed",
+            "active_run": null,
+            "run_history": [],
+            "loop_history": [],
+            "superseded_by": null,
+            "findings": [],
+            "decisions": [],
+            "patches": [],
+            "publication": {
+                "attempts": [{
+                    "contract_version": { "major": 1, "minor": 3 },
+                    "run_id": "run-judge-2",
+                    "operation": {
+                        "kind": "post_finding_comment",
+                        "finding_id": "finding-1",
+                        "finding_dedup_key": "brief:correctness:path:src/lib.rs:12"
+                    },
+                    "idempotency_key": "comment-finding-1",
+                    "status": "succeeded",
+                    "receipt": {
+                        "operation_id": "comment-1",
+                        "idempotency_key": "comment-finding-1",
+                        "new_head_sha": null
+                    },
+                    "error": null
+                }],
+                "finding_comments": [],
+                "fix_pushes": [],
+                "merges": []
+            },
+            "ceiling": null
+        });
+
+        let state = serde_json::from_value::<super::PrRunState>(payload).expect("v1.3 state");
+        let attempt = state
+            .publication
+            .attempts
+            .first()
+            .expect("publication attempt");
+
+        assert_eq!(attempt.expected_head_sha, None);
+        assert_eq!(attempt.refusal, None);
     }
 
     #[test]
