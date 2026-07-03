@@ -2300,16 +2300,16 @@ exit 75
                 .then(|| ForgejoLabelApplication {
                     name: "pump19-finish".to_owned(),
                     applied_by: Some(ForgejoActor {
-                        id: "pump19-core".to_owned(),
-                        display_name: "pump19-core".to_owned(),
+                        id: "maintainer".to_owned(),
+                        display_name: "maintainer".to_owned(),
                     }),
                 })
                 .into_iter()
                 .collect(),
             actor_permissions: vec![ForgejoActorPermission {
                 actor: ForgejoActor {
-                    id: "pump19-core".to_owned(),
-                    display_name: "pump19-core".to_owned(),
+                    id: "maintainer".to_owned(),
+                    display_name: "maintainer".to_owned(),
                 },
                 can_apply_finish_label: true,
                 can_merge: true,

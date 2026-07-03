@@ -879,11 +879,8 @@ fn actor(id: &str) -> ActorRef {
     }
 }
 
-fn core_service_actor() -> ActorRef {
-    ActorRef {
-        id: "pump19-core".to_owned(),
-        display_name: "Pump-19 Core".to_owned(),
-    }
+fn finish_label_actor() -> ActorRef {
+    actor("maintainer")
 }
 
 fn contract_facts(
@@ -919,23 +916,20 @@ fn contract_facts_with_head(
         mergeability: Mergeability::Mergeable,
         finish_label: Some(FinishLabel {
             name: "pump19-finish".to_owned(),
-            applied_by: actor("pump19-core"),
+            applied_by: finish_label_actor(),
         }),
         actor_permissions,
         extensions: extensions(),
     }
 }
 
-fn core_actor_permissions() -> Vec<ActorPermissions> {
-    [actor("pump19-core"), core_service_actor()]
-        .into_iter()
-        .map(|actor| ActorPermissions {
-            actor,
-            capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
-                .into_iter()
-                .collect(),
-        })
-        .collect()
+fn finish_label_actor_permissions() -> Vec<ActorPermissions> {
+    vec![ActorPermissions {
+        actor: finish_label_actor(),
+        capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
+            .into_iter()
+            .collect(),
+    }]
 }
 
 fn opened_event(facts: ForgeFacts) -> ContractEvent {
@@ -964,7 +958,7 @@ fn finish_label_event() -> ContractEvent {
             pr: pr(),
             label: FinishLabel {
                 name: "pump19-finish".to_owned(),
-                applied_by: actor("pump19-core"),
+                applied_by: finish_label_actor(),
             },
         },
         extensions: extensions(),
@@ -1612,7 +1606,7 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
     let facts = contract_facts(
         BranchCurrency::Current,
         ReviewCleanliness::Clean,
-        core_actor_permissions(),
+        finish_label_actor_permissions(),
     );
     let mut core = Core::with_forge_operations(
         EmptyEventSource,
@@ -1676,7 +1670,7 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
         "head-sha-after-fix",
         BranchCurrency::Current,
         ReviewCleanliness::Clean,
-        core_actor_permissions(),
+        finish_label_actor_permissions(),
     );
     let outcomes = core
         .process_event(
@@ -1763,7 +1757,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
     let mut facts = contract_facts(
         BranchCurrency::Current,
         ReviewCleanliness::Clean,
-        core_actor_permissions(),
+        finish_label_actor_permissions(),
     );
     facts.finish_label = None;
     let mut core = Core::with_forge_operations_and_policy(
@@ -1810,7 +1804,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
         "head-sha-after-fix",
         BranchCurrency::Current,
         ReviewCleanliness::Clean,
-        core_actor_permissions(),
+        finish_label_actor_permissions(),
     );
     updated_facts.finish_label = None;
     let outcomes = core
@@ -2323,7 +2317,7 @@ fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
     let facts = contract_facts(
         BranchCurrency::Current,
         ReviewCleanliness::Clean,
-        core_actor_permissions(),
+        finish_label_actor_permissions(),
     );
 
     let opened = core
@@ -3157,13 +3151,13 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
         ForgejoBranchCurrency::Current,
         ForgejoReviewCleanliness::Clean,
         Some(ForgejoActor {
-            id: "pump19-core".to_owned(),
-            display_name: "Pump-19 Core".to_owned(),
+            id: "maintainer".to_owned(),
+            display_name: "maintainer".to_owned(),
         }),
         vec![ForgejoActorPermission {
             actor: ForgejoActor {
-                id: "pump19-core".to_owned(),
-                display_name: "Pump-19 Core".to_owned(),
+                id: "maintainer".to_owned(),
+                display_name: "maintainer".to_owned(),
             },
             can_apply_finish_label: true,
             can_merge: true,
@@ -3206,7 +3200,7 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
             pr: pr(),
             label: FinishLabel {
                 name: "pump19-finish".to_owned(),
-                applied_by: actor("pump19-core"),
+                applied_by: finish_label_actor(),
             },
         },
         extensions: extensions(),
