@@ -280,6 +280,7 @@ mod tests {
             mergeability: ForgejoMergeability::Unknown,
             labels,
             actor_permissions: Vec::new(),
+            author_login: None,
         }
     }
 
@@ -318,6 +319,7 @@ mod tests {
                         mergeability: ForgejoMergeability::Unknown,
                         labels: Vec::new(),
                         actor_permissions: Vec::new(),
+                        author_login: None,
                     },
                 },
             ]),

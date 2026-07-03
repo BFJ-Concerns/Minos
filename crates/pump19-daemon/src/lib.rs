@@ -2454,6 +2454,7 @@ exit 75
                 can_apply_finish_label: true,
                 can_merge: true,
             }],
+            author_login: None,
         }
     }
 
@@ -2524,6 +2525,7 @@ exit 75
                     .into_iter()
                     .collect(),
             }],
+            author_login: None,
             extensions: Extensions::new(),
         }
     }

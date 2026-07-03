@@ -2182,10 +2182,26 @@ pub struct TriggerRule {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Criteria {
-    Event { event: EventKind },
-    State { state: StateCriterion },
-    All { criteria: Vec<Self> },
-    Any { criteria: Vec<Self> },
+    Event {
+        event: EventKind,
+    },
+    State {
+        state: StateCriterion,
+    },
+    /// Matches when the PR author is one of the listed forge logins.
+    ///
+    /// The author comes from the event's own facts for forge events, falling
+    /// back to the facts recorded in run state for downstream events. Fails
+    /// closed when no author evidence exists.
+    PrAuthoredBy {
+        any_of: Vec<String>,
+    },
+    All {
+        criteria: Vec<Self>,
+    },
+    Any {
+        criteria: Vec<Self>,
+    },
 }
 
 impl Criteria {
@@ -2194,6 +2210,9 @@ impl Criteria {
         match self {
             Self::Event { event: expected } => expected.matches(event),
             Self::State { state: expected } => expected.matches(state),
+            Self::PrAuthoredBy { any_of } => {
+                pr_author_login(event, state).is_some_and(|login| any_of.contains(&login))
+            }
             Self::All { criteria } => criteria
                 .iter()
                 .all(|criterion| criterion.matches(event, state)),
@@ -2201,6 +2220,19 @@ impl Criteria {
                 .iter()
                 .any(|criterion| criterion.matches(event, state)),
         }
+    }
+}
+
+/// The PR author as the forge reported it, or `None` when no evidence exists.
+fn pr_author_login(event: &ContractEvent, state: Option<&PrRunState>) -> Option<String> {
+    match &event.payload {
+        EventPayload::PullRequestOpened { facts } | EventPayload::PullRequestUpdated { facts } => {
+            facts.author_login.clone()
+        }
+        _ => state
+            .and_then(|state| state.extensions.get(EXT_FORGE_FACTS))
+            .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
+            .and_then(|facts| facts.author_login),
     }
 }
 
@@ -4624,6 +4656,7 @@ mod tests {
                     .into_iter()
                     .collect(),
             }],
+            author_login: None,
             extensions: BTreeMap::new(),
         }
     }
@@ -5168,6 +5201,47 @@ mod tests {
             }
             .matches(&event)
         );
+    }
+
+    #[test]
+    fn pr_authored_by_matches_the_event_facts_author() {
+        let mut with_author = facts();
+        with_author.author_login = Some("example".to_owned());
+        let event = event_with_facts(with_author);
+        let allowed = Criteria::PrAuthoredBy {
+            any_of: vec!["example".to_owned(), "BFJ-Concerns".to_owned()],
+        };
+        let someone_else = Criteria::PrAuthoredBy {
+            any_of: vec!["mallory".to_owned()],
+        };
+
+        assert!(allowed.matches(&event, None));
+        assert!(!someone_else.matches(&event, None));
+    }
+
+    #[test]
+    fn pr_authored_by_fails_closed_when_the_forge_reports_no_author() {
+        let event = event_with_facts(facts());
+        let criteria = Criteria::PrAuthoredBy {
+            any_of: vec!["example".to_owned()],
+        };
+
+        assert!(!criteria.matches(&event, None));
+    }
+
+    #[test]
+    fn pr_authored_by_reads_state_facts_for_non_forge_events() {
+        let mut with_author = facts();
+        with_author.author_login = Some("example".to_owned());
+        let state = initial_state_from_event(&event_with_facts(with_author)).expect("state");
+        let completed =
+            run_completed_event("fix-completed", RunId("run-fix".to_owned()), RunKind::Fix);
+        let criteria = Criteria::PrAuthoredBy {
+            any_of: vec!["example".to_owned()],
+        };
+
+        assert!(criteria.matches(&completed, Some(&state)));
+        assert!(!criteria.matches(&completed, None));
     }
 
     #[test]

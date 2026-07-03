@@ -926,6 +926,7 @@ fn contract_facts_with_head(
             applied_by: finish_label_actor(),
         }),
         actor_permissions,
+        author_login: None,
         extensions: extensions(),
     }
 }
@@ -3623,6 +3624,7 @@ fn forgejo_snapshot(
             applied_by: finish_actor,
         }],
         actor_permissions,
+        author_login: None,
     }
 }
 
@@ -3644,5 +3646,6 @@ fn polling_snapshot(head_sha: &str) -> ForgejoPullRequestSnapshot {
             can_apply_finish_label: true,
             can_merge: true,
         }],
+        author_login: None,
     }
 }

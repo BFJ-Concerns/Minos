@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The current public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 4 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 5 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -535,6 +535,11 @@ pub struct ForgeFacts {
     pub mergeability: Mergeability,
     pub finish_label: Option<FinishLabel>,
     pub actor_permissions: Vec<ActorPermissions>,
+    /// The forge login of the PR author, when the forge exposes it. Optional
+    /// because contract 1.4 producers predate it; criteria that filter on the
+    /// author fail closed when it is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_login: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: Extensions,
 }
@@ -862,6 +867,7 @@ mod tests {
                     .into_iter()
                     .collect(),
             }],
+            author_login: None,
             extensions: extensions(),
         }
     }
