@@ -54,7 +54,7 @@ The example points at generated baseline packs:
   stdin and must return `{"tree":"...","revision":"..."}`.
 
 The generated packs carry the current contract version from `pump19-contract`
-(`1.5` at this revision).
+(`1.4` at this revision).
 
 Regenerate the baseline packs with:
 

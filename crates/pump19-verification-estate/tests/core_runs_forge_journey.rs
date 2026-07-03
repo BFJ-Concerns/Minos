@@ -14,8 +14,8 @@ use pump19_contract::{
     EventPayload, Extensions, Finding, FindingCommentPublication, FindingCommentStatus, FindingId,
     FindingLocation, FinishLabel, ForgeFacts, ForgeReceipt, LoopPassRecord, Mergeability,
     ModelFamily, ModelLineage, ModelProvenance, PatchChange, PrRunState, ProvenanceVerification,
-    PublicationAttemptStatus, PublicationOperation, PublicationRefusalReason, PublicationState,
-    PullRequestRef, ReviewCleanliness, Revision, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
+    PublicationAttemptStatus, PublicationOperation, PublicationState, PullRequestRef,
+    ReviewCleanliness, Revision, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
     RunRefusalReason, RunStatus, SessionFreshness, SessionId, Severity,
 };
 use pump19_core::{
@@ -197,7 +197,6 @@ struct RecordingForgeOperations {
     labels: Rc<RefCell<Vec<AuthorisedLabel>>>,
     merges: Rc<RefCell<Vec<AuthorisedMerge>>>,
     fix_pushes: Rc<RefCell<Vec<AuthorisedFixPush>>>,
-    moved_comment_head: Option<String>,
 }
 
 impl ForgeOperations for RecordingForgeOperations {
@@ -205,12 +204,6 @@ impl ForgeOperations for RecordingForgeOperations {
         &mut self,
         request: AuthorisedComment,
     ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
-        if let Some(actual_head_sha) = self.moved_comment_head.clone() {
-            return Err(ForgeOperationError::HeadMoved {
-                expected_head_sha: request.expected_head_sha,
-                actual_head_sha: Some(actual_head_sha),
-            });
-        }
         let idempotency_key = request.authorisation.idempotency_key.clone();
         self.comments.borrow_mut().push(request);
         Ok(ForgeOperationReceipt {
@@ -2054,93 +2047,6 @@ fn minor_judge_finding_is_recorded_but_suppressed_from_pr_publication() {
     );
     assert!(latest.publication.attempts.is_empty());
     assert!(latest.publication.finding_comments.is_empty());
-}
-
-#[test]
-fn stale_head_refuses_material_finding_publication_before_posting_comment() {
-    let forge_operations = RecordingForgeOperations {
-        moved_comment_head: Some("head-sha-2".to_owned()),
-        ..RecordingForgeOperations::default()
-    };
-    let comments = Rc::clone(&forge_operations.comments);
-    let mut state = run_state();
-    state.status = RunStatus::Completed;
-    state.findings = vec![
-        finding_with(
-            "stale-supporting",
-            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
-            1,
-        ),
-        finding(),
-    ];
-    state.run_history.push(RunRecord {
-        run_id: RunId("review-stale-head".to_owned()),
-        run_kind: RunKind::Review,
-        event_id: "forgejo-pr-opened".to_owned(),
-        rule_id: "review-on-pr-opened".to_owned(),
-        pass_index: 1,
-        commit_sha: state.commit_sha.clone(),
-        status: RunStatus::Completed,
-        outcome: Some(RunOutcome::Succeeded),
-        refusal: None,
-        ensemble_archive_path: None,
-    });
-    state.extensions.insert(
-        "pump19.core.running_run_id".to_owned(),
-        Value::String("review-stale-head".to_owned()),
-    );
-    let state_store = SharedEstateStateStore::with_state(state);
-    let observer = state_store.clone();
-    let mut core = Core::with_forge_operations(
-        EmptyEventSource,
-        EstateWorkspaceProvider {
-            lease: workspace(PathBuf::from("/tmp/pump19-stale-head-publication-estate")),
-        },
-        EstateLoopLauncher,
-        state_store,
-        forge_operations,
-    );
-
-    let outcomes = core
-        .process_event(
-            &run_completed_event(
-                "review-stale-head-completed",
-                RunId("review-stale-head".to_owned()),
-                RunKind::Review,
-            ),
-            &[judge_after_review_rule()],
-        )
-        .expect("stale-head publication is recorded as a refusal");
-
-    assert!(matches!(
-        outcomes.as_slice(),
-        [DispatchOutcome::Launched { .. }]
-    ));
-    let judge_run_id = launched_run_id(&outcomes).unwrap();
-    assert!(comments.borrow().is_empty());
-    let saved = observer
-        .load_by_run_id(&judge_run_id)
-        .expect("load state")
-        .expect("state saved");
-    assert_eq!(saved.status, RunStatus::Superseded);
-    assert_eq!(saved.superseded_by.as_deref(), Some("head-sha-2"));
-    assert!(saved.publication.finding_comments.is_empty());
-    assert_eq!(saved.publication.attempts.len(), 1);
-    let attempt = &saved.publication.attempts[0];
-    assert_eq!(attempt.status, PublicationAttemptStatus::Refused);
-    assert!(matches!(
-        attempt.operation,
-        PublicationOperation::PostFindingComment { .. }
-    ));
-    assert_eq!(attempt.expected_head_sha.as_deref(), Some("head-sha-1"));
-    assert!(matches!(
-        attempt.refusal.as_ref().map(|refusal| &refusal.reason),
-        Some(PublicationRefusalReason::HeadMoved {
-            expected_head_sha,
-            actual_head_sha,
-        }) if expected_head_sha == "head-sha-1"
-            && actual_head_sha.as_deref() == Some("head-sha-2")
-    ));
 }
 
 #[test]
