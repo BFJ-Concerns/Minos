@@ -544,6 +544,15 @@ pub trait RunStateStore {
     fn save(&mut self, state: &PrRunState) -> Result<(), CoreError>;
 }
 
+/// Summary of completion events rederived from durable state after restart.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CompletionRecoverySummary {
+    pub queued: usize,
+    pub terminal_replays: usize,
+    pub stale_running_failures: usize,
+    pub errors_continued: usize,
+}
+
 /// Deterministic dispatch-and-enforce core.
 #[derive(Debug)]
 pub struct Core<E, W, L, S, F = NoopForgeOperations, P = NoopSourcePreparer> {
@@ -725,23 +734,33 @@ where
     ///
     /// Returns an error when the state store cannot enumerate or decode candidate
     /// states for recovery.
-    pub fn rederive_pending_completions(&mut self) -> Result<usize, CoreError> {
+    pub fn rederive_pending_completions(&mut self) -> Result<CompletionRecoverySummary, CoreError> {
         let pending_ids = self
             .pending_events
             .iter()
             .map(|event| event.id.clone())
             .collect::<BTreeSet<_>>();
-        let mut queued = 0;
+        let mut summary = CompletionRecoverySummary::default();
         for state in self.state_store.completion_recovery_states()? {
             if state.status == RunStatus::Running {
-                if let Some(event) = self.resolve_stale_running_state(state)? {
-                    if pending_ids.contains(&event.id)
-                        || self.queued_completion_event_ids.contains(&event.id)
-                    {
-                        continue;
+                match self.resolve_stale_running_state(state) {
+                    Ok(Some(event)) => {
+                        summary.stale_running_failures += 1;
+                        if pending_ids.contains(&event.id)
+                            || self.queued_completion_event_ids.contains(&event.id)
+                        {
+                            continue;
+                        }
+                        self.queue_completion_event(event);
+                        summary.queued += 1;
                     }
-                    self.queue_completion_event(event);
-                    queued += 1;
+                    Ok(None) => {
+                        summary.stale_running_failures += 1;
+                    }
+                    Err(error) if recovery_error_is_fatal(&error) => return Err(error),
+                    Err(_error) => {
+                        summary.errors_continued += 1;
+                    }
                 }
                 continue;
             }
@@ -755,10 +774,11 @@ where
                     continue;
                 }
                 self.queue_completion_event(event);
-                queued += 1;
+                summary.terminal_replays += 1;
+                summary.queued += 1;
             }
         }
-        Ok(queued)
+        Ok(summary)
     }
 
     fn resolve_stale_running_state(
@@ -1637,6 +1657,13 @@ where
         self.queued_completion_event_ids.insert(event.id.clone());
         self.pending_events.push_back(event);
     }
+}
+
+const fn recovery_error_is_fatal(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::StateStore(_) | CoreError::Io { .. } | CoreError::Json { .. }
+    )
 }
 
 /// The durable key for a PR run state.
@@ -5271,7 +5298,9 @@ mod tests {
             .rederive_pending_completions()
             .expect("recover stale running");
 
-        assert_eq!(recovered, 1);
+        assert_eq!(recovered.queued, 1);
+        assert_eq!(recovered.terminal_replays, 0);
+        assert_eq!(recovered.stale_running_failures, 1);
         assert_eq!(core.pending_event_count(), 1);
         assert_eq!(core.forge_operations.comments.len(), 1);
         assert!(
@@ -5593,7 +5622,9 @@ mod tests {
         let recovered = restarted
             .rederive_pending_completions()
             .expect("rederive completions from stored run history");
-        assert_eq!(recovered, 1);
+        assert_eq!(recovered.queued, 1);
+        assert_eq!(recovered.terminal_replays, 1);
+        assert_eq!(recovered.stale_running_failures, 0);
 
         let batches = restarted.drain_available(&rules).expect("resume loop");
 

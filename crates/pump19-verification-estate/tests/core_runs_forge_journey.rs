@@ -2227,16 +2227,16 @@ fn restart_rederives_unprocessed_completion_and_drives_next_trigger_once() {
         state_store,
     );
 
-    assert_eq!(
-        core.rederive_pending_completions()
-            .expect("completion recovery succeeds"),
-        1
-    );
-    assert_eq!(
-        core.rederive_pending_completions()
-            .expect("completion recovery is idempotent"),
-        0
-    );
+    let recovered = core
+        .rederive_pending_completions()
+        .expect("completion recovery succeeds");
+    assert_eq!(recovered.queued, 1);
+    assert_eq!(recovered.terminal_replays, 1);
+    assert_eq!(recovered.stale_running_failures, 0);
+    let recovered = core
+        .rederive_pending_completions()
+        .expect("completion recovery is idempotent");
+    assert_eq!(recovered.queued, 0);
     assert_eq!(core.pending_event_count(), 1);
 
     let batches = core
@@ -2418,11 +2418,12 @@ fn stale_running_recovery_surfaces_failure_and_reopens_pr_dispatch() {
         forge_operations,
     );
 
-    assert_eq!(
-        core.rederive_pending_completions()
-            .expect("stale running recovery succeeds"),
-        1
-    );
+    let recovered = core
+        .rederive_pending_completions()
+        .expect("stale running recovery succeeds");
+    assert_eq!(recovered.queued, 1);
+    assert_eq!(recovered.terminal_replays, 0);
+    assert_eq!(recovered.stale_running_failures, 1);
     assert_eq!(comments.borrow().len(), 1);
     assert!(comments.borrow()[0].body.contains("daemon restarted"));
     let failed = observer

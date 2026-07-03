@@ -520,6 +520,7 @@ where
         let _ = workspace;
         let targets = expected_targets(request, AgentRole::Judge)?;
         let provenance = provenance_for_role(request, AgentRole::Judge)?;
+        let judge_findings = judge_findings(request);
         let loop_context = json!({
             "pass_count": request.state.pass_index,
             "prior_verdicts": prior_judge_verdicts(request),
@@ -531,7 +532,7 @@ where
             &[
                 ("run_id", request.run_id.0.clone()),
                 ("commit_sha", request.state.commit_sha.clone()),
-                ("findings", prompt_json(&request.state.findings)?),
+                ("findings", prompt_json(&judge_findings)?),
                 ("loop_context", prompt_json(&loop_context)?),
             ],
         )?;
@@ -543,8 +544,8 @@ where
             "judges": targets,
             "prompt": prompt,
             "pass_count": request.state.pass_index,
-            "current_findings": request.state.findings,
-            "findings": request.state.findings,
+            "current_findings": judge_findings,
+            "findings": judge_findings,
             "prior_verdicts": prior_judge_verdicts(request),
             "fix_outcomes": prior_fix_outcomes(request),
             "loop_history": request.state.loop_history,
@@ -553,7 +554,7 @@ where
         reconcile_ensemble_archive(&output.archive_dir, &targets)?;
         let outputs = serde_json::from_value::<Vec<JudgeDecisionOutput>>(output.value)
             .map_err(RunBodyError::EnsembleJson)?;
-        if outputs.is_empty() && request.state.findings.is_empty() {
+        if outputs.is_empty() && judge_findings.is_empty() {
             return Ok(vec![convergence_decision(request, &provenance)]);
         }
         if outputs.is_empty() {
@@ -696,6 +697,20 @@ fn prior_fix_outcomes(request: &RunLaunchRequest) -> Vec<RunOutcome> {
         .iter()
         .filter_map(|pass| pass.fix_outcome)
         .collect()
+}
+
+fn judge_findings(request: &RunLaunchRequest) -> Vec<Finding> {
+    if !request.state.findings.is_empty() {
+        return request.state.findings.clone();
+    }
+    request
+        .state
+        .loop_history
+        .iter()
+        .rev()
+        .find(|pass| pass.fix_outcome == Some(RunOutcome::NoOp) && !pass.findings.is_empty())
+        .map(|pass| pass.findings.clone())
+        .unwrap_or_default()
 }
 
 fn findings_from_judgement(
@@ -1926,6 +1941,97 @@ mod tests {
         let error = judge
             .run_judge(&req, &mut workspace)
             .expect_err("empty decisions with findings fail");
+
+        assert!(
+            matches!(error, RunBodyError::Ensemble(message) if message.contains("no decisions"))
+        );
+    }
+
+    #[test]
+    fn judge_replays_noop_fix_findings_from_loop_history() {
+        let root = tempfile::tempdir().expect("judge root");
+        let mut req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "glm")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let standing = finding();
+        req.state.loop_history.push(LoopPassRecord {
+            pass_index: 1,
+            commit_sha: "abc123".to_owned(),
+            findings: vec![standing.clone()],
+            decisions: vec![Decision {
+                contract_version: ContractVersion::current(),
+                id: "decision-material".to_owned(),
+                subject: DecisionSubject::Finding {
+                    finding_id: standing.id,
+                },
+                verdict: DecisionVerdict::Material,
+                rationale: "was material before the NoOp fix".to_owned(),
+                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
+                extensions: BTreeMap::new(),
+            }],
+            patches: Vec::new(),
+            judge_verdict: Some(DecisionVerdict::Material),
+            fix_outcome: Some(RunOutcome::NoOp),
+        });
+        let runner = FakeEnsembleRunner::new(
+            json!([{"finding_id":"finding-1","verdict":"minor","rationale":"NoOp exhausted the useful fix path"}]),
+            vec![archive_agent("judge", "glm")],
+        );
+        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let decisions = judge.run_judge(&req, &mut workspace).expect("judge");
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].verdict, DecisionVerdict::Minor);
+        let workflow_args = &judge.runner.requests[0].args;
+        assert_eq!(
+            workflow_args["current_findings"]
+                .as_array()
+                .expect("current findings")
+                .len(),
+            1
+        );
+        assert_eq!(workflow_args["fix_outcomes"], json!(["no_op"]));
+    }
+
+    #[test]
+    fn judge_fails_empty_decisions_for_noop_history_findings() {
+        let root = tempfile::tempdir().expect("judge root");
+        let mut req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "glm")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let standing = finding();
+        req.state.loop_history.push(LoopPassRecord {
+            pass_index: 1,
+            commit_sha: "abc123".to_owned(),
+            findings: vec![standing.clone()],
+            decisions: vec![Decision {
+                contract_version: ContractVersion::current(),
+                id: "decision-material".to_owned(),
+                subject: DecisionSubject::Finding {
+                    finding_id: standing.id,
+                },
+                verdict: DecisionVerdict::Material,
+                rationale: "was material before the NoOp fix".to_owned(),
+                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
+                extensions: BTreeMap::new(),
+            }],
+            patches: Vec::new(),
+            judge_verdict: Some(DecisionVerdict::Material),
+            fix_outcome: Some(RunOutcome::NoOp),
+        });
+        let runner = FakeEnsembleRunner::new(json!([]), vec![archive_agent("judge", "glm")]);
+        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = judge
+            .run_judge(&req, &mut workspace)
+            .expect_err("NoOp-history findings need decisions");
 
         assert!(
             matches!(error, RunBodyError::Ensemble(message) if message.contains("no decisions"))

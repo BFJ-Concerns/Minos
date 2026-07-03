@@ -28,9 +28,9 @@ use pump19_adaptations::{
 };
 use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
-    AgentLaunchSpec, Core, CoreError, CorePolicy, DispatchOutcome, FinishLabelApplicationPolicy,
-    JsonRunStateStore, LaunchProof, PreparedAgent, PreparedSource, SourcePreparationRequest,
-    SourcePreparer, TriggerRule,
+    AgentLaunchSpec, CompletionRecoverySummary, Core, CoreError, CorePolicy, DispatchOutcome,
+    FinishLabelApplicationPolicy, JsonRunStateStore, LaunchProof, PreparedAgent, PreparedSource,
+    SourcePreparationRequest, SourcePreparer, TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -219,6 +219,9 @@ pub struct DaemonRunSummary {
     pub launches: usize,
     pub quiet_polls: u32,
     pub recovered_completion_events: usize,
+    pub recovered_terminal_events: usize,
+    pub recovered_stale_running_events: usize,
+    pub recovery_errors_continued: usize,
     pub dispatch_errors_continued: usize,
     pub stopped_by_shutdown: bool,
 }
@@ -241,6 +244,9 @@ pub fn run_from_config(config: DaemonConfig) -> Result<(), DaemonError> {
             "launches": summary.launches,
             "quiet_polls": summary.quiet_polls,
             "recovered_completion_events": summary.recovered_completion_events,
+            "recovered_terminal_events": summary.recovered_terminal_events,
+            "recovered_stale_running_events": summary.recovered_stale_running_events,
+            "recovery_errors_continued": summary.recovery_errors_continued,
             "dispatch_errors_continued": summary.dispatch_errors_continued,
             "stopped_by_shutdown": summary.stopped_by_shutdown,
         }),
@@ -392,18 +398,49 @@ where
         &mut self,
         summary: &mut DaemonRunSummary,
     ) -> Result<bool, DaemonError> {
-        let recovered = self.core.recover_pending_completions()?;
-        if recovered == 0 {
+        let recovery = match self.core.recover_pending_completions() {
+            Ok(recovery) => recovery,
+            Err(error) if core_error_is_daemon_fatal(&error) => {
+                return Err(DaemonError::Core(error));
+            }
+            Err(error) => {
+                summary.recovery_errors_continued += 1;
+                log_daemon_event(
+                    "error",
+                    "completion_recovery_error_continued",
+                    &json!({
+                        "class": core_error_class(&error),
+                        "error": error.to_string(),
+                        "continued_errors": summary.recovery_errors_continued,
+                    }),
+                );
+                return Ok(true);
+            }
+        };
+        if recovery == CompletionRecoverySummary::default() {
             return Ok(false);
         }
-        summary.recovered_completion_events += recovered;
+        summary.recovered_completion_events += recovery.queued;
+        summary.recovered_terminal_events += recovery.terminal_replays;
+        summary.recovered_stale_running_events += recovery.stale_running_failures;
+        summary.recovery_errors_continued += recovery.errors_continued;
         summary.quiet_polls = 0;
         log_daemon_event(
             "info",
-            "completion_recovery",
+            if recovery.stale_running_failures == 0 {
+                "completion_recovery"
+            } else {
+                "stale_running_recovery"
+            },
             &json!({
-                "recovered": recovered,
+                "recovered": recovery.queued,
+                "terminal_replays": recovery.terminal_replays,
+                "stale_running_failures": recovery.stale_running_failures,
+                "errors_continued": recovery.errors_continued,
                 "total_recovered": summary.recovered_completion_events,
+                "total_terminal_replays": summary.recovered_terminal_events,
+                "total_stale_running_failures": summary.recovered_stale_running_events,
+                "total_recovery_errors_continued": summary.recovery_errors_continued,
                 "pending_events": self.core.pending_event_count(),
             }),
         );
@@ -417,7 +454,7 @@ trait CoreRunner {
         rules: &[TriggerRule],
     ) -> Result<Option<Vec<DispatchOutcome>>, CoreError>;
 
-    fn recover_pending_completions(&mut self) -> Result<usize, CoreError>;
+    fn recover_pending_completions(&mut self) -> Result<CompletionRecoverySummary, CoreError>;
 
     fn pending_event_count(&self) -> usize;
 }
@@ -438,7 +475,7 @@ where
         self.process_next(rules)
     }
 
-    fn recover_pending_completions(&mut self) -> Result<usize, CoreError> {
+    fn recover_pending_completions(&mut self) -> Result<CompletionRecoverySummary, CoreError> {
         self.rederive_pending_completions()
     }
 
@@ -1072,7 +1109,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct StubCore {
         outcomes: Rc<RefCell<Vec<StubOutcome>>>,
-        recovered: Rc<RefCell<Vec<usize>>>,
+        recovered: Rc<RefCell<Vec<Result<CompletionRecoverySummary, CoreError>>>>,
     }
 
     impl CoreRunner for StubCore {
@@ -1083,8 +1120,11 @@ mod tests {
             self.outcomes.borrow_mut().remove(0)
         }
 
-        fn recover_pending_completions(&mut self) -> Result<usize, CoreError> {
-            Ok(self.recovered.borrow_mut().pop().unwrap_or_default())
+        fn recover_pending_completions(&mut self) -> Result<CompletionRecoverySummary, CoreError> {
+            self.recovered
+                .borrow_mut()
+                .pop()
+                .unwrap_or_else(|| Ok(CompletionRecoverySummary::default()))
         }
 
         fn pending_event_count(&self) -> usize {
@@ -1457,7 +1497,15 @@ mod tests {
                     }])),
                     Ok(None),
                 ])),
-                recovered: Rc::new(RefCell::new(vec![0, 1])),
+                recovered: Rc::new(RefCell::new(vec![
+                    Ok(CompletionRecoverySummary::default()),
+                    Ok(CompletionRecoverySummary {
+                        queued: 1,
+                        terminal_replays: 1,
+                        stale_running_failures: 0,
+                        errors_continued: 0,
+                    }),
+                ])),
             },
             LoopControlConfig {
                 poll_interval_ms: 0,
@@ -1468,7 +1516,31 @@ mod tests {
         let summary = daemon.run(&[], &NeverShutdown).expect("run daemon");
 
         assert_eq!(summary.recovered_completion_events, 1);
+        assert_eq!(summary.recovered_terminal_events, 1);
+        assert_eq!(summary.recovered_stale_running_events, 0);
         assert_eq!(summary.events_processed, 1);
+        assert_eq!(summary.quiet_polls, 1);
+    }
+
+    #[test]
+    fn run_loop_contains_nonfatal_completion_recovery_errors() {
+        let mut daemon = Pump19Daemon::new(
+            StubCore {
+                outcomes: Rc::new(RefCell::new(vec![Ok(None)])),
+                recovered: Rc::new(RefCell::new(vec![
+                    Ok(CompletionRecoverySummary::default()),
+                    Err(CoreError::Launcher("recovery hook failed".to_owned())),
+                ])),
+            },
+            LoopControlConfig {
+                poll_interval_ms: 0,
+                stop_after_quiet_polls: Some(1),
+            },
+        );
+
+        let summary = daemon.run(&[], &NeverShutdown).expect("run daemon");
+
+        assert_eq!(summary.recovery_errors_continued, 1);
         assert_eq!(summary.quiet_polls, 1);
     }
 
