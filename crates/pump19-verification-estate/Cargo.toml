@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+pump19-adaptations = { path = "../pump19-adaptations" }
 pump19-contract = { path = "../pump19-contract" }
 pump19-core = { path = "../pump19-core" }
 pump19-forge-forgejo = { path = "../pump19-forge-forgejo" }

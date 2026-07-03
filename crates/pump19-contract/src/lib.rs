@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The current public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 4 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 5 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -353,6 +353,9 @@ pub enum PublicationOperation {
     },
     PushFixCommits {
         patch_ids: Vec<PatchId>,
+    },
+    ApplyFinishLabel {
+        label: String,
     },
     MergePullRequest,
 }
@@ -831,7 +834,7 @@ mod tests {
             },
             verdict: DecisionVerdict::Material,
             rationale: "The finding affects merge safety.".to_owned(),
-            provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
             extensions: extensions(),
         }
     }
@@ -865,24 +868,43 @@ mod tests {
 
     fn publication_state() -> PublicationState {
         PublicationState {
-            attempts: vec![PublicationAttempt {
-                contract_version: version(),
-                run_id: RunId("run-judge-1".to_owned()),
-                operation: PublicationOperation::PostFindingComment {
-                    finding_id: FindingId("finding-1".to_owned()),
-                    finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
-                },
-                idempotency_key: "comment-finding-1".to_owned(),
-                expected_head_sha: Some("abc123".to_owned()),
-                status: PublicationAttemptStatus::Succeeded,
-                receipt: Some(ForgeReceipt {
-                    operation_id: "comment-1".to_owned(),
+            attempts: vec![
+                PublicationAttempt {
+                    contract_version: version(),
+                    run_id: RunId("run-judge-1".to_owned()),
+                    operation: PublicationOperation::PostFindingComment {
+                        finding_id: FindingId("finding-1".to_owned()),
+                        finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
+                    },
                     idempotency_key: "comment-finding-1".to_owned(),
-                    new_head_sha: None,
-                }),
-                error: None,
-                refusal: None,
-            }],
+                    expected_head_sha: Some("abc123".to_owned()),
+                    status: PublicationAttemptStatus::Succeeded,
+                    receipt: Some(ForgeReceipt {
+                        operation_id: "comment-1".to_owned(),
+                        idempotency_key: "comment-finding-1".to_owned(),
+                        new_head_sha: None,
+                    }),
+                    error: None,
+                    refusal: None,
+                },
+                PublicationAttempt {
+                    contract_version: version(),
+                    run_id: RunId("run-judge-2".to_owned()),
+                    operation: PublicationOperation::ApplyFinishLabel {
+                        label: "pump19-finish".to_owned(),
+                    },
+                    idempotency_key: "apply-finish-label-1".to_owned(),
+                    expected_head_sha: None,
+                    status: PublicationAttemptStatus::Succeeded,
+                    receipt: Some(ForgeReceipt {
+                        operation_id: "finish-label-1".to_owned(),
+                        idempotency_key: "apply-finish-label-1".to_owned(),
+                        new_head_sha: None,
+                    }),
+                    error: None,
+                    refusal: None,
+                },
+            ],
             finding_comments: vec![FindingCommentPublication {
                 finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
                 latest_finding_id: FindingId("finding-1".to_owned()),
@@ -1177,7 +1199,7 @@ mod tests {
             verified_provenance("claude-reviewer", AgentRole::Reviewer, "claude"),
         ];
         let fixer = verified_provenance("fixer", AgentRole::Fixer, "codex");
-        let judge = verified_provenance("judge", AgentRole::Judge, "gemini");
+        let judge = verified_provenance("judge", AgentRole::Judge, "glm");
         let mut all_provenance = reviewers.clone();
         all_provenance.push(fixer);
         all_provenance.push(judge.clone());

@@ -13,6 +13,8 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
+    thread,
+    time::{Duration, Instant},
 };
 
 use pump19_contract::{
@@ -25,8 +27,8 @@ use pump19_core::{
     WorkspaceExecutor,
 };
 use pump19_judgement::{
-    JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult, judgement_prompt,
-    load_intent, load_judgement_briefs,
+    JudgementBrief, JudgementBriefResult, JudgementRun, JudgementStatus, ReviewerResult,
+    evidence_text, load_intent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -123,6 +125,8 @@ pub enum RunBodyError {
     },
     #[error("ensemble archive does not prove the authorised lineup: {0}")]
     EnsembleArchiveMismatch(String),
+    #[error("prompt template failed: {0}")]
+    PromptTemplate(String),
 }
 
 /// Prepares a concrete agent session for a core-owned launch target.
@@ -228,6 +232,8 @@ pub struct EnsembleWorkflowConfig {
     pub script: PathBuf,
     pub archive_root: PathBuf,
     pub timeout_ms: u64,
+    pub prompt_template: String,
+    pub briefs: Vec<JudgementBrief>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,7 +275,7 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
         fs::create_dir_all(&request.archive_dir)
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
         let json_args = serde_json::to_string(&request.args).map_err(RunBodyError::EnsembleJson)?;
-        let output = Command::new(&self.node_program)
+        let mut child = Command::new(&self.node_program)
             .env_clear()
             .envs(filtered_ensemble_env(env::vars()))
             .arg(&self.launcher_path)
@@ -279,7 +285,32 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             .arg(request.timeout_ms.to_string())
             .arg(&request.script)
             .env("ENSEMBLE_RUN_RECORD_DIR", &request.archive_dir)
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
+        loop {
+            if let Some(_status) = child
+                .try_wait()
+                .map_err(|error| RunBodyError::Ensemble(error.to_string()))?
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                child
+                    .kill()
+                    .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+                let _ = child.wait();
+                return Err(RunBodyError::Ensemble(format!(
+                    "launcher exceeded hard timeout of {} ms and was killed",
+                    request.timeout_ms
+                )));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let output = child
+            .wait_with_output()
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
         let stdout = String::from_utf8(output.stdout)
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
@@ -454,14 +485,30 @@ where
         self.last_archive_path = None;
         let _ = workspace;
         let intent = load_intent(&request.workspace.root)?;
-        let brief_inputs = load_judgement_briefs(&request.workspace.root)?
-            .into_iter()
+        let brief_inputs = self
+            .config
+            .briefs
+            .iter()
             .map(|brief| {
-                let prompt = judgement_prompt(&request.workspace.root, &intent, &brief)?;
+                let evidence = evidence_text(&request.workspace.root, brief)?;
+                let prompt = render_prompt_template(
+                    &self.config.prompt_template,
+                    &[
+                        ("brief_id", brief.id.clone()),
+                        ("brief_title", brief.title.clone()),
+                        ("brief_body", brief.brief.clone()),
+                        ("subject_name", intent.app.name.clone()),
+                        ("subject_slug", intent.app.slug.clone()),
+                        ("subject_purpose", intent.app.purpose.clone()),
+                        ("evidence", evidence.clone()),
+                    ],
+                )?;
                 Ok(json!({
                     "id": brief.id,
                     "title": brief.title,
                     "prompt": prompt,
+                    "brief": brief.brief,
+                    "evidence": evidence,
                 }))
             })
             .collect::<Result<Vec<_>, RunBodyError>>()?;
@@ -519,15 +566,32 @@ where
         let _ = workspace;
         let targets = expected_targets(request, AgentRole::Judge)?;
         let provenance = provenance_for_role(request, AgentRole::Judge)?;
+        let judge_findings = judge_findings(request);
+        let loop_context = json!({
+            "pass_count": request.state.pass_index,
+            "prior_verdicts": prior_judge_verdicts(request),
+            "fix_outcomes": prior_fix_outcomes(request),
+            "loop_history": request.state.loop_history,
+        });
+        let prompt = render_prompt_template(
+            &self.config.prompt_template,
+            &[
+                ("run_id", request.run_id.0.clone()),
+                ("commit_sha", request.state.commit_sha.clone()),
+                ("findings", prompt_json(&judge_findings)?),
+                ("loop_context", prompt_json(&loop_context)?),
+            ],
+        )?;
         let input = json!({
             "run_id": request.run_id,
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
             "workspace_root": request.workspace.root,
             "judges": targets,
+            "prompt": prompt,
             "pass_count": request.state.pass_index,
-            "current_findings": request.state.findings,
-            "findings": request.state.findings,
+            "current_findings": judge_findings,
+            "findings": judge_findings,
             "prior_verdicts": prior_judge_verdicts(request),
             "fix_outcomes": prior_fix_outcomes(request),
             "loop_history": request.state.loop_history,
@@ -537,8 +601,13 @@ where
         self.last_archive_path = Some(output.archive_dir.display().to_string());
         let outputs = serde_json::from_value::<Vec<JudgeDecisionOutput>>(output.value)
             .map_err(RunBodyError::EnsembleJson)?;
-        if outputs.is_empty() && request.state.findings.is_empty() {
+        if outputs.is_empty() && judge_findings.is_empty() {
             return Ok(vec![convergence_decision(request, &provenance)]);
+        }
+        if outputs.is_empty() {
+            return Err(RunBodyError::Ensemble(
+                "judge returned no decisions for standing findings".to_owned(),
+            ));
         }
         Ok(outputs
             .into_iter()
@@ -587,12 +656,21 @@ where
         }
         let targets = expected_targets(request, AgentRole::Fixer)?;
         let provenance = provenance_for_role(request, AgentRole::Fixer)?;
+        let prompt = render_prompt_template(
+            &self.config.prompt_template,
+            &[
+                ("run_id", request.run_id.0.clone()),
+                ("commit_sha", request.state.commit_sha.clone()),
+                ("material_findings", prompt_json(&findings)?),
+            ],
+        )?;
         let input = json!({
             "run_id": request.run_id,
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
             "workspace_root": request.workspace.root,
             "fixers": targets,
+            "prompt": prompt,
             "material_findings": findings,
         });
         let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
@@ -681,6 +759,20 @@ fn prior_fix_outcomes(request: &RunLaunchRequest) -> Vec<RunOutcome> {
         .iter()
         .filter_map(|pass| pass.fix_outcome)
         .collect()
+}
+
+fn judge_findings(request: &RunLaunchRequest) -> Vec<Finding> {
+    if !request.state.findings.is_empty() {
+        return request.state.findings.clone();
+    }
+    request
+        .state
+        .loop_history
+        .iter()
+        .rev()
+        .find(|pass| pass.fix_outcome == Some(RunOutcome::NoOp) && !pass.findings.is_empty())
+        .map(|pass| pass.findings.clone())
+        .unwrap_or_default()
 }
 
 fn findings_from_judgement(
@@ -822,6 +914,43 @@ fn run_ensemble_workflow(
         archive_dir,
         timeout_ms: config.timeout_ms,
     })
+}
+
+fn render_prompt_template(
+    template: &str,
+    variables: &[(&str, String)],
+) -> Result<String, RunBodyError> {
+    let variable_map = variables
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mut rendered = String::with_capacity(template.len());
+    let mut remaining = template;
+
+    while let Some(start) = remaining.find("{{") {
+        rendered.push_str(&remaining[..start]);
+        let after_start = &remaining[start + 2..];
+        let Some(end) = after_start.find("}}") else {
+            return Err(RunBodyError::PromptTemplate(
+                "unclosed {{placeholder}} in prompt template".to_owned(),
+            ));
+        };
+        let name = after_start[..end].trim();
+        let Some(value) = variable_map.get(name) else {
+            return Err(RunBodyError::PromptTemplate(format!(
+                "unknown {{{{{name}}}}} placeholder in prompt template"
+            )));
+        };
+        rendered.push_str(value);
+        remaining = &after_start[end + 2..];
+    }
+    rendered.push_str(remaining);
+
+    Ok(rendered)
+}
+
+fn prompt_json(value: &impl Serialize) -> Result<String, RunBodyError> {
+    serde_json::to_string_pretty(value).map_err(RunBodyError::EnsembleJson)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1145,7 +1274,7 @@ mod tests {
     use pump19_core::{
         LaunchProof, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation, WorkspaceLease,
     };
-    use pump19_judgement::{ReviewerResult, install_standalone};
+    use pump19_judgement::{ReviewerResult, baseline_judgement_briefs, install_standalone};
     use serde_json::json;
 
     use super::*;
@@ -1455,6 +1584,8 @@ mod tests {
             script: root.join("workflow.js"),
             archive_root: root.join("archives"),
             timeout_ms: 5_000,
+            prompt_template: "configured prompt".to_owned(),
+            briefs: baseline_judgement_briefs(),
         }
     }
 
@@ -1607,7 +1738,11 @@ mod tests {
         };
         let value = serde_json::to_value(run).expect("serialise judgement run");
         let runner = FakeEnsembleRunner::new(value, vec![archive_agent("reviewer-codex", "codex")]);
-        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut config = ensemble_config(root.path());
+        config.prompt_template =
+            "external review template marker {{brief_id}}\n{{subject_name}}\n{{brief_title}}\n{{brief_body}}\n{{evidence}}"
+                .to_owned();
+        let mut body = EnsembleReviewBody::new(runner, config);
         let mut workspace = FakeWorkspace::default();
 
         let findings = body
@@ -1618,6 +1753,48 @@ mod tests {
         assert!(workspace.execs.is_empty());
         assert_eq!(body.runner.requests.len(), 1);
         assert!(body.runner.requests[0].archive_dir.ends_with("review-run"));
+        let prompt = body.runner.requests[0].args["briefs"][0]["prompt"]
+            .as_str()
+            .expect("workflow brief prompt");
+        assert!(prompt.contains("external review template marker reviewer-independence"));
+        assert!(prompt.contains("Sample"));
+        assert!(prompt.contains("Reviewer independence"));
+        assert!(prompt.contains("No separate evidence paths were supplied."));
+    }
+
+    #[test]
+    fn prompt_template_allows_brace_bearing_variable_content() {
+        let rendered = render_prompt_template(
+            "Evidence:\n{{evidence}}\nFinding:\n{{finding}}",
+            &[
+                (
+                    "evidence",
+                    "Vue template: <h1>{{ title }}</h1>\nLiteral later placeholder: {{finding}}"
+                        .to_owned(),
+                ),
+                ("finding", "actual finding text".to_owned()),
+            ],
+        )
+        .expect("render template");
+
+        assert!(rendered.contains("<h1>{{ title }}</h1>"));
+        assert!(rendered.contains("Literal later placeholder: {{finding}}"));
+        assert!(rendered.contains("Finding:\nactual finding text"));
+    }
+
+    #[test]
+    fn prompt_template_rejects_unknown_template_placeholder_before_rendering_values() {
+        let error = render_prompt_template(
+            "{{known}}\n{{missing}}",
+            &[("known", "content with {{missing}} braces".to_owned())],
+        )
+        .expect_err("unknown template placeholder is rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown {{missing}} placeholder")
+        );
     }
 
     #[test]
@@ -1746,10 +1923,34 @@ mod tests {
     }
 
     #[test]
+    fn host_runner_kills_launcher_at_hard_timeout() {
+        let root = tempfile::tempdir().expect("host runner root");
+        let launcher = root.path().join("sleep-launcher.sh");
+        fs::write(&launcher, "#!/bin/sh\nsleep 5\n").expect("write launcher");
+        let mut runner = HostEnsembleWorkflowRunner::new("sh", &launcher);
+        let request = EnsembleWorkflowRequest {
+            script: root.path().join("workflow.js"),
+            args: json!({}),
+            archive_dir: root.path().join("archive"),
+            timeout_ms: 50,
+        };
+        let started = Instant::now();
+
+        let error = runner
+            .run_workflow(request)
+            .expect_err("hard timeout should kill launcher");
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            matches!(error, RunBodyError::Ensemble(message) if message.contains("hard timeout"))
+        );
+    }
+
+    #[test]
     fn judge_run_produces_material_decisions_for_findings() {
         let mut req = request(
             RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "gemini")],
+            vec![provenance("judge", AgentRole::Judge, "glm")],
         );
         req.state.findings.push(finding());
         let mut launcher = Pump19RunLauncher::new(
@@ -1779,7 +1980,7 @@ mod tests {
         let root = tempfile::tempdir().expect("judge root");
         let mut req = request(
             RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "gemini")],
+            vec![provenance("judge", AgentRole::Judge, "glm")],
         );
         req.workspace.root = root.path().to_path_buf();
         let stale = finding();
@@ -1795,7 +1996,7 @@ mod tests {
                 },
                 verdict: DecisionVerdict::Material,
                 rationale: "was material".to_owned(),
-                provenance: provenance("judge-old", AgentRole::Judge, "gemini"),
+                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
                 extensions: BTreeMap::new(),
             }],
             patches: Vec::new(),
@@ -1806,7 +2007,7 @@ mod tests {
         req.state.findings.push(finding());
         let runner = FakeEnsembleRunner::new(
             json!([{"finding_id":"finding-1","verdict":"minor","rationale":"below threshold"}]),
-            vec![archive_agent("judge", "gemini")],
+            vec![archive_agent("judge", "glm")],
         );
         let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
         let mut workspace = FakeWorkspace::default();
@@ -1839,10 +2040,123 @@ mod tests {
     }
 
     #[test]
+    fn judge_run_fails_when_standing_findings_get_no_decisions() {
+        let root = tempfile::tempdir().expect("judge root");
+        let mut req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "glm")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        req.state.findings.push(finding());
+        let runner = FakeEnsembleRunner::new(json!([]), vec![archive_agent("judge", "glm")]);
+        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = judge
+            .run_judge(&req, &mut workspace)
+            .expect_err("empty decisions with findings fail");
+
+        assert!(
+            matches!(error, RunBodyError::Ensemble(message) if message.contains("no decisions"))
+        );
+    }
+
+    #[test]
+    fn judge_replays_noop_fix_findings_from_loop_history() {
+        let root = tempfile::tempdir().expect("judge root");
+        let mut req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "glm")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let standing = finding();
+        req.state.loop_history.push(LoopPassRecord {
+            pass_index: 1,
+            commit_sha: "abc123".to_owned(),
+            findings: vec![standing.clone()],
+            decisions: vec![Decision {
+                contract_version: ContractVersion::current(),
+                id: "decision-material".to_owned(),
+                subject: DecisionSubject::Finding {
+                    finding_id: standing.id,
+                },
+                verdict: DecisionVerdict::Material,
+                rationale: "was material before the NoOp fix".to_owned(),
+                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
+                extensions: BTreeMap::new(),
+            }],
+            patches: Vec::new(),
+            judge_verdict: Some(DecisionVerdict::Material),
+            fix_outcome: Some(RunOutcome::NoOp),
+        });
+        let runner = FakeEnsembleRunner::new(
+            json!([{"finding_id":"finding-1","verdict":"minor","rationale":"NoOp exhausted the useful fix path"}]),
+            vec![archive_agent("judge", "glm")],
+        );
+        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let decisions = judge.run_judge(&req, &mut workspace).expect("judge");
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].verdict, DecisionVerdict::Minor);
+        let workflow_args = &judge.runner.requests[0].args;
+        assert_eq!(
+            workflow_args["current_findings"]
+                .as_array()
+                .expect("current findings")
+                .len(),
+            1
+        );
+        assert_eq!(workflow_args["fix_outcomes"], json!(["no_op"]));
+    }
+
+    #[test]
+    fn judge_fails_empty_decisions_for_noop_history_findings() {
+        let root = tempfile::tempdir().expect("judge root");
+        let mut req = request(
+            RunKind::Judge,
+            vec![provenance("judge", AgentRole::Judge, "glm")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let standing = finding();
+        req.state.loop_history.push(LoopPassRecord {
+            pass_index: 1,
+            commit_sha: "abc123".to_owned(),
+            findings: vec![standing.clone()],
+            decisions: vec![Decision {
+                contract_version: ContractVersion::current(),
+                id: "decision-material".to_owned(),
+                subject: DecisionSubject::Finding {
+                    finding_id: standing.id,
+                },
+                verdict: DecisionVerdict::Material,
+                rationale: "was material before the NoOp fix".to_owned(),
+                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
+                extensions: BTreeMap::new(),
+            }],
+            patches: Vec::new(),
+            judge_verdict: Some(DecisionVerdict::Material),
+            fix_outcome: Some(RunOutcome::NoOp),
+        });
+        let runner = FakeEnsembleRunner::new(json!([]), vec![archive_agent("judge", "glm")]);
+        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = judge
+            .run_judge(&req, &mut workspace)
+            .expect_err("NoOp-history findings need decisions");
+
+        assert!(
+            matches!(error, RunBodyError::Ensemble(message) if message.contains("no decisions"))
+        );
+    }
+
+    #[test]
     fn judge_run_with_no_current_findings_records_convergence() {
         let req = request(
             RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "gemini")],
+            vec![provenance("judge", AgentRole::Judge, "glm")],
         );
         let mut launcher = Pump19RunLauncher::new(
             FakeSessions,
@@ -1881,7 +2195,7 @@ mod tests {
             },
             verdict: DecisionVerdict::Material,
             rationale: "worth fixing".to_owned(),
-            provenance: provenance("judge", AgentRole::Judge, "gemini"),
+            provenance: provenance("judge", AgentRole::Judge, "glm"),
             extensions: BTreeMap::new(),
         });
         let mut launcher = Pump19RunLauncher::new(

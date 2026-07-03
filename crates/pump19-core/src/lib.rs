@@ -12,7 +12,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use pump19_contract::{
@@ -49,6 +49,8 @@ pub enum CoreError {
     EventSource(String),
     #[error("workspace provider failed: {0}")]
     Workspace(String),
+    #[error("source preparation failed: {0}")]
+    SourcePreparation(String),
     #[error("run launcher failed: {0}")]
     Launcher(String),
     #[error("required model family {family:?} for agent {agent_id:?} is unavailable: {reason}")]
@@ -94,6 +96,20 @@ pub trait WorkspaceProvider {
     /// Returns an error when the provider cannot create or describe the workspace.
     fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError>;
 
+    /// Injects a trusted, already-prepared source tree into the workspace boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider cannot make the source visible to
+    /// commands executed inside the isolated workspace.
+    fn inject_source(
+        &mut self,
+        _lease: &WorkspaceLease,
+        _source: &PreparedSource,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
     /// Executes a command inside the prepared workspace boundary.
     ///
     /// # Errors
@@ -134,6 +150,48 @@ pub trait RunLauncher {
         request: RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<RunLaunchOutcome, CoreError>;
+}
+
+/// Checks out and prepares PR source on the trusted side of the workspace boundary.
+pub trait SourcePreparer {
+    /// Returns whether this preparer should run for dispatches.
+    #[must_use]
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    /// Produces a plain, credential-free tree for the requested PR revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when checkout, dependency prefetch, or any mechanical
+    /// preparation step fails.
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError>;
+}
+
+/// Source preparation disabled for tests and configurations that explicitly do
+/// not need source material.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NoopSourcePreparer;
+
+impl SourcePreparer for NoopSourcePreparer {
+    fn enabled(&self) -> bool {
+        false
+    }
+
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError> {
+        Ok(PreparedSource {
+            tree: request.workspace.root,
+            revision: request.commit_sha,
+            cleanup_root: None,
+        })
+    }
 }
 
 /// Executes forge side effects after the core has already authorised them.
@@ -379,6 +437,34 @@ pub enum MergeMethod {
     Rebase,
 }
 
+/// Core-side policy for applying the finish label after convergence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CorePolicy {
+    pub finish_label_application: FinishLabelApplicationPolicy,
+}
+
+impl CorePolicy {
+    #[must_use]
+    pub const fn human_gate() -> Self {
+        Self {
+            finish_label_application: FinishLabelApplicationPolicy::HumanOnly,
+        }
+    }
+}
+
+impl Default for CorePolicy {
+    fn default() -> Self {
+        Self::human_gate()
+    }
+}
+
+/// Whether convergence may cause the core itself to apply the finish label.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FinishLabelApplicationPolicy {
+    HumanOnly,
+    CoreOnConvergence { label: String },
+}
+
 /// Receipt returned by an outbound forge operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForgeOperationReceipt {
@@ -479,9 +565,18 @@ pub trait RunStateStore {
     fn save(&mut self, state: &PrRunState) -> Result<(), CoreError>;
 }
 
+/// Summary of completion events rederived from durable state after restart.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CompletionRecoverySummary {
+    pub queued: usize,
+    pub terminal_replays: usize,
+    pub stale_running_failures: usize,
+    pub errors_continued: usize,
+}
+
 /// Deterministic dispatch-and-enforce core.
 #[derive(Debug)]
-pub struct Core<E, W, L, S, F = NoopForgeOperations> {
+pub struct Core<E, W, L, S, F = NoopForgeOperations, P = NoopSourcePreparer> {
     event_source: E,
     pending_events: VecDeque<ContractEvent>,
     queued_completion_event_ids: BTreeSet<String>,
@@ -489,9 +584,11 @@ pub struct Core<E, W, L, S, F = NoopForgeOperations> {
     launcher: L,
     state_store: S,
     forge_operations: F,
+    source_preparer: P,
+    policy: CorePolicy,
 }
 
-impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations>
+impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations, NoopSourcePreparer>
 where
     E: EventSource,
     W: WorkspaceProvider,
@@ -526,6 +623,76 @@ where
         state_store: S,
         forge_operations: F,
     ) -> Self {
+        Self::with_forge_operations_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            CorePolicy::human_gate(),
+        )
+    }
+
+    #[must_use]
+    pub const fn with_forge_operations_and_policy(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        policy: CorePolicy,
+    ) -> Self {
+        Self::with_forge_operations_source_preparer_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            NoopSourcePreparer,
+            policy,
+        )
+    }
+}
+
+impl<E, W, L, S, F, P> Core<E, W, L, S, F, P>
+where
+    E: EventSource,
+    W: WorkspaceProvider,
+    L: RunLauncher,
+    S: RunStateStore,
+    F: ForgeOperations,
+    P: SourcePreparer,
+{
+    #[must_use]
+    pub const fn with_forge_operations_and_source_preparer(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        source_preparer: P,
+    ) -> Self {
+        Self::with_forge_operations_source_preparer_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            source_preparer,
+            CorePolicy::human_gate(),
+        )
+    }
+
+    #[must_use]
+    pub const fn with_forge_operations_source_preparer_and_policy(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        source_preparer: P,
+        policy: CorePolicy,
+    ) -> Self {
         Self {
             event_source,
             pending_events: VecDeque::new(),
@@ -534,6 +701,8 @@ where
             launcher,
             state_store,
             forge_operations,
+            source_preparer,
+            policy,
         }
     }
 
@@ -586,14 +755,36 @@ where
     ///
     /// Returns an error when the state store cannot enumerate or decode candidate
     /// states for recovery.
-    pub fn rederive_pending_completions(&mut self) -> Result<usize, CoreError> {
+    pub fn rederive_pending_completions(&mut self) -> Result<CompletionRecoverySummary, CoreError> {
         let pending_ids = self
             .pending_events
             .iter()
             .map(|event| event.id.clone())
             .collect::<BTreeSet<_>>();
-        let mut queued = 0;
+        let mut summary = CompletionRecoverySummary::default();
         for state in self.state_store.completion_recovery_states()? {
+            if state.status == RunStatus::Running {
+                match self.resolve_stale_running_state(state) {
+                    Ok(Some(event)) => {
+                        summary.stale_running_failures += 1;
+                        if pending_ids.contains(&event.id)
+                            || self.queued_completion_event_ids.contains(&event.id)
+                        {
+                            continue;
+                        }
+                        self.queue_completion_event(event);
+                        summary.queued += 1;
+                    }
+                    Ok(None) => {
+                        summary.stale_running_failures += 1;
+                    }
+                    Err(error) if recovery_error_is_fatal(&error) => return Err(error),
+                    Err(_error) => {
+                        summary.errors_continued += 1;
+                    }
+                }
+                continue;
+            }
             for record in &state.run_history {
                 let Some(event) = run_completed_event_from_record(record) else {
                     continue;
@@ -604,10 +795,46 @@ where
                     continue;
                 }
                 self.queue_completion_event(event);
-                queued += 1;
+                summary.terminal_replays += 1;
+                summary.queued += 1;
             }
         }
-        Ok(queued)
+        Ok(summary)
+    }
+
+    fn resolve_stale_running_state(
+        &mut self,
+        mut state: PrRunState,
+    ) -> Result<Option<ContractEvent>, CoreError> {
+        let Some(mut record) = state.active_run.clone() else {
+            state.status = RunStatus::Failed;
+            state.extensions.insert(
+                EXT_LAST_FAILURE.to_owned(),
+                Value::String(
+                    "daemon restarted with stale running state but no active run record".to_owned(),
+                ),
+            );
+            self.state_store.save(&state)?;
+            return Ok(None);
+        };
+        let message = "daemon restarted while run was still recorded as running";
+        state.status = RunStatus::Failed;
+        state.extensions.insert(
+            EXT_LAST_FAILURE.to_owned(),
+            Value::String(message.to_owned()),
+        );
+        record_terminal_run(
+            &mut state,
+            record.clone(),
+            RunStatus::Failed,
+            Some(RunOutcome::Failed),
+        );
+        self.state_store.save(&state)?;
+        self.surface_failure(&record.run_id, &mut state, message)?;
+        self.state_store.save(&state)?;
+        record.status = RunStatus::Failed;
+        record.outcome = Some(RunOutcome::Failed);
+        Ok(run_completed_event_from_record(&record))
     }
 
     #[must_use]
@@ -747,6 +974,8 @@ where
             });
         }
 
+        self.prepare_and_inject_source(event, rule, &state, &run_id, &workspace)?;
+
         let mut running_state = mark_running(state, event, rule, &run_id);
         if let Err(error) = self.state_store.save(&running_state) {
             self.workspace_provider.cleanup(&workspace)?;
@@ -884,6 +1113,102 @@ where
                 Err(error)
             }
         }
+    }
+
+    fn prepare_and_inject_source(
+        &mut self,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        state: &PrRunState,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if !self.source_preparer.enabled() {
+            return Ok(());
+        }
+        let prepared_source = match self
+            .source_preparer
+            .prepare_source(SourcePreparationRequest {
+                run_id: run_id.clone(),
+                run_kind: rule.run_kind,
+                event: event.clone(),
+                state: state.clone(),
+                workspace: workspace.clone(),
+                pr: state.pr.clone(),
+                commit_sha: state.commit_sha.clone(),
+            }) {
+            Ok(source) => source,
+            Err(error) => {
+                self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_prepared_source(&prepared_source, &state.commit_sha) {
+            self.cleanup_prepared_source_or_fail(
+                &prepared_source,
+                state,
+                event,
+                rule,
+                run_id,
+                workspace,
+            )?;
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .workspace_provider
+            .inject_source(workspace, &prepared_source)
+        {
+            self.cleanup_prepared_source_or_fail(
+                &prepared_source,
+                state,
+                event,
+                rule,
+                run_id,
+                workspace,
+            )?;
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = cleanup_external_prepared_source(&prepared_source, workspace) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = reject_credential_residue(&workspace.root) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn cleanup_prepared_source_or_fail(
+        &mut self,
+        source: &PreparedSource,
+        state: &PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if let Err(error) = cleanup_external_prepared_source(source, workspace) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn fail_before_run(
+        &mut self,
+        state: &PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+        error: &CoreError,
+    ) -> Result<(), CoreError> {
+        let message = error.to_string();
+        self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str())?;
+        self.workspace_provider.cleanup(workspace)
     }
 
     fn record_failed_dispatch(
@@ -1047,13 +1372,22 @@ where
         state: &mut PrRunState,
     ) -> Result<(), CoreError> {
         match run_kind {
-            RunKind::Judge => self.post_material_findings(run_id, state),
+            RunKind::Judge => self.apply_judge_forge_operations(run_id, state),
             RunKind::Fix => self.push_fix_patches(run_id, state),
             RunKind::Finish if state.status == RunStatus::Completed => {
                 self.merge_finished_pr(run_id, state)
             }
             RunKind::Review | RunKind::Finish => Ok(()),
         }
+    }
+
+    fn apply_judge_forge_operations(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        self.post_material_findings(run_id, state)?;
+        self.apply_finish_label_after_convergence(run_id, state)
     }
 
     fn post_material_findings(
@@ -1489,6 +1823,74 @@ where
         Ok(())
     }
 
+    fn apply_finish_label_after_convergence(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        if !state_converged_for_current_pass(state) {
+            return Ok(());
+        }
+        let label = match &self.policy.finish_label_application {
+            FinishLabelApplicationPolicy::HumanOnly => return Ok(()),
+            FinishLabelApplicationPolicy::CoreOnConvergence { label } => label.clone(),
+        };
+        let Some(mut facts) = forge_facts_from_state(state)? else {
+            return Ok(());
+        };
+        let actor = core_actor();
+        if !core_may_apply_finish_label(&facts, &actor, &label) {
+            return Ok(());
+        }
+
+        let idempotency_key = stable_id(
+            "forge-apply-finish-label",
+            [run_id.0.as_str(), facts.head.sha.as_str(), label.as_str()],
+        );
+        let result = self.forge_operations.apply_label(AuthorisedLabel {
+            authorisation: finish_label_authorisation(
+                state,
+                &facts,
+                &actor,
+                idempotency_key.clone(),
+            ),
+            label: label.clone(),
+        });
+        if let Err(error) =
+            record_finish_label_attempt(state, run_id, &label, idempotency_key, result)
+        {
+            self.state_store.save(state)?;
+            return Err(error);
+        }
+
+        let finish_label = FinishLabel {
+            name: label.clone(),
+            applied_by: actor,
+        };
+        facts.finish_label = Some(finish_label.clone());
+        state.extensions.insert(
+            EXT_FORGE_FACTS.to_owned(),
+            serde_json::to_value(&facts).map_err(|source| CoreError::Json {
+                path: EXT_FORGE_FACTS.to_owned(),
+                source,
+            })?,
+        );
+        self.state_store.save(state)?;
+        self.queue_completion_event(ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: stable_id(
+                "event-finish-label-applied",
+                [run_id.0.as_str(), facts.head.sha.as_str(), label.as_str()],
+            ),
+            payload: EventPayload::LabelApplied {
+                pr: state.pr.clone(),
+                label: finish_label,
+            },
+            extensions: BTreeMap::new(),
+        });
+        Ok(())
+    }
+
     fn merge_finished_pr(
         &mut self,
         run_id: &RunId,
@@ -1592,6 +1994,13 @@ where
         self.queued_completion_event_ids.insert(event.id.clone());
         self.pending_events.push_back(event);
     }
+}
+
+const fn recovery_error_is_fatal(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::StateStore(_) | CoreError::Io { .. } | CoreError::Json { .. }
+    )
 }
 
 /// The durable key for a PR run state.
@@ -1992,6 +2401,26 @@ pub struct WorkspaceRequest {
     pub commit_sha: String,
 }
 
+/// Request made to trusted source preparation before untrusted code can execute.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourcePreparationRequest {
+    pub run_id: RunId,
+    pub run_kind: RunKind,
+    pub event: ContractEvent,
+    pub state: PrRunState,
+    pub workspace: WorkspaceLease,
+    pub pr: PullRequestRef,
+    pub commit_sha: String,
+}
+
+/// A plain source tree prepared outside the credential-free workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedSource {
+    pub tree: PathBuf,
+    pub revision: String,
+    pub cleanup_root: Option<PathBuf>,
+}
+
 /// A prepared workspace plus isolation assertion from the trusted provider seam.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceLease {
@@ -2275,6 +2704,8 @@ fn opencode_engine_family(model: &str) -> Option<&'static str> {
         || model.starts_with("o5")
     {
         Some("codex")
+    } else if model.starts_with("glm") || model.starts_with("z-ai/glm") {
+        Some("glm")
     } else if model.starts_with("gemini") || model.starts_with("palm") {
         Some("gemini")
     } else if model.starts_with("mistral") || model.starts_with("mixtral") {
@@ -2305,6 +2736,7 @@ fn launch_refusal_from_prepare_error(error: &CoreError) -> Option<LaunchRefusal>
         }),
         CoreError::EventSource(_)
         | CoreError::Workspace(_)
+        | CoreError::SourcePreparation(_)
         | CoreError::Launcher(_)
         | CoreError::StateStore(_)
         | CoreError::ForgeOperation(_)
@@ -2526,6 +2958,95 @@ fn material_findings_for_pass(state: &PrRunState) -> Vec<(Finding, Decision)> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+fn state_converged_for_current_pass(state: &PrRunState) -> bool {
+    convergence_decision_id_for_current_pass(state).is_some()
+}
+
+fn convergence_decision_id_for_current_pass(state: &PrRunState) -> Option<String> {
+    state
+        .decisions
+        .iter()
+        .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
+        .find(|decision| decision.verdict == DecisionVerdict::Converged)
+        .map(|decision| decision.id.clone())
+}
+
+fn core_may_apply_finish_label(facts: &ForgeFacts, actor: &ActorRef, label: &str) -> bool {
+    facts
+        .finish_label
+        .as_ref()
+        .is_none_or(|finish_label| finish_label.name != label)
+        && merge_gate_clean_and_current(facts)
+        && actor_has_capability(facts, actor, ActorCapability::ApplyFinishLabel)
+}
+
+fn finish_label_authorisation(
+    state: &PrRunState,
+    facts: &ForgeFacts,
+    actor: &ActorRef,
+    idempotency_key: String,
+) -> AuthorisationContext {
+    AuthorisationContext {
+        pr: state.pr.clone(),
+        observed_head_sha: facts.head.sha.clone(),
+        idempotency_key,
+        actor: actor.clone(),
+        reason: "core authorised applying finish label after convergence".to_owned(),
+        evidence: vec![
+            AuthorisationEvidence::Decision {
+                decision_id: convergence_decision_id_for_current_pass(state)
+                    .unwrap_or_else(|| "converged".to_owned()),
+                verdict: DecisionVerdict::Converged,
+            },
+            AuthorisationEvidence::ActorCapability {
+                actor: actor.clone(),
+                capability: ActorCapability::ApplyFinishLabel,
+            },
+            AuthorisationEvidence::MergeGateCleanAndCurrent {
+                facts_head_sha: facts.head.sha.clone(),
+            },
+        ],
+    }
+}
+
+fn record_finish_label_attempt(
+    state: &mut PrRunState,
+    run_id: &RunId,
+    label: &str,
+    idempotency_key: String,
+    result: Result<ForgeOperationReceipt, ForgeOperationError>,
+) -> Result<ForgeReceipt, CoreError> {
+    let operation = PublicationOperation::ApplyFinishLabel {
+        label: label.to_owned(),
+    };
+    match result {
+        Ok(receipt) => {
+            let receipt = receipt_to_contract(receipt);
+            record_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                None,
+                Ok(receipt.clone()),
+            );
+            Ok(receipt)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            record_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                None,
+                Err(message.clone()),
+            );
+            Err(CoreError::ForgeOperation(message))
+        }
+    }
 }
 
 fn finding_comment_authorisation(
@@ -3200,11 +3721,179 @@ fn sanitise_path_component(value: &str) -> String {
         .collect()
 }
 
+fn validate_prepared_source(
+    source: &PreparedSource,
+    expected_revision: &str,
+) -> Result<(), CoreError> {
+    if source.revision != expected_revision {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared revision {} did not match recorded head {}",
+            source.revision, expected_revision
+        )));
+    }
+    if let Some(cleanup_root) = &source.cleanup_root {
+        ensure_source_tree_under_cleanup_root(source, cleanup_root)?;
+    }
+    let metadata = fs::metadata(&source.tree).map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "prepared source tree {} is not readable: {error}",
+            source.tree.display()
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared source tree {} is not a directory",
+            source.tree.display()
+        )));
+    }
+    reject_credential_residue(&source.tree)
+}
+
+fn ensure_source_tree_under_cleanup_root(
+    source: &PreparedSource,
+    cleanup_root: &Path,
+) -> Result<(), CoreError> {
+    let canonical_tree = source.tree.canonicalize().map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "inspect prepared source tree {}: {error}",
+            source.tree.display()
+        ))
+    })?;
+    let canonical_root = cleanup_root.canonicalize().map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "inspect trusted cleanup root {}: {error}",
+            cleanup_root.display()
+        ))
+    })?;
+    if canonical_tree.starts_with(&canonical_root) && canonical_tree != canonical_root {
+        return Ok(());
+    }
+    Err(CoreError::SourcePreparation(format!(
+        "prepared source tree {} is outside trusted cleanup root {}",
+        source.tree.display(),
+        cleanup_root.display()
+    )))
+}
+
+fn reject_credential_residue(root: &Path) -> Result<(), CoreError> {
+    reject_credential_residue_at(root, root)
+}
+
+fn cleanup_external_prepared_source(
+    source: &PreparedSource,
+    workspace: &WorkspaceLease,
+) -> Result<(), CoreError> {
+    if source.tree == workspace.root || !source.tree.exists() {
+        return Ok(());
+    }
+    let Some(cleanup_root) = &source.cleanup_root else {
+        return Err(CoreError::SourcePreparation(format!(
+            "refusing to remove prepared source tree {} without trusted cleanup root",
+            source.tree.display()
+        )));
+    };
+    if let Err(error) = ensure_source_tree_under_cleanup_root(source, cleanup_root) {
+        return Err(CoreError::SourcePreparation(format!(
+            "refusing to remove prepared source tree: {error}"
+        )));
+    }
+    fs::remove_dir_all(&source.tree).map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "remove trusted preparation tree {}: {error}",
+            source.tree.display()
+        ))
+    })
+}
+
+fn reject_credential_residue_at(root: &Path, path: &Path) -> Result<(), CoreError> {
+    for entry in fs::read_dir(path).map_err(|error| {
+        CoreError::SourcePreparation(format!("read prepared tree {}: {error}", path.display()))
+    })? {
+        let entry = entry.map_err(|error| {
+            CoreError::SourcePreparation(format!("read prepared tree {}: {error}", path.display()))
+        })?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if credential_residue_name(name.as_str()) {
+            return Err(CoreError::SourcePreparation(format!(
+                "prepared source contains credential residue at {}",
+                display_relative(root, &path)
+            )));
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            CoreError::SourcePreparation(format!(
+                "inspect prepared tree {}: {error}",
+                path.display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink() {
+            reject_escaping_symlink(root, &path)?;
+            continue;
+        }
+        if metadata.is_dir() {
+            reject_credential_residue_at(root, &path)?;
+        }
+    }
+    Ok(())
+}
+
+fn credential_residue_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".gitconfig" | ".git-credentials" | ".netrc" | ".ssh"
+    )
+}
+
+fn reject_escaping_symlink(root: &Path, path: &Path) -> Result<(), CoreError> {
+    let target = fs::read_link(path).map_err(|error| {
+        CoreError::SourcePreparation(format!("inspect symlink {}: {error}", path.display()))
+    })?;
+    if target.is_absolute() {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared source contains absolute symlink at {}",
+            display_relative(root, path)
+        )));
+    }
+    let parent = path.parent().unwrap_or(root);
+    let mut depth = parent
+        .strip_prefix(root)
+        .map_or(0, |relative| relative.components().count());
+    for component in target.components() {
+        match component {
+            std::path::Component::ParentDir if depth == 0 => {
+                return Err(CoreError::SourcePreparation(format!(
+                    "prepared source contains escaping symlink at {}",
+                    display_relative(root, path)
+                )));
+            }
+            std::path::Component::ParentDir => depth -= 1,
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::CurDir => {}
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(CoreError::SourcePreparation(format!(
+                    "prepared source contains escaping symlink at {}",
+                    display_relative(root, path)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn display_relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::RefCell,
         collections::{BTreeMap, VecDeque},
         path::PathBuf,
+        rc::Rc,
     };
 
     use pump19_contract::{
@@ -3245,6 +3934,27 @@ mod tests {
         cleaned: usize,
     }
 
+    #[derive(Debug)]
+    struct SourceWorkspaceProvider {
+        root: PathBuf,
+        cleaned: Rc<RefCell<usize>>,
+        injections: Rc<RefCell<Vec<PreparedSource>>>,
+    }
+
+    #[derive(Debug)]
+    struct TreeSourcePreparer {
+        tree: PathBuf,
+    }
+
+    #[derive(Debug)]
+    struct OutsideCleanupRootSourcePreparer {
+        tree: PathBuf,
+        cleanup_root: PathBuf,
+    }
+
+    #[derive(Debug)]
+    struct FailingSourcePreparer;
+
     impl WorkspaceProvider for FakeWorkspaceProvider {
         fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
             Ok(WorkspaceLease {
@@ -3269,6 +3979,99 @@ mod tests {
         fn cleanup(&mut self, _lease: &WorkspaceLease) -> Result<(), CoreError> {
             self.cleaned += 1;
             Ok(())
+        }
+    }
+
+    impl WorkspaceProvider for SourceWorkspaceProvider {
+        fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
+            fs::create_dir_all(&self.root).map_err(|source| CoreError::Io {
+                path: self.root.display().to_string(),
+                source,
+            })?;
+            Ok(WorkspaceLease {
+                id: request.run_id.0,
+                root: self.root.clone(),
+                isolation: WorkspaceIsolation {
+                    isolated: true,
+                    credential_free: true,
+                    egress_bounded: true,
+                    resource_bounded: true,
+                    ephemeral: true,
+                },
+            })
+        }
+
+        fn inject_source(
+            &mut self,
+            _lease: &WorkspaceLease,
+            source: &PreparedSource,
+        ) -> Result<(), CoreError> {
+            fs::create_dir_all(self.root.join("src")).map_err(|error| CoreError::Io {
+                path: self.root.display().to_string(),
+                source: error,
+            })?;
+            fs::copy(source.tree.join("src/lib.rs"), self.root.join("src/lib.rs")).map_err(
+                |error| CoreError::Io {
+                    path: self.root.join("src/lib.rs").display().to_string(),
+                    source: error,
+                },
+            )?;
+            self.injections.borrow_mut().push(source.clone());
+            Ok(())
+        }
+
+        fn exec(
+            &mut self,
+            _lease: &WorkspaceLease,
+            _request: WorkspaceExecRequest,
+        ) -> Result<WorkspaceExecOutput, CoreError> {
+            Ok(WorkspaceExecOutput {
+                exit_code: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+
+        fn cleanup(&mut self, _lease: &WorkspaceLease) -> Result<(), CoreError> {
+            *self.cleaned.borrow_mut() += 1;
+            Ok(())
+        }
+    }
+
+    impl SourcePreparer for TreeSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Ok(PreparedSource {
+                tree: self.tree.clone(),
+                revision: request.commit_sha,
+                cleanup_root: self.tree.parent().map(Path::to_path_buf),
+            })
+        }
+    }
+
+    impl SourcePreparer for OutsideCleanupRootSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Ok(PreparedSource {
+                tree: self.tree.clone(),
+                revision: request.commit_sha,
+                cleanup_root: Some(self.cleanup_root.clone()),
+            })
+        }
+    }
+
+    impl SourcePreparer for FailingSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            _request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Err(CoreError::SourcePreparation(
+                "checkout failed in test".to_owned(),
+            ))
         }
     }
 
@@ -3794,11 +4597,28 @@ mod tests {
         }
     }
 
+    fn core_authority_facts(head_sha: &str) -> ForgeFacts {
+        ForgeFacts {
+            finish_label: None,
+            actor_permissions: vec![ActorPermissions {
+                actor: core_actor(),
+                capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
+                    .into_iter()
+                    .collect(),
+            }],
+            ..facts_with_head(head_sha)
+        }
+    }
+
     fn event() -> ContractEvent {
+        event_with_facts(facts())
+    }
+
+    fn event_with_facts(facts: ForgeFacts) -> ContractEvent {
         ContractEvent {
             contract_version: ContractVersion::current(),
             id: "event-1".to_owned(),
-            payload: EventPayload::PullRequestOpened { facts: facts() },
+            payload: EventPayload::PullRequestOpened { facts },
             extensions: BTreeMap::new(),
         }
     }
@@ -3812,8 +4632,15 @@ mod tests {
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-2026"),
+                model: model_for_family(family),
             },
+        }
+    }
+
+    fn model_for_family(family: &str) -> String {
+        match family {
+            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            _ => format!("{family}-2026"),
         }
     }
 
@@ -3870,7 +4697,7 @@ mod tests {
                     target("reviewer-claude", AgentRole::Reviewer, "claude"),
                 ],
                 fixers: vec![target("fixer", AgentRole::Fixer, "codex")],
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
@@ -3880,6 +4707,23 @@ mod tests {
         TriggerRule {
             criteria: Criteria::Event {
                 event: EventKind::PullRequestUpdated,
+            },
+            ..independent_rule()
+        }
+    }
+
+    fn review_on_open_or_update_rule() -> TriggerRule {
+        TriggerRule {
+            id: "review-on-pr-change".to_owned(),
+            criteria: Criteria::Any {
+                criteria: vec![
+                    Criteria::Event {
+                        event: EventKind::PullRequestOpened,
+                    },
+                    Criteria::Event {
+                        event: EventKind::PullRequestUpdated,
+                    },
+                ],
             },
             ..independent_rule()
         }
@@ -3907,6 +4751,25 @@ mod tests {
         }
     }
 
+    fn judge_after_noop_fix_rule() -> TriggerRule {
+        TriggerRule {
+            id: "judge-after-noop-fix".to_owned(),
+            run_kind: RunKind::Judge,
+            criteria: Criteria::Event {
+                event: EventKind::RunCompleted {
+                    run_kind: Some(RunKind::Fix),
+                    outcome: Some(RunOutcome::NoOp),
+                },
+            },
+            agent_plan: AgentPlan {
+                reviewers: Vec::new(),
+                fixers: Vec::new(),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
+                finishers: Vec::new(),
+            },
+        }
+    }
+
     fn judge_after_review_rule() -> TriggerRule {
         TriggerRule {
             id: "judge-after-review".to_owned(),
@@ -3920,7 +4783,7 @@ mod tests {
             agent_plan: AgentPlan {
                 reviewers: Vec::new(),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
@@ -3973,13 +4836,22 @@ mod tests {
     }
 
     fn run_completed_event(id: &str, run_id: RunId, run_kind: RunKind) -> ContractEvent {
+        run_completed_event_with_outcome(id, run_id, run_kind, RunOutcome::Succeeded)
+    }
+
+    fn run_completed_event_with_outcome(
+        id: &str,
+        run_id: RunId,
+        run_kind: RunKind,
+        outcome: RunOutcome,
+    ) -> ContractEvent {
         ContractEvent {
             contract_version: ContractVersion::current(),
             id: id.to_owned(),
             payload: EventPayload::RunCompleted {
                 run_id,
                 run_kind: Some(run_kind),
-                outcome: RunOutcome::Succeeded,
+                outcome,
             },
             extensions: BTreeMap::new(),
         }
@@ -4016,6 +4888,154 @@ mod tests {
             .process_event(&event(), &[rule])
             .expect("process event");
         (outcomes, core.launcher.launched)
+    }
+
+    #[test]
+    fn trusted_source_preparation_injects_tree_before_launch_and_cleans_prepared_tree() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prepared_tree = temp.path().join("prepared");
+        fs::create_dir_all(prepared_tree.join("src")).expect("create prepared tree");
+        fs::write(prepared_tree.join("src/lib.rs"), "pub fn prepared() {}\n")
+            .expect("write source");
+        let workspace_root = temp.path().join("workspace");
+        let cleaned = Rc::new(RefCell::new(0));
+        let injections = Rc::new(RefCell::new(Vec::new()));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: workspace_root.clone(),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::clone(&injections),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            NoopForgeOperations,
+            TreeSourcePreparer {
+                tree: prepared_tree.clone(),
+            },
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("process event");
+
+        assert!(matches!(outcomes[0], DispatchOutcome::Launched { .. }));
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("src/lib.rs")).expect("read injected source"),
+            "pub fn prepared() {}\n"
+        );
+        assert_eq!(injections.borrow().len(), 1);
+        assert!(!prepared_tree.exists());
+        assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn source_cleanup_refuses_tree_outside_trusted_preparation_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prepared_tree = temp.path().join("outside-prepared");
+        let trusted_root = temp.path().join("trusted-preparation-root");
+        fs::create_dir_all(prepared_tree.join("src")).expect("create prepared tree");
+        fs::create_dir_all(&trusted_root).expect("create trusted root");
+        fs::write(
+            prepared_tree.join("src/lib.rs"),
+            "pub fn unsafe_tree() {}\n",
+        )
+        .expect("write source");
+        let workspace_root = temp.path().join("workspace");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: workspace_root,
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            OutsideCleanupRootSourcePreparer {
+                tree: prepared_tree.clone(),
+                cleanup_root: trusted_root,
+            },
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("outside cleanup root should fail dispatch");
+
+        assert!(matches!(error, CoreError::SourcePreparation(_)));
+        assert!(prepared_tree.exists());
+        assert_eq!(*cleaned.borrow(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("saved state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert!(
+            saved
+                .extensions
+                .get(EXT_LAST_FAILURE)
+                .and_then(Value::as_str)
+                .expect("last failure")
+                .contains("outside trusted cleanup root")
+        );
+    }
+
+    #[test]
+    fn source_preparation_failure_records_surfaces_and_cleans_workspace() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: temp.path().join("workspace"),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("source preparation failure should fail dispatch");
+
+        assert!(matches!(error, CoreError::SourcePreparation(_)));
+        assert_eq!(*cleaned.borrow(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("saved state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert_eq!(saved.run_history.len(), 1);
+        assert_eq!(saved.run_history[0].status, RunStatus::Failed);
+        assert_eq!(saved.publication.attempts.len(), 1);
+        assert_eq!(
+            saved
+                .extensions
+                .get(EXT_LAST_FAILURE)
+                .and_then(Value::as_str),
+            Some("source preparation failed: checkout failed in test")
+        );
     }
 
     #[test]
@@ -4067,7 +5087,7 @@ mod tests {
             agent_plan: AgentPlan {
                 reviewers: Vec::new(),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         };
@@ -4191,6 +5211,52 @@ mod tests {
                 reason: SkipReason::DuplicateDispatch,
             }]
         );
+    }
+
+    #[test]
+    fn review_fires_on_pr_open_or_update() {
+        let rule = review_on_open_or_update_rule();
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        let updated = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "human-pushed-update".to_owned(),
+            payload: EventPayload::PullRequestUpdated {
+                facts: facts_with_head("human-push-sha"),
+            },
+            extensions: BTreeMap::new(),
+        };
+
+        let opened = core
+            .process_event(&event(), std::slice::from_ref(&rule))
+            .expect("opened event");
+        let update = core
+            .process_event(&updated, &[rule])
+            .expect("updated event");
+
+        assert!(matches!(
+            opened.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+        ));
+        assert!(matches!(
+            update.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+        ));
+        assert_eq!(core.launcher.launched, 2);
     }
 
     #[test]
@@ -4378,7 +5444,7 @@ mod tests {
                 },
                 verdict: DecisionVerdict::Material,
                 rationale: "worth another pass".to_owned(),
-                provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+                provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
                 extensions: BTreeMap::new(),
             }],
             patches: Vec::new(),
@@ -4820,8 +5886,7 @@ mod tests {
     #[test]
     fn process_event_drives_review_fix_rereview_finish_loop() {
         let rules = vec![
-            independent_rule(),
-            update_review_rule(),
+            review_on_open_or_update_rule(),
             judge_after_review_rule(),
             fix_after_material_judge_rule(),
             finish_on_label_rule(),
@@ -4968,6 +6033,386 @@ mod tests {
     }
 
     #[test]
+    fn noop_fix_completion_routes_to_judge_with_standing_findings() {
+        let fix_run_id = RunId("fix-noop".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let first = finding_from("reviewer-codex", "codex", "finding-1");
+        let second = finding_from("reviewer-claude", "claude", "finding-2");
+        state.status = RunStatus::Completed;
+        state.findings = vec![first.clone(), second];
+        state.decisions.push(Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-material".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: first.id,
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "worth another pass".to_owned(),
+            provenance: verified_provenance("judge-old", AgentRole::Judge, "glm"),
+            extensions: BTreeMap::new(),
+        });
+        state.run_history.push(RunRecord {
+            run_id: fix_run_id.clone(),
+            run_kind: RunKind::Fix,
+            event_id: "fix-trigger".to_owned(),
+            rule_id: "fix-after-material-judge".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::NoOp),
+            refusal: None,
+            ensemble_archive_path: None,
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save NoOp state");
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
+            store,
+        );
+
+        let outcomes = core
+            .process_event(
+                &run_completed_event_with_outcome(
+                    "fix-noop-done",
+                    fix_run_id,
+                    RunKind::Fix,
+                    RunOutcome::NoOp,
+                ),
+                &[judge_after_noop_fix_rule()],
+            )
+            .expect("NoOp fix completion");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-noop-fix"
+        ));
+        assert_eq!(core.launcher.launched, 1);
+    }
+
+    #[test]
+    fn noop_fix_outcome_archives_standing_findings_for_judge() {
+        let run_id = RunId("fix-noop".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.status = RunStatus::Running;
+        state.active_run = Some(RunRecord {
+            run_id,
+            run_kind: RunKind::Fix,
+            event_id: "judge-done".to_owned(),
+            rule_id: "fix-after-material-judge".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Running,
+            outcome: None,
+            refusal: None,
+            ensemble_archive_path: None,
+        });
+        let finding = finding_from("reviewer-codex", "codex", "finding-1");
+        state.findings.push(finding.clone());
+        state.decisions.push(Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-material".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: finding.id,
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "worth another pass".to_owned(),
+            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
+            extensions: BTreeMap::new(),
+        });
+
+        apply_run_outcome(
+            &mut state,
+            RunKind::Fix,
+            RunLaunchOutcome {
+                outcome: RunOutcome::NoOp,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                token_usage: None,
+                ensemble_archive_path: None,
+            },
+        );
+
+        assert_eq!(state.status, RunStatus::Completed);
+        assert!(state.findings.is_empty());
+        assert!(state.decisions.is_empty());
+        assert_eq!(state.loop_history.len(), 1);
+        assert_eq!(state.loop_history[0].findings.len(), 1);
+        assert_eq!(state.loop_history[0].decisions.len(), 1);
+        assert_eq!(state.loop_history[0].fix_outcome, Some(RunOutcome::NoOp));
+        assert_eq!(state.run_history[0].outcome, Some(RunOutcome::NoOp));
+    }
+
+    #[test]
+    fn stale_running_recovery_surfaces_failure_and_unblocks_pr() {
+        let run_id = RunId("event-1:review:1".to_owned());
+        let mut running = mark_running(
+            initial_state_from_event(&event()).expect("initial state"),
+            &event(),
+            &independent_rule(),
+            &run_id,
+        );
+        running.status = RunStatus::Running;
+        let mut store = FakeRunStateStore::default();
+        store.save(&running).expect("save running state");
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            store,
+            RecordingForgeOperations::default(),
+        );
+
+        let recovered = core
+            .rederive_pending_completions()
+            .expect("recover stale running");
+
+        assert_eq!(recovered.queued, 1);
+        assert_eq!(recovered.terminal_replays, 0);
+        assert_eq!(recovered.stale_running_failures, 1);
+        assert_eq!(core.pending_event_count(), 1);
+        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert!(
+            core.forge_operations.comments[0]
+                .body
+                .contains("daemon restarted")
+        );
+        let failed = core
+            .state_store
+            .load_by_run_id(&run_id)
+            .expect("load failed run")
+            .expect("failed state");
+        assert_eq!(failed.status, RunStatus::Failed);
+        assert_eq!(failed.run_history[0].status, RunStatus::Failed);
+        assert_eq!(failed.run_history[0].outcome, Some(RunOutcome::Failed));
+
+        let updated = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "retry-after-restart".to_owned(),
+            payload: EventPayload::PullRequestUpdated { facts: facts() },
+            extensions: BTreeMap::new(),
+        };
+        let outcomes = core
+            .process_event(&updated, &[update_review_rule()])
+            .expect("updated event after recovery");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review"
+        ));
+    }
+
+    #[test]
+    fn convergence_applies_finish_label_and_reaches_merge_when_policy_grants_authority() {
+        let rules = vec![
+            independent_rule(),
+            update_review_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+            finish_on_label_rule(),
+        ];
+        let mut core = Core::with_forge_operations_and_policy(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            CorePolicy {
+                finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
+                    label: "pump19-finish".to_owned(),
+                },
+            },
+        );
+
+        let outcomes = core
+            .process_event(&event_with_facts(core_authority_facts("abc123")), &rules)
+            .expect("PR open launches review");
+        let review_one = launched_run_id(&outcomes).expect("review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-one-done", review_one, RunKind::Review),
+                &rules,
+            )
+            .expect("review completion launches judge");
+        let judge_one = launched_run_id(&outcomes).expect("judge launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
+                &rules,
+            )
+            .expect("material judge completion launches fix");
+        let fix_one = launched_run_id(&outcomes).expect("fix launched");
+        core.process_event(
+            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
+            &rules,
+        )
+        .expect("fix completion publishes patches");
+
+        let outcomes = core
+            .process_event(
+                &ContractEvent {
+                    contract_version: ContractVersion::current(),
+                    id: "fix-push-updated-pr".to_owned(),
+                    payload: EventPayload::PullRequestUpdated {
+                        facts: core_authority_facts("head-after-fix"),
+                    },
+                    extensions: BTreeMap::new(),
+                },
+                &rules,
+            )
+            .expect("PR update launches fresh review");
+        let review_two = launched_run_id(&outcomes).expect("second review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-two-done", review_two, RunKind::Review),
+                &rules,
+            )
+            .expect("second review completion launches judge");
+        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
+
+        core.process_event(
+            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+            &rules,
+        )
+        .expect("converged judge applies finish label");
+        let drained = core
+            .drain_available(&rules)
+            .expect("queued label event launches finish");
+
+        assert_eq!(core.forge_operations.labels.len(), 1);
+        assert_eq!(core.forge_operations.labels[0].label, "pump19-finish");
+        assert_eq!(
+            core.forge_operations.labels[0].authorisation.actor,
+            core_actor()
+        );
+        assert_eq!(core.forge_operations.merges.len(), 1);
+        assert!(
+            drained
+                .iter()
+                .flatten()
+                .any(|outcome| matches!(outcome, DispatchOutcome::Launched { rule_id, .. } if rule_id == "finish-on-label"))
+        );
+    }
+
+    #[test]
+    fn convergence_does_not_apply_finish_label_without_policy_grant() {
+        let rules = vec![
+            independent_rule(),
+            update_review_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+            finish_on_label_rule(),
+        ];
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+        );
+
+        let outcomes = core
+            .process_event(&event_with_facts(core_authority_facts("abc123")), &rules)
+            .expect("PR open launches review");
+        let review = launched_run_id(&outcomes).expect("review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-one-done", review, RunKind::Review),
+                &rules,
+            )
+            .expect("review completion launches judge");
+        let judge_one = launched_run_id(&outcomes).expect("judge launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
+                &rules,
+            )
+            .expect("material judge completion launches fix");
+        let fix_one = launched_run_id(&outcomes).expect("fix launched");
+        core.process_event(
+            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
+            &rules,
+        )
+        .expect("fix completion publishes patches");
+        let outcomes = core
+            .process_event(
+                &ContractEvent {
+                    contract_version: ContractVersion::current(),
+                    id: "fix-push-updated-pr".to_owned(),
+                    payload: EventPayload::PullRequestUpdated {
+                        facts: core_authority_facts("head-after-fix"),
+                    },
+                    extensions: BTreeMap::new(),
+                },
+                &rules,
+            )
+            .expect("PR update launches fresh review");
+        let review_two = launched_run_id(&outcomes).expect("second review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-two-done", review_two, RunKind::Review),
+                &rules,
+            )
+            .expect("second review completion launches judge");
+        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
+        core.process_event(
+            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+            &rules,
+        )
+        .expect("converged judge does not apply finish label");
+
+        assert!(core.forge_operations.labels.is_empty());
+        assert!(core.forge_operations.merges.is_empty());
+    }
+
+    #[test]
+    fn core_does_not_apply_finish_label_when_actor_lacks_capability() {
+        let mut facts = core_authority_facts("abc123");
+        facts.actor_permissions = vec![ActorPermissions {
+            actor: core_actor(),
+            capabilities: std::iter::once(ActorCapability::Merge).collect(),
+        }];
+
+        assert!(!core_may_apply_finish_label(
+            &facts,
+            &core_actor(),
+            "pump19-finish",
+        ));
+    }
+
+    #[test]
+    fn core_does_not_apply_finish_label_when_facts_are_stale() {
+        let facts = ForgeFacts {
+            branch_currency: BranchCurrency::Stale,
+            ..core_authority_facts("abc123")
+        };
+
+        assert!(!core_may_apply_finish_label(
+            &facts,
+            &core_actor(),
+            "pump19-finish",
+        ));
+    }
+
+    #[test]
     fn drain_available_self_emits_run_completions_without_external_echo() {
         let rules = vec![
             independent_rule(),
@@ -5087,7 +6532,9 @@ mod tests {
         let recovered = restarted
             .rederive_pending_completions()
             .expect("rederive completions from stored run history");
-        assert_eq!(recovered, 1);
+        assert_eq!(recovered.queued, 1);
+        assert_eq!(recovered.terminal_replays, 1);
+        assert_eq!(recovered.stale_running_failures, 0);
 
         let batches = restarted.drain_available(&rules).expect("resume loop");
 
@@ -5397,7 +6844,7 @@ mod tests {
             verdict: DecisionVerdict::Material,
             rationale: "worth another pass".to_owned(),
             provenance: establish_provenance(
-                &target("judge", AgentRole::Judge, "gemini"),
+                &target("judge", AgentRole::Judge, "glm"),
                 PreparedAgent {
                     agent_id: AgentId("judge".to_owned()),
                     role: AgentRole::Judge,
@@ -5429,7 +6876,7 @@ mod tests {
             verdict: DecisionVerdict::Converged,
             rationale: "nothing material stands".to_owned(),
             provenance: establish_provenance(
-                &target("judge", AgentRole::Judge, "gemini"),
+                &target("judge", AgentRole::Judge, "glm"),
                 PreparedAgent {
                     agent_id: AgentId("judge".to_owned()),
                     role: AgentRole::Judge,
