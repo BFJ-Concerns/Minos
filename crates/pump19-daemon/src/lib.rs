@@ -135,6 +135,10 @@ impl DaemonConfig {
         self.workspace.root = resolve_config_path(root, &self.workspace.root);
         self.ensemble.launcher_path = resolve_config_path(root, &self.ensemble.launcher_path);
         self.ensemble.archive_root = resolve_config_path(root, &self.ensemble.archive_root);
+        self.forgejo.poll_command.program =
+            resolve_command_program(root, &self.forgejo.poll_command.program);
+        self.forgejo.operation_command.program =
+            resolve_command_program(root, &self.forgejo.operation_command.program);
     }
 }
 
@@ -143,6 +147,13 @@ fn resolve_config_path(root: &Path, path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
     root.join(path)
+}
+
+fn resolve_command_program(root: &Path, program: &Path) -> PathBuf {
+    if program.is_absolute() || program.components().count() == 1 {
+        return program.to_path_buf();
+    }
+    root.join(program)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1094,11 +1105,15 @@ impl CommandForgejoClient {
         let input = serde_json::to_vec(&operation).map_err(|error| {
             pump19_forge_forgejo::ForgejoClientError::Transport(error.to_string())
         })?;
-        let output = run_json_command_with_stdin(&self.command, std::iter::empty::<&str>(), &input)
-            .map_err(|error| {
-                pump19_forge_forgejo::ForgejoClientError::Transport(error.to_string())
-            })?;
-        serde_json::from_slice::<CommandReceipt>(&output)
+        let output =
+            run_command_with_stdin_output(&self.command, std::iter::empty::<&str>(), &input)
+                .map_err(|error| {
+                    pump19_forge_forgejo::ForgejoClientError::Transport(error.to_string())
+                })?;
+        if !output.status.success() {
+            return Err(command_failure_to_forgejo_error(&output));
+        }
+        serde_json::from_slice::<CommandReceipt>(&output.stdout)
             .map(|receipt| ForgejoCommandReceipt {
                 operation_id: receipt.operation_id,
                 new_head_sha: receipt.new_head_sha,
@@ -1152,6 +1167,34 @@ struct CommandReceipt {
     new_head_sha: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct CommandErrorBody {
+    error: String,
+    #[serde(default)]
+    expected_head_sha: Option<String>,
+    #[serde(default)]
+    actual_head_sha: Option<String>,
+}
+
+fn command_failure_to_forgejo_error(
+    output: &std::process::Output,
+) -> pump19_forge_forgejo::ForgejoClientError {
+    if let Some(error) =
+        command_failure_json(&output.stderr).or_else(|| command_failure_json(&output.stdout))
+        && error.error == "head_moved"
+    {
+        return pump19_forge_forgejo::ForgejoClientError::HeadMoved {
+            expected_head_sha: error.expected_head_sha.unwrap_or_default(),
+            actual_head_sha: error.actual_head_sha,
+        };
+    }
+    pump19_forge_forgejo::ForgejoClientError::Transport(command_exit_message(output))
+}
+
+fn command_failure_json(output: &[u8]) -> Option<CommandErrorBody> {
+    serde_json::from_slice::<CommandErrorBody>(output).ok()
+}
+
 fn run_json_command<'a>(
     config: &CommandConfig,
     args: impl IntoIterator<Item = &'a str>,
@@ -1164,13 +1207,21 @@ fn run_json_command_with_stdin<'a>(
     args: impl IntoIterator<Item = &'a str>,
     stdin: &[u8],
 ) -> Result<Vec<u8>, std::io::Error> {
+    let output = run_command_with_stdin_output(config, args, stdin)?;
+    command_output(output)
+}
+
+fn run_command_with_stdin_output<'a>(
+    config: &CommandConfig,
+    args: impl IntoIterator<Item = &'a str>,
+    stdin: &[u8],
+) -> Result<std::process::Output, std::io::Error> {
     use std::io::Write as _;
 
     let mut command = Command::new(&config.program);
     command.args(&config.args).args(args).envs(&config.env);
     if stdin.is_empty() {
-        let output = command.output()?;
-        return command_output(output);
+        return command.output();
     }
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
@@ -1179,7 +1230,7 @@ fn run_json_command_with_stdin<'a>(
     if let Some(child_stdin) = child.stdin.as_mut() {
         child_stdin.write_all(stdin)?;
     }
-    command_output(child.wait_with_output()?)
+    child.wait_with_output()
 }
 
 fn run_json_program(
@@ -1205,11 +1256,15 @@ fn command_output(output: std::process::Output) -> Result<Vec<u8>, std::io::Erro
     if output.status.success() {
         return Ok(output.stdout);
     }
-    Err(std::io::Error::other(format!(
+    Err(std::io::Error::other(command_exit_message(&output)))
+}
+
+fn command_exit_message(output: &std::process::Output) -> String {
+    format!(
         "command exited with {:?}: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
-    )))
+    )
 }
 
 #[cfg(test)]
@@ -2090,6 +2145,99 @@ stop_after_quiet_polls = 1
         let _daemon = build_daemon(config).expect("build daemon from example config");
 
         assert_eq!(rules.len(), 5);
+    }
+
+    #[test]
+    fn config_resolves_relative_command_programs_from_toml_file() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("pump19.toml");
+        fs::write(
+            &path,
+            r#"
+trigger_pack = "triggers.toml"
+prompt_pack = "prompt-pack.toml"
+mechanical_pack = "mechanical.toml"
+state_root = "state"
+
+[workspace]
+root = "workspaces"
+image = "localhost/pump19-workspace:stable"
+
+[ensemble]
+node_program = "node"
+launcher_path = "launcher.js"
+archive_root = "archives"
+timeout_ms = 5000
+
+[forgejo]
+repositories = ["acme/widgets"]
+finish_label = "pump19-finish"
+
+[forgejo.poll_command]
+program = "commands/poll-forgejo"
+
+[forgejo.operation_command]
+program = "write-forgejo"
+
+[loop_control]
+stop_after_quiet_polls = 1
+"#,
+        )
+        .expect("write config");
+
+        let config = DaemonConfig::load(&path).expect("load config");
+
+        assert_eq!(
+            config.forgejo.poll_command.program,
+            dir.path().join("commands/poll-forgejo")
+        );
+        assert_eq!(
+            config.forgejo.operation_command.program,
+            PathBuf::from("write-forgejo")
+        );
+    }
+
+    #[test]
+    fn command_forgejo_client_preserves_head_moved_command_error() {
+        let dir = tempdir().expect("temp dir");
+        let script = dir.path().join("head-moved");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '{"error":"head_moved","expected_head_sha":"abc123","actual_head_sha":"new456"}' >&2
+exit 75
+"#,
+        )
+        .expect("write script");
+        make_executable(&script);
+        let mut client = CommandForgejoClient::new(CommandConfig {
+            program: script,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        });
+
+        let error = client
+            .post_pr_comment(
+                &pr(),
+                "body",
+                &ForgejoCommandMetadata {
+                    observed_head_sha: "abc123".to_owned(),
+                    expected_head_sha: Some("abc123".to_owned()),
+                    idempotency_key: "comment-1".to_owned(),
+                    reason: "test".to_owned(),
+                },
+            )
+            .expect_err("head moved should be typed");
+
+        assert!(matches!(
+            error,
+            pump19_forge_forgejo::ForgejoClientError::HeadMoved {
+                expected_head_sha,
+                actual_head_sha,
+            } if expected_head_sha == "abc123"
+                && actual_head_sha.as_deref() == Some("new456")
+        ));
     }
 
     #[test]

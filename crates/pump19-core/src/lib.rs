@@ -478,6 +478,13 @@ pub struct ForgeOperationReceipt {
 pub enum ForgeOperationError {
     #[error("authorised forge operation has invalid shape: {0}")]
     InvalidRequest(&'static str),
+    #[error(
+        "PR head moved before operation: expected {expected_head_sha}, actual {actual_head_sha:?}"
+    )]
+    HeadMoved {
+        expected_head_sha: String,
+        actual_head_sha: Option<String>,
+    },
     #[error("credentialed forge client failed: {0}")]
     Client(String),
 }
@@ -1655,14 +1662,16 @@ where
             }
             Err(error) => {
                 let message = error.to_string();
-                record_publication_attempt(
+                record_publication_error_attempt(
                     state,
                     run_id,
                     operation,
                     idempotency_key,
                     Some(expected_head_sha),
-                    Err(message.clone()),
+                    &error,
+                    message.clone(),
                 );
+                mark_superseded_from_operation_error(state, &error);
                 self.state_store.save(state)?;
                 return Err(CoreError::ForgeOperation(message));
             }
@@ -1768,14 +1777,16 @@ where
             }
             Err(error) => {
                 let message = error.to_string();
-                record_publication_attempt(
+                record_publication_error_attempt(
                     state,
                     run_id,
                     PublicationOperation::PushFixCommits { patch_ids },
                     idempotency_key,
                     Some(expected_head_sha),
-                    Err(message.clone()),
+                    &error,
+                    message.clone(),
                 );
+                mark_superseded_from_operation_error(state, &error);
                 self.state_store.save(state)?;
                 return Err(CoreError::ForgeOperation(message));
             }
@@ -3142,14 +3153,78 @@ fn record_surface_comment_attempt(
             Some(expected_head_sha),
             Ok(receipt_to_contract(receipt)),
         ),
-        Err(error) => record_publication_attempt(
+        Err(error) => {
+            let message = error.to_string();
+            record_publication_error_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                Some(expected_head_sha),
+                &error,
+                message,
+            );
+            mark_superseded_from_operation_error(state, &error);
+        }
+    }
+}
+
+fn record_publication_error_attempt(
+    state: &mut PrRunState,
+    run_id: &RunId,
+    operation: PublicationOperation,
+    idempotency_key: String,
+    expected_head_sha: Option<String>,
+    error: &ForgeOperationError,
+    message: String,
+) {
+    if let Some(refusal) = publication_refusal_from_operation_error(error, message.clone()) {
+        record_refused_publication_attempt(
             state,
             run_id,
             operation,
             idempotency_key,
-            Some(expected_head_sha),
-            Err(error.to_string()),
-        ),
+            expected_head_sha,
+            refusal,
+        );
+        return;
+    }
+    record_publication_attempt(
+        state,
+        run_id,
+        operation,
+        idempotency_key,
+        expected_head_sha,
+        Err(message),
+    );
+}
+
+fn publication_refusal_from_operation_error(
+    error: &ForgeOperationError,
+    message: String,
+) -> Option<PublicationRefusal> {
+    match error {
+        ForgeOperationError::HeadMoved {
+            expected_head_sha,
+            actual_head_sha,
+        } => Some(PublicationRefusal {
+            reason: PublicationRefusalReason::HeadMoved {
+                expected_head_sha: expected_head_sha.clone(),
+                actual_head_sha: actual_head_sha.clone(),
+            },
+            message,
+        }),
+        ForgeOperationError::InvalidRequest(_) | ForgeOperationError::Client(_) => None,
+    }
+}
+
+fn mark_superseded_from_operation_error(state: &mut PrRunState, error: &ForgeOperationError) {
+    if let ForgeOperationError::HeadMoved {
+        actual_head_sha: Some(actual_head_sha),
+        ..
+    } = error
+    {
+        mark_superseded(state, actual_head_sha.clone(), None);
     }
 }
 

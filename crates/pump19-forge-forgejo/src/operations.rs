@@ -44,7 +44,7 @@ where
                 &request.body,
                 &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+            .map_err(forgejo_error_to_operation_error)?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -67,7 +67,7 @@ where
                 &request.body,
                 &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+            .map_err(forgejo_error_to_operation_error)?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -90,7 +90,7 @@ where
                 &request.reason,
                 &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+            .map_err(forgejo_error_to_operation_error)?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -161,7 +161,7 @@ where
                 &commits,
                 &metadata(&request.authorisation),
             )
-            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+            .map_err(forgejo_error_to_operation_error)?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 }
@@ -217,6 +217,19 @@ fn comment_metadata(
     }
 }
 
+fn forgejo_error_to_operation_error(error: crate::ForgejoClientError) -> ForgeOperationError {
+    match error {
+        crate::ForgejoClientError::HeadMoved {
+            expected_head_sha,
+            actual_head_sha,
+        } => ForgeOperationError::HeadMoved {
+            expected_head_sha,
+            actual_head_sha,
+        },
+        error => ForgeOperationError::Client(error.to_string()),
+    }
+}
+
 fn receipt_for(
     receipt: ForgejoCommandReceipt,
     context: &AuthorisationContext,
@@ -246,6 +259,7 @@ mod tests {
     struct FakeClient {
         calls: Vec<String>,
         metadata: Vec<ForgejoCommandMetadata>,
+        head_moved_on_fix_push: bool,
     }
 
     impl ForgejoCommandClient for FakeClient {
@@ -344,6 +358,12 @@ mod tests {
                 commits.len()
             ));
             self.metadata.push(metadata.clone());
+            if self.head_moved_on_fix_push {
+                return Err(ForgejoClientError::HeadMoved {
+                    expected_head_sha: expected_head_sha.to_owned(),
+                    actual_head_sha: Some("def456".to_owned()),
+                });
+            }
             Ok(ForgejoCommandReceipt {
                 operation_id: "fix-push-1".to_owned(),
                 new_head_sha: Some("def456".to_owned()),
@@ -499,5 +519,49 @@ mod tests {
             vec!["fix-push:acme/widgets:42:abc123:1"]
         );
         assert_eq!(operations.client().metadata[0].observed_head_sha, "abc123");
+    }
+
+    #[test]
+    fn credentialed_fix_push_head_move_remains_typed() {
+        let client = FakeClient {
+            head_moved_on_fix_push: true,
+            ..FakeClient::default()
+        };
+        let mut operations = ForgejoForgeOperations::new(client);
+        let patch = Patch {
+            contract_version: ContractVersion::current(),
+            id: PatchId("patch-1".to_owned()),
+            run_id: RunId("fix-run".to_owned()),
+            commit_sha: "abc123".to_owned(),
+            idempotency_key: "patch-1-key".to_owned(),
+            answers_findings: Vec::new(),
+            change: PatchChange::Description {
+                summary: "tighten stale-state check".to_owned(),
+            },
+            provenance: provenance(),
+            extensions: BTreeMap::new(),
+        };
+
+        let error = operations
+            .push_fix_commits(AuthorisedFixPush {
+                authorisation: authorisation(),
+                expected_head_sha: "abc123".to_owned(),
+                commits: vec![AuthorisedFixCommit {
+                    patch,
+                    message: "fix: address Pump-19 finding via patch-1".to_owned(),
+                    author_agent_id: AgentId("fixer-codex".to_owned()),
+                    provenance: provenance(),
+                }],
+            })
+            .expect_err("moved head should stay typed");
+
+        assert!(matches!(
+            error,
+            ForgeOperationError::HeadMoved {
+                expected_head_sha,
+                actual_head_sha
+            } if expected_head_sha == "abc123"
+                && actual_head_sha.as_deref() == Some("def456")
+        ));
     }
 }

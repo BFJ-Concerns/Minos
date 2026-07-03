@@ -58,6 +58,13 @@ pub struct ForgejoFixCommit {
 /// Errors from the credentialed Forgejo client boundary.
 #[derive(Debug, Error)]
 pub enum ForgejoClientError {
+    #[error(
+        "PR head moved before operation: expected {expected_head_sha}, actual {actual_head_sha:?}"
+    )]
+    HeadMoved {
+        expected_head_sha: String,
+        actual_head_sha: Option<String>,
+    },
     #[error("Forgejo transport failed: {0}")]
     Transport(String),
     #[error("Forgejo rejected the operation: {0}")]

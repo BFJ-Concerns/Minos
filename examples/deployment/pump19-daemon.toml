@@ -24,14 +24,14 @@ finish_label = "pump19-finish"
 # core_applies_finish_label_on_convergence = false
 
 [forgejo.poll_command]
-program = "pump19-forgejo-poll"
-args = ["--base-url", "REPLACE_WITH_FORGEJO_BASE_URL"]
+program = "commands/pump19-forgejo-poll"
+args = ["--base-url", "REPLACE_WITH_FORGEJO_BASE_URL", "--finish-label", "pump19-finish"]
 
 [forgejo.poll_command.env]
 FORGEJO_TOKEN = "REPLACE_WITH_FORGEJO_TOKEN"
 
 [forgejo.operation_command]
-program = "pump19-forgejo-operation"
+program = "commands/pump19-forgejo-operation"
 args = ["--base-url", "REPLACE_WITH_FORGEJO_BASE_URL"]
 
 [forgejo.operation_command.env]

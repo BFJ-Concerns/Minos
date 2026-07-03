@@ -29,6 +29,7 @@ use pump19_core::{
     WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
     WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
 };
+use pump19_daemon::{DaemonConfig, run_from_config};
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency,
     ForgejoEventSource, ForgejoLabelApplication, ForgejoMergeability, ForgejoNormalisationConfig,
@@ -982,6 +983,12 @@ fn workspace(root: PathBuf) -> WorkspaceLease {
             ephemeral: true,
         },
     }
+}
+
+fn deployment_example_config_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("examples/deployment/pump19-daemon.toml")
 }
 
 fn target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
@@ -2078,16 +2085,19 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
         forge_operations,
     );
 
+    let event = opened_event(contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Dirty,
+        Vec::new(),
+    ));
+    let mut replay_event = event.clone();
+    replay_event.id = "forgejo-pr-opened-again".to_owned();
     let outcomes = core
-        .process_event(
-            &opened_event(contract_facts(
-                BranchCurrency::Current,
-                ReviewCleanliness::Dirty,
-                Vec::new(),
-            )),
-            &[review_rule(standard_plan())],
-        )
+        .process_event(&event, &[review_rule(standard_plan())])
         .expect("ceiling refusal is handled");
+    let replay = core
+        .process_event(&replay_event, &[review_rule(standard_plan())])
+        .expect("replayed ceiling refusal is handled");
 
     assert_eq!(
         outcomes,
@@ -2096,6 +2106,7 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
             reason: LaunchRefusal::RunCeilingReached,
         }]
     );
+    assert_eq!(replay, outcomes);
     assert!(recorded_launches.borrow().is_empty());
     assert_eq!(comments.borrow().len(), 1);
     assert!(comments.borrow()[0].body.contains("RunCeilingReached"));
@@ -2120,6 +2131,39 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
         latest.publication.attempts[0].operation,
         PublicationOperation::PostRefusalComment { .. }
     ));
+}
+
+#[test]
+fn deployment_example_assets_compose_into_startable_daemon() {
+    let runtime = tempdir().expect("runtime dir");
+    let mut config = DaemonConfig::load(&deployment_example_config_path())
+        .expect("load checked-in deployment example");
+    config.forgejo.repositories = vec!["acme/widgets".to_owned()];
+    config.forgejo.poll_command.args = vec![
+        "--base-url".to_owned(),
+        "http://127.0.0.1:9".to_owned(),
+        "--finish-label".to_owned(),
+        "pump19-finish".to_owned(),
+    ];
+    config
+        .forgejo
+        .poll_command
+        .env
+        .insert("FORGEJO_TOKEN".to_owned(), "estate-token".to_owned());
+    config.forgejo.operation_command.args =
+        vec!["--base-url".to_owned(), "http://127.0.0.1:9".to_owned()];
+    config
+        .forgejo
+        .operation_command
+        .env
+        .insert("FORGEJO_TOKEN".to_owned(), "estate-token".to_owned());
+    config.state_root = runtime.path().join("state");
+    config.workspace.root = runtime.path().join("workspaces");
+    config.ensemble.archive_root = runtime.path().join("archives");
+    config.loop_control.poll_interval_ms = 0;
+    config.loop_control.stop_after_quiet_polls = Some(1);
+
+    run_from_config(config).expect("checked-in example assets compose into daemon");
 }
 
 #[test]
