@@ -69,6 +69,7 @@ fn forge_facts(
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
         }],
+        author_login: None,
         extensions: extensions(),
     }
 }

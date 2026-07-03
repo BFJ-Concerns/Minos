@@ -101,6 +101,9 @@ pub struct ForgejoPullRequestSnapshot {
     pub labels: Vec<ForgejoLabelApplication>,
     #[serde(default)]
     pub actor_permissions: Vec<ForgejoActorPermission>,
+    /// The Forgejo login of the PR author, absent when the API omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_login: Option<String>,
 }
 
 /// Forgejo activity that the adapter can turn into the contract event vocabulary.
@@ -184,6 +187,7 @@ pub fn forge_facts(
         mergeability: map_mergeability(snapshot.mergeability),
         finish_label: finish_label(config, &snapshot.labels)?,
         actor_permissions: actor_permissions(&snapshot.actor_permissions),
+        author_login: snapshot.author_login.clone(),
         extensions,
     })
 }

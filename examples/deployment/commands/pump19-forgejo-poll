@@ -139,7 +139,8 @@ while IFS= read -r pull_json; do
           end
         ),
         labels: $labels,
-        actor_permissions: $actor_permissions
+        actor_permissions: $actor_permissions,
+        author_login: ($pull.user.login // null)
       }
   ')
   printf '%s\n' "$snapshot" >> "$tmp/snapshots.jsonl"

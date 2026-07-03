@@ -7,7 +7,7 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 4
+minor = 5
 
 [[prompt_templates]]
 id = "review-contract-findings"

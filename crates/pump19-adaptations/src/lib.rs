@@ -99,6 +99,8 @@ pub enum AdaptationError {
     EmptyTriggerRuleId { pack_id: String },
     #[error("trigger rule {rule_id:?} has an empty criteria group")]
     EmptyCriteriaGroup { rule_id: String },
+    #[error("trigger rule {rule_id:?} has an author criterion with no usable logins")]
+    EmptyAuthorCriteria { rule_id: String },
     #[error("trigger rule {rule_id:?} has an empty agent target id")]
     EmptyAgentTargetId { rule_id: String },
     #[error("trigger rule {rule_id:?} has an empty agent model family")]
@@ -563,7 +565,8 @@ while IFS= read -r pull_json; do
           end
         ),
         labels: $labels,
-        actor_permissions: $actor_permissions
+        actor_permissions: $actor_permissions,
+        author_login: ($pull.user.login // null)
       }
   ')
   printf '%s\n' "$snapshot" >> "$tmp/snapshots.jsonl"
@@ -1565,7 +1568,14 @@ fn validate_criteria(rule_id: &str, criteria: &Criteria) -> Result<(), Adaptatio
             }
             Ok(())
         }
-        Criteria::Event { .. } | Criteria::State { .. } => Ok(()),
+        // An author criterion with no usable logins can never match; that is a
+        // configuration mistake, so fail at load rather than silently never firing.
+        Criteria::PrAuthoredBy { any_of } if any_of.iter().all(|login| login.trim().is_empty()) => {
+            Err(AdaptationError::EmptyAuthorCriteria {
+                rule_id: rule_id.to_owned(),
+            })
+        }
+        Criteria::Event { .. } | Criteria::State { .. } | Criteria::PrAuthoredBy { .. } => Ok(()),
     }
 }
 
@@ -1700,6 +1710,103 @@ mod tests {
     }
 
     #[test]
+    fn trigger_pack_parses_author_criterion_toml() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let pack_path = dir.path().join("triggers.toml");
+        fs::write(
+            &pack_path,
+            r#"
+id = "site-pack"
+
+[schema_version]
+major = 1
+minor = 0
+
+[contract_version]
+major = 1
+minor = 5
+
+[[rules]]
+id = "review-on-my-prs"
+run_kind = "review"
+
+[rules.criteria]
+kind = "pr_authored_by"
+any_of = ["example", "BFJ-Concerns"]
+
+[[rules.agent_plan.reviewers]]
+agent_id = "reviewer-claude"
+role = "reviewer"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.reviewers.lineage]
+family = "claude"
+model = "claude-stable"
+"#,
+        )?;
+
+        let rules = load_trigger_rules(&pack_path)?;
+
+        assert_eq!(
+            rules[0].criteria,
+            Criteria::PrAuthoredBy {
+                any_of: vec!["example".to_owned(), "BFJ-Concerns".to_owned()],
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trigger_pack_rejects_author_criterion_without_logins()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let pack_path = dir.path().join("triggers.toml");
+        fs::write(
+            &pack_path,
+            r#"
+id = "site-pack"
+
+[schema_version]
+major = 1
+minor = 0
+
+[contract_version]
+major = 1
+minor = 5
+
+[[rules]]
+id = "review-on-my-prs"
+run_kind = "review"
+
+[rules.criteria]
+kind = "pr_authored_by"
+any_of = [" "]
+
+[[rules.agent_plan.reviewers]]
+agent_id = "reviewer-claude"
+role = "reviewer"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.reviewers.lineage]
+family = "claude"
+model = "claude-stable"
+"#,
+        )?;
+
+        let error = load_trigger_rules(&pack_path).expect_err("blank author logins should fail");
+
+        assert!(matches!(
+            error,
+            AdaptationError::EmptyAuthorCriteria { rule_id } if rule_id == "review-on-my-prs"
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn baseline_trigger_pack_pins_review_loop_composition() -> Result<(), Box<dyn std::error::Error>>
     {
         let dir = tempdir()?;
@@ -1821,7 +1928,7 @@ mod tests {
         )?;
         fs::write(
             fixtures.join("pulls.json"),
-            r#"[{"number":42,"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"pump19-finish"}]}]"#,
+            r#"[{"number":42,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"pump19-finish"}]}]"#,
         )?;
         fs::write(
             fixtures.join("timeline.json"),
@@ -1861,6 +1968,7 @@ esac
         assert_eq!(snapshots[0]["cleanliness"], "clean");
         assert_eq!(snapshots[0]["mergeability"], "mergeable");
         assert_eq!(snapshots[0]["labels"][0]["applied_by"]["id"], "7");
+        assert_eq!(snapshots[0]["author_login"], "example");
         assert_eq!(snapshots[0]["actor_permissions"][0]["actor"]["id"], "7");
         assert_eq!(snapshots[0]["actor_permissions"][0]["can_merge"], true);
         assert_eq!(
@@ -2570,6 +2678,7 @@ done
                     mergeability: Mergeability::Mergeable,
                     finish_label: None,
                     actor_permissions: Vec::new(),
+                    author_login: None,
                     extensions: Extensions::new(),
                 },
             },
