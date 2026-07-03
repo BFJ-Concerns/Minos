@@ -497,11 +497,16 @@ const result = await agent(
 Judge whether each finding is material enough to justify another fix pass.
 
 <findings>
-${JSON.stringify(args.findings)}
+${JSON.stringify(args.current_findings || args.findings)}
 </findings>
 
 <loop_history>
-${JSON.stringify({ pass_index: args.pass_index, prior_decisions: args.decisions })}
+${JSON.stringify({
+  pass_count: args.pass_count,
+  prior_verdicts: args.prior_verdicts || [],
+  fix_outcomes: args.fix_outcomes || [],
+  loop_history: args.loop_history || []
+})}
 </loop_history>`,
   {
     engine: judge.engine,
@@ -514,6 +519,10 @@ ${JSON.stringify({ pass_index: args.pass_index, prior_decisions: args.decisions 
 
 if (result === null) {
   throw new Error("judge output failed schema validation");
+}
+
+if ((args.current_findings || args.findings || []).length > 0 && result.decisions.length === 0) {
+  throw new Error("judge returned no decisions for standing findings");
 }
 
 return result.decisions;

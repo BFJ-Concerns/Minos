@@ -1262,7 +1262,10 @@ mod tests {
         let state_observer = store.clone();
         let polling = PollingForgejoActivitySource::new(
             FakePollingClient {
-                polls: VecDeque::from([vec![forgejo_snapshot()], vec![forgejo_snapshot()]]),
+                polls: VecDeque::from([
+                    vec![forgejo_snapshot_without_finish_label()],
+                    vec![forgejo_snapshot()],
+                ]),
             },
             ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
         );
@@ -1376,21 +1379,35 @@ stop_after_quiet_polls = 1
     }
 
     fn forgejo_snapshot() -> ForgejoPullRequestSnapshot {
+        forgejo_snapshot_with_head("head-after-fix", true)
+    }
+
+    fn forgejo_snapshot_without_finish_label() -> ForgejoPullRequestSnapshot {
+        forgejo_snapshot_with_head("abc123", false)
+    }
+
+    fn forgejo_snapshot_with_head(
+        head_sha: &str,
+        include_finish_label: bool,
+    ) -> ForgejoPullRequestSnapshot {
         ForgejoPullRequestSnapshot {
             repository: "acme/widgets".to_owned(),
             id: "42".to_owned(),
-            head_sha: "abc123".to_owned(),
+            head_sha: head_sha.to_owned(),
             base_sha: "def456".to_owned(),
             branch_currency: ForgejoBranchCurrency::Current,
             cleanliness: ForgejoReviewCleanliness::Clean,
             mergeability: ForgejoMergeability::Mergeable,
-            labels: vec![ForgejoLabelApplication {
-                name: "pump19-finish".to_owned(),
-                applied_by: Some(ForgejoActor {
-                    id: "pump19-core".to_owned(),
-                    display_name: "pump19-core".to_owned(),
-                }),
-            }],
+            labels: include_finish_label
+                .then(|| ForgejoLabelApplication {
+                    name: "pump19-finish".to_owned(),
+                    applied_by: Some(ForgejoActor {
+                        id: "pump19-core".to_owned(),
+                        display_name: "pump19-core".to_owned(),
+                    }),
+                })
+                .into_iter()
+                .collect(),
             actor_permissions: vec![ForgejoActorPermission {
                 actor: ForgejoActor {
                     id: "pump19-core".to_owned(),
@@ -1472,10 +1489,17 @@ stop_after_quiet_polls = 1
     fn loop_rules() -> Vec<TriggerRule> {
         vec![
             TriggerRule {
-                id: "review-on-pr-opened".to_owned(),
+                id: "review-on-pr-change".to_owned(),
                 run_kind: RunKind::Review,
-                criteria: Criteria::Event {
-                    event: EventKind::PullRequestOpened,
+                criteria: Criteria::Any {
+                    criteria: vec![
+                        Criteria::Event {
+                            event: EventKind::PullRequestOpened,
+                        },
+                        Criteria::Event {
+                            event: EventKind::PullRequestUpdated,
+                        },
+                    ],
                 },
                 agent_plan: AgentPlan {
                     reviewers: vec![
@@ -1504,6 +1528,22 @@ stop_after_quiet_polls = 1
                 },
             },
             TriggerRule {
+                id: "judge-after-noop-fix".to_owned(),
+                run_kind: RunKind::Judge,
+                criteria: Criteria::Event {
+                    event: EventKind::RunCompleted {
+                        run_kind: Some(RunKind::Fix),
+                        outcome: Some(RunOutcome::NoOp),
+                    },
+                },
+                agent_plan: AgentPlan {
+                    reviewers: Vec::new(),
+                    fixers: Vec::new(),
+                    judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+                    finishers: Vec::new(),
+                },
+            },
+            TriggerRule {
                 id: "fix-after-material-judge".to_owned(),
                 run_kind: RunKind::Fix,
                 criteria: Criteria::All {
@@ -1522,25 +1562,6 @@ stop_after_quiet_polls = 1
                 agent_plan: AgentPlan {
                     reviewers: Vec::new(),
                     fixers: vec![target("fixer-codex", AgentRole::Fixer, "codex")],
-                    judge: None,
-                    finishers: Vec::new(),
-                },
-            },
-            TriggerRule {
-                id: "review-after-fix".to_owned(),
-                run_kind: RunKind::Review,
-                criteria: Criteria::Event {
-                    event: EventKind::RunCompleted {
-                        run_kind: Some(RunKind::Fix),
-                        outcome: Some(RunOutcome::Succeeded),
-                    },
-                },
-                agent_plan: AgentPlan {
-                    reviewers: vec![
-                        target("reviewer-codex", AgentRole::Reviewer, "codex"),
-                        target("reviewer-claude", AgentRole::Reviewer, "claude"),
-                    ],
-                    fixers: Vec::new(),
                     judge: None,
                     finishers: Vec::new(),
                 },
