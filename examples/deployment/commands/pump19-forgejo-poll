@@ -49,10 +49,10 @@ command -v jq >/dev/null 2>&1 || {
 }
 
 api_json() {
-  "$curl_bin" -fsS \
-    -H "Authorization: token ${FORGEJO_TOKEN}" \
-    -H "Accept: application/json" \
-    "$base_url/api/v1$1"
+  {
+    printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN"
+    printf 'header = "Accept: application/json"\n'
+  } | "$curl_bin" -fsS -K - "$base_url/api/v1$1"
 }
 
 user_json=$(api_json "/user")
@@ -68,37 +68,54 @@ printf '%s' "$pulls_json" | jq -c '.[]' > "$tmp/pulls.jsonl"
 while IFS= read -r pull_json; do
   pr_id=$(printf '%s' "$pull_json" | jq -r '(.number // .id | tostring)')
   timeline_json=$(api_json "/repos/$repository/issues/$pr_id/timeline" 2>/dev/null || printf '[]')
-  labels_json=$(printf '%s\n%s\n' "$pull_json" "$timeline_json" | jq -c -n --arg finish "$finish_label" '
+  label_actors_json=$(printf '%s\n%s\n' "$pull_json" "$timeline_json" | jq -c -n --arg finish "$finish_label" '
     input as $pull
     | input as $timeline
     | ($pull.labels // []) as $labels
     | ($timeline // []) as $events
-    | $labels
-    | map(select(.name == $finish))
-    | map({
-        name,
-        applied_by: (
-          $events
-          | map(select((.label.name // .label.Name // "") == $finish))
-          | .[-1]
-          | if . == null then null else {
-              id: ((.user.id // .user.login // .user.username // "unknown") | tostring),
-              display_name: (.user.full_name // .user.login // .user.username // "unknown")
-            } end
-        )
-      })
+    | if any($labels[]?; .name == $finish) then
+        ($events
+        | map(select((.label.name // .label.Name // "") == $finish))
+        | map(select(.user != null))
+        | map({
+            id: ((.user.id // .user.login // .user.username // "unknown") | tostring),
+            login: (.user.login // .user.username // ""),
+            display_name: (.user.full_name // .user.login // .user.username // "unknown")
+          })
+        | unique_by(.id))
+      else [] end
+  ')
+  labels_json=$(printf '%s' "$label_actors_json" | jq -c --arg finish "$finish_label" '
+    if length == 0 then []
+    else map({name: $finish, applied_by: {id, display_name}})
+    end
   ')
   cleanliness=$(printf '%s' "$labels_json" | jq -r 'if length > 0 then "clean" else "dirty" end')
-  actor_permissions_json=$(printf '%s' "$user_json" | jq -c --arg finish "$finish_label" '[
-    {
-      actor: {
-        id: ((.id // .login // .username // "forgejo-token") | tostring),
-        display_name: (.full_name // .login // .username // "Forgejo token")
-      },
-      can_apply_finish_label: true,
-      can_merge: true
-    }
-  ]')
+  : > "$tmp/actor-permissions.jsonl"
+  printf '%s' "$label_actors_json" | jq -c '.[]' > "$tmp/label-actors.jsonl"
+  while IFS= read -r actor_json; do
+    login=$(printf '%s' "$actor_json" | jq -r '.login')
+    [ -n "$login" ] || continue
+    permission_json=$(api_json "/repos/$repository/collaborators/$login/permission" 2>/dev/null || printf '{}')
+    permission=$(printf '%s' "$permission_json" | jq -r '(.permission // .role_name // .role // "") | ascii_downcase')
+    can_write=false
+    case "$permission" in
+      write|admin|administrator|owner) can_write=true ;;
+    esac
+    printf '%s\n%s\n' "$actor_json" "$can_write" | jq -c -n '
+      input as $actor
+      | input as $can_write
+      | {
+          actor: {
+            id: $actor.id,
+            display_name: $actor.display_name
+          },
+          can_apply_finish_label: $can_write,
+          can_merge: $can_write
+        }
+    ' >> "$tmp/actor-permissions.jsonl"
+  done < "$tmp/label-actors.jsonl"
+  actor_permissions_json=$(jq -s 'unique_by(.actor.id)' "$tmp/actor-permissions.jsonl")
   snapshot=$(printf '%s\n%s\n%s\n' "$pull_json" "$labels_json" "$actor_permissions_json" | jq -c -n --arg repository "$repository" --arg cleanliness "$cleanliness" '
     input as $pull
     | input as $labels

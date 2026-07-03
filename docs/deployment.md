@@ -16,7 +16,7 @@ checks prove config loading and loud startup failures.
   `codex` for the Codex/GPT-class reviewer and fixer, `claude` for the
   Claude-class reviewer, and `opencode` configured for the GLM judge model
   `openrouter/z-ai/glm-4.6`.
-- `curl`, `jq` and `git` for the generated baseline Forgejo command scripts.
+- `curl`, `jq`, `git` and `tar` for the generated baseline command scripts.
   The example TOML points at the checked-in scripts under
   `examples/deployment/commands/`. Custom commands are an override path, not a
   prerequisite.
@@ -50,8 +50,8 @@ The example points at generated baseline deployment assets:
 - `adaptations/prompt/prompt-pack.toml` supplies the review, judge and fix prompt
   templates, baseline judgement briefs and ensemble workflow scripts.
 - `adaptations/mechanical/mechanical.toml` declares the source preparation command
-  `pump19-prepare-source`. That command receives source-preparation JSON on
-  stdin and must return `{"tree":"...","revision":"..."}`.
+  `commands/pump19-prepare-source`. That command receives source-preparation JSON
+  on stdin and returns a `.git`-free tree archived from the recorded revision.
 - `commands/pump19-forgejo-poll` reads open pull requests from Forgejo REST and
   emits the daemon's polling snapshot JSON.
 - `commands/pump19-forgejo-operation` performs the credentialed write side:
@@ -84,9 +84,14 @@ Replace every `REPLACE_*` value before starting the daemon:
 
 - `forgejo.repositories`: repository slugs in the form the polling command
   expects, for example `acme/widgets`.
-- `FORGEJO_TOKEN`: the token consumed by both Forgejo command adapters.
 - `--base-url`: the Forgejo instance URL consumed by the baseline command
   arguments.
+
+The example command env entries use `env:FORGEJO_TOKEN`, which means the daemon
+copies `FORGEJO_TOKEN` from its own environment into the command environment
+after placeholder validation. `commands/pump19-prepare-source` also reads
+`PUMP19_GIT_BASE_URL` from the daemon environment unless you override it with
+`--git-base-url`.
 
 If any `REPLACE_*` marker remains, startup fails before loading packs or polling:
 
@@ -105,16 +110,21 @@ the token to cover:
 - `write:issue` to create/update/resolve PR comments and apply labels.
 
 Limit the token to the repositories Pump-19 watches when your Forgejo instance
-supports repository-scoped tokens. Keep the token in the command environment, as
-shown by `FORGEJO_TOKEN` in the example TOML; do not bake it into the workspace
-image or adaptation packs. Forgejo's own scope reference is at
+supports repository-scoped tokens. Keep the token in the daemon environment and
+inherit it with `env:FORGEJO_TOKEN`; do not put a token literal in TOML, bake it
+into the workspace image, or store it in adaptation packs. Forgejo's own scope
+reference is at
 <https://forgejo.org/docs/latest/user/token-scope/>.
+
+The baseline scripts avoid passing the token in `curl` or `git` argv. If you
+replace them, keep the same property: secrets must not be visible in process
+arguments.
 
 ## Forgejo Command Contracts
 
-The baseline scripts use Forgejo's REST API under `/api/v1`, authenticate with
-`Authorization: token $FORGEJO_TOKEN`, and expect repository slugs such as
-`acme/widgets`. Forgejo's API authentication guide is at
+The baseline scripts use Forgejo's REST API under `/api/v1`, authenticate with an
+`Authorization: token ...` header sourced from `FORGEJO_TOKEN`, and expect
+repository slugs such as `acme/widgets`. Forgejo's API authentication guide is at
 <https://forgejo.org/docs/latest/user/api-usage/>.
 
 The polling command is executed as:
@@ -140,12 +150,18 @@ daemon uses these fields:
 }
 ```
 
-The baseline poll command fetches open PRs, the current token user, and issue
-timeline entries for the configured finish label. It marks a snapshot `clean`
-when the finish label is present, records the latest finish-label actor when the
-timeline exposes one, and marks branch currency `current` when Forgejo reports a
-merge base equal to the PR base SHA. If Forgejo cannot expose a field, the script
-uses the contract's conservative `unknown` value.
+The baseline poll command fetches open PRs and issue timeline entries for the
+configured finish label. It marks a snapshot `clean` when the finish label is
+present, records every finish-label actor the timeline exposes, and queries each
+actor's repository permission. `write`, `admin`, `administrator` and `owner`
+permission values produce `can_apply_finish_label = true` and `can_merge = true`;
+other values fail closed. Forgejo documents that write, admin and owner
+collaborators can merge PRs in its repository permissions guide:
+<https://forgejo.org/docs/latest/user/repo-permissions/>.
+
+The poll command marks branch currency `current` when Forgejo reports a merge
+base equal to the PR base SHA. If Forgejo cannot expose a field, the script uses
+the contract's conservative `unknown` value.
 
 The operation command receives one JSON object on stdin and returns:
 
@@ -181,6 +197,18 @@ applies `unified_diff` patch changes when present, creates empty commits for
 description-only changes, and pushes `HEAD:<pr-head-ref>` without force. Forked
 or heavily customised Forgejo workflows may need a site-specific override
 script; keep the JSON contract unchanged.
+
+The source preparation command receives one JSON object on stdin with the
+daemon's `repository`, `commit_sha`, `preparation_root` and run-state context. It
+clones `$PUMP19_GIT_BASE_URL/<repository>.git`, fetches the recorded hexadecimal
+commit, archives it into `<preparation_root>/prepared-tree`, and returns:
+
+```json
+{ "tree": "/path/to/prepared-tree", "revision": "abc123..." }
+```
+
+The archived tree deliberately contains no `.git` directory; review workspaces
+receive source, not forge credentials or repository metadata.
 
 ## Optional Knobs
 
@@ -219,7 +247,17 @@ line is only the operator-facing symptom.
 
 ## systemd Unit
 
-Adjust paths, user and environment file names for the host:
+Adjust paths, user and environment file names for the host. The environment file
+contains the Forgejo token and clone base URL, so make it readable only by root
+and the daemon user, for example `root:pump19` with mode `0640`, or owned by the
+daemon user with mode `0600`.
+
+Example `/etc/pump19/forgejo.env`:
+
+```sh
+FORGEJO_TOKEN=replace-with-token
+PUMP19_GIT_BASE_URL=https://forgejo.example
+```
 
 ```ini
 [Unit]
@@ -247,19 +285,19 @@ The daemon writes one JSON object per line to stderr.
 Quiet poll with no work:
 
 ```json
-{"level":"info","event":"quiet_poll","fields":{"quiet_polls":1,"stop_after_quiet_polls":null}}
+{"event":"quiet_poll","fields":{"quiet_polls":1,"stop_after_quiet_polls":null},"level":"info"}
 ```
 
 Successful dispatch:
 
 ```json
-{"level":"info","event":"dispatch_outcomes","fields":{"event_index":1,"launches":1,"outcomes":[{"outcome":"launched","rule_id":"review-on-pr-change","run_id":"review-on-pr-change-1"}],"pending_events":0}}
+{"event":"dispatch_outcomes","fields":{"event_index":1,"launches":1,"outcomes":[{"outcome":"launched","rule_id":"review-on-pr-change","run_id":"review-on-pr-change-1"}],"pending_events":0},"level":"info"}
 ```
 
 Clean shutdown summary:
 
 ```json
-{"level":"info","event":"daemon_summary","fields":{"events_processed":1,"launches":1,"quiet_polls":0,"recovered_completion_events":0,"recovered_terminal_events":0,"recovered_stale_running_events":0,"recovery_errors_continued":0,"dispatch_errors_continued":0,"stopped_by_shutdown":true}}
+{"event":"daemon_summary","fields":{"dispatch_errors_continued":0,"events_processed":1,"launches":1,"quiet_polls":0,"recovered_completion_events":0,"recovered_stale_running_events":0,"recovered_terminal_events":0,"recovery_errors_continued":0,"stopped_by_shutdown":true},"level":"info"}
 ```
 
 ## Failing Logs
@@ -269,13 +307,13 @@ error. With `stop_after_quiet_polls = 1`, the daemon records the error and exits
 cleanly after the configured quiet/error poll budget:
 
 ```json
-{"level":"error","event":"dispatch_error_continued","fields":{"class":"event_source","error":"event source failed: Forgejo activity source failed: command exited with Some(7): connection refused","continued_errors":1,"retry_after_poll_interval":true}}
+{"event":"dispatch_error_continued","fields":{"class":"event_source","continued_errors":1,"error":"event source failed: Forgejo activity source failed: command exited with Some(7): connection refused","retry_after_poll_interval":true},"level":"error"}
 ```
 
 Fatal state-store or serialisation errors stop the daemon:
 
 ```json
-{"level":"error","event":"daemon_fatal_core_error","fields":{"class":"state_store","error":"state store failed: ..."}}
+{"event":"daemon_fatal_core_error","fields":{"class":"state_store","error":"state store failed: ..."},"level":"error"}
 ```
 
 When a required model family cannot be prepared, the daemon classifies the core

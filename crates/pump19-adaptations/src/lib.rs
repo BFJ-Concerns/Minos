@@ -339,6 +339,7 @@ pub struct BaselineDeploymentPackPaths {
 pub struct BaselineForgejoCommandPaths {
     pub poll_command: PathBuf,
     pub operation_command: PathBuf,
+    pub prepare_source_command: PathBuf,
 }
 
 /// Paths written by [`write_baseline_deployment_assets`].
@@ -380,11 +381,14 @@ pub fn write_baseline_forgejo_commands(
     })?;
     let poll_command = root.join("pump19-forgejo-poll");
     let operation_command = root.join("pump19-forgejo-operation");
+    let prepare_source_command = root.join("pump19-prepare-source");
     write_executable_text(&poll_command, BASELINE_FORGEJO_POLL_SH)?;
     write_executable_text(&operation_command, BASELINE_FORGEJO_OPERATION_SH)?;
+    write_executable_text(&prepare_source_command, BASELINE_PREPARE_SOURCE_SH)?;
     Ok(BaselineForgejoCommandPaths {
         poll_command,
         operation_command,
+        prepare_source_command,
     })
 }
 
@@ -469,10 +473,10 @@ command -v jq >/dev/null 2>&1 || {
 }
 
 api_json() {
-  "$curl_bin" -fsS \
-    -H "Authorization: token ${FORGEJO_TOKEN}" \
-    -H "Accept: application/json" \
-    "$base_url/api/v1$1"
+  {
+    printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN"
+    printf 'header = "Accept: application/json"\n'
+  } | "$curl_bin" -fsS -K - "$base_url/api/v1$1"
 }
 
 user_json=$(api_json "/user")
@@ -488,37 +492,54 @@ printf '%s' "$pulls_json" | jq -c '.[]' > "$tmp/pulls.jsonl"
 while IFS= read -r pull_json; do
   pr_id=$(printf '%s' "$pull_json" | jq -r '(.number // .id | tostring)')
   timeline_json=$(api_json "/repos/$repository/issues/$pr_id/timeline" 2>/dev/null || printf '[]')
-  labels_json=$(printf '%s\n%s\n' "$pull_json" "$timeline_json" | jq -c -n --arg finish "$finish_label" '
+  label_actors_json=$(printf '%s\n%s\n' "$pull_json" "$timeline_json" | jq -c -n --arg finish "$finish_label" '
     input as $pull
     | input as $timeline
     | ($pull.labels // []) as $labels
     | ($timeline // []) as $events
-    | $labels
-    | map(select(.name == $finish))
-    | map({
-        name,
-        applied_by: (
-          $events
-          | map(select((.label.name // .label.Name // "") == $finish))
-          | .[-1]
-          | if . == null then null else {
-              id: ((.user.id // .user.login // .user.username // "unknown") | tostring),
-              display_name: (.user.full_name // .user.login // .user.username // "unknown")
-            } end
-        )
-      })
+    | if any($labels[]?; .name == $finish) then
+        ($events
+        | map(select((.label.name // .label.Name // "") == $finish))
+        | map(select(.user != null))
+        | map({
+            id: ((.user.id // .user.login // .user.username // "unknown") | tostring),
+            login: (.user.login // .user.username // ""),
+            display_name: (.user.full_name // .user.login // .user.username // "unknown")
+          })
+        | unique_by(.id))
+      else [] end
+  ')
+  labels_json=$(printf '%s' "$label_actors_json" | jq -c --arg finish "$finish_label" '
+    if length == 0 then []
+    else map({name: $finish, applied_by: {id, display_name}})
+    end
   ')
   cleanliness=$(printf '%s' "$labels_json" | jq -r 'if length > 0 then "clean" else "dirty" end')
-  actor_permissions_json=$(printf '%s' "$user_json" | jq -c --arg finish "$finish_label" '[
-    {
-      actor: {
-        id: ((.id // .login // .username // "forgejo-token") | tostring),
-        display_name: (.full_name // .login // .username // "Forgejo token")
-      },
-      can_apply_finish_label: true,
-      can_merge: true
-    }
-  ]')
+  : > "$tmp/actor-permissions.jsonl"
+  printf '%s' "$label_actors_json" | jq -c '.[]' > "$tmp/label-actors.jsonl"
+  while IFS= read -r actor_json; do
+    login=$(printf '%s' "$actor_json" | jq -r '.login')
+    [ -n "$login" ] || continue
+    permission_json=$(api_json "/repos/$repository/collaborators/$login/permission" 2>/dev/null || printf '{}')
+    permission=$(printf '%s' "$permission_json" | jq -r '(.permission // .role_name // .role // "") | ascii_downcase')
+    can_write=false
+    case "$permission" in
+      write|admin|administrator|owner) can_write=true ;;
+    esac
+    printf '%s\n%s\n' "$actor_json" "$can_write" | jq -c -n '
+      input as $actor
+      | input as $can_write
+      | {
+          actor: {
+            id: $actor.id,
+            display_name: $actor.display_name
+          },
+          can_apply_finish_label: $can_write,
+          can_merge: $can_write
+        }
+    ' >> "$tmp/actor-permissions.jsonl"
+  done < "$tmp/label-actors.jsonl"
+  actor_permissions_json=$(jq -s 'unique_by(.actor.id)' "$tmp/actor-permissions.jsonl")
   snapshot=$(printf '%s\n%s\n%s\n' "$pull_json" "$labels_json" "$actor_permissions_json" | jq -c -n --arg repository "$repository" --arg cleanliness "$cleanliness" '
     input as $pull
     | input as $labels
@@ -606,20 +627,31 @@ api_json() {
   path=$2
   body=${3:-}
   if [ -n "$body" ]; then
-    "$curl_bin" -fsS \
+    {
+      printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN"
+      printf 'header = "Accept: application/json"\n'
+      printf 'header = "Content-Type: application/json"\n'
+    } | "$curl_bin" -fsS \
       -X "$method" \
-      -H "Authorization: token ${FORGEJO_TOKEN}" \
-      -H "Accept: application/json" \
-      -H "Content-Type: application/json" \
+      -K - \
       --data "$body" \
       "$base_url/api/v1$path"
   else
-    "$curl_bin" -fsS \
+    {
+      printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN"
+      printf 'header = "Accept: application/json"\n'
+    } | "$curl_bin" -fsS \
       -X "$method" \
-      -H "Authorization: token ${FORGEJO_TOKEN}" \
-      -H "Accept: application/json" \
+      -K - \
       "$base_url/api/v1$path"
   fi
+}
+
+git_auth() {
+  GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0=http.extraHeader \
+  GIT_CONFIG_VALUE_0="Authorization: token ${FORGEJO_TOKEN}" \
+  git "$@"
 }
 
 pull_json() {
@@ -658,7 +690,7 @@ case "$operation" in
     comment_id=$(printf '%s' "$input" | jq -r '.comment_operation_id')
     body=$(printf '%s' "$input" | jq -c '{body:.body}')
     response=$(api_json PATCH "/repos/$repository/issues/comments/$comment_id" "$body")
-    receipt "$(printf '%s' "$response" | jq -r '(.id // "'"$comment_id"'") | tostring')"
+    receipt "$(printf '%s' "$response" | jq -r --arg comment_id "$comment_id" '(.id // $comment_id) | tostring')"
     ;;
   resolve_comment)
     guard_expected_head "$metadata_expected"
@@ -666,13 +698,13 @@ case "$operation" in
     reason=$(printf '%s' "$input" | jq -r '.reason')
     body=$(jq -nc --arg reason "$reason" '{body:("Resolved by Pump-19: " + $reason)}')
     response=$(api_json PATCH "/repos/$repository/issues/comments/$comment_id" "$body")
-    receipt "$(printf '%s' "$response" | jq -r '(.id // "'"$comment_id"'") | tostring')"
+    receipt "$(printf '%s' "$response" | jq -r --arg comment_id "$comment_id" '(.id // $comment_id) | tostring')"
     ;;
   apply_label)
     label=$(printf '%s' "$input" | jq -r '.label')
     body=$(jq -nc --arg label "$label" '{labels:[$label]}')
     response=$(api_json POST "/repos/$repository/issues/$pr_id/labels" "$body")
-    receipt "$(printf '%s' "$response" | jq -r 'if type == "array" then (.[-1].id // .[-1].name // "'"$label"'") else (.id // .name // "'"$label"'") end | tostring')"
+    receipt "$(printf '%s' "$response" | jq -r --arg label "$label" 'if type == "array" then (.[-1].id // .[-1].name // $label) else (.id // .name // $label) end | tostring')"
     ;;
   merge)
     method=$(printf '%s' "$input" | jq -r '.method')
@@ -698,9 +730,10 @@ case "$operation" in
     mkdir -p "$tmp"
     trap 'rm -rf "$tmp"' EXIT HUP INT TERM
     git_url="$git_base_url/$repository.git"
-    git -c "http.extraHeader=Authorization: token ${FORGEJO_TOKEN}" clone "$git_url" "$tmp/repo" >/dev/null 2>&1
+    git_auth clone "$git_url" "$tmp/repo" >/dev/null 2>&1
     cd "$tmp/repo"
-    git checkout "$head_ref" >/dev/null 2>&1 || git checkout -b "$head_ref" "origin/$head_ref" >/dev/null 2>&1
+    git_auth fetch origin -- "$head_ref" >/dev/null 2>&1
+    git checkout --detach FETCH_HEAD -- >/dev/null 2>&1
     actual=$(git rev-parse HEAD)
     if [ "$actual" != "$expected" ]; then
       jq -nc --arg expected "$expected" --arg actual "$actual" \
@@ -723,7 +756,7 @@ case "$operation" in
         git commit --allow-empty -m "$message" >/dev/null 2>&1
     done < "$tmp/commits.jsonl"
     new_head=$(git rev-parse HEAD)
-    git -c "http.extraHeader=Authorization: token ${FORGEJO_TOKEN}" push origin "HEAD:$head_ref" >/dev/null 2>&1
+    git_auth push origin -- "HEAD:$head_ref" >/dev/null 2>&1
     receipt "push:$new_head" "$new_head"
     ;;
   *)
@@ -731,6 +764,92 @@ case "$operation" in
     exit 64
     ;;
 esac
+"#;
+
+const BASELINE_PREPARE_SOURCE_SH: &str = r#"#!/bin/sh
+set -eu
+
+git_base_url=${PUMP19_GIT_BASE_URL:-}
+
+usage() {
+  echo "usage: pump19-prepare-source [--git-base-url URL]" >&2
+  exit 64
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --git-base-url)
+      [ "$#" -ge 2 ] || usage
+      git_base_url=${2%/}
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      usage
+      ;;
+  esac
+done
+
+[ -n "$git_base_url" ] || {
+  echo "PUMP19_GIT_BASE_URL or --git-base-url is required" >&2
+  exit 78
+}
+command -v git >/dev/null 2>&1 || {
+  echo "git is required" >&2
+  exit 78
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "jq is required" >&2
+  exit 78
+}
+command -v tar >/dev/null 2>&1 || {
+  echo "tar is required" >&2
+  exit 78
+}
+
+input=$(cat)
+repository=$(printf '%s' "$input" | jq -r '.repository')
+commit_sha=$(printf '%s' "$input" | jq -r '.commit_sha')
+preparation_root=$(printf '%s' "$input" | jq -r '.preparation_root')
+
+case "$commit_sha" in
+  ""|*[!0123456789abcdefABCDEF]*)
+    echo "commit_sha must be a hexadecimal revision" >&2
+    exit 65
+    ;;
+esac
+
+git_maybe_auth() {
+  if [ -n "${FORGEJO_TOKEN:-}" ]; then
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0=http.extraHeader \
+    GIT_CONFIG_VALUE_0="Authorization: token ${FORGEJO_TOKEN}" \
+    git "$@"
+  else
+    git "$@"
+  fi
+}
+
+tmp=${TMPDIR:-/tmp}/pump19-prepare-source.$$
+rm -rf "$tmp"
+mkdir -p "$tmp"
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+output_tree="$preparation_root/prepared-tree"
+rm -rf "$output_tree"
+mkdir -p "$output_tree"
+
+git_url="$git_base_url/$repository.git"
+git_maybe_auth clone --no-checkout "$git_url" "$tmp/repo" >/dev/null 2>&1
+git_maybe_auth -C "$tmp/repo" fetch origin -- "$commit_sha" >/dev/null 2>&1
+git -C "$tmp/repo" cat-file -e "$commit_sha^{commit}"
+git -C "$tmp/repo" archive "$commit_sha" | tar -x -C "$output_tree"
+
+jq -nc --arg tree "$output_tree" --arg revision "$commit_sha" \
+  '{tree:$tree, revision:$revision}'
 "#;
 
 /// Returns the baseline mechanical pack used by the deployable example set.
@@ -744,7 +863,7 @@ pub fn baseline_mechanical_pack(id: &str) -> MechanicalPack {
             id: "prepare-source".to_owned(),
             kind: MechanicalStepKind::Checkout,
             execution: MechanicalExecution::Command {
-                program: "pump19-prepare-source".to_owned(),
+                program: "commands/pump19-prepare-source".to_owned(),
                 args: Vec::new(),
             },
             inputs: vec![
@@ -1505,7 +1624,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, process::Command};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+    };
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
@@ -1651,7 +1774,7 @@ mod tests {
                 execution: MechanicalExecution::Command { program, args },
                 ..
             }] if id == "prepare-source"
-                && program == "pump19-prepare-source"
+                && program == "commands/pump19-prepare-source"
                 && args.is_empty()
         ));
         Ok(())
@@ -1675,6 +1798,10 @@ mod tests {
             &checked_in.join("adaptations"),
         )?;
         assert_directories_match(
+            &generated.path().join("commands"),
+            &checked_in.join("commands"),
+        )?;
+        assert_executable_modes_match(
             &generated.path().join("commands"),
             &checked_in.join("commands"),
         )?;
@@ -1706,6 +1833,7 @@ mod tests {
   */api/v1/user) cat "$PUMP19_FIXTURES/user.json" ;;
   */api/v1/repos/acme/widgets/pulls\?state=open) cat "$PUMP19_FIXTURES/pulls.json" ;;
   */api/v1/repos/acme/widgets/issues/42/timeline) cat "$PUMP19_FIXTURES/timeline.json" ;;
+  */api/v1/repos/acme/widgets/collaborators/pump19/permission) printf '{"permission":"write"}' ;;
   *) echo "unexpected URL: $url" >&2; exit 44 ;;
 esac
 "#,
@@ -1733,6 +1861,12 @@ esac
         assert_eq!(snapshots[0]["cleanliness"], "clean");
         assert_eq!(snapshots[0]["mergeability"], "mergeable");
         assert_eq!(snapshots[0]["labels"][0]["applied_by"]["id"], "7");
+        assert_eq!(snapshots[0]["actor_permissions"][0]["actor"]["id"], "7");
+        assert_eq!(snapshots[0]["actor_permissions"][0]["can_merge"], true);
+        assert_eq!(
+            snapshots[0]["actor_permissions"][0]["can_apply_finish_label"],
+            true
+        );
         Ok(())
     }
 
@@ -1768,6 +1902,182 @@ esac
         let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(receipt["operation_id"], "12345");
         assert!(receipt["new_head_sha"].is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_forgejo_operation_command_updates_comment_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/repos/acme/widgets/pulls/42) printf '{"head":{"sha":"abc123"}}' ;;
+  */api/v1/repos/acme/widgets/issues/comments/12345) printf '{"id":12345}' ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+        let input = serde_json::json!({
+            "operation": "update_comment",
+            "pr": {"repository": "acme/widgets", "id": "42"},
+            "comment_operation_id": "12345",
+            "body": "Updated Pump-19 finding",
+            "metadata": guarded_metadata(),
+        });
+
+        let output = run_operation_command(&commands.operation_command, &fake_curl, &input)?;
+
+        assert_command_success(&output);
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(receipt["operation_id"], "12345");
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_forgejo_operation_command_resolves_comment_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/repos/acme/widgets/pulls/42) printf '{"head":{"sha":"abc123"}}' ;;
+  */api/v1/repos/acme/widgets/issues/comments/12345) printf '{"id":12345}' ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+        let input = serde_json::json!({
+            "operation": "resolve_comment",
+            "pr": {"repository": "acme/widgets", "id": "42"},
+            "comment_operation_id": "12345",
+            "reason": "no longer material",
+            "metadata": guarded_metadata(),
+        });
+
+        let output = run_operation_command(&commands.operation_command, &fake_curl, &input)?;
+
+        assert_command_success(&output);
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(receipt["operation_id"], "12345");
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_forgejo_operation_command_applies_label_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/repos/acme/widgets/issues/42/labels) printf '[{"id":77,"name":"pump19-finish"}]' ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+        let input = serde_json::json!({
+            "operation": "apply_label",
+            "pr": {"repository": "acme/widgets", "id": "42"},
+            "label": "pump19-finish",
+            "metadata": unguarded_metadata(),
+        });
+
+        let output = run_operation_command(&commands.operation_command, &fake_curl, &input)?;
+
+        assert_command_success(&output);
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(receipt["operation_id"], "77");
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_forgejo_operation_command_merges_pr_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/repos/acme/widgets/pulls/42/merge) printf '{"sha":"merge123"}' ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+        let input = serde_json::json!({
+            "operation": "merge",
+            "pr": {"repository": "acme/widgets", "id": "42"},
+            "method": "squash",
+            "metadata": unguarded_metadata(),
+        });
+
+        let output = run_operation_command(&commands.operation_command, &fake_curl, &input)?;
+
+        assert_command_success(&output);
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(receipt["operation_id"], "merge123");
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_prepare_source_command_archives_git_free_tree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let git_root = dir.path().join("git");
+        let bare_repo = git_root.join("acme/widgets.git");
+        let work_repo = dir.path().join("work");
+        fs::create_dir_all(bare_repo.parent().expect("bare parent"))?;
+        run_git(["init", "--bare", bare_repo.to_str().expect("bare path")]);
+        run_git(["init", work_repo.to_str().expect("work path")]);
+        run_git_in(&work_repo, ["config", "user.name", "Fixture"]);
+        run_git_in(
+            &work_repo,
+            ["config", "user.email", "fixture@example.invalid"],
+        );
+        fs::write(work_repo.join("README.md"), "prepared\n")?;
+        run_git_in(&work_repo, ["add", "README.md"]);
+        run_git_in(&work_repo, ["commit", "-m", "initial"]);
+        let expected_head = git_stdout_in(&work_repo, ["rev-parse", "HEAD"]);
+        run_git_in(
+            &work_repo,
+            [
+                "remote",
+                "add",
+                "origin",
+                bare_repo.to_str().expect("bare path"),
+            ],
+        );
+        run_git_in(&work_repo, ["push", "origin", "HEAD:main"]);
+        let preparation_root = dir.path().join("prep");
+        let input = serde_json::json!({
+            "step_id": "prepare-source",
+            "run_id": "run-1",
+            "run_kind": "review",
+            "repository": "acme/widgets",
+            "pull_request": "42",
+            "commit_sha": expected_head,
+            "workspace_root": dir.path().join("workspace"),
+            "preparation_root": preparation_root,
+            "previous_tree": null,
+            "event": {},
+            "state": {}
+        });
+
+        let output = run_json_command_with_args(
+            &commands.prepare_source_command,
+            &["--git-base-url", git_root.to_str().expect("git root path")],
+            &input,
+        )?;
+
+        assert_command_success(&output);
+        let prepared: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let tree = PathBuf::from(prepared["tree"].as_str().expect("tree path"));
+        assert_eq!(prepared["revision"], expected_head);
+        assert_eq!(fs::read_to_string(tree.join("README.md"))?, "prepared\n");
+        assert!(!tree.join(".git").exists());
         Ok(())
     }
 
@@ -1968,6 +2278,34 @@ esac
         Ok(())
     }
 
+    fn assert_executable_modes_match(
+        generated: &Path,
+        checked_in: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let generated_files = sorted_relative_files(generated)?;
+        let checked_in_files = sorted_relative_files(checked_in)?;
+        assert_eq!(generated_files, checked_in_files);
+        for file in generated_files {
+            assert_eq!(
+                executable_mode(&generated.join(&file))?,
+                executable_mode(&checked_in.join(&file))?,
+                "{}",
+                file.display()
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn executable_mode(path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(fs::metadata(path)?.permissions().mode() & 0o111 != 0)
+    }
+
+    #[cfg(not(unix))]
+    fn executable_mode(_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(false)
+    }
+
     fn sorted_relative_files(
         root: &std::path::Path,
     ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
@@ -2001,18 +2339,39 @@ esac
         fs::write(
             &path,
             format!(
-                r"#!/bin/sh
+                r#"#!/bin/sh
 set -eu
 url=
 for arg do
+  case "$arg" in
+    *"$FORGEJO_TOKEN"*) echo "FORGEJO_TOKEN leaked through argv" >&2; exit 45 ;;
+  esac
   url=$arg
 done
 {response_cases}
-"
+"#
             ),
         )?;
         set_executable(&path)?;
         Ok(path)
+    }
+
+    fn guarded_metadata() -> serde_json::Value {
+        serde_json::json!({
+            "observed_head_sha": "abc123",
+            "expected_head_sha": "abc123",
+            "idempotency_key": "operation-1",
+            "reason": "fixture operation"
+        })
+    }
+
+    fn unguarded_metadata() -> serde_json::Value {
+        serde_json::json!({
+            "observed_head_sha": "abc123",
+            "expected_head_sha": null,
+            "idempotency_key": "operation-1",
+            "reason": "fixture operation"
+        })
     }
 
     fn run_operation_command(
@@ -2048,6 +2407,27 @@ done
             .stdin
             .as_mut()
             .expect("operation command stdin")
+            .write_all(input.to_string().as_bytes())?;
+        Ok(child.wait_with_output()?)
+    }
+
+    fn run_json_command_with_args(
+        command: &Path,
+        args: &[&str],
+        input: &serde_json::Value,
+    ) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+
+        let mut child = Command::new(command)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .as_mut()
+            .expect("json command stdin")
             .write_all(input.to_string().as_bytes())?;
         Ok(child.wait_with_output()?)
     }

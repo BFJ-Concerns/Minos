@@ -1817,7 +1817,7 @@ where
             return Ok(());
         };
         let actor = core_actor();
-        if !core_may_apply_finish_label(&facts, &actor, &label) {
+        if !core_may_apply_finish_label(&facts, &label) {
             return Ok(());
         }
 
@@ -1884,7 +1884,7 @@ where
         let label = facts.finish_label.clone().ok_or_else(|| {
             CoreError::ForgeOperation("missing finish label authority".to_owned())
         })?;
-        if !actor_has_capability(&facts, &label.applied_by, ActorCapability::Merge) {
+        if !finish_label_actor_may_merge(&self.policy, &facts, &label) {
             return Err(CoreError::ForgeOperation(
                 "finish label actor lacks merge capability".to_owned(),
             ));
@@ -2951,13 +2951,33 @@ fn convergence_decision_id_for_current_pass(state: &PrRunState) -> Option<String
         .map(|decision| decision.id.clone())
 }
 
-fn core_may_apply_finish_label(facts: &ForgeFacts, actor: &ActorRef, label: &str) -> bool {
+fn core_may_apply_finish_label(facts: &ForgeFacts, label: &str) -> bool {
     facts
         .finish_label
         .as_ref()
         .is_none_or(|finish_label| finish_label.name != label)
         && merge_gate_clean_and_current(facts)
-        && actor_has_capability(facts, actor, ActorCapability::ApplyFinishLabel)
+}
+
+fn finish_label_actor_may_merge(
+    policy: &CorePolicy,
+    facts: &ForgeFacts,
+    label: &FinishLabel,
+) -> bool {
+    if is_core_actor(&label.applied_by) {
+        core_policy_grants_finish_label(policy, &label.name)
+    } else {
+        actor_has_capability(facts, &label.applied_by, ActorCapability::Merge)
+    }
+}
+
+fn core_policy_grants_finish_label(policy: &CorePolicy, label: &str) -> bool {
+    matches!(
+        &policy.finish_label_application,
+        FinishLabelApplicationPolicy::CoreOnConvergence {
+            label: granted_label
+        } if granted_label == label
+    )
 }
 
 fn finish_label_authorisation(
@@ -3351,6 +3371,10 @@ fn core_actor() -> ActorRef {
         id: "pump19-core".to_owned(),
         display_name: "Pump-19 Core".to_owned(),
     }
+}
+
+fn is_core_actor(actor: &ActorRef) -> bool {
+    actor.id == "pump19-core"
 }
 
 fn stable_id<'a>(prefix: &str, parts: impl IntoIterator<Item = &'a str>) -> String {
@@ -4607,6 +4631,17 @@ mod tests {
     fn core_authority_facts(head_sha: &str) -> ForgeFacts {
         ForgeFacts {
             finish_label: None,
+            actor_permissions: Vec::new(),
+            ..facts_with_head(head_sha)
+        }
+    }
+
+    fn facts_with_spurious_core_actor_permissions(head_sha: &str) -> ForgeFacts {
+        ForgeFacts {
+            finish_label: Some(FinishLabel {
+                name: "pump19-finish".to_owned(),
+                applied_by: core_actor(),
+            }),
             actor_permissions: vec![ActorPermissions {
                 actor: core_actor(),
                 capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
@@ -6259,8 +6294,16 @@ mod tests {
             },
         );
 
+        let opened_facts = core_authority_facts("abc123");
+        assert!(
+            !opened_facts
+                .actor_permissions
+                .iter()
+                .any(|permission| permission.actor == core_actor()),
+            "core authority must derive from local policy, not forge-supplied sentinel permissions"
+        );
         let outcomes = core
-            .process_event(&event_with_facts(core_authority_facts("abc123")), &rules)
+            .process_event(&event_with_facts(opened_facts), &rules)
             .expect("PR open launches review");
         let review_one = launched_run_id(&outcomes).expect("review launched");
         let outcomes = core
@@ -6321,6 +6364,10 @@ mod tests {
             core_actor()
         );
         assert_eq!(core.forge_operations.merges.len(), 1);
+        assert_eq!(
+            core.forge_operations.merges[0].authorisation.actor,
+            core_actor()
+        );
         assert!(
             drained
                 .iter()
@@ -6394,28 +6441,50 @@ mod tests {
             .expect("second review completion launches judge");
         let judge_two = launched_run_id(&outcomes).expect("second judge launched");
         core.process_event(
-            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+            &run_completed_event("judge-two-done", judge_two.clone(), RunKind::Judge),
             &rules,
         )
         .expect("converged judge does not apply finish label");
 
         assert!(core.forge_operations.labels.is_empty());
         assert!(core.forge_operations.merges.is_empty());
-    }
 
-    #[test]
-    fn core_does_not_apply_finish_label_when_actor_lacks_capability() {
-        let mut facts = core_authority_facts("abc123");
-        facts.actor_permissions = vec![ActorPermissions {
-            actor: core_actor(),
-            capabilities: std::iter::once(ActorCapability::Merge).collect(),
-        }];
+        let spoofed_facts = facts_with_spurious_core_actor_permissions("head-after-fix");
+        let spoofed_label = spoofed_facts.finish_label.clone().expect("finish label");
+        let mut spoofed_state = core
+            .state_store
+            .load_by_run_id(&judge_two)
+            .expect("load converged state")
+            .expect("converged state");
+        spoofed_state.extensions.insert(
+            EXT_FORGE_FACTS.to_owned(),
+            serde_json::to_value(&spoofed_facts).expect("serialise spoofed facts"),
+        );
+        core.state_store
+            .save(&spoofed_state)
+            .expect("save spoofed facts");
 
-        assert!(!core_may_apply_finish_label(
-            &facts,
-            &core_actor(),
-            "pump19-finish",
+        let error = core
+            .process_event(
+                &ContractEvent {
+                    contract_version: ContractVersion::current(),
+                    id: "spurious-core-finish-label".to_owned(),
+                    payload: EventPayload::LabelApplied {
+                        pr: pr(),
+                        label: spoofed_label,
+                    },
+                    extensions: BTreeMap::new(),
+                },
+                &[finish_on_label_rule()],
+            )
+            .expect_err("forge-supplied core actor is not trusted without policy grant");
+
+        assert!(matches!(
+            error,
+            CoreError::ForgeOperation(message)
+                if message == "finish label actor lacks merge capability"
         ));
+        assert!(core.forge_operations.merges.is_empty());
     }
 
     #[test]
@@ -6425,11 +6494,7 @@ mod tests {
             ..core_authority_facts("abc123")
         };
 
-        assert!(!core_may_apply_finish_label(
-            &facts,
-            &core_actor(),
-            "pump19-finish",
-        ));
+        assert!(!core_may_apply_finish_label(&facts, "pump19-finish"));
     }
 
     #[test]

@@ -74,6 +74,12 @@ pub enum DaemonError {
         value: String,
         expected: String,
     },
+    #[error("daemon config {path} at {field} references missing environment variable {name:?}")]
+    MissingEnvironmentVariable {
+        path: String,
+        field: String,
+        name: String,
+    },
     #[error("adaptation loading failed: {0}")]
     Adaptation(String),
     #[error("core failed: {0}")]
@@ -274,8 +280,9 @@ pub struct DaemonRunSummary {
 /// # Errors
 ///
 /// Returns an error when configuration loading, composition, or core dispatch fails.
-pub fn run_from_config(config: DaemonConfig) -> Result<(), DaemonError> {
+pub fn run_from_config(mut config: DaemonConfig) -> Result<(), DaemonError> {
     validate_startable_config(&config)?;
+    resolve_inherited_command_env(&mut config)?;
     let rules = load_rules(&config)?;
     let mut daemon = build_daemon(config)?;
     let shutdown = SignalShutdown::install()?;
@@ -295,6 +302,44 @@ pub fn run_from_config(config: DaemonConfig) -> Result<(), DaemonError> {
             "stopped_by_shutdown": summary.stopped_by_shutdown,
         }),
     );
+    Ok(())
+}
+
+fn resolve_inherited_command_env(config: &mut DaemonConfig) -> Result<(), DaemonError> {
+    let config_path = config.source_path.as_ref().map_or_else(
+        || "<in-memory>".to_owned(),
+        |path| path.display().to_string(),
+    );
+    resolve_inherited_env_for_command(
+        &config_path,
+        "forgejo.poll_command",
+        &mut config.forgejo.poll_command,
+    )?;
+    resolve_inherited_env_for_command(
+        &config_path,
+        "forgejo.operation_command",
+        &mut config.forgejo.operation_command,
+    )?;
+    Ok(())
+}
+
+fn resolve_inherited_env_for_command(
+    config_path: &str,
+    field: &str,
+    command: &mut CommandConfig,
+) -> Result<(), DaemonError> {
+    for (name, value) in &mut command.env {
+        let Some(variable) = value.strip_prefix("env:") else {
+            continue;
+        };
+        let inherited =
+            std::env::var(variable).map_err(|_error| DaemonError::MissingEnvironmentVariable {
+                path: config_path.to_owned(),
+                field: format!("{field}.env.{name}"),
+                name: variable.to_owned(),
+            })?;
+        *value = inherited;
+    }
     Ok(())
 }
 
@@ -687,8 +732,11 @@ fn load_rules(config: &DaemonConfig) -> Result<Vec<TriggerRule>, DaemonError> {
 fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, DaemonError> {
     let prompt_pack = load_prompt_pack(&config.prompt_pack)
         .map_err(|error| DaemonError::Adaptation(error.to_string()))?;
-    let mechanical_pack = load_mechanical_pack(&config.mechanical_pack)
+    let mut mechanical_pack = load_mechanical_pack(&config.mechanical_pack)
         .map_err(|error| DaemonError::Adaptation(error.to_string()))?;
+    if let Some(config_root) = config.source_path.as_ref().and_then(|path| path.parent()) {
+        resolve_mechanical_command_programs(&mut mechanical_pack, config_root);
+    }
     let prompt_root = config
         .prompt_pack
         .parent()
@@ -721,6 +769,15 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         policy,
     );
     Ok(Pump19Daemon::new(core, config.loop_control))
+}
+
+fn resolve_mechanical_command_programs(pack: &mut MechanicalPack, root: &Path) {
+    for step in &mut pack.steps {
+        if let MechanicalExecution::Command { program, .. } = &mut step.execution {
+            let resolved = resolve_command_program(root, Path::new(program));
+            *program = resolved.display().to_string();
+        }
+    }
 }
 
 fn core_policy(config: &ForgejoDaemonConfig) -> CorePolicy {
@@ -2198,6 +2255,53 @@ stop_after_quiet_polls = 1
     }
 
     #[test]
+    fn command_env_can_inherit_from_daemon_environment() {
+        let mut config = minimal_config();
+        config
+            .forgejo
+            .poll_command
+            .env
+            .insert("FORGEJO_TOKEN".to_owned(), "env:PATH".to_owned());
+
+        resolve_inherited_command_env(&mut config).expect("resolve env");
+
+        assert_eq!(
+            config.forgejo.poll_command.env.get("FORGEJO_TOKEN"),
+            std::env::var("PATH").ok().as_ref()
+        );
+    }
+
+    #[test]
+    fn mechanical_command_programs_resolve_relative_to_config_root() {
+        let root = PathBuf::from("/opt/pump19/examples/deployment");
+        let mut pack = MechanicalPack {
+            schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
+            contract_version: ContractVersion::current(),
+            id: "test-mechanics".to_owned(),
+            steps: vec![MechanicalStep {
+                id: "prepare-source".to_owned(),
+                kind: MechanicalStepKind::Checkout,
+                execution: MechanicalExecution::Command {
+                    program: "commands/pump19-prepare-source".to_owned(),
+                    args: Vec::new(),
+                },
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                extensions: Extensions::new(),
+            }],
+            extensions: Extensions::new(),
+        };
+
+        resolve_mechanical_command_programs(&mut pack, &root);
+
+        assert!(matches!(
+            &pack.steps[0].execution,
+            MechanicalExecution::Command { program, .. }
+                if program == "/opt/pump19/examples/deployment/commands/pump19-prepare-source"
+        ));
+    }
+
+    #[test]
     fn command_forgejo_client_preserves_head_moved_command_error() {
         let dir = tempdir().expect("temp dir");
         let script = dir.path().join("head-moved");
@@ -2274,6 +2378,42 @@ exit 75
         forgejo_snapshot_with_head("head-after-fix", true)
     }
 
+    fn minimal_config() -> DaemonConfig {
+        DaemonConfig {
+            source_path: None,
+            trigger_pack: PathBuf::from("triggers.toml"),
+            prompt_pack: PathBuf::from("prompt-pack.toml"),
+            mechanical_pack: PathBuf::from("mechanical.toml"),
+            state_root: PathBuf::from("state"),
+            workspace: WorkspaceDaemonConfig {
+                root: PathBuf::from("workspaces"),
+                image: "localhost/pump19-workspace:stable".to_owned(),
+            },
+            ensemble: EnsembleDaemonConfig {
+                node_program: PathBuf::from("node"),
+                launcher_path: PathBuf::from("launcher.js"),
+                archive_root: PathBuf::from("archives"),
+                timeout_ms: 5000,
+            },
+            forgejo: ForgejoDaemonConfig {
+                repositories: vec!["acme/widgets".to_owned()],
+                finish_label: "pump19-finish".to_owned(),
+                core_applies_finish_label_on_convergence: false,
+                poll_command: CommandConfig {
+                    program: PathBuf::from("poll-forgejo"),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                },
+                operation_command: CommandConfig {
+                    program: PathBuf::from("write-forgejo"),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                },
+            },
+            loop_control: LoopControlConfig::default(),
+        }
+    }
+
     fn deployment_example_config_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -2300,16 +2440,16 @@ exit 75
                 .then(|| ForgejoLabelApplication {
                     name: "pump19-finish".to_owned(),
                     applied_by: Some(ForgejoActor {
-                        id: "pump19-core".to_owned(),
-                        display_name: "pump19-core".to_owned(),
+                        id: "maintainer".to_owned(),
+                        display_name: "maintainer".to_owned(),
                     }),
                 })
                 .into_iter()
                 .collect(),
             actor_permissions: vec![ForgejoActorPermission {
                 actor: ForgejoActor {
-                    id: "pump19-core".to_owned(),
-                    display_name: "pump19-core".to_owned(),
+                    id: "maintainer".to_owned(),
+                    display_name: "maintainer".to_owned(),
                 },
                 can_apply_finish_label: true,
                 can_merge: true,
