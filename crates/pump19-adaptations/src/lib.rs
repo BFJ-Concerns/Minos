@@ -14,8 +14,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use pump19_contract::{ContractVersion, Extensions, RunKind};
-use pump19_core::{AgentPlan, Criteria, TriggerRule};
+use pump19_contract::{
+    AgentId, AgentRole, ContractVersion, Extensions, ModelFamily, ModelLineage, RunKind, RunOutcome,
+};
+use pump19_core::{
+    AgentEngine, AgentLaunchTarget, AgentPlan, Criteria, EventKind, StateCriterion, TriggerRule,
+};
 use pump19_judgement::{
     JudgementBrief, load_judgement_briefs_from_dir, write_baseline_briefs_to_dir,
 };
@@ -289,6 +293,163 @@ pub fn write_baseline_prompt_pack(root: &Path, id: &str) -> Result<PathBuf, Adap
     Ok(manifest_path)
 }
 
+/// Writes the baseline review/fix/judge loop trigger pack into `root`.
+///
+/// # Errors
+///
+/// Returns an error when the trigger pack cannot be serialised or written.
+pub fn write_baseline_trigger_pack(root: &Path, id: &str) -> Result<PathBuf, AdaptationError> {
+    fs::create_dir_all(root).map_err(|source| AdaptationError::Io {
+        path: root.display().to_string(),
+        source,
+    })?;
+    let pack_path = root.join("triggers.toml");
+    write_toml(&pack_path, &baseline_trigger_pack(id))?;
+    Ok(pack_path)
+}
+
+/// Returns the baseline trigger pack that composes the review/fix/judge loop.
+#[must_use]
+pub fn baseline_trigger_pack(id: &str) -> TriggerPack {
+    TriggerPack {
+        schema_version: AdaptationSchemaVersion::current(),
+        contract_version: ContractVersion::current(),
+        id: id.to_owned(),
+        rules: baseline_trigger_rules(),
+        extensions: Extensions::new(),
+    }
+}
+
+/// Returns the baseline review/fix/judge loop trigger rules.
+#[must_use]
+pub fn baseline_trigger_rules() -> Vec<TriggerRule> {
+    vec![
+        review_on_pr_change_rule(),
+        judge_after_review_rule(),
+        judge_after_noop_fix_rule(),
+        fix_after_material_judge_rule(),
+        finish_on_label_rule(),
+    ]
+}
+
+fn review_on_pr_change_rule() -> TriggerRule {
+    TriggerRule {
+        id: "review-on-pr-change".to_owned(),
+        run_kind: RunKind::Review,
+        criteria: Criteria::Any {
+            criteria: vec![
+                Criteria::Event {
+                    event: EventKind::PullRequestOpened,
+                },
+                Criteria::Event {
+                    event: EventKind::PullRequestUpdated,
+                },
+            ],
+        },
+        agent_plan: AgentPlan {
+            reviewers: baseline_reviewers(),
+            fixers: Vec::new(),
+            judge: Some(baseline_target("judge-glm", AgentRole::Judge, "glm")),
+            finishers: Vec::new(),
+        },
+    }
+}
+
+fn judge_after_review_rule() -> TriggerRule {
+    TriggerRule {
+        id: "judge-after-review".to_owned(),
+        run_kind: RunKind::Judge,
+        criteria: Criteria::Event {
+            event: EventKind::RunCompleted {
+                run_kind: Some(RunKind::Review),
+                outcome: Some(RunOutcome::Succeeded),
+            },
+        },
+        agent_plan: judge_plan(),
+    }
+}
+
+fn judge_after_noop_fix_rule() -> TriggerRule {
+    TriggerRule {
+        id: "judge-after-noop-fix".to_owned(),
+        run_kind: RunKind::Judge,
+        criteria: Criteria::Event {
+            event: EventKind::RunCompleted {
+                run_kind: Some(RunKind::Fix),
+                outcome: Some(RunOutcome::NoOp),
+            },
+        },
+        agent_plan: judge_plan(),
+    }
+}
+
+fn fix_after_material_judge_rule() -> TriggerRule {
+    TriggerRule {
+        id: "fix-after-material-judge".to_owned(),
+        run_kind: RunKind::Fix,
+        criteria: Criteria::All {
+            criteria: vec![
+                Criteria::Event {
+                    event: EventKind::RunCompleted {
+                        run_kind: Some(RunKind::Judge),
+                        outcome: Some(RunOutcome::Succeeded),
+                    },
+                },
+                Criteria::State {
+                    state: StateCriterion::HasMaterialDecision,
+                },
+            ],
+        },
+        agent_plan: AgentPlan {
+            reviewers: Vec::new(),
+            fixers: vec![baseline_target("fixer-codex", AgentRole::Fixer, "codex")],
+            judge: None,
+            finishers: Vec::new(),
+        },
+    }
+}
+
+fn finish_on_label_rule() -> TriggerRule {
+    TriggerRule {
+        id: "finish-on-label".to_owned(),
+        run_kind: RunKind::Finish,
+        criteria: Criteria::All {
+            criteria: vec![
+                Criteria::Event {
+                    event: EventKind::LabelApplied {
+                        name: Some("pump19-finish".to_owned()),
+                    },
+                },
+                Criteria::State {
+                    state: StateCriterion::HasConverged,
+                },
+                Criteria::State {
+                    state: StateCriterion::CleanAndCurrent,
+                },
+            ],
+        },
+        agent_plan: AgentPlan {
+            reviewers: Vec::new(),
+            fixers: Vec::new(),
+            judge: None,
+            finishers: vec![baseline_target(
+                "finisher-codex",
+                AgentRole::Finish,
+                "codex",
+            )],
+        },
+    }
+}
+
+fn judge_plan() -> AgentPlan {
+    AgentPlan {
+        reviewers: Vec::new(),
+        fixers: Vec::new(),
+        judge: Some(baseline_target("judge-glm", AgentRole::Judge, "glm")),
+        finishers: Vec::new(),
+    }
+}
+
 /// Loads a trigger pack from TOML.
 ///
 /// # Errors
@@ -320,6 +481,42 @@ pub fn load_mechanical_pack(path: &Path) -> Result<MechanicalPack, AdaptationErr
     Ok(pack)
 }
 
+fn baseline_reviewers() -> Vec<AgentLaunchTarget> {
+    vec![
+        baseline_target("reviewer-codex", AgentRole::Reviewer, "codex"),
+        baseline_target("reviewer-claude", AgentRole::Reviewer, "claude"),
+    ]
+}
+
+fn baseline_target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
+    AgentLaunchTarget {
+        agent_id: AgentId(agent_id.to_owned()),
+        role,
+        engine: baseline_engine_for_family(family),
+        vendor: "baseline".to_owned(),
+        control_plane: "pump19-core".to_owned(),
+        lineage: ModelLineage {
+            family: ModelFamily(family.to_owned()),
+            model: baseline_model_for_family(family),
+        },
+    }
+}
+
+fn baseline_engine_for_family(family: &str) -> AgentEngine {
+    match family {
+        "claude" => AgentEngine::Claude,
+        "codex" => AgentEngine::Codex,
+        _ => AgentEngine::Opencode,
+    }
+}
+
+fn baseline_model_for_family(family: &str) -> String {
+    match family {
+        "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+        _ => format!("{family}-stable"),
+    }
+}
+
 /// Returns the compact baseline prompt templates for review, judge, and fix runs.
 #[must_use]
 pub fn baseline_prompt_templates() -> Vec<PromptTemplate> {
@@ -327,25 +524,51 @@ pub fn baseline_prompt_templates() -> Vec<PromptTemplate> {
         PromptTemplate {
             id: "review-contract-findings".to_owned(),
             run_kind: RunKind::Review,
-            template:
-                "Review the supplied change, contract facts, intent, and judgement briefs; return material findings using the Pump-19 contract."
-                    .to_owned(),
+            template: "You are an independent Pump-19 judgement reviewer.
+Subject: {{subject_name}} ({{subject_slug}})
+Purpose: {{subject_purpose}}
+
+## Task
+Review this Pump-19 judgement brief independently. Return JSON matching the schema.
+
+## Verdict
+Use status \"failed\" when you find a material concern. Use status \"passed\" only when the brief is satisfied. Put the short reason in stdout and diagnostics, if any, in stderr.
+
+<brief id=\"{{brief_id}}\" title=\"{{brief_title}}\">
+{{brief_body}}
+</brief>
+
+Evidence:
+{{evidence}}"
+                .to_owned(),
             extensions: Extensions::new(),
         },
         PromptTemplate {
             id: "judge-materiality".to_owned(),
             run_kind: RunKind::Judge,
-            template:
-                "Judge whether each finding is material enough to justify another fix pass; return decisions using the Pump-19 contract."
-                    .to_owned(),
+            template: "## Task
+Judge whether each finding is material enough to justify another fix pass.
+
+<findings>
+{{findings}}
+</findings>
+
+<loop_history>
+{{loop_context}}
+</loop_history>"
+                .to_owned(),
             extensions: Extensions::new(),
         },
         PromptTemplate {
             id: "fix-material-findings".to_owned(),
             run_kind: RunKind::Fix,
-            template:
-                "Fix only the material findings assigned to this pass; return patches using the Pump-19 contract."
-                    .to_owned(),
+            template: "## Task
+Produce a fix description for the material findings. Return JSON matching the schema.
+
+<material_findings>
+{{material_findings}}
+</material_findings>"
+                .to_owned(),
             extensions: Extensions::new(),
         },
     ]
@@ -418,18 +641,7 @@ for (const brief of args.briefs) {
 }
 
 const outputs = await parallel(calls.map(({ brief, reviewer }) => () =>
-  agent(
-    `## Task
-Review this Pump-19 judgement brief independently. Return JSON matching the schema.
-
-## Verdict
-Use status "failed" when you find a material concern. Use status "passed" only when the brief is satisfied.
-
-<brief id="${brief.id}">
-${brief.prompt}
-</brief>`,
-    optionsFor(reviewer, `${reviewer.agent_id}:${brief.id}`)
-  )
+  agent(brief.prompt, optionsFor(reviewer, `${reviewer.agent_id}:${brief.id}`))
 ));
 
 if (outputs.some((output) => output === null)) {
@@ -493,16 +705,7 @@ const judgeSchema = {
 
 const judge = args.judges[0];
 const result = await agent(
-  `## Task
-Judge whether each finding is material enough to justify another fix pass.
-
-<findings>
-${JSON.stringify(args.findings)}
-</findings>
-
-<loop_history>
-${JSON.stringify({ pass_index: args.pass_index, prior_decisions: args.decisions })}
-</loop_history>`,
+  args.prompt,
   {
     engine: judge.engine,
     model: judge.model,
@@ -514,6 +717,10 @@ ${JSON.stringify({ pass_index: args.pass_index, prior_decisions: args.decisions 
 
 if (result === null) {
   throw new Error("judge output failed schema validation");
+}
+
+if ((args.current_findings || args.findings || []).length > 0 && result.decisions.length === 0) {
+  throw new Error("judge returned no decisions for standing findings");
 }
 
 return result.decisions;
@@ -536,12 +743,7 @@ const fixSchema = {
 
 const fixer = args.fixers[0];
 const result = await agent(
-  `## Task
-Produce a fix description for the material findings. Return JSON matching the schema.
-
-<material_findings>
-${JSON.stringify(args.material_findings)}
-</material_findings>`,
+  args.prompt,
   {
     engine: fixer.engine,
     model: fixer.model,
@@ -660,6 +862,13 @@ pub fn validate_mechanical_pack(pack: &MechanicalPack) -> Result<(), AdaptationE
 ///
 /// Returns an error when the pack has malformed workflow scripts, briefs, or prompt templates.
 pub fn validate_prompt_pack(pack: &PromptPack) -> Result<(), AdaptationError> {
+    if pack.manifest.prompt_templates.is_empty() {
+        return Err(AdaptationError::EmptyCollection {
+            unit_kind: "prompt pack",
+            id: pack.manifest.id.clone(),
+            items: "prompt templates",
+        });
+    }
     let mut template_ids = BTreeSet::new();
     for template in &pack.manifest.prompt_templates {
         if template.id.trim().is_empty() {
@@ -855,43 +1064,31 @@ mod tests {
         RunLaunchOutcome, RunLaunchRequest, RunLauncher, WorkspaceExecOutput, WorkspaceExecRequest,
         WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
     };
-    use pump19_judgement::{IntentApp, IntentSpec, judgement_prompt};
     use tempfile::tempdir;
 
     use super::{
         AdaptationError, AdaptationSchemaVersion, MechanicalExecution, MechanicalPack,
-        MechanicalStep, MechanicalStepKind, TriggerPack, load_mechanical_pack, load_prompt_pack,
-        load_trigger_rules, write_baseline_prompt_pack, write_toml,
+        MechanicalStep, MechanicalStepKind, TriggerPack, baseline_trigger_pack,
+        load_mechanical_pack, load_prompt_pack, load_trigger_rules, write_baseline_prompt_pack,
+        write_baseline_trigger_pack, write_toml,
     };
 
     #[test]
-    fn baseline_prompt_pack_loads_and_feeds_judgement_prompt()
+    fn baseline_prompt_pack_loads_schema_only_review_template()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let manifest = write_baseline_prompt_pack(dir.path(), "baseline-review")?;
 
         let pack = load_prompt_pack(&manifest)?;
-        let prompt = judgement_prompt(
-            dir.path(),
-            &IntentSpec {
-                app: IntentApp {
-                    slug: "sample".to_owned(),
-                    name: "Sample".to_owned(),
-                    purpose: "Prove prompt packs load through judgement seams".to_owned(),
-                    author_agent_id: None,
-                },
-                invariants: Vec::new(),
-                behaviours: Vec::new(),
-            },
-            &pack.briefs[0],
-        )?;
 
         assert_eq!(pack.manifest.id, "baseline-review");
         assert_eq!(pack.manifest.prompt_templates.len(), 3);
         assert_eq!(pack.manifest.workflow_scripts.len(), 3);
         assert_eq!(pack.briefs.len(), 3);
-        assert!(prompt.contains("PUMP19_JUDGEMENT: PASS"));
-        assert!(prompt.contains(&pack.briefs[0].brief));
+        let review_template = &pack.manifest.prompt_templates[0].template;
+        assert!(review_template.contains("Return JSON matching the schema."));
+        assert!(review_template.contains("Put the short reason in stdout"));
+        assert!(!review_template.contains("PUMP19_JUDGEMENT"));
         Ok(())
     }
 
@@ -917,6 +1114,65 @@ mod tests {
             outcomes.as_slice(),
             [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-open"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_trigger_pack_pins_review_loop_composition() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let pack_path = write_baseline_trigger_pack(dir.path(), "baseline-loop")?;
+        let pack = baseline_trigger_pack("baseline-loop");
+        let loaded = load_trigger_rules(&pack_path)?;
+        let rule_ids = loaded
+            .iter()
+            .map(|rule| rule.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(pack.rules, loaded);
+        assert_eq!(
+            rule_ids,
+            vec![
+                "review-on-pr-change",
+                "judge-after-review",
+                "judge-after-noop-fix",
+                "fix-after-material-judge",
+                "finish-on-label",
+            ]
+        );
+        assert!(matches!(
+            loaded[0].criteria,
+            Criteria::Any { ref criteria }
+                if matches!(
+                    criteria.as_slice(),
+                    [
+                        Criteria::Event {
+                            event: EventKind::PullRequestOpened
+                        },
+                        Criteria::Event {
+                            event: EventKind::PullRequestUpdated
+                        },
+                    ]
+                )
+        ));
+        assert!(loaded.iter().any(|rule| matches!(
+            &rule.criteria,
+            Criteria::Event {
+                event: EventKind::RunCompleted {
+                    run_kind: Some(RunKind::Fix),
+                    outcome: Some(RunOutcome::NoOp),
+                }
+            }
+        )));
+        assert!(!loaded.iter().any(|rule| matches!(
+            &rule.criteria,
+            Criteria::Event {
+                event: EventKind::RunCompleted {
+                    run_kind: Some(RunKind::Fix),
+                    outcome: Some(RunOutcome::Succeeded),
+                }
+            } if rule.run_kind == RunKind::Review
+        )));
         Ok(())
     }
 
@@ -1001,7 +1257,7 @@ mod tests {
                     target("claude-reviewer", AgentRole::Reviewer, "claude"),
                 ],
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             }
         }
@@ -1016,8 +1272,15 @@ mod tests {
             control_plane: "test-control".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-stable"),
+                model: model_for_family(family),
             },
+        }
+    }
+
+    fn model_for_family(family: &str) -> String {
+        match family {
+            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            _ => format!("{family}-stable"),
         }
     }
 
@@ -1128,6 +1391,7 @@ mod tests {
                 decisions: Vec::new(),
                 patches: Vec::new(),
                 token_usage: None,
+                ensemble_archive_path: None,
             })
         }
     }

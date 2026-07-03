@@ -12,20 +12,21 @@ use pump19_contract::{
     ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
     CertaintyClass, Confidence, ContractEvent, ContractVersion, DecisionSubject, DecisionVerdict,
     EventPayload, Extensions, Finding, FindingCommentPublication, FindingCommentStatus, FindingId,
-    FindingLocation, FinishLabel, ForgeFacts, ForgeReceipt, Mergeability, ModelFamily,
-    ModelLineage, ModelProvenance, PatchChange, PrRunState, ProvenanceVerification,
+    FindingLocation, FinishLabel, ForgeFacts, ForgeReceipt, LoopPassRecord, Mergeability,
+    ModelFamily, ModelLineage, ModelProvenance, PatchChange, PrRunState, ProvenanceVerification,
     PublicationState, PullRequestRef, ReviewCleanliness, Revision, RunId, RunKind, RunOutcome,
     RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
 };
 use pump19_core::{
     AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence,
     AuthorisedComment, AuthorisedCommentResolution, AuthorisedCommentUpdate, AuthorisedFixPush,
-    AuthorisedLabel, AuthorisedMerge, Core, CoreError, Criteria, DispatchOutcome, EventKind,
-    EventSource, ForgeOperationError, ForgeOperationReceipt, ForgeOperations, LaunchProof,
-    LaunchRefusal, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey,
-    RunStateStore, SkipReason, StateCriterion, TriggerRule, WorkspaceExecOutput,
-    WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider,
-    WorkspaceRequest,
+    AuthorisedLabel, AuthorisedMerge, Core, CoreError, CorePolicy, Criteria, DispatchOutcome,
+    EventKind, EventSource, FinishLabelApplicationPolicy, ForgeOperationError,
+    ForgeOperationReceipt, ForgeOperations, LaunchProof, LaunchRefusal, PreparedAgent,
+    PreparedSource, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore,
+    SkipReason, SourcePreparationRequest, SourcePreparer, StateCriterion, TriggerRule,
+    WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
+    WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency,
@@ -98,6 +99,61 @@ impl WorkspaceProvider for EstateWorkspaceProvider {
 }
 
 #[derive(Clone, Debug)]
+struct SourceRecordingWorkspaceProvider {
+    lease: WorkspaceLease,
+    injections: Rc<RefCell<Vec<PreparedSource>>>,
+    cleanups: Rc<RefCell<Vec<String>>>,
+}
+
+impl WorkspaceProvider for SourceRecordingWorkspaceProvider {
+    fn prepare(&mut self, _request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
+        fs::create_dir_all(&self.lease.root).map_err(|source| CoreError::Io {
+            path: self.lease.root.display().to_string(),
+            source,
+        })?;
+        Ok(self.lease.clone())
+    }
+
+    fn inject_source(
+        &mut self,
+        _lease: &WorkspaceLease,
+        source: &PreparedSource,
+    ) -> Result<(), CoreError> {
+        fs::create_dir_all(self.lease.root.join("src")).map_err(|source| CoreError::Io {
+            path: self.lease.root.join("src").display().to_string(),
+            source,
+        })?;
+        fs::copy(
+            source.tree.join("src/lib.rs"),
+            self.lease.root.join("src/lib.rs"),
+        )
+        .map_err(|source| CoreError::Io {
+            path: self.lease.root.join("src/lib.rs").display().to_string(),
+            source,
+        })?;
+        self.injections.borrow_mut().push(source.clone());
+        Ok(())
+    }
+
+    fn exec(
+        &mut self,
+        _lease: &WorkspaceLease,
+        _request: WorkspaceExecRequest,
+    ) -> Result<WorkspaceExecOutput, CoreError> {
+        Ok(WorkspaceExecOutput {
+            exit_code: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })
+    }
+
+    fn cleanup(&mut self, lease: &WorkspaceLease) -> Result<(), CoreError> {
+        self.cleanups.borrow_mut().push(lease.id.clone());
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
 struct PlannedLauncher {
     proofs: Vec<LaunchProof>,
     launches: usize,
@@ -113,6 +169,21 @@ struct RecordingLauncher {
 struct FailingLauncher {
     proofs: Rc<RefCell<Vec<LaunchProof>>>,
 }
+
+#[derive(Clone, Debug)]
+struct SourceCheckingLauncher {
+    launched: Rc<RefCell<Vec<RunLaunchRequest>>>,
+    expected_source: String,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedTreeSourcePreparer {
+    tree: PathBuf,
+    requests: Rc<RefCell<Vec<SourcePreparationRequest>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct FailingSourcePreparer;
 
 #[derive(Clone, Debug, Default)]
 struct RecordingForgeOperations {
@@ -223,6 +294,15 @@ impl FailingLauncher {
     }
 }
 
+impl SourceCheckingLauncher {
+    fn new(expected_source: &str) -> Self {
+        Self {
+            launched: Rc::new(RefCell::new(Vec::new())),
+            expected_source: expected_source.to_owned(),
+        }
+    }
+}
+
 impl RunLauncher for RecordingLauncher {
     fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
         let proof = self.proofs.borrow_mut().remove(0);
@@ -246,6 +326,49 @@ impl RunLauncher for RecordingLauncher {
             decisions: Vec::new(),
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
+        })
+    }
+}
+
+impl RunLauncher for SourceCheckingLauncher {
+    fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
+        Ok(PreparedAgent {
+            agent_id: spec.target.agent_id,
+            role: spec.target.role,
+            session_id: SessionId(format!("session-{}", spec.pass_index)),
+            proof: LaunchProof::EstablishedFresh,
+        })
+    }
+
+    fn launch_run(
+        &mut self,
+        request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
+        let source =
+            fs::read_to_string(request.workspace.root.join("src/lib.rs")).map_err(|source| {
+                CoreError::Io {
+                    path: request
+                        .workspace
+                        .root
+                        .join("src/lib.rs")
+                        .display()
+                        .to_string(),
+                    source,
+                }
+            })?;
+        assert_eq!(source, self.expected_source);
+        assert!(request.workspace.isolation.credential_free);
+        assert!(request.workspace.isolation.egress_bounded);
+        self.launched.borrow_mut().push(request);
+        Ok(RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: Vec::new(),
+            decisions: Vec::new(),
+            patches: Vec::new(),
+            token_usage: None,
+            ensemble_archive_path: None,
         })
     }
 }
@@ -268,6 +391,31 @@ impl RunLauncher for FailingLauncher {
     ) -> Result<RunLaunchOutcome, CoreError> {
         Err(CoreError::Launcher(
             "estate forced launch failure".to_owned(),
+        ))
+    }
+}
+
+impl SourcePreparer for PreparedTreeSourcePreparer {
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError> {
+        self.requests.borrow_mut().push(request.clone());
+        Ok(PreparedSource {
+            tree: self.tree.clone(),
+            revision: request.commit_sha,
+            cleanup_root: self.tree.parent().map(Path::to_path_buf),
+        })
+    }
+}
+
+impl SourcePreparer for FailingSourcePreparer {
+    fn prepare_source(
+        &mut self,
+        _request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError> {
+        Err(CoreError::SourcePreparation(
+            "estate source preparation failed".to_owned(),
         ))
     }
 }
@@ -384,6 +532,15 @@ impl ContainerRuntime for RecordingRuntime {
             }))
     }
 
+    fn copy_into(
+        &mut self,
+        _container_id: &str,
+        _host_source: &Path,
+        _container_dest: &str,
+    ) -> Result<(), WorkspaceError> {
+        Ok(())
+    }
+
     fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
         self.removed.borrow_mut().push(container_id.to_owned());
         Ok(())
@@ -401,6 +558,11 @@ impl RecordingRuntime {
 
 #[derive(Debug, Default)]
 struct EstateLoopLauncher;
+
+#[derive(Clone, Debug, Default)]
+struct NoOpFixLoopLauncher {
+    launched: Rc<RefCell<Vec<RunKind>>>,
+}
 
 #[derive(Debug)]
 struct EstateSessions;
@@ -442,6 +604,53 @@ impl RunLauncher for EstateLoopLauncher {
                 decisions: Vec::new(),
                 patches: Vec::new(),
                 token_usage: None,
+                ensemble_archive_path: None,
+            }),
+        }
+    }
+}
+
+impl NoOpFixLoopLauncher {
+    fn launched(&self) -> Rc<RefCell<Vec<RunKind>>> {
+        Rc::clone(&self.launched)
+    }
+}
+
+impl RunLauncher for NoOpFixLoopLauncher {
+    fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
+        let agent_id = spec.target.agent_id.clone();
+        Ok(PreparedAgent {
+            agent_id: spec.target.agent_id,
+            role: spec.target.role,
+            session_id: SessionId(format!("session-{}-{}", spec.pass_index, agent_id.0)),
+            proof: LaunchProof::EstablishedFresh,
+        })
+    }
+
+    fn launch_run(
+        &mut self,
+        request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
+        self.launched.borrow_mut().push(request.run_kind);
+        match request.run_kind {
+            RunKind::Review => Ok(review_outcome(&request)),
+            RunKind::Judge => Ok(judge_outcome(&request)),
+            RunKind::Fix => Ok(RunLaunchOutcome {
+                outcome: RunOutcome::NoOp,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                token_usage: None,
+                ensemble_archive_path: None,
+            }),
+            RunKind::Finish => Ok(RunLaunchOutcome {
+                outcome: RunOutcome::Succeeded,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                token_usage: None,
+                ensemble_archive_path: None,
             }),
         }
     }
@@ -479,6 +688,7 @@ impl RunLauncher for PlannedLauncher {
             decisions: Vec::new(),
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         })
     }
 }
@@ -545,6 +755,10 @@ impl RunStateStore for EstateStateStore {
                     .get("pump19.core.running_run_id")
                     .and_then(serde_json::Value::as_str)
                     == Some(run_id.0.as_str())
+                    || state
+                        .run_history
+                        .iter()
+                        .any(|record| record.run_id == *run_id)
             })
             .cloned())
     }
@@ -594,6 +808,10 @@ impl RunStateStore for SharedEstateStateStore {
                     .get("pump19.core.running_run_id")
                     .and_then(serde_json::Value::as_str)
                     == Some(run_id.0.as_str())
+                    || state
+                        .run_history
+                        .iter()
+                        .any(|record| record.run_id == *run_id)
             })
             .cloned())
     }
@@ -609,6 +827,10 @@ impl RunStateStore for SharedEstateStateStore {
             states.push(state.clone());
         }
         Ok(())
+    }
+
+    fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+        Ok(self.states())
     }
 }
 
@@ -631,6 +853,13 @@ fn actor(id: &str) -> ActorRef {
     ActorRef {
         id: id.to_owned(),
         display_name: id.to_owned(),
+    }
+}
+
+fn core_service_actor() -> ActorRef {
+    ActorRef {
+        id: "pump19-core".to_owned(),
+        display_name: "Pump-19 Core".to_owned(),
     }
 }
 
@@ -675,12 +904,15 @@ fn contract_facts_with_head(
 }
 
 fn core_actor_permissions() -> Vec<ActorPermissions> {
-    vec![ActorPermissions {
-        actor: actor("pump19-core"),
-        capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
-            .into_iter()
-            .collect(),
-    }]
+    [actor("pump19-core"), core_service_actor()]
+        .into_iter()
+        .map(|actor| ActorPermissions {
+            actor,
+            capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
+                .into_iter()
+                .collect(),
+        })
+        .collect()
 }
 
 fn opened_event(facts: ForgeFacts) -> ContractEvent {
@@ -739,8 +971,15 @@ fn target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
         control_plane: "pump19-core".to_owned(),
         lineage: ModelLineage {
             family: ModelFamily(family.to_owned()),
-            model: format!("{family}-2026-06"),
+            model: model_for_family(family),
         },
+    }
+}
+
+fn model_for_family(family: &str) -> String {
+    match family {
+        "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+        _ => format!("{family}-2026-06"),
     }
 }
 
@@ -756,7 +995,7 @@ fn archive_agent(agent_id: &str, family: &str) -> ArchiveAgentFixture {
     ArchiveAgentFixture {
         label: format!("{agent_id}:purpose"),
         engine: engine_for_family(family).as_str().to_owned(),
-        model: format!("{family}-2026-06"),
+        model: model_for_family(family),
     }
 }
 
@@ -765,6 +1004,8 @@ fn ensemble_config(root: &Path, run_kind: &str) -> EnsembleWorkflowConfig {
         script: root.join(format!("{run_kind}.js")),
         archive_root: root.join("archives"),
         timeout_ms: 5_000,
+        prompt_template: "configured estate prompt".to_owned(),
+        briefs: pump19_judgement::baseline_judgement_briefs(),
     }
 }
 
@@ -818,7 +1059,7 @@ fn standard_plan() -> AgentPlan {
             target("reviewer-claude", AgentRole::Reviewer, "claude"),
         ],
         fixers: Vec::new(),
-        judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+        judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
         finishers: Vec::new(),
     }
 }
@@ -847,7 +1088,7 @@ fn review_on_pr_updated_rule() -> TriggerRule {
                 target("reviewer-claude", AgentRole::Reviewer, "claude"),
             ],
             fixers: Vec::new(),
-            judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+            judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
             finishers: Vec::new(),
         },
     }
@@ -866,7 +1107,7 @@ fn judge_after_review_rule() -> TriggerRule {
         agent_plan: AgentPlan {
             reviewers: Vec::new(),
             fixers: Vec::new(),
-            judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+            judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
             finishers: Vec::new(),
         },
     }
@@ -1000,7 +1241,7 @@ fn verified_provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelPr
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-2026-06"),
+                model: model_for_family(family),
             },
         },
         extensions,
@@ -1061,6 +1302,7 @@ fn review_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
             decisions: Vec::new(),
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         };
     }
     let judged_id = if request.state.pass_index == 1 {
@@ -1082,6 +1324,7 @@ fn review_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
         decisions: Vec::new(),
         patches: Vec::new(),
         token_usage: None,
+        ensemble_archive_path: None,
     }
 }
 
@@ -1109,6 +1352,7 @@ fn judge_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
             }],
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         };
     }
     let verdict = if request.state.pass_index == 1 {
@@ -1133,6 +1377,7 @@ fn judge_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
         }],
         patches: Vec::new(),
         token_usage: None,
+        ensemble_archive_path: None,
     }
 }
 
@@ -1161,6 +1406,7 @@ fn fix_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
             extensions: extensions(),
         }],
         token_usage: None,
+        ensemble_archive_path: None,
     }
 }
 
@@ -1293,7 +1539,7 @@ fn core_launch_gate_refuses_each_soundness_violation_and_launches_independent_se
             ],
         ),
         LaunchRefusal::NonFreshSession {
-            agent_id: AgentId("judge-gemini".to_owned())
+            agent_id: AgentId("judge-glm".to_owned())
         }
     );
 
@@ -1329,6 +1575,7 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
     let comment_resolutions = Rc::clone(&forge_operations.comment_resolutions);
+    let labels = Rc::clone(&forge_operations.labels);
     let fix_pushes = Rc::clone(&forge_operations.fix_pushes);
     let merges = Rc::clone(&forge_operations.merges);
     let state_store = SharedEstateStateStore::default();
@@ -1425,6 +1672,8 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
         )
         .expect("minor judge completion is processed");
     assert!(no_fix.is_empty());
+    assert!(labels.borrow().is_empty());
+    assert!(merges.borrow().is_empty());
     assert_eq!(comments.borrow().len(), 1);
     assert_eq!(comment_resolutions.borrow().len(), 1);
     assert_eq!(
@@ -1476,6 +1725,132 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
 }
 
 #[test]
+fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() {
+    let forge_operations = RecordingForgeOperations::default();
+    let labels = Rc::clone(&forge_operations.labels);
+    let merges = Rc::clone(&forge_operations.merges);
+    let state_store = SharedEstateStateStore::default();
+    let state_observer = state_store.clone();
+    let mut facts = contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Clean,
+        core_actor_permissions(),
+    );
+    facts.finish_label = None;
+    let mut core = Core::with_forge_operations_and_policy(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-core-applied-finish-estate")),
+        },
+        EstateLoopLauncher,
+        state_store,
+        forge_operations,
+        CorePolicy {
+            finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
+                label: "pump19-finish".to_owned(),
+            },
+        },
+    );
+    let rules = loop_rules();
+
+    let outcomes = core
+        .process_event(&opened_event(facts), &rules)
+        .expect("PR open launches review");
+    let review_one = launched_run_id(&outcomes).expect("review launched");
+    let outcomes = core
+        .process_event(
+            &run_completed_event("review-one-done", review_one, RunKind::Review),
+            &rules,
+        )
+        .expect("review completion launches judge");
+    let judge_one = launched_run_id(&outcomes).expect("judge launched");
+    let outcomes = core
+        .process_event(
+            &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
+            &rules,
+        )
+        .expect("material judge launches fix");
+    let fix_one = launched_run_id(&outcomes).expect("fix launched");
+    core.process_event(
+        &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
+        &rules,
+    )
+    .expect("fix completion publishes commits");
+
+    let mut updated_facts = contract_facts_with_head(
+        "head-sha-after-fix",
+        BranchCurrency::Current,
+        ReviewCleanliness::Clean,
+        core_actor_permissions(),
+    );
+    updated_facts.finish_label = None;
+    let outcomes = core
+        .process_event(
+            &updated_event("forgejo-pr-updated-after-fix", updated_facts),
+            &rules,
+        )
+        .expect("PR update launches re-review");
+    let review_two = launched_run_id(&outcomes).expect("second review launched");
+    let outcomes = core
+        .process_event(
+            &run_completed_event("review-two-done", review_two, RunKind::Review),
+            &rules,
+        )
+        .expect("second review completion launches judge");
+    let judge_two = launched_run_id(&outcomes).expect("second judge launched");
+
+    core.process_event(
+        &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+        &rules,
+    )
+    .expect("convergence applies finish label");
+    let converged = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load converged state")
+        .expect("converged state saved");
+    assert!(
+        converged
+            .decisions
+            .iter()
+            .any(|decision| decision.verdict == DecisionVerdict::Converged)
+    );
+    assert_eq!(
+        converged
+            .extensions
+            .get("pump19.core.forge_facts")
+            .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
+            .and_then(|facts| facts.finish_label.map(|label| label.name)),
+        Some("pump19-finish".to_owned())
+    );
+    let drained = core
+        .drain_available(&rules)
+        .expect("core-applied finish label launches finish");
+
+    assert_eq!(labels.borrow().len(), 1);
+    assert_eq!(labels.borrow()[0].label, "pump19-finish");
+    assert!(
+        labels.borrow()[0]
+            .authorisation
+            .evidence
+            .iter()
+            .any(|evidence| matches!(
+                evidence,
+                AuthorisationEvidence::ActorCapability {
+                    capability: ActorCapability::ApplyFinishLabel,
+                    ..
+                }
+            ))
+    );
+    assert_eq!(merges.borrow().len(), 1);
+    assert!(
+        drained
+            .iter()
+            .flatten()
+            .any(|outcome| matches!(outcome, DispatchOutcome::Launched { rule_id, .. } if rule_id == "finish-on-label"))
+    );
+}
+
+#[test]
 fn repeated_material_finding_updates_existing_comment_identity() {
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
@@ -1500,6 +1875,8 @@ fn repeated_material_finding_updates_existing_comment_identity() {
         commit_sha: state.commit_sha.clone(),
         status: RunStatus::Completed,
         outcome: Some(RunOutcome::Succeeded),
+        refusal: None,
+        ensemble_archive_path: None,
     });
     state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),
@@ -1519,6 +1896,7 @@ fn repeated_material_finding_updates_existing_comment_identity() {
             },
         }],
         fix_pushes: Vec::new(),
+        merges: Vec::new(),
     };
     let state_store = SharedEstateStateStore::with_state(state);
     let state_observer = state_store.clone();
@@ -1598,6 +1976,8 @@ fn minor_judge_finding_is_recorded_but_suppressed_from_pr_publication() {
         commit_sha: state.commit_sha.clone(),
         status: RunStatus::Completed,
         outcome: Some(RunOutcome::Succeeded),
+        refusal: None,
+        ensemble_archive_path: None,
     });
     state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),
@@ -1710,6 +2090,507 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
 }
 
 #[test]
+fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
+    let trigger_pack_root = tempdir().expect("baseline trigger pack root");
+    let trigger_pack_path =
+        pump19_adaptations::write_baseline_trigger_pack(trigger_pack_root.path(), "estate-loop")
+            .expect("write baseline trigger pack");
+    let rules =
+        pump19_adaptations::load_trigger_rules(&trigger_pack_path).expect("load trigger rules");
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let state_store = SharedEstateStateStore::default();
+    let state_observer = state_store.clone();
+    let launcher = NoOpFixLoopLauncher::default();
+    let launched_kinds = launcher.launched();
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-noop-fix-estate")),
+        },
+        launcher,
+        state_store,
+        forge_operations,
+    );
+    let facts = contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Clean,
+        core_actor_permissions(),
+    );
+
+    let opened = core
+        .process_event(&opened_event(facts), &rules)
+        .expect("PR open launches review");
+    assert!(matches!(
+        opened.as_slice(),
+        [DispatchOutcome::Launched { .. }]
+    ));
+
+    let drained = core
+        .drain_available(&rules)
+        .expect("self-emitted completions keep the NoOp fix path moving");
+
+    assert_eq!(
+        launched_kinds.borrow().as_slice(),
+        [
+            RunKind::Review,
+            RunKind::Judge,
+            RunKind::Fix,
+            RunKind::Judge,
+        ]
+    );
+    assert_eq!(
+        drained
+            .iter()
+            .filter(|batch| matches!(batch.as_slice(), [DispatchOutcome::Launched { .. }]))
+            .count(),
+        3,
+        "review completion should launch judge, material verdict should launch fix, and NoOp fix completion should launch judge"
+    );
+    assert!(rules.iter().any(|rule| rule.id == "judge-after-noop-fix"
+        && rule.run_kind == RunKind::Judge
+        && matches!(
+            rule.criteria,
+            Criteria::Event {
+                event: EventKind::RunCompleted {
+                    run_kind: Some(RunKind::Fix),
+                    outcome: Some(RunOutcome::NoOp),
+                }
+            }
+        )));
+    assert_eq!(comments.borrow().len(), 1);
+    assert!(
+        comments.borrow()[0]
+            .authorisation
+            .evidence
+            .iter()
+            .any(|evidence| matches!(
+                evidence,
+                AuthorisationEvidence::Decision {
+                    verdict: DecisionVerdict::Material,
+                    ..
+                }
+            ))
+    );
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest state")
+        .expect("state saved");
+    assert_eq!(
+        latest.pass_index, 1,
+        "NoOp fixes do not advance the PR head"
+    );
+    assert!(
+        latest
+            .loop_history
+            .iter()
+            .any(|pass| pass.fix_outcome == Some(RunOutcome::NoOp))
+    );
+    assert!(
+        latest
+            .decisions
+            .iter()
+            .any(|decision| decision.verdict == DecisionVerdict::Converged)
+    );
+}
+
+#[test]
+fn shipped_baseline_trigger_pack_pins_loop_composition() {
+    let root = tempdir().expect("baseline trigger pack root");
+    let pack_path = pump19_adaptations::write_baseline_trigger_pack(root.path(), "estate-baseline")
+        .expect("write baseline trigger pack");
+    let rules = pump19_adaptations::load_trigger_rules(&pack_path).expect("load baseline rules");
+
+    assert_eq!(
+        rules
+            .iter()
+            .map(|rule| rule.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "review-on-pr-change",
+            "judge-after-review",
+            "judge-after-noop-fix",
+            "fix-after-material-judge",
+            "finish-on-label",
+        ]
+    );
+    assert!(rules.iter().any(|rule| {
+        rule.id == "judge-after-noop-fix"
+            && rule.run_kind == RunKind::Judge
+            && matches!(
+                rule.criteria,
+                Criteria::Event {
+                    event: EventKind::RunCompleted {
+                        run_kind: Some(RunKind::Fix),
+                        outcome: Some(RunOutcome::NoOp),
+                    }
+                }
+            )
+            && rule
+                .agent_plan
+                .judge
+                .as_ref()
+                .is_some_and(|target| target.agent_id.0 == "judge-glm")
+    }));
+    let finish = rules
+        .iter()
+        .find(|rule| rule.id == "finish-on-label")
+        .expect("finish rule exists");
+    let Criteria::All { criteria } = &finish.criteria else {
+        assert!(matches!(finish.criteria, Criteria::All { .. }));
+        return;
+    };
+    assert!(criteria.iter().any(|criterion| matches!(
+        criterion,
+        Criteria::State {
+            state: StateCriterion::HasConverged
+        }
+    )));
+    assert!(criteria.iter().any(|criterion| matches!(
+        criterion,
+        Criteria::State {
+            state: StateCriterion::CleanAndCurrent
+        }
+    )));
+}
+
+#[test]
+fn real_judge_body_replays_noop_loop_history_findings() {
+    let root = tempdir().expect("noop judge estate root");
+    let standing = finding();
+    let mut request = run_request(
+        RunKind::Judge,
+        vec![verified_provenance("judge-glm", AgentRole::Judge, "glm")],
+    );
+    request.state.findings.clear();
+    request.state.decisions.clear();
+    request.state.loop_history.push(LoopPassRecord {
+        pass_index: 1,
+        commit_sha: "head-sha-1".to_owned(),
+        findings: vec![standing.clone()],
+        decisions: vec![pump19_contract::Decision {
+            contract_version: version(),
+            id: "decision-before-noop".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: standing.id.clone(),
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "standing before NoOp fix".to_owned(),
+            provenance: verified_provenance("judge-glm", AgentRole::Judge, "glm"),
+            extensions: extensions(),
+        }],
+        patches: Vec::new(),
+        judge_verdict: Some(DecisionVerdict::Material),
+        fix_outcome: Some(RunOutcome::NoOp),
+    });
+    let runner = EstateEnsembleRunner::new(
+        json!([{
+            "finding_id": standing.id.0,
+            "verdict": "minor",
+            "rationale": "NoOp fix exhausted useful changes"
+        }]),
+        vec![archive_agent("judge-glm", "glm")],
+    );
+    let workflow_requests = runner.requests();
+    let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path(), "judge"));
+    let mut executor = EstateExecutor::new(Vec::new());
+
+    let decisions = judge
+        .run_judge(&request, &mut executor)
+        .expect("real judge body replays NoOp history");
+
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].verdict, DecisionVerdict::Minor);
+    assert!(matches!(
+        decisions[0].subject,
+        DecisionSubject::Finding { ref finding_id } if finding_id == &standing.id
+    ));
+    let workflow_args = &workflow_requests.borrow()[0].args;
+    assert_eq!(
+        workflow_args["current_findings"][0]["id"],
+        json!(standing.id.0)
+    );
+    assert_eq!(workflow_args["fix_outcomes"], json!(["no_op"]));
+    assert_eq!(
+        workflow_args["loop_history"][0]["fix_outcome"],
+        json!("no_op")
+    );
+    assert!(executor.execs.is_empty());
+}
+
+#[test]
+fn restart_rederives_unprocessed_completion_and_drives_next_trigger_once() {
+    let mut state = run_state();
+    let review_run = RunId("review-completed-before-restart".to_owned());
+    state.status = RunStatus::Completed;
+    state.active_run = None;
+    state.findings = vec![
+        finding_with(
+            "recovered-codex-finding",
+            verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+            1,
+        ),
+        finding_with(
+            "recovered-claude-finding",
+            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            1,
+        ),
+    ];
+    state.run_history.push(RunRecord {
+        run_id: review_run,
+        run_kind: RunKind::Review,
+        event_id: "forgejo-pr-opened".to_owned(),
+        rule_id: "review-on-pr-opened".to_owned(),
+        pass_index: 1,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Completed,
+        outcome: Some(RunOutcome::Succeeded),
+        refusal: None,
+        ensemble_archive_path: None,
+    });
+    let state_store = SharedEstateStateStore::with_state(state);
+    let state_observer = state_store.clone();
+    let launcher = RecordingLauncher::new(vec![LaunchProof::EstablishedFresh]);
+    let launch_requests = Rc::clone(&launcher.launched);
+    let mut core = Core::new(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-completion-recovery-estate")),
+        },
+        launcher,
+        state_store,
+    );
+
+    let recovered = core
+        .rederive_pending_completions()
+        .expect("completion recovery succeeds");
+    assert_eq!(recovered.queued, 1);
+    assert_eq!(recovered.terminal_replays, 1);
+    assert_eq!(recovered.stale_running_failures, 0);
+    let recovered = core
+        .rederive_pending_completions()
+        .expect("completion recovery is idempotent");
+    assert_eq!(recovered.queued, 0);
+    assert_eq!(core.pending_event_count(), 1);
+
+    let batches = core
+        .drain_available(&[judge_after_review_rule()])
+        .expect("recovered completion is processed");
+
+    assert_eq!(
+        batches
+            .iter()
+            .filter(|batch| matches!(batch.as_slice(), [DispatchOutcome::Launched { .. }]))
+            .count(),
+        1
+    );
+    assert_eq!(launch_requests.borrow().len(), 1);
+    assert_eq!(launch_requests.borrow()[0].run_kind, RunKind::Judge);
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest state")
+        .expect("state saved");
+    assert!(
+        latest
+            .run_history
+            .iter()
+            .any(|record| record.run_kind == RunKind::Judge)
+    );
+}
+
+#[test]
+fn prepared_source_is_injected_into_credential_free_workspace_before_launch() {
+    let temp = tempdir().expect("temp source estate");
+    let prepared_tree = temp.path().join("prepared-source");
+    let workspace_root = temp.path().join("workspace");
+    fs::create_dir_all(prepared_tree.join("src")).expect("create prepared source");
+    fs::write(
+        prepared_tree.join("src/lib.rs"),
+        "pub fn injected_source() -> &'static str { \"head-sha-1\" }\n",
+    )
+    .expect("write prepared source");
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let injections = Rc::new(RefCell::new(Vec::new()));
+    let cleanups = Rc::new(RefCell::new(Vec::new()));
+    let launcher = SourceCheckingLauncher::new(
+        "pub fn injected_source() -> &'static str { \"head-sha-1\" }\n",
+    );
+    let source_launches = Rc::clone(&launcher.launched);
+    let mut core = Core::with_forge_operations_and_source_preparer(
+        EmptyEventSource,
+        SourceRecordingWorkspaceProvider {
+            lease: workspace(workspace_root.clone()),
+            injections: Rc::clone(&injections),
+            cleanups: Rc::clone(&cleanups),
+        },
+        launcher,
+        SharedEstateStateStore::default(),
+        RecordingForgeOperations::default(),
+        PreparedTreeSourcePreparer {
+            tree: prepared_tree.clone(),
+            requests: Rc::clone(&requests),
+        },
+    );
+
+    let outcomes = core
+        .process_event(
+            &opened_event(contract_facts(
+                BranchCurrency::Current,
+                ReviewCleanliness::Dirty,
+                Vec::new(),
+            )),
+            &[review_rule(standard_plan())],
+        )
+        .expect("prepared source launches review");
+
+    assert!(matches!(
+        outcomes.as_slice(),
+        [DispatchOutcome::Launched { .. }]
+    ));
+    assert_eq!(requests.borrow().len(), 1);
+    assert_eq!(requests.borrow()[0].commit_sha, "head-sha-1");
+    assert_eq!(requests.borrow()[0].workspace.root, workspace_root);
+    assert_eq!(injections.borrow().len(), 1);
+    assert_eq!(injections.borrow()[0].revision, "head-sha-1");
+    assert!(!prepared_tree.exists());
+    assert_eq!(cleanups.borrow().as_slice(), ["workspace-1"]);
+    assert_eq!(source_launches.borrow().len(), 1);
+}
+
+#[test]
+fn source_preparation_failure_records_surfaces_and_cleans_without_launching() {
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let state_store = SharedEstateStateStore::default();
+    let observer = state_store.clone();
+    let cleanups = Rc::new(RefCell::new(Vec::new()));
+    let launcher = RecordingLauncher::new(vec![
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+    ]);
+    let failed_prep_launches = Rc::clone(&launcher.launched);
+    let mut core = Core::with_forge_operations_and_source_preparer(
+        EmptyEventSource,
+        SourceRecordingWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-source-prep-failure-estate")),
+            injections: Rc::new(RefCell::new(Vec::new())),
+            cleanups: Rc::clone(&cleanups),
+        },
+        launcher,
+        state_store,
+        forge_operations,
+        FailingSourcePreparer,
+    );
+
+    let result = core.process_event(
+        &opened_event(contract_facts(
+            BranchCurrency::Current,
+            ReviewCleanliness::Dirty,
+            Vec::new(),
+        )),
+        &[review_rule(standard_plan())],
+    );
+
+    assert!(matches!(
+        result,
+        Err(CoreError::SourcePreparation(message))
+            if message == "estate source preparation failed"
+    ));
+    assert!(failed_prep_launches.borrow().is_empty());
+    assert_eq!(cleanups.borrow().as_slice(), ["workspace-1"]);
+    assert_eq!(comments.borrow().len(), 1);
+    assert!(
+        comments.borrow()[0]
+            .body
+            .contains("estate source preparation failed")
+    );
+    assert!(
+        observer
+            .states()
+            .iter()
+            .any(|state| state.status == RunStatus::Failed)
+    );
+}
+
+#[test]
+fn stale_running_recovery_surfaces_failure_and_reopens_pr_dispatch() {
+    let review_run = RunId("review-running-before-restart".to_owned());
+    let mut state = run_state();
+    state.status = RunStatus::Running;
+    state.active_run = Some(RunRecord {
+        run_id: review_run.clone(),
+        run_kind: RunKind::Review,
+        event_id: "forgejo-pr-opened".to_owned(),
+        rule_id: "review-on-pr-opened".to_owned(),
+        pass_index: 1,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Running,
+        outcome: None,
+        refusal: None,
+        ensemble_archive_path: None,
+    });
+    state.extensions.insert(
+        "pump19.core.running_run_id".to_owned(),
+        Value::String(review_run.0.clone()),
+    );
+    let state_store = SharedEstateStateStore::with_state(state);
+    let observer = state_store.clone();
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let launcher = RecordingLauncher::new(vec![
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+    ]);
+    let recovery_launches = Rc::clone(&launcher.launched);
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-stale-running-recovery-estate")),
+        },
+        launcher,
+        state_store,
+        forge_operations,
+    );
+
+    let recovered = core
+        .rederive_pending_completions()
+        .expect("stale running recovery succeeds");
+    assert_eq!(recovered.queued, 1);
+    assert_eq!(recovered.terminal_replays, 0);
+    assert_eq!(recovered.stale_running_failures, 1);
+    assert_eq!(comments.borrow().len(), 1);
+    assert!(comments.borrow()[0].body.contains("daemon restarted"));
+    let failed = observer
+        .load_by_run_id(&review_run)
+        .expect("load failed state")
+        .expect("failed state saved");
+    assert_eq!(failed.status, RunStatus::Failed);
+    assert_eq!(failed.run_history[0].outcome, Some(RunOutcome::Failed));
+
+    let outcomes = core
+        .process_event(
+            &updated_event(
+                "retry-after-stale-running-recovery",
+                contract_facts(
+                    BranchCurrency::Current,
+                    ReviewCleanliness::Dirty,
+                    Vec::new(),
+                ),
+            ),
+            &[review_on_pr_updated_rule()],
+        )
+        .expect("PR update launches after recovery");
+
+    assert!(matches!(
+        outcomes.as_slice(),
+        [DispatchOutcome::Launched { .. }]
+    ));
+    assert_eq!(recovery_launches.borrow().len(), 1);
+}
+
+#[test]
 fn duplicate_pr_event_is_idempotent_and_does_not_launch_a_second_run() {
     let state_store = SharedEstateStateStore::default();
     let launcher = RecordingLauncher::new(vec![
@@ -1809,6 +2690,8 @@ fn moved_pr_head_supersedes_running_old_head_and_reenters_on_new_head() {
         commit_sha: "head-sha-1".to_owned(),
         status: RunStatus::Running,
         outcome: None,
+        refusal: None,
+        ensemble_archive_path: None,
     });
     old_state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),
@@ -1997,18 +2880,14 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let mut judge = EnsembleJudgeBody::new(
         EstateEnsembleRunner::new(
             json!([{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]),
-            vec![archive_agent("judge-gemini", "gemini")],
+            vec![archive_agent("judge-glm", "glm")],
         ),
         ensemble_config(judge_workspace.path(), "judge"),
     );
     let mut judge_executor = EstateExecutor::new(Vec::new());
     let judge_request = run_request(
         RunKind::Judge,
-        vec![verified_provenance(
-            "judge-gemini",
-            AgentRole::Judge,
-            "gemini",
-        )],
+        vec![verified_provenance("judge-glm", AgentRole::Judge, "glm")],
     );
     let decisions = judge
         .run_judge(&judge_request, &mut judge_executor)
@@ -2325,7 +3204,7 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
         EstateSessions,
         EnsembleReviewBody::new(review_runner, ensemble_config(root.path(), "review")),
         EnsembleJudgeBody::new(
-            EstateEnsembleRunner::new(json!([]), vec![archive_agent("judge-gemini", "gemini")]),
+            EstateEnsembleRunner::new(json!([]), vec![archive_agent("judge-glm", "glm")]),
             ensemble_config(root.path(), "judge"),
         ),
         EnsembleFixBody::new(

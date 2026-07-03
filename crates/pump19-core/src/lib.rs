@@ -10,21 +10,22 @@
 )]
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use pump19_contract::{
     ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
     DecisionVerdict, EventPayload, Extensions, Finding, FindingCommentPublication,
     FindingCommentStatus, FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt,
-    LoopPassRecord, ModelFamily, ModelLineage, ModelProvenance, Patch, PrRunState,
-    ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus, PublicationOperation,
-    PublicationState, PublishedFixCommit, PullRequestRef, RunCeiling, RunId, RunKind, RunOutcome,
-    RunRecord, RunStatus, SessionFreshness, SessionId, has_two_verified_reviewer_families,
-    judge_independent_of_reviewers, merge_gate_clean_and_current, reviewers_disjoint_from_fixers,
-    sessions_fresh_for_pass,
+    LoopPassRecord, MergePublication, ModelFamily, ModelLineage, ModelProvenance, Patch,
+    PrRunState, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
+    PublicationOperation, PublicationRefusal, PublicationRefusalReason, PublicationState,
+    PublishedFixCommit, PullRequestRef, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
+    RunRefusal, RunRefusalReason, RunStatus, SessionFreshness, SessionId,
+    has_two_verified_reviewer_families, judge_independent_of_reviewers,
+    merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,8 +49,16 @@ pub enum CoreError {
     EventSource(String),
     #[error("workspace provider failed: {0}")]
     Workspace(String),
+    #[error("source preparation failed: {0}")]
+    SourcePreparation(String),
     #[error("run launcher failed: {0}")]
     Launcher(String),
+    #[error("required model family {family:?} for agent {agent_id:?} is unavailable: {reason}")]
+    RequiredFamilyUnavailable {
+        agent_id: AgentId,
+        family: ModelFamily,
+        reason: String,
+    },
     #[error("state store failed: {0}")]
     StateStore(String),
     #[error("forge operation failed: {0}")]
@@ -86,6 +95,20 @@ pub trait WorkspaceProvider {
     ///
     /// Returns an error when the provider cannot create or describe the workspace.
     fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError>;
+
+    /// Injects a trusted, already-prepared source tree into the workspace boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider cannot make the source visible to
+    /// commands executed inside the isolated workspace.
+    fn inject_source(
+        &mut self,
+        _lease: &WorkspaceLease,
+        _source: &PreparedSource,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
 
     /// Executes a command inside the prepared workspace boundary.
     ///
@@ -127,6 +150,48 @@ pub trait RunLauncher {
         request: RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<RunLaunchOutcome, CoreError>;
+}
+
+/// Checks out and prepares PR source on the trusted side of the workspace boundary.
+pub trait SourcePreparer {
+    /// Returns whether this preparer should run for dispatches.
+    #[must_use]
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    /// Produces a plain, credential-free tree for the requested PR revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when checkout, dependency prefetch, or any mechanical
+    /// preparation step fails.
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError>;
+}
+
+/// Source preparation disabled for tests and configurations that explicitly do
+/// not need source material.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NoopSourcePreparer;
+
+impl SourcePreparer for NoopSourcePreparer {
+    fn enabled(&self) -> bool {
+        false
+    }
+
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError> {
+        Ok(PreparedSource {
+            tree: request.workspace.root,
+            revision: request.commit_sha,
+            cleanup_root: None,
+        })
+    }
 }
 
 /// Executes forge side effects after the core has already authorised them.
@@ -285,6 +350,9 @@ pub enum AuthorisationEvidence {
     RunFailure {
         run_id: RunId,
     },
+    LaunchRefusal {
+        run_id: RunId,
+    },
     FinishLabelAuthority {
         label: FinishLabel,
     },
@@ -308,6 +376,7 @@ pub struct AuthorisationContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorisedComment {
     pub authorisation: AuthorisationContext,
+    pub expected_head_sha: String,
     pub body: String,
 }
 
@@ -315,6 +384,7 @@ pub struct AuthorisedComment {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorisedCommentUpdate {
     pub authorisation: AuthorisationContext,
+    pub expected_head_sha: String,
     pub comment_operation_id: String,
     pub body: String,
 }
@@ -323,6 +393,7 @@ pub struct AuthorisedCommentUpdate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorisedCommentResolution {
     pub authorisation: AuthorisationContext,
+    pub expected_head_sha: String,
     pub comment_operation_id: String,
     pub reason: String,
 }
@@ -366,6 +437,34 @@ pub enum MergeMethod {
     Rebase,
 }
 
+/// Core-side policy for applying the finish label after convergence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CorePolicy {
+    pub finish_label_application: FinishLabelApplicationPolicy,
+}
+
+impl CorePolicy {
+    #[must_use]
+    pub const fn human_gate() -> Self {
+        Self {
+            finish_label_application: FinishLabelApplicationPolicy::HumanOnly,
+        }
+    }
+}
+
+impl Default for CorePolicy {
+    fn default() -> Self {
+        Self::human_gate()
+    }
+}
+
+/// Whether convergence may cause the core itself to apply the finish label.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FinishLabelApplicationPolicy {
+    HumanOnly,
+    CoreOnConvergence { label: String },
+}
+
 /// Receipt returned by an outbound forge operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForgeOperationReceipt {
@@ -379,6 +478,13 @@ pub struct ForgeOperationReceipt {
 pub enum ForgeOperationError {
     #[error("authorised forge operation has invalid shape: {0}")]
     InvalidRequest(&'static str),
+    #[error(
+        "PR head moved before publication: expected {expected_head_sha}, actual {actual_head_sha:?}"
+    )]
+    HeadMoved {
+        expected_head_sha: String,
+        actual_head_sha: Option<String>,
+    },
     #[error("credentialed forge client failed: {0}")]
     Client(String),
 }
@@ -437,6 +543,20 @@ pub trait RunStateStore {
     /// Returns an error when the store cannot read or decode candidate states.
     fn load_by_run_id(&self, run_id: &RunId) -> Result<Option<PrRunState>, CoreError>;
 
+    /// Loads states that may contain terminal runs whose completion events need
+    /// regenerating after a daemon restart.
+    ///
+    /// Stores that cannot enumerate safely may return an empty list. The JSON
+    /// deployment store implements this so the self-emitted completion queue is
+    /// recoverable from durable state rather than process memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot read or decode candidate states.
+    fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+        Ok(Vec::new())
+    }
+
     /// Saves state durably enough that a crash cannot be mistaken for success.
     ///
     /// # Errors
@@ -445,18 +565,30 @@ pub trait RunStateStore {
     fn save(&mut self, state: &PrRunState) -> Result<(), CoreError>;
 }
 
+/// Summary of completion events rederived from durable state after restart.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CompletionRecoverySummary {
+    pub queued: usize,
+    pub terminal_replays: usize,
+    pub stale_running_failures: usize,
+    pub errors_continued: usize,
+}
+
 /// Deterministic dispatch-and-enforce core.
 #[derive(Debug)]
-pub struct Core<E, W, L, S, F = NoopForgeOperations> {
+pub struct Core<E, W, L, S, F = NoopForgeOperations, P = NoopSourcePreparer> {
     event_source: E,
     pending_events: VecDeque<ContractEvent>,
+    queued_completion_event_ids: BTreeSet<String>,
     workspace_provider: W,
     launcher: L,
     state_store: S,
     forge_operations: F,
+    source_preparer: P,
+    policy: CorePolicy,
 }
 
-impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations>
+impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations, NoopSourcePreparer>
 where
     E: EventSource,
     W: WorkspaceProvider,
@@ -491,13 +623,86 @@ where
         state_store: S,
         forge_operations: F,
     ) -> Self {
-        Self {
+        Self::with_forge_operations_and_policy(
             event_source,
-            pending_events: VecDeque::new(),
             workspace_provider,
             launcher,
             state_store,
             forge_operations,
+            CorePolicy::human_gate(),
+        )
+    }
+
+    #[must_use]
+    pub const fn with_forge_operations_and_policy(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        policy: CorePolicy,
+    ) -> Self {
+        Self::with_forge_operations_source_preparer_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            NoopSourcePreparer,
+            policy,
+        )
+    }
+}
+
+impl<E, W, L, S, F, P> Core<E, W, L, S, F, P>
+where
+    E: EventSource,
+    W: WorkspaceProvider,
+    L: RunLauncher,
+    S: RunStateStore,
+    F: ForgeOperations,
+    P: SourcePreparer,
+{
+    #[must_use]
+    pub const fn with_forge_operations_and_source_preparer(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        source_preparer: P,
+    ) -> Self {
+        Self::with_forge_operations_source_preparer_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            source_preparer,
+            CorePolicy::human_gate(),
+        )
+    }
+
+    #[must_use]
+    pub const fn with_forge_operations_source_preparer_and_policy(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        source_preparer: P,
+        policy: CorePolicy,
+    ) -> Self {
+        Self {
+            event_source,
+            pending_events: VecDeque::new(),
+            queued_completion_event_ids: BTreeSet::new(),
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            source_preparer,
+            policy,
         }
     }
 
@@ -536,6 +741,105 @@ where
             batches.push(outcomes);
         }
         Ok(batches)
+    }
+
+    /// Regenerates self-emitted run-completion events from durable run state.
+    ///
+    /// This is the crash-recovery counterpart to the in-process completion queue:
+    /// after a restart, the completed run record is still present in the store,
+    /// so the same stable completion event id can be derived and re-entered into
+    /// ordinary dispatch. Duplicate prechecks then skip any completion that was
+    /// already processed before the crash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state store cannot enumerate or decode candidate
+    /// states for recovery.
+    pub fn rederive_pending_completions(&mut self) -> Result<CompletionRecoverySummary, CoreError> {
+        let pending_ids = self
+            .pending_events
+            .iter()
+            .map(|event| event.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut summary = CompletionRecoverySummary::default();
+        for state in self.state_store.completion_recovery_states()? {
+            if state.status == RunStatus::Running {
+                match self.resolve_stale_running_state(state) {
+                    Ok(Some(event)) => {
+                        summary.stale_running_failures += 1;
+                        if pending_ids.contains(&event.id)
+                            || self.queued_completion_event_ids.contains(&event.id)
+                        {
+                            continue;
+                        }
+                        self.queue_completion_event(event);
+                        summary.queued += 1;
+                    }
+                    Ok(None) => {
+                        summary.stale_running_failures += 1;
+                    }
+                    Err(error) if recovery_error_is_fatal(&error) => return Err(error),
+                    Err(_error) => {
+                        summary.errors_continued += 1;
+                    }
+                }
+                continue;
+            }
+            for record in &state.run_history {
+                let Some(event) = run_completed_event_from_record(record) else {
+                    continue;
+                };
+                if pending_ids.contains(&event.id)
+                    || self.queued_completion_event_ids.contains(&event.id)
+                {
+                    continue;
+                }
+                self.queue_completion_event(event);
+                summary.terminal_replays += 1;
+                summary.queued += 1;
+            }
+        }
+        Ok(summary)
+    }
+
+    fn resolve_stale_running_state(
+        &mut self,
+        mut state: PrRunState,
+    ) -> Result<Option<ContractEvent>, CoreError> {
+        let Some(mut record) = state.active_run.clone() else {
+            state.status = RunStatus::Failed;
+            state.extensions.insert(
+                EXT_LAST_FAILURE.to_owned(),
+                Value::String(
+                    "daemon restarted with stale running state but no active run record".to_owned(),
+                ),
+            );
+            self.state_store.save(&state)?;
+            return Ok(None);
+        };
+        let message = "daemon restarted while run was still recorded as running";
+        state.status = RunStatus::Failed;
+        state.extensions.insert(
+            EXT_LAST_FAILURE.to_owned(),
+            Value::String(message.to_owned()),
+        );
+        record_terminal_run(
+            &mut state,
+            record.clone(),
+            RunStatus::Failed,
+            Some(RunOutcome::Failed),
+        );
+        self.state_store.save(&state)?;
+        self.surface_failure(&record.run_id, &mut state, message)?;
+        self.state_store.save(&state)?;
+        record.status = RunStatus::Failed;
+        record.outcome = Some(RunOutcome::Failed);
+        Ok(run_completed_event_from_record(&record))
+    }
+
+    #[must_use]
+    pub fn pending_event_count(&self) -> usize {
+        self.pending_events.len()
     }
 
     /// Evaluates trigger rules for one event and launches only authorised runs.
@@ -638,32 +942,16 @@ where
         rule: &TriggerRule,
         state: PrRunState,
     ) -> Result<DispatchOutcome, CoreError> {
-        if let Some(outcome) = dispatch_precheck(&state, event, rule) {
+        let run_id = run_id_for(event, rule, state.pass_index);
+        if let Some(outcome) = self.handle_dispatch_precheck(&state, event, rule, &run_id)? {
             return Ok(outcome);
         }
 
-        let run_id = run_id_for(event, rule, state.pass_index);
-        let prepared = match self.prepare_provenance(&rule.agent_plan, state.pass_index) {
+        let prepared = match self.prepare_provenance_or_refusal(event, rule, &state, &run_id)? {
             Ok(prepared) => prepared,
-            Err(error) => {
-                let message = error.to_string();
-                self.record_failed_dispatch(state, event, rule, &run_id, message.as_str())?;
-                return Err(error);
-            }
+            Err(outcome) => return Ok(outcome),
         };
-        let workspace = match self.workspace_provider.prepare(WorkspaceRequest {
-            run_id: run_id.clone(),
-            run_kind: rule.run_kind,
-            pr: state.pr.clone(),
-            commit_sha: state.commit_sha.clone(),
-        }) {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                let message = error.to_string();
-                self.record_failed_dispatch(state, event, rule, &run_id, message.as_str())?;
-                return Err(error);
-            }
-        };
+        let workspace = self.prepare_workspace_or_record_failure(event, rule, &state, &run_id)?;
         let mut gate_provenance = collect_state_provenance(&state);
         gate_provenance.extend(prepared.iter().cloned());
 
@@ -671,13 +959,22 @@ where
             evaluate_gate(&gate_provenance, &prepared, state.pass_index, &workspace)
         {
             let failure = format!("launch refused: {reason:?}");
-            self.record_failed_dispatch(state, event, rule, &run_id, failure.as_str())?;
+            self.record_failed_launch_refusal(
+                state,
+                event,
+                rule,
+                &run_id,
+                &reason,
+                failure.as_str(),
+            )?;
             self.workspace_provider.cleanup(&workspace)?;
             return Ok(DispatchOutcome::Refused {
                 rule_id: rule.id.clone(),
                 reason,
             });
         }
+
+        self.prepare_and_inject_source(event, rule, &state, &run_id, &workspace)?;
 
         let mut running_state = mark_running(state, event, rule, &run_id);
         if let Err(error) = self.state_store.save(&running_state) {
@@ -737,13 +1034,181 @@ where
         save_result?;
         cleanup_result?;
         if let Some(completion_event) = run_completed_event_from_state(&running_state, &run_id) {
-            self.pending_events.push_back(completion_event);
+            self.queue_completion_event(completion_event);
         }
 
         Ok(DispatchOutcome::Launched {
             rule_id: rule.id.clone(),
             run_id,
         })
+    }
+
+    fn handle_dispatch_precheck(
+        &mut self,
+        state: &PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchOutcome>, CoreError> {
+        let Some(outcome) = dispatch_precheck(state, event, rule) else {
+            return Ok(None);
+        };
+        if let DispatchOutcome::Refused { reason, .. } = &outcome
+            && *reason == LaunchRefusal::RunCeilingReached
+        {
+            self.record_skipped_refusal(state.clone(), event, rule, run_id, reason)?;
+        }
+        Ok(Some(outcome))
+    }
+
+    fn prepare_provenance_or_refusal(
+        &mut self,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        state: &PrRunState,
+        run_id: &RunId,
+    ) -> Result<Result<Vec<ModelProvenance>, DispatchOutcome>, CoreError> {
+        match self.prepare_provenance(&rule.agent_plan, state.pass_index) {
+            Ok(prepared) => Ok(Ok(prepared)),
+            Err(error) => {
+                if let Some(reason) = launch_refusal_from_prepare_error(&error) {
+                    let failure = format!("launch refused: {reason:?}");
+                    self.record_failed_launch_refusal(
+                        state.clone(),
+                        event,
+                        rule,
+                        run_id,
+                        &reason,
+                        failure.as_str(),
+                    )?;
+                    return Ok(Err(DispatchOutcome::Refused {
+                        rule_id: rule.id.clone(),
+                        reason,
+                    }));
+                }
+                let message = error.to_string();
+                self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str())?;
+                Err(error)
+            }
+        }
+    }
+
+    fn prepare_workspace_or_record_failure(
+        &mut self,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        state: &PrRunState,
+        run_id: &RunId,
+    ) -> Result<WorkspaceLease, CoreError> {
+        match self.workspace_provider.prepare(WorkspaceRequest {
+            run_id: run_id.clone(),
+            run_kind: rule.run_kind,
+            pr: state.pr.clone(),
+            commit_sha: state.commit_sha.clone(),
+        }) {
+            Ok(workspace) => Ok(workspace),
+            Err(error) => {
+                let message = error.to_string();
+                self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str())?;
+                Err(error)
+            }
+        }
+    }
+
+    fn prepare_and_inject_source(
+        &mut self,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        state: &PrRunState,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if !self.source_preparer.enabled() {
+            return Ok(());
+        }
+        let prepared_source = match self
+            .source_preparer
+            .prepare_source(SourcePreparationRequest {
+                run_id: run_id.clone(),
+                run_kind: rule.run_kind,
+                event: event.clone(),
+                state: state.clone(),
+                workspace: workspace.clone(),
+                pr: state.pr.clone(),
+                commit_sha: state.commit_sha.clone(),
+            }) {
+            Ok(source) => source,
+            Err(error) => {
+                self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_prepared_source(&prepared_source, &state.commit_sha) {
+            self.cleanup_prepared_source_or_fail(
+                &prepared_source,
+                state,
+                event,
+                rule,
+                run_id,
+                workspace,
+            )?;
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .workspace_provider
+            .inject_source(workspace, &prepared_source)
+        {
+            self.cleanup_prepared_source_or_fail(
+                &prepared_source,
+                state,
+                event,
+                rule,
+                run_id,
+                workspace,
+            )?;
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = cleanup_external_prepared_source(&prepared_source, workspace) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        if let Err(error) = reject_credential_residue(&workspace.root) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn cleanup_prepared_source_or_fail(
+        &mut self,
+        source: &PreparedSource,
+        state: &PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if let Err(error) = cleanup_external_prepared_source(source, workspace) {
+            self.fail_before_run(state, event, rule, run_id, workspace, &error)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn fail_before_run(
+        &mut self,
+        state: &PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+        error: &CoreError,
+    ) -> Result<(), CoreError> {
+        let message = error.to_string();
+        self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str())?;
+        self.workspace_provider.cleanup(workspace)
     }
 
     fn record_failed_dispatch(
@@ -760,6 +1225,36 @@ where
         self.state_store.save(&state)
     }
 
+    fn record_failed_launch_refusal(
+        &mut self,
+        mut state: PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        refusal: &LaunchRefusal,
+        message: &str,
+    ) -> Result<(), CoreError> {
+        mark_failed_refusal(&mut state, event, rule, run_id, refusal, message);
+        self.state_store.save(&state)?;
+        self.surface_failure(run_id, &mut state, message)?;
+        self.state_store.save(&state)
+    }
+
+    fn record_skipped_refusal(
+        &mut self,
+        mut state: PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        refusal: &LaunchRefusal,
+    ) -> Result<(), CoreError> {
+        let message = format!("launch skipped: {refusal:?}");
+        mark_skipped_refusal(&mut state, event, rule, run_id, refusal, message.as_str());
+        self.state_store.save(&state)?;
+        self.surface_refusal(run_id, &mut state, refusal, message.as_str())?;
+        self.state_store.save(&state)
+    }
+
     fn surface_failure(
         &mut self,
         run_id: &RunId,
@@ -770,10 +1265,21 @@ where
             return Ok(());
         };
         let idempotency_key = stable_id("forge-failure", [run_id.0.as_str()]);
+        let expected_head_sha = facts.head.sha;
+        if self.refuse_comment_if_head_moved(
+            state,
+            run_id,
+            PublicationOperation::PostFailureComment,
+            idempotency_key.clone(),
+            expected_head_sha.clone(),
+        )? {
+            self.state_store.save(state)?;
+            return Ok(());
+        }
         let result = self.forge_operations.post_comment(AuthorisedComment {
             authorisation: AuthorisationContext {
                 pr: state.pr.clone(),
-                observed_head_sha: facts.head.sha,
+                observed_head_sha: expected_head_sha.clone(),
                 idempotency_key: idempotency_key.clone(),
                 actor: core_actor(),
                 reason: "core surfaced failed Pump-19 run".to_owned(),
@@ -781,17 +1287,69 @@ where
                     run_id: run_id.clone(),
                 }],
             },
+            expected_head_sha: expected_head_sha.clone(),
             body: failure_comment(run_id, message),
         });
-        record_publication_attempt(
+        record_surface_comment_attempt(
             state,
             run_id,
             PublicationOperation::PostFailureComment,
             idempotency_key,
-            result
-                .map(receipt_to_contract)
-                .map_err(|error| error.to_string()),
+            expected_head_sha,
+            result,
         );
+        self.state_store.save(state)?;
+        Ok(())
+    }
+
+    fn surface_refusal(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+        refusal: &LaunchRefusal,
+        message: &str,
+    ) -> Result<(), CoreError> {
+        let Some(facts) = forge_facts_from_state(state)? else {
+            return Ok(());
+        };
+        let reason = format!("{refusal:?}");
+        let idempotency_key = stable_id("forge-refusal", [run_id.0.as_str(), reason.as_str()]);
+        let expected_head_sha = facts.head.sha;
+        if self.refuse_comment_if_head_moved(
+            state,
+            run_id,
+            PublicationOperation::PostRefusalComment {
+                reason: reason.clone(),
+            },
+            idempotency_key.clone(),
+            expected_head_sha.clone(),
+        )? {
+            self.state_store.save(state)?;
+            return Ok(());
+        }
+        let result = self.forge_operations.post_comment(AuthorisedComment {
+            authorisation: AuthorisationContext {
+                pr: state.pr.clone(),
+                observed_head_sha: expected_head_sha.clone(),
+                idempotency_key: idempotency_key.clone(),
+                actor: core_actor(),
+                reason: "core surfaced Pump-19 launch refusal".to_owned(),
+                evidence: vec![AuthorisationEvidence::LaunchRefusal {
+                    run_id: run_id.clone(),
+                }],
+            },
+            expected_head_sha: expected_head_sha.clone(),
+            body: refusal_comment(run_id, message),
+        });
+        record_surface_comment_attempt(
+            state,
+            run_id,
+            PublicationOperation::PostRefusalComment { reason },
+            idempotency_key,
+            expected_head_sha,
+            result,
+        );
+        self.state_store.save(state)?;
         Ok(())
     }
 
@@ -814,13 +1372,22 @@ where
         state: &mut PrRunState,
     ) -> Result<(), CoreError> {
         match run_kind {
-            RunKind::Judge => self.post_material_findings(run_id, state),
+            RunKind::Judge => self.apply_judge_forge_operations(run_id, state),
             RunKind::Fix => self.push_fix_patches(run_id, state),
             RunKind::Finish if state.status == RunStatus::Completed => {
                 self.merge_finished_pr(run_id, state)
             }
             RunKind::Review | RunKind::Finish => Ok(()),
         }
+    }
+
+    fn apply_judge_forge_operations(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        self.post_material_findings(run_id, state)?;
+        self.apply_finish_label_after_convergence(run_id, state)
     }
 
     fn post_material_findings(
@@ -892,11 +1459,26 @@ where
             finding,
             "core authorised material finding comment from judge decision",
         );
+        let expected_head_sha = facts.head.sha.clone();
+        if self.refuse_comment_if_head_moved(
+            state,
+            run_id,
+            PublicationOperation::PostFindingComment {
+                finding_id: finding.id.clone(),
+                finding_dedup_key: finding.dedup_key.clone(),
+            },
+            idempotency_key.clone(),
+            expected_head_sha.clone(),
+        )? {
+            self.state_store.save(state)?;
+            return Ok(());
+        }
         let result = self.forge_operations.post_comment(AuthorisedComment {
             authorisation,
+            expected_head_sha: expected_head_sha.clone(),
             body: material_finding_comment(finding, decision),
         });
-        let receipt = Self::record_finding_comment_attempt(
+        let receipt = self.record_finding_comment_attempt(
             state,
             run_id,
             PublicationOperation::PostFindingComment {
@@ -904,9 +1486,13 @@ where
                 finding_dedup_key: finding.dedup_key.clone(),
             },
             idempotency_key,
+            expected_head_sha,
             result,
         )?;
-        upsert_finding_comment_publication(state, finding, receipt, FindingCommentStatus::Open);
+        if let Some(receipt) = receipt {
+            upsert_finding_comment_publication(state, finding, receipt, FindingCommentStatus::Open);
+        }
+        self.state_store.save(state)?;
         Ok(())
     }
 
@@ -936,14 +1522,30 @@ where
             finding,
             "core authorised material finding comment update from judge decision",
         );
+        let expected_head_sha = facts.head.sha.clone();
+        if self.refuse_comment_if_head_moved(
+            state,
+            run_id,
+            PublicationOperation::UpdateFindingComment {
+                finding_id: finding.id.clone(),
+                finding_dedup_key: finding.dedup_key.clone(),
+                comment_operation_id: publication.comment_operation_id.clone(),
+            },
+            idempotency_key.clone(),
+            expected_head_sha.clone(),
+        )? {
+            self.state_store.save(state)?;
+            return Ok(());
+        }
         let result = self
             .forge_operations
             .update_comment(AuthorisedCommentUpdate {
                 authorisation,
+                expected_head_sha: expected_head_sha.clone(),
                 comment_operation_id: publication.comment_operation_id.clone(),
                 body: material_finding_comment(finding, decision),
             });
-        let receipt = Self::record_finding_comment_attempt(
+        let receipt = self.record_finding_comment_attempt(
             state,
             run_id,
             PublicationOperation::UpdateFindingComment {
@@ -952,9 +1554,13 @@ where
                 comment_operation_id: publication.comment_operation_id.clone(),
             },
             idempotency_key,
+            expected_head_sha,
             result,
         )?;
-        upsert_finding_comment_publication(state, finding, receipt, FindingCommentStatus::Open);
+        if let Some(receipt) = receipt {
+            upsert_finding_comment_publication(state, finding, receipt, FindingCommentStatus::Open);
+        }
+        self.state_store.save(state)?;
         Ok(())
     }
 
@@ -984,14 +1590,29 @@ where
                 finding_id: publication.latest_finding_id.clone(),
             }],
         };
+        let expected_head_sha = facts.head.sha.clone();
+        if self.refuse_comment_if_head_moved(
+            state,
+            run_id,
+            PublicationOperation::ResolveFindingComment {
+                finding_dedup_key: publication.finding_dedup_key.clone(),
+                comment_operation_id: publication.comment_operation_id.clone(),
+            },
+            idempotency_key.clone(),
+            expected_head_sha.clone(),
+        )? {
+            self.state_store.save(state)?;
+            return Ok(());
+        }
         let result = self
             .forge_operations
             .resolve_comment(AuthorisedCommentResolution {
                 authorisation,
+                expected_head_sha: expected_head_sha.clone(),
                 comment_operation_id: publication.comment_operation_id.clone(),
                 reason: "finding no longer material on this pass".to_owned(),
             });
-        let receipt = Self::record_finding_comment_attempt(
+        let receipt = self.record_finding_comment_attempt(
             state,
             run_id,
             PublicationOperation::ResolveFindingComment {
@@ -999,27 +1620,32 @@ where
                 comment_operation_id: publication.comment_operation_id.clone(),
             },
             idempotency_key,
+            expected_head_sha,
             result,
         )?;
-        if let Some(existing) = state
-            .publication
-            .finding_comments
-            .iter_mut()
-            .find(|existing| existing.finding_dedup_key == publication.finding_dedup_key)
+        if let Some(receipt) = receipt
+            && let Some(existing) = state
+                .publication
+                .finding_comments
+                .iter_mut()
+                .find(|existing| existing.finding_dedup_key == publication.finding_dedup_key)
         {
             existing.status = FindingCommentStatus::Resolved;
             existing.last_receipt = receipt;
         }
+        self.state_store.save(state)?;
         Ok(())
     }
 
     fn record_finding_comment_attempt(
+        &mut self,
         state: &mut PrRunState,
         run_id: &RunId,
         operation: PublicationOperation,
         idempotency_key: String,
+        expected_head_sha: String,
         result: Result<ForgeOperationReceipt, ForgeOperationError>,
-    ) -> Result<ForgeReceipt, CoreError> {
+    ) -> Result<Option<ForgeReceipt>, CoreError> {
         let receipt = match result {
             Ok(receipt) => {
                 let receipt = receipt_to_contract(receipt);
@@ -1028,9 +1654,37 @@ where
                     run_id,
                     operation,
                     idempotency_key,
+                    Some(expected_head_sha),
                     Ok(receipt.clone()),
                 );
                 receipt
+            }
+            Err(ForgeOperationError::HeadMoved {
+                expected_head_sha,
+                actual_head_sha,
+            }) => {
+                let message = format!(
+                    "publication refused because PR head moved from {expected_head_sha} to {actual_head_sha:?}"
+                );
+                record_refused_publication_attempt(
+                    state,
+                    run_id,
+                    operation,
+                    idempotency_key,
+                    Some(expected_head_sha.clone()),
+                    PublicationRefusal {
+                        reason: PublicationRefusalReason::HeadMoved {
+                            expected_head_sha,
+                            actual_head_sha: actual_head_sha.clone(),
+                        },
+                        message,
+                    },
+                );
+                if let Some(actual_head_sha) = actual_head_sha {
+                    mark_superseded(state, actual_head_sha, None);
+                }
+                self.state_store.save(state)?;
+                return Ok(None);
             }
             Err(error) => {
                 let message = error.to_string();
@@ -1039,12 +1693,55 @@ where
                     run_id,
                     operation,
                     idempotency_key,
+                    Some(expected_head_sha),
                     Err(message.clone()),
                 );
+                self.state_store.save(state)?;
                 return Err(CoreError::ForgeOperation(message));
             }
         };
-        Ok(receipt)
+        Ok(Some(receipt))
+    }
+
+    fn refuse_comment_if_head_moved(
+        &self,
+        state: &mut PrRunState,
+        run_id: &RunId,
+        operation: PublicationOperation,
+        idempotency_key: String,
+        expected_head_sha: String,
+    ) -> Result<bool, CoreError> {
+        let actual_head_sha = self.head_was_superseded_by(state)?;
+        let current_head_mismatch = state
+            .current_head_sha
+            .as_ref()
+            .is_some_and(|head| head != &expected_head_sha);
+        if actual_head_sha.is_none() && !current_head_mismatch {
+            return Ok(false);
+        }
+
+        let actual_head_sha = actual_head_sha.or_else(|| state.current_head_sha.clone());
+        let message = format!(
+            "publication refused because PR head moved from {expected_head_sha} to {actual_head_sha:?}"
+        );
+        record_refused_publication_attempt(
+            state,
+            run_id,
+            operation,
+            idempotency_key,
+            Some(expected_head_sha.clone()),
+            PublicationRefusal {
+                reason: PublicationRefusalReason::HeadMoved {
+                    expected_head_sha,
+                    actual_head_sha: actual_head_sha.clone(),
+                },
+                message,
+            },
+        );
+        if let Some(actual_head_sha) = actual_head_sha {
+            mark_superseded(state, actual_head_sha, None);
+        }
+        Ok(true)
     }
 
     fn push_fix_patches(
@@ -1081,9 +1778,10 @@ where
         );
         let commits = fix_commits_for_patches(&patches);
         let authorisation = fix_push_authorisation(state, &facts, &idempotency_key, &patch_ids);
+        let expected_head_sha = facts.head.sha;
         let result = self.forge_operations.push_fix_commits(AuthorisedFixPush {
             authorisation,
-            expected_head_sha: facts.head.sha,
+            expected_head_sha: expected_head_sha.clone(),
             commits: commits.clone(),
         });
         let receipt = match result {
@@ -1096,6 +1794,7 @@ where
                         patch_ids: patch_ids.clone(),
                     },
                     idempotency_key,
+                    Some(expected_head_sha),
                     Ok(receipt.clone()),
                 );
                 receipt
@@ -1107,8 +1806,10 @@ where
                     run_id,
                     PublicationOperation::PushFixCommits { patch_ids },
                     idempotency_key,
+                    Some(expected_head_sha),
                     Err(message.clone()),
                 );
+                self.state_store.save(state)?;
                 return Err(CoreError::ForgeOperation(message));
             }
         };
@@ -1118,10 +1819,83 @@ where
             commits: published_fix_commits(commits),
             receipt,
         });
+        self.state_store.save(state)?;
         Ok(())
     }
 
-    fn merge_finished_pr(&mut self, run_id: &RunId, state: &PrRunState) -> Result<(), CoreError> {
+    fn apply_finish_label_after_convergence(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        if !state_converged_for_current_pass(state) {
+            return Ok(());
+        }
+        let label = match &self.policy.finish_label_application {
+            FinishLabelApplicationPolicy::HumanOnly => return Ok(()),
+            FinishLabelApplicationPolicy::CoreOnConvergence { label } => label.clone(),
+        };
+        let Some(mut facts) = forge_facts_from_state(state)? else {
+            return Ok(());
+        };
+        let actor = core_actor();
+        if !core_may_apply_finish_label(&facts, &actor, &label) {
+            return Ok(());
+        }
+
+        let idempotency_key = stable_id(
+            "forge-apply-finish-label",
+            [run_id.0.as_str(), facts.head.sha.as_str(), label.as_str()],
+        );
+        let result = self.forge_operations.apply_label(AuthorisedLabel {
+            authorisation: finish_label_authorisation(
+                state,
+                &facts,
+                &actor,
+                idempotency_key.clone(),
+            ),
+            label: label.clone(),
+        });
+        if let Err(error) =
+            record_finish_label_attempt(state, run_id, &label, idempotency_key, result)
+        {
+            self.state_store.save(state)?;
+            return Err(error);
+        }
+
+        let finish_label = FinishLabel {
+            name: label.clone(),
+            applied_by: actor,
+        };
+        facts.finish_label = Some(finish_label.clone());
+        state.extensions.insert(
+            EXT_FORGE_FACTS.to_owned(),
+            serde_json::to_value(&facts).map_err(|source| CoreError::Json {
+                path: EXT_FORGE_FACTS.to_owned(),
+                source,
+            })?,
+        );
+        self.state_store.save(state)?;
+        self.queue_completion_event(ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: stable_id(
+                "event-finish-label-applied",
+                [run_id.0.as_str(), facts.head.sha.as_str(), label.as_str()],
+            ),
+            payload: EventPayload::LabelApplied {
+                pr: state.pr.clone(),
+                label: finish_label,
+            },
+            extensions: BTreeMap::new(),
+        });
+        Ok(())
+    }
+
+    fn merge_finished_pr(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
         let facts = forge_facts_from_state(state)?
             .ok_or_else(|| CoreError::ForgeOperation("missing forge facts for merge".to_owned()))?;
         if !merge_gate_clean_and_current(&facts) {
@@ -1137,10 +1911,13 @@ where
                 "finish label actor lacks merge capability".to_owned(),
             ));
         }
+        let idempotency_key =
+            stable_id("forge-merge", [run_id.0.as_str(), facts.head.sha.as_str()]);
+        let expected_head_sha = facts.head.sha;
         let authorisation = AuthorisationContext {
             pr: state.pr.clone(),
-            observed_head_sha: facts.head.sha.clone(),
-            idempotency_key: stable_id("forge-merge", [run_id.0.as_str(), facts.head.sha.as_str()]),
+            observed_head_sha: expected_head_sha.clone(),
+            idempotency_key: idempotency_key.clone(),
             actor: label.applied_by.clone(),
             reason: "core authorised merge from clean/current facts and finish label authority"
                 .to_owned(),
@@ -1153,16 +1930,46 @@ where
                     capability: ActorCapability::Merge,
                 },
                 AuthorisationEvidence::MergeGateCleanAndCurrent {
-                    facts_head_sha: facts.head.sha,
+                    facts_head_sha: expected_head_sha.clone(),
                 },
             ],
         };
-        self.forge_operations
-            .merge(AuthorisedMerge {
-                authorisation,
-                method: MergeMethod::Squash,
-            })
-            .map_err(|error| CoreError::ForgeOperation(error.to_string()))?;
+        let result = self.forge_operations.merge(AuthorisedMerge {
+            authorisation,
+            method: MergeMethod::Squash,
+        });
+        let receipt = match result {
+            Ok(receipt) => {
+                let receipt = receipt_to_contract(receipt);
+                record_publication_attempt(
+                    state,
+                    run_id,
+                    PublicationOperation::MergePullRequest,
+                    idempotency_key,
+                    Some(expected_head_sha),
+                    Ok(receipt.clone()),
+                );
+                receipt
+            }
+            Err(error) => {
+                let message = error.to_string();
+                record_publication_attempt(
+                    state,
+                    run_id,
+                    PublicationOperation::MergePullRequest,
+                    idempotency_key,
+                    Some(expected_head_sha),
+                    Err(message.clone()),
+                );
+                self.state_store.save(state)?;
+                return Err(CoreError::ForgeOperation(message));
+            }
+        };
+        state.publication.merges.push(MergePublication {
+            run_id: run_id.clone(),
+            receipt,
+        });
+        self.state_store.save(state)?;
         Ok(())
     }
 
@@ -1182,6 +1989,18 @@ where
         }
         Ok(provenances)
     }
+
+    fn queue_completion_event(&mut self, event: ContractEvent) {
+        self.queued_completion_event_ids.insert(event.id.clone());
+        self.pending_events.push_back(event);
+    }
+}
+
+const fn recovery_error_is_fatal(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::StateStore(_) | CoreError::Io { .. } | CoreError::Json { .. }
+    )
 }
 
 /// The durable key for a PR run state.
@@ -1326,6 +2145,14 @@ impl RunStateStore for JsonRunStateStore {
         Ok(self.all_states()?.into_iter().find(|state| {
             state.commit_sha != CONTROL_COMMIT_SHA && state_records_run(state, run_id)
         }))
+    }
+
+    fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+        Ok(self
+            .all_states()?
+            .into_iter()
+            .filter(|state| state.commit_sha != CONTROL_COMMIT_SHA)
+            .collect())
     }
 
     fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
@@ -1574,6 +2401,26 @@ pub struct WorkspaceRequest {
     pub commit_sha: String,
 }
 
+/// Request made to trusted source preparation before untrusted code can execute.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourcePreparationRequest {
+    pub run_id: RunId,
+    pub run_kind: RunKind,
+    pub event: ContractEvent,
+    pub state: PrRunState,
+    pub workspace: WorkspaceLease,
+    pub pr: PullRequestRef,
+    pub commit_sha: String,
+}
+
+/// A plain source tree prepared outside the credential-free workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedSource {
+    pub tree: PathBuf,
+    pub revision: String,
+    pub cleanup_root: Option<PathBuf>,
+}
+
 /// A prepared workspace plus isolation assertion from the trusted provider seam.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceLease {
@@ -1651,6 +2498,7 @@ pub struct RunLaunchOutcome {
     pub decisions: Vec<Decision>,
     pub patches: Vec<Patch>,
     pub token_usage: Option<u64>,
+    pub ensemble_archive_path: Option<String>,
 }
 
 /// Observable result of evaluating one matching trigger rule.
@@ -1679,12 +2527,22 @@ pub enum DispatchOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LaunchRefusal {
     RunCeilingReached,
+    RequiredFamilyUnavailable {
+        agent_id: AgentId,
+        family: ModelFamily,
+        reason: String,
+    },
     WorkspaceIsolationMissing,
-    UnverifiedProvenance { agent_id: AgentId, reason: String },
+    UnverifiedProvenance {
+        agent_id: AgentId,
+        reason: String,
+    },
     InsufficientReviewerFamilies,
     ReviewerFixerOverlap,
     MissingIndependentJudge,
-    NonFreshSession { agent_id: AgentId },
+    NonFreshSession {
+        agent_id: AgentId,
+    },
 }
 
 /// Reasons a trigger match did not have enough contract context to launch.
@@ -1846,6 +2704,8 @@ fn opencode_engine_family(model: &str) -> Option<&'static str> {
         || model.starts_with("o5")
     {
         Some("codex")
+    } else if model.starts_with("glm") || model.starts_with("z-ai/glm") {
+        Some("glm")
     } else if model.starts_with("gemini") || model.starts_with("palm") {
         Some("gemini")
     } else if model.starts_with("mistral") || model.starts_with("mixtral") {
@@ -1860,6 +2720,28 @@ fn opencode_engine_family(model: &str) -> Option<&'static str> {
         Some("grok")
     } else {
         None
+    }
+}
+
+fn launch_refusal_from_prepare_error(error: &CoreError) -> Option<LaunchRefusal> {
+    match error {
+        CoreError::RequiredFamilyUnavailable {
+            agent_id,
+            family,
+            reason,
+        } => Some(LaunchRefusal::RequiredFamilyUnavailable {
+            agent_id: agent_id.clone(),
+            family: family.clone(),
+            reason: reason.clone(),
+        }),
+        CoreError::EventSource(_)
+        | CoreError::Workspace(_)
+        | CoreError::SourcePreparation(_)
+        | CoreError::Launcher(_)
+        | CoreError::StateStore(_)
+        | CoreError::ForgeOperation(_)
+        | CoreError::Io { .. }
+        | CoreError::Json { .. } => None,
     }
 }
 
@@ -2078,6 +2960,95 @@ fn material_findings_for_pass(state: &PrRunState) -> Vec<(Finding, Decision)> {
         .collect()
 }
 
+fn state_converged_for_current_pass(state: &PrRunState) -> bool {
+    convergence_decision_id_for_current_pass(state).is_some()
+}
+
+fn convergence_decision_id_for_current_pass(state: &PrRunState) -> Option<String> {
+    state
+        .decisions
+        .iter()
+        .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
+        .find(|decision| decision.verdict == DecisionVerdict::Converged)
+        .map(|decision| decision.id.clone())
+}
+
+fn core_may_apply_finish_label(facts: &ForgeFacts, actor: &ActorRef, label: &str) -> bool {
+    facts
+        .finish_label
+        .as_ref()
+        .is_none_or(|finish_label| finish_label.name != label)
+        && merge_gate_clean_and_current(facts)
+        && actor_has_capability(facts, actor, ActorCapability::ApplyFinishLabel)
+}
+
+fn finish_label_authorisation(
+    state: &PrRunState,
+    facts: &ForgeFacts,
+    actor: &ActorRef,
+    idempotency_key: String,
+) -> AuthorisationContext {
+    AuthorisationContext {
+        pr: state.pr.clone(),
+        observed_head_sha: facts.head.sha.clone(),
+        idempotency_key,
+        actor: actor.clone(),
+        reason: "core authorised applying finish label after convergence".to_owned(),
+        evidence: vec![
+            AuthorisationEvidence::Decision {
+                decision_id: convergence_decision_id_for_current_pass(state)
+                    .unwrap_or_else(|| "converged".to_owned()),
+                verdict: DecisionVerdict::Converged,
+            },
+            AuthorisationEvidence::ActorCapability {
+                actor: actor.clone(),
+                capability: ActorCapability::ApplyFinishLabel,
+            },
+            AuthorisationEvidence::MergeGateCleanAndCurrent {
+                facts_head_sha: facts.head.sha.clone(),
+            },
+        ],
+    }
+}
+
+fn record_finish_label_attempt(
+    state: &mut PrRunState,
+    run_id: &RunId,
+    label: &str,
+    idempotency_key: String,
+    result: Result<ForgeOperationReceipt, ForgeOperationError>,
+) -> Result<ForgeReceipt, CoreError> {
+    let operation = PublicationOperation::ApplyFinishLabel {
+        label: label.to_owned(),
+    };
+    match result {
+        Ok(receipt) => {
+            let receipt = receipt_to_contract(receipt);
+            record_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                None,
+                Ok(receipt.clone()),
+            );
+            Ok(receipt)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            record_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                None,
+                Err(message.clone()),
+            );
+            Err(CoreError::ForgeOperation(message))
+        }
+    }
+}
+
 fn finding_comment_authorisation(
     state: &PrRunState,
     facts: &ForgeFacts,
@@ -2141,21 +3112,103 @@ fn record_publication_attempt(
     run_id: &RunId,
     operation: PublicationOperation,
     idempotency_key: String,
+    expected_head_sha: Option<String>,
     result: Result<ForgeReceipt, String>,
 ) {
-    let (status, receipt, error) = match result {
-        Ok(receipt) => (PublicationAttemptStatus::Succeeded, Some(receipt), None),
-        Err(error) => (PublicationAttemptStatus::Failed, None, Some(error)),
+    let (status, receipt, error, refusal) = match result {
+        Ok(receipt) => (
+            PublicationAttemptStatus::Succeeded,
+            Some(receipt),
+            None,
+            None,
+        ),
+        Err(error) => (PublicationAttemptStatus::Failed, None, Some(error), None),
     };
     state.publication.attempts.push(PublicationAttempt {
         contract_version: ContractVersion::current(),
         run_id: run_id.clone(),
         operation,
         idempotency_key,
+        expected_head_sha,
         status,
         receipt,
         error,
+        refusal,
     });
+}
+
+fn record_refused_publication_attempt(
+    state: &mut PrRunState,
+    run_id: &RunId,
+    operation: PublicationOperation,
+    idempotency_key: String,
+    expected_head_sha: Option<String>,
+    refusal: PublicationRefusal,
+) {
+    state.publication.attempts.push(PublicationAttempt {
+        contract_version: ContractVersion::current(),
+        run_id: run_id.clone(),
+        operation,
+        idempotency_key,
+        expected_head_sha,
+        status: PublicationAttemptStatus::Refused,
+        receipt: None,
+        error: Some(refusal.message.clone()),
+        refusal: Some(refusal),
+    });
+}
+
+fn record_surface_comment_attempt(
+    state: &mut PrRunState,
+    run_id: &RunId,
+    operation: PublicationOperation,
+    idempotency_key: String,
+    expected_head_sha: String,
+    result: Result<ForgeOperationReceipt, ForgeOperationError>,
+) {
+    match result {
+        Ok(receipt) => record_publication_attempt(
+            state,
+            run_id,
+            operation,
+            idempotency_key,
+            Some(expected_head_sha),
+            Ok(receipt_to_contract(receipt)),
+        ),
+        Err(ForgeOperationError::HeadMoved {
+            expected_head_sha,
+            actual_head_sha,
+        }) => {
+            let message = format!(
+                "publication refused because PR head moved from {expected_head_sha} to {actual_head_sha:?}"
+            );
+            record_refused_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                Some(expected_head_sha.clone()),
+                PublicationRefusal {
+                    reason: PublicationRefusalReason::HeadMoved {
+                        expected_head_sha,
+                        actual_head_sha: actual_head_sha.clone(),
+                    },
+                    message,
+                },
+            );
+            if let Some(actual_head_sha) = actual_head_sha {
+                mark_superseded(state, actual_head_sha, None);
+            }
+        }
+        Err(error) => record_publication_attempt(
+            state,
+            run_id,
+            operation,
+            idempotency_key,
+            Some(expected_head_sha),
+            Err(error.to_string()),
+        ),
+    }
 }
 
 fn receipt_to_contract(receipt: ForgeOperationReceipt) -> ForgeReceipt {
@@ -2226,7 +3279,24 @@ fn published_fix_commits(commits: Vec<AuthorisedFixCommit>) -> Vec<PublishedFixC
 }
 
 fn fix_commit_message(patch: &Patch) -> String {
-    format!("fix: address Pump-19 finding via {}", patch.id.0)
+    let subject = match &patch.change {
+        pump19_contract::PatchChange::Description { summary } => {
+            format!("fix: {summary}")
+        }
+        pump19_contract::PatchChange::UnifiedDiff { .. } => {
+            format!("fix: apply Pump-19 patch {}", patch.id.0)
+        }
+    };
+    let findings = patch
+        .answers_findings
+        .iter()
+        .map(|finding_id| finding_id.0.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{subject}\n\nPump-19 patch: {}\nAnswers findings: {}",
+        patch.id.0, findings
+    )
 }
 
 fn material_finding_comment(finding: &Finding, decision: &Decision) -> String {
@@ -2238,6 +3308,10 @@ fn material_finding_comment(finding: &Finding, decision: &Decision) -> String {
 
 fn failure_comment(run_id: &RunId, message: &str) -> String {
     format!("Pump-19 run failed: {}\n\n{}", run_id.0, message)
+}
+
+fn refusal_comment(run_id: &RunId, message: &str) -> String {
+    format!("Pump-19 run was not launched: {}\n\n{}", run_id.0, message)
 }
 
 fn actor_has_capability(facts: &ForgeFacts, actor: &ActorRef, capability: ActorCapability) -> bool {
@@ -2341,6 +3415,8 @@ fn mark_running(
         commit_sha: state.commit_sha.clone(),
         status: RunStatus::Running,
         outcome: None,
+        refusal: None,
+        ensemble_archive_path: None,
     });
     state.extensions.insert(
         EXT_RUNNING_RUN_ID.to_owned(),
@@ -2380,6 +3456,38 @@ fn mark_failed(
     );
 }
 
+fn mark_failed_refusal(
+    state: &mut PrRunState,
+    event: &ContractEvent,
+    rule: &TriggerRule,
+    run_id: &RunId,
+    refusal: &LaunchRefusal,
+    message: &str,
+) {
+    state.status = RunStatus::Failed;
+    state.extensions.insert(
+        EXT_LAST_FAILURE.to_owned(),
+        Value::String(message.to_owned()),
+    );
+    let mut record = fallback_run_record(state, event, rule, run_id);
+    record.refusal = Some(run_refusal_from_launch_refusal(refusal, message));
+    record_terminal_run(state, record, RunStatus::Failed, Some(RunOutcome::Failed));
+}
+
+fn mark_skipped_refusal(
+    state: &mut PrRunState,
+    event: &ContractEvent,
+    rule: &TriggerRule,
+    run_id: &RunId,
+    refusal: &LaunchRefusal,
+    message: &str,
+) {
+    state.status = RunStatus::Skipped;
+    let mut record = fallback_run_record(state, event, rule, run_id);
+    record.refusal = Some(run_refusal_from_launch_refusal(refusal, message));
+    record_terminal_run(state, record, RunStatus::Skipped, None);
+}
+
 fn mark_superseded(state: &mut PrRunState, superseded_by: String, fallback: Option<RunRecord>) {
     state.status = RunStatus::Superseded;
     state.superseded_by = Some(superseded_by);
@@ -2404,6 +3512,9 @@ fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaun
     if let Some(mut active_run) = state.active_run.take() {
         active_run.status = state.status;
         active_run.outcome = Some(outcome.outcome);
+        active_run
+            .ensemble_archive_path
+            .clone_from(&outcome.ensemble_archive_path);
         record_terminal_run(state, active_run, state.status, Some(outcome.outcome));
     }
     match run_kind {
@@ -2462,6 +3573,8 @@ fn fallback_run_record(
         commit_sha: state.commit_sha.clone(),
         status: state.status,
         outcome: None,
+        refusal: None,
+        ensemble_archive_path: None,
     }
 }
 
@@ -2482,6 +3595,26 @@ fn record_terminal_run(
         *existing = record;
     } else {
         state.run_history.push(record);
+    }
+}
+
+fn run_refusal_from_launch_refusal(refusal: &LaunchRefusal, message: &str) -> RunRefusal {
+    RunRefusal {
+        reason: match refusal {
+            LaunchRefusal::RunCeilingReached => RunRefusalReason::RunCeilingReached,
+            LaunchRefusal::RequiredFamilyUnavailable { .. } => {
+                RunRefusalReason::RequiredFamilyUnavailable
+            }
+            LaunchRefusal::WorkspaceIsolationMissing => RunRefusalReason::WorkspaceIsolationMissing,
+            LaunchRefusal::UnverifiedProvenance { .. } => RunRefusalReason::UnverifiedProvenance,
+            LaunchRefusal::InsufficientReviewerFamilies => {
+                RunRefusalReason::InsufficientReviewerFamilies
+            }
+            LaunchRefusal::ReviewerFixerOverlap => RunRefusalReason::ReviewerFixerOverlap,
+            LaunchRefusal::MissingIndependentJudge => RunRefusalReason::MissingIndependentJudge,
+            LaunchRefusal::NonFreshSession { .. } => RunRefusalReason::NonFreshSession,
+        },
+        message: message.to_owned(),
     }
 }
 
@@ -2537,14 +3670,18 @@ fn run_completed_event_from_state(state: &PrRunState, run_id: &RunId) -> Option<
         .iter()
         .rev()
         .find(|record| record.run_id == *run_id)?;
+    run_completed_event_from_record(record)
+}
+
+fn run_completed_event_from_record(record: &RunRecord) -> Option<ContractEvent> {
     let outcome = record.outcome?;
     let mut extensions = Extensions::new();
     extensions.insert(EXT_SELF_EMITTED_EVENT.to_owned(), Value::Bool(true));
     Some(ContractEvent {
         contract_version: ContractVersion::current(),
-        id: stable_id("run-completed", [run_id.0.as_str()]),
+        id: stable_id("run-completed", [record.run_id.0.as_str()]),
         payload: EventPayload::RunCompleted {
-            run_id: run_id.clone(),
+            run_id: record.run_id.clone(),
             run_kind: Some(record.run_kind),
             outcome,
         },
@@ -2584,9 +3721,180 @@ fn sanitise_path_component(value: &str) -> String {
         .collect()
 }
 
+fn validate_prepared_source(
+    source: &PreparedSource,
+    expected_revision: &str,
+) -> Result<(), CoreError> {
+    if source.revision != expected_revision {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared revision {} did not match recorded head {}",
+            source.revision, expected_revision
+        )));
+    }
+    if let Some(cleanup_root) = &source.cleanup_root {
+        ensure_source_tree_under_cleanup_root(source, cleanup_root)?;
+    }
+    let metadata = fs::metadata(&source.tree).map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "prepared source tree {} is not readable: {error}",
+            source.tree.display()
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared source tree {} is not a directory",
+            source.tree.display()
+        )));
+    }
+    reject_credential_residue(&source.tree)
+}
+
+fn ensure_source_tree_under_cleanup_root(
+    source: &PreparedSource,
+    cleanup_root: &Path,
+) -> Result<(), CoreError> {
+    let canonical_tree = source.tree.canonicalize().map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "inspect prepared source tree {}: {error}",
+            source.tree.display()
+        ))
+    })?;
+    let canonical_root = cleanup_root.canonicalize().map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "inspect trusted cleanup root {}: {error}",
+            cleanup_root.display()
+        ))
+    })?;
+    if canonical_tree.starts_with(&canonical_root) && canonical_tree != canonical_root {
+        return Ok(());
+    }
+    Err(CoreError::SourcePreparation(format!(
+        "prepared source tree {} is outside trusted cleanup root {}",
+        source.tree.display(),
+        cleanup_root.display()
+    )))
+}
+
+fn reject_credential_residue(root: &Path) -> Result<(), CoreError> {
+    reject_credential_residue_at(root, root)
+}
+
+fn cleanup_external_prepared_source(
+    source: &PreparedSource,
+    workspace: &WorkspaceLease,
+) -> Result<(), CoreError> {
+    if source.tree == workspace.root || !source.tree.exists() {
+        return Ok(());
+    }
+    let Some(cleanup_root) = &source.cleanup_root else {
+        return Err(CoreError::SourcePreparation(format!(
+            "refusing to remove prepared source tree {} without trusted cleanup root",
+            source.tree.display()
+        )));
+    };
+    if let Err(error) = ensure_source_tree_under_cleanup_root(source, cleanup_root) {
+        return Err(CoreError::SourcePreparation(format!(
+            "refusing to remove prepared source tree: {error}"
+        )));
+    }
+    fs::remove_dir_all(&source.tree).map_err(|error| {
+        CoreError::SourcePreparation(format!(
+            "remove trusted preparation tree {}: {error}",
+            source.tree.display()
+        ))
+    })
+}
+
+fn reject_credential_residue_at(root: &Path, path: &Path) -> Result<(), CoreError> {
+    for entry in fs::read_dir(path).map_err(|error| {
+        CoreError::SourcePreparation(format!("read prepared tree {}: {error}", path.display()))
+    })? {
+        let entry = entry.map_err(|error| {
+            CoreError::SourcePreparation(format!("read prepared tree {}: {error}", path.display()))
+        })?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if credential_residue_name(name.as_str()) {
+            return Err(CoreError::SourcePreparation(format!(
+                "prepared source contains credential residue at {}",
+                display_relative(root, &path)
+            )));
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            CoreError::SourcePreparation(format!(
+                "inspect prepared tree {}: {error}",
+                path.display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink() {
+            reject_escaping_symlink(root, &path)?;
+            continue;
+        }
+        if metadata.is_dir() {
+            reject_credential_residue_at(root, &path)?;
+        }
+    }
+    Ok(())
+}
+
+fn credential_residue_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".gitconfig" | ".git-credentials" | ".netrc" | ".ssh"
+    )
+}
+
+fn reject_escaping_symlink(root: &Path, path: &Path) -> Result<(), CoreError> {
+    let target = fs::read_link(path).map_err(|error| {
+        CoreError::SourcePreparation(format!("inspect symlink {}: {error}", path.display()))
+    })?;
+    if target.is_absolute() {
+        return Err(CoreError::SourcePreparation(format!(
+            "prepared source contains absolute symlink at {}",
+            display_relative(root, path)
+        )));
+    }
+    let parent = path.parent().unwrap_or(root);
+    let mut depth = parent
+        .strip_prefix(root)
+        .map_or(0, |relative| relative.components().count());
+    for component in target.components() {
+        match component {
+            std::path::Component::ParentDir if depth == 0 => {
+                return Err(CoreError::SourcePreparation(format!(
+                    "prepared source contains escaping symlink at {}",
+                    display_relative(root, path)
+                )));
+            }
+            std::path::Component::ParentDir => depth -= 1,
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::CurDir => {}
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(CoreError::SourcePreparation(format!(
+                    "prepared source contains escaping symlink at {}",
+                    display_relative(root, path)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn display_relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, path::PathBuf};
+    use std::{
+        cell::RefCell,
+        collections::{BTreeMap, VecDeque},
+        path::PathBuf,
+        rc::Rc,
+    };
 
     use pump19_contract::{
         ActorCapability, ActorPermissions, ActorRef, BranchCurrency, DecisionSubject, FinishLabel,
@@ -2626,6 +3934,27 @@ mod tests {
         cleaned: usize,
     }
 
+    #[derive(Debug)]
+    struct SourceWorkspaceProvider {
+        root: PathBuf,
+        cleaned: Rc<RefCell<usize>>,
+        injections: Rc<RefCell<Vec<PreparedSource>>>,
+    }
+
+    #[derive(Debug)]
+    struct TreeSourcePreparer {
+        tree: PathBuf,
+    }
+
+    #[derive(Debug)]
+    struct OutsideCleanupRootSourcePreparer {
+        tree: PathBuf,
+        cleanup_root: PathBuf,
+    }
+
+    #[derive(Debug)]
+    struct FailingSourcePreparer;
+
     impl WorkspaceProvider for FakeWorkspaceProvider {
         fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
             Ok(WorkspaceLease {
@@ -2653,17 +3982,112 @@ mod tests {
         }
     }
 
+    impl WorkspaceProvider for SourceWorkspaceProvider {
+        fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
+            fs::create_dir_all(&self.root).map_err(|source| CoreError::Io {
+                path: self.root.display().to_string(),
+                source,
+            })?;
+            Ok(WorkspaceLease {
+                id: request.run_id.0,
+                root: self.root.clone(),
+                isolation: WorkspaceIsolation {
+                    isolated: true,
+                    credential_free: true,
+                    egress_bounded: true,
+                    resource_bounded: true,
+                    ephemeral: true,
+                },
+            })
+        }
+
+        fn inject_source(
+            &mut self,
+            _lease: &WorkspaceLease,
+            source: &PreparedSource,
+        ) -> Result<(), CoreError> {
+            fs::create_dir_all(self.root.join("src")).map_err(|error| CoreError::Io {
+                path: self.root.display().to_string(),
+                source: error,
+            })?;
+            fs::copy(source.tree.join("src/lib.rs"), self.root.join("src/lib.rs")).map_err(
+                |error| CoreError::Io {
+                    path: self.root.join("src/lib.rs").display().to_string(),
+                    source: error,
+                },
+            )?;
+            self.injections.borrow_mut().push(source.clone());
+            Ok(())
+        }
+
+        fn exec(
+            &mut self,
+            _lease: &WorkspaceLease,
+            _request: WorkspaceExecRequest,
+        ) -> Result<WorkspaceExecOutput, CoreError> {
+            Ok(WorkspaceExecOutput {
+                exit_code: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+
+        fn cleanup(&mut self, _lease: &WorkspaceLease) -> Result<(), CoreError> {
+            *self.cleaned.borrow_mut() += 1;
+            Ok(())
+        }
+    }
+
+    impl SourcePreparer for TreeSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Ok(PreparedSource {
+                tree: self.tree.clone(),
+                revision: request.commit_sha,
+                cleanup_root: self.tree.parent().map(Path::to_path_buf),
+            })
+        }
+    }
+
+    impl SourcePreparer for OutsideCleanupRootSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Ok(PreparedSource {
+                tree: self.tree.clone(),
+                revision: request.commit_sha,
+                cleanup_root: Some(self.cleanup_root.clone()),
+            })
+        }
+    }
+
+    impl SourcePreparer for FailingSourcePreparer {
+        fn prepare_source(
+            &mut self,
+            _request: SourcePreparationRequest,
+        ) -> Result<PreparedSource, CoreError> {
+            Err(CoreError::SourcePreparation(
+                "checkout failed in test".to_owned(),
+            ))
+        }
+    }
+
     #[derive(Debug)]
     struct FakeRunLauncher {
         proofs: VecDeque<LaunchProof>,
         launched: usize,
         outcome: RunLaunchOutcome,
         fail_launch: bool,
+        prepare_error: Option<CoreError>,
     }
 
     #[derive(Debug, Default)]
     struct RecordingForgeOperations {
         fail_comments: bool,
+        moved_comment_head: Option<String>,
         comments: Vec<AuthorisedComment>,
         comment_updates: Vec<AuthorisedCommentUpdate>,
         comment_resolutions: Vec<AuthorisedCommentResolution>,
@@ -2682,6 +4106,12 @@ mod tests {
             &mut self,
             request: AuthorisedComment,
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            if let Some(actual_head_sha) = &self.moved_comment_head {
+                return Err(ForgeOperationError::HeadMoved {
+                    expected_head_sha: request.expected_head_sha,
+                    actual_head_sha: Some(actual_head_sha.clone()),
+                });
+            }
             if self.fail_comments {
                 return Err(ForgeOperationError::Client(
                     "comment channel unavailable".to_owned(),
@@ -2700,6 +4130,12 @@ mod tests {
             &mut self,
             request: AuthorisedCommentUpdate,
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            if let Some(actual_head_sha) = &self.moved_comment_head {
+                return Err(ForgeOperationError::HeadMoved {
+                    expected_head_sha: request.expected_head_sha,
+                    actual_head_sha: Some(actual_head_sha.clone()),
+                });
+            }
             let idempotency_key = request.authorisation.idempotency_key.clone();
             let operation_id = request.comment_operation_id.clone();
             self.comment_updates.push(request);
@@ -2714,6 +4150,12 @@ mod tests {
             &mut self,
             request: AuthorisedCommentResolution,
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            if let Some(actual_head_sha) = &self.moved_comment_head {
+                return Err(ForgeOperationError::HeadMoved {
+                    expected_head_sha: request.expected_head_sha,
+                    actual_head_sha: Some(actual_head_sha.clone()),
+                });
+            }
             let idempotency_key = request.authorisation.idempotency_key.clone();
             let operation_id = request.comment_operation_id.clone();
             self.comment_resolutions.push(request);
@@ -2843,6 +4285,7 @@ mod tests {
                             decisions: Vec::new(),
                             patches: Vec::new(),
                             token_usage: None,
+                            ensemble_archive_path: None,
                         });
                     }
                     let primary_reviewer = reviewers.first().expect("primary reviewer").clone();
@@ -2874,6 +4317,7 @@ mod tests {
                         decisions: Vec::new(),
                         patches: Vec::new(),
                         token_usage: None,
+                        ensemble_archive_path: None,
                     })
                 }
                 RunKind::Judge => {
@@ -2915,6 +4359,7 @@ mod tests {
                         }],
                         patches: Vec::new(),
                         token_usage: None,
+                        ensemble_archive_path: None,
                     })
                 }
                 RunKind::Fix => {
@@ -2944,6 +4389,7 @@ mod tests {
                             extensions: BTreeMap::new(),
                         }],
                         token_usage: None,
+                        ensemble_archive_path: None,
                     })
                 }
                 RunKind::Finish => Ok(RunLaunchOutcome {
@@ -2952,6 +4398,7 @@ mod tests {
                     decisions: Vec::new(),
                     patches: Vec::new(),
                     token_usage: None,
+                    ensemble_archive_path: None,
                 }),
             }
         }
@@ -2968,14 +4415,19 @@ mod tests {
                     decisions: Vec::new(),
                     patches: Vec::new(),
                     token_usage: None,
+                    ensemble_archive_path: None,
                 },
                 fail_launch: false,
+                prepare_error: None,
             }
         }
     }
 
     impl RunLauncher for FakeRunLauncher {
         fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
+            if let Some(error) = self.prepare_error.take() {
+                return Err(error);
+            }
             let proof = self
                 .proofs
                 .pop_front()
@@ -3036,6 +4488,10 @@ mod tests {
                 .iter()
                 .find(|state| state_records_run(state, run_id))
                 .cloned())
+        }
+
+        fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+            Ok(self.states.clone())
         }
 
         fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
@@ -3141,11 +4597,28 @@ mod tests {
         }
     }
 
+    fn core_authority_facts(head_sha: &str) -> ForgeFacts {
+        ForgeFacts {
+            finish_label: None,
+            actor_permissions: vec![ActorPermissions {
+                actor: core_actor(),
+                capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
+                    .into_iter()
+                    .collect(),
+            }],
+            ..facts_with_head(head_sha)
+        }
+    }
+
     fn event() -> ContractEvent {
+        event_with_facts(facts())
+    }
+
+    fn event_with_facts(facts: ForgeFacts) -> ContractEvent {
         ContractEvent {
             contract_version: ContractVersion::current(),
             id: "event-1".to_owned(),
-            payload: EventPayload::PullRequestOpened { facts: facts() },
+            payload: EventPayload::PullRequestOpened { facts },
             extensions: BTreeMap::new(),
         }
     }
@@ -3159,8 +4632,15 @@ mod tests {
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-2026"),
+                model: model_for_family(family),
             },
+        }
+    }
+
+    fn model_for_family(family: &str) -> String {
+        match family {
+            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            _ => format!("{family}-2026"),
         }
     }
 
@@ -3217,7 +4697,7 @@ mod tests {
                     target("reviewer-claude", AgentRole::Reviewer, "claude"),
                 ],
                 fixers: vec![target("fixer", AgentRole::Fixer, "codex")],
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
@@ -3227,6 +4707,23 @@ mod tests {
         TriggerRule {
             criteria: Criteria::Event {
                 event: EventKind::PullRequestUpdated,
+            },
+            ..independent_rule()
+        }
+    }
+
+    fn review_on_open_or_update_rule() -> TriggerRule {
+        TriggerRule {
+            id: "review-on-pr-change".to_owned(),
+            criteria: Criteria::Any {
+                criteria: vec![
+                    Criteria::Event {
+                        event: EventKind::PullRequestOpened,
+                    },
+                    Criteria::Event {
+                        event: EventKind::PullRequestUpdated,
+                    },
+                ],
             },
             ..independent_rule()
         }
@@ -3254,6 +4751,25 @@ mod tests {
         }
     }
 
+    fn judge_after_noop_fix_rule() -> TriggerRule {
+        TriggerRule {
+            id: "judge-after-noop-fix".to_owned(),
+            run_kind: RunKind::Judge,
+            criteria: Criteria::Event {
+                event: EventKind::RunCompleted {
+                    run_kind: Some(RunKind::Fix),
+                    outcome: Some(RunOutcome::NoOp),
+                },
+            },
+            agent_plan: AgentPlan {
+                reviewers: Vec::new(),
+                fixers: Vec::new(),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
+                finishers: Vec::new(),
+            },
+        }
+    }
+
     fn judge_after_review_rule() -> TriggerRule {
         TriggerRule {
             id: "judge-after-review".to_owned(),
@@ -3267,7 +4783,7 @@ mod tests {
             agent_plan: AgentPlan {
                 reviewers: Vec::new(),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
@@ -3320,13 +4836,22 @@ mod tests {
     }
 
     fn run_completed_event(id: &str, run_id: RunId, run_kind: RunKind) -> ContractEvent {
+        run_completed_event_with_outcome(id, run_id, run_kind, RunOutcome::Succeeded)
+    }
+
+    fn run_completed_event_with_outcome(
+        id: &str,
+        run_id: RunId,
+        run_kind: RunKind,
+        outcome: RunOutcome,
+    ) -> ContractEvent {
         ContractEvent {
             contract_version: ContractVersion::current(),
             id: id.to_owned(),
             payload: EventPayload::RunCompleted {
                 run_id,
                 run_kind: Some(run_kind),
-                outcome: RunOutcome::Succeeded,
+                outcome,
             },
             extensions: BTreeMap::new(),
         }
@@ -3363,6 +4888,154 @@ mod tests {
             .process_event(&event(), &[rule])
             .expect("process event");
         (outcomes, core.launcher.launched)
+    }
+
+    #[test]
+    fn trusted_source_preparation_injects_tree_before_launch_and_cleans_prepared_tree() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prepared_tree = temp.path().join("prepared");
+        fs::create_dir_all(prepared_tree.join("src")).expect("create prepared tree");
+        fs::write(prepared_tree.join("src/lib.rs"), "pub fn prepared() {}\n")
+            .expect("write source");
+        let workspace_root = temp.path().join("workspace");
+        let cleaned = Rc::new(RefCell::new(0));
+        let injections = Rc::new(RefCell::new(Vec::new()));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: workspace_root.clone(),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::clone(&injections),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            NoopForgeOperations,
+            TreeSourcePreparer {
+                tree: prepared_tree.clone(),
+            },
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("process event");
+
+        assert!(matches!(outcomes[0], DispatchOutcome::Launched { .. }));
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("src/lib.rs")).expect("read injected source"),
+            "pub fn prepared() {}\n"
+        );
+        assert_eq!(injections.borrow().len(), 1);
+        assert!(!prepared_tree.exists());
+        assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn source_cleanup_refuses_tree_outside_trusted_preparation_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prepared_tree = temp.path().join("outside-prepared");
+        let trusted_root = temp.path().join("trusted-preparation-root");
+        fs::create_dir_all(prepared_tree.join("src")).expect("create prepared tree");
+        fs::create_dir_all(&trusted_root).expect("create trusted root");
+        fs::write(
+            prepared_tree.join("src/lib.rs"),
+            "pub fn unsafe_tree() {}\n",
+        )
+        .expect("write source");
+        let workspace_root = temp.path().join("workspace");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: workspace_root,
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            OutsideCleanupRootSourcePreparer {
+                tree: prepared_tree.clone(),
+                cleanup_root: trusted_root,
+            },
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("outside cleanup root should fail dispatch");
+
+        assert!(matches!(error, CoreError::SourcePreparation(_)));
+        assert!(prepared_tree.exists());
+        assert_eq!(*cleaned.borrow(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("saved state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert!(
+            saved
+                .extensions
+                .get(EXT_LAST_FAILURE)
+                .and_then(Value::as_str)
+                .expect("last failure")
+                .contains("outside trusted cleanup root")
+        );
+    }
+
+    #[test]
+    fn source_preparation_failure_records_surfaces_and_cleans_workspace() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: temp.path().join("workspace"),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("source preparation failure should fail dispatch");
+
+        assert!(matches!(error, CoreError::SourcePreparation(_)));
+        assert_eq!(*cleaned.borrow(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("saved state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert_eq!(saved.run_history.len(), 1);
+        assert_eq!(saved.run_history[0].status, RunStatus::Failed);
+        assert_eq!(saved.publication.attempts.len(), 1);
+        assert_eq!(
+            saved
+                .extensions
+                .get(EXT_LAST_FAILURE)
+                .and_then(Value::as_str),
+            Some("source preparation failed: checkout failed in test")
+        );
     }
 
     #[test]
@@ -3414,7 +5087,7 @@ mod tests {
             agent_plan: AgentPlan {
                 reviewers: Vec::new(),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         };
@@ -3538,6 +5211,52 @@ mod tests {
                 reason: SkipReason::DuplicateDispatch,
             }]
         );
+    }
+
+    #[test]
+    fn review_fires_on_pr_open_or_update() {
+        let rule = review_on_open_or_update_rule();
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        let updated = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "human-pushed-update".to_owned(),
+            payload: EventPayload::PullRequestUpdated {
+                facts: facts_with_head("human-push-sha"),
+            },
+            extensions: BTreeMap::new(),
+        };
+
+        let opened = core
+            .process_event(&event(), std::slice::from_ref(&rule))
+            .expect("opened event");
+        let update = core
+            .process_event(&updated, &[rule])
+            .expect("updated event");
+
+        assert!(matches!(
+            opened.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+        ));
+        assert!(matches!(
+            update.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+        ));
+        assert_eq!(core.launcher.launched, 2);
     }
 
     #[test]
@@ -3725,11 +5444,12 @@ mod tests {
                 },
                 verdict: DecisionVerdict::Material,
                 rationale: "worth another pass".to_owned(),
-                provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+                provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
                 extensions: BTreeMap::new(),
             }],
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         };
         let mut core = Core::with_forge_operations(
             FakeEventSource::empty(),
@@ -3771,6 +5491,210 @@ mod tests {
                 .attempts
                 .iter()
                 .any(|attempt| attempt.status == PublicationAttemptStatus::Failed)
+        );
+    }
+
+    #[test]
+    fn moved_head_refuses_material_comment_and_records_publication_refusal() {
+        let review_run_id = RunId("event-1:review:1".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.status = RunStatus::Completed;
+        state.extensions.insert(
+            EXT_RUNNING_RUN_ID.to_owned(),
+            Value::String(review_run_id.0.clone()),
+        );
+        let finding = finding_from("reviewer-codex", "codex", "finding-1");
+        state.findings.push(finding.clone());
+        state
+            .findings
+            .push(finding_from("reviewer-claude", "claude", "finding-2"));
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save state");
+        let mut launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
+        launcher.outcome = RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: Vec::new(),
+            decisions: vec![Decision {
+                contract_version: ContractVersion::current(),
+                id: "decision-material".to_owned(),
+                subject: DecisionSubject::Finding {
+                    finding_id: finding.id,
+                },
+                verdict: DecisionVerdict::Material,
+                rationale: "worth another pass".to_owned(),
+                provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+                extensions: BTreeMap::new(),
+            }],
+            patches: Vec::new(),
+            token_usage: None,
+            ensemble_archive_path: Some("/var/lib/pump19/archives/judge".to_owned()),
+        };
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            store,
+            RecordingForgeOperations {
+                moved_comment_head: Some("new-head-sha".to_owned()),
+                ..Default::default()
+            },
+        );
+        let event = run_completed_event("review-one-done", review_run_id, RunKind::Review);
+
+        let outcomes = core
+            .process_event(&event, &[judge_after_review_rule()])
+            .expect("stale comment is a recorded refusal");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { .. }]
+        ));
+        assert!(core.forge_operations.comments.is_empty());
+        let run_id = RunId("review-one-done:judge-after-review:1".to_owned());
+        let saved = core
+            .state_store
+            .load_by_run_id(&run_id)
+            .expect("load by run")
+            .expect("judge state");
+        assert_eq!(saved.status, RunStatus::Superseded);
+        assert_eq!(saved.superseded_by.as_deref(), Some("new-head-sha"));
+        assert_eq!(
+            saved.run_history[0].ensemble_archive_path.as_deref(),
+            Some("/var/lib/pump19/archives/judge")
+        );
+        assert!(saved.publication.finding_comments.is_empty());
+        assert_eq!(saved.publication.attempts.len(), 1);
+        let attempt = &saved.publication.attempts[0];
+        assert_eq!(attempt.status, PublicationAttemptStatus::Refused);
+        assert_eq!(attempt.expected_head_sha.as_deref(), Some("abc123"));
+        assert!(matches!(
+            attempt.refusal.as_ref().map(|refusal| &refusal.reason),
+            Some(PublicationRefusalReason::HeadMoved {
+                expected_head_sha,
+                actual_head_sha
+            }) if expected_head_sha == "abc123"
+                && actual_head_sha.as_deref() == Some("new-head-sha")
+        ));
+    }
+
+    #[test]
+    fn run_ceiling_refusal_is_skipped_in_state_and_visible_on_pr() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.pass_index = 2;
+        state.ceiling = Some(RunCeiling {
+            max_passes: Some(2),
+            token_budget: None,
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save state");
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            store,
+            RecordingForgeOperations::default(),
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("ceiling refusal is handled");
+
+        assert_eq!(
+            outcomes,
+            vec![DispatchOutcome::Refused {
+                rule_id: "review".to_owned(),
+                reason: LaunchRefusal::RunCeilingReached,
+            }]
+        );
+        assert_eq!(core.launcher.launched, 0);
+        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert!(
+            core.forge_operations.comments[0]
+                .body
+                .contains("RunCeilingReached")
+        );
+        let saved = core
+            .state_store
+            .load(&RunStateKey {
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+            })
+            .expect("load state")
+            .expect("state");
+        assert_eq!(saved.status, RunStatus::Skipped);
+        assert_eq!(saved.run_history.len(), 1);
+        assert_eq!(saved.run_history[0].status, RunStatus::Skipped);
+        assert_eq!(
+            saved.run_history[0]
+                .refusal
+                .as_ref()
+                .map(|refusal| &refusal.reason),
+            Some(&RunRefusalReason::RunCeilingReached)
+        );
+        assert_eq!(saved.publication.attempts.len(), 1);
+        assert!(matches!(
+            saved.publication.attempts[0].operation,
+            PublicationOperation::PostRefusalComment { .. }
+        ));
+    }
+
+    #[test]
+    fn required_family_unavailable_is_typed_launch_refusal() {
+        let mut launcher = FakeRunLauncher::new(Vec::new());
+        launcher.prepare_error = Some(CoreError::RequiredFamilyUnavailable {
+            agent_id: AgentId("reviewer-codex".to_owned()),
+            family: ModelFamily("codex".to_owned()),
+            reason: "codex CLI unavailable".to_owned(),
+        });
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("typed refusal is handled");
+
+        assert_eq!(
+            outcomes,
+            vec![DispatchOutcome::Refused {
+                rule_id: "review".to_owned(),
+                reason: LaunchRefusal::RequiredFamilyUnavailable {
+                    agent_id: AgentId("reviewer-codex".to_owned()),
+                    family: ModelFamily("codex".to_owned()),
+                    reason: "codex CLI unavailable".to_owned(),
+                },
+            }]
+        );
+        assert_eq!(core.launcher.launched, 0);
+        assert_eq!(core.forge_operations.comments.len(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey {
+                pr: pr(),
+                commit_sha: "abc123".to_owned(),
+            })
+            .expect("load state")
+            .expect("state");
+        assert_eq!(saved.status, RunStatus::Failed);
+        assert_eq!(
+            saved.run_history[0]
+                .refusal
+                .as_ref()
+                .map(|refusal| &refusal.reason),
+            Some(&RunRefusalReason::RequiredFamilyUnavailable)
         );
     }
 
@@ -3962,8 +5886,7 @@ mod tests {
     #[test]
     fn process_event_drives_review_fix_rereview_finish_loop() {
         let rules = vec![
-            independent_rule(),
-            review_on_fix_rule(),
+            review_on_open_or_update_rule(),
             judge_after_review_rule(),
             fix_after_material_judge_rule(),
             finish_on_label_rule(),
@@ -4017,7 +5940,31 @@ mod tests {
                 &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
                 &rules,
             )
-            .expect("fix completion launches fresh review");
+            .expect("fix completion publishes patches");
+        assert!(outcomes.is_empty());
+        assert_eq!(core.forge_operations.fix_pushes.len(), 1);
+        assert!(
+            core.forge_operations.fix_pushes[0].commits[0]
+                .message
+                .contains("fix: fixed material finding")
+        );
+        assert!(
+            core.forge_operations.fix_pushes[0].commits[0]
+                .message
+                .contains("Answers findings: finding-material")
+        );
+
+        let update_event = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "fix-push-updated-pr".to_owned(),
+            payload: EventPayload::PullRequestUpdated {
+                facts: facts_with_head("head-after-fix"),
+            },
+            extensions: BTreeMap::new(),
+        };
+        let outcomes = core
+            .process_event(&update_event, &rules)
+            .expect("PR update launches fresh review");
         let review_two = launched_run_id(&outcomes).expect("second review launched");
         let outcomes = core
             .process_event(
@@ -4066,6 +6013,12 @@ mod tests {
         let finish = launched_run_id(&outcomes).expect("finish launched");
         assert!(finish.0.contains("finish-on-label"));
         assert_eq!(core.forge_operations.merges.len(), 1);
+        let finished = core
+            .state_store
+            .load_by_run_id(&finish)
+            .expect("load finish state")
+            .expect("finish state");
+        assert_eq!(finished.publication.merges.len(), 1);
         assert!(
             core.forge_operations.merges[0]
                 .authorisation
@@ -4077,6 +6030,386 @@ mod tests {
                 ))
         );
         assert_eq!(core.workspace_provider.cleaned, 6);
+    }
+
+    #[test]
+    fn noop_fix_completion_routes_to_judge_with_standing_findings() {
+        let fix_run_id = RunId("fix-noop".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let first = finding_from("reviewer-codex", "codex", "finding-1");
+        let second = finding_from("reviewer-claude", "claude", "finding-2");
+        state.status = RunStatus::Completed;
+        state.findings = vec![first.clone(), second];
+        state.decisions.push(Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-material".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: first.id,
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "worth another pass".to_owned(),
+            provenance: verified_provenance("judge-old", AgentRole::Judge, "glm"),
+            extensions: BTreeMap::new(),
+        });
+        state.run_history.push(RunRecord {
+            run_id: fix_run_id.clone(),
+            run_kind: RunKind::Fix,
+            event_id: "fix-trigger".to_owned(),
+            rule_id: "fix-after-material-judge".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::NoOp),
+            refusal: None,
+            ensemble_archive_path: None,
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save NoOp state");
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
+            store,
+        );
+
+        let outcomes = core
+            .process_event(
+                &run_completed_event_with_outcome(
+                    "fix-noop-done",
+                    fix_run_id,
+                    RunKind::Fix,
+                    RunOutcome::NoOp,
+                ),
+                &[judge_after_noop_fix_rule()],
+            )
+            .expect("NoOp fix completion");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-noop-fix"
+        ));
+        assert_eq!(core.launcher.launched, 1);
+    }
+
+    #[test]
+    fn noop_fix_outcome_archives_standing_findings_for_judge() {
+        let run_id = RunId("fix-noop".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.status = RunStatus::Running;
+        state.active_run = Some(RunRecord {
+            run_id,
+            run_kind: RunKind::Fix,
+            event_id: "judge-done".to_owned(),
+            rule_id: "fix-after-material-judge".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Running,
+            outcome: None,
+            refusal: None,
+            ensemble_archive_path: None,
+        });
+        let finding = finding_from("reviewer-codex", "codex", "finding-1");
+        state.findings.push(finding.clone());
+        state.decisions.push(Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-material".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: finding.id,
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "worth another pass".to_owned(),
+            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
+            extensions: BTreeMap::new(),
+        });
+
+        apply_run_outcome(
+            &mut state,
+            RunKind::Fix,
+            RunLaunchOutcome {
+                outcome: RunOutcome::NoOp,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                token_usage: None,
+                ensemble_archive_path: None,
+            },
+        );
+
+        assert_eq!(state.status, RunStatus::Completed);
+        assert!(state.findings.is_empty());
+        assert!(state.decisions.is_empty());
+        assert_eq!(state.loop_history.len(), 1);
+        assert_eq!(state.loop_history[0].findings.len(), 1);
+        assert_eq!(state.loop_history[0].decisions.len(), 1);
+        assert_eq!(state.loop_history[0].fix_outcome, Some(RunOutcome::NoOp));
+        assert_eq!(state.run_history[0].outcome, Some(RunOutcome::NoOp));
+    }
+
+    #[test]
+    fn stale_running_recovery_surfaces_failure_and_unblocks_pr() {
+        let run_id = RunId("event-1:review:1".to_owned());
+        let mut running = mark_running(
+            initial_state_from_event(&event()).expect("initial state"),
+            &event(),
+            &independent_rule(),
+            &run_id,
+        );
+        running.status = RunStatus::Running;
+        let mut store = FakeRunStateStore::default();
+        store.save(&running).expect("save running state");
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            store,
+            RecordingForgeOperations::default(),
+        );
+
+        let recovered = core
+            .rederive_pending_completions()
+            .expect("recover stale running");
+
+        assert_eq!(recovered.queued, 1);
+        assert_eq!(recovered.terminal_replays, 0);
+        assert_eq!(recovered.stale_running_failures, 1);
+        assert_eq!(core.pending_event_count(), 1);
+        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert!(
+            core.forge_operations.comments[0]
+                .body
+                .contains("daemon restarted")
+        );
+        let failed = core
+            .state_store
+            .load_by_run_id(&run_id)
+            .expect("load failed run")
+            .expect("failed state");
+        assert_eq!(failed.status, RunStatus::Failed);
+        assert_eq!(failed.run_history[0].status, RunStatus::Failed);
+        assert_eq!(failed.run_history[0].outcome, Some(RunOutcome::Failed));
+
+        let updated = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "retry-after-restart".to_owned(),
+            payload: EventPayload::PullRequestUpdated { facts: facts() },
+            extensions: BTreeMap::new(),
+        };
+        let outcomes = core
+            .process_event(&updated, &[update_review_rule()])
+            .expect("updated event after recovery");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review"
+        ));
+    }
+
+    #[test]
+    fn convergence_applies_finish_label_and_reaches_merge_when_policy_grants_authority() {
+        let rules = vec![
+            independent_rule(),
+            update_review_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+            finish_on_label_rule(),
+        ];
+        let mut core = Core::with_forge_operations_and_policy(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            CorePolicy {
+                finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
+                    label: "pump19-finish".to_owned(),
+                },
+            },
+        );
+
+        let outcomes = core
+            .process_event(&event_with_facts(core_authority_facts("abc123")), &rules)
+            .expect("PR open launches review");
+        let review_one = launched_run_id(&outcomes).expect("review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-one-done", review_one, RunKind::Review),
+                &rules,
+            )
+            .expect("review completion launches judge");
+        let judge_one = launched_run_id(&outcomes).expect("judge launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
+                &rules,
+            )
+            .expect("material judge completion launches fix");
+        let fix_one = launched_run_id(&outcomes).expect("fix launched");
+        core.process_event(
+            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
+            &rules,
+        )
+        .expect("fix completion publishes patches");
+
+        let outcomes = core
+            .process_event(
+                &ContractEvent {
+                    contract_version: ContractVersion::current(),
+                    id: "fix-push-updated-pr".to_owned(),
+                    payload: EventPayload::PullRequestUpdated {
+                        facts: core_authority_facts("head-after-fix"),
+                    },
+                    extensions: BTreeMap::new(),
+                },
+                &rules,
+            )
+            .expect("PR update launches fresh review");
+        let review_two = launched_run_id(&outcomes).expect("second review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-two-done", review_two, RunKind::Review),
+                &rules,
+            )
+            .expect("second review completion launches judge");
+        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
+
+        core.process_event(
+            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+            &rules,
+        )
+        .expect("converged judge applies finish label");
+        let drained = core
+            .drain_available(&rules)
+            .expect("queued label event launches finish");
+
+        assert_eq!(core.forge_operations.labels.len(), 1);
+        assert_eq!(core.forge_operations.labels[0].label, "pump19-finish");
+        assert_eq!(
+            core.forge_operations.labels[0].authorisation.actor,
+            core_actor()
+        );
+        assert_eq!(core.forge_operations.merges.len(), 1);
+        assert!(
+            drained
+                .iter()
+                .flatten()
+                .any(|outcome| matches!(outcome, DispatchOutcome::Launched { rule_id, .. } if rule_id == "finish-on-label"))
+        );
+    }
+
+    #[test]
+    fn convergence_does_not_apply_finish_label_without_policy_grant() {
+        let rules = vec![
+            independent_rule(),
+            update_review_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+            finish_on_label_rule(),
+        ];
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+        );
+
+        let outcomes = core
+            .process_event(&event_with_facts(core_authority_facts("abc123")), &rules)
+            .expect("PR open launches review");
+        let review = launched_run_id(&outcomes).expect("review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-one-done", review, RunKind::Review),
+                &rules,
+            )
+            .expect("review completion launches judge");
+        let judge_one = launched_run_id(&outcomes).expect("judge launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
+                &rules,
+            )
+            .expect("material judge completion launches fix");
+        let fix_one = launched_run_id(&outcomes).expect("fix launched");
+        core.process_event(
+            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
+            &rules,
+        )
+        .expect("fix completion publishes patches");
+        let outcomes = core
+            .process_event(
+                &ContractEvent {
+                    contract_version: ContractVersion::current(),
+                    id: "fix-push-updated-pr".to_owned(),
+                    payload: EventPayload::PullRequestUpdated {
+                        facts: core_authority_facts("head-after-fix"),
+                    },
+                    extensions: BTreeMap::new(),
+                },
+                &rules,
+            )
+            .expect("PR update launches fresh review");
+        let review_two = launched_run_id(&outcomes).expect("second review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-two-done", review_two, RunKind::Review),
+                &rules,
+            )
+            .expect("second review completion launches judge");
+        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
+        core.process_event(
+            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+            &rules,
+        )
+        .expect("converged judge does not apply finish label");
+
+        assert!(core.forge_operations.labels.is_empty());
+        assert!(core.forge_operations.merges.is_empty());
+    }
+
+    #[test]
+    fn core_does_not_apply_finish_label_when_actor_lacks_capability() {
+        let mut facts = core_authority_facts("abc123");
+        facts.actor_permissions = vec![ActorPermissions {
+            actor: core_actor(),
+            capabilities: std::iter::once(ActorCapability::Merge).collect(),
+        }];
+
+        assert!(!core_may_apply_finish_label(
+            &facts,
+            &core_actor(),
+            "pump19-finish",
+        ));
+    }
+
+    #[test]
+    fn core_does_not_apply_finish_label_when_facts_are_stale() {
+        let facts = ForgeFacts {
+            branch_currency: BranchCurrency::Stale,
+            ..core_authority_facts("abc123")
+        };
+
+        assert!(!core_may_apply_finish_label(
+            &facts,
+            &core_actor(),
+            "pump19-finish",
+        ));
     }
 
     #[test]
@@ -4145,6 +6478,86 @@ mod tests {
                 rule_id: "judge-after-review".to_owned(),
                 reason: SkipReason::DuplicateDispatch,
             }]
+        );
+    }
+
+    #[test]
+    fn rederived_completions_resume_loop_after_core_restart() {
+        let rules = vec![
+            independent_rule(),
+            review_on_fix_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+        ];
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::from_events(vec![event()]),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+        );
+
+        let opened = core
+            .process_next(&rules)
+            .expect("process opened event")
+            .expect("opened event available");
+        assert!(matches!(
+            opened.as_slice(),
+            [DispatchOutcome::Launched {
+                rule_id,
+                run_id: _
+            }] if rule_id == "review"
+        ));
+        assert_eq!(
+            core.pending_event_count(),
+            1,
+            "the first completion is deliberately still only queued in memory"
+        );
+        let persisted_store = core.state_store.clone();
+        drop(core);
+
+        let mut restarted = Core::with_forge_operations(
+            FakeEventSource::from_events(Vec::new()),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            persisted_store,
+            RecordingForgeOperations::default(),
+        );
+        let recovered = restarted
+            .rederive_pending_completions()
+            .expect("rederive completions from stored run history");
+        assert_eq!(recovered.queued, 1);
+        assert_eq!(recovered.terminal_replays, 1);
+        assert_eq!(recovered.stale_running_failures, 0);
+
+        let batches = restarted.drain_available(&rules).expect("resume loop");
+
+        assert_eq!(
+            restarted.workspace_provider.cleaned, 4,
+            "judge, fix, re-review, and final judge resume after restart"
+        );
+        assert_eq!(
+            restarted.forge_operations.comments.len(),
+            1,
+            "the material finding still surfaces once after restart"
+        );
+        assert_eq!(batches.len(), 5);
+        let converged = restarted
+            .state_store
+            .load_latest_for_pr(&pr())
+            .expect("load latest")
+            .expect("converged state");
+        assert!(
+            Criteria::State {
+                state: StateCriterion::HasConverged
+            }
+            .matches(&event(), Some(&converged))
         );
     }
 
@@ -4344,6 +6757,7 @@ mod tests {
             decisions: Vec::new(),
             patches: Vec::new(),
             token_usage: Some(7),
+            ensemble_archive_path: None,
         };
         let mut core = Core::new(
             FakeEventSource::empty(),
@@ -4430,7 +6844,7 @@ mod tests {
             verdict: DecisionVerdict::Material,
             rationale: "worth another pass".to_owned(),
             provenance: establish_provenance(
-                &target("judge", AgentRole::Judge, "gemini"),
+                &target("judge", AgentRole::Judge, "glm"),
                 PreparedAgent {
                     agent_id: AgentId("judge".to_owned()),
                     role: AgentRole::Judge,
@@ -4462,7 +6876,7 @@ mod tests {
             verdict: DecisionVerdict::Converged,
             rationale: "nothing material stands".to_owned(),
             provenance: establish_provenance(
-                &target("judge", AgentRole::Judge, "gemini"),
+                &target("judge", AgentRole::Judge, "glm"),
                 PreparedAgent {
                     agent_id: AgentId("judge".to_owned()),
                     role: AgentRole::Judge,

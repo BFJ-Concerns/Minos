@@ -18,8 +18,8 @@ use std::{
 
 use pump19_contract::RunKind;
 use pump19_core::{
-    CoreError, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation, WorkspaceLease,
-    WorkspaceProvider, WorkspaceRequest,
+    CoreError, PreparedSource, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation,
+    WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
 };
 use thiserror::Error;
 
@@ -70,6 +70,19 @@ pub trait ContainerRuntime {
         container_id: &str,
         request: &WorkspaceExecRequest,
     ) -> Result<WorkspaceExecOutput, WorkspaceError>;
+
+    /// Copies a trusted host-side source tree into the running container.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime cannot copy the source tree through the
+    /// container boundary.
+    fn copy_into(
+        &mut self,
+        container_id: &str,
+        host_source: &Path,
+        container_dest: &str,
+    ) -> Result<(), WorkspaceError>;
 
     /// Removes the configured container workspace.
     ///
@@ -144,6 +157,19 @@ impl ContainerRuntime for CommandRuntime {
             stdout: output.stdout,
             stderr: output.stderr,
         })
+    }
+
+    fn copy_into(
+        &mut self,
+        container_id: &str,
+        host_source: &Path,
+        container_dest: &str,
+    ) -> Result<(), WorkspaceError> {
+        let mut command = self.command();
+        let source = format!("{}/.", host_source.display());
+        let destination = format!("{container_id}:{container_dest}/");
+        command.args(["cp", &source, &destination]);
+        run_command(command, "copy source into workspace container")
     }
 
     fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
@@ -452,6 +478,15 @@ where
             .map_err(|error| CoreError::Workspace(error.to_string()))
     }
 
+    fn inject_source(
+        &mut self,
+        lease: &WorkspaceLease,
+        source: &PreparedSource,
+    ) -> Result<(), CoreError> {
+        self.inject_source_tree(lease, source)
+            .map_err(|error| CoreError::Workspace(error.to_string()))
+    }
+
     fn exec(
         &mut self,
         lease: &WorkspaceLease,
@@ -501,6 +536,17 @@ where
             },
         })
     }
+
+    fn inject_source_tree(
+        &mut self,
+        lease: &WorkspaceLease,
+        source: &PreparedSource,
+    ) -> Result<(), WorkspaceError> {
+        clear_directory(&lease.root)?;
+        copy_directory_contents(&source.tree, &lease.root)?;
+        self.runtime
+            .copy_into(&lease.id, &lease.root, DEFAULT_CONTAINER_WORKDIR)
+    }
 }
 
 fn remove_host_control_dir(path: &Path) -> Result<(), WorkspaceError> {
@@ -509,6 +555,98 @@ fn remove_host_control_dir(path: &Path) -> Result<(), WorkspaceError> {
             path: path.display().to_string(),
             source,
         })?;
+    }
+    Ok(())
+}
+
+fn clear_directory(path: &Path) -> Result<(), WorkspaceError> {
+    if !path.exists() {
+        fs::create_dir_all(path).map_err(|source| WorkspaceError::CreateRoot {
+            path: path.display().to_string(),
+            source,
+        })?;
+        return Ok(());
+    }
+    for entry in fs::read_dir(path).map_err(|source| WorkspaceError::RemoveRoot {
+        path: path.display().to_string(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| WorkspaceError::RemoveRoot {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let entry_path = entry.path();
+        let metadata =
+            fs::symlink_metadata(&entry_path).map_err(|source| WorkspaceError::RemoveRoot {
+                path: entry_path.display().to_string(),
+                source,
+            })?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            fs::remove_dir_all(&entry_path).map_err(|source| WorkspaceError::RemoveRoot {
+                path: entry_path.display().to_string(),
+                source,
+            })?;
+        } else {
+            fs::remove_file(&entry_path).map_err(|source| WorkspaceError::RemoveRoot {
+                path: entry_path.display().to_string(),
+                source,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_directory_contents(source: &Path, destination: &Path) -> Result<(), WorkspaceError> {
+    fs::create_dir_all(destination).map_err(|source_error| WorkspaceError::CreateRoot {
+        path: destination.display().to_string(),
+        source: source_error,
+    })?;
+    for entry in fs::read_dir(source).map_err(|source_error| WorkspaceError::CreateRoot {
+        path: source.display().to_string(),
+        source: source_error,
+    })? {
+        let entry = entry.map_err(|source_error| WorkspaceError::CreateRoot {
+            path: source.display().to_string(),
+            source: source_error,
+        })?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source_path).map_err(|source_error| {
+            WorkspaceError::CreateRoot {
+                path: source_path.display().to_string(),
+                source: source_error,
+            }
+        })?;
+        if metadata.file_type().is_symlink() {
+            let target =
+                fs::read_link(&source_path).map_err(|source_error| WorkspaceError::CreateRoot {
+                    path: source_path.display().to_string(),
+                    source: source_error,
+                })?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &destination_path).map_err(|source_error| {
+                WorkspaceError::CreateRoot {
+                    path: destination_path.display().to_string(),
+                    source: source_error,
+                }
+            })?;
+            #[cfg(not(unix))]
+            fs::write(&destination_path, target.to_string_lossy().as_bytes()).map_err(
+                |source_error| WorkspaceError::CreateRoot {
+                    path: destination_path.display().to_string(),
+                    source: source_error,
+                },
+            )?;
+        } else if metadata.is_dir() {
+            copy_directory_contents(&source_path, &destination_path)?;
+        } else {
+            fs::copy(&source_path, &destination_path).map_err(|source_error| {
+                WorkspaceError::CreateRoot {
+                    path: destination_path.display().to_string(),
+                    source: source_error,
+                }
+            })?;
+        }
     }
     Ok(())
 }
@@ -656,6 +794,7 @@ mod tests {
     struct RecordingRuntime {
         created: RefCell<Vec<ContainerSpec>>,
         execs: RefCell<Vec<(String, WorkspaceExecRequest)>>,
+        copies: RefCell<Vec<(String, PathBuf, String)>>,
         removed: RefCell<Vec<String>>,
         fail_create: Option<String>,
     }
@@ -682,6 +821,20 @@ mod tests {
                 stdout: b"ok".to_vec(),
                 stderr: Vec::new(),
             })
+        }
+
+        fn copy_into(
+            &mut self,
+            container_id: &str,
+            host_source: &Path,
+            container_dest: &str,
+        ) -> Result<(), WorkspaceError> {
+            self.copies.borrow_mut().push((
+                container_id.to_owned(),
+                host_source.to_path_buf(),
+                container_dest.to_owned(),
+            ));
+            Ok(())
         }
 
         fn remove(&mut self, container_id: &str) -> Result<(), WorkspaceError> {
@@ -718,6 +871,40 @@ mod tests {
         assert!(lease.root.exists());
         assert!(lease.root.starts_with(temp.path()));
         assert_eq!(provider.runtime().created.borrow().len(), 1);
+    }
+
+    #[test]
+    fn inject_source_copies_plain_tree_to_host_root_and_container_workspace() {
+        let temp = TempDir::new().expect("temp dir");
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("src")).expect("create source");
+        fs::write(source.join("src/lib.rs"), "pub fn answer() -> u8 { 19 }\n")
+            .expect("write source");
+        let mut provider = provider(temp.path());
+        let lease = provider.prepare(request()).expect("prepare");
+        fs::write(lease.root.join("stale"), "old").expect("write stale file");
+
+        provider
+            .inject_source(
+                &lease,
+                &PreparedSource {
+                    tree: source,
+                    revision: "abc123".to_owned(),
+                    cleanup_root: None,
+                },
+            )
+            .expect("inject source");
+
+        assert_eq!(
+            fs::read_to_string(lease.root.join("src/lib.rs")).expect("read injected source"),
+            "pub fn answer() -> u8 { 19 }\n"
+        );
+        assert!(!lease.root.join("stale").exists());
+        let copies = provider.runtime().copies.borrow();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].0, lease.id);
+        assert_eq!(copies[0].1, lease.root);
+        assert_eq!(copies[0].2, DEFAULT_CONTAINER_WORKDIR);
     }
 
     #[test]
