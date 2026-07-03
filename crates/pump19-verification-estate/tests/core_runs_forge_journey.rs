@@ -809,8 +809,15 @@ fn target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
         control_plane: "pump19-core".to_owned(),
         lineage: ModelLineage {
             family: ModelFamily(family.to_owned()),
-            model: format!("{family}-2026-06"),
+            model: model_for_family(family),
         },
+    }
+}
+
+fn model_for_family(family: &str) -> String {
+    match family {
+        "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+        _ => format!("{family}-2026-06"),
     }
 }
 
@@ -826,7 +833,7 @@ fn archive_agent(agent_id: &str, family: &str) -> ArchiveAgentFixture {
     ArchiveAgentFixture {
         label: format!("{agent_id}:purpose"),
         engine: engine_for_family(family).as_str().to_owned(),
-        model: format!("{family}-2026-06"),
+        model: model_for_family(family),
     }
 }
 
@@ -835,6 +842,8 @@ fn ensemble_config(root: &Path, run_kind: &str) -> EnsembleWorkflowConfig {
         script: root.join(format!("{run_kind}.js")),
         archive_root: root.join("archives"),
         timeout_ms: 5_000,
+        prompt_template: "configured estate prompt".to_owned(),
+        briefs: pump19_judgement::baseline_judgement_briefs(),
     }
 }
 
@@ -888,7 +897,7 @@ fn standard_plan() -> AgentPlan {
             target("reviewer-claude", AgentRole::Reviewer, "claude"),
         ],
         fixers: Vec::new(),
-        judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+        judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
         finishers: Vec::new(),
     }
 }
@@ -917,7 +926,7 @@ fn review_on_pr_updated_rule() -> TriggerRule {
                 target("reviewer-claude", AgentRole::Reviewer, "claude"),
             ],
             fixers: Vec::new(),
-            judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+            judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
             finishers: Vec::new(),
         },
     }
@@ -936,7 +945,7 @@ fn judge_after_review_rule() -> TriggerRule {
         agent_plan: AgentPlan {
             reviewers: Vec::new(),
             fixers: Vec::new(),
-            judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+            judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
             finishers: Vec::new(),
         },
     }
@@ -1089,7 +1098,7 @@ fn verified_provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelPr
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-2026-06"),
+                model: model_for_family(family),
             },
         },
         extensions,
@@ -1382,7 +1391,7 @@ fn core_launch_gate_refuses_each_soundness_violation_and_launches_independent_se
             ],
         ),
         LaunchRefusal::NonFreshSession {
-            agent_id: AgentId("judge-gemini".to_owned())
+            agent_id: AgentId("judge-glm".to_owned())
         }
     );
 
@@ -2259,18 +2268,14 @@ fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let mut judge = EnsembleJudgeBody::new(
         EstateEnsembleRunner::new(
             json!([{"finding_id":"finding-material-1","verdict":"material","rationale":"worth another pass"}]),
-            vec![archive_agent("judge-gemini", "gemini")],
+            vec![archive_agent("judge-glm", "glm")],
         ),
         ensemble_config(judge_workspace.path(), "judge"),
     );
     let mut judge_executor = EstateExecutor::new(Vec::new());
     let judge_request = run_request(
         RunKind::Judge,
-        vec![verified_provenance(
-            "judge-gemini",
-            AgentRole::Judge,
-            "gemini",
-        )],
+        vec![verified_provenance("judge-glm", AgentRole::Judge, "glm")],
     );
     let decisions = judge
         .run_judge(&judge_request, &mut judge_executor)
@@ -2587,7 +2592,7 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
         EstateSessions,
         EnsembleReviewBody::new(review_runner, ensemble_config(root.path(), "review")),
         EnsembleJudgeBody::new(
-            EstateEnsembleRunner::new(json!([]), vec![archive_agent("judge-gemini", "gemini")]),
+            EstateEnsembleRunner::new(json!([]), vec![archive_agent("judge-glm", "glm")]),
             ensemble_config(root.path(), "judge"),
         ),
         EnsembleFixBody::new(

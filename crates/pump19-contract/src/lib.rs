@@ -347,6 +347,9 @@ pub enum PublicationOperation {
     PushFixCommits {
         patch_ids: Vec<PatchId>,
     },
+    ApplyFinishLabel {
+        label: String,
+    },
     MergePullRequest,
 }
 
@@ -781,7 +784,7 @@ mod tests {
             },
             verdict: DecisionVerdict::Material,
             rationale: "The finding affects merge safety.".to_owned(),
-            provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
             extensions: extensions(),
         }
     }
@@ -1059,7 +1062,7 @@ mod tests {
             verified_provenance("claude-reviewer", AgentRole::Reviewer, "claude"),
         ];
         let fixer = verified_provenance("fixer", AgentRole::Fixer, "codex");
-        let judge = verified_provenance("judge", AgentRole::Judge, "gemini");
+        let judge = verified_provenance("judge", AgentRole::Judge, "glm");
         let mut all_provenance = reviewers.clone();
         all_provenance.push(fixer);
         all_provenance.push(judge.clone());

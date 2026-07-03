@@ -24,12 +24,13 @@ use std::{
 
 use pump19_adaptations::{
     MechanicalExecution, MechanicalPack, MechanicalStep, MechanicalStepKind, PromptPack,
-    WorkflowScript, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
+    PromptTemplate, WorkflowScript, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
 };
 use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
-    AgentLaunchSpec, Core, CoreError, DispatchOutcome, JsonRunStateStore, LaunchProof,
-    PreparedAgent, PreparedSource, SourcePreparationRequest, SourcePreparer, TriggerRule,
+    AgentLaunchSpec, Core, CoreError, CorePolicy, DispatchOutcome, FinishLabelApplicationPolicy,
+    JsonRunStateStore, LaunchProof, PreparedAgent, PreparedSource, SourcePreparationRequest,
+    SourcePreparer, TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -70,6 +71,8 @@ pub enum DaemonError {
     Core(#[from] CoreError),
     #[error("workflow script for {0:?} is missing from the prompt pack")]
     MissingWorkflowScript(RunKind),
+    #[error("prompt template for {0:?} is missing from the prompt pack")]
+    MissingPromptTemplate(RunKind),
     #[error("mechanical source preparation step is missing from the mechanical pack")]
     MissingSourcePreparationStep,
     #[error("source preparation step {0:?} uses unsupported container execution")]
@@ -128,6 +131,8 @@ pub struct EnsembleDaemonConfig {
 pub struct ForgejoDaemonConfig {
     pub repositories: Vec<String>,
     pub finish_label: String,
+    #[serde(default)]
+    pub core_applies_finish_label_on_convergence: bool,
     pub poll_command: CommandConfig,
     pub operation_command: CommandConfig,
 }
@@ -521,6 +526,7 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let launcher = runtime_launcher(&config.ensemble, &prompt_pack, &prompt_root)?;
+    let policy = core_policy(&config.forgejo);
     let source_preparer = runtime_source_preparer(&mechanical_pack)?;
     let polling = PollingForgejoActivitySource::new(
         CommandPollingClient::new(config.forgejo.poll_command.clone()),
@@ -537,15 +543,28 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
     let state_store = JsonRunStateStore::new(config.state_root)?;
     let forge_operations =
         ForgejoForgeOperations::new(CommandForgejoClient::new(config.forgejo.operation_command));
-    let core = Core::with_forge_operations_and_source_preparer(
+    let core = Core::with_forge_operations_source_preparer_and_policy(
         event_source,
         workspace,
         launcher,
         state_store,
         forge_operations,
         source_preparer,
+        policy,
     );
     Ok(Pump19Daemon::new(core, config.loop_control))
+}
+
+fn core_policy(config: &ForgejoDaemonConfig) -> CorePolicy {
+    if config.core_applies_finish_label_on_convergence {
+        CorePolicy {
+            finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
+                label: config.finish_label.clone(),
+            },
+        }
+    } else {
+        CorePolicy::human_gate()
+    }
 }
 
 fn runtime_launcher(
@@ -580,10 +599,14 @@ fn workflow_config(
 ) -> Result<EnsembleWorkflowConfig, DaemonError> {
     let script = workflow_script(prompt_pack, run_kind)
         .ok_or(DaemonError::MissingWorkflowScript(run_kind))?;
+    let template = prompt_template(prompt_pack, run_kind)
+        .ok_or(DaemonError::MissingPromptTemplate(run_kind))?;
     Ok(EnsembleWorkflowConfig {
         script: prompt_root.join(&script.path),
         archive_root: ensemble.archive_root.clone(),
         timeout_ms: ensemble.timeout_ms,
+        prompt_template: template.template.clone(),
+        briefs: prompt_pack.briefs.clone(),
     })
 }
 
@@ -593,6 +616,14 @@ fn workflow_script(prompt_pack: &PromptPack, run_kind: RunKind) -> Option<&Workf
         .workflow_scripts
         .iter()
         .find(|script| script.run_kind == run_kind)
+}
+
+fn prompt_template(prompt_pack: &PromptPack, run_kind: RunKind) -> Option<&PromptTemplate> {
+    prompt_pack
+        .manifest
+        .prompt_templates
+        .iter()
+        .find(|template| template.run_kind == run_kind)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1841,8 +1872,15 @@ stop_after_quiet_polls = 1
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-2026-06"),
+                model: model_for_family(family),
             },
+        }
+    }
+
+    fn model_for_family(family: &str) -> String {
+        match family {
+            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            _ => format!("{family}-2026-06"),
         }
     }
 
@@ -1867,7 +1905,7 @@ stop_after_quiet_polls = 1
                         target("reviewer-claude", AgentRole::Reviewer, "claude"),
                     ],
                     fixers: Vec::new(),
-                    judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+                    judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
                     finishers: Vec::new(),
                 },
             },
@@ -1883,7 +1921,7 @@ stop_after_quiet_polls = 1
                 agent_plan: AgentPlan {
                     reviewers: Vec::new(),
                     fixers: Vec::new(),
-                    judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+                    judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
                     finishers: Vec::new(),
                 },
             },

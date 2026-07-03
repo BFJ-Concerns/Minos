@@ -423,6 +423,34 @@ pub enum MergeMethod {
     Rebase,
 }
 
+/// Core-side policy for applying the finish label after convergence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CorePolicy {
+    pub finish_label_application: FinishLabelApplicationPolicy,
+}
+
+impl CorePolicy {
+    #[must_use]
+    pub const fn human_gate() -> Self {
+        Self {
+            finish_label_application: FinishLabelApplicationPolicy::HumanOnly,
+        }
+    }
+}
+
+impl Default for CorePolicy {
+    fn default() -> Self {
+        Self::human_gate()
+    }
+}
+
+/// Whether convergence may cause the core itself to apply the finish label.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FinishLabelApplicationPolicy {
+    HumanOnly,
+    CoreOnConvergence { label: String },
+}
+
 /// Receipt returned by an outbound forge operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForgeOperationReceipt {
@@ -527,6 +555,7 @@ pub struct Core<E, W, L, S, F = NoopForgeOperations, P = NoopSourcePreparer> {
     state_store: S,
     forge_operations: F,
     source_preparer: P,
+    policy: CorePolicy,
 }
 
 impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations, NoopSourcePreparer>
@@ -564,13 +593,33 @@ where
         state_store: S,
         forge_operations: F,
     ) -> Self {
-        Self::with_forge_operations_and_source_preparer(
+        Self::with_forge_operations_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            CorePolicy::human_gate(),
+        )
+    }
+
+    #[must_use]
+    pub const fn with_forge_operations_and_policy(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        policy: CorePolicy,
+    ) -> Self {
+        Self::with_forge_operations_source_preparer_and_policy(
             event_source,
             workspace_provider,
             launcher,
             state_store,
             forge_operations,
             NoopSourcePreparer,
+            policy,
         )
     }
 }
@@ -593,6 +642,27 @@ where
         forge_operations: F,
         source_preparer: P,
     ) -> Self {
+        Self::with_forge_operations_source_preparer_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            source_preparer,
+            CorePolicy::human_gate(),
+        )
+    }
+
+    #[must_use]
+    pub const fn with_forge_operations_source_preparer_and_policy(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        source_preparer: P,
+        policy: CorePolicy,
+    ) -> Self {
         Self {
             event_source,
             pending_events: VecDeque::new(),
@@ -602,6 +672,7 @@ where
             state_store,
             forge_operations,
             source_preparer,
+            policy,
         }
     }
 
@@ -1075,13 +1146,22 @@ where
         state: &mut PrRunState,
     ) -> Result<(), CoreError> {
         match run_kind {
-            RunKind::Judge => self.post_material_findings(run_id, state),
+            RunKind::Judge => self.apply_judge_forge_operations(run_id, state),
             RunKind::Fix => self.push_fix_patches(run_id, state),
             RunKind::Finish if state.status == RunStatus::Completed => {
                 self.merge_finished_pr(run_id, state)
             }
             RunKind::Review | RunKind::Finish => Ok(()),
         }
+    }
+
+    fn apply_judge_forge_operations(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        self.post_material_findings(run_id, state)?;
+        self.apply_finish_label_after_convergence(run_id, state)
     }
 
     fn post_material_findings(
@@ -1386,6 +1466,74 @@ where
             receipt,
         });
         self.state_store.save(state)?;
+        Ok(())
+    }
+
+    fn apply_finish_label_after_convergence(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        if !state_converged_for_current_pass(state) {
+            return Ok(());
+        }
+        let label = match &self.policy.finish_label_application {
+            FinishLabelApplicationPolicy::HumanOnly => return Ok(()),
+            FinishLabelApplicationPolicy::CoreOnConvergence { label } => label.clone(),
+        };
+        let Some(mut facts) = forge_facts_from_state(state)? else {
+            return Ok(());
+        };
+        let actor = core_actor();
+        if !core_may_apply_finish_label(&facts, &actor, &label) {
+            return Ok(());
+        }
+
+        let idempotency_key = stable_id(
+            "forge-apply-finish-label",
+            [run_id.0.as_str(), facts.head.sha.as_str(), label.as_str()],
+        );
+        let result = self.forge_operations.apply_label(AuthorisedLabel {
+            authorisation: finish_label_authorisation(
+                state,
+                &facts,
+                &actor,
+                idempotency_key.clone(),
+            ),
+            label: label.clone(),
+        });
+        if let Err(error) =
+            record_finish_label_attempt(state, run_id, &label, idempotency_key, result)
+        {
+            self.state_store.save(state)?;
+            return Err(error);
+        }
+
+        let finish_label = FinishLabel {
+            name: label.clone(),
+            applied_by: actor,
+        };
+        facts.finish_label = Some(finish_label.clone());
+        state.extensions.insert(
+            EXT_FORGE_FACTS.to_owned(),
+            serde_json::to_value(&facts).map_err(|source| CoreError::Json {
+                path: EXT_FORGE_FACTS.to_owned(),
+                source,
+            })?,
+        );
+        self.state_store.save(state)?;
+        self.queue_completion_event(ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: stable_id(
+                "event-finish-label-applied",
+                [run_id.0.as_str(), facts.head.sha.as_str(), label.as_str()],
+            ),
+            payload: EventPayload::LabelApplied {
+                pr: state.pr.clone(),
+                label: finish_label,
+            },
+            extensions: BTreeMap::new(),
+        });
         Ok(())
     }
 
@@ -2180,6 +2328,8 @@ fn opencode_engine_family(model: &str) -> Option<&'static str> {
         || model.starts_with("o5")
     {
         Some("codex")
+    } else if model.starts_with("glm") || model.starts_with("z-ai/glm") {
+        Some("glm")
     } else if model.starts_with("gemini") || model.starts_with("palm") {
         Some("gemini")
     } else if model.starts_with("mistral") || model.starts_with("mixtral") {
@@ -2410,6 +2560,93 @@ fn material_findings_for_pass(state: &PrRunState) -> Vec<(Finding, Decision)> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+fn state_converged_for_current_pass(state: &PrRunState) -> bool {
+    convergence_decision_id_for_current_pass(state).is_some()
+}
+
+fn convergence_decision_id_for_current_pass(state: &PrRunState) -> Option<String> {
+    state
+        .decisions
+        .iter()
+        .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
+        .find(|decision| decision.verdict == DecisionVerdict::Converged)
+        .map(|decision| decision.id.clone())
+}
+
+fn core_may_apply_finish_label(facts: &ForgeFacts, actor: &ActorRef, label: &str) -> bool {
+    facts
+        .finish_label
+        .as_ref()
+        .is_none_or(|finish_label| finish_label.name != label)
+        && merge_gate_clean_and_current(facts)
+        && actor_has_capability(facts, actor, ActorCapability::ApplyFinishLabel)
+}
+
+fn finish_label_authorisation(
+    state: &PrRunState,
+    facts: &ForgeFacts,
+    actor: &ActorRef,
+    idempotency_key: String,
+) -> AuthorisationContext {
+    AuthorisationContext {
+        pr: state.pr.clone(),
+        observed_head_sha: facts.head.sha.clone(),
+        idempotency_key,
+        actor: actor.clone(),
+        reason: "core authorised applying finish label after convergence".to_owned(),
+        evidence: vec![
+            AuthorisationEvidence::Decision {
+                decision_id: convergence_decision_id_for_current_pass(state)
+                    .unwrap_or_else(|| "converged".to_owned()),
+                verdict: DecisionVerdict::Converged,
+            },
+            AuthorisationEvidence::ActorCapability {
+                actor: actor.clone(),
+                capability: ActorCapability::ApplyFinishLabel,
+            },
+            AuthorisationEvidence::MergeGateCleanAndCurrent {
+                facts_head_sha: facts.head.sha.clone(),
+            },
+        ],
+    }
+}
+
+fn record_finish_label_attempt(
+    state: &mut PrRunState,
+    run_id: &RunId,
+    label: &str,
+    idempotency_key: String,
+    result: Result<ForgeOperationReceipt, ForgeOperationError>,
+) -> Result<ForgeReceipt, CoreError> {
+    let operation = PublicationOperation::ApplyFinishLabel {
+        label: label.to_owned(),
+    };
+    match result {
+        Ok(receipt) => {
+            let receipt = receipt_to_contract(receipt);
+            record_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                Ok(receipt.clone()),
+            );
+            Ok(receipt)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            record_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                Err(message.clone()),
+            );
+            Err(CoreError::ForgeOperation(message))
+        }
+    }
 }
 
 fn finding_comment_authorisation(
@@ -3720,11 +3957,28 @@ mod tests {
         }
     }
 
+    fn core_authority_facts(head_sha: &str) -> ForgeFacts {
+        ForgeFacts {
+            finish_label: None,
+            actor_permissions: vec![ActorPermissions {
+                actor: core_actor(),
+                capabilities: [ActorCapability::ApplyFinishLabel, ActorCapability::Merge]
+                    .into_iter()
+                    .collect(),
+            }],
+            ..facts_with_head(head_sha)
+        }
+    }
+
     fn event() -> ContractEvent {
+        event_with_facts(facts())
+    }
+
+    fn event_with_facts(facts: ForgeFacts) -> ContractEvent {
         ContractEvent {
             contract_version: ContractVersion::current(),
             id: "event-1".to_owned(),
-            payload: EventPayload::PullRequestOpened { facts: facts() },
+            payload: EventPayload::PullRequestOpened { facts },
             extensions: BTreeMap::new(),
         }
     }
@@ -3738,8 +3992,15 @@ mod tests {
             control_plane: "pump19-core".to_owned(),
             lineage: ModelLineage {
                 family: ModelFamily(family.to_owned()),
-                model: format!("{family}-2026"),
+                model: model_for_family(family),
             },
+        }
+    }
+
+    fn model_for_family(family: &str) -> String {
+        match family {
+            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            _ => format!("{family}-2026"),
         }
     }
 
@@ -3796,7 +4057,7 @@ mod tests {
                     target("reviewer-claude", AgentRole::Reviewer, "claude"),
                 ],
                 fixers: vec![target("fixer", AgentRole::Fixer, "codex")],
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
@@ -3882,7 +4143,7 @@ mod tests {
             agent_plan: AgentPlan {
                 reviewers: Vec::new(),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
@@ -4128,7 +4389,7 @@ mod tests {
             agent_plan: AgentPlan {
                 reviewers: Vec::new(),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         };
@@ -4485,7 +4746,7 @@ mod tests {
                 },
                 verdict: DecisionVerdict::Material,
                 rationale: "worth another pass".to_owned(),
-                provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+                provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
                 extensions: BTreeMap::new(),
             }],
             patches: Vec::new(),
@@ -4884,7 +5145,7 @@ mod tests {
             },
             verdict: DecisionVerdict::Material,
             rationale: "worth another pass".to_owned(),
-            provenance: verified_provenance("judge-old", AgentRole::Judge, "gemini"),
+            provenance: verified_provenance("judge-old", AgentRole::Judge, "glm"),
             extensions: BTreeMap::new(),
         });
         state.run_history.push(RunRecord {
@@ -4953,7 +5214,7 @@ mod tests {
             },
             verdict: DecisionVerdict::Material,
             rationale: "worth another pass".to_owned(),
-            provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
             extensions: BTreeMap::new(),
         });
 
@@ -5041,6 +5302,175 @@ mod tests {
             outcomes.as_slice(),
             [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review"
         ));
+    }
+
+    #[test]
+    fn convergence_applies_finish_label_and_reaches_merge_when_policy_grants_authority() {
+        let rules = vec![
+            independent_rule(),
+            update_review_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+            finish_on_label_rule(),
+        ];
+        let mut core = Core::with_forge_operations_and_policy(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            CorePolicy {
+                finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
+                    label: "pump19-finish".to_owned(),
+                },
+            },
+        );
+
+        let outcomes = core
+            .process_event(&event_with_facts(core_authority_facts("abc123")), &rules)
+            .expect("PR open launches review");
+        let review_one = launched_run_id(&outcomes).expect("review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-one-done", review_one, RunKind::Review),
+                &rules,
+            )
+            .expect("review completion launches judge");
+        let judge_one = launched_run_id(&outcomes).expect("judge launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
+                &rules,
+            )
+            .expect("material judge completion launches fix");
+        let fix_one = launched_run_id(&outcomes).expect("fix launched");
+        core.process_event(
+            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
+            &rules,
+        )
+        .expect("fix completion publishes patches");
+
+        let outcomes = core
+            .process_event(
+                &ContractEvent {
+                    contract_version: ContractVersion::current(),
+                    id: "fix-push-updated-pr".to_owned(),
+                    payload: EventPayload::PullRequestUpdated {
+                        facts: core_authority_facts("head-after-fix"),
+                    },
+                    extensions: BTreeMap::new(),
+                },
+                &rules,
+            )
+            .expect("PR update launches fresh review");
+        let review_two = launched_run_id(&outcomes).expect("second review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-two-done", review_two, RunKind::Review),
+                &rules,
+            )
+            .expect("second review completion launches judge");
+        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
+
+        core.process_event(
+            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+            &rules,
+        )
+        .expect("converged judge applies finish label");
+        let drained = core
+            .drain_available(&rules)
+            .expect("queued label event launches finish");
+
+        assert_eq!(core.forge_operations.labels.len(), 1);
+        assert_eq!(core.forge_operations.labels[0].label, "pump19-finish");
+        assert_eq!(
+            core.forge_operations.labels[0].authorisation.actor,
+            core_actor()
+        );
+        assert_eq!(core.forge_operations.merges.len(), 1);
+        assert!(
+            drained
+                .iter()
+                .flatten()
+                .any(|outcome| matches!(outcome, DispatchOutcome::Launched { rule_id, .. } if rule_id == "finish-on-label"))
+        );
+    }
+
+    #[test]
+    fn convergence_does_not_apply_finish_label_without_policy_grant() {
+        let rules = vec![
+            independent_rule(),
+            update_review_rule(),
+            judge_after_review_rule(),
+            fix_after_material_judge_rule(),
+            finish_on_label_rule(),
+        ];
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            LoopLauncher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+        );
+
+        let outcomes = core
+            .process_event(&event_with_facts(core_authority_facts("abc123")), &rules)
+            .expect("PR open launches review");
+        let review = launched_run_id(&outcomes).expect("review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-one-done", review, RunKind::Review),
+                &rules,
+            )
+            .expect("review completion launches judge");
+        let judge_one = launched_run_id(&outcomes).expect("judge launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
+                &rules,
+            )
+            .expect("material judge completion launches fix");
+        let fix_one = launched_run_id(&outcomes).expect("fix launched");
+        core.process_event(
+            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
+            &rules,
+        )
+        .expect("fix completion publishes patches");
+        let outcomes = core
+            .process_event(
+                &ContractEvent {
+                    contract_version: ContractVersion::current(),
+                    id: "fix-push-updated-pr".to_owned(),
+                    payload: EventPayload::PullRequestUpdated {
+                        facts: core_authority_facts("head-after-fix"),
+                    },
+                    extensions: BTreeMap::new(),
+                },
+                &rules,
+            )
+            .expect("PR update launches fresh review");
+        let review_two = launched_run_id(&outcomes).expect("second review launched");
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-two-done", review_two, RunKind::Review),
+                &rules,
+            )
+            .expect("second review completion launches judge");
+        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
+        core.process_event(
+            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
+            &rules,
+        )
+        .expect("converged judge does not apply finish label");
+
+        assert!(core.forge_operations.labels.is_empty());
+        assert!(core.forge_operations.merges.is_empty());
     }
 
     #[test]
@@ -5472,7 +5902,7 @@ mod tests {
             verdict: DecisionVerdict::Material,
             rationale: "worth another pass".to_owned(),
             provenance: establish_provenance(
-                &target("judge", AgentRole::Judge, "gemini"),
+                &target("judge", AgentRole::Judge, "glm"),
                 PreparedAgent {
                     agent_id: AgentId("judge".to_owned()),
                     role: AgentRole::Judge,
@@ -5504,7 +5934,7 @@ mod tests {
             verdict: DecisionVerdict::Converged,
             rationale: "nothing material stands".to_owned(),
             provenance: establish_provenance(
-                &target("judge", AgentRole::Judge, "gemini"),
+                &target("judge", AgentRole::Judge, "glm"),
                 PreparedAgent {
                     agent_id: AgentId("judge".to_owned()),
                     role: AgentRole::Judge,
