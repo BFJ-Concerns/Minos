@@ -1,0 +1,180 @@
+#!/bin/sh
+set -eu
+
+base_url=
+git_base_url=
+curl_bin=${PUMP19_FORGEJO_CURL:-curl}
+
+usage() {
+  echo "usage: pump19-forgejo-operation --base-url URL [--git-base-url URL]" >&2
+  exit 64
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --base-url)
+      [ "$#" -ge 2 ] || usage
+      base_url=${2%/}
+      shift 2
+      ;;
+    --git-base-url)
+      [ "$#" -ge 2 ] || usage
+      git_base_url=${2%/}
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      usage
+      ;;
+  esac
+done
+
+[ -n "${base_url}" ] || usage
+[ -n "${git_base_url}" ] || git_base_url=$base_url
+[ -n "${FORGEJO_TOKEN:-}" ] || {
+  echo "FORGEJO_TOKEN is required" >&2
+  exit 78
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "jq is required" >&2
+  exit 78
+}
+
+input=$(cat)
+operation=$(printf '%s' "$input" | jq -r '.operation')
+repository=$(printf '%s' "$input" | jq -r '.pr.repository')
+pr_id=$(printf '%s' "$input" | jq -r '.pr.id')
+
+api_json() {
+  method=$1
+  path=$2
+  body=${3:-}
+  if [ -n "$body" ]; then
+    "$curl_bin" -fsS \
+      -X "$method" \
+      -H "Authorization: token ${FORGEJO_TOKEN}" \
+      -H "Accept: application/json" \
+      -H "Content-Type: application/json" \
+      --data "$body" \
+      "$base_url/api/v1$path"
+  else
+    "$curl_bin" -fsS \
+      -X "$method" \
+      -H "Authorization: token ${FORGEJO_TOKEN}" \
+      -H "Accept: application/json" \
+      "$base_url/api/v1$path"
+  fi
+}
+
+pull_json() {
+  api_json GET "/repos/$repository/pulls/$pr_id"
+}
+
+guard_expected_head() {
+  expected=$1
+  [ -n "$expected" ] && [ "$expected" != "null" ] || return 0
+  current=$(pull_json | jq -r '.head.sha // empty')
+  if [ "$current" != "$expected" ]; then
+    jq -nc --arg expected "$expected" --arg actual "$current" \
+      '{error:"head_moved", expected_head_sha:$expected, actual_head_sha:(if $actual == "" then null else $actual end)}' >&2
+    exit 75
+  fi
+}
+
+receipt() {
+  operation_id=$1
+  new_head=${2:-}
+  jq -nc --arg operation_id "$operation_id" --arg new_head "$new_head" \
+    '{operation_id:$operation_id, new_head_sha:(if $new_head == "" then null else $new_head end)}'
+}
+
+metadata_expected=$(printf '%s' "$input" | jq -r '.metadata.expected_head_sha // empty')
+
+case "$operation" in
+  post_comment)
+    guard_expected_head "$metadata_expected"
+    body=$(printf '%s' "$input" | jq -c '{body:.body}')
+    response=$(api_json POST "/repos/$repository/issues/$pr_id/comments" "$body")
+    receipt "$(printf '%s' "$response" | jq -r '(.id // .html_url // .url) | tostring')"
+    ;;
+  update_comment)
+    guard_expected_head "$metadata_expected"
+    comment_id=$(printf '%s' "$input" | jq -r '.comment_operation_id')
+    body=$(printf '%s' "$input" | jq -c '{body:.body}')
+    response=$(api_json PATCH "/repos/$repository/issues/comments/$comment_id" "$body")
+    receipt "$(printf '%s' "$response" | jq -r '(.id // "'"$comment_id"'") | tostring')"
+    ;;
+  resolve_comment)
+    guard_expected_head "$metadata_expected"
+    comment_id=$(printf '%s' "$input" | jq -r '.comment_operation_id')
+    reason=$(printf '%s' "$input" | jq -r '.reason')
+    body=$(jq -nc --arg reason "$reason" '{body:("Resolved by Pump-19: " + $reason)}')
+    response=$(api_json PATCH "/repos/$repository/issues/comments/$comment_id" "$body")
+    receipt "$(printf '%s' "$response" | jq -r '(.id // "'"$comment_id"'") | tostring')"
+    ;;
+  apply_label)
+    label=$(printf '%s' "$input" | jq -r '.label')
+    body=$(jq -nc --arg label "$label" '{labels:[$label]}')
+    response=$(api_json POST "/repos/$repository/issues/$pr_id/labels" "$body")
+    receipt "$(printf '%s' "$response" | jq -r 'if type == "array" then (.[-1].id // .[-1].name // "'"$label"'") else (.id // .name // "'"$label"'") end | tostring')"
+    ;;
+  merge)
+    method=$(printf '%s' "$input" | jq -r '.method')
+    body=$(jq -nc --arg method "$method" '{Do:$method}')
+    response=$(api_json POST "/repos/$repository/pulls/$pr_id/merge" "$body")
+    receipt "$(printf '%s' "$response" | jq -r '(.sha // .commit_id // "merge") | tostring')"
+    ;;
+  push_fix_commits)
+    expected=$(printf '%s' "$input" | jq -r '.expected_head_sha')
+    guard_expected_head "$expected"
+    command -v git >/dev/null 2>&1 || {
+      echo "git is required for push_fix_commits" >&2
+      exit 78
+    }
+    pr_json=$(pull_json)
+    head_ref=$(printf '%s' "$pr_json" | jq -r '.head.ref // empty')
+    [ -n "$head_ref" ] || {
+      echo "PR head ref is unavailable" >&2
+      exit 65
+    }
+    tmp=${TMPDIR:-/tmp}/pump19-forgejo-operation.$$
+    rm -rf "$tmp"
+    mkdir -p "$tmp"
+    trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+    git_url="$git_base_url/$repository.git"
+    git -c "http.extraHeader=Authorization: token ${FORGEJO_TOKEN}" clone "$git_url" "$tmp/repo" >/dev/null 2>&1
+    cd "$tmp/repo"
+    git checkout "$head_ref" >/dev/null 2>&1 || git checkout -b "$head_ref" "origin/$head_ref" >/dev/null 2>&1
+    actual=$(git rev-parse HEAD)
+    if [ "$actual" != "$expected" ]; then
+      jq -nc --arg expected "$expected" --arg actual "$actual" \
+        '{error:"head_moved", expected_head_sha:$expected, actual_head_sha:$actual}' >&2
+      exit 75
+    fi
+    printf '%s' "$input" | jq -c '.commits[]' > "$tmp/commits.jsonl"
+    while IFS= read -r commit_json; do
+      message=$(printf '%s' "$commit_json" | jq -r '.message')
+      author=$(printf '%s' "$commit_json" | jq -r '.author_agent_id')
+      kind=$(printf '%s' "$commit_json" | jq -r '.change.kind')
+      if [ "$kind" = "unified_diff" ]; then
+        printf '%s' "$commit_json" | jq -r '.change.diff' | git apply
+      fi
+      if [ "$kind" != "description" ]; then
+        git add -A
+      fi
+      GIT_AUTHOR_NAME="$author" GIT_AUTHOR_EMAIL="pump19@example.invalid" \
+        GIT_COMMITTER_NAME="Pump-19" GIT_COMMITTER_EMAIL="pump19@example.invalid" \
+        git commit --allow-empty -m "$message" >/dev/null 2>&1
+    done < "$tmp/commits.jsonl"
+    new_head=$(git rev-parse HEAD)
+    git -c "http.extraHeader=Authorization: token ${FORGEJO_TOKEN}" push origin "HEAD:$head_ref" >/dev/null 2>&1
+    receipt "push:$new_head" "$new_head"
+    ;;
+  *)
+    echo "unknown operation: $operation" >&2
+    exit 64
+    ;;
+esac

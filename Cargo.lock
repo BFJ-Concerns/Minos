@@ -175,6 +175,7 @@ dependencies = [
  "pump19-core",
  "pump19-judgement",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "toml",

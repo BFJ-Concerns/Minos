@@ -1,0 +1,131 @@
+#!/bin/sh
+set -eu
+
+base_url=
+finish_label=pump19-finish
+curl_bin=${PUMP19_FORGEJO_CURL:-curl}
+
+usage() {
+  echo "usage: pump19-forgejo-poll --base-url URL [--finish-label LABEL] owner/repo" >&2
+  exit 64
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --base-url)
+      [ "$#" -ge 2 ] || usage
+      base_url=${2%/}
+      shift 2
+      ;;
+    --finish-label)
+      [ "$#" -ge 2 ] || usage
+      finish_label=$2
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      ;;
+    --*)
+      echo "unknown option: $1" >&2
+      usage
+      ;;
+    *)
+      repository=$1
+      shift
+      [ "$#" -eq 0 ] || usage
+      ;;
+  esac
+done
+
+[ -n "${base_url}" ] || usage
+[ -n "${repository:-}" ] || usage
+[ -n "${FORGEJO_TOKEN:-}" ] || {
+  echo "FORGEJO_TOKEN is required" >&2
+  exit 78
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "jq is required" >&2
+  exit 78
+}
+
+api_json() {
+  "$curl_bin" -fsS \
+    -H "Authorization: token ${FORGEJO_TOKEN}" \
+    -H "Accept: application/json" \
+    "$base_url/api/v1$1"
+}
+
+user_json=$(api_json "/user")
+pulls_json=$(api_json "/repos/$repository/pulls?state=open")
+
+tmp=${TMPDIR:-/tmp}/pump19-forgejo-poll.$$
+mkdir -p "$tmp"
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+printf '%s' "$pulls_json" | jq -c '.[]' > "$tmp/pulls.jsonl"
+: > "$tmp/snapshots.jsonl"
+
+while IFS= read -r pull_json; do
+  pr_id=$(printf '%s' "$pull_json" | jq -r '(.number // .id | tostring)')
+  timeline_json=$(api_json "/repos/$repository/issues/$pr_id/timeline" 2>/dev/null || printf '[]')
+  labels_json=$(printf '%s\n%s\n' "$pull_json" "$timeline_json" | jq -c -n --arg finish "$finish_label" '
+    input as $pull
+    | input as $timeline
+    | ($pull.labels // []) as $labels
+    | ($timeline // []) as $events
+    | $labels
+    | map(select(.name == $finish))
+    | map({
+        name,
+        applied_by: (
+          $events
+          | map(select((.label.name // .label.Name // "") == $finish))
+          | .[-1]
+          | if . == null then null else {
+              id: ((.user.id // .user.login // .user.username // "unknown") | tostring),
+              display_name: (.user.full_name // .user.login // .user.username // "unknown")
+            } end
+        )
+      })
+  ')
+  cleanliness=$(printf '%s' "$labels_json" | jq -r 'if length > 0 then "clean" else "dirty" end')
+  actor_permissions_json=$(printf '%s' "$user_json" | jq -c --arg finish "$finish_label" '[
+    {
+      actor: {
+        id: ((.id // .login // .username // "forgejo-token") | tostring),
+        display_name: (.full_name // .login // .username // "Forgejo token")
+      },
+      can_apply_finish_label: true,
+      can_merge: true
+    }
+  ]')
+  snapshot=$(printf '%s\n%s\n%s\n' "$pull_json" "$labels_json" "$actor_permissions_json" | jq -c -n --arg repository "$repository" --arg cleanliness "$cleanliness" '
+    input as $pull
+    | input as $labels
+    | input as $actor_permissions
+    | {
+        repository: $repository,
+        id: (($pull.number // $pull.id) | tostring),
+        head_sha: ($pull.head.sha // ""),
+        base_sha: ($pull.base.sha // ""),
+        branch_currency: (
+          if ($pull.merge_base // "") != "" and ($pull.base.sha // "") != "" and $pull.merge_base == $pull.base.sha
+          then "current"
+          else "unknown"
+          end
+        ),
+        cleanliness: $cleanliness,
+        mergeability: (
+          if $pull.mergeable == true then "mergeable"
+          elif $pull.mergeable == false then "conflicting"
+          else "unknown"
+          end
+        ),
+        labels: $labels,
+        actor_permissions: $actor_permissions
+      }
+  ')
+  printf '%s\n' "$snapshot" >> "$tmp/snapshots.jsonl"
+done < "$tmp/pulls.jsonl"
+
+jq -s '.' "$tmp/snapshots.jsonl"
