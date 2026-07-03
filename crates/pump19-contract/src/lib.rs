@@ -480,6 +480,11 @@ pub struct RunRecord {
     pub refusal: Option<RunRefusal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ensemble_archive_path: Option<String>,
+    /// The verified provenance the run launched with. Persisted so later
+    /// launch gates (judge independence, family spread) can see reviewers
+    /// even when a run produced no findings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<ModelProvenance>,
 }
 
 /// A launch refusal recorded in run history.
@@ -979,6 +984,7 @@ mod tests {
                 outcome: Some(RunOutcome::Succeeded),
                 refusal: None,
                 ensemble_archive_path: Some("/var/lib/pump19/archives/run-review-1".to_owned()),
+                provenance: Vec::new(),
             }],
             loop_history: vec![LoopPassRecord {
                 pass_index: 1,
@@ -1049,6 +1055,7 @@ mod tests {
                     message: "run ceiling reached before launch".to_owned(),
                 }),
                 ensemble_archive_path: Some("/var/lib/pump19/archives/run-review-3".to_owned()),
+                provenance: Vec::new(),
             }],
             loop_history: Vec::new(),
             superseded_by: None,

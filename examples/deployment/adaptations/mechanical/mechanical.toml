@@ -26,3 +26,20 @@ kind = "checkout"
 [steps.execution]
 executor = "command"
 program = "commands/pump19-prepare-source"
+
+[[steps]]
+id = "merge-readiness"
+inputs = [
+    "merge_readiness_command_input_json",
+    "forge_repository",
+    "pull_request_head",
+]
+outputs = ["merge_readiness_verdict_json"]
+
+[steps.kind]
+kind = "custom"
+name = "merge-readiness"
+
+[steps.execution]
+executor = "command"
+program = "commands/pump19-merge-readiness"

@@ -50,13 +50,27 @@ The example points at generated baseline deployment assets:
 - `adaptations/prompt/prompt-pack.toml` supplies the review, judge and fix prompt
   templates, baseline judgement briefs and ensemble workflow scripts.
 - `adaptations/mechanical/mechanical.toml` declares the source preparation command
-  `commands/pump19-prepare-source`. That command receives source-preparation JSON
-  on stdin and returns a `.git`-free tree archived from the recorded revision.
+  `commands/pump19-prepare-source` and the merge-readiness command
+  `commands/pump19-merge-readiness`. The preparation command receives
+  source-preparation JSON on stdin and returns a `.git`-free tree archived from
+  the recorded revision.
 - `commands/pump19-forgejo-poll` reads open pull requests from Forgejo REST and
-  emits the daemon's polling snapshot JSON.
+  emits the daemon's polling snapshot JSON, including the PR author's login.
 - `commands/pump19-forgejo-operation` performs the credentialed write side:
   post/update/resolve comments, apply labels, merge PRs, and append fix commits
   to the PR head branch with a non-force `git push`.
+- `commands/pump19-merge-readiness` runs during finish runs, before the core
+  merges: it re-reads the live PR (verdict `not_ready` on a moved head or
+  forge-reported conflict), probes a merge against the live base tip, and runs
+  build/test checks. Untrusted PR code never executes on the host — checks run
+  in a throwaway, credential-free container (`podman run --rm`, image from
+  `PUMP19_MERGE_READINESS_IMAGE`, default `localhost/pump19-workspace:stable`)
+  with network access for dependency downloads. The default check command is
+  toolchain-detected (`cargo build`/`cargo test` for Cargo workspaces, `npm ci`
+  and `npm test` for Node packages, nothing otherwise); override it with
+  `--check-command`. `PUMP19_MERGE_READINESS_TIMEOUT` (seconds, default 3600)
+  bounds the checks. Removing the step from the mechanical pack leaves the
+  contract merge gate alone in charge, as before.
 
 Relative command paths containing `/` are resolved relative to the daemon config
 file, just like the pack and state paths. Bare command names still resolve
@@ -217,6 +231,43 @@ false for a human merge gate: a person applies `finish_label` after convergence.
 Set it true only when the repository policy explicitly accepts auto-merge of
 agent-authored code.
 
+`forgejo.web_base_url` is the forge web root (for example
+`https://forgejo.example`) used to render file permalinks in finding comments,
+pinned to the reviewed head SHA. Leave it unset to render plain `path:line`
+code spans instead.
+
+Trigger rules can restrict runs to specific PR authors with the
+`pr_authored_by` criterion. Wrap the baseline review rule's criteria in a
+site-pack copy:
+
+```toml
+[rules.criteria]
+kind = "all"
+
+[[rules.criteria.criteria]]
+kind = "any"
+
+[[rules.criteria.criteria.criteria]]
+kind = "event"
+
+[rules.criteria.criteria.criteria.event]
+event = "pull_request_opened"
+
+[[rules.criteria.criteria.criteria]]
+kind = "event"
+
+[rules.criteria.criteria.criteria.event]
+event = "pull_request_updated"
+
+[[rules.criteria.criteria]]
+kind = "pr_authored_by"
+any_of = ["some-login", "another-login"]
+```
+
+The author comes from the poll command's `author_login` snapshot field; when
+the forge does not expose an author the criterion fails closed and the rule
+does not fire.
+
 `loop_control.poll_interval_ms` defaults to `5000`.
 `loop_control.stop_after_quiet_polls` defaults to unset, which means the daemon
 keeps polling until SIGINT or SIGTERM. Set it for smoke runs.
@@ -257,6 +308,10 @@ Example `/etc/pump19/forgejo.env`:
 ```sh
 FORGEJO_TOKEN=replace-with-token
 PUMP19_GIT_BASE_URL=https://forgejo.example
+# Merge-readiness checks (optional overrides):
+# PUMP19_FORGEJO_BASE_URL=https://forgejo.example
+# PUMP19_MERGE_READINESS_IMAGE=localhost/pump19-workspace:stable
+# PUMP19_MERGE_READINESS_TIMEOUT=3600
 ```
 
 ```ini

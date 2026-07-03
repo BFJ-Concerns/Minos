@@ -342,6 +342,7 @@ pub struct BaselineForgejoCommandPaths {
     pub poll_command: PathBuf,
     pub operation_command: PathBuf,
     pub prepare_source_command: PathBuf,
+    pub merge_readiness_command: PathBuf,
 }
 
 /// Paths written by [`write_baseline_deployment_assets`].
@@ -384,13 +385,16 @@ pub fn write_baseline_forgejo_commands(
     let poll_command = root.join("pump19-forgejo-poll");
     let operation_command = root.join("pump19-forgejo-operation");
     let prepare_source_command = root.join("pump19-prepare-source");
+    let merge_readiness_command = root.join("pump19-merge-readiness");
     write_executable_text(&poll_command, BASELINE_FORGEJO_POLL_SH)?;
     write_executable_text(&operation_command, BASELINE_FORGEJO_OPERATION_SH)?;
     write_executable_text(&prepare_source_command, BASELINE_PREPARE_SOURCE_SH)?;
+    write_executable_text(&merge_readiness_command, BASELINE_MERGE_READINESS_SH)?;
     Ok(BaselineForgejoCommandPaths {
         poll_command,
         operation_command,
         prepare_source_command,
+        merge_readiness_command,
     })
 }
 
@@ -855,6 +859,179 @@ jq -nc --arg tree "$output_tree" --arg revision "$commit_sha" \
   '{tree:$tree, revision:$revision}'
 "#;
 
+// The readiness verdict is stdout JSON ({"status":"ready"} or
+// {"status":"not_ready","detail":"..."}); a non-zero exit means the check
+// itself could not execute. Untrusted PR code never runs on the host: the
+// host side is git-only (clone, conflict probe), and build/test checks run
+// in a throwaway, credential-free container with network for dependencies.
+const BASELINE_MERGE_READINESS_SH: &str = r#"#!/bin/sh
+set -eu
+
+base_url=${PUMP19_FORGEJO_BASE_URL:-${PUMP19_GIT_BASE_URL:-}}
+git_base_url=${PUMP19_GIT_BASE_URL:-}
+curl_bin=${PUMP19_FORGEJO_CURL:-curl}
+runner_bin=${PUMP19_MERGE_READINESS_RUNNER:-podman}
+check_image=${PUMP19_MERGE_READINESS_IMAGE:-localhost/pump19-workspace:stable}
+check_timeout=${PUMP19_MERGE_READINESS_TIMEOUT:-3600}
+check_command=
+
+usage() {
+  echo "usage: pump19-merge-readiness [--base-url URL] [--git-base-url URL] [--check-image IMAGE] [--check-command CMD] [--timeout SECONDS]" >&2
+  exit 64
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --base-url)
+      [ "$#" -ge 2 ] || usage
+      base_url=${2%/}
+      shift 2
+      ;;
+    --git-base-url)
+      [ "$#" -ge 2 ] || usage
+      git_base_url=${2%/}
+      shift 2
+      ;;
+    --check-image)
+      [ "$#" -ge 2 ] || usage
+      check_image=$2
+      shift 2
+      ;;
+    --check-command)
+      [ "$#" -ge 2 ] || usage
+      check_command=$2
+      shift 2
+      ;;
+    --timeout)
+      [ "$#" -ge 2 ] || usage
+      check_timeout=$2
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      usage
+      ;;
+  esac
+done
+
+[ -n "$base_url" ] || {
+  echo "PUMP19_FORGEJO_BASE_URL, PUMP19_GIT_BASE_URL or --base-url is required" >&2
+  exit 78
+}
+[ -n "$git_base_url" ] || git_base_url=$base_url
+[ -n "${FORGEJO_TOKEN:-}" ] || {
+  echo "FORGEJO_TOKEN is required" >&2
+  exit 78
+}
+for required in jq git; do
+  command -v "$required" >/dev/null 2>&1 || {
+    echo "$required is required" >&2
+    exit 78
+  }
+done
+
+input=$(cat)
+repository=$(printf '%s' "$input" | jq -r '.repository')
+pr_id=$(printf '%s' "$input" | jq -r '.pull_request')
+commit_sha=$(printf '%s' "$input" | jq -r '.commit_sha')
+
+ready() {
+  jq -nc '{status:"ready"}'
+  exit 0
+}
+
+not_ready() {
+  jq -nc --arg detail "$1" '{status:"not_ready", detail:$detail}'
+  exit 0
+}
+
+api_json() {
+  {
+    printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN"
+    printf 'header = "Accept: application/json"\n'
+  } | "$curl_bin" -fsS -K - "$base_url/api/v1$1"
+}
+
+git_auth() {
+  GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0=http.extraHeader \
+  GIT_CONFIG_VALUE_0="Authorization: token ${FORGEJO_TOKEN}" \
+  git "$@"
+}
+
+# Re-read the live PR: a moved head or forge-reported conflict is a verdict,
+# not an execution failure.
+pr_json=$(api_json "/repos/$repository/pulls/$pr_id")
+live_head=$(printf '%s' "$pr_json" | jq -r '.head.sha // empty')
+[ "$live_head" = "$commit_sha" ] || not_ready "PR head moved: expected $commit_sha, found ${live_head:-none}"
+mergeable=$(printf '%s' "$pr_json" | jq -r '.mergeable')
+[ "$mergeable" != "false" ] || not_ready "forge reports the PR as conflicting"
+base_ref=$(printf '%s' "$pr_json" | jq -r '.base.ref // empty')
+[ -n "$base_ref" ] || {
+  echo "PR base ref is unavailable" >&2
+  exit 65
+}
+
+tmp=${TMPDIR:-/tmp}/pump19-merge-readiness.$$
+rm -rf "$tmp"
+mkdir -p "$tmp"
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+git_url="$git_base_url/$repository.git"
+git_auth clone "$git_url" "$tmp/repo" >/dev/null 2>&1
+cd "$tmp/repo"
+git_auth fetch origin -- "$commit_sha" "$base_ref" >/dev/null 2>&1
+git checkout --detach "$commit_sha" -- >/dev/null 2>&1
+
+# Conflict probe against the live base tip; the probe never commits and any
+# staged merge state is discarded before checks run.
+if ! git -c user.name="Pump-19" -c user.email="pump19@example.invalid" \
+    merge --no-commit --no-ff "origin/$base_ref" >/dev/null 2>&1; then
+  git merge --abort >/dev/null 2>&1 || true
+  not_ready "merge conflict with $base_ref at $(git rev-parse "origin/$base_ref")"
+fi
+git merge --abort >/dev/null 2>&1 || true
+git checkout --force --detach "$commit_sha" -- >/dev/null 2>&1
+
+# Pick the default check by toolchain when no override is configured.
+if [ -z "$check_command" ]; then
+  if [ -f Cargo.toml ]; then
+    check_command='cargo build --workspace --all-targets && cargo test --workspace'
+  elif [ -f package.json ]; then
+    check_command='npm ci --no-audit --no-fund && npm test --if-present'
+  fi
+fi
+[ -n "$check_command" ] || ready
+
+for required in "$runner_bin" timeout; do
+  command -v "$required" >/dev/null 2>&1 || {
+    echo "$required is required to run merge-readiness checks" >&2
+    exit 78
+  }
+done
+
+# Untrusted code runs only inside the container: no forge credentials, the
+# clone mounted read-write for build artefacts, host filesystem otherwise
+# unreachable.
+status=0
+timeout "$check_timeout" "$runner_bin" run --rm \
+  --volume "$tmp/repo:/workspace:rw" \
+  --workdir /workspace \
+  "$check_image" \
+  sh -ec "$check_command" >"$tmp/check.log" 2>&1 || status=$?
+if [ "$status" -eq 0 ]; then
+  ready
+fi
+if [ "$status" -eq 124 ]; then
+  not_ready "merge-readiness checks timed out after ${check_timeout}s"
+fi
+detail=$(tail -c 2000 "$tmp/check.log" | tr -d '\000')
+not_ready "merge-readiness checks failed (exit $status): $detail"
+"#;
+
 /// Returns the baseline mechanical pack used by the deployable example set.
 #[must_use]
 pub fn baseline_mechanical_pack(id: &str) -> MechanicalPack {
@@ -862,24 +1039,43 @@ pub fn baseline_mechanical_pack(id: &str) -> MechanicalPack {
         schema_version: AdaptationSchemaVersion::current(),
         contract_version: ContractVersion::current(),
         id: id.to_owned(),
-        steps: vec![MechanicalStep {
-            id: "prepare-source".to_owned(),
-            kind: MechanicalStepKind::Checkout,
-            execution: MechanicalExecution::Command {
-                program: "commands/pump19-prepare-source".to_owned(),
-                args: Vec::new(),
+        steps: vec![
+            MechanicalStep {
+                id: "prepare-source".to_owned(),
+                kind: MechanicalStepKind::Checkout,
+                execution: MechanicalExecution::Command {
+                    program: "commands/pump19-prepare-source".to_owned(),
+                    args: Vec::new(),
+                },
+                inputs: vec![
+                    "source_preparation_command_input_json".to_owned(),
+                    "forge_repository".to_owned(),
+                    "pull_request_head".to_owned(),
+                ],
+                outputs: vec![
+                    "prepared_source_tree".to_owned(),
+                    "prepared_revision".to_owned(),
+                ],
+                extensions: Extensions::new(),
             },
-            inputs: vec![
-                "source_preparation_command_input_json".to_owned(),
-                "forge_repository".to_owned(),
-                "pull_request_head".to_owned(),
-            ],
-            outputs: vec![
-                "prepared_source_tree".to_owned(),
-                "prepared_revision".to_owned(),
-            ],
-            extensions: Extensions::new(),
-        }],
+            MechanicalStep {
+                id: "merge-readiness".to_owned(),
+                kind: MechanicalStepKind::Custom {
+                    name: "merge-readiness".to_owned(),
+                },
+                execution: MechanicalExecution::Command {
+                    program: "commands/pump19-merge-readiness".to_owned(),
+                    args: Vec::new(),
+                },
+                inputs: vec![
+                    "merge_readiness_command_input_json".to_owned(),
+                    "forge_repository".to_owned(),
+                    "pull_request_head".to_owned(),
+                ],
+                outputs: vec!["merge_readiness_verdict_json".to_owned()],
+                extensions: Extensions::new(),
+            },
+        ],
         extensions: Extensions::new(),
     }
 }
@@ -1875,14 +2071,32 @@ model = "claude-stable"
         assert_eq!(loaded, baseline_mechanical_pack("baseline-mechanical"));
         assert!(matches!(
             loaded.steps.as_slice(),
-            [MechanicalStep {
-                id,
-                kind: MechanicalStepKind::Checkout,
-                execution: MechanicalExecution::Command { program, args },
-                ..
-            }] if id == "prepare-source"
-                && program == "commands/pump19-prepare-source"
-                && args.is_empty()
+            [
+                MechanicalStep {
+                    id: prepare_id,
+                    kind: MechanicalStepKind::Checkout,
+                    execution: MechanicalExecution::Command {
+                        program: prepare_program,
+                        args: prepare_args,
+                    },
+                    ..
+                },
+                MechanicalStep {
+                    id: readiness_id,
+                    kind: MechanicalStepKind::Custom { name },
+                    execution: MechanicalExecution::Command {
+                        program: readiness_program,
+                        args: readiness_args,
+                    },
+                    ..
+                }
+            ] if prepare_id == "prepare-source"
+                && prepare_program == "commands/pump19-prepare-source"
+                && prepare_args.is_empty()
+                && readiness_id == "merge-readiness"
+                && name == "merge-readiness"
+                && readiness_program == "commands/pump19-merge-readiness"
+                && readiness_args.is_empty()
         ));
         Ok(())
     }
@@ -2436,6 +2650,188 @@ esac
                 files.push(path.strip_prefix(root)?.to_path_buf());
             }
         }
+        Ok(())
+    }
+
+    struct MergeReadinessFixture {
+        _dir: tempfile::TempDir,
+        command: PathBuf,
+        git_root: PathBuf,
+        work_repo: PathBuf,
+        head: String,
+        fake_curl: PathBuf,
+        stub_runner: PathBuf,
+        runner_args: PathBuf,
+    }
+
+    impl MergeReadinessFixture {
+        /// Runs the readiness command against the fixture PR and returns the
+        /// parsed verdict JSON.
+        fn verdict(&self, stub_status: &str, commit_sha: &str) -> serde_json::Value {
+            use std::io::Write as _;
+
+            let request = serde_json::json!({
+                "step_id": "merge-readiness",
+                "run_id": "run-1",
+                "repository": "acme/widgets",
+                "pull_request": "42",
+                "commit_sha": commit_sha,
+            });
+            let mut child = Command::new(&self.command)
+                .args([
+                    "--base-url",
+                    "https://forgejo.example",
+                    "--git-base-url",
+                    self.git_root.to_str().expect("git root path"),
+                    "--check-command",
+                    "true",
+                ])
+                .env("FORGEJO_TOKEN", "test-token")
+                .env("PUMP19_FORGEJO_CURL", &self.fake_curl)
+                .env("PUMP19_MERGE_READINESS_RUNNER", &self.stub_runner)
+                .env("PUMP19_STUB_RUNNER_STATUS", stub_status)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn merge readiness");
+            child
+                .stdin
+                .as_mut()
+                .expect("merge readiness stdin")
+                .write_all(request.to_string().as_bytes())
+                .expect("write merge readiness input");
+            let output = child.wait_with_output().expect("merge readiness output");
+            assert_command_success(&output);
+            serde_json::from_slice(&output.stdout).expect("verdict JSON")
+        }
+    }
+
+    fn merge_readiness_fixture() -> Result<MergeReadinessFixture, Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let git_root = dir.path().join("git");
+        let bare_repo = git_root.join("acme/widgets.git");
+        let work_repo = dir.path().join("work");
+        fs::create_dir_all(bare_repo.parent().expect("bare parent"))?;
+        run_git(["init", "--bare", bare_repo.to_str().expect("bare path")]);
+        run_git(["init", "-b", "main", work_repo.to_str().expect("work path")]);
+        run_git_in(&work_repo, ["config", "user.name", "Fixture"]);
+        run_git_in(
+            &work_repo,
+            ["config", "user.email", "fixture@example.invalid"],
+        );
+        fs::write(work_repo.join("README.md"), "base\n")?;
+        run_git_in(&work_repo, ["add", "README.md"]);
+        run_git_in(&work_repo, ["commit", "-m", "initial"]);
+        run_git_in(
+            &work_repo,
+            [
+                "remote",
+                "add",
+                "origin",
+                bare_repo.to_str().expect("bare path"),
+            ],
+        );
+        run_git_in(&work_repo, ["push", "origin", "main"]);
+        run_git_in(&work_repo, ["checkout", "-b", "feature"]);
+        fs::write(work_repo.join("feature.txt"), "feature work\n")?;
+        run_git_in(&work_repo, ["add", "feature.txt"]);
+        run_git_in(&work_repo, ["commit", "-m", "feature"]);
+        run_git_in(&work_repo, ["push", "origin", "feature"]);
+        let head = git_stdout_in(&work_repo, ["rev-parse", "HEAD"]);
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            &format!(
+                r#"case "$url" in
+  */api/v1/repos/acme/widgets/pulls/42) printf '{{"head":{{"sha":"{head}","ref":"feature"}},"base":{{"ref":"main"}},"mergeable":true}}' ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#
+            ),
+        )?;
+        let runner_args = dir.path().join("runner-args.txt");
+        let stub_runner = dir.path().join("stub-runner");
+        fs::write(
+            &stub_runner,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$@" > "{args_file}"
+echo "stub check output"
+exit "${{PUMP19_STUB_RUNNER_STATUS:-0}}"
+"#,
+                args_file = runner_args.display()
+            ),
+        )?;
+        set_executable(&stub_runner)?;
+        Ok(MergeReadinessFixture {
+            command: commands.merge_readiness_command,
+            git_root,
+            work_repo,
+            head,
+            fake_curl,
+            stub_runner,
+            runner_args,
+            _dir: dir,
+        })
+    }
+
+    #[test]
+    fn baseline_merge_readiness_command_runs_checks_in_a_container()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = merge_readiness_fixture()?;
+
+        // Clean merge and passing container checks: ready.
+        let verdict = fixture.verdict("0", &fixture.head);
+        assert_eq!(verdict["status"], "ready");
+        let recorded_args = fs::read_to_string(&fixture.runner_args)?;
+        assert!(recorded_args.contains("localhost/pump19-workspace:stable"));
+        assert!(recorded_args.contains("/workspace:rw"));
+
+        // Failing container checks: a not_ready verdict, not an execution error.
+        let verdict = fixture.verdict("7", &fixture.head);
+        assert_eq!(verdict["status"], "not_ready");
+        let detail = verdict["detail"].as_str().expect("verdict detail");
+        assert!(detail.contains("exit 7"));
+        assert!(detail.contains("stub check output"));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_merge_readiness_command_treats_stale_heads_and_conflicts_as_verdicts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = merge_readiness_fixture()?;
+
+        // A stale head is a verdict, not an execution failure.
+        let verdict = fixture.verdict("0", "deadbeef");
+        assert_eq!(verdict["status"], "not_ready");
+        assert!(
+            verdict["detail"]
+                .as_str()
+                .expect("verdict detail")
+                .contains("PR head moved")
+        );
+
+        // A conflicting base tip fails the probe before any checks run.
+        run_git_in(&fixture.work_repo, ["checkout", "main"]);
+        fs::write(
+            fixture.work_repo.join("feature.txt"),
+            "conflicting main work\n",
+        )?;
+        run_git_in(&fixture.work_repo, ["add", "feature.txt"]);
+        run_git_in(
+            &fixture.work_repo,
+            ["commit", "-m", "conflict with feature"],
+        );
+        run_git_in(&fixture.work_repo, ["push", "origin", "main"]);
+        let verdict = fixture.verdict("0", &fixture.head);
+        assert_eq!(verdict["status"], "not_ready");
+        assert!(
+            verdict["detail"]
+                .as_str()
+                .expect("verdict detail")
+                .contains("merge conflict")
+        );
         Ok(())
     }
 

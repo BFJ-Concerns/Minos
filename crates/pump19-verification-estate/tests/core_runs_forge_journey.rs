@@ -2026,6 +2026,7 @@ fn repeated_material_finding_updates_existing_comment_identity() {
         outcome: Some(RunOutcome::Succeeded),
         refusal: None,
         ensemble_archive_path: None,
+        provenance: Vec::new(),
     });
     state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),
@@ -2127,6 +2128,7 @@ fn minor_judge_finding_is_recorded_but_suppressed_from_pr_publication() {
         outcome: Some(RunOutcome::Succeeded),
         refusal: None,
         ensemble_archive_path: None,
+        provenance: Vec::new(),
     });
     state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),
@@ -2675,6 +2677,7 @@ fn restart_rederives_unprocessed_completion_and_drives_next_trigger_once() {
         outcome: Some(RunOutcome::Succeeded),
         refusal: None,
         ensemble_archive_path: None,
+        provenance: Vec::new(),
     });
     let state_store = SharedEstateStateStore::with_state(state);
     let state_observer = state_store.clone();
@@ -2857,6 +2860,7 @@ fn stale_running_recovery_surfaces_failure_and_reopens_pr_dispatch() {
         outcome: None,
         refusal: None,
         ensemble_archive_path: None,
+        provenance: Vec::new(),
     });
     state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),
@@ -3020,6 +3024,7 @@ fn moved_pr_head_supersedes_running_old_head_and_reenters_on_new_head() {
         outcome: None,
         refusal: None,
         ensemble_archive_path: None,
+        provenance: Vec::new(),
     });
     old_state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),

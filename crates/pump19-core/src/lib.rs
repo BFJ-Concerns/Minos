@@ -986,7 +986,7 @@ where
 
         self.prepare_and_inject_source(event, rule, &state, &run_id, &workspace)?;
 
-        let mut running_state = mark_running(state, event, rule, &run_id);
+        let mut running_state = mark_running(state, event, rule, &run_id, prepared.clone());
         if let Err(error) = self.state_store.save(&running_state) {
             self.workspace_provider.cleanup(&workspace)?;
             return Err(error);
@@ -2911,6 +2911,15 @@ fn collect_state_provenance(state: &PrRunState) -> Vec<ModelProvenance> {
     let mut provenances = Vec::with_capacity(
         state.findings.len() + state.decisions.len() + state.patches.len() + archived_len,
     );
+    // Run records carry the provenance their run launched with, so reviewers
+    // stay visible to later gates (family spread, judge independence) even
+    // when a clean review produced no findings to hang provenance on.
+    provenances.extend(
+        state
+            .run_history
+            .iter()
+            .flat_map(|record| record.provenance.iter().cloned()),
+    );
     provenances.extend(
         state
             .findings
@@ -3565,6 +3574,7 @@ fn mark_running(
     event: &ContractEvent,
     rule: &TriggerRule,
     run_id: &RunId,
+    provenance: Vec<ModelProvenance>,
 ) -> PrRunState {
     state.status = RunStatus::Running;
     state.active_run = Some(RunRecord {
@@ -3578,6 +3588,7 @@ fn mark_running(
         outcome: None,
         refusal: None,
         ensemble_archive_path: None,
+        provenance,
     });
     state.extensions.insert(
         EXT_RUNNING_RUN_ID.to_owned(),
@@ -3736,6 +3747,7 @@ fn fallback_run_record(
         outcome: None,
         refusal: None,
         ensemble_archive_path: None,
+        provenance: Vec::new(),
     }
 }
 
@@ -5525,7 +5537,13 @@ mod tests {
     fn moved_head_supersedes_running_state_and_stale_completion_posts_nothing() {
         let old_run_id = RunId("event-1:review:1".to_owned());
         let mut old_state = initial_state_from_event(&event()).expect("initial state");
-        old_state = mark_running(old_state, &event(), &independent_rule(), &old_run_id);
+        old_state = mark_running(
+            old_state,
+            &event(),
+            &independent_rule(),
+            &old_run_id,
+            Vec::new(),
+        );
         let mut store = FakeRunStateStore::default();
         store.save(&old_state).expect("save old running state");
         let mut core = Core::with_forge_operations(
@@ -6308,6 +6326,60 @@ mod tests {
     }
 
     #[test]
+    fn judge_launches_after_clean_review_via_recorded_run_provenance() {
+        let review_run_id = RunId("review-clean".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.status = RunStatus::Completed;
+        // A clean review: no findings, so the only reviewer evidence is the
+        // provenance recorded on the run itself.
+        state.run_history.push(RunRecord {
+            run_id: review_run_id.clone(),
+            run_kind: RunKind::Review,
+            event_id: "review-trigger".to_owned(),
+            rule_id: "review-on-pr-change".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Succeeded),
+            refusal: None,
+            ensemble_archive_path: None,
+            provenance: vec![
+                verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+                verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            ],
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save clean review state");
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
+            store,
+        );
+
+        let outcomes = core
+            .process_event(
+                &run_completed_event_with_outcome(
+                    "review-clean-done",
+                    review_run_id,
+                    RunKind::Review,
+                    RunOutcome::Succeeded,
+                ),
+                &[judge_after_review_rule()],
+            )
+            .expect("clean review completion");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-review"
+        ));
+        assert_eq!(core.launcher.launched, 1);
+    }
+
+    #[test]
     fn noop_fix_completion_routes_to_judge_with_standing_findings() {
         let fix_run_id = RunId("fix-noop".to_owned());
         let mut state = initial_state_from_event(&event()).expect("initial state");
@@ -6337,6 +6409,7 @@ mod tests {
             outcome: Some(RunOutcome::NoOp),
             refusal: None,
             ensemble_archive_path: None,
+            provenance: Vec::new(),
         });
         let mut store = FakeRunStateStore::default();
         store.save(&state).expect("save NoOp state");
@@ -6385,6 +6458,7 @@ mod tests {
             outcome: None,
             refusal: None,
             ensemble_archive_path: None,
+            provenance: Vec::new(),
         });
         let finding = finding_from("reviewer-codex", "codex", "finding-1");
         state.findings.push(finding.clone());
@@ -6431,6 +6505,7 @@ mod tests {
             &event(),
             &independent_rule(),
             &run_id,
+            Vec::new(),
         );
         running.status = RunStatus::Running;
         let mut store = FakeRunStateStore::default();
