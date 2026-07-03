@@ -2600,11 +2600,9 @@ fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaun
                     patches,
                     Some(outcome.outcome),
                 ));
-                if outcome.outcome == RunOutcome::Succeeded {
-                    state.findings.clear();
-                    state.decisions.clear();
-                    state.patches.clear();
-                }
+                state.findings.clear();
+                state.decisions.clear();
+                state.patches.clear();
             }
         }
         RunKind::Finish => {}
@@ -4446,7 +4444,7 @@ mod tests {
     }
 
     #[test]
-    fn noop_fix_outcome_keeps_standing_findings_for_judge() {
+    fn noop_fix_outcome_archives_standing_findings_for_judge() {
         let run_id = RunId("fix-noop".to_owned());
         let mut state = initial_state_from_event(&event()).expect("initial state");
         state.status = RunStatus::Running;
@@ -4487,9 +4485,11 @@ mod tests {
         );
 
         assert_eq!(state.status, RunStatus::Completed);
-        assert_eq!(state.findings.len(), 1);
-        assert_eq!(state.decisions.len(), 1);
+        assert!(state.findings.is_empty());
+        assert!(state.decisions.is_empty());
         assert_eq!(state.loop_history.len(), 1);
+        assert_eq!(state.loop_history[0].findings.len(), 1);
+        assert_eq!(state.loop_history[0].decisions.len(), 1);
         assert_eq!(state.loop_history[0].fix_outcome, Some(RunOutcome::NoOp));
         assert_eq!(state.run_history[0].outcome, Some(RunOutcome::NoOp));
     }
