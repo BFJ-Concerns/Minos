@@ -818,22 +818,39 @@ mod tests {
 
     fn publication_state() -> PublicationState {
         PublicationState {
-            attempts: vec![PublicationAttempt {
-                contract_version: version(),
-                run_id: RunId("run-judge-1".to_owned()),
-                operation: PublicationOperation::PostFindingComment {
-                    finding_id: FindingId("finding-1".to_owned()),
-                    finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
-                },
-                idempotency_key: "comment-finding-1".to_owned(),
-                status: PublicationAttemptStatus::Succeeded,
-                receipt: Some(ForgeReceipt {
-                    operation_id: "comment-1".to_owned(),
+            attempts: vec![
+                PublicationAttempt {
+                    contract_version: version(),
+                    run_id: RunId("run-judge-1".to_owned()),
+                    operation: PublicationOperation::PostFindingComment {
+                        finding_id: FindingId("finding-1".to_owned()),
+                        finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
+                    },
                     idempotency_key: "comment-finding-1".to_owned(),
-                    new_head_sha: None,
-                }),
-                error: None,
-            }],
+                    status: PublicationAttemptStatus::Succeeded,
+                    receipt: Some(ForgeReceipt {
+                        operation_id: "comment-1".to_owned(),
+                        idempotency_key: "comment-finding-1".to_owned(),
+                        new_head_sha: None,
+                    }),
+                    error: None,
+                },
+                PublicationAttempt {
+                    contract_version: version(),
+                    run_id: RunId("run-judge-2".to_owned()),
+                    operation: PublicationOperation::ApplyFinishLabel {
+                        label: "pump19-finish".to_owned(),
+                    },
+                    idempotency_key: "apply-finish-label-1".to_owned(),
+                    status: PublicationAttemptStatus::Succeeded,
+                    receipt: Some(ForgeReceipt {
+                        operation_id: "finish-label-1".to_owned(),
+                        idempotency_key: "apply-finish-label-1".to_owned(),
+                        new_head_sha: None,
+                    }),
+                    error: None,
+                },
+            ],
             finding_comments: vec![FindingCommentPublication {
                 finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
                 latest_finding_id: FindingId("finding-1".to_owned()),

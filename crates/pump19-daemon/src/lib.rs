@@ -1718,6 +1718,7 @@ stop_after_quiet_polls = 1
 
         assert_eq!(config.forgejo.repositories, vec!["acme/widgets"]);
         assert_eq!(config.loop_control.stop_after_quiet_polls, Some(1));
+        assert!(!config.forgejo.core_applies_finish_label_on_convergence);
     }
 
     fn assert_core_runner<T: CoreRunner>() {}
@@ -1937,7 +1938,7 @@ stop_after_quiet_polls = 1
                 agent_plan: AgentPlan {
                     reviewers: Vec::new(),
                     fixers: Vec::new(),
-                    judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+                    judge: Some(target("judge-glm-noop", AgentRole::Judge, "glm")),
                     finishers: Vec::new(),
                 },
             },

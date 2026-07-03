@@ -4124,7 +4124,7 @@ mod tests {
             agent_plan: AgentPlan {
                 reviewers: Vec::new(),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "gemini")),
+                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
@@ -5471,6 +5471,35 @@ mod tests {
 
         assert!(core.forge_operations.labels.is_empty());
         assert!(core.forge_operations.merges.is_empty());
+    }
+
+    #[test]
+    fn core_does_not_apply_finish_label_when_actor_lacks_capability() {
+        let mut facts = core_authority_facts("abc123");
+        facts.actor_permissions = vec![ActorPermissions {
+            actor: core_actor(),
+            capabilities: std::iter::once(ActorCapability::Merge).collect(),
+        }];
+
+        assert!(!core_may_apply_finish_label(
+            &facts,
+            &core_actor(),
+            "pump19-finish",
+        ));
+    }
+
+    #[test]
+    fn core_does_not_apply_finish_label_when_facts_are_stale() {
+        let facts = ForgeFacts {
+            branch_currency: BranchCurrency::Stale,
+            ..core_authority_facts("abc123")
+        };
+
+        assert!(!core_may_apply_finish_label(
+            &facts,
+            &core_actor(),
+            "pump19-finish",
+        ));
     }
 
     #[test]

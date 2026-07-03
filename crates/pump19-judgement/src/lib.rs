@@ -20,8 +20,8 @@ use thiserror::Error;
 const INTENT_FILE: &str = "pump19.intent.toml";
 const VERIFICATION_DIR: &str = "verification";
 const JUDGEMENT_DIR: &str = "judgement";
-const JUDGEMENT_PASS_TOKEN: &str = "PUMP19_JUDGEMENT: PASS";
-const JUDGEMENT_FAIL_TOKEN: &str = "PUMP19_JUDGEMENT: FAIL";
+pub const JUDGEMENT_PASS_TOKEN: &str = "PUMP19_JUDGEMENT: PASS";
+pub const JUDGEMENT_FAIL_TOKEN: &str = "PUMP19_JUDGEMENT: FAIL";
 
 /// Errors raised while loading, preparing, or running judgement review.
 #[derive(Debug, Error)]
@@ -256,35 +256,6 @@ pub fn write_baseline_briefs_to_dir(dir: &Path) -> Result<(), JudgementError> {
     Ok(())
 }
 
-/// Builds the prompt given to an independent judgement reviewer.
-///
-/// # Errors
-///
-/// Returns an error when a referenced evidence path cannot be read.
-pub fn judgement_prompt(
-    root: &Path,
-    intent: &IntentSpec,
-    brief: &JudgementBrief,
-) -> Result<String, JudgementError> {
-    let evidence = evidence_text(root, brief)?;
-    Ok(format!(
-        "You are an independent Pump-19 judgement reviewer.\n\
-         Subject: {} ({})\n\
-         Purpose: {}\n\
-         Brief {}: {}\n\
-         {}\n\n\
-         Evidence:\n{}\n\n\
-         Reply with {JUDGEMENT_PASS_TOKEN} or {JUDGEMENT_FAIL_TOKEN} and one short reason.",
-        intent.app.name,
-        intent.app.slug,
-        intent.app.purpose,
-        brief.id,
-        brief.title,
-        brief.brief,
-        evidence
-    ))
-}
-
 /// Reads evidence files named by a judgement brief.
 ///
 /// # Errors
@@ -388,8 +359,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        IntentApp, IntentSpec, IntentStatement, JudgementBrief, install_standalone, judgement_dir,
-        judgement_prompt, load_judgement_briefs, save_intent, write_toml,
+        IntentApp, IntentSpec, IntentStatement, JUDGEMENT_FAIL_TOKEN, JUDGEMENT_PASS_TOKEN,
+        JudgementBrief, install_standalone, judgement_dir, load_judgement_briefs, save_intent,
+        write_toml,
     };
 
     fn intent(author_agent_id: Option<&str>) -> IntentSpec {
@@ -431,12 +403,11 @@ mod tests {
     }
 
     #[test]
-    fn prompt_includes_intent_brief_and_evidence() -> Result<(), Box<dyn std::error::Error>> {
+    fn evidence_text_includes_referenced_evidence() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         fs::write(dir.path().join("evidence.txt"), "Observed rendered output")?;
-        let prompt = judgement_prompt(
+        let evidence = super::evidence_text(
             dir.path(),
-            &intent(Some("author")),
             &JudgementBrief {
                 id: "purpose".to_owned(),
                 title: "Purpose".to_owned(),
@@ -446,11 +417,14 @@ mod tests {
             },
         )?;
 
-        assert!(prompt.contains("Sample (sample)"));
-        assert!(prompt.contains("Judge the implementation against its purpose."));
-        assert!(prompt.contains("Observed rendered output"));
-        assert!(prompt.contains("PUMP19_JUDGEMENT: PASS"));
+        assert!(evidence.contains("Observed rendered output"));
         Ok(())
+    }
+
+    #[test]
+    fn judgement_tokens_have_single_contract_spelling() {
+        assert_eq!(JUDGEMENT_PASS_TOKEN, "PUMP19_JUDGEMENT: PASS");
+        assert_eq!(JUDGEMENT_FAIL_TOKEN, "PUMP19_JUDGEMENT: FAIL");
     }
 
     #[test]

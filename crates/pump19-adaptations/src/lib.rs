@@ -335,16 +335,14 @@ Purpose: {{subject_purpose}}
 Review this Pump-19 judgement brief independently. Return JSON matching the schema.
 
 ## Verdict
-Use status \"failed\" when you find a material concern. Use status \"passed\" only when the brief is satisfied.
+Use status \"failed\" when you find a material concern. Use status \"passed\" only when the brief is satisfied. Put the short reason in stdout and diagnostics, if any, in stderr.
 
 <brief id=\"{{brief_id}}\" title=\"{{brief_title}}\">
 {{brief_body}}
 </brief>
 
 Evidence:
-{{evidence}}
-
-Reply with PUMP19_JUDGEMENT: PASS or PUMP19_JUDGEMENT: FAIL and one short reason."
+{{evidence}}"
                 .to_owned(),
             extensions: Extensions::new(),
         },
@@ -869,7 +867,6 @@ mod tests {
         RunLaunchOutcome, RunLaunchRequest, RunLauncher, WorkspaceExecOutput, WorkspaceExecRequest,
         WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
     };
-    use pump19_judgement::{IntentApp, IntentSpec, judgement_prompt};
     use tempfile::tempdir;
 
     use super::{
@@ -879,33 +876,21 @@ mod tests {
     };
 
     #[test]
-    fn baseline_prompt_pack_loads_and_feeds_judgement_prompt()
+    fn baseline_prompt_pack_loads_schema_only_review_template()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let manifest = write_baseline_prompt_pack(dir.path(), "baseline-review")?;
 
         let pack = load_prompt_pack(&manifest)?;
-        let prompt = judgement_prompt(
-            dir.path(),
-            &IntentSpec {
-                app: IntentApp {
-                    slug: "sample".to_owned(),
-                    name: "Sample".to_owned(),
-                    purpose: "Prove prompt packs load through judgement seams".to_owned(),
-                    author_agent_id: None,
-                },
-                invariants: Vec::new(),
-                behaviours: Vec::new(),
-            },
-            &pack.briefs[0],
-        )?;
 
         assert_eq!(pack.manifest.id, "baseline-review");
         assert_eq!(pack.manifest.prompt_templates.len(), 3);
         assert_eq!(pack.manifest.workflow_scripts.len(), 3);
         assert_eq!(pack.briefs.len(), 3);
-        assert!(prompt.contains("PUMP19_JUDGEMENT: PASS"));
-        assert!(prompt.contains(&pack.briefs[0].brief));
+        let review_template = &pack.manifest.prompt_templates[0].template;
+        assert!(review_template.contains("Return JSON matching the schema."));
+        assert!(review_template.contains("Put the short reason in stdout"));
+        assert!(!review_template.contains("PUMP19_JUDGEMENT"));
         Ok(())
     }
 
