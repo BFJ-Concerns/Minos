@@ -18,12 +18,12 @@ use std::{
 use pump19_contract::{
     ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
     DecisionVerdict, EventPayload, Extensions, Finding, FindingCommentPublication,
-    FindingCommentStatus, FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt,
-    LoopPassRecord, MergePublication, ModelFamily, ModelLineage, ModelProvenance, Patch,
-    PrRunState, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
+    FindingCommentStatus, FindingLocation, FinishLabel, FixPushPublication, ForgeFacts,
+    ForgeReceipt, LoopPassRecord, MergePublication, ModelFamily, ModelLineage, ModelProvenance,
+    Patch, PrRunState, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
     PublicationOperation, PublicationRefusal, PublicationRefusalReason, PublicationState,
     PublishedFixCommit, PullRequestRef, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
-    RunRefusal, RunRefusalReason, RunStatus, SessionFreshness, SessionId,
+    RunRefusal, RunRefusalReason, RunStatus, SessionFreshness, SessionId, Severity,
     has_two_verified_reviewer_families, judge_independent_of_reviewers,
     merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
 };
@@ -441,6 +441,7 @@ pub enum MergeMethod {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CorePolicy {
     pub finish_label_application: FinishLabelApplicationPolicy,
+    pub comment_rendering: CommentRendering,
 }
 
 impl CorePolicy {
@@ -448,8 +449,17 @@ impl CorePolicy {
     pub const fn human_gate() -> Self {
         Self {
             finish_label_application: FinishLabelApplicationPolicy::HumanOnly,
+            comment_rendering: CommentRendering { web_base_url: None },
         }
     }
+}
+
+/// Presentation knobs for the comments the core renders onto PRs.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CommentRendering {
+    /// Forge web root (for example `https://forgejo.example`) used to render
+    /// file permalinks in finding comments. `None` renders plain code spans.
+    pub web_base_url: Option<String>,
 }
 
 impl Default for CorePolicy {
@@ -1477,7 +1487,12 @@ where
         let result = self.forge_operations.post_comment(AuthorisedComment {
             authorisation,
             expected_head_sha: expected_head_sha.clone(),
-            body: material_finding_comment(finding, decision),
+            body: material_finding_comment(
+                finding,
+                decision,
+                facts,
+                &self.policy.comment_rendering,
+            ),
         });
         let receipt = self.record_finding_comment_attempt(
             state,
@@ -1544,7 +1559,12 @@ where
                 authorisation,
                 expected_head_sha: expected_head_sha.clone(),
                 comment_operation_id: publication.comment_operation_id.clone(),
-                body: material_finding_comment(finding, decision),
+                body: material_finding_comment(
+                    finding,
+                    decision,
+                    facts,
+                    &self.policy.comment_rendering,
+                ),
             });
         let receipt = self.record_finding_comment_attempt(
             state,
@@ -3377,11 +3397,70 @@ fn fix_commit_message(patch: &Patch) -> String {
     )
 }
 
-fn material_finding_comment(finding: &Finding, decision: &Decision) -> String {
+/// Renders one material finding as a PR comment in the badge/collapsible house
+/// style: severity badge and summary in bold, the judge's rationale as the
+/// body, a file permalink when the finding carries one, and a small footer
+/// with review provenance.
+fn material_finding_comment(
+    finding: &Finding,
+    decision: &Decision,
+    facts: &ForgeFacts,
+    rendering: &CommentRendering,
+) -> String {
+    let location_block = finding_location_line(finding, facts, rendering)
+        .map_or_else(String::new, |location| format!("\n{location}\n"));
+    let head_sha = facts.head.sha.as_str();
+    let short_head = head_sha.get(..7).unwrap_or(head_sha);
     format!(
-        "Pump-19 material finding: {}\n\nDecision {}: {}",
-        finding.summary, decision.id, decision.rationale
+        "**{badge}  {summary}**\n\n{rationale}\n{location_block}\n\
+         <sub>Pump-19 · {brief} · reviewed `{short_head}` · decision `{decision_id}`</sub>",
+        badge = severity_badge(finding.severity),
+        summary = finding.summary.trim(),
+        rationale = decision.rationale.trim(),
+        brief = finding.source_brief,
+        decision_id = decision.id,
     )
+}
+
+fn severity_badge(severity: Severity) -> String {
+    let (label, colour) = match severity {
+        Severity::Critical => ("critical", "red"),
+        Severity::High => ("high", "orange"),
+        Severity::Medium => ("medium", "yellow"),
+        Severity::Low => ("low", "blue"),
+    };
+    // Double <sub> shrinks the badge to sit inline with the bold title,
+    // matching the Codex-review comment style.
+    format!(
+        "<sub><sub>![{label}](https://img.shields.io/badge/{label}-{colour}?style=flat)</sub></sub>"
+    )
+}
+
+/// The finding's first location as a markdown line: a Forgejo permalink when a
+/// web base URL is configured, a plain code span otherwise.
+fn finding_location_line(
+    finding: &Finding,
+    facts: &ForgeFacts,
+    rendering: &CommentRendering,
+) -> Option<String> {
+    finding.locations.first().map(|location| match location {
+        FindingLocation::File { path, line, .. } => {
+            let reference = line.map_or_else(|| path.clone(), |line| format!("{path}:{line}"));
+            rendering.web_base_url.as_ref().map_or_else(
+                || format!("`{reference}`"),
+                |base| {
+                    let base = base.trim_end_matches('/');
+                    let anchor = line.map_or_else(String::new, |line| format!("#L{line}"));
+                    format!(
+                        "[`{reference}`]({base}/{repository}/src/commit/{head}/{path}{anchor})",
+                        repository = facts.pr.repository,
+                        head = facts.head.sha,
+                    )
+                },
+            )
+        }
+        FindingLocation::General { description } => format!("_{}_", description.trim()),
+    })
 }
 
 fn failure_comment(run_id: &RunId, message: &str) -> String {
@@ -5203,6 +5282,73 @@ mod tests {
         );
     }
 
+    fn material_decision_for(finding: &Finding, rationale: &str) -> Decision {
+        Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-1".to_owned(),
+            subject: pump19_contract::DecisionSubject::Finding {
+                finding_id: finding.id.clone(),
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: rationale.to_owned(),
+            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
+            extensions: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn material_finding_comment_renders_badge_permalink_and_footer() {
+        let mut finding = finding_from("reviewer-codex", "codex", "finding-1");
+        finding.locations = vec![FindingLocation::File {
+            path: "src/lib.rs".to_owned(),
+            line: Some(42),
+            range: None,
+        }];
+        let decision = material_decision_for(&finding, "Material because the loop can wedge.");
+        let rendering = CommentRendering {
+            web_base_url: Some("https://forgejo.example/".to_owned()),
+        };
+
+        let comment = material_finding_comment(&finding, &decision, &facts(), &rendering);
+
+        assert_eq!(
+            comment,
+            "**<sub><sub>![high](https://img.shields.io/badge/high-orange?style=flat)</sub></sub>  \
+             A material review finding.**\n\n\
+             Material because the loop can wedge.\n\n\
+             [`src/lib.rs:42`](https://forgejo.example/acme/widgets/src/commit/abc123/src/lib.rs#L42)\n\n\
+             <sub>Pump-19 · review · reviewed `abc123` · decision `decision-1`</sub>"
+        );
+    }
+
+    #[test]
+    fn material_finding_comment_renders_code_span_without_web_base_url() {
+        let mut finding = finding_from("reviewer-codex", "codex", "finding-1");
+        finding.locations = vec![FindingLocation::File {
+            path: "src/lib.rs".to_owned(),
+            line: Some(42),
+            range: None,
+        }];
+        let decision = material_decision_for(&finding, "Material.");
+
+        let comment =
+            material_finding_comment(&finding, &decision, &facts(), &CommentRendering::default());
+
+        assert!(comment.contains("\n`src/lib.rs:42`\n"));
+        assert!(!comment.contains("src/commit"));
+    }
+
+    #[test]
+    fn material_finding_comment_renders_general_location_as_prose() {
+        let finding = finding_from("reviewer-codex", "codex", "finding-1");
+        let decision = material_decision_for(&finding, "Material.");
+
+        let comment =
+            material_finding_comment(&finding, &decision, &facts(), &CommentRendering::default());
+
+        assert!(comment.contains("_whole change_"));
+    }
+
     #[test]
     fn pr_authored_by_matches_the_event_facts_author() {
         let mut with_author = facts();
@@ -6365,6 +6511,7 @@ mod tests {
                 finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
                     label: "pump19-finish".to_owned(),
                 },
+                comment_rendering: CommentRendering::default(),
             },
         );
 
