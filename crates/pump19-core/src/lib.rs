@@ -662,6 +662,18 @@ where
             .collect::<BTreeSet<_>>();
         let mut queued = 0;
         for state in self.state_store.completion_recovery_states()? {
+            if state.status == RunStatus::Running {
+                if let Some(event) = self.resolve_stale_running_state(state)? {
+                    if pending_ids.contains(&event.id)
+                        || self.queued_completion_event_ids.contains(&event.id)
+                    {
+                        continue;
+                    }
+                    self.queue_completion_event(event);
+                    queued += 1;
+                }
+                continue;
+            }
             for record in &state.run_history {
                 let Some(event) = run_completed_event_from_record(record) else {
                     continue;
@@ -676,6 +688,41 @@ where
             }
         }
         Ok(queued)
+    }
+
+    fn resolve_stale_running_state(
+        &mut self,
+        mut state: PrRunState,
+    ) -> Result<Option<ContractEvent>, CoreError> {
+        let Some(mut record) = state.active_run.clone() else {
+            state.status = RunStatus::Failed;
+            state.extensions.insert(
+                EXT_LAST_FAILURE.to_owned(),
+                Value::String(
+                    "daemon restarted with stale running state but no active run record".to_owned(),
+                ),
+            );
+            self.state_store.save(&state)?;
+            return Ok(None);
+        };
+        let message = "daemon restarted while run was still recorded as running";
+        state.status = RunStatus::Failed;
+        state.extensions.insert(
+            EXT_LAST_FAILURE.to_owned(),
+            Value::String(message.to_owned()),
+        );
+        record_terminal_run(
+            &mut state,
+            record.clone(),
+            RunStatus::Failed,
+            Some(RunOutcome::Failed),
+        );
+        self.state_store.save(&state)?;
+        self.surface_failure(&record.run_id, &mut state, message)?;
+        self.state_store.save(&state)?;
+        record.status = RunStatus::Failed;
+        record.outcome = Some(RunOutcome::Failed);
+        Ok(run_completed_event_from_record(&record))
     }
 
     #[must_use]
@@ -3764,6 +3811,23 @@ mod tests {
         }
     }
 
+    fn review_on_open_or_update_rule() -> TriggerRule {
+        TriggerRule {
+            id: "review-on-pr-change".to_owned(),
+            criteria: Criteria::Any {
+                criteria: vec![
+                    Criteria::Event {
+                        event: EventKind::PullRequestOpened,
+                    },
+                    Criteria::Event {
+                        event: EventKind::PullRequestUpdated,
+                    },
+                ],
+            },
+            ..independent_rule()
+        }
+    }
+
     fn review_on_fix_rule() -> TriggerRule {
         TriggerRule {
             id: "review-after-fix".to_owned(),
@@ -3781,6 +3845,25 @@ mod tests {
                 ],
                 fixers: Vec::new(),
                 judge: None,
+                finishers: Vec::new(),
+            },
+        }
+    }
+
+    fn judge_after_noop_fix_rule() -> TriggerRule {
+        TriggerRule {
+            id: "judge-after-noop-fix".to_owned(),
+            run_kind: RunKind::Judge,
+            criteria: Criteria::Event {
+                event: EventKind::RunCompleted {
+                    run_kind: Some(RunKind::Fix),
+                    outcome: Some(RunOutcome::NoOp),
+                },
+            },
+            agent_plan: AgentPlan {
+                reviewers: Vec::new(),
+                fixers: Vec::new(),
+                judge: Some(target("judge", AgentRole::Judge, "gemini")),
                 finishers: Vec::new(),
             },
         }
@@ -3852,13 +3935,22 @@ mod tests {
     }
 
     fn run_completed_event(id: &str, run_id: RunId, run_kind: RunKind) -> ContractEvent {
+        run_completed_event_with_outcome(id, run_id, run_kind, RunOutcome::Succeeded)
+    }
+
+    fn run_completed_event_with_outcome(
+        id: &str,
+        run_id: RunId,
+        run_kind: RunKind,
+        outcome: RunOutcome,
+    ) -> ContractEvent {
         ContractEvent {
             contract_version: ContractVersion::current(),
             id: id.to_owned(),
             payload: EventPayload::RunCompleted {
                 run_id,
                 run_kind: Some(run_kind),
-                outcome: RunOutcome::Succeeded,
+                outcome,
             },
             extensions: BTreeMap::new(),
         }
@@ -4160,6 +4252,52 @@ mod tests {
                 reason: SkipReason::DuplicateDispatch,
             }]
         );
+    }
+
+    #[test]
+    fn review_fires_on_pr_open_or_update() {
+        let rule = review_on_open_or_update_rule();
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        let updated = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "human-pushed-update".to_owned(),
+            payload: EventPayload::PullRequestUpdated {
+                facts: facts_with_head("human-push-sha"),
+            },
+            extensions: BTreeMap::new(),
+        };
+
+        let opened = core
+            .process_event(&event(), std::slice::from_ref(&rule))
+            .expect("opened event");
+        let update = core
+            .process_event(&updated, &[rule])
+            .expect("updated event");
+
+        assert!(matches!(
+            opened.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+        ));
+        assert!(matches!(
+            update.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+        ));
+        assert_eq!(core.launcher.launched, 2);
     }
 
     #[test]
@@ -4584,8 +4722,7 @@ mod tests {
     #[test]
     fn process_event_drives_review_fix_rereview_finish_loop() {
         let rules = vec![
-            independent_rule(),
-            update_review_rule(),
+            review_on_open_or_update_rule(),
             judge_after_review_rule(),
             fix_after_material_judge_rule(),
             finish_on_label_rule(),
@@ -4729,6 +4866,181 @@ mod tests {
                 ))
         );
         assert_eq!(core.workspace_provider.cleaned, 6);
+    }
+
+    #[test]
+    fn noop_fix_completion_routes_to_judge_with_standing_findings() {
+        let fix_run_id = RunId("fix-noop".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let first = finding_from("reviewer-codex", "codex", "finding-1");
+        let second = finding_from("reviewer-claude", "claude", "finding-2");
+        state.status = RunStatus::Completed;
+        state.findings = vec![first.clone(), second];
+        state.decisions.push(Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-material".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: first.id,
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "worth another pass".to_owned(),
+            provenance: verified_provenance("judge-old", AgentRole::Judge, "gemini"),
+            extensions: BTreeMap::new(),
+        });
+        state.run_history.push(RunRecord {
+            run_id: fix_run_id.clone(),
+            run_kind: RunKind::Fix,
+            event_id: "fix-trigger".to_owned(),
+            rule_id: "fix-after-material-judge".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::NoOp),
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save NoOp state");
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
+            store,
+        );
+
+        let outcomes = core
+            .process_event(
+                &run_completed_event_with_outcome(
+                    "fix-noop-done",
+                    fix_run_id,
+                    RunKind::Fix,
+                    RunOutcome::NoOp,
+                ),
+                &[judge_after_noop_fix_rule()],
+            )
+            .expect("NoOp fix completion");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-noop-fix"
+        ));
+        assert_eq!(core.launcher.launched, 1);
+    }
+
+    #[test]
+    fn noop_fix_outcome_archives_standing_findings_for_judge() {
+        let run_id = RunId("fix-noop".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.status = RunStatus::Running;
+        state.active_run = Some(RunRecord {
+            run_id,
+            run_kind: RunKind::Fix,
+            event_id: "judge-done".to_owned(),
+            rule_id: "fix-after-material-judge".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Running,
+            outcome: None,
+        });
+        let finding = finding_from("reviewer-codex", "codex", "finding-1");
+        state.findings.push(finding.clone());
+        state.decisions.push(Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-material".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: finding.id,
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "worth another pass".to_owned(),
+            provenance: verified_provenance("judge", AgentRole::Judge, "gemini"),
+            extensions: BTreeMap::new(),
+        });
+
+        apply_run_outcome(
+            &mut state,
+            RunKind::Fix,
+            RunLaunchOutcome {
+                outcome: RunOutcome::NoOp,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                token_usage: None,
+            },
+        );
+
+        assert_eq!(state.status, RunStatus::Completed);
+        assert!(state.findings.is_empty());
+        assert!(state.decisions.is_empty());
+        assert_eq!(state.loop_history.len(), 1);
+        assert_eq!(state.loop_history[0].findings.len(), 1);
+        assert_eq!(state.loop_history[0].decisions.len(), 1);
+        assert_eq!(state.loop_history[0].fix_outcome, Some(RunOutcome::NoOp));
+        assert_eq!(state.run_history[0].outcome, Some(RunOutcome::NoOp));
+    }
+
+    #[test]
+    fn stale_running_recovery_surfaces_failure_and_unblocks_pr() {
+        let run_id = RunId("event-1:review:1".to_owned());
+        let mut running = mark_running(
+            initial_state_from_event(&event()).expect("initial state"),
+            &event(),
+            &independent_rule(),
+            &run_id,
+        );
+        running.status = RunStatus::Running;
+        let mut store = FakeRunStateStore::default();
+        store.save(&running).expect("save running state");
+        let mut core = Core::with_forge_operations(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            store,
+            RecordingForgeOperations::default(),
+        );
+
+        let recovered = core
+            .rederive_pending_completions()
+            .expect("recover stale running");
+
+        assert_eq!(recovered, 1);
+        assert_eq!(core.pending_event_count(), 1);
+        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert!(
+            core.forge_operations.comments[0]
+                .body
+                .contains("daemon restarted")
+        );
+        let failed = core
+            .state_store
+            .load_by_run_id(&run_id)
+            .expect("load failed run")
+            .expect("failed state");
+        assert_eq!(failed.status, RunStatus::Failed);
+        assert_eq!(failed.run_history[0].status, RunStatus::Failed);
+        assert_eq!(failed.run_history[0].outcome, Some(RunOutcome::Failed));
+
+        let updated = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "retry-after-restart".to_owned(),
+            payload: EventPayload::PullRequestUpdated { facts: facts() },
+            extensions: BTreeMap::new(),
+        };
+        let outcomes = core
+            .process_event(&updated, &[update_review_rule()])
+            .expect("updated event after recovery");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review"
+        ));
     }
 
     #[test]
