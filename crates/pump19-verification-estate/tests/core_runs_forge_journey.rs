@@ -402,6 +402,11 @@ impl RecordingRuntime {
 #[derive(Debug, Default)]
 struct EstateLoopLauncher;
 
+#[derive(Clone, Debug, Default)]
+struct NoOpFixLoopLauncher {
+    launched: Rc<RefCell<Vec<RunKind>>>,
+}
+
 #[derive(Debug)]
 struct EstateSessions;
 
@@ -436,6 +441,50 @@ impl RunLauncher for EstateLoopLauncher {
             RunKind::Review => Ok(review_outcome(&request)),
             RunKind::Judge => Ok(judge_outcome(&request)),
             RunKind::Fix => Ok(fix_outcome(&request)),
+            RunKind::Finish => Ok(RunLaunchOutcome {
+                outcome: RunOutcome::Succeeded,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                token_usage: None,
+            }),
+        }
+    }
+}
+
+impl NoOpFixLoopLauncher {
+    fn launched(&self) -> Rc<RefCell<Vec<RunKind>>> {
+        Rc::clone(&self.launched)
+    }
+}
+
+impl RunLauncher for NoOpFixLoopLauncher {
+    fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
+        let agent_id = spec.target.agent_id.clone();
+        Ok(PreparedAgent {
+            agent_id: spec.target.agent_id,
+            role: spec.target.role,
+            session_id: SessionId(format!("session-{}-{}", spec.pass_index, agent_id.0)),
+            proof: LaunchProof::EstablishedFresh,
+        })
+    }
+
+    fn launch_run(
+        &mut self,
+        request: RunLaunchRequest,
+        _workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<RunLaunchOutcome, CoreError> {
+        self.launched.borrow_mut().push(request.run_kind);
+        match request.run_kind {
+            RunKind::Review => Ok(review_outcome(&request)),
+            RunKind::Judge => Ok(judge_outcome(&request)),
+            RunKind::Fix => Ok(RunLaunchOutcome {
+                outcome: RunOutcome::NoOp,
+                findings: Vec::new(),
+                decisions: Vec::new(),
+                patches: Vec::new(),
+                token_usage: None,
+            }),
             RunKind::Finish => Ok(RunLaunchOutcome {
                 outcome: RunOutcome::Succeeded,
                 findings: Vec::new(),
@@ -545,6 +594,10 @@ impl RunStateStore for EstateStateStore {
                     .get("pump19.core.running_run_id")
                     .and_then(serde_json::Value::as_str)
                     == Some(run_id.0.as_str())
+                    || state
+                        .run_history
+                        .iter()
+                        .any(|record| record.run_id == *run_id)
             })
             .cloned())
     }
@@ -594,6 +647,10 @@ impl RunStateStore for SharedEstateStateStore {
                     .get("pump19.core.running_run_id")
                     .and_then(serde_json::Value::as_str)
                     == Some(run_id.0.as_str())
+                    || state
+                        .run_history
+                        .iter()
+                        .any(|record| record.run_id == *run_id)
             })
             .cloned())
     }
@@ -609,6 +666,10 @@ impl RunStateStore for SharedEstateStateStore {
             states.push(state.clone());
         }
         Ok(())
+    }
+
+    fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+        Ok(self.states())
     }
 }
 
@@ -861,6 +922,25 @@ fn judge_after_review_rule() -> TriggerRule {
             event: EventKind::RunCompleted {
                 run_kind: Some(RunKind::Review),
                 outcome: Some(RunOutcome::Succeeded),
+            },
+        },
+        agent_plan: AgentPlan {
+            reviewers: Vec::new(),
+            fixers: Vec::new(),
+            judge: Some(target("judge-gemini", AgentRole::Judge, "gemini")),
+            finishers: Vec::new(),
+        },
+    }
+}
+
+fn judge_after_noop_fix_rule() -> TriggerRule {
+    TriggerRule {
+        id: "judge-after-noop-fix".to_owned(),
+        run_kind: RunKind::Judge,
+        criteria: Criteria::Event {
+            event: EventKind::RunCompleted {
+                run_kind: Some(RunKind::Fix),
+                outcome: Some(RunOutcome::NoOp),
             },
         },
         agent_plan: AgentPlan {
@@ -1707,6 +1787,178 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
             state: StateCriterion::HasConverged
         }
         .matches(&finish_label_event(), Some(&latest))
+    );
+}
+
+#[test]
+fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let state_store = SharedEstateStateStore::default();
+    let state_observer = state_store.clone();
+    let launcher = NoOpFixLoopLauncher::default();
+    let launched_kinds = launcher.launched();
+    let mut core = Core::with_forge_operations(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-noop-fix-estate")),
+        },
+        launcher,
+        state_store,
+        forge_operations,
+    );
+    let rules = vec![
+        review_rule(standard_plan()),
+        judge_after_review_rule(),
+        fix_after_material_judge_rule(),
+        judge_after_noop_fix_rule(),
+    ];
+    let facts = contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Clean,
+        core_actor_permissions(),
+    );
+
+    let opened = core
+        .process_event(&opened_event(facts), &rules)
+        .expect("PR open launches review");
+    assert!(matches!(
+        opened.as_slice(),
+        [DispatchOutcome::Launched { .. }]
+    ));
+
+    let drained = core
+        .drain_available(&rules)
+        .expect("self-emitted completions keep the NoOp fix path moving");
+
+    assert_eq!(
+        launched_kinds.borrow().as_slice(),
+        [
+            RunKind::Review,
+            RunKind::Judge,
+            RunKind::Fix,
+            RunKind::Judge,
+        ]
+    );
+    assert_eq!(
+        drained
+            .iter()
+            .filter(|batch| matches!(batch.as_slice(), [DispatchOutcome::Launched { .. }]))
+            .count(),
+        3,
+        "review completion should launch judge, material verdict should launch fix, and NoOp fix completion should launch judge"
+    );
+    assert_eq!(comments.borrow().len(), 1);
+    assert!(
+        comments.borrow()[0]
+            .authorisation
+            .evidence
+            .iter()
+            .any(|evidence| matches!(
+                evidence,
+                AuthorisationEvidence::Decision {
+                    verdict: DecisionVerdict::Material,
+                    ..
+                }
+            ))
+    );
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest state")
+        .expect("state saved");
+    assert_eq!(
+        latest.pass_index, 1,
+        "NoOp fixes do not advance the PR head"
+    );
+    assert!(
+        latest
+            .loop_history
+            .iter()
+            .any(|pass| pass.fix_outcome == Some(RunOutcome::NoOp))
+    );
+    assert!(
+        latest
+            .decisions
+            .iter()
+            .any(|decision| decision.verdict == DecisionVerdict::Converged)
+    );
+}
+
+#[test]
+fn restart_rederives_unprocessed_completion_and_drives_next_trigger_once() {
+    let mut state = run_state();
+    let review_run = RunId("review-completed-before-restart".to_owned());
+    state.status = RunStatus::Completed;
+    state.active_run = None;
+    state.findings = vec![
+        finding_with(
+            "recovered-codex-finding",
+            verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+            1,
+        ),
+        finding_with(
+            "recovered-claude-finding",
+            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            1,
+        ),
+    ];
+    state.run_history.push(RunRecord {
+        run_id: review_run,
+        run_kind: RunKind::Review,
+        event_id: "forgejo-pr-opened".to_owned(),
+        rule_id: "review-on-pr-opened".to_owned(),
+        pass_index: 1,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Completed,
+        outcome: Some(RunOutcome::Succeeded),
+    });
+    let state_store = SharedEstateStateStore::with_state(state);
+    let state_observer = state_store.clone();
+    let launcher = RecordingLauncher::new(vec![LaunchProof::EstablishedFresh]);
+    let launch_requests = Rc::clone(&launcher.launched);
+    let mut core = Core::new(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-completion-recovery-estate")),
+        },
+        launcher,
+        state_store,
+    );
+
+    assert_eq!(
+        core.rederive_pending_completions()
+            .expect("completion recovery succeeds"),
+        1
+    );
+    assert_eq!(
+        core.rederive_pending_completions()
+            .expect("completion recovery is idempotent"),
+        0
+    );
+    assert_eq!(core.pending_event_count(), 1);
+
+    let batches = core
+        .drain_available(&[judge_after_review_rule()])
+        .expect("recovered completion is processed");
+
+    assert_eq!(
+        batches
+            .iter()
+            .filter(|batch| matches!(batch.as_slice(), [DispatchOutcome::Launched { .. }]))
+            .count(),
+        1
+    );
+    assert_eq!(launch_requests.borrow().len(), 1);
+    assert_eq!(launch_requests.borrow()[0].run_kind, RunKind::Judge);
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest state")
+        .expect("state saved");
+    assert!(
+        latest
+            .run_history
+            .iter()
+            .any(|record| record.run_kind == RunKind::Judge)
     );
 }
 
