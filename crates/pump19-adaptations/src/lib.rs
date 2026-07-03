@@ -11,7 +11,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 #[cfg(unix)]
@@ -413,18 +415,49 @@ pub fn write_baseline_deployment_assets(
 }
 
 fn write_executable_text(path: &Path, source: &str) -> Result<(), AdaptationError> {
-    fs::write(path, source).map_err(|source| AdaptationError::Io {
-        path: path.display().to_string(),
+    static TEMPFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|source| AdaptationError::Io {
+        path: parent.display().to_string(),
         source,
     })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("script");
+    let temp_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        TEMPFILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|source| AdaptationError::Io {
+                path: temp_path.display().to_string(),
+                source,
+            })?;
+        file.write_all(source.as_bytes())
+            .map_err(|source| AdaptationError::Io {
+                path: temp_path.display().to_string(),
+                source,
+            })?;
+    }
     #[cfg(unix)]
     {
         let permissions = fs::Permissions::from_mode(0o755);
-        fs::set_permissions(path, permissions).map_err(|source| AdaptationError::Io {
-            path: path.display().to_string(),
+        fs::set_permissions(&temp_path, permissions).map_err(|source| AdaptationError::Io {
+            path: temp_path.display().to_string(),
             source,
         })?;
     }
+    fs::rename(&temp_path, path).map_err(|source| AdaptationError::Io {
+        path: format!("{} -> {}", temp_path.display(), path.display()),
+        source,
+    })?;
     Ok(())
 }
 
@@ -2840,9 +2873,9 @@ exit "${{PUMP19_STUB_RUNNER_STATUS:-0}}"
         response_cases: &str,
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let path = root.join("fake-curl");
-        fs::write(
+        super::write_executable_text(
             &path,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 set -eu
 url=
@@ -2856,7 +2889,6 @@ done
 "#
             ),
         )?;
-        set_executable(&path)?;
         Ok(path)
     }
 

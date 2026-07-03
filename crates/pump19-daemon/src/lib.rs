@@ -41,7 +41,7 @@ use pump19_forge_forgejo::{
 use pump19_runs::{
     AgentSessionPreparer, EnsembleFixBody, EnsembleJudgeBody, EnsembleReviewBody,
     EnsembleWorkflowConfig, HostEnsembleWorkflowRunner, MergeReadiness, MergeReadinessCheck,
-    Pump19RunLauncher, RunBodyError, VerifiedMergeGateFinishBody,
+    Pump19RunLauncher, RunBodyError, SubjectIntent, VerifiedMergeGateFinishBody,
 };
 use pump19_workspace::{CommandRuntime, ContainerWorkspaceProvider, WorkspaceConfig};
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,8 @@ pub struct EnsembleDaemonConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ForgejoDaemonConfig {
     pub repositories: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repository_intents: BTreeMap<String, SubjectIntent>,
     pub finish_label: String,
     #[serde(default)]
     pub core_applies_finish_label_on_convergence: bool,
@@ -379,6 +381,29 @@ fn validate_startable_config(config: &DaemonConfig) -> Result<(), DaemonError> {
             &format!("forgejo.repositories[{index}]"),
             repository,
         )?;
+    }
+    for (repository, intent) in &config.forgejo.repository_intents {
+        let field_prefix = format!("forgejo.repository_intents.{repository}");
+        reject_placeholder(&config_path, &field_prefix, repository)?;
+        reject_placeholder(&config_path, &format!("{field_prefix}.name"), &intent.name)?;
+        reject_placeholder(&config_path, &format!("{field_prefix}.slug"), &intent.slug)?;
+        reject_placeholder(
+            &config_path,
+            &format!("{field_prefix}.purpose"),
+            &intent.purpose,
+        )?;
+        for statement in intent.invariants.iter().chain(&intent.behaviours) {
+            reject_placeholder(
+                &config_path,
+                &format!("{field_prefix}.{}.id", statement.id),
+                &statement.id,
+            )?;
+            reject_placeholder(
+                &config_path,
+                &format!("{field_prefix}.{}.statement", statement.id),
+                &statement.statement,
+            )?;
+        }
     }
     reject_placeholder(
         &config_path,
@@ -747,6 +772,7 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let launcher = runtime_launcher(
         &config.ensemble,
+        &config.forgejo.repository_intents,
         &prompt_pack,
         &prompt_root,
         runtime_merge_readiness(&mechanical_pack),
@@ -807,6 +833,7 @@ fn core_policy(config: &ForgejoDaemonConfig) -> CorePolicy {
 
 fn runtime_launcher(
     ensemble: &EnsembleDaemonConfig,
+    subject_intents: &BTreeMap<String, SubjectIntent>,
     prompt_pack: &PromptPack,
     prompt_root: &Path,
     merge_readiness: Option<RuntimeMergeReadiness>,
@@ -814,9 +841,10 @@ fn runtime_launcher(
     let runner = HostEnsembleWorkflowRunner::new(&ensemble.node_program, &ensemble.launcher_path);
     Ok(Pump19RunLauncher::new(
         DaemonSessionPreparer,
-        EnsembleReviewBody::new(
+        EnsembleReviewBody::with_subject_intents(
             runner.clone(),
             workflow_config(ensemble, prompt_pack, prompt_root, RunKind::Review)?,
+            subject_intents.clone(),
         ),
         EnsembleJudgeBody::new(
             runner.clone(),
@@ -2289,6 +2317,11 @@ timeout_ms = 5000
 repositories = ["acme/widgets"]
 finish_label = "pump19-finish"
 
+[forgejo.repository_intents."acme/widgets"]
+name = "Acme Widgets"
+slug = "widgets"
+purpose = "Review the widget service."
+
 [forgejo.poll_command]
 program = "poll-forgejo"
 args = ["--json"]
@@ -2306,6 +2339,15 @@ stop_after_quiet_polls = 1
         let config = DaemonConfig::load(&path).expect("load config");
 
         assert_eq!(config.forgejo.repositories, vec!["acme/widgets"]);
+        assert_eq!(
+            config
+                .forgejo
+                .repository_intents
+                .get("acme/widgets")
+                .expect("repository intent")
+                .purpose,
+            "Review the widget service."
+        );
         assert_eq!(config.loop_control.stop_after_quiet_polls, Some(1));
         assert!(!config.forgejo.core_applies_finish_label_on_convergence);
     }
@@ -2680,6 +2722,7 @@ exit 75
             },
             forgejo: ForgejoDaemonConfig {
                 repositories: vec!["acme/widgets".to_owned()],
+                repository_intents: BTreeMap::new(),
                 finish_label: "pump19-finish".to_owned(),
                 core_applies_finish_label_on_convergence: false,
                 web_base_url: None,

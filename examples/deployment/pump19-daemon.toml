@@ -19,6 +19,14 @@ timeout_ms = 600000
 [forgejo]
 repositories = ["REPLACE_WITH_OWNER/REPOSITORY"]
 finish_label = "pump19-finish"
+# Optional pump-side subject intent, keyed by the same owner/repository slug used
+# above. Repositories without an entry are reviewed with neutral subject text
+# derived from their slug; no file is required in the reviewed repository.
+#
+# [forgejo.repository_intents."REPLACE_WITH_OWNER/REPOSITORY"]
+# name = "Example Service"
+# slug = "example-service"
+# purpose = "Review changes to the Example Service for correctness and maintainability."
 # Forge web root for file permalinks in finding comments; omit for plain
 # path:line code spans.
 # web_base_url = "https://forgejo.example"
