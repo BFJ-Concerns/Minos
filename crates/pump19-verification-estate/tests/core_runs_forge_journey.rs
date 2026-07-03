@@ -246,6 +246,7 @@ impl RunLauncher for RecordingLauncher {
             decisions: Vec::new(),
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         })
     }
 }
@@ -442,6 +443,7 @@ impl RunLauncher for EstateLoopLauncher {
                 decisions: Vec::new(),
                 patches: Vec::new(),
                 token_usage: None,
+                ensemble_archive_path: None,
             }),
         }
     }
@@ -479,6 +481,7 @@ impl RunLauncher for PlannedLauncher {
             decisions: Vec::new(),
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         })
     }
 }
@@ -1061,6 +1064,7 @@ fn review_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
             decisions: Vec::new(),
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         };
     }
     let judged_id = if request.state.pass_index == 1 {
@@ -1082,6 +1086,7 @@ fn review_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
         decisions: Vec::new(),
         patches: Vec::new(),
         token_usage: None,
+        ensemble_archive_path: None,
     }
 }
 
@@ -1109,6 +1114,7 @@ fn judge_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
             }],
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         };
     }
     let verdict = if request.state.pass_index == 1 {
@@ -1133,6 +1139,7 @@ fn judge_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
         }],
         patches: Vec::new(),
         token_usage: None,
+        ensemble_archive_path: None,
     }
 }
 
@@ -1161,6 +1168,7 @@ fn fix_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
             extensions: extensions(),
         }],
         token_usage: None,
+        ensemble_archive_path: None,
     }
 }
 
@@ -1500,6 +1508,8 @@ fn repeated_material_finding_updates_existing_comment_identity() {
         commit_sha: state.commit_sha.clone(),
         status: RunStatus::Completed,
         outcome: Some(RunOutcome::Succeeded),
+        refusal: None,
+        ensemble_archive_path: None,
     });
     state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),
@@ -1599,6 +1609,8 @@ fn minor_judge_finding_is_recorded_but_suppressed_from_pr_publication() {
         commit_sha: state.commit_sha.clone(),
         status: RunStatus::Completed,
         outcome: Some(RunOutcome::Succeeded),
+        refusal: None,
+        ensemble_archive_path: None,
     });
     state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),
@@ -1810,6 +1822,8 @@ fn moved_pr_head_supersedes_running_old_head_and_reenters_on_new_head() {
         commit_sha: "head-sha-1".to_owned(),
         status: RunStatus::Running,
         outcome: None,
+        refusal: None,
+        ensemble_archive_path: None,
     });
     old_state.extensions.insert(
         "pump19.core.running_run_id".to_owned(),

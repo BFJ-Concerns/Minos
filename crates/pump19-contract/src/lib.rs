@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The current public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 3 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 4 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -320,11 +320,15 @@ pub struct PublicationAttempt {
     pub run_id: RunId,
     pub operation: PublicationOperation,
     pub idempotency_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_head_sha: Option<String>,
     pub status: PublicationAttemptStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<ForgeReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<PublicationRefusal>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -344,6 +348,9 @@ pub enum PublicationOperation {
         comment_operation_id: String,
     },
     PostFailureComment,
+    PostRefusalComment {
+        reason: String,
+    },
     PushFixCommits {
         patch_ids: Vec<PatchId>,
     },
@@ -354,7 +361,25 @@ pub enum PublicationOperation {
 #[serde(rename_all = "snake_case")]
 pub enum PublicationAttemptStatus {
     Succeeded,
+    Refused,
     Failed,
+}
+
+/// A publication the core authorised but deliberately did not let through.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PublicationRefusal {
+    pub reason: PublicationRefusalReason,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "reason")]
+pub enum PublicationRefusalReason {
+    HeadMoved {
+        expected_head_sha: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actual_head_sha: Option<String>,
+    },
 }
 
 /// The live PR comment currently associated with one stable finding identity.
@@ -431,6 +456,7 @@ pub enum RunStatus {
     Pending,
     Running,
     Completed,
+    Skipped,
     Failed,
     Superseded,
 }
@@ -447,6 +473,30 @@ pub struct RunRecord {
     pub status: RunStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<RunOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<RunRefusal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ensemble_archive_path: Option<String>,
+}
+
+/// A launch refusal recorded in run history.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RunRefusal {
+    pub reason: RunRefusalReason,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunRefusalReason {
+    RunCeilingReached,
+    RequiredFamilyUnavailable,
+    WorkspaceIsolationMissing,
+    UnverifiedProvenance,
+    InsufficientReviewerFamilies,
+    ReviewerFixerOverlap,
+    MissingIndependentJudge,
+    NonFreshSession,
 }
 
 /// Archived working set for one completed loop pass.
@@ -823,6 +873,7 @@ mod tests {
                     finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
                 },
                 idempotency_key: "comment-finding-1".to_owned(),
+                expected_head_sha: Some("abc123".to_owned()),
                 status: PublicationAttemptStatus::Succeeded,
                 receipt: Some(ForgeReceipt {
                     operation_id: "comment-1".to_owned(),
@@ -830,6 +881,7 @@ mod tests {
                     new_head_sha: None,
                 }),
                 error: None,
+                refusal: None,
             }],
             finding_comments: vec![FindingCommentPublication {
                 finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
@@ -897,6 +949,8 @@ mod tests {
                 commit_sha: "abc123".to_owned(),
                 status: RunStatus::Completed,
                 outcome: Some(RunOutcome::Succeeded),
+                refusal: None,
+                ensemble_archive_path: Some("/var/lib/pump19/archives/run-review-1".to_owned()),
             }],
             loop_history: vec![LoopPassRecord {
                 pass_index: 1,
@@ -941,6 +995,58 @@ mod tests {
         ));
         round_trip(&forge_facts());
         round_trip(&event);
+    }
+
+    #[test]
+    fn run_state_round_trips_archive_paths_and_refusals() {
+        let state = super::PrRunState {
+            contract_version: version(),
+            pr: pr(),
+            commit_sha: "abc123".to_owned(),
+            current_head_sha: Some("abc123".to_owned()),
+            pass_index: 3,
+            status: RunStatus::Skipped,
+            active_run: None,
+            run_history: vec![RunRecord {
+                run_id: RunId("run-review-3".to_owned()),
+                run_kind: RunKind::Review,
+                event_id: "event-3".to_owned(),
+                rule_id: "review".to_owned(),
+                pass_index: 3,
+                commit_sha: "abc123".to_owned(),
+                status: RunStatus::Skipped,
+                outcome: None,
+                refusal: Some(super::RunRefusal {
+                    reason: super::RunRefusalReason::RunCeilingReached,
+                    message: "run ceiling reached before launch".to_owned(),
+                }),
+                ensemble_archive_path: Some("/var/lib/pump19/archives/run-review-3".to_owned()),
+            }],
+            loop_history: Vec::new(),
+            superseded_by: None,
+            findings: Vec::new(),
+            decisions: Vec::new(),
+            patches: Vec::new(),
+            publication: PublicationState::default(),
+            ceiling: Some(RunCeiling {
+                max_passes: Some(3),
+                token_budget: None,
+            }),
+            extensions: extensions(),
+        };
+
+        let encoded = serde_json::to_value(&state).expect("serialise state");
+        assert_eq!(
+            encoded["run_history"][0]["ensemble_archive_path"],
+            json!("/var/lib/pump19/archives/run-review-3")
+        );
+        assert_eq!(
+            encoded["run_history"][0]["refusal"]["reason"],
+            json!("run_ceiling_reached")
+        );
+        let decoded =
+            serde_json::from_value::<super::PrRunState>(encoded).expect("deserialise state");
+        assert_eq!(decoded, state);
     }
 
     #[test]
@@ -1021,6 +1127,12 @@ mod tests {
         assert!(state.loop_history.is_empty());
         assert_eq!(state.superseded_by, None);
         assert!(state.publication.is_empty());
+        assert!(
+            state
+                .run_history
+                .iter()
+                .all(|record| record.refusal.is_none() && record.ensemble_archive_path.is_none())
+        );
     }
 
     #[test]
@@ -1050,6 +1162,12 @@ mod tests {
         );
         assert_eq!(state.current_head_sha.as_deref(), Some("abc123"));
         assert!(state.publication.is_empty());
+        assert!(
+            state
+                .run_history
+                .iter()
+                .all(|record| record.refusal.is_none() && record.ensemble_archive_path.is_none())
+        );
     }
 
     #[test]

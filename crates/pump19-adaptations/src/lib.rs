@@ -1128,6 +1128,7 @@ mod tests {
                 decisions: Vec::new(),
                 patches: Vec::new(),
                 token_usage: None,
+                ensemble_archive_path: None,
             })
         }
     }

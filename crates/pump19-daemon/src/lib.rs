@@ -447,6 +447,7 @@ const fn core_error_class(error: &CoreError) -> &'static str {
         CoreError::EventSource(_) => "event_source",
         CoreError::Workspace(_) => "workspace",
         CoreError::Launcher(_) => "launcher",
+        CoreError::RequiredFamilyUnavailable { .. } => "required_family_unavailable",
         CoreError::StateStore(_) => "state_store",
         CoreError::ForgeOperation(_) => "forge_operation",
         CoreError::Io { .. } => "io",
@@ -1130,6 +1131,7 @@ mod tests {
                     decisions: Vec::new(),
                     patches: Vec::new(),
                     token_usage: None,
+                    ensemble_archive_path: None,
                 }),
             }
         }
@@ -1581,6 +1583,7 @@ stop_after_quiet_polls = 1
                 decisions: Vec::new(),
                 patches: Vec::new(),
                 token_usage: None,
+                ensemble_archive_path: None,
             };
         }
         RunLaunchOutcome {
@@ -1611,6 +1614,7 @@ stop_after_quiet_polls = 1
             decisions: Vec::new(),
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         }
     }
 
@@ -1653,6 +1657,7 @@ stop_after_quiet_polls = 1
             }],
             patches: Vec::new(),
             token_usage: None,
+            ensemble_archive_path: None,
         }
     }
 
@@ -1681,6 +1686,7 @@ stop_after_quiet_polls = 1
                 extensions: Extensions::new(),
             }],
             token_usage: None,
+            ensemble_archive_path: None,
         }
     }
 }

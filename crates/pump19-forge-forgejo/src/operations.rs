@@ -35,15 +35,16 @@ where
         request: AuthorisedComment,
     ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
         validate_authorisation(&request.authorisation)?;
+        validate_non_empty(&request.expected_head_sha, "expected head SHA is empty")?;
         validate_non_empty(&request.body, "comment body is empty")?;
         let receipt = self
             .client
             .post_pr_comment(
                 &request.authorisation.pr,
                 &request.body,
-                &metadata(&request.authorisation),
+                &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+            .map_err(forgejo_error_to_operation_error)?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -52,6 +53,7 @@ where
         request: AuthorisedCommentUpdate,
     ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
         validate_authorisation(&request.authorisation)?;
+        validate_non_empty(&request.expected_head_sha, "expected head SHA is empty")?;
         validate_non_empty(
             &request.comment_operation_id,
             "comment operation id is empty",
@@ -63,9 +65,9 @@ where
                 &request.authorisation.pr,
                 &request.comment_operation_id,
                 &request.body,
-                &metadata(&request.authorisation),
+                &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+            .map_err(forgejo_error_to_operation_error)?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -74,6 +76,7 @@ where
         request: AuthorisedCommentResolution,
     ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
         validate_authorisation(&request.authorisation)?;
+        validate_non_empty(&request.expected_head_sha, "expected head SHA is empty")?;
         validate_non_empty(
             &request.comment_operation_id,
             "comment operation id is empty",
@@ -85,9 +88,9 @@ where
                 &request.authorisation.pr,
                 &request.comment_operation_id,
                 &request.reason,
-                &metadata(&request.authorisation),
+                &comment_metadata(&request.authorisation, &request.expected_head_sha),
             )
-            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+            .map_err(forgejo_error_to_operation_error)?;
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
@@ -196,8 +199,34 @@ const fn validate_non_empty(value: &str, reason: &'static str) -> Result<(), For
 fn metadata(context: &AuthorisationContext) -> ForgejoCommandMetadata {
     ForgejoCommandMetadata {
         observed_head_sha: context.observed_head_sha.clone(),
+        expected_head_sha: None,
         idempotency_key: context.idempotency_key.clone(),
         reason: context.reason.clone(),
+    }
+}
+
+fn comment_metadata(
+    context: &AuthorisationContext,
+    expected_head_sha: &str,
+) -> ForgejoCommandMetadata {
+    ForgejoCommandMetadata {
+        observed_head_sha: context.observed_head_sha.clone(),
+        expected_head_sha: Some(expected_head_sha.to_owned()),
+        idempotency_key: context.idempotency_key.clone(),
+        reason: context.reason.clone(),
+    }
+}
+
+fn forgejo_error_to_operation_error(error: crate::ForgejoClientError) -> ForgeOperationError {
+    match error {
+        crate::ForgejoClientError::HeadMoved {
+            expected_head_sha,
+            actual_head_sha,
+        } => ForgeOperationError::HeadMoved {
+            expected_head_sha,
+            actual_head_sha,
+        },
+        error => ForgeOperationError::Client(error.to_string()),
     }
 }
 
@@ -429,6 +458,7 @@ mod tests {
         let receipt = operations
             .post_comment(AuthorisedComment {
                 authorisation: authorisation(),
+                expected_head_sha: "abc123".to_owned(),
                 body: "material finding".to_owned(),
             })
             .expect("comment executes");
@@ -437,6 +467,10 @@ mod tests {
         assert_eq!(
             operations.client().metadata[0].idempotency_key,
             "run-1:comment:finding-1"
+        );
+        assert_eq!(
+            operations.client().metadata[0].expected_head_sha.as_deref(),
+            Some("abc123")
         );
     }
 

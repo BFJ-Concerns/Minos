@@ -95,6 +95,8 @@ const ENSEMBLE_ENV_EXACT_ALLOWLIST: &[&str] = &[
 pub enum RunBodyError {
     #[error("session preparation failed: {0}")]
     Session(String),
+    #[error("required model family is unavailable: {0}")]
+    RequiredFamilyUnavailable(String),
     #[error("judgement failed: {0}")]
     Judgement(#[from] pump19_judgement::JudgementError),
     #[error("missing provenance for role {0:?}")]
@@ -147,6 +149,10 @@ pub trait ReviewRunBody {
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Finding>, RunBodyError>;
+
+    fn last_ensemble_archive_path(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Executes a significance-judge run after the core has passed the launch gate.
@@ -161,6 +167,10 @@ pub trait JudgeRunBody {
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Decision>, RunBodyError>;
+
+    fn last_ensemble_archive_path(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Executes a fix run after the core has passed the launch gate.
@@ -175,6 +185,10 @@ pub trait FixRunBody {
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Patch>, RunBodyError>;
+
+    fn last_ensemble_archive_path(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Executes a finish run after the core has passed the launch gate.
@@ -189,6 +203,10 @@ pub trait FinishRunBody {
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<RunOutcome, RunBodyError>;
+
+    fn last_ensemble_archive_path(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Runs a versioned ensemble workflow on the host and returns its JSON result.
@@ -325,9 +343,17 @@ where
     N: FinishRunBody,
 {
     fn prepare_agent(&mut self, spec: AgentLaunchSpec) -> Result<PreparedAgent, CoreError> {
-        self.sessions
-            .prepare(spec)
-            .map_err(|error| CoreError::Launcher(error.to_string()))
+        let target = spec.target.clone();
+        self.sessions.prepare(spec).map_err(|error| match error {
+            RunBodyError::RequiredFamilyUnavailable(reason) => {
+                CoreError::RequiredFamilyUnavailable {
+                    agent_id: target.agent_id,
+                    family: target.lineage.family,
+                    reason,
+                }
+            }
+            error => CoreError::Launcher(error.to_string()),
+        })
     }
 
     fn launch_run(
@@ -336,17 +362,17 @@ where
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<RunLaunchOutcome, CoreError> {
         let result = match request.run_kind {
-            RunKind::Review => {
-                self.review
-                    .run_review(&request, workspace)
-                    .map(|findings| RunLaunchOutcome {
-                        outcome: RunOutcome::Succeeded,
-                        findings,
-                        decisions: Vec::new(),
-                        patches: Vec::new(),
-                        token_usage: None,
-                    })
-            }
+            RunKind::Review => self.review.run_review(&request, workspace).map(|findings| {
+                let ensemble_archive_path = self.review.last_ensemble_archive_path();
+                RunLaunchOutcome {
+                    outcome: RunOutcome::Succeeded,
+                    findings,
+                    decisions: Vec::new(),
+                    patches: Vec::new(),
+                    token_usage: None,
+                    ensemble_archive_path,
+                }
+            }),
             RunKind::Judge => {
                 self.judge
                     .run_judge(&request, workspace)
@@ -361,13 +387,13 @@ where
                             decisions,
                             patches: Vec::new(),
                             token_usage: None,
+                            ensemble_archive_path: self.judge.last_ensemble_archive_path(),
                         })
                     })
             }
-            RunKind::Fix => self
-                .fix
-                .run_fix(&request, workspace)
-                .map(|patches| RunLaunchOutcome {
+            RunKind::Fix => self.fix.run_fix(&request, workspace).map(|patches| {
+                let ensemble_archive_path = self.fix.last_ensemble_archive_path();
+                RunLaunchOutcome {
                     outcome: if patches.is_empty() {
                         RunOutcome::NoOp
                     } else {
@@ -377,7 +403,9 @@ where
                     decisions: Vec::new(),
                     patches,
                     token_usage: None,
-                }),
+                    ensemble_archive_path,
+                }
+            }),
             RunKind::Finish => {
                 self.finish
                     .run_finish(&request, workspace)
@@ -387,6 +415,7 @@ where
                         decisions: Vec::new(),
                         patches: Vec::new(),
                         token_usage: None,
+                        ensemble_archive_path: self.finish.last_ensemble_archive_path(),
                     })
             }
         };
@@ -399,12 +428,17 @@ where
 pub struct EnsembleReviewBody<R> {
     runner: R,
     config: EnsembleWorkflowConfig,
+    last_archive_path: Option<String>,
 }
 
 impl<R> EnsembleReviewBody<R> {
     #[must_use]
     pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
-        Self { runner, config }
+        Self {
+            runner,
+            config,
+            last_archive_path: None,
+        }
     }
 }
 
@@ -417,6 +451,7 @@ where
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Finding>, RunBodyError> {
+        self.last_archive_path = None;
         let _ = workspace;
         let intent = load_intent(&request.workspace.root)?;
         let brief_inputs = load_judgement_briefs(&request.workspace.root)?
@@ -441,9 +476,14 @@ where
         });
         let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
         reconcile_ensemble_archive(&output.archive_dir, &reviewers)?;
+        self.last_archive_path = Some(output.archive_dir.display().to_string());
         let run = serde_json::from_value::<JudgementRun>(output.value)
             .map_err(RunBodyError::EnsembleJson)?;
         findings_from_judgement(request, &run)
+    }
+
+    fn last_ensemble_archive_path(&self) -> Option<String> {
+        self.last_archive_path.clone()
     }
 }
 
@@ -452,12 +492,17 @@ where
 pub struct EnsembleJudgeBody<R> {
     runner: R,
     config: EnsembleWorkflowConfig,
+    last_archive_path: Option<String>,
 }
 
 impl<R> EnsembleJudgeBody<R> {
     #[must_use]
     pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
-        Self { runner, config }
+        Self {
+            runner,
+            config,
+            last_archive_path: None,
+        }
     }
 }
 
@@ -470,6 +515,7 @@ where
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Decision>, RunBodyError> {
+        self.last_archive_path = None;
         let _ = workspace;
         let targets = expected_targets(request, AgentRole::Judge)?;
         let provenance = provenance_for_role(request, AgentRole::Judge)?;
@@ -488,6 +534,7 @@ where
         });
         let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
         reconcile_ensemble_archive(&output.archive_dir, &targets)?;
+        self.last_archive_path = Some(output.archive_dir.display().to_string());
         let outputs = serde_json::from_value::<Vec<JudgeDecisionOutput>>(output.value)
             .map_err(RunBodyError::EnsembleJson)?;
         if outputs.is_empty() && request.state.findings.is_empty() {
@@ -498,6 +545,10 @@ where
             .map(|output| output.into_decision(&request.run_id, &provenance))
             .collect())
     }
+
+    fn last_ensemble_archive_path(&self) -> Option<String> {
+        self.last_archive_path.clone()
+    }
 }
 
 /// Fix body backed by a host-side ensemble workflow.
@@ -505,12 +556,17 @@ where
 pub struct EnsembleFixBody<R> {
     runner: R,
     config: EnsembleWorkflowConfig,
+    last_archive_path: Option<String>,
 }
 
 impl<R> EnsembleFixBody<R> {
     #[must_use]
     pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
-        Self { runner, config }
+        Self {
+            runner,
+            config,
+            last_archive_path: None,
+        }
     }
 }
 
@@ -523,6 +579,7 @@ where
         request: &RunLaunchRequest,
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Patch>, RunBodyError> {
+        self.last_archive_path = None;
         let _ = workspace;
         let findings = material_findings(request);
         if findings.is_empty() {
@@ -540,11 +597,16 @@ where
         });
         let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
         reconcile_ensemble_archive(&output.archive_dir, &targets)?;
+        self.last_archive_path = Some(output.archive_dir.display().to_string());
         let change = serde_json::from_value::<PatchChange>(output.value)
             .map_err(RunBodyError::EnsembleJson)?;
         Ok(vec![patch_from_change(
             request, findings, change, provenance,
         )])
+    }
+
+    fn last_ensemble_archive_path(&self) -> Option<String> {
+        self.last_archive_path.clone()
     }
 }
 

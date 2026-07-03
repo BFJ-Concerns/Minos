@@ -33,6 +33,7 @@ impl std::fmt::Debug for ForgejoCredential {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ForgejoCommandMetadata {
     pub observed_head_sha: String,
+    pub expected_head_sha: Option<String>,
     pub idempotency_key: String,
     pub reason: String,
 }
@@ -57,6 +58,13 @@ pub struct ForgejoFixCommit {
 /// Errors from the credentialed Forgejo client boundary.
 #[derive(Debug, Error)]
 pub enum ForgejoClientError {
+    #[error(
+        "PR head moved before operation: expected {expected_head_sha}, actual {actual_head_sha:?}"
+    )]
+    HeadMoved {
+        expected_head_sha: String,
+        actual_head_sha: Option<String>,
+    },
     #[error("Forgejo transport failed: {0}")]
     Transport(String),
     #[error("Forgejo rejected the operation: {0}")]
@@ -69,7 +77,8 @@ pub enum ForgejoClientError {
 /// workspace path or PR-content execution hook, so the token-bearing path remains
 /// separate from untrusted code execution.
 pub trait ForgejoCommandClient {
-    /// Posts a PR comment.
+    /// Posts a PR comment if the PR head still matches the expected head in
+    /// `metadata`.
     ///
     /// # Errors
     ///
@@ -82,7 +91,8 @@ pub trait ForgejoCommandClient {
         metadata: &ForgejoCommandMetadata,
     ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
 
-    /// Updates a PR comment previously created by Pump-19.
+    /// Updates a PR comment previously created by Pump-19 if the PR head still
+    /// matches the expected head in `metadata`.
     ///
     /// # Errors
     ///
@@ -96,7 +106,8 @@ pub trait ForgejoCommandClient {
         metadata: &ForgejoCommandMetadata,
     ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
 
-    /// Resolves a PR comment previously created by Pump-19.
+    /// Resolves a PR comment previously created by Pump-19 if the PR head still
+    /// matches the expected head in `metadata`.
     ///
     /// # Errors
     ///
