@@ -1504,12 +1504,7 @@ impl CommandForgejoClient {
                     pump19_forge_forgejo::ForgejoClientError::Transport(error.to_string())
                 })?;
         if !output.status.success() {
-            let secrets = self
-                .command
-                .env
-                .values()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
+            let secrets = command_config_secrets(&self.command);
             return Err(command_failure_to_forgejo_error(&output, &secrets));
         }
         serde_json::from_slice::<CommandReceipt>(&output.stdout)
@@ -1610,7 +1605,8 @@ fn run_json_command_with_stdin<'a>(
     stdin: &[u8],
 ) -> Result<Vec<u8>, std::io::Error> {
     let output = run_command_with_stdin_output(config, args, stdin)?;
-    command_output(output)
+    let secrets = command_config_secrets(config);
+    command_output(output, &secrets)
 }
 
 fn run_command_with_stdin_output<'a>(
@@ -1651,16 +1647,22 @@ fn run_json_program(
     if let Some(child_stdin) = child.stdin.as_mut() {
         child_stdin.write_all(stdin)?;
     }
-    command_output(child.wait_with_output()?)
+    command_output(child.wait_with_output()?, &[])
 }
 
-fn command_output(output: std::process::Output) -> Result<Vec<u8>, std::io::Error> {
+fn command_config_secrets(config: &CommandConfig) -> Vec<&str> {
+    config.env.values().map(String::as_str).collect()
+}
+
+fn command_output(
+    output: std::process::Output,
+    secrets: &[&str],
+) -> Result<Vec<u8>, std::io::Error> {
     if output.status.success() {
         return Ok(output.stdout);
     }
     Err(std::io::Error::other(command_exit_message_with_redaction(
-        &output,
-        &[],
+        &output, secrets,
     )))
 }
 
@@ -3226,6 +3228,37 @@ exit 1
         assert!(message.contains("git push failed: protected branch rejected"));
         assert!(message.contains("Authorization: <redacted>"));
         assert!(message.contains("FORGEJO_TOKEN=<redacted>"));
+        assert!(!message.contains("secret-token-123"));
+    }
+
+    #[test]
+    fn command_polling_client_surfaces_redacted_stderr_on_activity_failure() {
+        let dir = tempdir().expect("temp dir");
+        let script = dir.path().join("poll-failure");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+printf 'poll failed for %s with token %s\n' "$1" "$FORGEJO_TOKEN" >&2
+exit 1
+"#,
+        )
+        .expect("write script");
+        make_executable(&script);
+        let mut env = BTreeMap::new();
+        env.insert("FORGEJO_TOKEN".to_owned(), "secret-token-123".to_owned());
+        let mut client = CommandPollingClient::new(CommandConfig {
+            program: script,
+            args: Vec::new(),
+            env,
+        });
+
+        let error = client
+            .open_pull_requests("acme/widgets")
+            .expect_err("poll failure should include stderr");
+        let message = error.to_string();
+
+        assert!(message.contains("poll failed for acme/widgets"));
+        assert!(message.contains("<redacted>"));
         assert!(!message.contains("secret-token-123"));
     }
 

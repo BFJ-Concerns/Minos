@@ -211,7 +211,14 @@ fn snapshot_work_in_progress(snapshot: &ForgejoPullRequestSnapshot) -> bool {
 
 fn title_has_work_in_progress_prefix(title: &str) -> bool {
     let title = title.trim_start();
-    title.starts_with("WIP:") || title.starts_with("[WIP]")
+    ascii_case_insensitive_starts_with(title, "WIP:")
+        || ascii_case_insensitive_starts_with(title, "[WIP]")
+}
+
+fn ascii_case_insensitive_starts_with(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
 }
 
 /// Converts a Forgejo activity into a contract event.
@@ -480,7 +487,14 @@ mod tests {
 
     #[test]
     fn work_in_progress_title_prefixes_normalise_to_contract_fact() {
-        for title in ["WIP: still shaping this", "[WIP] still shaping this"] {
+        for title in [
+            "WIP: still shaping this",
+            "[WIP] still shaping this",
+            "wip: still shaping this",
+            "[wip] still shaping this",
+            "WiP: still shaping this",
+            "[WiP] still shaping this",
+        ] {
             let mut snapshot = snapshot_fixture();
             snapshot.title = Some(title.to_owned());
 
