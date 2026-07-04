@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The current public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 5 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 6 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -545,8 +545,20 @@ pub struct ForgeFacts {
     /// author fail closed when it is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_login: Option<String>,
+    /// Whether the forge reports the PR as draft/work-in-progress. Absent means
+    /// "ready" for contract 1.5 and older producers.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub work_in_progress: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: Extensions,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if predicates take values by reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -873,6 +885,7 @@ mod tests {
                     .collect(),
             }],
             author_login: None,
+            work_in_progress: false,
             extensions: extensions(),
         }
     }
@@ -1211,6 +1224,19 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn older_forge_facts_default_to_ready_pull_request() {
+        let mut payload = serde_json::to_value(forge_facts()).expect("serialise facts");
+        payload
+            .as_object_mut()
+            .expect("facts are an object")
+            .remove("work_in_progress");
+
+        let facts = serde_json::from_value::<ForgeFacts>(payload).expect("legacy facts");
+
+        assert!(!facts.work_in_progress);
     }
 
     #[test]
