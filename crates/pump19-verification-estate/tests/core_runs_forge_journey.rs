@@ -922,6 +922,7 @@ fn contract_facts_with_head(
         }),
         actor_permissions,
         author_login: None,
+        work_in_progress: false,
         extensions: extensions(),
     }
 }
@@ -1131,6 +1132,29 @@ fn review_on_pr_updated_rule() -> TriggerRule {
             judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
             finishers: Vec::new(),
         },
+    }
+}
+
+fn ready_review_on_pr_change_rule() -> TriggerRule {
+    TriggerRule {
+        id: "review-on-pr-change".to_owned(),
+        run_kind: RunKind::Review,
+        criteria: Criteria::All {
+            criteria: vec![
+                Criteria::Any {
+                    criteria: vec![
+                        Criteria::Event {
+                            event: EventKind::PullRequestOpened,
+                        },
+                        Criteria::Event {
+                            event: EventKind::PullRequestUpdated,
+                        },
+                    ],
+                },
+                Criteria::PrReady,
+            ],
+        },
+        agent_plan: standard_plan(),
     }
 }
 
@@ -2430,6 +2454,52 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
 }
 
 #[test]
+fn opt_in_poll_reviews_ready_standing_prs_once_and_leaves_drafts_waiting() {
+    let state_store = SharedEstateStateStore::default();
+    let launcher = RecordingLauncher::new(vec![
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+    ]);
+    let launch_requests = Rc::clone(&launcher.launched);
+    let polling = PollingForgejoActivitySource::new(
+        EstatePollingClient {
+            polls: VecDeque::from([
+                vec![
+                    polling_snapshot_for("40", "ready-head-1", false),
+                    polling_snapshot_for("41", "draft-head", true),
+                    polling_snapshot_for("42", "ready-head-2", false),
+                ],
+                Vec::new(),
+            ]),
+        },
+        ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
+    );
+    let source = ForgejoEventSource::new(polling, ForgejoNormalisationConfig::new("pump19-finish"));
+    let mut core = Core::new(
+        source,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-opt-in-draft-estate")),
+        },
+        launcher,
+        state_store,
+    );
+
+    core.drain_available(&[ready_review_on_pr_change_rule()])
+        .expect("polling ingress drains standing PR set");
+
+    let recorded_requests = launch_requests.borrow();
+    let launched_prs = recorded_requests
+        .iter()
+        .map(|request| request.state.pr.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(launched_prs, vec!["40", "42"]);
+}
+
+#[test]
 fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
     let trigger_pack_root = tempdir().expect("baseline trigger pack root");
     let trigger_pack_path =
@@ -2980,6 +3050,69 @@ fn duplicate_pr_event_is_idempotent_and_does_not_launch_a_second_run() {
         }]
     );
     assert_eq!(launch_requests.borrow().len(), 1);
+}
+
+#[test]
+fn draft_pr_open_update_and_ready_transition_fire_only_when_ready() {
+    let state_store = SharedEstateStateStore::default();
+    let state_observer = state_store.clone();
+    let launcher = RecordingLauncher::new(vec![
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+    ]);
+    let launch_requests = Rc::clone(&launcher.launched);
+    let mut core = Core::new(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-draft-transition-estate")),
+        },
+        launcher,
+        state_store,
+    );
+    let rule = ready_review_on_pr_change_rule();
+    let mut draft_facts = contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Dirty,
+        Vec::new(),
+    );
+    draft_facts.work_in_progress = true;
+    let mut ready_facts = draft_facts.clone();
+    ready_facts.work_in_progress = false;
+
+    let draft_open = core
+        .process_event(
+            &opened_event(draft_facts.clone()),
+            std::slice::from_ref(&rule),
+        )
+        .expect("draft opening is evaluated");
+    let draft_update = core
+        .process_event(
+            &updated_event("forgejo-pr-updated-draft", draft_facts),
+            std::slice::from_ref(&rule),
+        )
+        .expect("draft update is evaluated");
+    let ready_update = core
+        .process_event(&updated_event("forgejo-pr-ready", ready_facts), &[rule])
+        .expect("ready transition launches review");
+
+    assert!(draft_open.is_empty());
+    assert!(draft_update.is_empty());
+    assert!(matches!(
+        ready_update.as_slice(),
+        [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+    ));
+    assert_eq!(launch_requests.borrow().len(), 1);
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest")
+        .expect("latest state");
+    let facts = latest
+        .extensions
+        .get("pump19.core.forge_facts")
+        .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
+        .expect("state carries latest forge facts");
+    assert!(!facts.work_in_progress);
 }
 
 #[test]
@@ -3641,6 +3774,8 @@ fn forgejo_snapshot(
     ForgejoPullRequestSnapshot {
         repository: "acme/widgets".to_owned(),
         id: "42".to_owned(),
+        title: None,
+        draft: None,
         head_sha: "head-sha-1".to_owned(),
         base_sha: "base-sha-1".to_owned(),
         branch_currency,
@@ -3656,9 +3791,19 @@ fn forgejo_snapshot(
 }
 
 fn polling_snapshot(head_sha: &str) -> ForgejoPullRequestSnapshot {
+    polling_snapshot_for("42", head_sha, false)
+}
+
+fn polling_snapshot_for(id: &str, head_sha: &str, draft: bool) -> ForgejoPullRequestSnapshot {
     ForgejoPullRequestSnapshot {
         repository: "acme/widgets".to_owned(),
-        id: "42".to_owned(),
+        id: id.to_owned(),
+        title: Some(if draft {
+            "WIP: still shaping".to_owned()
+        } else {
+            "Ready for review".to_owned()
+        }),
+        draft: Some(draft),
         head_sha: head_sha.to_owned(),
         base_sha: "base-sha-1".to_owned(),
         branch_currency: ForgejoBranchCurrency::Current,

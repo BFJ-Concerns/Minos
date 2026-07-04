@@ -70,6 +70,7 @@ fn forge_facts(
                 .collect::<BTreeSet<_>>(),
         }],
         author_login: None,
+        work_in_progress: false,
         extensions: extensions(),
     }
 }
