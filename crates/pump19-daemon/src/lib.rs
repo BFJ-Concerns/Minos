@@ -28,9 +28,10 @@ use pump19_adaptations::{
 };
 use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
-    AgentLaunchSpec, CommentRendering, CompletionRecoverySummary, Core, CoreError, CorePolicy,
-    DispatchOutcome, FinishLabelApplicationPolicy, JsonRunStateStore, LaunchProof, PreparedAgent,
-    PreparedSource, SourcePreparationRequest, SourcePreparer, TriggerRule,
+    AgentLaunchSpec, CommentFormatter, CompletionRecoverySummary, Core, CoreError, CorePolicy,
+    DispatchOutcome, FindingCommentFormatRequest, FinishLabelApplicationPolicy, JsonRunStateStore,
+    LaunchProof, PreparedAgent, PreparedSource, SourcePreparationRequest, SourcePreparer,
+    TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -90,8 +91,12 @@ pub enum DaemonError {
     MissingPromptTemplate(RunKind),
     #[error("mechanical source preparation step is missing from the mechanical pack")]
     MissingSourcePreparationStep,
+    #[error("mechanical comment formatting step is missing from the mechanical pack")]
+    MissingCommentFormattingStep,
     #[error("source preparation step {0:?} uses unsupported container execution")]
     UnsupportedSourcePreparationContainer(String),
+    #[error("comment formatting step {0:?} uses unsupported container execution")]
+    UnsupportedCommentFormattingContainer(String),
     #[error("signal handler setup failed: {0}")]
     Signal(String),
 }
@@ -465,6 +470,7 @@ type RuntimeCore = Core<
     JsonRunStateStore,
     ForgejoForgeOperations<CommandForgejoClient>,
     RuntimeSourcePreparer,
+    RuntimeCommentFormatter,
 >;
 
 type RuntimeLauncher = Pump19RunLauncher<
@@ -664,7 +670,7 @@ trait CoreRunner {
     fn pending_event_count(&self) -> usize;
 }
 
-impl<E, W, L, S, F, P> CoreRunner for Core<E, W, L, S, F, P>
+impl<E, W, L, S, F, P, C> CoreRunner for Core<E, W, L, S, F, P, C>
 where
     E: pump19_core::EventSource,
     W: pump19_core::WorkspaceProvider,
@@ -672,6 +678,7 @@ where
     S: pump19_core::RunStateStore,
     F: pump19_core::ForgeOperations,
     P: pump19_core::SourcePreparer,
+    C: pump19_core::CommentFormatter,
 {
     fn run_next(
         &mut self,
@@ -704,6 +711,7 @@ const fn core_error_class(error: &CoreError) -> &'static str {
         CoreError::EventSource(_) => "event_source",
         CoreError::Workspace(_) => "workspace",
         CoreError::SourcePreparation(_) => "source_preparation",
+        CoreError::CommentFormatting(_) => "comment_formatting",
         CoreError::Launcher(_) => "launcher",
         CoreError::RequiredFamilyUnavailable { .. } => "required_family_unavailable",
         CoreError::StateStore(_) => "state_store",
@@ -779,6 +787,8 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
     )?;
     let policy = core_policy(&config.forgejo);
     let source_preparer = runtime_source_preparer(&mechanical_pack)?;
+    let comment_formatter =
+        runtime_comment_formatter(&mechanical_pack, config.forgejo.web_base_url.clone())?;
     let polling = PollingForgejoActivitySource::new(
         CommandPollingClient::new(config.forgejo.poll_command.clone()),
         ForgejoPollingConfig::new(config.forgejo.repositories, &config.forgejo.finish_label),
@@ -794,13 +804,14 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
     let state_store = JsonRunStateStore::new(config.state_root)?;
     let forge_operations =
         ForgejoForgeOperations::new(CommandForgejoClient::new(config.forgejo.operation_command));
-    let core = Core::with_forge_operations_source_preparer_and_policy(
+    let core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
         event_source,
         workspace,
         launcher,
         state_store,
         forge_operations,
         source_preparer,
+        comment_formatter,
         policy,
     );
     Ok(Pump19Daemon::new(core, config.loop_control))
@@ -825,9 +836,6 @@ fn core_policy(config: &ForgejoDaemonConfig) -> CorePolicy {
     };
     CorePolicy {
         finish_label_application,
-        comment_rendering: CommentRendering {
-            web_base_url: config.web_base_url.clone(),
-        },
     }
 }
 
@@ -994,6 +1002,97 @@ fn runtime_merge_readiness(pack: &MechanicalPack) -> Option<RuntimeMergeReadines
         })
         .cloned()
         .map(|step| RuntimeMergeReadiness { step })
+}
+
+/// Host-side comment formatting backed by a mechanical-pack command.
+///
+/// The command receives finding, decision and forge context on stdin and returns
+/// `{"body":"..."}`. It never receives forge credentials; the core still owns
+/// the authorised post/update operation that uses the returned body.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeCommentFormatter {
+    step: MechanicalStep,
+    web_base_url: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FormatCommentsCommandInput<'a> {
+    step_id: &'a str,
+    run_id: &'a str,
+    repository: &'a str,
+    pull_request: &'a str,
+    commit_sha: &'a str,
+    web_base_url: Option<&'a str>,
+    finding: &'a pump19_contract::Finding,
+    decision: &'a pump19_contract::Decision,
+    facts: &'a pump19_contract::ForgeFacts,
+}
+
+#[derive(Deserialize)]
+struct FormatCommentsCommandOutput {
+    body: String,
+}
+
+impl CommentFormatter for RuntimeCommentFormatter {
+    fn format_finding_comment(
+        &mut self,
+        request: FindingCommentFormatRequest,
+    ) -> Result<String, CoreError> {
+        let input = FormatCommentsCommandInput {
+            step_id: &self.step.id,
+            run_id: &request.run_id.0,
+            repository: &request.facts.pr.repository,
+            pull_request: &request.facts.pr.id,
+            commit_sha: &request.facts.head.sha,
+            web_base_url: self.web_base_url.as_deref(),
+            finding: &request.finding,
+            decision: &request.decision,
+            facts: &request.facts,
+        };
+        let stdin = serde_json::to_vec(&input).map_err(|error| {
+            CoreError::CommentFormatting(format!(
+                "serialise comment formatter input for step {:?}: {error}",
+                self.step.id
+            ))
+        })?;
+        let output = match &self.step.execution {
+            MechanicalExecution::Command { program, args } => {
+                run_json_program(program, args, &stdin).map_err(|error| {
+                    CoreError::CommentFormatting(format!(
+                        "comment formatting step {:?} failed: {error}",
+                        self.step.id
+                    ))
+                })?
+            }
+            MechanicalExecution::Container { .. } => {
+                return Err(CoreError::CommentFormatting(
+                    DaemonError::UnsupportedCommentFormattingContainer(self.step.id.clone())
+                        .to_string(),
+                ));
+            }
+        };
+        let output =
+            serde_json::from_slice::<FormatCommentsCommandOutput>(&output).map_err(|error| {
+                CoreError::CommentFormatting(format!(
+                    "comment formatting step {:?} returned invalid JSON: {error}",
+                    self.step.id
+                ))
+            })?;
+        Ok(output.body)
+    }
+}
+
+fn runtime_comment_formatter(
+    pack: &MechanicalPack,
+    web_base_url: Option<String>,
+) -> Result<RuntimeCommentFormatter, DaemonError> {
+    let step = pack
+        .steps
+        .iter()
+        .find(|step| matches!(step.kind, MechanicalStepKind::FormatComments))
+        .cloned()
+        .ok_or(DaemonError::MissingCommentFormattingStep)?;
+    Ok(RuntimeCommentFormatter { step, web_base_url })
 }
 
 fn workflow_config(
@@ -1651,6 +1750,18 @@ mod tests {
         fix_pushes: Rc<RefCell<Vec<AuthorisedFixPush>>>,
     }
 
+    #[derive(Clone, Debug, Default)]
+    struct TestCommentFormatter;
+
+    impl CommentFormatter for TestCommentFormatter {
+        fn format_finding_comment(
+            &mut self,
+            request: FindingCommentFormatRequest,
+        ) -> Result<String, CoreError> {
+            Ok(format!("daemon formatted {}", request.finding.id.0))
+        }
+    }
+
     impl ForgeOperations for RecordingForgeOperations {
         fn post_comment(
             &mut self,
@@ -2028,7 +2139,7 @@ mod tests {
         );
         let source =
             ForgejoEventSource::new(polling, ForgejoNormalisationConfig::new("pump19-finish"));
-        let core = Core::with_forge_operations(
+        let core = Core::with_forge_operations_and_comment_formatter(
             source,
             FakeWorkspaceProvider {
                 cleaned: Rc::clone(&cleaned),
@@ -2036,6 +2147,7 @@ mod tests {
             EstateLoopLauncher,
             store,
             forge_operations,
+            TestCommentFormatter,
         );
         let mut daemon = Pump19Daemon::new(
             core,
@@ -2614,6 +2726,52 @@ stop_after_quiet_polls = 1
         ));
     }
 
+    #[test]
+    fn runtime_comment_formatter_runs_format_comments_step() {
+        let dir = tempdir().expect("temp dir");
+        let command = dir.path().join("format-comments");
+        write_test_executable(
+            &command,
+            r#"#!/bin/sh
+set -eu
+jq -r '.finding.id as $id | {body: ("mechanical body for " + $id)}'
+"#,
+        );
+        let pack = format_comments_pack(&command);
+        let mut formatter =
+            runtime_comment_formatter(&pack, Some("https://forgejo.example".to_owned()))
+                .expect("formatter");
+
+        let body = formatter
+            .format_finding_comment(format_request())
+            .expect("formatted body");
+
+        assert_eq!(body, "mechanical body for finding-1");
+    }
+
+    #[test]
+    fn runtime_comment_formatter_rejects_malformed_output() {
+        let dir = tempdir().expect("temp dir");
+        let command = dir.path().join("format-comments");
+        write_test_executable(
+            &command,
+            r"#!/bin/sh
+set -eu
+printf 'not json\n'
+",
+        );
+        let pack = format_comments_pack(&command);
+        let mut formatter = runtime_comment_formatter(&pack, None).expect("formatter");
+
+        let error = formatter
+            .format_finding_comment(format_request())
+            .expect_err("malformed formatter output fails");
+
+        assert!(
+            matches!(error, CoreError::CommentFormatting(message) if message.contains("invalid JSON"))
+        );
+    }
+
     fn readiness_pack(step: Option<MechanicalStep>) -> MechanicalPack {
         MechanicalPack {
             schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
@@ -2637,6 +2795,63 @@ stop_after_quiet_polls = 1
             inputs: Vec::new(),
             outputs: Vec::new(),
             extensions: Extensions::new(),
+        }
+    }
+
+    fn format_comments_pack(command: &Path) -> MechanicalPack {
+        MechanicalPack {
+            schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
+            contract_version: ContractVersion::current(),
+            id: "test-mechanics".to_owned(),
+            steps: vec![MechanicalStep {
+                id: "format-comments".to_owned(),
+                kind: MechanicalStepKind::FormatComments,
+                execution: MechanicalExecution::Command {
+                    program: command.display().to_string(),
+                    args: Vec::new(),
+                },
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                extensions: Extensions::new(),
+            }],
+            extensions: Extensions::new(),
+        }
+    }
+
+    fn format_request() -> FindingCommentFormatRequest {
+        let finding_id = FindingId("finding-1".to_owned());
+        FindingCommentFormatRequest {
+            run_id: RunId("run-judge-1".to_owned()),
+            finding: Finding {
+                contract_version: ContractVersion::current(),
+                id: finding_id.clone(),
+                dedup_key: "review:correctness:src/lib.rs:42".to_owned(),
+                source_brief: "review".to_owned(),
+                dimension: "correctness".to_owned(),
+                summary: "A material review finding.".to_owned(),
+                severity: Severity::High,
+                confidence: Confidence::High,
+                certainty: CertaintyClass::Advisory,
+                provenance: provenance_for_target(target(
+                    "reviewer-codex",
+                    AgentRole::Reviewer,
+                    "codex",
+                )),
+                locations: vec![FindingLocation::General {
+                    description: "whole change".to_owned(),
+                }],
+                extensions: Extensions::new(),
+            },
+            decision: Decision {
+                contract_version: ContractVersion::current(),
+                id: "decision-1".to_owned(),
+                subject: DecisionSubject::Finding { finding_id },
+                verdict: DecisionVerdict::Material,
+                rationale: "Material.".to_owned(),
+                provenance: provenance_for_target(target("judge-glm", AgentRole::Judge, "glm")),
+                extensions: Extensions::new(),
+            },
+            facts: contract_facts(),
         }
     }
 
@@ -3210,7 +3425,7 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
 
     fn model_for_family(family: &str) -> String {
         match family {
-            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            "glm" => "openrouter/z-ai/glm-5.2".to_owned(),
             _ => format!("{family}-2026-06"),
         }
     }

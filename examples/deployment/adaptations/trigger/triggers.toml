@@ -58,7 +58,7 @@ control_plane = "pump19-core"
 
 [rules.agent_plan.judge.lineage]
 family = "glm"
-model = "openrouter/z-ai/glm-4.6"
+model = "openrouter/z-ai/glm-5.2"
 
 [[rules]]
 id = "judge-after-review"
@@ -81,7 +81,7 @@ control_plane = "pump19-core"
 
 [rules.agent_plan.judge.lineage]
 family = "glm"
-model = "openrouter/z-ai/glm-4.6"
+model = "openrouter/z-ai/glm-5.2"
 
 [[rules]]
 id = "judge-after-noop-fix"
@@ -104,7 +104,7 @@ control_plane = "pump19-core"
 
 [rules.agent_plan.judge.lineage]
 family = "glm"
-model = "openrouter/z-ai/glm-4.6"
+model = "openrouter/z-ai/glm-5.2"
 
 [[rules]]
 id = "fix-after-material-judge"
