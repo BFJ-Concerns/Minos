@@ -796,11 +796,15 @@ where
                 continue;
             }
             for record in &state.run_history {
+                if record.status == RunStatus::Failed {
+                    continue;
+                }
                 let Some(event) = run_completed_event_from_record(record) else {
                     continue;
                 };
+                let needs_retry = completion_event_has_failed_dispatch(&state, &event);
                 if pending_ids.contains(&event.id)
-                    || self.queued_completion_event_ids.contains(&event.id)
+                    || (self.queued_completion_event_ids.contains(&event.id) && !needs_retry)
                 {
                     continue;
                 }
@@ -969,15 +973,16 @@ where
             evaluate_gate(&gate_provenance, &prepared, state.pass_index, &workspace)
         {
             let failure = format!("launch refused: {reason:?}");
-            self.record_failed_launch_refusal(
+            let record_result = self.record_failed_launch_refusal(
                 state,
                 event,
                 rule,
                 &run_id,
                 &reason,
                 failure.as_str(),
-            )?;
-            self.workspace_provider.cleanup(&workspace)?;
+            );
+            let cleanup_result = self.workspace_provider.cleanup(&workspace);
+            finish_failure_recording_before_cleanup(record_result, cleanup_result)?;
             return Ok(DispatchOutcome::Refused {
                 rule_id: rule.id.clone(),
                 reason,
@@ -1134,7 +1139,7 @@ where
         run_id: &RunId,
         workspace: &WorkspaceLease,
     ) -> Result<(), CoreError> {
-        if !self.source_preparer.enabled() {
+        if !run_kind_requires_source(rule.run_kind) || !self.source_preparer.enabled() {
             return Ok(());
         }
         let prepared_source = match self
@@ -1218,8 +1223,10 @@ where
         error: &CoreError,
     ) -> Result<(), CoreError> {
         let message = error.to_string();
-        self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str())?;
-        self.workspace_provider.cleanup(workspace)
+        let record_result =
+            self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str());
+        let cleanup_result = self.workspace_provider.cleanup(workspace);
+        finish_failure_recording_before_cleanup(record_result, cleanup_result)
     }
 
     fn record_failed_dispatch(
@@ -3791,6 +3798,46 @@ fn run_refusal_from_launch_refusal(refusal: &LaunchRefusal, message: &str) -> Ru
     }
 }
 
+fn finish_failure_recording_before_cleanup(
+    record_result: Result<(), CoreError>,
+    cleanup_result: Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    match (record_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(record_error), Ok(())) => Err(record_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(record_error), Err(cleanup_error)) => {
+            eprintln!(
+                "pump19_core_failure_cleanup_error: record_failure={record_error}; cleanup_failure={cleanup_error}"
+            );
+            Err(combine_record_and_cleanup_errors(
+                &record_error,
+                &cleanup_error,
+            ))
+        }
+    }
+}
+
+fn combine_record_and_cleanup_errors(
+    record_error: &CoreError,
+    cleanup_error: &CoreError,
+) -> CoreError {
+    let message = format!(
+        "failed to record dispatch failure: {record_error}; workspace cleanup also failed: {cleanup_error}"
+    );
+    match record_error {
+        CoreError::StateStore(_) | CoreError::Io { .. } | CoreError::Json { .. } => {
+            CoreError::StateStore(message)
+        }
+        CoreError::EventSource(_)
+        | CoreError::Workspace(_)
+        | CoreError::SourcePreparation(_)
+        | CoreError::Launcher(_)
+        | CoreError::RequiredFamilyUnavailable { .. }
+        | CoreError::ForgeOperation(_) => CoreError::Workspace(message),
+    }
+}
+
 fn loop_record_from_state(
     state: &PrRunState,
     patches: Vec<Patch>,
@@ -3826,15 +3873,31 @@ fn state_records_run(state: &PrRunState, run_id: &RunId) -> bool {
             == Some(run_id.0.as_str())
 }
 
-fn state_already_dispatched(
-    state: &PrRunState,
-    event: &ContractEvent,
-    _rule: &TriggerRule,
-) -> bool {
+fn state_already_dispatched(state: &PrRunState, event: &ContractEvent, rule: &TriggerRule) -> bool {
+    if matches!(
+        event.payload,
+        EventPayload::PullRequestOpened { .. } | EventPayload::PullRequestUpdated { .. }
+    ) {
+        return state.run_history.iter().any(|record| {
+            record.status != RunStatus::Failed
+                && record.status != RunStatus::Skipped
+                && record.run_kind == rule.run_kind
+                && record.pass_index == state.pass_index
+                && record.commit_sha == state.commit_sha
+        });
+    }
+
     state
         .run_history
         .iter()
-        .any(|record| record.event_id == event.id)
+        .any(|record| record.status != RunStatus::Failed && record.event_id == event.id)
+}
+
+fn completion_event_has_failed_dispatch(state: &PrRunState, event: &ContractEvent) -> bool {
+    state
+        .run_history
+        .iter()
+        .any(|record| record.status == RunStatus::Failed && record.event_id == event.id)
 }
 
 fn run_completed_event_from_state(state: &PrRunState, run_id: &RunId) -> Option<ContractEvent> {
@@ -3860,6 +3923,10 @@ fn run_completed_event_from_record(record: &RunRecord) -> Option<ContractEvent> 
         },
         extensions,
     })
+}
+
+const fn run_kind_requires_source(run_kind: RunKind) -> bool {
+    matches!(run_kind, RunKind::Review | RunKind::Fix)
 }
 
 fn state_is_current_pr_control(state: &PrRunState) -> bool {
@@ -4115,6 +4182,11 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct FailingCleanupSourceWorkspaceProvider {
+        inner: SourceWorkspaceProvider,
+    }
+
+    #[derive(Debug)]
     struct TreeSourcePreparer {
         tree: PathBuf,
     }
@@ -4211,6 +4283,36 @@ mod tests {
         }
     }
 
+    impl WorkspaceProvider for FailingCleanupSourceWorkspaceProvider {
+        fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
+            self.inner.prepare(request)
+        }
+
+        fn inject_source(
+            &mut self,
+            lease: &WorkspaceLease,
+            source: &PreparedSource,
+        ) -> Result<(), CoreError> {
+            self.inner.inject_source(lease, source)
+        }
+
+        fn exec(
+            &mut self,
+            lease: &WorkspaceLease,
+            request: WorkspaceExecRequest,
+        ) -> Result<WorkspaceExecOutput, CoreError> {
+            WorkspaceProvider::exec(&mut self.inner, lease, request)
+        }
+
+        fn cleanup(&mut self, lease: &WorkspaceLease) -> Result<(), CoreError> {
+            self.inner.cleanup(lease)?;
+            Err(CoreError::Workspace(format!(
+                "cleanup failed for {}",
+                lease.id
+            )))
+        }
+    }
+
     impl SourcePreparer for TreeSourcePreparer {
         fn prepare_source(
             &mut self,
@@ -4254,6 +4356,7 @@ mod tests {
         launched: usize,
         outcome: RunLaunchOutcome,
         fail_launch: bool,
+        fail_launches_remaining: usize,
         prepare_error: Option<CoreError>,
     }
 
@@ -4572,6 +4675,7 @@ mod tests {
                     ensemble_archive_path: None,
                 },
                 fail_launch: false,
+                fail_launches_remaining: 0,
                 prepare_error: None,
             }
         }
@@ -4600,6 +4704,10 @@ mod tests {
             _workspace: &mut dyn WorkspaceExecutor,
         ) -> Result<RunLaunchOutcome, CoreError> {
             self.launched += 1;
+            if self.fail_launches_remaining > 0 {
+                self.fail_launches_remaining -= 1;
+                return Err(CoreError::Launcher("launch failed".to_owned()));
+            }
             if self.fail_launch {
                 return Err(CoreError::Launcher("launch failed".to_owned()));
             }
@@ -4611,6 +4719,9 @@ mod tests {
     struct FakeRunStateStore {
         states: Vec<PrRunState>,
     }
+
+    #[derive(Clone, Debug, Default)]
+    struct FailingSaveRunStateStore;
 
     #[derive(Clone, Debug, Default)]
     struct SupersedingRunStateStore {
@@ -4660,6 +4771,31 @@ mod tests {
                 self.states.push(state.clone());
             }
             Ok(())
+        }
+    }
+
+    impl RunStateStore for FailingSaveRunStateStore {
+        fn load(&self, _key: &RunStateKey) -> Result<Option<PrRunState>, CoreError> {
+            Ok(None)
+        }
+
+        fn load_latest_for_pr(
+            &self,
+            _pr: &PullRequestRef,
+        ) -> Result<Option<PrRunState>, CoreError> {
+            Ok(None)
+        }
+
+        fn load_by_run_id(&self, _run_id: &RunId) -> Result<Option<PrRunState>, CoreError> {
+            Ok(None)
+        }
+
+        fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        fn save(&mut self, _state: &PrRunState) -> Result<(), CoreError> {
+            Err(CoreError::StateStore("state store unavailable".to_owned()))
         }
     }
 
@@ -5205,6 +5341,127 @@ mod tests {
     }
 
     #[test]
+    fn failed_dispatch_recording_does_not_skip_workspace_cleanup() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: temp.path().join("workspace"),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FailingSaveRunStateStore,
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("recording the failure should fail dispatch");
+
+        assert!(
+            matches!(error, CoreError::StateStore(message) if message == "state store unavailable")
+        );
+        assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn record_and_cleanup_failures_are_reported_together() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            FailingCleanupSourceWorkspaceProvider {
+                inner: SourceWorkspaceProvider {
+                    root: temp.path().join("workspace"),
+                    cleaned: Rc::clone(&cleaned),
+                    injections: Rc::new(RefCell::new(Vec::new())),
+                },
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FailingSaveRunStateStore,
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("recording and cleanup failures should be combined");
+
+        assert!(matches!(error, CoreError::StateStore(message)
+            if message.contains("state store unavailable")
+                && message.contains("workspace cleanup also failed")
+                && message.contains("cleanup failed")));
+        assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn judge_dispatch_does_not_prepare_source_by_default() {
+        let review_run_id = RunId("review-completed".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.status = RunStatus::Completed;
+        state
+            .findings
+            .push(finding_from("reviewer-codex", "codex", "finding-1"));
+        state.run_history.push(RunRecord {
+            run_id: review_run_id.clone(),
+            run_kind: RunKind::Review,
+            event_id: "forgejo-pr-opened".to_owned(),
+            rule_id: "review".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Succeeded),
+            refusal: None,
+            ensemble_archive_path: None,
+            provenance: vec![
+                verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+                verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            ],
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save review state");
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: temp.path().join("workspace"),
+                cleaned: Rc::new(RefCell::new(0)),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
+            store,
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-done", review_run_id, RunKind::Review),
+                &[judge_after_review_rule()],
+            )
+            .expect("judge dispatch should not require source preparation");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-review"
+        ));
+        assert_eq!(core.launcher.launched, 1);
+    }
+
+    #[test]
     fn judge_run_uses_historical_reviewers_for_independence_gate() {
         let review_run_id = RunId("event-1:review:1".to_owned());
         let mut state = initial_state_from_event(&event()).expect("initial state");
@@ -5488,6 +5745,51 @@ mod tests {
     }
 
     #[test]
+    fn opened_and_updated_for_same_unseen_head_dispatch_one_review() {
+        let rule = review_on_open_or_update_rule();
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        let updated_same_head = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "forgejo-poll-updated-same-head".to_owned(),
+            payload: EventPayload::PullRequestUpdated { facts: facts() },
+            extensions: BTreeMap::new(),
+        };
+
+        let opened = core
+            .process_event(&event(), std::slice::from_ref(&rule))
+            .expect("opened event");
+        let updated = core
+            .process_event(&updated_same_head, &[rule])
+            .expect("updated event for same head");
+
+        assert!(matches!(
+            opened.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+        ));
+        assert_eq!(
+            updated,
+            vec![DispatchOutcome::Skipped {
+                rule_id: "review-on-pr-change".to_owned(),
+                reason: SkipReason::DuplicateDispatch,
+            }]
+        );
+        assert_eq!(core.launcher.launched, 1);
+    }
+
+    #[test]
     fn review_fires_on_pr_open_or_update() {
         let rule = review_on_open_or_update_rule();
         let mut core = Core::new(
@@ -5644,6 +5946,72 @@ mod tests {
                 .body
                 .contains("launch failed")
         );
+    }
+
+    #[test]
+    fn failed_completion_triggered_run_rearms_from_durable_completion() {
+        let mut review_core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        review_core
+            .process_event(&event(), &[independent_rule()])
+            .expect("review dispatch");
+
+        let mut judge_launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
+        judge_launcher.fail_launches_remaining = 1;
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            judge_launcher,
+            review_core.state_store,
+        );
+
+        let first_recovery = core
+            .rederive_pending_completions()
+            .expect("rederive review completion");
+        assert_eq!(first_recovery.queued, 1);
+        let first_error = core
+            .process_next(&[judge_after_review_rule()])
+            .expect_err("transient judge failure is returned");
+        assert!(matches!(first_error, CoreError::Launcher(message) if message == "launch failed"));
+
+        let second_recovery = core
+            .rederive_pending_completions()
+            .expect("rederive failed judge trigger");
+        assert_eq!(second_recovery.queued, 1);
+        let retry = core
+            .process_next(&[judge_after_review_rule()])
+            .expect("retry dispatch")
+            .expect("retried completion event");
+
+        assert!(matches!(
+            retry.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-review"
+        ));
+        assert_eq!(core.launcher.launched, 2);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("retried state");
+        assert_eq!(saved.status, RunStatus::Completed);
+        assert!(saved.run_history.iter().any(
+            |record| record.run_kind == RunKind::Judge && record.status == RunStatus::Completed
+        ));
     }
 
     #[test]

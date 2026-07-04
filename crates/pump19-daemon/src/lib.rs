@@ -568,8 +568,9 @@ where
                 }
                 Err(error) => {
                     summary.dispatch_errors_continued += 1;
-                    let retry_after_poll_interval = matches!(error, CoreError::EventSource(_));
-                    if retry_after_poll_interval {
+                    let event_source_error = matches!(error, CoreError::EventSource(_));
+                    let retry_after_poll_interval = true;
+                    if event_source_error {
                         summary.quiet_polls = summary.quiet_polls.saturating_add(1);
                     } else {
                         summary.quiet_polls = 0;
