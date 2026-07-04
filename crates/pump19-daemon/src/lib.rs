@@ -2467,9 +2467,9 @@ mod tests {
             .join("prepared-tree");
         let checkout_script = dir.path().join("checkout.sh");
         let prepare_script = dir.path().join("prepare.sh");
-        fs::write(
+        write_test_executable(
             &checkout_script,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 set -eu
 cat >/dev/null
@@ -2479,11 +2479,10 @@ printf '{{"tree":"{checkout_tree}","revision":"abc123"}}'
 "#,
                 checkout_tree = checkout_tree.display(),
             ),
-        )
-        .expect("write checkout script");
-        fs::write(
+        );
+        write_test_executable(
             &prepare_script,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 set -eu
 input="$(cat)"
@@ -2499,10 +2498,7 @@ printf '{{"tree":"{prepared_tree}","revision":"abc123"}}'
                 checkout_tree = checkout_tree.display(),
                 prepared_tree = prepared_tree.display(),
             ),
-        )
-        .expect("write prepare script");
-        make_executable(&checkout_script);
-        make_executable(&prepare_script);
+        );
         let pack = MechanicalPack {
             schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
             contract_version: ContractVersion::current(),
@@ -3083,22 +3079,18 @@ printf 'not json\n'
         let dir = tempdir().expect("temp dir");
         let capture = dir.path().join("input.json");
         let ready = dir.path().join("ready.sh");
-        fs::write(
+        write_test_executable(
             &ready,
-            format!(
+            &format!(
                 "#!/bin/sh\ncat > \"{}\"\nprintf '{{\"status\":\"ready\"}}'\n",
                 capture.display()
             ),
-        )
-        .expect("write ready script");
-        make_executable(&ready);
+        );
         let not_ready = dir.path().join("not-ready.sh");
-        fs::write(
+        write_test_executable(
             &not_ready,
             "#!/bin/sh\ncat >/dev/null\nprintf '{\"status\":\"not_ready\",\"detail\":\"cargo test failed\"}'\n",
-        )
-        .expect("write not-ready script");
-        make_executable(&not_ready);
+        );
         let request = finish_launch_request();
 
         let mut check = runtime_merge_readiness(&readiness_pack(Some(readiness_step(
@@ -3132,8 +3124,7 @@ printf 'not json\n'
     fn merge_readiness_command_execution_failure_is_an_error_not_a_verdict() {
         let dir = tempdir().expect("temp dir");
         let script = dir.path().join("broken.sh");
-        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nexit 9\n").expect("write script");
-        make_executable(&script);
+        write_test_executable(&script, "#!/bin/sh\ncat >/dev/null\nexit 9\n");
         let mut check = runtime_merge_readiness(&readiness_pack(Some(readiness_step(
             script.to_str().expect("script path"),
         ))))
@@ -3150,16 +3141,14 @@ printf 'not json\n'
     fn command_forgejo_client_preserves_head_moved_command_error() {
         let dir = tempdir().expect("temp dir");
         let script = dir.path().join("head-moved");
-        fs::write(
+        write_test_executable(
             &script,
             r#"#!/bin/sh
 cat >/dev/null
 printf '{"error":"head_moved","expected_head_sha":"abc123","actual_head_sha":"new456"}' >&2
 exit 75
 "#,
-        )
-        .expect("write script");
-        make_executable(&script);
+        );
         let mut client = CommandForgejoClient::new(CommandConfig {
             program: script,
             args: Vec::new(),
@@ -3193,16 +3182,14 @@ exit 75
     fn command_forgejo_client_surfaces_redacted_stderr_on_transport_failure() {
         let dir = tempdir().expect("temp dir");
         let script = dir.path().join("transport-failure");
-        fs::write(
+        write_test_executable(
             &script,
             r#"#!/bin/sh
 cat >/dev/null
 printf 'git push failed: protected branch rejected\nAuthorization: Bearer %s\nFORGEJO_TOKEN=%s\n' "$FORGEJO_TOKEN" "$FORGEJO_TOKEN" >&2
 exit 1
 "#,
-        )
-        .expect("write script");
-        make_executable(&script);
+        );
         let mut env = BTreeMap::new();
         env.insert("FORGEJO_TOKEN".to_owned(), "secret-token-123".to_owned());
         let mut client = CommandForgejoClient::new(CommandConfig {
@@ -3235,15 +3222,13 @@ exit 1
     fn command_polling_client_surfaces_redacted_stderr_on_activity_failure() {
         let dir = tempdir().expect("temp dir");
         let script = dir.path().join("poll-failure");
-        fs::write(
+        write_test_executable(
             &script,
             r#"#!/bin/sh
 printf 'poll failed for %s with token %s\n' "$1" "$FORGEJO_TOKEN" >&2
 exit 1
 "#,
-        )
-        .expect("write script");
-        make_executable(&script);
+        );
         let mut env = BTreeMap::new();
         env.insert("FORGEJO_TOKEN".to_owned(), "secret-token-123".to_owned());
         let mut client = CommandPollingClient::new(CommandConfig {

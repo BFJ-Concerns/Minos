@@ -133,6 +133,24 @@ impl WorkspaceProvider for SourceRecordingWorkspaceProvider {
             path: self.lease.root.join("src/lib.rs").display().to_string(),
             source,
         })?;
+        let source_diff = source.tree.join(".pump19/review/diff.patch");
+        if source_diff.exists() {
+            let workspace_diff = self.lease.root.join(".pump19/review/diff.patch");
+            fs::create_dir_all(workspace_diff.parent().expect("diff parent")).map_err(
+                |source| CoreError::Io {
+                    path: workspace_diff
+                        .parent()
+                        .expect("diff parent")
+                        .display()
+                        .to_string(),
+                    source,
+                },
+            )?;
+            fs::copy(&source_diff, &workspace_diff).map_err(|source| CoreError::Io {
+                path: workspace_diff.display().to_string(),
+                source,
+            })?;
+        }
         self.injections.borrow_mut().push(source.clone());
         Ok(())
     }
@@ -187,6 +205,12 @@ struct PreparedTreeSourcePreparer {
     requests: Rc<RefCell<Vec<SourcePreparationRequest>>>,
 }
 
+#[derive(Clone, Debug)]
+struct DiffWritingSourcePreparer {
+    root: PathBuf,
+    requests: Rc<RefCell<Vec<SourcePreparationRequest>>>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct FailingSourcePreparer;
 
@@ -216,6 +240,20 @@ impl CommentFormatter for EstateCommentFormatter {
         Ok(format!(
             "estate formatted finding {} via {}",
             request.finding.id.0, request.decision.id
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct FailingCommentFormatter;
+
+impl CommentFormatter for FailingCommentFormatter {
+    fn format_finding_comment(
+        &mut self,
+        _request: FindingCommentFormatRequest,
+    ) -> Result<String, CoreError> {
+        Err(CoreError::CommentFormatting(
+            "estate formatter failed".to_owned(),
         ))
     }
 }
@@ -459,6 +497,44 @@ impl SourcePreparer for PreparedTreeSourcePreparer {
     }
 }
 
+impl SourcePreparer for DiffWritingSourcePreparer {
+    fn prepare_source(
+        &mut self,
+        request: SourcePreparationRequest,
+    ) -> Result<PreparedSource, CoreError> {
+        let index = self.requests.borrow().len() + 1;
+        let tree = self.root.join(format!("prepared-{index}"));
+        fs::create_dir_all(tree.join("src")).map_err(|source| CoreError::Io {
+            path: tree.join("src").display().to_string(),
+            source,
+        })?;
+        fs::write(
+            tree.join("src/lib.rs"),
+            format!(
+                "pub fn changed() -> &'static str {{ {:?} }}\n",
+                request.commit_sha
+            ),
+        )
+        .map_err(|source| CoreError::Io {
+            path: tree.join("src/lib.rs").display().to_string(),
+            source,
+        })?;
+        write_review_diff(
+            &tree,
+            &format!(
+                "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() -> &'static str {{ {:?} }}\n",
+                request.commit_sha
+            ),
+        );
+        self.requests.borrow_mut().push(request.clone());
+        Ok(PreparedSource {
+            tree,
+            revision: request.commit_sha,
+            cleanup_root: Some(self.root.clone()),
+        })
+    }
+}
+
 impl SourcePreparer for FailingSourcePreparer {
     fn prepare_source(
         &mut self,
@@ -518,10 +594,48 @@ struct EstateEnsembleRunner {
     requests: Rc<RefCell<Vec<EnsembleWorkflowRequest>>>,
 }
 
+#[derive(Debug)]
+struct SequencedEstateEnsembleRunner {
+    outputs: VecDeque<(Value, Vec<ArchiveAgentFixture>)>,
+    requests: Rc<RefCell<Vec<EnsembleWorkflowRequest>>>,
+}
+
+#[derive(Debug)]
+struct MaterialThenConvergedJudgeRunner {
+    agents: Vec<ArchiveAgentFixture>,
+    requests: Rc<RefCell<Vec<EnsembleWorkflowRequest>>>,
+}
+
 impl EstateEnsembleRunner {
     fn new(value: Value, agents: Vec<ArchiveAgentFixture>) -> Self {
         Self {
             value,
+            agents,
+            requests: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn requests(&self) -> Rc<RefCell<Vec<EnsembleWorkflowRequest>>> {
+        Rc::clone(&self.requests)
+    }
+}
+
+impl SequencedEstateEnsembleRunner {
+    fn new(outputs: Vec<(Value, Vec<ArchiveAgentFixture>)>) -> Self {
+        Self {
+            outputs: outputs.into(),
+            requests: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn requests(&self) -> Rc<RefCell<Vec<EnsembleWorkflowRequest>>> {
+        Rc::clone(&self.requests)
+    }
+}
+
+impl MaterialThenConvergedJudgeRunner {
+    fn new(agents: Vec<ArchiveAgentFixture>) -> Self {
+        Self {
             agents,
             requests: Rc::new(RefCell::new(Vec::new())),
         }
@@ -541,6 +655,52 @@ impl EnsembleWorkflowRunner for EstateEnsembleRunner {
         self.requests.borrow_mut().push(request.clone());
         Ok(EnsembleWorkflowOutput {
             value: self.value.clone(),
+            archive_dir: request.archive_dir,
+        })
+    }
+}
+
+impl EnsembleWorkflowRunner for SequencedEstateEnsembleRunner {
+    fn run_workflow(
+        &mut self,
+        request: EnsembleWorkflowRequest,
+    ) -> Result<EnsembleWorkflowOutput, RunBodyError> {
+        let (value, agents) = self.outputs.pop_front().expect("sequenced ensemble output");
+        write_archive(&request.archive_dir, &agents);
+        self.requests.borrow_mut().push(request.clone());
+        Ok(EnsembleWorkflowOutput {
+            value,
+            archive_dir: request.archive_dir,
+        })
+    }
+}
+
+impl EnsembleWorkflowRunner for MaterialThenConvergedJudgeRunner {
+    fn run_workflow(
+        &mut self,
+        request: EnsembleWorkflowRequest,
+    ) -> Result<EnsembleWorkflowOutput, RunBodyError> {
+        write_archive(&request.archive_dir, &self.agents);
+        let value = request
+            .args
+            .get("current_findings")
+            .and_then(Value::as_array)
+            .and_then(|findings| findings.first())
+            .and_then(|finding| finding.get("id"))
+            .and_then(Value::as_str)
+            .map_or_else(
+                || json!([]),
+                |finding_id| {
+                    json!([{
+                        "finding_id": finding_id,
+                        "verdict": "material",
+                        "rationale": "worth another pass"
+                    }])
+                },
+            );
+        self.requests.borrow_mut().push(request.clone());
+        Ok(EnsembleWorkflowOutput {
+            value,
             archive_dir: request.archive_dir,
         })
     }
@@ -1818,6 +1978,259 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
                     capability: ActorCapability::Merge,
                 } if actor == &finish_label_actor()
             ))
+    );
+}
+
+#[test]
+fn draft_ready_review_fix_rereview_journey_carries_diff_and_converges() {
+    let root = tempdir().expect("live dogfood estate root");
+    let prepared_root = root.path().join("prepared");
+    let workspace_root = root.path().join("workspace");
+    let source_requests = Rc::new(RefCell::new(Vec::new()));
+    let cleanups = Rc::new(RefCell::new(Vec::new()));
+    let injections = Rc::new(RefCell::new(Vec::new()));
+    let review_one = serde_json::to_value(pump19_judgement::JudgementRun {
+        status: pump19_judgement::JudgementStatus::Failed,
+        model_families: vec!["codex".to_owned(), "claude".to_owned()],
+        briefs: vec![pump19_judgement::JudgementBriefResult {
+            brief_id: "purpose".to_owned(),
+            status: pump19_judgement::JudgementStatus::Failed,
+            reviews: vec![
+                pump19_judgement::ReviewerResult {
+                    agent_id: "reviewer-codex".to_owned(),
+                    model_family: "codex".to_owned(),
+                    status: pump19_judgement::JudgementStatus::Failed,
+                    stdout: "PUMP19_JUDGEMENT: FAIL first-pass material issue".to_owned(),
+                    stderr: String::new(),
+                },
+                pump19_judgement::ReviewerResult {
+                    agent_id: "reviewer-claude".to_owned(),
+                    model_family: "claude".to_owned(),
+                    status: pump19_judgement::JudgementStatus::Passed,
+                    stdout: "PUMP19_JUDGEMENT: PASS".to_owned(),
+                    stderr: String::new(),
+                },
+            ],
+        }],
+    })
+    .expect("review-one judgement serialises");
+    let review_two = serde_json::to_value(pump19_judgement::JudgementRun {
+        status: pump19_judgement::JudgementStatus::Passed,
+        model_families: vec!["codex".to_owned(), "claude".to_owned()],
+        briefs: vec![pump19_judgement::JudgementBriefResult {
+            brief_id: "purpose".to_owned(),
+            status: pump19_judgement::JudgementStatus::Passed,
+            reviews: vec![
+                pump19_judgement::ReviewerResult {
+                    agent_id: "reviewer-codex".to_owned(),
+                    model_family: "codex".to_owned(),
+                    status: pump19_judgement::JudgementStatus::Passed,
+                    stdout: "PUMP19_JUDGEMENT: PASS fixed".to_owned(),
+                    stderr: String::new(),
+                },
+                pump19_judgement::ReviewerResult {
+                    agent_id: "reviewer-claude".to_owned(),
+                    model_family: "claude".to_owned(),
+                    status: pump19_judgement::JudgementStatus::Passed,
+                    stdout: "PUMP19_JUDGEMENT: PASS fixed".to_owned(),
+                    stderr: String::new(),
+                },
+            ],
+        }],
+    })
+    .expect("review-two judgement serialises");
+    let review_runner = SequencedEstateEnsembleRunner::new(vec![
+        (
+            review_one,
+            vec![
+                archive_agent("reviewer-codex", "codex"),
+                archive_agent("reviewer-claude", "claude"),
+            ],
+        ),
+        (
+            review_two,
+            vec![
+                archive_agent("reviewer-codex", "codex"),
+                archive_agent("reviewer-claude", "claude"),
+            ],
+        ),
+    ]);
+    let review_requests = review_runner.requests();
+    let judge_runner =
+        MaterialThenConvergedJudgeRunner::new(vec![archive_agent("judge-glm", "glm")]);
+    let judge_requests = judge_runner.requests();
+    let fix_runner = EstateEnsembleRunner::new(
+        json!({"kind":"description","summary":"fixed first-pass material issue"}),
+        vec![archive_agent("fixer-codex", "codex")],
+    );
+    let fix_requests = fix_runner.requests();
+    let launcher = Pump19RunLauncher::new(
+        EstateSessions,
+        EnsembleReviewBody::new(review_runner, ensemble_config(root.path(), "review")),
+        EnsembleJudgeBody::new(judge_runner, ensemble_config(root.path(), "judge")),
+        EnsembleFixBody::new(fix_runner, ensemble_config(root.path(), "fix")),
+        MergeGateFinishBody,
+    );
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let comment_resolutions = Rc::clone(&forge_operations.comment_resolutions);
+    let fix_pushes = Rc::clone(&forge_operations.fix_pushes);
+    let state_store = SharedEstateStateStore::default();
+    let state_observer = state_store.clone();
+    let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
+        EmptyEventSource,
+        SourceRecordingWorkspaceProvider {
+            lease: workspace(workspace_root),
+            injections,
+            cleanups,
+        },
+        launcher,
+        state_store,
+        forge_operations,
+        DiffWritingSourcePreparer {
+            root: prepared_root,
+            requests: Rc::clone(&source_requests),
+        },
+        EstateCommentFormatter,
+        NoopOperatorLog,
+        CorePolicy::human_gate(),
+    );
+    let rules = vec![
+        ready_review_on_pr_change_rule(),
+        judge_after_review_rule(),
+        fix_after_material_judge_rule(),
+        finish_on_label_rule(),
+    ];
+    let mut draft_facts = contract_facts_with_head(
+        "head-sha-1",
+        BranchCurrency::Current,
+        ReviewCleanliness::Dirty,
+        finish_label_actor_permissions(),
+    );
+    draft_facts.work_in_progress = true;
+    let mut ready_facts = draft_facts.clone();
+    ready_facts.work_in_progress = false;
+
+    let draft_open = core
+        .process_event(&opened_event(draft_facts.clone()), &rules)
+        .expect("draft open is recorded but not reviewed");
+    let draft_update = core
+        .process_event(
+            &updated_event("forgejo-pr-updated-draft-live", draft_facts),
+            &rules,
+        )
+        .expect("draft update is recorded but not reviewed");
+    let ready_update = core
+        .process_event(&updated_event("forgejo-pr-ready-live", ready_facts), &rules)
+        .expect("ready transition launches first review");
+    let review_one_run = launched_run_id(&ready_update).expect("first review launched");
+    let judge_one = launched_run_id(
+        &core
+            .process_event(
+                &run_completed_event("review-one-done-live", review_one_run, RunKind::Review),
+                &rules,
+            )
+            .expect("review completion launches material judge"),
+    )
+    .expect("material judge launched");
+    let fix_one = launched_run_id(
+        &core
+            .process_event(
+                &run_completed_event("judge-one-done-live", judge_one, RunKind::Judge),
+                &rules,
+            )
+            .expect("material judge completion launches fix"),
+    )
+    .expect("fix launched");
+    core.process_event(
+        &run_completed_event("fix-one-done-live", fix_one, RunKind::Fix),
+        &rules,
+    )
+    .expect("fix completion publishes commit");
+    let mut fixed_facts = contract_facts_with_head(
+        "head-sha-after-fix",
+        BranchCurrency::Current,
+        ReviewCleanliness::Clean,
+        finish_label_actor_permissions(),
+    );
+    fixed_facts.work_in_progress = false;
+    let review_two_run = launched_run_id(
+        &core
+            .process_event(
+                &updated_event("forgejo-pr-updated-after-fix-live", fixed_facts),
+                &rules,
+            )
+            .expect("fix head update launches re-review"),
+    )
+    .expect("second review launched");
+    let judge_two = launched_run_id(
+        &core
+            .process_event(
+                &run_completed_event("review-two-done-live", review_two_run, RunKind::Review),
+                &rules,
+            )
+            .expect("clean re-review launches convergence judge"),
+    )
+    .expect("convergence judge launched");
+    let converged = core
+        .process_event(
+            &run_completed_event("judge-two-done-live", judge_two, RunKind::Judge),
+            &rules,
+        )
+        .expect("convergence is recorded without another fix");
+
+    assert!(draft_open.is_empty());
+    assert!(draft_update.is_empty());
+    assert!(converged.is_empty());
+    assert_eq!(
+        source_requests
+            .borrow()
+            .iter()
+            .map(|request| (request.run_kind, request.commit_sha.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (RunKind::Review, "head-sha-1"),
+            (RunKind::Fix, "head-sha-1"),
+            (RunKind::Review, "head-sha-after-fix"),
+        ]
+    );
+    let review_requests = review_requests.borrow();
+    assert_eq!(review_requests.len(), 2);
+    assert!(
+        review_requests[0].args["evidence"]["diff"]
+            .as_str()
+            .expect("first diff")
+            .contains("head-sha-1")
+    );
+    assert!(
+        review_requests[1].args["evidence"]["diff"]
+            .as_str()
+            .expect("second diff")
+            .contains("head-sha-after-fix")
+    );
+    assert_eq!(judge_requests.borrow().len(), 2);
+    assert_eq!(fix_requests.borrow().len(), 1);
+    assert_eq!(comments.borrow().len(), 1);
+    assert_eq!(fix_pushes.borrow().len(), 1);
+    assert_eq!(comment_resolutions.borrow().len(), 1);
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest")
+        .expect("latest state");
+    assert_eq!(latest.pass_index, 2);
+    assert!(
+        latest
+            .decisions
+            .iter()
+            .any(|decision| decision.verdict == DecisionVerdict::Converged)
+    );
+    assert!(
+        latest
+            .run_history
+            .iter()
+            .filter(|record| record.run_kind == RunKind::Review)
+            .count()
+            >= 1
     );
 }
 
@@ -3321,6 +3734,88 @@ fn launcher_failure_is_recorded_as_failed_pr_run_state() {
     let event = &operator_events.borrow()[0];
     assert_eq!(event.kind, OperatorLogEventKind::RunFailure);
     assert!(event.message.contains("estate forced launch failure"));
+}
+
+#[test]
+fn format_comments_failure_records_operator_event_and_posts_nothing() {
+    let mut state = run_state();
+    state.status = RunStatus::Completed;
+    state.active_run = None;
+    state.findings.insert(
+        0,
+        finding_with(
+            "formatting-failure-supporting",
+            verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            1,
+        ),
+    );
+    state.run_history.push(RunRecord {
+        run_id: RunId("review-pass-before-formatting-failure".to_owned()),
+        run_kind: RunKind::Review,
+        event_id: "forgejo-pr-ready".to_owned(),
+        rule_id: "review-on-pr-change".to_owned(),
+        pass_index: 1,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Completed,
+        outcome: Some(RunOutcome::Succeeded),
+        refusal: None,
+        ensemble_archive_path: None,
+        provenance: Vec::new(),
+    });
+    let state_store = SharedEstateStateStore::with_state(state);
+    let observer = state_store.clone();
+    let forge_operations = RecordingForgeOperations::default();
+    let comments = Rc::clone(&forge_operations.comments);
+    let operator_log = RecordingOperatorLog::default();
+    let operator_events = Rc::clone(&operator_log.events);
+    let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-format-comments-failure-estate")),
+        },
+        EstateLoopLauncher,
+        state_store,
+        forge_operations,
+        pump19_core::NoopSourcePreparer,
+        FailingCommentFormatter,
+        operator_log,
+        CorePolicy::human_gate(),
+    );
+
+    let result = core.process_event(
+        &run_completed_event(
+            "review-pass-before-formatting-failure-completed",
+            RunId("review-pass-before-formatting-failure".to_owned()),
+            RunKind::Review,
+        ),
+        &[judge_after_review_rule()],
+    );
+
+    let error = result.expect_err("formatter failure should fail the dispatch");
+    assert!(
+        matches!(
+            error,
+            CoreError::CommentFormatting(ref message) if message.contains("estate formatter failed")
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(comments.borrow().is_empty());
+    assert_eq!(operator_events.borrow().len(), 1);
+    let event = &operator_events.borrow()[0];
+    assert_eq!(event.kind, OperatorLogEventKind::RunFailure);
+    assert!(event.message.contains("estate formatter failed"));
+    let latest = observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest state")
+        .expect("state saved");
+    assert_eq!(latest.status, RunStatus::Failed);
+    assert_eq!(latest.publication.attempts.len(), 1);
+    assert!(
+        latest.publication.attempts[0]
+            .error
+            .as_deref()
+            .is_some_and(|message| message.contains("estate formatter failed"))
+    );
 }
 
 #[test]
