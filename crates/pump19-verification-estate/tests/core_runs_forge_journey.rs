@@ -2213,7 +2213,13 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
             reason: LaunchRefusal::RunCeilingReached,
         }]
     );
-    assert_eq!(replay, outcomes);
+    assert_eq!(
+        replay,
+        vec![DispatchOutcome::Skipped {
+            rule_id: "review-on-pr-opened".to_owned(),
+            reason: SkipReason::DuplicateDispatch,
+        }]
+    );
     assert!(recorded_launches.borrow().is_empty());
     assert_eq!(comments.borrow().len(), 1);
     assert!(comments.borrow()[0].body.contains("RunCeilingReached"));

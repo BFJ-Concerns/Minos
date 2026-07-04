@@ -569,7 +569,7 @@ where
                 Err(error) => {
                     summary.dispatch_errors_continued += 1;
                     let event_source_error = matches!(error, CoreError::EventSource(_));
-                    let retry_after_poll_interval = true;
+                    let retry_is_poll_interval_paced = true;
                     if event_source_error {
                         summary.quiet_polls = summary.quiet_polls.saturating_add(1);
                     } else {
@@ -582,10 +582,10 @@ where
                             "class": core_error_class(&error),
                             "error": error.to_string(),
                             "continued_errors": summary.dispatch_errors_continued,
-                            "retry_after_poll_interval": retry_after_poll_interval,
+                            "retry_after_poll_interval": retry_is_poll_interval_paced,
                         }),
                     );
-                    if retry_after_poll_interval {
+                    if retry_is_poll_interval_paced {
                         if self
                             .stop_after_quiet_polls
                             .is_some_and(|limit| summary.quiet_polls >= limit)
@@ -1511,6 +1511,7 @@ mod tests {
         collections::VecDeque,
         path::{Path, PathBuf},
         rc::Rc,
+        time::{Duration, Instant},
     };
 
     use pump19_adaptations::PromptPackManifest;
@@ -1901,6 +1902,34 @@ mod tests {
         assert_eq!(summary.events_processed, 1);
         assert_eq!(summary.launches, 1);
         assert_eq!(summary.quiet_polls, 1);
+    }
+
+    #[test]
+    fn run_loop_paces_non_event_source_errors_by_poll_interval() {
+        let mut daemon = Pump19Daemon::new(
+            stub_core(vec![
+                Err(CoreError::Launcher("agent launch failed".to_owned())),
+                Ok(None),
+            ]),
+            LoopControlConfig {
+                poll_interval_ms: 75,
+                stop_after_quiet_polls: None,
+            },
+        );
+        let shutdown = StopAfter {
+            calls: Rc::new(RefCell::new(0)),
+            limit: 2,
+        };
+
+        let started = Instant::now();
+        let summary = daemon.run(&[], &shutdown).expect("run daemon");
+
+        assert_eq!(summary.dispatch_errors_continued, 1);
+        assert!(summary.stopped_by_shutdown);
+        assert!(
+            started.elapsed() >= Duration::from_millis(50),
+            "non-event-source dispatch errors should wait for the poll interval before retry"
+        );
     }
 
     #[test]
