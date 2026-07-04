@@ -15,7 +15,7 @@ checks prove config loading and loud startup failures.
 - Authenticated engine CLIs available to ensemble:
   `codex` for the Codex/GPT-class reviewer and fixer, `claude` for the
   Claude-class reviewer, and `opencode` configured for the GLM judge model
-  `openrouter/z-ai/glm-4.6`.
+  `openrouter/z-ai/glm-5.2`.
 - `curl`, `jq`, `git` and `tar` for the generated baseline command scripts.
   The example TOML points at the checked-in scripts under
   `examples/deployment/commands/`. Custom commands are an override path, not a

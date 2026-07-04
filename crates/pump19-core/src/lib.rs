@@ -1098,7 +1098,7 @@ where
                 failure.as_str(),
             );
             let cleanup_result = self.workspace_provider.cleanup(&workspace);
-            finish_failure_recording_before_cleanup(record_result, cleanup_result)?;
+            finish_before_cleanup(record_result, cleanup_result)?;
             return Ok(DispatchOutcome::Refused {
                 rule_id: rule.id.clone(),
                 reason,
@@ -1108,10 +1108,7 @@ where
         self.prepare_and_inject_source(event, rule, &state, &run_id, &workspace)?;
 
         let mut running_state = mark_running(state, event, rule, &run_id, prepared.clone());
-        if let Err(error) = self.state_store.save(&running_state) {
-            self.workspace_provider.cleanup(&workspace)?;
-            return Err(error);
-        }
+        self.save_running_or_cleanup(&running_state, &workspace)?;
 
         let launch_result = self.launcher.launch_run(
             RunLaunchRequest {
@@ -1129,23 +1126,27 @@ where
             Err(error) => {
                 let message = error.to_string();
                 mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
-                self.state_store.save(&running_state)?;
-                self.surface_failure(&run_id, &mut running_state, message.as_str())?;
-                self.state_store.save(&running_state)?;
-                self.workspace_provider.cleanup(&workspace)?;
-                return Err(error);
+                let record_result = self
+                    .state_store
+                    .save(&running_state)
+                    .and_then(|()| {
+                        self.surface_failure(&run_id, &mut running_state, message.as_str())
+                    })
+                    .and_then(|()| self.state_store.save(&running_state));
+                let cleanup_result = self.workspace_provider.cleanup(&workspace);
+                if let Err(record_error) = record_result {
+                    finish_before_cleanup(Err(record_error), cleanup_result)?;
+                    unreachable!("an explicit primary error cannot finish successfully");
+                }
+                finish_before_cleanup(Err(error), cleanup_result)?;
+                unreachable!("an explicit primary error cannot finish successfully");
             }
         };
 
-        if let Some(superseded_by) = self.head_was_superseded_by(&running_state)? {
-            mark_superseded(&mut running_state, superseded_by.clone(), None);
-            self.state_store.save(&running_state)?;
-            self.workspace_provider.cleanup(&workspace)?;
-            return Ok(DispatchOutcome::Superseded {
-                rule_id: rule.id.clone(),
-                run_id,
-                superseded_by,
-            });
+        if let Some(outcome) =
+            self.handle_post_launch_supersession(rule, &run_id, &mut running_state, &workspace)?
+        {
+            return Ok(outcome);
         }
 
         apply_run_outcome(&mut running_state, rule.run_kind, outcome);
@@ -1155,10 +1156,17 @@ where
         {
             let message = error.to_string();
             mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
-            self.state_store.save(&running_state)?;
-            self.surface_failure(&run_id, &mut running_state, message.as_str())?;
-            self.workspace_provider.cleanup(&workspace)?;
-            return Err(error);
+            let record_result = self
+                .state_store
+                .save(&running_state)
+                .and_then(|()| self.surface_failure(&run_id, &mut running_state, message.as_str()));
+            let cleanup_result = self.workspace_provider.cleanup(&workspace);
+            if let Err(record_error) = record_result {
+                finish_before_cleanup(Err(record_error), cleanup_result)?;
+                unreachable!("an explicit primary error cannot finish successfully");
+            }
+            finish_before_cleanup(Err(error), cleanup_result)?;
+            unreachable!("an explicit primary error cannot finish successfully");
         }
         let save_result = self.state_store.save(&running_state);
         let cleanup_result = self.workspace_provider.cleanup(&workspace);
@@ -1172,6 +1180,40 @@ where
             rule_id: rule.id.clone(),
             run_id,
         })
+    }
+
+    fn save_running_or_cleanup(
+        &mut self,
+        running_state: &PrRunState,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if let Err(error) = self.state_store.save(running_state) {
+            let cleanup_result = self.workspace_provider.cleanup(workspace);
+            finish_before_cleanup(Err(error), cleanup_result)?;
+            unreachable!("an explicit primary error cannot finish successfully");
+        }
+        Ok(())
+    }
+
+    fn handle_post_launch_supersession(
+        &mut self,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        running_state: &mut PrRunState,
+        workspace: &WorkspaceLease,
+    ) -> Result<Option<DispatchOutcome>, CoreError> {
+        let Some(superseded_by) = self.head_was_superseded_by(running_state)? else {
+            return Ok(None);
+        };
+        mark_superseded(running_state, superseded_by.clone(), None);
+        let save_result = self.state_store.save(running_state);
+        let cleanup_result = self.workspace_provider.cleanup(workspace);
+        finish_before_cleanup(save_result, cleanup_result)?;
+        Ok(Some(DispatchOutcome::Superseded {
+            rule_id: rule.id.clone(),
+            run_id: run_id.clone(),
+            superseded_by,
+        }))
     }
 
     fn handle_dispatch_precheck(
@@ -1342,7 +1384,7 @@ where
         let record_result =
             self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str());
         let cleanup_result = self.workspace_provider.cleanup(workspace);
-        finish_failure_recording_before_cleanup(record_result, cleanup_result)
+        finish_before_cleanup(record_result, cleanup_result)
     }
 
     fn record_failed_dispatch(
@@ -3945,34 +3987,34 @@ fn run_refusal_from_launch_refusal(refusal: &LaunchRefusal, message: &str) -> Ru
     }
 }
 
-fn finish_failure_recording_before_cleanup(
-    record_result: Result<(), CoreError>,
+fn finish_before_cleanup(
+    primary_result: Result<(), CoreError>,
     cleanup_result: Result<(), CoreError>,
 ) -> Result<(), CoreError> {
-    match (record_result, cleanup_result) {
+    match (primary_result, cleanup_result) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(record_error), Ok(())) => Err(record_error),
+        (Err(primary_error), Ok(())) => Err(primary_error),
         (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
-        (Err(record_error), Err(cleanup_error)) => {
+        (Err(primary_error), Err(cleanup_error)) => {
             eprintln!(
-                "pump19_core_failure_cleanup_error: record_failure={record_error}; cleanup_failure={cleanup_error}"
+                "pump19_core_cleanup_error: primary_failure={primary_error}; cleanup_failure={cleanup_error}"
             );
-            Err(combine_record_and_cleanup_errors(
-                &record_error,
+            Err(combine_primary_and_cleanup_errors(
+                &primary_error,
                 &cleanup_error,
             ))
         }
     }
 }
 
-fn combine_record_and_cleanup_errors(
-    record_error: &CoreError,
+fn combine_primary_and_cleanup_errors(
+    primary_error: &CoreError,
     cleanup_error: &CoreError,
 ) -> CoreError {
     let message = format!(
-        "failed to record dispatch failure: {record_error}; workspace cleanup also failed: {cleanup_error}"
+        "dispatch bookkeeping failed: {primary_error}; workspace cleanup also failed: {cleanup_error}"
     );
-    match record_error {
+    match primary_error {
         CoreError::StateStore(_) | CoreError::Io { .. } | CoreError::Json { .. } => {
             CoreError::StateStore(message)
         }
@@ -4028,7 +4070,6 @@ fn state_already_dispatched(state: &PrRunState, event: &ContractEvent, rule: &Tr
     ) {
         return state.run_history.iter().any(|record| {
             record.status != RunStatus::Failed
-                && record.status != RunStatus::Skipped
                 && record.run_kind == rule.run_kind
                 && record.pass_index == state.pass_index
                 && record.commit_sha == state.commit_sha
@@ -4910,6 +4951,12 @@ mod tests {
         superseding_head: Option<String>,
     }
 
+    #[derive(Clone, Debug, Default)]
+    struct FailingSupersededSaveRunStateStore {
+        states: Vec<PrRunState>,
+        superseding_head: Option<String>,
+    }
+
     impl RunStateStore for FakeRunStateStore {
         fn load(&self, key: &RunStateKey) -> Result<Option<PrRunState>, CoreError> {
             Ok(self
@@ -5003,6 +5050,59 @@ mod tests {
         }
 
         fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
+            let key = RunStateKey::from_state(state);
+            if let Some(existing) = self
+                .states
+                .iter_mut()
+                .find(|candidate| RunStateKey::from_state(candidate) == key)
+            {
+                *existing = state.clone();
+            } else {
+                self.states.push(state.clone());
+            }
+            if state.status == RunStatus::Running
+                && let Some(head) = &self.superseding_head
+            {
+                let mut superseding = initial_state_from_facts(&facts_with_head(head));
+                superseding.pass_index = state.pass_index.saturating_add(1);
+                self.states.push(superseding);
+            }
+            Ok(())
+        }
+    }
+
+    impl RunStateStore for FailingSupersededSaveRunStateStore {
+        fn load(&self, key: &RunStateKey) -> Result<Option<PrRunState>, CoreError> {
+            FakeRunStateStore {
+                states: self.states.clone(),
+            }
+            .load(key)
+        }
+
+        fn load_latest_for_pr(&self, pr: &PullRequestRef) -> Result<Option<PrRunState>, CoreError> {
+            FakeRunStateStore {
+                states: self.states.clone(),
+            }
+            .load_latest_for_pr(pr)
+        }
+
+        fn load_by_run_id(&self, run_id: &RunId) -> Result<Option<PrRunState>, CoreError> {
+            FakeRunStateStore {
+                states: self.states.clone(),
+            }
+            .load_by_run_id(run_id)
+        }
+
+        fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+            Ok(self.states.clone())
+        }
+
+        fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
+            if state.status == RunStatus::Superseded {
+                return Err(CoreError::StateStore(
+                    "superseded state save failed".to_owned(),
+                ));
+            }
             let key = RunStateKey::from_state(state);
             if let Some(existing) = self
                 .states
@@ -6488,7 +6588,13 @@ mod tests {
                 reason: LaunchRefusal::RunCeilingReached,
             }]
         );
-        assert_eq!(second_outcomes, first_outcomes);
+        assert_eq!(
+            second_outcomes,
+            vec![DispatchOutcome::Skipped {
+                rule_id: "review".to_owned(),
+                reason: SkipReason::DuplicateDispatch,
+            }]
+        );
         assert_eq!(core.launcher.launched, 0);
         assert_eq!(core.forge_operations.comments.len(), 1);
         let saved = core
@@ -6602,6 +6708,35 @@ mod tests {
         assert_eq!(saved.active_run, None);
         assert_eq!(saved.run_history.len(), 1);
         assert_eq!(saved.run_history[0].status, RunStatus::Superseded);
+    }
+
+    #[test]
+    fn superseded_save_failure_still_cleans_workspace() {
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FailingSupersededSaveRunStateStore {
+                states: Vec::new(),
+                superseding_head: Some("new-head-sha".to_owned()),
+            },
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("superseded save failure should be returned");
+
+        assert!(matches!(error, CoreError::StateStore(message)
+            if message == "superseded state save failed"));
+        assert_eq!(core.workspace_provider.cleaned, 1);
     }
 
     #[test]
