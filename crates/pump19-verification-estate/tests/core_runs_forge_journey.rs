@@ -21,13 +21,13 @@ use pump19_contract::{
 use pump19_core::{
     AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence,
     AuthorisedComment, AuthorisedCommentResolution, AuthorisedCommentUpdate, AuthorisedFixPush,
-    AuthorisedLabel, AuthorisedMerge, CommentRendering, Core, CoreError, CorePolicy, Criteria,
-    DispatchOutcome, EventKind, EventSource, FinishLabelApplicationPolicy, ForgeOperationError,
-    ForgeOperationReceipt, ForgeOperations, LaunchProof, LaunchRefusal, PreparedAgent,
-    PreparedSource, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore,
-    SkipReason, SourcePreparationRequest, SourcePreparer, StateCriterion, TriggerRule,
-    WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
-    WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+    AuthorisedLabel, AuthorisedMerge, CommentFormatter, Core, CoreError, CorePolicy, Criteria,
+    DispatchOutcome, EventKind, EventSource, FindingCommentFormatRequest,
+    FinishLabelApplicationPolicy, ForgeOperationError, ForgeOperationReceipt, ForgeOperations,
+    LaunchProof, LaunchRefusal, PreparedAgent, PreparedSource, RunLaunchOutcome, RunLaunchRequest,
+    RunLauncher, RunStateKey, RunStateStore, SkipReason, SourcePreparationRequest, SourcePreparer,
+    StateCriterion, TriggerRule, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor,
+    WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
 };
 use pump19_daemon::{DaemonConfig, run_from_config};
 use pump19_forge_forgejo::{
@@ -198,6 +198,21 @@ struct RecordingForgeOperations {
     labels: Rc<RefCell<Vec<AuthorisedLabel>>>,
     merges: Rc<RefCell<Vec<AuthorisedMerge>>>,
     fix_pushes: Rc<RefCell<Vec<AuthorisedFixPush>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EstateCommentFormatter;
+
+impl CommentFormatter for EstateCommentFormatter {
+    fn format_finding_comment(
+        &mut self,
+        request: FindingCommentFormatRequest,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "estate formatted finding {} via {}",
+            request.finding.id.0, request.decision.id
+        ))
+    }
 }
 
 impl ForgeOperations for RecordingForgeOperations {
@@ -998,7 +1013,7 @@ fn target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
 
 fn model_for_family(family: &str) -> String {
     match family {
-        "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+        "glm" => "openrouter/z-ai/glm-5.2".to_owned(),
         _ => format!("{family}-2026-06"),
     }
 }
@@ -1610,7 +1625,7 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
         ReviewCleanliness::Clean,
         finish_label_actor_permissions(),
     );
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_comment_formatter(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-verification-loop")),
@@ -1618,6 +1633,7 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
         EstateLoopLauncher,
         state_store,
         forge_operations,
+        EstateCommentFormatter,
     );
     let rules = loop_rules();
 
@@ -1776,7 +1792,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
         Vec::new(),
     );
     facts.finish_label = None;
-    let mut core = Core::with_forge_operations_and_policy(
+    let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-core-applied-finish-estate")),
@@ -1784,11 +1800,12 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
         EstateLoopLauncher,
         state_store,
         forge_operations,
+        pump19_core::NoopSourcePreparer,
+        EstateCommentFormatter,
         CorePolicy {
             finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
                 label: "pump19-finish".to_owned(),
             },
-            comment_rendering: CommentRendering::default(),
         },
     );
     let rules = loop_rules();
@@ -2035,7 +2052,7 @@ fn repeated_material_finding_updates_existing_comment_identity() {
     };
     let state_store = SharedEstateStateStore::with_state(state);
     let state_observer = state_store.clone();
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_comment_formatter(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-verification-comment-update")),
@@ -2043,6 +2060,7 @@ fn repeated_material_finding_updates_existing_comment_identity() {
         EstateLoopLauncher,
         state_store,
         forge_operations,
+        EstateCommentFormatter,
     );
 
     let outcomes = core
@@ -2358,7 +2376,7 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
         ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
     );
     let source = ForgejoEventSource::new(polling, ForgejoNormalisationConfig::new("pump19-finish"));
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_comment_formatter(
         source,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-verification-daemon-loop")),
@@ -2366,6 +2384,7 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
         EstateLoopLauncher,
         state_store,
         forge_operations,
+        EstateCommentFormatter,
     );
 
     let batches = core
@@ -2418,7 +2437,7 @@ fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
     let state_observer = state_store.clone();
     let launcher = NoOpFixLoopLauncher::default();
     let launched_kinds = launcher.launched();
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_comment_formatter(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-noop-fix-estate")),
@@ -2426,6 +2445,7 @@ fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
         launcher,
         state_store,
         forge_operations,
+        EstateCommentFormatter,
     );
     let facts = contract_facts(
         BranchCurrency::Current,

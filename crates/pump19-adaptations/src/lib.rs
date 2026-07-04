@@ -344,6 +344,7 @@ pub struct BaselineForgejoCommandPaths {
     pub poll_command: PathBuf,
     pub operation_command: PathBuf,
     pub prepare_source_command: PathBuf,
+    pub format_comments_command: PathBuf,
     pub merge_readiness_command: PathBuf,
 }
 
@@ -387,15 +388,18 @@ pub fn write_baseline_forgejo_commands(
     let poll_command = root.join("pump19-forgejo-poll");
     let operation_command = root.join("pump19-forgejo-operation");
     let prepare_source_command = root.join("pump19-prepare-source");
+    let format_comments_command = root.join("pump19-format-comments");
     let merge_readiness_command = root.join("pump19-merge-readiness");
     write_executable_text(&poll_command, BASELINE_FORGEJO_POLL_SH)?;
     write_executable_text(&operation_command, BASELINE_FORGEJO_OPERATION_SH)?;
     write_executable_text(&prepare_source_command, BASELINE_PREPARE_SOURCE_SH)?;
+    write_executable_text(&format_comments_command, BASELINE_FORMAT_COMMENTS_SH)?;
     write_executable_text(&merge_readiness_command, BASELINE_MERGE_READINESS_SH)?;
     Ok(BaselineForgejoCommandPaths {
         poll_command,
         operation_command,
         prepare_source_command,
+        format_comments_command,
         merge_readiness_command,
     })
 }
@@ -892,6 +896,57 @@ jq -nc --arg tree "$output_tree" --arg revision "$commit_sha" \
   '{tree:$tree, revision:$revision}'
 "#;
 
+// The formatter is deliberately a pure JSON-in/JSON-out transform. Finding
+// content comes from untrusted PR material, so every field stays data to jq; the
+// shell never evaluates it.
+const BASELINE_FORMAT_COMMENTS_SH: &str = r##"#!/bin/sh
+set -eu
+
+command -v jq >/dev/null 2>&1 || {
+  echo "jq is required" >&2
+  exit 78
+}
+
+input=$(cat)
+body=$(printf '%s' "$input" | jq -r '
+  def trim: gsub("^\\s+|\\s+$"; "");
+  def severity_badge($severity):
+    if $severity == "critical" then
+      "<sub><sub>![critical](https://img.shields.io/badge/critical-red?style=flat)</sub></sub>"
+    elif $severity == "high" then
+      "<sub><sub>![high](https://img.shields.io/badge/high-orange?style=flat)</sub></sub>"
+    elif $severity == "medium" then
+      "<sub><sub>![medium](https://img.shields.io/badge/medium-yellow?style=flat)</sub></sub>"
+    else
+      "<sub><sub>![low](https://img.shields.io/badge/low-blue?style=flat)</sub></sub>"
+    end;
+  def finding_location:
+    (.finding.locations[0] // null) as $location
+    | if $location == null then
+        ""
+      elif $location.kind == "file" then
+        ($location.path as $path
+        | ($location.line // null) as $line
+        | ($path + (if $line == null then "" else ":" + ($line | tostring) end)) as $reference
+        | (.web_base_url // "") as $base
+        | if $base == "" then
+            "`\($reference)`"
+          else
+            ($base | sub("/+$"; "")) as $clean_base
+            | "[`\($reference)`](\($clean_base)/\(.facts.pr.repository)/src/commit/\(.facts.head.sha)/\($path)\(if $line == null then "" else "#L" + ($line | tostring) end))"
+          end)
+      elif $location.kind == "general" then
+        "_\($location.description | trim)_"
+      else
+        ""
+      end;
+  (finding_location) as $location
+  | "**\(severity_badge(.finding.severity))  \(.finding.summary | trim)**\n\n\(.decision.rationale | trim)\n\(if $location == "" then "" else "\n\($location)\n" end)\n<sub>Pump-19 · \(.finding.source_brief) · reviewed `\(.facts.head.sha[0:7])` · decision `\(.decision.id)`</sub>"
+')
+
+jq -nc --arg body "$body" '{body:$body}'
+"##;
+
 // The readiness verdict is stdout JSON ({"status":"ready"} or
 // {"status":"not_ready","detail":"..."}); a non-zero exit means the check
 // itself could not execute. Untrusted PR code never runs on the host: the
@@ -1108,6 +1163,22 @@ pub fn baseline_mechanical_pack(id: &str) -> MechanicalPack {
                 outputs: vec!["merge_readiness_verdict_json".to_owned()],
                 extensions: Extensions::new(),
             },
+            MechanicalStep {
+                id: "format-comments".to_owned(),
+                kind: MechanicalStepKind::FormatComments,
+                execution: MechanicalExecution::Command {
+                    program: "commands/pump19-format-comments".to_owned(),
+                    args: Vec::new(),
+                },
+                inputs: vec![
+                    "finding_comment_format_request_json".to_owned(),
+                    "finding".to_owned(),
+                    "judge_decision".to_owned(),
+                    "forge_facts".to_owned(),
+                ],
+                outputs: vec!["finding_comment_body_json".to_owned()],
+                extensions: Extensions::new(),
+            },
         ],
         extensions: Extensions::new(),
     }
@@ -1317,7 +1388,7 @@ fn baseline_engine_for_family(family: &str) -> AgentEngine {
 
 fn baseline_model_for_family(family: &str) -> String {
     match family {
-        "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+        "glm" => "openrouter/z-ai/glm-5.2".to_owned(),
         _ => format!("{family}-stable"),
     }
 }
@@ -1865,6 +1936,7 @@ where
 mod tests {
     use std::{
         fs,
+        io::Write as _,
         path::{Path, PathBuf},
         process::Command,
     };
@@ -1873,9 +1945,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use pump19_contract::{
-        AgentId, AgentRole, BranchCurrency, ContractEvent, ContractVersion, EventPayload,
-        Extensions, ForgeFacts, Mergeability, ModelFamily, ModelLineage, PullRequestRef,
-        ReviewCleanliness, Revision, RunKind, RunOutcome, SessionId,
+        AgentId, AgentRole, BranchCurrency, CertaintyClass, Confidence, ContractEvent,
+        ContractVersion, Decision, DecisionSubject, DecisionVerdict, EventPayload, Extensions,
+        Finding, FindingId, FindingLocation, ForgeFacts, Mergeability, ModelFamily, ModelLineage,
+        ModelProvenance, ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision,
+        RunKind, RunOutcome, SessionFreshness, SessionId, Severity,
     };
     use pump19_core::{
         AgentEngine, AgentLaunchSpec, AgentLaunchTarget, Core, CoreError, Criteria,
@@ -2091,6 +2165,16 @@ model = "claude-stable"
                 }
             } if rule.run_kind == RunKind::Review
         )));
+        let judge_models = loaded
+            .iter()
+            .filter_map(|rule| rule.agent_plan.judge.as_ref())
+            .map(|target| target.lineage.model.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            judge_models
+                .iter()
+                .all(|model| *model == "openrouter/z-ai/glm-5.2")
+        );
         Ok(())
     }
 
@@ -2122,6 +2206,15 @@ model = "claude-stable"
                         args: readiness_args,
                     },
                     ..
+                },
+                MechanicalStep {
+                    id: formatter_id,
+                    kind: MechanicalStepKind::FormatComments,
+                    execution: MechanicalExecution::Command {
+                        program: formatter_program,
+                        args: formatter_args,
+                    },
+                    ..
                 }
             ] if prepare_id == "prepare-source"
                 && prepare_program == "commands/pump19-prepare-source"
@@ -2130,7 +2223,54 @@ model = "claude-stable"
                 && name == "merge-readiness"
                 && readiness_program == "commands/pump19-merge-readiness"
                 && readiness_args.is_empty()
+                && formatter_id == "format-comments"
+                && formatter_program == "commands/pump19-format-comments"
+                && formatter_args.is_empty()
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_format_comments_command_matches_house_style()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generated = tempdir()?;
+        let assets = write_baseline_deployment_assets(generated.path())?;
+        let input = serde_json::json!({
+            "step_id": "format-comments",
+            "run_id": "run-judge-1",
+            "repository": "acme/widgets",
+            "pull_request": "17",
+            "commit_sha": "abc123",
+            "web_base_url": "https://forgejo.example/",
+            "finding": finding(),
+            "decision": decision(),
+            "facts": forge_facts(),
+        });
+        let mut child = Command::new(&assets.commands.format_comments_command)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .as_mut()
+            .expect("formatter stdin")
+            .write_all(serde_json::to_string(&input)?.as_bytes())?;
+        let output = child.wait_with_output()?;
+        assert!(
+            output.status.success(),
+            "formatter failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+
+        assert_eq!(
+            output["body"],
+            "**<sub><sub>![high](https://img.shields.io/badge/high-orange?style=flat)</sub></sub>  \
+             A material review finding.**\n\n\
+             Material because the loop can wedge.\n\n\
+             [`src/lib.rs:42`](https://forgejo.example/acme/widgets/src/commit/abc123/src/lib.rs#L42)\n\n\
+             <sub>Pump-19 · review · reviewed `abc123` · decision `decision-1`</sub>"
+        );
         Ok(())
     }
 
@@ -3062,7 +3202,7 @@ done
 
     fn model_for_family(family: &str) -> String {
         match family {
-            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            "glm" => "openrouter/z-ai/glm-5.2".to_owned(),
             _ => format!("{family}-stable"),
         }
     }
@@ -3072,6 +3212,83 @@ done
             "claude" => AgentEngine::Claude,
             "codex" => AgentEngine::Codex,
             _ => AgentEngine::Opencode,
+        }
+    }
+
+    fn finding() -> Finding {
+        Finding {
+            contract_version: ContractVersion::current(),
+            id: FindingId("finding-1".to_owned()),
+            dedup_key: "review:correctness:src/lib.rs:42".to_owned(),
+            source_brief: "review".to_owned(),
+            dimension: "correctness".to_owned(),
+            summary: "A material review finding.".to_owned(),
+            severity: Severity::High,
+            confidence: Confidence::High,
+            certainty: CertaintyClass::Advisory,
+            provenance: provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+            locations: vec![FindingLocation::File {
+                path: "src/lib.rs".to_owned(),
+                line: Some(42),
+                range: None,
+            }],
+            extensions: Extensions::new(),
+        }
+    }
+
+    fn decision() -> Decision {
+        Decision {
+            contract_version: ContractVersion::current(),
+            id: "decision-1".to_owned(),
+            subject: DecisionSubject::Finding {
+                finding_id: FindingId("finding-1".to_owned()),
+            },
+            verdict: DecisionVerdict::Material,
+            rationale: "Material because the loop can wedge.".to_owned(),
+            provenance: provenance("judge-glm", AgentRole::Judge, "glm"),
+            extensions: Extensions::new(),
+        }
+    }
+
+    fn forge_facts() -> ForgeFacts {
+        ForgeFacts {
+            contract_version: ContractVersion::current(),
+            pr: PullRequestRef {
+                repository: "acme/widgets".to_owned(),
+                id: "17".to_owned(),
+            },
+            head: Revision {
+                sha: "abc123".to_owned(),
+            },
+            base: Revision {
+                sha: "base123".to_owned(),
+            },
+            branch_currency: BranchCurrency::Current,
+            cleanliness: ReviewCleanliness::Dirty,
+            mergeability: Mergeability::Mergeable,
+            finish_label: None,
+            actor_permissions: Vec::new(),
+            author_login: None,
+            extensions: Extensions::new(),
+        }
+    }
+
+    fn provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelProvenance {
+        ModelProvenance {
+            contract_version: ContractVersion::current(),
+            agent_id: AgentId(agent_id.to_owned()),
+            role,
+            session_id: SessionId(format!("session-{agent_id}")),
+            freshness: SessionFreshness::FreshForPass { pass_index: 1 },
+            verification: ProvenanceVerification::Verified {
+                vendor: "baseline".to_owned(),
+                control_plane: "pump19-core".to_owned(),
+                lineage: ModelLineage {
+                    family: ModelFamily(family.to_owned()),
+                    model: model_for_family(family),
+                },
+            },
+            extensions: Extensions::new(),
         }
     }
 
