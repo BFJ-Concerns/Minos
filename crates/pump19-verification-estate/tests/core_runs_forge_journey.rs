@@ -21,13 +21,13 @@ use pump19_contract::{
 use pump19_core::{
     AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence,
     AuthorisedComment, AuthorisedCommentResolution, AuthorisedCommentUpdate, AuthorisedFixPush,
-    AuthorisedLabel, AuthorisedMerge, CommentRendering, Core, CoreError, CorePolicy, Criteria,
-    DispatchOutcome, EventKind, EventSource, FinishLabelApplicationPolicy, ForgeOperationError,
-    ForgeOperationReceipt, ForgeOperations, LaunchProof, LaunchRefusal, PreparedAgent,
-    PreparedSource, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore,
-    SkipReason, SourcePreparationRequest, SourcePreparer, StateCriterion, TriggerRule,
-    WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
-    WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+    AuthorisedLabel, AuthorisedMerge, CommentFormatter, Core, CoreError, CorePolicy, Criteria,
+    DispatchOutcome, EventKind, EventSource, FindingCommentFormatRequest,
+    FinishLabelApplicationPolicy, ForgeOperationError, ForgeOperationReceipt, ForgeOperations,
+    LaunchProof, LaunchRefusal, PreparedAgent, PreparedSource, RunLaunchOutcome, RunLaunchRequest,
+    RunLauncher, RunStateKey, RunStateStore, SkipReason, SourcePreparationRequest, SourcePreparer,
+    StateCriterion, TriggerRule, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor,
+    WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
 };
 use pump19_daemon::{DaemonConfig, run_from_config};
 use pump19_forge_forgejo::{
@@ -198,6 +198,21 @@ struct RecordingForgeOperations {
     labels: Rc<RefCell<Vec<AuthorisedLabel>>>,
     merges: Rc<RefCell<Vec<AuthorisedMerge>>>,
     fix_pushes: Rc<RefCell<Vec<AuthorisedFixPush>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EstateCommentFormatter;
+
+impl CommentFormatter for EstateCommentFormatter {
+    fn format_finding_comment(
+        &mut self,
+        request: FindingCommentFormatRequest,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "estate formatted finding {} via {}",
+            request.finding.id.0, request.decision.id
+        ))
+    }
 }
 
 impl ForgeOperations for RecordingForgeOperations {
@@ -907,6 +922,7 @@ fn contract_facts_with_head(
         }),
         actor_permissions,
         author_login: None,
+        work_in_progress: false,
         extensions: extensions(),
     }
 }
@@ -998,7 +1014,7 @@ fn target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
 
 fn model_for_family(family: &str) -> String {
     match family {
-        "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+        "glm" => "openrouter/z-ai/glm-5.2".to_owned(),
         _ => format!("{family}-2026-06"),
     }
 }
@@ -1021,7 +1037,7 @@ fn archive_agent(agent_id: &str, family: &str) -> ArchiveAgentFixture {
 
 fn ensemble_config(root: &Path, run_kind: &str) -> EnsembleWorkflowConfig {
     let prompt_template = if run_kind == "review" {
-        "configured estate prompt\n{{subject_name}}\n{{subject_slug}}\n{{subject_purpose}}"
+        "configured estate prompt\n{{subject_name}}\n{{subject_slug}}\n{{subject_purpose}}\n{{evidence}}"
     } else {
         "configured estate prompt"
     };
@@ -1032,6 +1048,12 @@ fn ensemble_config(root: &Path, run_kind: &str) -> EnsembleWorkflowConfig {
         prompt_template: prompt_template.to_owned(),
         briefs: pump19_judgement::baseline_judgement_briefs(),
     }
+}
+
+fn write_review_diff(root: &Path, diff: &str) {
+    let evidence_dir = root.join(".pump19/review");
+    fs::create_dir_all(&evidence_dir).expect("create review evidence dir");
+    fs::write(evidence_dir.join("diff.patch"), diff).expect("write review diff");
 }
 
 fn write_archive(root: &Path, agents: &[ArchiveAgentFixture]) {
@@ -1116,6 +1138,29 @@ fn review_on_pr_updated_rule() -> TriggerRule {
             judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
             finishers: Vec::new(),
         },
+    }
+}
+
+fn ready_review_on_pr_change_rule() -> TriggerRule {
+    TriggerRule {
+        id: "review-on-pr-change".to_owned(),
+        run_kind: RunKind::Review,
+        criteria: Criteria::All {
+            criteria: vec![
+                Criteria::Any {
+                    criteria: vec![
+                        Criteria::Event {
+                            event: EventKind::PullRequestOpened,
+                        },
+                        Criteria::Event {
+                            event: EventKind::PullRequestUpdated,
+                        },
+                    ],
+                },
+                Criteria::PrReady,
+            ],
+        },
+        agent_plan: standard_plan(),
     }
 }
 
@@ -1610,7 +1655,7 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
         ReviewCleanliness::Clean,
         finish_label_actor_permissions(),
     );
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_comment_formatter(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-verification-loop")),
@@ -1618,6 +1663,7 @@ fn criteria_triggered_loop_posts_fixes_rereviews_converges_and_merges() {
         EstateLoopLauncher,
         state_store,
         forge_operations,
+        EstateCommentFormatter,
     );
     let rules = loop_rules();
 
@@ -1776,7 +1822,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
         Vec::new(),
     );
     facts.finish_label = None;
-    let mut core = Core::with_forge_operations_and_policy(
+    let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-core-applied-finish-estate")),
@@ -1784,11 +1830,12 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
         EstateLoopLauncher,
         state_store,
         forge_operations,
+        pump19_core::NoopSourcePreparer,
+        EstateCommentFormatter,
         CorePolicy {
             finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
                 label: "pump19-finish".to_owned(),
             },
-            comment_rendering: CommentRendering::default(),
         },
     );
     let rules = loop_rules();
@@ -2035,7 +2082,7 @@ fn repeated_material_finding_updates_existing_comment_identity() {
     };
     let state_store = SharedEstateStateStore::with_state(state);
     let state_observer = state_store.clone();
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_comment_formatter(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-verification-comment-update")),
@@ -2043,6 +2090,7 @@ fn repeated_material_finding_updates_existing_comment_identity() {
         EstateLoopLauncher,
         state_store,
         forge_operations,
+        EstateCommentFormatter,
     );
 
     let outcomes = core
@@ -2213,7 +2261,13 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
             reason: LaunchRefusal::RunCeilingReached,
         }]
     );
-    assert_eq!(replay, outcomes);
+    assert_eq!(
+        replay,
+        vec![DispatchOutcome::Skipped {
+            rule_id: "review-on-pr-opened".to_owned(),
+            reason: SkipReason::DuplicateDispatch,
+        }]
+    );
     assert!(recorded_launches.borrow().is_empty());
     assert_eq!(comments.borrow().len(), 1);
     assert!(comments.borrow()[0].body.contains("RunCeilingReached"));
@@ -2358,7 +2412,7 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
         ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
     );
     let source = ForgejoEventSource::new(polling, ForgejoNormalisationConfig::new("pump19-finish"));
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_comment_formatter(
         source,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-verification-daemon-loop")),
@@ -2366,6 +2420,7 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
         EstateLoopLauncher,
         state_store,
         forge_operations,
+        EstateCommentFormatter,
     );
 
     let batches = core
@@ -2405,6 +2460,52 @@ fn polling_ingress_and_self_emitted_completions_close_the_review_loop() {
 }
 
 #[test]
+fn opt_in_poll_reviews_ready_standing_prs_once_and_leaves_drafts_waiting() {
+    let state_store = SharedEstateStateStore::default();
+    let launcher = RecordingLauncher::new(vec![
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+    ]);
+    let launch_requests = Rc::clone(&launcher.launched);
+    let polling = PollingForgejoActivitySource::new(
+        EstatePollingClient {
+            polls: VecDeque::from([
+                vec![
+                    polling_snapshot_for("40", "ready-head-1", false),
+                    polling_snapshot_for("41", "draft-head", true),
+                    polling_snapshot_for("42", "ready-head-2", false),
+                ],
+                Vec::new(),
+            ]),
+        },
+        ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
+    );
+    let source = ForgejoEventSource::new(polling, ForgejoNormalisationConfig::new("pump19-finish"));
+    let mut core = Core::new(
+        source,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-opt-in-draft-estate")),
+        },
+        launcher,
+        state_store,
+    );
+
+    core.drain_available(&[ready_review_on_pr_change_rule()])
+        .expect("polling ingress drains standing PR set");
+
+    let recorded_requests = launch_requests.borrow();
+    let launched_prs = recorded_requests
+        .iter()
+        .map(|request| request.state.pr.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(launched_prs, vec!["40", "42"]);
+}
+
+#[test]
 fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
     let trigger_pack_root = tempdir().expect("baseline trigger pack root");
     let trigger_pack_path =
@@ -2418,7 +2519,7 @@ fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
     let state_observer = state_store.clone();
     let launcher = NoOpFixLoopLauncher::default();
     let launched_kinds = launcher.launched();
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_comment_formatter(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-noop-fix-estate")),
@@ -2426,6 +2527,7 @@ fn noop_fix_completion_routes_back_to_judge_without_waiting_for_pr_update() {
         launcher,
         state_store,
         forge_operations,
+        EstateCommentFormatter,
     );
     let facts = contract_facts(
         BranchCurrency::Current,
@@ -2957,6 +3059,69 @@ fn duplicate_pr_event_is_idempotent_and_does_not_launch_a_second_run() {
 }
 
 #[test]
+fn draft_pr_open_update_and_ready_transition_fire_only_when_ready() {
+    let state_store = SharedEstateStateStore::default();
+    let state_observer = state_store.clone();
+    let launcher = RecordingLauncher::new(vec![
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+        LaunchProof::EstablishedFresh,
+    ]);
+    let launch_requests = Rc::clone(&launcher.launched);
+    let mut core = Core::new(
+        EmptyEventSource,
+        EstateWorkspaceProvider {
+            lease: workspace(PathBuf::from("/tmp/pump19-draft-transition-estate")),
+        },
+        launcher,
+        state_store,
+    );
+    let rule = ready_review_on_pr_change_rule();
+    let mut draft_facts = contract_facts(
+        BranchCurrency::Current,
+        ReviewCleanliness::Dirty,
+        Vec::new(),
+    );
+    draft_facts.work_in_progress = true;
+    let mut ready_facts = draft_facts.clone();
+    ready_facts.work_in_progress = false;
+
+    let draft_open = core
+        .process_event(
+            &opened_event(draft_facts.clone()),
+            std::slice::from_ref(&rule),
+        )
+        .expect("draft opening is evaluated");
+    let draft_update = core
+        .process_event(
+            &updated_event("forgejo-pr-updated-draft", draft_facts),
+            std::slice::from_ref(&rule),
+        )
+        .expect("draft update is evaluated");
+    let ready_update = core
+        .process_event(&updated_event("forgejo-pr-ready", ready_facts), &[rule])
+        .expect("ready transition launches review");
+
+    assert!(draft_open.is_empty());
+    assert!(draft_update.is_empty());
+    assert!(matches!(
+        ready_update.as_slice(),
+        [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+    ));
+    assert_eq!(launch_requests.borrow().len(), 1);
+    let latest = state_observer
+        .load_latest_for_pr(&pr())
+        .expect("load latest")
+        .expect("latest state");
+    let facts = latest
+        .extensions
+        .get("pump19.core.forge_facts")
+        .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
+        .expect("state carries latest forge facts");
+    assert!(!facts.work_in_progress);
+}
+
+#[test]
 fn running_pr_state_serialises_new_runs_for_the_same_head() {
     let state_store = SharedEstateStateStore::with_state(run_state());
     let launcher = RecordingLauncher::new(vec![
@@ -3129,6 +3294,10 @@ fn launcher_failure_is_recorded_as_failed_pr_run_state() {
 #[test]
 fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let review_workspace = tempdir().expect("review workspace");
+    write_review_diff(
+        review_workspace.path(),
+        "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+    );
     let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
         status: pump19_judgement::JudgementStatus::Failed,
         model_families: vec!["codex".to_owned(), "claude".to_owned()],
@@ -3365,6 +3534,10 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
 #[test]
 fn review_run_body_uses_host_ensemble_not_workspace_executor() {
     let host_workspace = tempdir().expect("host workspace");
+    write_review_diff(
+        host_workspace.path(),
+        "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+    );
     let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
         status: pump19_judgement::JudgementStatus::Failed,
         model_families: vec!["codex".to_owned(), "claude".to_owned()],
@@ -3491,6 +3664,14 @@ fn real_workspace_provider_prepares_container_and_cleans_up_after_launch() {
 #[test]
 fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     let root = tempdir().expect("workspace root");
+    let prepared_tree = root.path().join("prepared-source");
+    fs::create_dir_all(prepared_tree.join("src")).expect("create prepared source");
+    fs::write(prepared_tree.join("src/lib.rs"), "pub fn changed() {}\n")
+        .expect("write prepared source");
+    write_review_diff(
+        &prepared_tree,
+        "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+    );
     let runtime = RecordingRuntime::default();
     let created_specs = Rc::clone(&runtime.created);
     let execs = Rc::clone(&runtime.execs);
@@ -3540,12 +3721,23 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     );
     let state_store = SharedEstateStateStore::default();
     let state_observer = state_store.clone();
+    let source_requests = Rc::new(RefCell::new(Vec::new()));
     let event = opened_event(contract_facts(
         BranchCurrency::Current,
         ReviewCleanliness::Dirty,
         Vec::new(),
     ));
-    let mut core = Core::new(EmptyEventSource, provider, launcher, state_store);
+    let mut core = Core::with_forge_operations_and_source_preparer(
+        EmptyEventSource,
+        provider,
+        launcher,
+        state_store,
+        RecordingForgeOperations::default(),
+        PreparedTreeSourcePreparer {
+            tree: prepared_tree,
+            requests: Rc::clone(&source_requests),
+        },
+    );
 
     let outcomes = core
         .process_event(&event, &[review_rule(standard_plan())])
@@ -3564,6 +3756,7 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     assert_eq!(spec.workdir, "/workspace");
     assert!(!spec.host_control_dir.join("pump19.intent.toml").exists());
     assert!(execs.borrow().is_empty());
+    assert_eq!(source_requests.borrow().len(), 1);
 
     let requests = review_requests.borrow();
     let request = requests.first().expect("ensemble workflow invoked");
@@ -3583,6 +3776,18 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
         .expect("rendered prompt");
     assert!(prompt.contains("acme/widgets"));
     assert!(prompt.contains("Review changes to acme/widgets"));
+    assert!(prompt.contains("Prepared workspace tree:"));
+    assert!(prompt.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+    assert_eq!(
+        request.args["evidence"]["workspace_root"].as_str(),
+        Some(spec.host_control_dir.to_string_lossy().as_ref())
+    );
+    assert!(
+        request.args["evidence"]["diff"]
+            .as_str()
+            .expect("diff evidence")
+            .contains("+pub fn changed() {}")
+    );
     assert_ne!(
         request.args["workspace_root"].as_str(),
         Some("/workspace"),
@@ -3615,6 +3820,8 @@ fn forgejo_snapshot(
     ForgejoPullRequestSnapshot {
         repository: "acme/widgets".to_owned(),
         id: "42".to_owned(),
+        title: None,
+        draft: None,
         head_sha: "head-sha-1".to_owned(),
         base_sha: "base-sha-1".to_owned(),
         branch_currency,
@@ -3630,9 +3837,19 @@ fn forgejo_snapshot(
 }
 
 fn polling_snapshot(head_sha: &str) -> ForgejoPullRequestSnapshot {
+    polling_snapshot_for("42", head_sha, false)
+}
+
+fn polling_snapshot_for(id: &str, head_sha: &str, draft: bool) -> ForgejoPullRequestSnapshot {
     ForgejoPullRequestSnapshot {
         repository: "acme/widgets".to_owned(),
-        id: "42".to_owned(),
+        id: id.to_owned(),
+        title: Some(if draft {
+            "WIP: still shaping".to_owned()
+        } else {
+            "Ready for review".to_owned()
+        }),
+        draft: Some(draft),
         head_sha: head_sha.to_owned(),
         base_sha: "base-sha-1".to_owned(),
         branch_currency: ForgejoBranchCurrency::Current,

@@ -273,6 +273,8 @@ mod tests {
         ForgejoPullRequestSnapshot {
             repository: "acme/widgets".to_owned(),
             id: "42".to_owned(),
+            title: None,
+            draft: None,
             head_sha: head_sha.to_owned(),
             base_sha: "def456".to_owned(),
             branch_currency: ForgejoBranchCurrency::Current,
@@ -312,6 +314,8 @@ mod tests {
                     snapshot: ForgejoPullRequestSnapshot {
                         repository: "acme/widgets".to_owned(),
                         id: "42".to_owned(),
+                        title: None,
+                        draft: None,
                         head_sha: "abc123".to_owned(),
                         base_sha: "def456".to_owned(),
                         branch_currency: crate::ForgejoBranchCurrency::Current,

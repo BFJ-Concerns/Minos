@@ -117,12 +117,19 @@ while IFS= read -r pull_json; do
   done < "$tmp/label-actors.jsonl"
   actor_permissions_json=$(jq -s 'unique_by(.actor.id)' "$tmp/actor-permissions.jsonl")
   snapshot=$(printf '%s\n%s\n%s\n' "$pull_json" "$labels_json" "$actor_permissions_json" | jq -c -n --arg repository "$repository" --arg cleanliness "$cleanliness" '
-    input as $pull
+      input as $pull
     | input as $labels
     | input as $actor_permissions
     | {
         repository: $repository,
         id: (($pull.number // $pull.id) | tostring),
+        title: ($pull.title // null),
+        draft: (
+          if $pull.draft == true or $pull.is_draft == true then true
+          elif $pull.draft == false or $pull.is_draft == false then false
+          else null
+          end
+        ),
         head_sha: ($pull.head.sha // ""),
         base_sha: ($pull.base.sha // ""),
         branch_currency: (

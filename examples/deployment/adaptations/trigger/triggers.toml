@@ -6,26 +6,32 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 5
+minor = 6
 
 [[rules]]
 id = "review-on-pr-change"
 run_kind = "review"
 
 [rules.criteria]
+kind = "all"
+
+[[rules.criteria.criteria]]
 kind = "any"
 
-[[rules.criteria.criteria]]
+[[rules.criteria.criteria.criteria]]
 kind = "event"
 
-[rules.criteria.criteria.event]
+[rules.criteria.criteria.criteria.event]
 event = "pull_request_opened"
 
-[[rules.criteria.criteria]]
+[[rules.criteria.criteria.criteria]]
 kind = "event"
 
-[rules.criteria.criteria.event]
+[rules.criteria.criteria.criteria.event]
 event = "pull_request_updated"
+
+[[rules.criteria.criteria]]
+kind = "pr_ready"
 
 [[rules.agent_plan.reviewers]]
 agent_id = "reviewer-codex"
@@ -58,7 +64,7 @@ control_plane = "pump19-core"
 
 [rules.agent_plan.judge.lineage]
 family = "glm"
-model = "openrouter/z-ai/glm-4.6"
+model = "openrouter/z-ai/glm-5.2"
 
 [[rules]]
 id = "judge-after-review"
@@ -81,7 +87,7 @@ control_plane = "pump19-core"
 
 [rules.agent_plan.judge.lineage]
 family = "glm"
-model = "openrouter/z-ai/glm-4.6"
+model = "openrouter/z-ai/glm-5.2"
 
 [[rules]]
 id = "judge-after-noop-fix"
@@ -104,7 +110,7 @@ control_plane = "pump19-core"
 
 [rules.agent_plan.judge.lineage]
 family = "glm"
-model = "openrouter/z-ai/glm-4.6"
+model = "openrouter/z-ai/glm-5.2"
 
 [[rules]]
 id = "fix-after-material-judge"

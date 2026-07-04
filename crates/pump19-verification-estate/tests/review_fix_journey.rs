@@ -70,6 +70,7 @@ fn forge_facts(
                 .collect::<BTreeSet<_>>(),
         }],
         author_login: None,
+        work_in_progress: false,
         extensions: extensions(),
     }
 }
@@ -100,7 +101,7 @@ fn verified_agent(
 
 fn model_for_family(family: &str) -> String {
     match family {
-        "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+        "glm" => "openrouter/z-ai/glm-5.2".to_owned(),
         _ => format!("{family}-2026-06"),
     }
 }

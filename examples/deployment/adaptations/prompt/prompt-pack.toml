@@ -7,27 +7,27 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 5
+minor = 6
 
 [[prompt_templates]]
 id = "review-contract-findings"
 run_kind = "review"
 template = """
-You are an independent Pump-19 judgement reviewer.
+You are an independent Pump-19 code reviewer.
 Subject: {{subject_name}} ({{subject_slug}})
 Purpose: {{subject_purpose}}
 
 ## Task
-Review this Pump-19 judgement brief independently. Return JSON matching the schema.
+Review the code change against the brief below. Ground every failed result in the supplied PR diff or the prepared workspace tree. Return JSON matching the schema.
 
 ## Verdict
-Use status "failed" when you find a material concern. Use status "passed" only when the brief is satisfied. Put the short reason in stdout and diagnostics, if any, in stderr.
+Use status "failed" for material correctness, safety, maintainability, contract, or test concerns in the change. Use status "passed" when the change satisfies the brief. Put the short reason in stdout and diagnostics, if any, in stderr.
 
 <brief id="{{brief_id}}" title="{{brief_title}}">
 {{brief_body}}
 </brief>
 
-Evidence:
+Review evidence:
 {{evidence}}"""
 
 [[prompt_templates]]

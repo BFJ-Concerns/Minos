@@ -46,10 +46,17 @@ input=$(cat)
 repository=$(printf '%s' "$input" | jq -r '.repository')
 commit_sha=$(printf '%s' "$input" | jq -r '.commit_sha')
 preparation_root=$(printf '%s' "$input" | jq -r '.preparation_root')
+base_sha=$(printf '%s' "$input" | jq -r '.state.extensions["pump19.core.forge_facts"].base.sha // empty')
 
 case "$commit_sha" in
   ""|*[!0123456789abcdefABCDEF]*)
     echo "commit_sha must be a hexadecimal revision" >&2
+    exit 65
+    ;;
+esac
+case "$base_sha" in
+  ""|*[!0123456789abcdefABCDEF]*)
+    echo "base revision is required to derive review diff evidence" >&2
     exit 65
     ;;
 esac
@@ -77,8 +84,16 @@ mkdir -p "$output_tree"
 git_url="$git_base_url/$repository.git"
 git_maybe_auth clone --no-checkout "$git_url" "$tmp/repo" >/dev/null 2>&1
 git_maybe_auth -C "$tmp/repo" fetch origin -- "$commit_sha" >/dev/null 2>&1
+git_maybe_auth -C "$tmp/repo" fetch origin -- "$base_sha" >/dev/null 2>&1
 git -C "$tmp/repo" cat-file -e "$commit_sha^{commit}"
+git -C "$tmp/repo" cat-file -e "$base_sha^{commit}"
 git -C "$tmp/repo" archive "$commit_sha" | tar -x -C "$output_tree"
+mkdir -p "$output_tree/.pump19/review"
+git -C "$tmp/repo" diff --no-ext-diff --no-color "$base_sha" "$commit_sha" -- > "$output_tree/.pump19/review/diff.patch"
+[ -s "$output_tree/.pump19/review/diff.patch" ] || {
+  echo "review diff evidence is empty for $base_sha..$commit_sha" >&2
+  exit 65
+}
 
 jq -nc --arg tree "$output_tree" --arg revision "$commit_sha" \
   '{tree:$tree, revision:$revision}'

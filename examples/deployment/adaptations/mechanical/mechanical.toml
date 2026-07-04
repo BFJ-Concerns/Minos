@@ -6,7 +6,7 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 5
+minor = 6
 
 [[steps]]
 id = "prepare-source"
@@ -43,3 +43,20 @@ name = "merge-readiness"
 [steps.execution]
 executor = "command"
 program = "commands/pump19-merge-readiness"
+
+[[steps]]
+id = "format-comments"
+inputs = [
+    "finding_comment_format_request_json",
+    "finding",
+    "judge_decision",
+    "forge_facts",
+]
+outputs = ["finding_comment_body_json"]
+
+[steps.kind]
+kind = "format_comments"
+
+[steps.execution]
+executor = "command"
+program = "commands/pump19-format-comments"

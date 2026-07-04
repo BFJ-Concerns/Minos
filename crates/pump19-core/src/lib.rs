@@ -18,12 +18,12 @@ use std::{
 use pump19_contract::{
     ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
     DecisionVerdict, EventPayload, Extensions, Finding, FindingCommentPublication,
-    FindingCommentStatus, FindingLocation, FinishLabel, FixPushPublication, ForgeFacts,
-    ForgeReceipt, LoopPassRecord, MergePublication, ModelFamily, ModelLineage, ModelProvenance,
-    Patch, PrRunState, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
+    FindingCommentStatus, FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt,
+    LoopPassRecord, MergePublication, ModelFamily, ModelLineage, ModelProvenance, Patch,
+    PrRunState, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
     PublicationOperation, PublicationRefusal, PublicationRefusalReason, PublicationState,
     PublishedFixCommit, PullRequestRef, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
-    RunRefusal, RunRefusalReason, RunStatus, SessionFreshness, SessionId, Severity,
+    RunRefusal, RunRefusalReason, RunStatus, SessionFreshness, SessionId,
     has_two_verified_reviewer_families, judge_independent_of_reviewers,
     merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
 };
@@ -51,6 +51,8 @@ pub enum CoreError {
     Workspace(String),
     #[error("source preparation failed: {0}")]
     SourcePreparation(String),
+    #[error("comment formatting failed: {0}")]
+    CommentFormatting(String),
     #[error("run launcher failed: {0}")]
     Launcher(String),
     #[error("required model family {family:?} for agent {agent_id:?} is unavailable: {reason}")]
@@ -170,6 +172,49 @@ pub trait SourcePreparer {
         &mut self,
         request: SourcePreparationRequest,
     ) -> Result<PreparedSource, CoreError>;
+}
+
+/// Renders material finding comments before the core posts them.
+///
+/// The core owns the posting decision and authorisation; this collaborator owns
+/// the prose. Deployments normally back it with a mechanical adaptation step.
+pub trait CommentFormatter {
+    /// Renders a material finding and its judge decision into a PR comment body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the formatter step fails or returns malformed output.
+    fn format_finding_comment(
+        &mut self,
+        request: FindingCommentFormatRequest,
+    ) -> Result<String, CoreError>;
+}
+
+/// Data handed to the comment-formatting adaptation for one material finding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FindingCommentFormatRequest {
+    pub run_id: RunId,
+    pub finding: Finding,
+    pub decision: Decision,
+    pub facts: ForgeFacts,
+}
+
+/// Formatter used when a core is constructed without a formatting adaptation.
+///
+/// Posting a finding comment without an explicit formatter would silently move
+/// prose policy back into the core, so the default fails closed instead.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MissingCommentFormatter;
+
+impl CommentFormatter for MissingCommentFormatter {
+    fn format_finding_comment(
+        &mut self,
+        _request: FindingCommentFormatRequest,
+    ) -> Result<String, CoreError> {
+        Err(CoreError::CommentFormatting(
+            "no FormatComments mechanical step is configured".to_owned(),
+        ))
+    }
 }
 
 /// Source preparation disabled for tests and configurations that explicitly do
@@ -441,7 +486,6 @@ pub enum MergeMethod {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CorePolicy {
     pub finish_label_application: FinishLabelApplicationPolicy,
-    pub comment_rendering: CommentRendering,
 }
 
 impl CorePolicy {
@@ -449,17 +493,8 @@ impl CorePolicy {
     pub const fn human_gate() -> Self {
         Self {
             finish_label_application: FinishLabelApplicationPolicy::HumanOnly,
-            comment_rendering: CommentRendering { web_base_url: None },
         }
     }
-}
-
-/// Presentation knobs for the comments the core renders onto PRs.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct CommentRendering {
-    /// Forge web root (for example `https://forgejo.example`) used to render
-    /// file permalinks in finding comments. `None` renders plain code spans.
-    pub web_base_url: Option<String>,
 }
 
 impl Default for CorePolicy {
@@ -586,7 +621,15 @@ pub struct CompletionRecoverySummary {
 
 /// Deterministic dispatch-and-enforce core.
 #[derive(Debug)]
-pub struct Core<E, W, L, S, F = NoopForgeOperations, P = NoopSourcePreparer> {
+pub struct Core<
+    E,
+    W,
+    L,
+    S,
+    F = NoopForgeOperations,
+    P = NoopSourcePreparer,
+    C = MissingCommentFormatter,
+> {
     event_source: E,
     pending_events: VecDeque<ContractEvent>,
     queued_completion_event_ids: BTreeSet<String>,
@@ -595,10 +638,11 @@ pub struct Core<E, W, L, S, F = NoopForgeOperations, P = NoopSourcePreparer> {
     state_store: S,
     forge_operations: F,
     source_preparer: P,
+    comment_formatter: C,
     policy: CorePolicy,
 }
 
-impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations, NoopSourcePreparer>
+impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations, NoopSourcePreparer, MissingCommentFormatter>
 where
     E: EventSource,
     W: WorkspaceProvider,
@@ -652,19 +696,51 @@ where
         forge_operations: F,
         policy: CorePolicy,
     ) -> Self {
-        Self::with_forge_operations_source_preparer_and_policy(
+        Self::with_forge_operations_source_preparer_comment_formatter_and_policy(
             event_source,
             workspace_provider,
             launcher,
             state_store,
             forge_operations,
             NoopSourcePreparer,
+            MissingCommentFormatter,
             policy,
         )
     }
 }
 
-impl<E, W, L, S, F, P> Core<E, W, L, S, F, P>
+impl<E, W, L, S, F, C> Core<E, W, L, S, F, NoopSourcePreparer, C>
+where
+    E: EventSource,
+    W: WorkspaceProvider,
+    L: RunLauncher,
+    S: RunStateStore,
+    F: ForgeOperations,
+    C: CommentFormatter,
+{
+    #[must_use]
+    pub const fn with_forge_operations_and_comment_formatter(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        comment_formatter: C,
+    ) -> Self {
+        Self::with_forge_operations_source_preparer_comment_formatter_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            NoopSourcePreparer,
+            comment_formatter,
+            CorePolicy::human_gate(),
+        )
+    }
+}
+
+impl<E, W, L, S, F, P> Core<E, W, L, S, F, P, MissingCommentFormatter>
 where
     E: EventSource,
     W: WorkspaceProvider,
@@ -682,13 +758,14 @@ where
         forge_operations: F,
         source_preparer: P,
     ) -> Self {
-        Self::with_forge_operations_source_preparer_and_policy(
+        Self::with_forge_operations_source_preparer_comment_formatter_and_policy(
             event_source,
             workspace_provider,
             launcher,
             state_store,
             forge_operations,
             source_preparer,
+            MissingCommentFormatter,
             CorePolicy::human_gate(),
         )
     }
@@ -703,6 +780,44 @@ where
         source_preparer: P,
         policy: CorePolicy,
     ) -> Self {
+        Self::with_forge_operations_source_preparer_comment_formatter_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            source_preparer,
+            MissingCommentFormatter,
+            policy,
+        )
+    }
+}
+
+impl<E, W, L, S, F, P, C> Core<E, W, L, S, F, P, C>
+where
+    E: EventSource,
+    W: WorkspaceProvider,
+    L: RunLauncher,
+    S: RunStateStore,
+    F: ForgeOperations,
+    P: SourcePreparer,
+    C: CommentFormatter,
+{
+    #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "runtime assembly supplies each core collaborator explicitly"
+    )]
+    pub const fn with_forge_operations_source_preparer_comment_formatter_and_policy(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        source_preparer: P,
+        comment_formatter: C,
+        policy: CorePolicy,
+    ) -> Self {
         Self {
             event_source,
             pending_events: VecDeque::new(),
@@ -712,6 +827,7 @@ where
             state_store,
             forge_operations,
             source_preparer,
+            comment_formatter,
             policy,
         }
     }
@@ -796,11 +912,15 @@ where
                 continue;
             }
             for record in &state.run_history {
+                if record.status == RunStatus::Failed {
+                    continue;
+                }
                 let Some(event) = run_completed_event_from_record(record) else {
                     continue;
                 };
+                let needs_retry = completion_event_has_failed_dispatch(&state, &event);
                 if pending_ids.contains(&event.id)
-                    || self.queued_completion_event_ids.contains(&event.id)
+                    || (self.queued_completion_event_ids.contains(&event.id) && !needs_retry)
                 {
                     continue;
                 }
@@ -863,6 +983,7 @@ where
         event: &ContractEvent,
         rules: &[TriggerRule],
     ) -> Result<Vec<DispatchOutcome>, CoreError> {
+        self.record_forge_event_state(event)?;
         let mut outcomes = Vec::new();
         for rule in rules {
             let state = self.load_state_for_event(event)?;
@@ -881,6 +1002,19 @@ where
             outcomes.push(self.dispatch_rule(event, rule, state)?);
         }
         Ok(outcomes)
+    }
+
+    fn record_forge_event_state(&mut self, event: &ContractEvent) -> Result<(), CoreError> {
+        if !matches!(
+            event.payload,
+            EventPayload::PullRequestOpened { .. } | EventPayload::PullRequestUpdated { .. }
+        ) {
+            return Ok(());
+        }
+        if let Some(state) = self.load_state_for_event(event)? {
+            self.state_store.save(&state)?;
+        }
+        Ok(())
     }
 
     fn load_state_for_event(
@@ -905,6 +1039,7 @@ where
             return Ok(exact);
         };
         if latest.commit_sha == facts.head.sha {
+            sync_state_with_forge_facts(&mut latest, facts)?;
             return Ok(Some(latest));
         }
 
@@ -969,15 +1104,16 @@ where
             evaluate_gate(&gate_provenance, &prepared, state.pass_index, &workspace)
         {
             let failure = format!("launch refused: {reason:?}");
-            self.record_failed_launch_refusal(
+            let record_result = self.record_failed_launch_refusal(
                 state,
                 event,
                 rule,
                 &run_id,
                 &reason,
                 failure.as_str(),
-            )?;
-            self.workspace_provider.cleanup(&workspace)?;
+            );
+            let cleanup_result = self.workspace_provider.cleanup(&workspace);
+            finish_before_cleanup(record_result, cleanup_result)?;
             return Ok(DispatchOutcome::Refused {
                 rule_id: rule.id.clone(),
                 reason,
@@ -987,10 +1123,7 @@ where
         self.prepare_and_inject_source(event, rule, &state, &run_id, &workspace)?;
 
         let mut running_state = mark_running(state, event, rule, &run_id, prepared.clone());
-        if let Err(error) = self.state_store.save(&running_state) {
-            self.workspace_provider.cleanup(&workspace)?;
-            return Err(error);
-        }
+        self.save_running_or_cleanup(&running_state, &workspace)?;
 
         let launch_result = self.launcher.launch_run(
             RunLaunchRequest {
@@ -1008,23 +1141,27 @@ where
             Err(error) => {
                 let message = error.to_string();
                 mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
-                self.state_store.save(&running_state)?;
-                self.surface_failure(&run_id, &mut running_state, message.as_str())?;
-                self.state_store.save(&running_state)?;
-                self.workspace_provider.cleanup(&workspace)?;
-                return Err(error);
+                let record_result = self
+                    .state_store
+                    .save(&running_state)
+                    .and_then(|()| {
+                        self.surface_failure(&run_id, &mut running_state, message.as_str())
+                    })
+                    .and_then(|()| self.state_store.save(&running_state));
+                let cleanup_result = self.workspace_provider.cleanup(&workspace);
+                if let Err(record_error) = record_result {
+                    finish_before_cleanup(Err(record_error), cleanup_result)?;
+                    unreachable!("an explicit primary error cannot finish successfully");
+                }
+                finish_before_cleanup(Err(error), cleanup_result)?;
+                unreachable!("an explicit primary error cannot finish successfully");
             }
         };
 
-        if let Some(superseded_by) = self.head_was_superseded_by(&running_state)? {
-            mark_superseded(&mut running_state, superseded_by.clone(), None);
-            self.state_store.save(&running_state)?;
-            self.workspace_provider.cleanup(&workspace)?;
-            return Ok(DispatchOutcome::Superseded {
-                rule_id: rule.id.clone(),
-                run_id,
-                superseded_by,
-            });
+        if let Some(outcome) =
+            self.handle_post_launch_supersession(rule, &run_id, &mut running_state, &workspace)?
+        {
+            return Ok(outcome);
         }
 
         apply_run_outcome(&mut running_state, rule.run_kind, outcome);
@@ -1034,10 +1171,17 @@ where
         {
             let message = error.to_string();
             mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
-            self.state_store.save(&running_state)?;
-            self.surface_failure(&run_id, &mut running_state, message.as_str())?;
-            self.workspace_provider.cleanup(&workspace)?;
-            return Err(error);
+            let record_result = self
+                .state_store
+                .save(&running_state)
+                .and_then(|()| self.surface_failure(&run_id, &mut running_state, message.as_str()));
+            let cleanup_result = self.workspace_provider.cleanup(&workspace);
+            if let Err(record_error) = record_result {
+                finish_before_cleanup(Err(record_error), cleanup_result)?;
+                unreachable!("an explicit primary error cannot finish successfully");
+            }
+            finish_before_cleanup(Err(error), cleanup_result)?;
+            unreachable!("an explicit primary error cannot finish successfully");
         }
         let save_result = self.state_store.save(&running_state);
         let cleanup_result = self.workspace_provider.cleanup(&workspace);
@@ -1051,6 +1195,40 @@ where
             rule_id: rule.id.clone(),
             run_id,
         })
+    }
+
+    fn save_running_or_cleanup(
+        &mut self,
+        running_state: &PrRunState,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if let Err(error) = self.state_store.save(running_state) {
+            let cleanup_result = self.workspace_provider.cleanup(workspace);
+            finish_before_cleanup(Err(error), cleanup_result)?;
+            unreachable!("an explicit primary error cannot finish successfully");
+        }
+        Ok(())
+    }
+
+    fn handle_post_launch_supersession(
+        &mut self,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        running_state: &mut PrRunState,
+        workspace: &WorkspaceLease,
+    ) -> Result<Option<DispatchOutcome>, CoreError> {
+        let Some(superseded_by) = self.head_was_superseded_by(running_state)? else {
+            return Ok(None);
+        };
+        mark_superseded(running_state, superseded_by.clone(), None);
+        let save_result = self.state_store.save(running_state);
+        let cleanup_result = self.workspace_provider.cleanup(workspace);
+        finish_before_cleanup(save_result, cleanup_result)?;
+        Ok(Some(DispatchOutcome::Superseded {
+            rule_id: rule.id.clone(),
+            run_id: run_id.clone(),
+            superseded_by,
+        }))
     }
 
     fn handle_dispatch_precheck(
@@ -1134,7 +1312,7 @@ where
         run_id: &RunId,
         workspace: &WorkspaceLease,
     ) -> Result<(), CoreError> {
-        if !self.source_preparer.enabled() {
+        if !run_kind_requires_source(rule.run_kind) || !self.source_preparer.enabled() {
             return Ok(());
         }
         let prepared_source = match self
@@ -1218,8 +1396,10 @@ where
         error: &CoreError,
     ) -> Result<(), CoreError> {
         let message = error.to_string();
-        self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str())?;
-        self.workspace_provider.cleanup(workspace)
+        let record_result =
+            self.record_failed_dispatch(state.clone(), event, rule, run_id, message.as_str());
+        let cleanup_result = self.workspace_provider.cleanup(workspace);
+        finish_before_cleanup(record_result, cleanup_result)
     }
 
     fn record_failed_dispatch(
@@ -1484,23 +1664,29 @@ where
             self.state_store.save(state)?;
             return Ok(());
         }
+        let operation = PublicationOperation::PostFindingComment {
+            finding_id: finding.id.clone(),
+            finding_dedup_key: finding.dedup_key.clone(),
+        };
+        let body = self.format_finding_comment_for_publication(
+            state,
+            run_id,
+            operation.clone(),
+            idempotency_key.clone(),
+            expected_head_sha.clone(),
+            finding,
+            decision,
+            facts,
+        )?;
         let result = self.forge_operations.post_comment(AuthorisedComment {
             authorisation,
             expected_head_sha: expected_head_sha.clone(),
-            body: material_finding_comment(
-                finding,
-                decision,
-                facts,
-                &self.policy.comment_rendering,
-            ),
+            body,
         });
         let receipt = self.record_finding_comment_attempt(
             state,
             run_id,
-            PublicationOperation::PostFindingComment {
-                finding_id: finding.id.clone(),
-                finding_dedup_key: finding.dedup_key.clone(),
-            },
+            operation,
             idempotency_key,
             expected_head_sha,
             result,
@@ -1553,27 +1739,33 @@ where
             self.state_store.save(state)?;
             return Ok(());
         }
+        let operation = PublicationOperation::UpdateFindingComment {
+            finding_id: finding.id.clone(),
+            finding_dedup_key: finding.dedup_key.clone(),
+            comment_operation_id: publication.comment_operation_id.clone(),
+        };
+        let body = self.format_finding_comment_for_publication(
+            state,
+            run_id,
+            operation.clone(),
+            idempotency_key.clone(),
+            expected_head_sha.clone(),
+            finding,
+            decision,
+            facts,
+        )?;
         let result = self
             .forge_operations
             .update_comment(AuthorisedCommentUpdate {
                 authorisation,
                 expected_head_sha: expected_head_sha.clone(),
                 comment_operation_id: publication.comment_operation_id.clone(),
-                body: material_finding_comment(
-                    finding,
-                    decision,
-                    facts,
-                    &self.policy.comment_rendering,
-                ),
+                body,
             });
         let receipt = self.record_finding_comment_attempt(
             state,
             run_id,
-            PublicationOperation::UpdateFindingComment {
-                finding_id: finding.id.clone(),
-                finding_dedup_key: finding.dedup_key.clone(),
-                comment_operation_id: publication.comment_operation_id.clone(),
-            },
+            operation,
             idempotency_key,
             expected_head_sha,
             result,
@@ -1583,6 +1775,73 @@ where
         }
         self.state_store.save(state)?;
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn format_finding_comment_for_publication(
+        &mut self,
+        state: &mut PrRunState,
+        run_id: &RunId,
+        operation: PublicationOperation,
+        idempotency_key: String,
+        expected_head_sha: String,
+        finding: &Finding,
+        decision: &Decision,
+        facts: &ForgeFacts,
+    ) -> Result<String, CoreError> {
+        let result = self
+            .comment_formatter
+            .format_finding_comment(FindingCommentFormatRequest {
+                run_id: run_id.clone(),
+                finding: finding.clone(),
+                decision: decision.clone(),
+                facts: facts.clone(),
+            });
+        let body = match result {
+            Ok(body) if !body.trim().is_empty() => body,
+            Ok(_) => {
+                return self.record_comment_formatting_failure(
+                    state,
+                    run_id,
+                    operation,
+                    idempotency_key,
+                    expected_head_sha,
+                    "comment formatter returned an empty body".to_owned(),
+                );
+            }
+            Err(error) => {
+                return self.record_comment_formatting_failure(
+                    state,
+                    run_id,
+                    operation,
+                    idempotency_key,
+                    expected_head_sha,
+                    error.to_string(),
+                );
+            }
+        };
+        Ok(body)
+    }
+
+    fn record_comment_formatting_failure(
+        &mut self,
+        state: &mut PrRunState,
+        run_id: &RunId,
+        operation: PublicationOperation,
+        idempotency_key: String,
+        expected_head_sha: String,
+        message: String,
+    ) -> Result<String, CoreError> {
+        record_publication_attempt(
+            state,
+            run_id,
+            operation,
+            idempotency_key,
+            Some(expected_head_sha),
+            Err(message.clone()),
+        );
+        self.state_store.save(state)?;
+        Err(CoreError::CommentFormatting(message))
     }
 
     fn resolve_finding_comment(
@@ -1977,7 +2236,8 @@ where
         pass_index: u32,
     ) -> Result<Vec<ModelProvenance>, CoreError> {
         let mut provenances = Vec::new();
-        for target in plan.targets() {
+        for mut target in plan.targets() {
+            canonicalise_launch_target_model(&mut target);
             let spec = AgentLaunchSpec {
                 target: target.clone(),
                 pass_index,
@@ -2216,6 +2476,12 @@ pub enum Criteria {
     PrAuthoredBy {
         any_of: Vec<String>,
     },
+    /// Matches when the PR is not marked draft/work-in-progress by the forge.
+    ///
+    /// Forge events carry current readiness directly; downstream events use
+    /// the most recent persisted forge facts. Older contract producers omit
+    /// the fact, which deserialises as ready.
+    PrReady,
     All {
         criteria: Vec<Self>,
     },
@@ -2233,6 +2499,7 @@ impl Criteria {
             Self::PrAuthoredBy { any_of } => {
                 pr_author_login(event, state).is_some_and(|login| any_of.contains(&login))
             }
+            Self::PrReady => pr_ready(event, state),
             Self::All { criteria } => criteria
                 .iter()
                 .all(|criterion| criterion.matches(event, state)),
@@ -2240,6 +2507,23 @@ impl Criteria {
                 .iter()
                 .any(|criterion| criterion.matches(event, state)),
         }
+    }
+}
+
+/// Whether the PR is currently ready for review according to forge facts.
+fn pr_ready(event: &ContractEvent, state: Option<&PrRunState>) -> bool {
+    !pr_work_in_progress(event, state)
+}
+
+fn pr_work_in_progress(event: &ContractEvent, state: Option<&PrRunState>) -> bool {
+    match &event.payload {
+        EventPayload::PullRequestOpened { facts } | EventPayload::PullRequestUpdated { facts } => {
+            facts.work_in_progress
+        }
+        _ => state
+            .and_then(|state| state.extensions.get(EXT_FORGE_FACTS))
+            .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
+            .is_some_and(|facts| facts.work_in_progress),
     }
 }
 
@@ -2677,6 +2961,22 @@ fn verify_engine_lineage(target: &AgentLaunchTarget) -> Result<(), String> {
     }
 }
 
+fn canonicalise_launch_target_model(target: &mut AgentLaunchTarget) {
+    if let Some(canonical) =
+        canonical_model_for_engine_alias(target.engine, target.lineage.model.as_str())
+    {
+        target.lineage.model = canonical.to_owned();
+    }
+}
+
+fn canonical_model_for_engine_alias(engine: AgentEngine, model: &str) -> Option<&'static str> {
+    let model = model.trim().to_ascii_lowercase();
+    match engine {
+        AgentEngine::Claude if model == "opus" => Some("claude-opus-4-8"),
+        AgentEngine::Codex | AgentEngine::Claude | AgentEngine::Opencode => None,
+    }
+}
+
 fn mapped_family_for_engine_model(engine: AgentEngine, model: &str) -> Option<ModelFamily> {
     let model = model.trim().to_ascii_lowercase();
     if model.is_empty() {
@@ -2767,6 +3067,7 @@ fn launch_refusal_from_prepare_error(error: &CoreError) -> Option<LaunchRefusal>
         CoreError::EventSource(_)
         | CoreError::Workspace(_)
         | CoreError::SourcePreparation(_)
+        | CoreError::CommentFormatting(_)
         | CoreError::Launcher(_)
         | CoreError::StateStore(_)
         | CoreError::ForgeOperation(_)
@@ -2899,6 +3200,21 @@ fn initial_state_from_facts(facts: &ForgeFacts) -> PrRunState {
         ceiling: None,
         extensions,
     }
+}
+
+fn sync_state_with_forge_facts(
+    state: &mut PrRunState,
+    facts: &ForgeFacts,
+) -> Result<(), CoreError> {
+    state.current_head_sha = Some(facts.head.sha.clone());
+    state.extensions.insert(
+        EXT_FORGE_FACTS.to_owned(),
+        serde_json::to_value(facts).map_err(|source| CoreError::Json {
+            path: EXT_FORGE_FACTS.to_owned(),
+            source,
+        })?,
+    );
+    Ok(())
 }
 
 #[must_use]
@@ -3406,72 +3722,6 @@ fn fix_commit_message(patch: &Patch) -> String {
     )
 }
 
-/// Renders one material finding as a PR comment in the badge/collapsible house
-/// style: severity badge and summary in bold, the judge's rationale as the
-/// body, a file permalink when the finding carries one, and a small footer
-/// with review provenance.
-fn material_finding_comment(
-    finding: &Finding,
-    decision: &Decision,
-    facts: &ForgeFacts,
-    rendering: &CommentRendering,
-) -> String {
-    let location_block = finding_location_line(finding, facts, rendering)
-        .map_or_else(String::new, |location| format!("\n{location}\n"));
-    let head_sha = facts.head.sha.as_str();
-    let short_head = head_sha.get(..7).unwrap_or(head_sha);
-    format!(
-        "**{badge}  {summary}**\n\n{rationale}\n{location_block}\n\
-         <sub>Pump-19 · {brief} · reviewed `{short_head}` · decision `{decision_id}`</sub>",
-        badge = severity_badge(finding.severity),
-        summary = finding.summary.trim(),
-        rationale = decision.rationale.trim(),
-        brief = finding.source_brief,
-        decision_id = decision.id,
-    )
-}
-
-fn severity_badge(severity: Severity) -> String {
-    let (label, colour) = match severity {
-        Severity::Critical => ("critical", "red"),
-        Severity::High => ("high", "orange"),
-        Severity::Medium => ("medium", "yellow"),
-        Severity::Low => ("low", "blue"),
-    };
-    // Double <sub> shrinks the badge to sit inline with the bold title,
-    // matching the Codex-review comment style.
-    format!(
-        "<sub><sub>![{label}](https://img.shields.io/badge/{label}-{colour}?style=flat)</sub></sub>"
-    )
-}
-
-/// The finding's first location as a markdown line: a Forgejo permalink when a
-/// web base URL is configured, a plain code span otherwise.
-fn finding_location_line(
-    finding: &Finding,
-    facts: &ForgeFacts,
-    rendering: &CommentRendering,
-) -> Option<String> {
-    finding.locations.first().map(|location| match location {
-        FindingLocation::File { path, line, .. } => {
-            let reference = line.map_or_else(|| path.clone(), |line| format!("{path}:{line}"));
-            rendering.web_base_url.as_ref().map_or_else(
-                || format!("`{reference}`"),
-                |base| {
-                    let base = base.trim_end_matches('/');
-                    let anchor = line.map_or_else(String::new, |line| format!("#L{line}"));
-                    format!(
-                        "[`{reference}`]({base}/{repository}/src/commit/{head}/{path}{anchor})",
-                        repository = facts.pr.repository,
-                        head = facts.head.sha,
-                    )
-                },
-            )
-        }
-        FindingLocation::General { description } => format!("_{}_", description.trim()),
-    })
-}
-
 fn failure_comment(run_id: &RunId, message: &str) -> String {
     format!("Pump-19 run failed: {}\n\n{}", run_id.0, message)
 }
@@ -3791,6 +4041,47 @@ fn run_refusal_from_launch_refusal(refusal: &LaunchRefusal, message: &str) -> Ru
     }
 }
 
+fn finish_before_cleanup(
+    primary_result: Result<(), CoreError>,
+    cleanup_result: Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    match (primary_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary_error), Ok(())) => Err(primary_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(primary_error), Err(cleanup_error)) => {
+            eprintln!(
+                "pump19_core_cleanup_error: primary_failure={primary_error}; cleanup_failure={cleanup_error}"
+            );
+            Err(combine_primary_and_cleanup_errors(
+                &primary_error,
+                &cleanup_error,
+            ))
+        }
+    }
+}
+
+fn combine_primary_and_cleanup_errors(
+    primary_error: &CoreError,
+    cleanup_error: &CoreError,
+) -> CoreError {
+    let message = format!(
+        "dispatch bookkeeping failed: {primary_error}; workspace cleanup also failed: {cleanup_error}"
+    );
+    match primary_error {
+        CoreError::StateStore(_) | CoreError::Io { .. } | CoreError::Json { .. } => {
+            CoreError::StateStore(message)
+        }
+        CoreError::EventSource(_)
+        | CoreError::Workspace(_)
+        | CoreError::SourcePreparation(_)
+        | CoreError::CommentFormatting(_)
+        | CoreError::Launcher(_)
+        | CoreError::RequiredFamilyUnavailable { .. }
+        | CoreError::ForgeOperation(_) => CoreError::Workspace(message),
+    }
+}
+
 fn loop_record_from_state(
     state: &PrRunState,
     patches: Vec<Patch>,
@@ -3826,15 +4117,30 @@ fn state_records_run(state: &PrRunState, run_id: &RunId) -> bool {
             == Some(run_id.0.as_str())
 }
 
-fn state_already_dispatched(
-    state: &PrRunState,
-    event: &ContractEvent,
-    _rule: &TriggerRule,
-) -> bool {
+fn state_already_dispatched(state: &PrRunState, event: &ContractEvent, rule: &TriggerRule) -> bool {
+    if matches!(
+        event.payload,
+        EventPayload::PullRequestOpened { .. } | EventPayload::PullRequestUpdated { .. }
+    ) {
+        return state.run_history.iter().any(|record| {
+            record.status != RunStatus::Failed
+                && record.run_kind == rule.run_kind
+                && record.pass_index == state.pass_index
+                && record.commit_sha == state.commit_sha
+        });
+    }
+
     state
         .run_history
         .iter()
-        .any(|record| record.event_id == event.id)
+        .any(|record| record.status != RunStatus::Failed && record.event_id == event.id)
+}
+
+fn completion_event_has_failed_dispatch(state: &PrRunState, event: &ContractEvent) -> bool {
+    state
+        .run_history
+        .iter()
+        .any(|record| record.status == RunStatus::Failed && record.event_id == event.id)
 }
 
 fn run_completed_event_from_state(state: &PrRunState, run_id: &RunId) -> Option<ContractEvent> {
@@ -3860,6 +4166,10 @@ fn run_completed_event_from_record(record: &RunRecord) -> Option<ContractEvent> 
         },
         extensions,
     })
+}
+
+const fn run_kind_requires_source(run_kind: RunKind) -> bool {
+    matches!(run_kind, RunKind::Review | RunKind::Fix)
 }
 
 fn state_is_current_pr_control(state: &PrRunState) -> bool {
@@ -4115,6 +4425,11 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct FailingCleanupSourceWorkspaceProvider {
+        inner: SourceWorkspaceProvider,
+    }
+
+    #[derive(Debug)]
     struct TreeSourcePreparer {
         tree: PathBuf,
     }
@@ -4211,6 +4526,36 @@ mod tests {
         }
     }
 
+    impl WorkspaceProvider for FailingCleanupSourceWorkspaceProvider {
+        fn prepare(&mut self, request: WorkspaceRequest) -> Result<WorkspaceLease, CoreError> {
+            self.inner.prepare(request)
+        }
+
+        fn inject_source(
+            &mut self,
+            lease: &WorkspaceLease,
+            source: &PreparedSource,
+        ) -> Result<(), CoreError> {
+            self.inner.inject_source(lease, source)
+        }
+
+        fn exec(
+            &mut self,
+            lease: &WorkspaceLease,
+            request: WorkspaceExecRequest,
+        ) -> Result<WorkspaceExecOutput, CoreError> {
+            WorkspaceProvider::exec(&mut self.inner, lease, request)
+        }
+
+        fn cleanup(&mut self, lease: &WorkspaceLease) -> Result<(), CoreError> {
+            self.inner.cleanup(lease)?;
+            Err(CoreError::Workspace(format!(
+                "cleanup failed for {}",
+                lease.id
+            )))
+        }
+    }
+
     impl SourcePreparer for TreeSourcePreparer {
         fn prepare_source(
             &mut self,
@@ -4254,6 +4599,7 @@ mod tests {
         launched: usize,
         outcome: RunLaunchOutcome,
         fail_launch: bool,
+        fail_launches_remaining: usize,
         prepare_error: Option<CoreError>,
     }
 
@@ -4271,6 +4617,39 @@ mod tests {
     #[derive(Debug, Default)]
     struct FailingForgeOperations {
         comments: Vec<AuthorisedComment>,
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingCommentFormatter {
+        fail: bool,
+        requests: Rc<RefCell<Vec<FindingCommentFormatRequest>>>,
+    }
+
+    impl RecordingCommentFormatter {
+        fn failing() -> Self {
+            Self {
+                fail: true,
+                requests: Rc::default(),
+            }
+        }
+    }
+
+    impl CommentFormatter for RecordingCommentFormatter {
+        fn format_finding_comment(
+            &mut self,
+            request: FindingCommentFormatRequest,
+        ) -> Result<String, CoreError> {
+            self.requests.borrow_mut().push(request.clone());
+            if self.fail {
+                return Err(CoreError::CommentFormatting(
+                    "formatter fixture failed".to_owned(),
+                ));
+            }
+            Ok(format!(
+                "formatted material finding {} via {}",
+                request.finding.id.0, request.decision.id
+            ))
+        }
     }
 
     impl ForgeOperations for RecordingForgeOperations {
@@ -4572,6 +4951,7 @@ mod tests {
                     ensemble_archive_path: None,
                 },
                 fail_launch: false,
+                fail_launches_remaining: 0,
                 prepare_error: None,
             }
         }
@@ -4600,6 +4980,10 @@ mod tests {
             _workspace: &mut dyn WorkspaceExecutor,
         ) -> Result<RunLaunchOutcome, CoreError> {
             self.launched += 1;
+            if self.fail_launches_remaining > 0 {
+                self.fail_launches_remaining -= 1;
+                return Err(CoreError::Launcher("launch failed".to_owned()));
+            }
             if self.fail_launch {
                 return Err(CoreError::Launcher("launch failed".to_owned()));
             }
@@ -4613,7 +4997,16 @@ mod tests {
     }
 
     #[derive(Clone, Debug, Default)]
+    struct FailingSaveRunStateStore;
+
+    #[derive(Clone, Debug, Default)]
     struct SupersedingRunStateStore {
+        states: Vec<PrRunState>,
+        superseding_head: Option<String>,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct FailingSupersededSaveRunStateStore {
         states: Vec<PrRunState>,
         superseding_head: Option<String>,
     }
@@ -4663,6 +5056,31 @@ mod tests {
         }
     }
 
+    impl RunStateStore for FailingSaveRunStateStore {
+        fn load(&self, _key: &RunStateKey) -> Result<Option<PrRunState>, CoreError> {
+            Ok(None)
+        }
+
+        fn load_latest_for_pr(
+            &self,
+            _pr: &PullRequestRef,
+        ) -> Result<Option<PrRunState>, CoreError> {
+            Ok(None)
+        }
+
+        fn load_by_run_id(&self, _run_id: &RunId) -> Result<Option<PrRunState>, CoreError> {
+            Ok(None)
+        }
+
+        fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        fn save(&mut self, _state: &PrRunState) -> Result<(), CoreError> {
+            Err(CoreError::StateStore("state store unavailable".to_owned()))
+        }
+    }
+
     impl RunStateStore for SupersedingRunStateStore {
         fn load(&self, key: &RunStateKey) -> Result<Option<PrRunState>, CoreError> {
             FakeRunStateStore {
@@ -4686,6 +5104,59 @@ mod tests {
         }
 
         fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
+            let key = RunStateKey::from_state(state);
+            if let Some(existing) = self
+                .states
+                .iter_mut()
+                .find(|candidate| RunStateKey::from_state(candidate) == key)
+            {
+                *existing = state.clone();
+            } else {
+                self.states.push(state.clone());
+            }
+            if state.status == RunStatus::Running
+                && let Some(head) = &self.superseding_head
+            {
+                let mut superseding = initial_state_from_facts(&facts_with_head(head));
+                superseding.pass_index = state.pass_index.saturating_add(1);
+                self.states.push(superseding);
+            }
+            Ok(())
+        }
+    }
+
+    impl RunStateStore for FailingSupersededSaveRunStateStore {
+        fn load(&self, key: &RunStateKey) -> Result<Option<PrRunState>, CoreError> {
+            FakeRunStateStore {
+                states: self.states.clone(),
+            }
+            .load(key)
+        }
+
+        fn load_latest_for_pr(&self, pr: &PullRequestRef) -> Result<Option<PrRunState>, CoreError> {
+            FakeRunStateStore {
+                states: self.states.clone(),
+            }
+            .load_latest_for_pr(pr)
+        }
+
+        fn load_by_run_id(&self, run_id: &RunId) -> Result<Option<PrRunState>, CoreError> {
+            FakeRunStateStore {
+                states: self.states.clone(),
+            }
+            .load_by_run_id(run_id)
+        }
+
+        fn completion_recovery_states(&self) -> Result<Vec<PrRunState>, CoreError> {
+            Ok(self.states.clone())
+        }
+
+        fn save(&mut self, state: &PrRunState) -> Result<(), CoreError> {
+            if state.status == RunStatus::Superseded {
+                return Err(CoreError::StateStore(
+                    "superseded state save failed".to_owned(),
+                ));
+            }
             let key = RunStateKey::from_state(state);
             if let Some(existing) = self
                 .states
@@ -4748,6 +5219,7 @@ mod tests {
                     .collect(),
             }],
             author_login: None,
+            work_in_progress: false,
             extensions: BTreeMap::new(),
         }
     }
@@ -4805,7 +5277,7 @@ mod tests {
 
     fn model_for_family(family: &str) -> String {
         match family {
-            "glm" => "openrouter/z-ai/glm-4.6".to_owned(),
+            "glm" => "openrouter/z-ai/glm-5.2".to_owned(),
             _ => format!("{family}-2026"),
         }
     }
@@ -5205,6 +5677,127 @@ mod tests {
     }
 
     #[test]
+    fn failed_dispatch_recording_does_not_skip_workspace_cleanup() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: temp.path().join("workspace"),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FailingSaveRunStateStore,
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("recording the failure should fail dispatch");
+
+        assert!(
+            matches!(error, CoreError::StateStore(message) if message == "state store unavailable")
+        );
+        assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn record_and_cleanup_failures_are_reported_together() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            FailingCleanupSourceWorkspaceProvider {
+                inner: SourceWorkspaceProvider {
+                    root: temp.path().join("workspace"),
+                    cleaned: Rc::clone(&cleaned),
+                    injections: Rc::new(RefCell::new(Vec::new())),
+                },
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FailingSaveRunStateStore,
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("recording and cleanup failures should be combined");
+
+        assert!(matches!(error, CoreError::StateStore(message)
+            if message.contains("state store unavailable")
+                && message.contains("workspace cleanup also failed")
+                && message.contains("cleanup failed")));
+        assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn judge_dispatch_does_not_prepare_source_by_default() {
+        let review_run_id = RunId("review-completed".to_owned());
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        state.status = RunStatus::Completed;
+        state
+            .findings
+            .push(finding_from("reviewer-codex", "codex", "finding-1"));
+        state.run_history.push(RunRecord {
+            run_id: review_run_id.clone(),
+            run_kind: RunKind::Review,
+            event_id: "forgejo-pr-opened".to_owned(),
+            rule_id: "review".to_owned(),
+            pass_index: 1,
+            commit_sha: state.commit_sha.clone(),
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Succeeded),
+            refusal: None,
+            ensemble_archive_path: None,
+            provenance: vec![
+                verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+                verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
+            ],
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save review state");
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: temp.path().join("workspace"),
+                cleaned: Rc::new(RefCell::new(0)),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
+            store,
+            RecordingForgeOperations::default(),
+            FailingSourcePreparer,
+        );
+
+        let outcomes = core
+            .process_event(
+                &run_completed_event("review-done", review_run_id, RunKind::Review),
+                &[judge_after_review_rule()],
+            )
+            .expect("judge dispatch should not require source preparation");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-review"
+        ));
+        assert_eq!(core.launcher.launched, 1);
+    }
+
+    #[test]
     fn judge_run_uses_historical_reviewers_for_independence_gate() {
         let review_run_id = RunId("event-1:review:1".to_owned());
         let mut state = initial_state_from_event(&event()).expect("initial state");
@@ -5309,56 +5902,72 @@ mod tests {
     }
 
     #[test]
-    fn material_finding_comment_renders_badge_permalink_and_footer() {
-        let mut finding = finding_from("reviewer-codex", "codex", "finding-1");
-        finding.locations = vec![FindingLocation::File {
-            path: "src/lib.rs".to_owned(),
-            line: Some(42),
-            range: None,
-        }];
+    fn material_finding_comment_posts_formatter_body() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let finding = finding_from("reviewer-codex", "codex", "finding-1");
         let decision = material_decision_for(&finding, "Material because the loop can wedge.");
-        let rendering = CommentRendering {
-            web_base_url: Some("https://forgejo.example/".to_owned()),
-        };
-
-        let comment = material_finding_comment(&finding, &decision, &facts(), &rendering);
-
-        assert_eq!(
-            comment,
-            "**<sub><sub>![high](https://img.shields.io/badge/high-orange?style=flat)</sub></sub>  \
-             A material review finding.**\n\n\
-             Material because the loop can wedge.\n\n\
-             [`src/lib.rs:42`](https://forgejo.example/acme/widgets/src/commit/abc123/src/lib.rs#L42)\n\n\
-             <sub>Pump-19 · review · reviewed `abc123` · decision `decision-1`</sub>"
+        let run_id = RunId("run-judge-1".to_owned());
+        let mut core = Core::with_forge_operations_and_comment_formatter(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
+
+        core.post_finding_comment(&run_id, &mut state, &facts(), &finding, &decision)
+            .expect("post formatted finding");
+
+        assert_eq!(core.comment_formatter.requests.borrow().len(), 1);
+        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert_eq!(
+            core.forge_operations.comments[0].body,
+            "formatted material finding finding-1 via decision-1"
+        );
+        assert_eq!(state.publication.finding_comments.len(), 1);
     }
 
     #[test]
-    fn material_finding_comment_renders_code_span_without_web_base_url() {
-        let mut finding = finding_from("reviewer-codex", "codex", "finding-1");
-        finding.locations = vec![FindingLocation::File {
-            path: "src/lib.rs".to_owned(),
-            line: Some(42),
-            range: None,
-        }];
-        let decision = material_decision_for(&finding, "Material.");
-
-        let comment =
-            material_finding_comment(&finding, &decision, &facts(), &CommentRendering::default());
-
-        assert!(comment.contains("\n`src/lib.rs:42`\n"));
-        assert!(!comment.contains("src/commit"));
-    }
-
-    #[test]
-    fn material_finding_comment_renders_general_location_as_prose() {
+    fn material_finding_comment_formatter_failure_posts_nothing_and_records_attempt() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
         let finding = finding_from("reviewer-codex", "codex", "finding-1");
         let decision = material_decision_for(&finding, "Material.");
+        let run_id = RunId("run-judge-1".to_owned());
+        let mut core = Core::with_forge_operations_and_comment_formatter(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::failing(),
+        );
 
-        let comment =
-            material_finding_comment(&finding, &decision, &facts(), &CommentRendering::default());
+        let error = core
+            .post_finding_comment(&run_id, &mut state, &facts(), &finding, &decision)
+            .expect_err("formatter failure is returned");
 
-        assert!(comment.contains("_whole change_"));
+        assert!(
+            matches!(error, CoreError::CommentFormatting(message) if message.contains("formatter fixture failed"))
+        );
+        assert!(core.forge_operations.comments.is_empty());
+        assert_eq!(state.publication.attempts.len(), 1);
+        assert_eq!(
+            state.publication.attempts[0].status,
+            PublicationAttemptStatus::Failed
+        );
+        assert!(
+            state.publication.attempts[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("formatter fixture failed"))
+        );
     }
 
     #[test]
@@ -5485,6 +6094,51 @@ mod tests {
                 reason: SkipReason::DuplicateDispatch,
             }]
         );
+    }
+
+    #[test]
+    fn opened_and_updated_for_same_unseen_head_dispatch_one_review() {
+        let rule = review_on_open_or_update_rule();
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        let updated_same_head = ContractEvent {
+            contract_version: ContractVersion::current(),
+            id: "forgejo-poll-updated-same-head".to_owned(),
+            payload: EventPayload::PullRequestUpdated { facts: facts() },
+            extensions: BTreeMap::new(),
+        };
+
+        let opened = core
+            .process_event(&event(), std::slice::from_ref(&rule))
+            .expect("opened event");
+        let updated = core
+            .process_event(&updated_same_head, &[rule])
+            .expect("updated event for same head");
+
+        assert!(matches!(
+            opened.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review-on-pr-change"
+        ));
+        assert_eq!(
+            updated,
+            vec![DispatchOutcome::Skipped {
+                rule_id: "review-on-pr-change".to_owned(),
+                reason: SkipReason::DuplicateDispatch,
+            }]
+        );
+        assert_eq!(core.launcher.launched, 1);
     }
 
     #[test]
@@ -5647,6 +6301,72 @@ mod tests {
     }
 
     #[test]
+    fn failed_completion_triggered_run_rearms_from_durable_completion() {
+        let mut review_core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        review_core
+            .process_event(&event(), &[independent_rule()])
+            .expect("review dispatch");
+
+        let mut judge_launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
+        judge_launcher.fail_launches_remaining = 1;
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            judge_launcher,
+            review_core.state_store,
+        );
+
+        let first_recovery = core
+            .rederive_pending_completions()
+            .expect("rederive review completion");
+        assert_eq!(first_recovery.queued, 1);
+        let first_error = core
+            .process_next(&[judge_after_review_rule()])
+            .expect_err("transient judge failure is returned");
+        assert!(matches!(first_error, CoreError::Launcher(message) if message == "launch failed"));
+
+        let second_recovery = core
+            .rederive_pending_completions()
+            .expect("rederive failed judge trigger");
+        assert_eq!(second_recovery.queued, 1);
+        let retry = core
+            .process_next(&[judge_after_review_rule()])
+            .expect("retry dispatch")
+            .expect("retried completion event");
+
+        assert!(matches!(
+            retry.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-review"
+        ));
+        assert_eq!(core.launcher.launched, 2);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("retried state");
+        assert_eq!(saved.status, RunStatus::Completed);
+        assert!(saved.run_history.iter().any(
+            |record| record.run_kind == RunKind::Judge && record.status == RunStatus::Completed
+        ));
+    }
+
+    #[test]
     fn failed_failure_comment_attempt_is_recorded_without_masking_run_failure() {
         let mut launcher = FakeRunLauncher::new(vec![
             LaunchProof::EstablishedFresh,
@@ -5731,7 +6451,7 @@ mod tests {
             token_usage: None,
             ensemble_archive_path: None,
         };
-        let mut core = Core::with_forge_operations(
+        let mut core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -5740,6 +6460,7 @@ mod tests {
             launcher,
             store,
             FailingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
         let event = run_completed_event("review-one-done", review_run_id, RunKind::Review);
 
@@ -5922,7 +6643,13 @@ mod tests {
                 reason: LaunchRefusal::RunCeilingReached,
             }]
         );
-        assert_eq!(second_outcomes, first_outcomes);
+        assert_eq!(
+            second_outcomes,
+            vec![DispatchOutcome::Skipped {
+                rule_id: "review".to_owned(),
+                reason: SkipReason::DuplicateDispatch,
+            }]
+        );
         assert_eq!(core.launcher.launched, 0);
         assert_eq!(core.forge_operations.comments.len(), 1);
         let saved = core
@@ -6036,6 +6763,35 @@ mod tests {
         assert_eq!(saved.active_run, None);
         assert_eq!(saved.run_history.len(), 1);
         assert_eq!(saved.run_history[0].status, RunStatus::Superseded);
+    }
+
+    #[test]
+    fn superseded_save_failure_still_cleans_workspace() {
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FailingSupersededSaveRunStateStore {
+                states: Vec::new(),
+                superseding_head: Some("new-head-sha".to_owned()),
+            },
+        );
+
+        let error = core
+            .process_event(&event(), &[independent_rule()])
+            .expect_err("superseded save failure should be returned");
+
+        assert!(matches!(error, CoreError::StateStore(message)
+            if message == "superseded state save failed"));
+        assert_eq!(core.workspace_provider.cleaned, 1);
     }
 
     #[test]
@@ -6184,7 +6940,7 @@ mod tests {
             fix_after_material_judge_rule(),
             finish_on_label_rule(),
         ];
-        let mut core = Core::with_forge_operations(
+        let mut core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6193,6 +6949,7 @@ mod tests {
             LoopLauncher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
 
         let outcomes = core
@@ -6573,7 +7330,7 @@ mod tests {
             fix_after_material_judge_rule(),
             finish_on_label_rule(),
         ];
-        let mut core = Core::with_forge_operations_and_policy(
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6582,11 +7339,12 @@ mod tests {
             LoopLauncher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
             CorePolicy {
                 finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
                     label: "pump19-finish".to_owned(),
                 },
-                comment_rendering: CommentRendering::default(),
             },
         );
 
@@ -6681,7 +7439,7 @@ mod tests {
             fix_after_material_judge_rule(),
             finish_on_label_rule(),
         ];
-        let mut core = Core::with_forge_operations(
+        let mut core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6690,6 +7448,7 @@ mod tests {
             LoopLauncher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
 
         let outcomes = core
@@ -6801,7 +7560,7 @@ mod tests {
             judge_after_review_rule(),
             fix_after_material_judge_rule(),
         ];
-        let mut core = Core::with_forge_operations(
+        let mut core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::from_events(vec![event()]),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6810,6 +7569,7 @@ mod tests {
             LoopLauncher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
 
         let batches = core.drain_available(&rules).expect("drain event queue");
@@ -6870,7 +7630,7 @@ mod tests {
             judge_after_review_rule(),
             fix_after_material_judge_rule(),
         ];
-        let mut core = Core::with_forge_operations(
+        let mut core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::from_events(vec![event()]),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6879,6 +7639,7 @@ mod tests {
             LoopLauncher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
 
         let opened = core
@@ -6900,7 +7661,7 @@ mod tests {
         let persisted_store = core.state_store.clone();
         drop(core);
 
-        let mut restarted = Core::with_forge_operations(
+        let mut restarted = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::from_events(Vec::new()),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6909,6 +7670,7 @@ mod tests {
             LoopLauncher,
             persisted_store,
             RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
         let recovered = restarted
             .rederive_pending_completions()
@@ -7062,6 +7824,50 @@ mod tests {
                 },
             }]
         );
+    }
+
+    #[test]
+    fn claude_opus_alias_is_canonicalised_before_provenance_gate() {
+        let mut rule = independent_rule();
+        rule.agent_plan.reviewers[1].lineage.model = "opus".to_owned();
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            FakeRunStateStore::default(),
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[rule])
+            .expect("process event");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { .. }]
+        ));
+        let state = core
+            .state_store
+            .load_latest_for_pr(&pr())
+            .expect("load state")
+            .expect("state saved");
+        let claude = state.run_history[0]
+            .provenance
+            .iter()
+            .find(|provenance| provenance.agent_id == AgentId("reviewer-claude".to_owned()))
+            .expect("claude reviewer provenance");
+        assert!(matches!(
+            claude.verification,
+            ProvenanceVerification::Verified { .. }
+        ));
+        let ProvenanceVerification::Verified { lineage, .. } = &claude.verification else {
+            return;
+        };
+        assert_eq!(lineage.model, "claude-opus-4-8");
+        assert_ne!(lineage.model, "opus");
+        assert_eq!(core.launcher.launched, 1);
     }
 
     #[test]

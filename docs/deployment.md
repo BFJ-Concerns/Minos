@@ -15,7 +15,7 @@ checks prove config loading and loud startup failures.
 - Authenticated engine CLIs available to ensemble:
   `codex` for the Codex/GPT-class reviewer and fixer, `claude` for the
   Claude-class reviewer, and `opencode` configured for the GLM judge model
-  `openrouter/z-ai/glm-4.6`.
+  `openrouter/z-ai/glm-5.2`.
 - `curl`, `jq`, `git` and `tar` for the generated baseline command scripts.
   The example TOML points at the checked-in scripts under
   `examples/deployment/commands/`. Custom commands are an override path, not a
@@ -172,6 +172,8 @@ daemon uses these fields:
 {
   "repository": "acme/widgets",
   "id": "42",
+  "title": "Ready for review",
+  "draft": false,
   "head_sha": "abc123",
   "base_sha": "main123",
   "branch_currency": "current",
@@ -183,11 +185,13 @@ daemon uses these fields:
 ```
 
 The baseline poll command fetches open PRs and issue timeline entries for the
-configured finish label. It marks a snapshot `clean` when the finish label is
-present, records every finish-label actor the timeline exposes, and queries each
-actor's repository permission. `write`, `admin`, `administrator` and `owner`
-permission values produce `can_apply_finish_label = true` and `can_merge = true`;
-other values fail closed. Forgejo documents that write, admin and owner
+configured finish label. It also carries optional draft evidence from Forgejo's
+native draft flag and PR title; if neither signal is present, the daemon treats
+the PR as ready. It marks a snapshot `clean` when the finish label is present,
+records every finish-label actor the timeline exposes, and queries each actor's
+repository permission. `write`, `admin`, `administrator` and `owner` permission
+values produce `can_apply_finish_label = true` and `can_merge = true`; other
+values fail closed. Forgejo documents that write, admin and owner
 collaborators can merge PRs in its repository permissions guide:
 <https://forgejo.org/docs/latest/user/repo-permissions/>.
 

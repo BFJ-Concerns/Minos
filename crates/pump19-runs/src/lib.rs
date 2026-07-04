@@ -13,6 +13,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -39,6 +40,8 @@ const EXT_RAW_STDOUT: &str = "pump19.runs.raw_stdout";
 const EXT_RAW_STDERR: &str = "pump19.runs.raw_stderr";
 const EXT_MODEL_FAMILY: &str = "pump19.runs.model_family";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
+const REVIEW_EVIDENCE_DIR: &str = ".pump19/review";
+const REVIEW_DIFF_FILE: &str = "diff.patch";
 const ENSEMBLE_ENV_EXACT_ALLOWLIST: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -129,6 +132,8 @@ pub enum RunBodyError {
     EnsembleArchiveMismatch(String),
     #[error("prompt template failed: {0}")]
     PromptTemplate(String),
+    #[error("review evidence is missing: {0}")]
+    MissingReviewEvidence(String),
 }
 
 /// Prepares a concrete agent session for a core-owned launch target.
@@ -306,16 +311,15 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
     ) -> Result<EnsembleWorkflowOutput, RunBodyError> {
         fs::create_dir_all(&request.archive_dir)
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-        let json_args = serde_json::to_string(&request.args).map_err(RunBodyError::EnsembleJson)?;
+        let wrapper =
+            TemporaryWorkflowScript::write(&request.script, &request.args, &request.archive_dir)?;
         let mut child = Command::new(&self.node_program)
             .env_clear()
             .envs(filtered_ensemble_env(env::vars()))
             .arg(&self.launcher_path)
-            .arg("--json-args")
-            .arg(json_args)
             .arg("--timeout")
             .arg(request.timeout_ms.to_string())
-            .arg(&request.script)
+            .arg(wrapper.path())
             .env("ENSEMBLE_RUN_RECORD_DIR", &request.archive_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -360,6 +364,174 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             archive_dir: request.archive_dir,
         })
     }
+}
+
+#[derive(Debug)]
+struct TemporaryWorkflowScript {
+    path: PathBuf,
+}
+
+impl TemporaryWorkflowScript {
+    fn write(script: &Path, args: &Value, run_dir: &Path) -> Result<Self, RunBodyError> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let source = fs::read_to_string(script).map_err(|error| {
+            RunBodyError::Ensemble(format!(
+                "read workflow script {}: {error}",
+                script.display()
+            ))
+        })?;
+        let (meta, body) = split_workflow_source(&source)?;
+        let args_json = serde_json::to_string(args).map_err(RunBodyError::EnsembleJson)?;
+        let args_literal = serde_json::to_string(&args_json).map_err(RunBodyError::EnsembleJson)?;
+        let wrapper = format!(
+            "export const meta = {meta};\nconst args = JSON.parse({args_literal});\n{body}"
+        );
+        let path = run_dir.join(format!(
+            ".pump19-workflow-{}-{}.js",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, wrapper).map_err(|error| {
+            RunBodyError::Ensemble(format!(
+                "write workflow wrapper {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryWorkflowScript {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn split_workflow_source(source: &str) -> Result<(&str, &str), RunBodyError> {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let trimmed = source.trim_start();
+    let leading_whitespace = source.len() - trimmed.len();
+    let source = &source[leading_whitespace..];
+    let Some(after_export) = source.strip_prefix("export const meta") else {
+        return Err(RunBodyError::Ensemble(
+            "workflow script must begin with `export const meta`".to_owned(),
+        ));
+    };
+    let equals_offset = source.len() - after_export.len()
+        + after_export.find('=').ok_or_else(|| {
+            RunBodyError::Ensemble("workflow meta export is missing `=`".to_owned())
+        })?;
+    let object_start = source[equals_offset + 1..]
+        .find('{')
+        .map(|offset| equals_offset + 1 + offset)
+        .ok_or_else(|| {
+            RunBodyError::Ensemble("workflow meta is missing object literal".to_owned())
+        })?;
+    let object_end = find_balanced_object_end(source, object_start)?;
+    let mut body_start = object_end + 1;
+    while source[body_start..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+    {
+        body_start += source[body_start..]
+            .chars()
+            .next()
+            .map_or(0, char::len_utf8);
+    }
+    if source[body_start..].starts_with(';') {
+        body_start += 1;
+    }
+    Ok((&source[object_start..=object_end], &source[body_start..]))
+}
+
+fn find_balanced_object_end(source: &str, start: usize) -> Result<usize, RunBodyError> {
+    let mut depth = 0_u32;
+    let mut index = start;
+    while index < source.len() {
+        let Some(ch) = source[index..].chars().next() else {
+            break;
+        };
+        match ch {
+            '{' | '[' | '(' => {
+                depth += 1;
+                index += ch.len_utf8();
+            }
+            '}' | ']' | ')' => {
+                depth = depth.checked_sub(1).ok_or_else(|| {
+                    RunBodyError::Ensemble("workflow meta object closed early".to_owned())
+                })?;
+                if depth == 0 {
+                    if ch == '}' {
+                        return Ok(index);
+                    }
+                    return Err(RunBodyError::Ensemble(
+                        "workflow meta object closed with the wrong delimiter".to_owned(),
+                    ));
+                }
+                index += ch.len_utf8();
+            }
+            '"' | '\'' => {
+                index = skip_quoted_string(source, index, ch)?;
+            }
+            '`' => {
+                index = skip_template_literal(source, index)?;
+            }
+            _ => {
+                index += ch.len_utf8();
+            }
+        }
+    }
+    Err(RunBodyError::Ensemble(
+        "workflow meta object is not closed".to_owned(),
+    ))
+}
+
+fn skip_quoted_string(source: &str, start: usize, quote: char) -> Result<usize, RunBodyError> {
+    let mut escaped = false;
+    let mut index = start + quote.len_utf8();
+    while index < source.len() {
+        let Some(ch) = source[index..].chars().next() else {
+            break;
+        };
+        index += ch.len_utf8();
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == quote {
+            return Ok(index);
+        }
+    }
+    Err(RunBodyError::Ensemble(
+        "workflow meta string literal is not closed".to_owned(),
+    ))
+}
+
+fn skip_template_literal(source: &str, start: usize) -> Result<usize, RunBodyError> {
+    let mut escaped = false;
+    let mut index = start + 1;
+    while index < source.len() {
+        let Some(ch) = source[index..].chars().next() else {
+            break;
+        };
+        index += ch.len_utf8();
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '`' {
+            return Ok(index);
+        }
+    }
+    Err(RunBodyError::Ensemble(
+        "workflow meta template literal is not closed".to_owned(),
+    ))
 }
 
 fn filtered_ensemble_env(
@@ -535,12 +707,13 @@ where
         self.last_archive_path = None;
         let _ = workspace;
         let subject = self.subject_for_repository(&request.state.pr.repository);
+        let review_evidence = load_review_evidence(&request.workspace.root)?;
         let brief_inputs = self
             .config
             .briefs
             .iter()
             .map(|brief| {
-                let evidence = evidence_text(&request.workspace.root, brief)?;
+                let evidence = review_evidence_text(&review_evidence, brief)?;
                 let prompt = render_prompt_template(
                     &self.config.prompt_template,
                     &[
@@ -568,6 +741,11 @@ where
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
             "workspace_root": request.workspace.root,
+            "evidence": {
+                "workspace_root": review_evidence.workspace_root,
+                "diff_path": review_evidence.diff_path,
+                "diff": review_evidence.diff,
+            },
             "reviewers": reviewers,
             "subject": subject,
             "briefs": brief_inputs,
@@ -1065,6 +1243,59 @@ fn prompt_json(value: &impl Serialize) -> Result<String, RunBodyError> {
     serde_json::to_string_pretty(value).map_err(RunBodyError::EnsembleJson)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReviewEvidence {
+    workspace_root: PathBuf,
+    diff_path: PathBuf,
+    diff: String,
+}
+
+fn load_review_evidence(workspace_root: &Path) -> Result<ReviewEvidence, RunBodyError> {
+    if !workspace_root.is_dir() {
+        return Err(RunBodyError::MissingReviewEvidence(format!(
+            "prepared workspace tree is absent at {}",
+            workspace_root.display()
+        )));
+    }
+    let diff_path = workspace_root
+        .join(REVIEW_EVIDENCE_DIR)
+        .join(REVIEW_DIFF_FILE);
+    let diff = fs::read_to_string(&diff_path).map_err(|error| {
+        RunBodyError::MissingReviewEvidence(format!(
+            "PR diff could not be read from {}: {error}",
+            diff_path.display()
+        ))
+    })?;
+    if diff.trim().is_empty() {
+        return Err(RunBodyError::MissingReviewEvidence(format!(
+            "PR diff at {} is empty",
+            diff_path.display()
+        )));
+    }
+    Ok(ReviewEvidence {
+        workspace_root: workspace_root.to_path_buf(),
+        diff_path,
+        diff,
+    })
+}
+
+fn review_evidence_text(
+    review_evidence: &ReviewEvidence,
+    brief: &JudgementBrief,
+) -> Result<String, RunBodyError> {
+    let mut text = format!(
+        "Prepared workspace tree: {}\nPR diff path: {}\n\n<pr_diff>\n{}\n</pr_diff>",
+        review_evidence.workspace_root.display(),
+        review_evidence.diff_path.display(),
+        review_evidence.diff
+    );
+    if !brief.evidence_paths.is_empty() {
+        text.push_str("\n\nAdditional brief evidence:\n");
+        text.push_str(&evidence_text(&review_evidence.workspace_root, brief)?);
+    }
+    Ok(text)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct ExpectedAgentTarget {
     agent_id: AgentId,
@@ -1184,7 +1415,7 @@ fn reconcile_ensemble_archive(
                 target.agent_id.0, record.engine, target.engine
             )));
         }
-        let actual_model = record.resolved_model.as_ref().or(record.model.as_ref());
+        let actual_model = archive_model_for_engine(&record, &target.engine);
         if actual_model != Some(&target.model) {
             return Err(RunBodyError::EnsembleArchiveMismatch(format!(
                 "agent {} ran model {:?} instead of {}",
@@ -1208,6 +1439,17 @@ fn reconcile_ensemble_archive(
         run_id: manifest.run_id,
         agents: seen.into_iter().collect(),
     })
+}
+
+fn archive_model_for_engine<'a>(
+    record: &'a EnsembleAgentRecord,
+    engine: &str,
+) -> Option<&'a String> {
+    if engine == "opencode" {
+        record.resolved_model.as_ref().or(record.model.as_ref())
+    } else {
+        record.model.as_ref()
+    }
 }
 
 fn expected_for_record<'a>(
@@ -1443,6 +1685,7 @@ mod tests {
         label: String,
         engine: String,
         model: String,
+        resolved_model: Option<String>,
         status: String,
         validated_output: Option<Value>,
     }
@@ -1686,6 +1929,7 @@ mod tests {
             label: format!("{agent_id}:purpose"),
             engine: engine_for_family(family).to_owned(),
             model: format!("{family}-2026"),
+            resolved_model: Some(format!("{family}-2026")),
             status: "complete".to_owned(),
             validated_output: Some(json!({"ok": true})),
         }
@@ -1699,6 +1943,12 @@ mod tests {
             prompt_template: "configured prompt".to_owned(),
             briefs: baseline_judgement_briefs(),
         }
+    }
+
+    fn write_review_diff(root: &Path, diff: &str) {
+        let evidence_dir = root.join(REVIEW_EVIDENCE_DIR);
+        fs::create_dir_all(&evidence_dir).expect("create review evidence dir");
+        fs::write(evidence_dir.join(REVIEW_DIFF_FILE), diff).expect("write review diff");
     }
 
     fn write_archive(root: &Path, agents: &[ArchiveAgentFixture]) {
@@ -1717,7 +1967,7 @@ mod tests {
                     "engine": agent.engine,
                     "label": agent.label,
                     "model": agent.model,
-                    "resolved_model": agent.model,
+                    "resolved_model": agent.resolved_model,
                     "status": agent.status,
                     "validated_output": agent.validated_output,
                 });
@@ -1825,6 +2075,10 @@ mod tests {
         );
         req.run_id = RunId("review-run".to_owned());
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let run = JudgementRun {
             status: JudgementStatus::Failed,
             model_families: vec!["codex".to_owned()],
@@ -1863,7 +2117,20 @@ mod tests {
         assert!(prompt.contains("external review template marker reviewer-independence"));
         assert!(prompt.contains("acme/widgets"));
         assert!(prompt.contains("Reviewer independence"));
-        assert!(prompt.contains("No separate evidence paths were supplied."));
+        assert!(prompt.contains("Prepared workspace tree:"));
+        assert!(prompt.contains(root.path().to_string_lossy().as_ref()));
+        assert!(prompt.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(!prompt.contains("No separate evidence paths were supplied."));
+        assert_eq!(
+            body.runner.requests[0].args["evidence"]["workspace_root"].as_str(),
+            Some(root.path().to_string_lossy().as_ref())
+        );
+        assert!(
+            body.runner.requests[0].args["evidence"]["diff"]
+                .as_str()
+                .expect("workflow diff evidence")
+                .contains("+pub fn changed() {}")
+        );
         assert_eq!(
             body.runner.requests[0].args["subject"]["name"].as_str(),
             Some("acme/widgets")
@@ -1879,6 +2146,10 @@ mod tests {
         );
         req.run_id = RunId("review-run".to_owned());
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let runner = FakeEnsembleRunner::new(
             serde_json::to_value(JudgementRun {
                 status: JudgementStatus::Passed,
@@ -1919,6 +2190,36 @@ mod tests {
             request.args["subject"]["name"].as_str(),
             Some("Acme Widgets")
         );
+    }
+
+    #[test]
+    fn review_body_fails_closed_before_launch_without_diff_evidence() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let runner = FakeEnsembleRunner::new(
+            serde_json::to_value(JudgementRun {
+                status: JudgementStatus::Passed,
+                model_families: vec!["codex".to_owned()],
+                briefs: Vec::new(),
+            })
+            .expect("serialise judgement run"),
+            vec![archive_agent("reviewer-codex", "codex")],
+        );
+        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("review without diff evidence fails closed");
+
+        assert!(
+            matches!(error, RunBodyError::MissingReviewEvidence(message) if message.contains("PR diff"))
+        );
+        assert!(body.runner.requests.is_empty());
     }
 
     #[test]
@@ -1964,6 +2265,10 @@ mod tests {
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let runner = FakeEnsembleRunner::new(
             json!({"not": "a judgement run"}),
             vec![archive_agent("reviewer-codex", "codex")],
@@ -1986,6 +2291,10 @@ mod tests {
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let mut agent = archive_agent("reviewer-codex", "codex");
         agent.validated_output = None;
         let runner = FakeEnsembleRunner::new(
@@ -2017,6 +2326,10 @@ mod tests {
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let mut agent = archive_agent("reviewer-codex", "codex");
         agent.engine = "claude".to_owned();
         let runner = FakeEnsembleRunner::new(
@@ -2041,6 +2354,30 @@ mod tests {
     }
 
     #[test]
+    fn claude_archive_must_match_requested_model_not_resolved_alias() {
+        let root = tempfile::tempdir().expect("archive root");
+        let mut agent = archive_agent("reviewer-claude", "claude");
+        agent.model = "opus".to_owned();
+        agent.resolved_model = Some("claude-opus-4-8".to_owned());
+        write_archive(root.path(), &[agent]);
+        let expected = ExpectedAgentTarget {
+            agent_id: AgentId("reviewer-claude".to_owned()),
+            role: AgentRole::Reviewer,
+            engine: "claude".to_owned(),
+            model_family: "claude".to_owned(),
+            model: "claude-opus-4-8".to_owned(),
+        };
+
+        let error = reconcile_ensemble_archive(root.path(), &[expected])
+            .expect_err("claude requested model mismatch fails closed");
+
+        assert!(
+            matches!(error, RunBodyError::EnsembleArchiveMismatch(message)
+                if message.contains("ran model Some(\"opus\") instead of claude-opus-4-8"))
+        );
+    }
+
+    #[test]
     fn runner_error_propagates_as_workflow_failure() {
         let root = tempfile::tempdir().expect("workspace root");
         let mut req = request(
@@ -2048,6 +2385,10 @@ mod tests {
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let runner = FailingEnsembleRunner {
             message: "workflow timed out".to_owned(),
         };
@@ -2066,9 +2407,15 @@ mod tests {
         let root = tempfile::tempdir().expect("host runner root");
         let launcher = root.path().join("sleep-launcher.sh");
         fs::write(&launcher, "#!/bin/sh\nsleep 5\n").expect("write launcher");
+        let workflow = root.path().join("workflow.js");
+        fs::write(
+            &workflow,
+            "export const meta = { name: \"timeout\" };\nreturn null;\n",
+        )
+        .expect("write workflow");
         let mut runner = HostEnsembleWorkflowRunner::new("sh", &launcher);
         let request = EnsembleWorkflowRequest {
-            script: root.path().join("workflow.js"),
+            script: workflow,
             args: json!({}),
             archive_dir: root.path().join("archive"),
             timeout_ms: 50,
@@ -2082,6 +2429,74 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(
             matches!(error, RunBodyError::Ensemble(message) if message.contains("hard timeout"))
+        );
+    }
+
+    #[test]
+    fn host_runner_passes_large_payload_through_temporary_workflow_file() {
+        let root = tempfile::tempdir().expect("host runner root");
+        let launcher = root.path().join("fake-ensemble.sh");
+        let captured_argv = root.path().join("argv.txt");
+        let captured_script_path = root.path().join("script-path.txt");
+        let captured_wrapper = root.path().join("wrapper.js");
+        fs::write(
+            &launcher,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$@" > "{captured_argv}"
+script=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --timeout)
+      shift 2
+      ;;
+    --*)
+      shift
+      ;;
+    *)
+      script=$1
+      shift
+      ;;
+  esac
+done
+printf '%s' "$script" > "{captured_script_path}"
+cp "$script" "{captured_wrapper}"
+printf '{{"ok":true}}\n'
+"#,
+                captured_argv = captured_argv.display(),
+                captured_script_path = captured_script_path.display(),
+                captured_wrapper = captured_wrapper.display(),
+            ),
+        )
+        .expect("write launcher");
+        let workflow = root.path().join("workflow.js");
+        fs::write(
+            &workflow,
+            "export const meta = { name: \"payload\" };\nreturn { marker: args.marker };\n",
+        )
+        .expect("write workflow");
+        let marker = "payload-marker-".repeat(20_000);
+        let request = EnsembleWorkflowRequest {
+            script: workflow,
+            args: json!({ "marker": marker }),
+            archive_dir: root.path().join("archive"),
+            timeout_ms: 5_000,
+        };
+        let mut runner = HostEnsembleWorkflowRunner::new("sh", &launcher);
+
+        let output = runner.run_workflow(request).expect("workflow launches");
+
+        assert_eq!(output.value, json!({"ok": true}));
+        let argv = fs::read_to_string(captured_argv).expect("read argv");
+        assert!(!argv.contains("--json-args"));
+        assert!(!argv.contains("payload-marker-"));
+        let wrapper = fs::read_to_string(captured_wrapper).expect("read wrapper");
+        assert!(wrapper.contains("const args = JSON.parse("));
+        assert!(wrapper.contains("payload-marker-"));
+        let wrapper_path = fs::read_to_string(captured_script_path).expect("read wrapper path");
+        assert!(
+            !Path::new(&wrapper_path).exists(),
+            "temporary wrapper should be removed after launch"
         );
     }
 
