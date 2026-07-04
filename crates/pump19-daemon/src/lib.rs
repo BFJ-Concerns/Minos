@@ -1447,7 +1447,13 @@ impl CommandForgejoClient {
                     pump19_forge_forgejo::ForgejoClientError::Transport(error.to_string())
                 })?;
         if !output.status.success() {
-            return Err(command_failure_to_forgejo_error(&output));
+            let secrets = self
+                .command
+                .env
+                .values()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            return Err(command_failure_to_forgejo_error(&output, &secrets));
         }
         serde_json::from_slice::<CommandReceipt>(&output.stdout)
             .map(|receipt| ForgejoCommandReceipt {
@@ -1514,6 +1520,7 @@ struct CommandErrorBody {
 
 fn command_failure_to_forgejo_error(
     output: &std::process::Output,
+    secrets: &[&str],
 ) -> pump19_forge_forgejo::ForgejoClientError {
     if let Some(error) =
         command_failure_json(&output.stderr).or_else(|| command_failure_json(&output.stdout))
@@ -1524,7 +1531,9 @@ fn command_failure_to_forgejo_error(
             actual_head_sha: error.actual_head_sha,
         };
     }
-    pump19_forge_forgejo::ForgejoClientError::Transport(command_exit_message(output))
+    pump19_forge_forgejo::ForgejoClientError::Transport(command_exit_message_with_redaction(
+        output, secrets,
+    ))
 }
 
 fn command_failure_json(output: &[u8]) -> Option<CommandErrorBody> {
@@ -1592,15 +1601,75 @@ fn command_output(output: std::process::Output) -> Result<Vec<u8>, std::io::Erro
     if output.status.success() {
         return Ok(output.stdout);
     }
-    Err(std::io::Error::other(command_exit_message(&output)))
+    Err(std::io::Error::other(command_exit_message_with_redaction(
+        &output,
+        &[],
+    )))
 }
 
-fn command_exit_message(output: &std::process::Output) -> String {
+const MAX_COMMAND_DIAGNOSTIC_BYTES: usize = 8192;
+
+fn command_exit_message_with_redaction(output: &std::process::Output, secrets: &[&str]) -> String {
+    let stderr = redacted_bounded_output(&output.stderr, secrets);
+    let stdout = redacted_bounded_output(&output.stdout, secrets);
+    let diagnostic = if stdout.is_empty() || stderr.contains(&stdout) {
+        stderr
+    } else if stderr.is_empty() {
+        format!("stdout: {stdout}")
+    } else {
+        format!("stderr: {stderr}\nstdout: {stdout}")
+    };
     format!(
-        "command exited with {:?}: {}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
+        "command exited with {:?}: {diagnostic}",
+        output.status.code()
     )
+}
+
+fn redacted_bounded_output(bytes: &[u8], secrets: &[&str]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut redacted = redact_obvious_secret_material(&text);
+    for secret in secrets.iter().copied().filter(|secret| secret.len() >= 4) {
+        redacted = redacted.replace(secret, "<redacted>");
+    }
+    bound_text(&redacted, MAX_COMMAND_DIAGNOSTIC_BYTES)
+}
+
+fn redact_obvious_secret_material(text: &str) -> String {
+    text.lines()
+        .map(redact_secret_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn redact_secret_line(line: &str) -> String {
+    let lower = line.to_ascii_lowercase();
+    if let Some(index) = lower.find("authorization:") {
+        return format!("{}Authorization: <redacted>", &line[..index]);
+    }
+    for marker in [
+        "forgejo_token=",
+        "gitea_token=",
+        "github_token=",
+        "access_token=",
+        "token=",
+    ] {
+        if let Some(index) = lower.find(marker) {
+            let marker_end = index + marker.len();
+            return format!("{}{}<redacted>", &line[..index], &line[index..marker_end]);
+        }
+    }
+    line.to_owned()
+}
+
+fn bound_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...[truncated]", &text[..end])
 }
 
 #[cfg(test)]
@@ -2587,17 +2656,12 @@ stop_after_quiet_polls = 1
             .expect("review launch succeeds");
 
         assert_eq!(outcome.findings.len(), 1);
-        let args: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(&captured_args).expect("read captured review args"),
-        )
-        .expect("captured args JSON");
-        let prompt = args["briefs"][0]["prompt"]
-            .as_str()
-            .expect("rendered prompt");
-        assert!(prompt.contains("Acme Widgets"));
-        assert!(prompt.contains("widgets"));
-        assert!(prompt.contains("Review the configured widget purpose."));
-        assert_eq!(args["subject"]["name"].as_str(), Some("Acme Widgets"));
+        let wrapper_source =
+            fs::read_to_string(&captured_args).expect("read captured workflow wrapper");
+        assert!(wrapper_source.contains("Acme Widgets"));
+        assert!(wrapper_source.contains("widgets"));
+        assert!(wrapper_source.contains("Review the configured widget purpose."));
+        assert!(wrapper_source.contains("\\\"subject\\\""));
     }
 
     #[test]
@@ -2990,6 +3054,48 @@ exit 75
     }
 
     #[test]
+    fn command_forgejo_client_surfaces_redacted_stderr_on_transport_failure() {
+        let dir = tempdir().expect("temp dir");
+        let script = dir.path().join("transport-failure");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+cat >/dev/null
+printf 'git push failed: protected branch rejected\nAuthorization: Bearer %s\nFORGEJO_TOKEN=%s\n' "$FORGEJO_TOKEN" "$FORGEJO_TOKEN" >&2
+exit 1
+"#,
+        )
+        .expect("write script");
+        make_executable(&script);
+        let mut env = BTreeMap::new();
+        env.insert("FORGEJO_TOKEN".to_owned(), "secret-token-123".to_owned());
+        let mut client = CommandForgejoClient::new(CommandConfig {
+            program: script,
+            args: Vec::new(),
+            env,
+        });
+
+        let error = client
+            .post_pr_comment(
+                &pr(),
+                "body",
+                &ForgejoCommandMetadata {
+                    observed_head_sha: "abc123".to_owned(),
+                    expected_head_sha: Some("abc123".to_owned()),
+                    idempotency_key: "comment-1".to_owned(),
+                    reason: "test".to_owned(),
+                },
+            )
+            .expect_err("transport failure should include stderr");
+        let message = error.to_string();
+
+        assert!(message.contains("git push failed: protected branch rejected"));
+        assert!(message.contains("Authorization: <redacted>"));
+        assert!(message.contains("FORGEJO_TOKEN=<redacted>"));
+        assert!(!message.contains("secret-token-123"));
+    }
+
+    #[test]
     fn daemon_start_rejects_unfilled_deployment_example_placeholders() {
         let config =
             DaemonConfig::load(&deployment_example_config_path()).expect("load deployment example");
@@ -3251,6 +3357,16 @@ exit 75
             )
             .expect("write brief");
         }
+        for workflow in &pack.manifest.workflow_scripts {
+            fs::write(
+                prompt_root.join(&workflow.path),
+                format!(
+                    "export const meta = {{ name: {:?} }};\nreturn args;\n",
+                    workflow.id
+                ),
+            )
+            .expect("write workflow script");
+        }
         prompt_root.join("prompt-pack.toml")
     }
 
@@ -3258,17 +3374,22 @@ exit 75
         format!(
             r#"#!/bin/sh
 set -eu
-json_args=
+script=
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --json-args)
+    --timeout)
+      shift 2
+      ;;
+    --*)
       shift
-      json_args=$1
+      ;;
+    *)
+      script=$1
+      shift
       ;;
   esac
-  shift || true
 done
-printf '%s' "$json_args" > "{captured_args}"
+cp "$script" "{captured_args}"
 run_dir="$ENSEMBLE_RUN_RECORD_DIR/runs/cwd/test/test-run"
 mkdir -p "$run_dir/agents/000001" "$run_dir/agents/000002"
 cat > "$run_dir/agents/000001/agent.json" <<'JSON'

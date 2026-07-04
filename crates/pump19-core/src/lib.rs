@@ -2179,7 +2179,8 @@ where
         pass_index: u32,
     ) -> Result<Vec<ModelProvenance>, CoreError> {
         let mut provenances = Vec::new();
-        for target in plan.targets() {
+        for mut target in plan.targets() {
+            canonicalise_launch_target_model(&mut target);
             let spec = AgentLaunchSpec {
                 target: target.clone(),
                 pass_index,
@@ -2876,6 +2877,22 @@ fn verify_engine_lineage(target: &AgentLaunchTarget) -> Result<(), String> {
             mapped_family.0,
             target.lineage.family.0
         ))
+    }
+}
+
+fn canonicalise_launch_target_model(target: &mut AgentLaunchTarget) {
+    if let Some(canonical) =
+        canonical_model_for_engine_alias(target.engine, target.lineage.model.as_str())
+    {
+        target.lineage.model = canonical.to_owned();
+    }
+}
+
+fn canonical_model_for_engine_alias(engine: AgentEngine, model: &str) -> Option<&'static str> {
+    let model = model.trim().to_ascii_lowercase();
+    match engine {
+        AgentEngine::Claude if model == "opus" => Some("claude-opus-4-8"),
+        AgentEngine::Codex | AgentEngine::Claude | AgentEngine::Opencode => None,
     }
 }
 
@@ -7617,6 +7634,50 @@ mod tests {
                 },
             }]
         );
+    }
+
+    #[test]
+    fn claude_opus_alias_is_canonicalised_before_provenance_gate() {
+        let mut rule = independent_rule();
+        rule.agent_plan.reviewers[1].lineage.model = "opus".to_owned();
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            FakeRunStateStore::default(),
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[rule])
+            .expect("process event");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { .. }]
+        ));
+        let state = core
+            .state_store
+            .load_latest_for_pr(&pr())
+            .expect("load state")
+            .expect("state saved");
+        let claude = state.run_history[0]
+            .provenance
+            .iter()
+            .find(|provenance| provenance.agent_id == AgentId("reviewer-claude".to_owned()))
+            .expect("claude reviewer provenance");
+        assert!(matches!(
+            claude.verification,
+            ProvenanceVerification::Verified { .. }
+        ));
+        let ProvenanceVerification::Verified { lineage, .. } = &claude.verification else {
+            return;
+        };
+        assert_eq!(lineage.model, "claude-opus-4-8");
+        assert_ne!(lineage.model, "opus");
+        assert_eq!(core.launcher.launched, 1);
     }
 
     #[test]
