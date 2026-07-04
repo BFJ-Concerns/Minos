@@ -2049,7 +2049,9 @@ mod tests {
     fn runtime_source_preparer_exports_recorded_revision_from_local_bare_repo() {
         let dir = tempdir().expect("temp dir");
         let source = dir.path().join("repo");
-        let bare = dir.path().join("repo.git");
+        let git_base = dir.path().join("git");
+        let bare = git_base.join("acme/widgets.git");
+        fs::create_dir_all(bare.parent().expect("bare parent")).expect("create bare parent");
         run_git(["init", source.to_str().expect("source path")]);
         fs::write(source.join("README.md"), "first\n").expect("write first file");
         run_git(["-C", source.to_str().expect("source path"), "add", "."]);
@@ -2063,6 +2065,12 @@ mod tests {
             "commit",
             "-m",
             "initial",
+        ]);
+        let base_sha = git_stdout([
+            "-C",
+            source.to_str().expect("source path"),
+            "rev-parse",
+            "HEAD",
         ]);
         fs::write(source.join("README.md"), "second\n").expect("write second file");
         run_git(["-C", source.to_str().expect("source path"), "add", "."]);
@@ -2089,28 +2097,9 @@ mod tests {
             source.to_str().expect("source path"),
             bare.to_str().expect("bare path"),
         ]);
-        let output_tree = dir
-            .path()
-            .join("workspace-1-source-prep")
-            .join("prepared-tree");
-        let script = dir.path().join("prepare-source.sh");
-        fs::write(
-            &script,
-            format!(
-                r#"#!/bin/sh
-set -eu
-cat >/dev/null
-mkdir -p "{output_tree}"
-git --git-dir="{bare}" archive "{head}" | tar -x -C "{output_tree}"
-printf '{{"tree":"{output_tree}","revision":"{head}"}}'
-"#,
-                output_tree = output_tree.display(),
-                bare = bare.display(),
-                head = head,
-            ),
-        )
-        .expect("write source prep script");
-        make_executable(&script);
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("examples/deployment/commands/pump19-prepare-source");
         let pack = MechanicalPack {
             schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
             contract_version: ContractVersion::current(),
@@ -2120,7 +2109,10 @@ printf '{{"tree":"{output_tree}","revision":"{head}"}}'
                 kind: MechanicalStepKind::Checkout,
                 execution: MechanicalExecution::Command {
                     program: script.display().to_string(),
-                    args: Vec::new(),
+                    args: vec![
+                        "--git-base-url".to_owned(),
+                        format!("file://{}", git_base.display()),
+                    ],
                 },
                 inputs: Vec::new(),
                 outputs: Vec::new(),
@@ -2141,9 +2133,12 @@ printf '{{"tree":"{output_tree}","revision":"{head}"}}'
             },
         };
         let mut state_extensions = Extensions::new();
+        let mut facts = contract_facts();
+        facts.head.sha = head.clone();
+        facts.base.sha = base_sha;
         state_extensions.insert(
             "pump19.core.forge_facts".to_owned(),
-            serde_json::to_value(contract_facts()).expect("forge facts JSON"),
+            serde_json::to_value(facts).expect("forge facts JSON"),
         );
         let state = PrRunState {
             contract_version: ContractVersion::current(),
@@ -2181,6 +2176,10 @@ printf '{{"tree":"{output_tree}","revision":"{head}"}}'
             fs::read_to_string(checkout.tree.join("README.md")).expect("read prepared source"),
             "second\n"
         );
+        let diff = fs::read_to_string(checkout.tree.join(".pump19/review/diff.patch"))
+            .expect("read review diff evidence");
+        assert!(diff.contains("-first"));
+        assert!(diff.contains("+second"));
         assert!(!checkout.tree.join(".git").exists());
     }
 
@@ -2437,6 +2436,11 @@ stop_after_quiet_polls = 1
         let mut workspace = FakeWorkspaceProvider {
             cleaned: Rc::new(RefCell::new(0)),
         };
+        let workspace_root = dir.path().join("workspace");
+        write_review_diff(
+            &workspace_root,
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
 
         let outcome = launcher
             .launch_run(
@@ -2447,7 +2451,7 @@ stop_after_quiet_polls = 1
                     state: pending_state("abc123"),
                     workspace: WorkspaceLease {
                         id: "workspace".to_owned(),
-                        root: dir.path().join("workspace"),
+                        root: workspace_root,
                         isolation: WorkspaceIsolation {
                             isolated: true,
                             credential_free: true,
@@ -3036,6 +3040,12 @@ exit 75
             .expect("write brief");
         }
         prompt_root.join("prompt-pack.toml")
+    }
+
+    fn write_review_diff(root: &Path, diff: &str) {
+        let evidence_dir = root.join(".pump19/review");
+        fs::create_dir_all(&evidence_dir).expect("create review evidence dir");
+        fs::write(evidence_dir.join("diff.patch"), diff).expect("write review diff");
     }
 
     fn fake_node_launcher_script(captured_args: &Path) -> String {

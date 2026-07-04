@@ -39,6 +39,8 @@ const EXT_RAW_STDOUT: &str = "pump19.runs.raw_stdout";
 const EXT_RAW_STDERR: &str = "pump19.runs.raw_stderr";
 const EXT_MODEL_FAMILY: &str = "pump19.runs.model_family";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
+const REVIEW_EVIDENCE_DIR: &str = ".pump19/review";
+const REVIEW_DIFF_FILE: &str = "diff.patch";
 const ENSEMBLE_ENV_EXACT_ALLOWLIST: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -129,6 +131,8 @@ pub enum RunBodyError {
     EnsembleArchiveMismatch(String),
     #[error("prompt template failed: {0}")]
     PromptTemplate(String),
+    #[error("review evidence is missing: {0}")]
+    MissingReviewEvidence(String),
 }
 
 /// Prepares a concrete agent session for a core-owned launch target.
@@ -535,12 +539,13 @@ where
         self.last_archive_path = None;
         let _ = workspace;
         let subject = self.subject_for_repository(&request.state.pr.repository);
+        let review_evidence = load_review_evidence(&request.workspace.root)?;
         let brief_inputs = self
             .config
             .briefs
             .iter()
             .map(|brief| {
-                let evidence = evidence_text(&request.workspace.root, brief)?;
+                let evidence = review_evidence_text(&review_evidence, brief)?;
                 let prompt = render_prompt_template(
                     &self.config.prompt_template,
                     &[
@@ -568,6 +573,11 @@ where
             "pr": request.state.pr,
             "commit_sha": request.state.commit_sha,
             "workspace_root": request.workspace.root,
+            "evidence": {
+                "workspace_root": review_evidence.workspace_root,
+                "diff_path": review_evidence.diff_path,
+                "diff": review_evidence.diff,
+            },
             "reviewers": reviewers,
             "subject": subject,
             "briefs": brief_inputs,
@@ -1063,6 +1073,59 @@ fn render_prompt_template(
 
 fn prompt_json(value: &impl Serialize) -> Result<String, RunBodyError> {
     serde_json::to_string_pretty(value).map_err(RunBodyError::EnsembleJson)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReviewEvidence {
+    workspace_root: PathBuf,
+    diff_path: PathBuf,
+    diff: String,
+}
+
+fn load_review_evidence(workspace_root: &Path) -> Result<ReviewEvidence, RunBodyError> {
+    if !workspace_root.is_dir() {
+        return Err(RunBodyError::MissingReviewEvidence(format!(
+            "prepared workspace tree is absent at {}",
+            workspace_root.display()
+        )));
+    }
+    let diff_path = workspace_root
+        .join(REVIEW_EVIDENCE_DIR)
+        .join(REVIEW_DIFF_FILE);
+    let diff = fs::read_to_string(&diff_path).map_err(|error| {
+        RunBodyError::MissingReviewEvidence(format!(
+            "PR diff could not be read from {}: {error}",
+            diff_path.display()
+        ))
+    })?;
+    if diff.trim().is_empty() {
+        return Err(RunBodyError::MissingReviewEvidence(format!(
+            "PR diff at {} is empty",
+            diff_path.display()
+        )));
+    }
+    Ok(ReviewEvidence {
+        workspace_root: workspace_root.to_path_buf(),
+        diff_path,
+        diff,
+    })
+}
+
+fn review_evidence_text(
+    review_evidence: &ReviewEvidence,
+    brief: &JudgementBrief,
+) -> Result<String, RunBodyError> {
+    let mut text = format!(
+        "Prepared workspace tree: {}\nPR diff path: {}\n\n<pr_diff>\n{}\n</pr_diff>",
+        review_evidence.workspace_root.display(),
+        review_evidence.diff_path.display(),
+        review_evidence.diff
+    );
+    if !brief.evidence_paths.is_empty() {
+        text.push_str("\n\nAdditional brief evidence:\n");
+        text.push_str(&evidence_text(&review_evidence.workspace_root, brief)?);
+    }
+    Ok(text)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1701,6 +1764,12 @@ mod tests {
         }
     }
 
+    fn write_review_diff(root: &Path, diff: &str) {
+        let evidence_dir = root.join(REVIEW_EVIDENCE_DIR);
+        fs::create_dir_all(&evidence_dir).expect("create review evidence dir");
+        fs::write(evidence_dir.join(REVIEW_DIFF_FILE), diff).expect("write review diff");
+    }
+
     fn write_archive(root: &Path, agents: &[ArchiveAgentFixture]) {
         let run_dir = root.join("runs/cwd/test/test-run");
         fs::create_dir_all(run_dir.join("agents")).expect("create archive agents");
@@ -1825,6 +1894,10 @@ mod tests {
         );
         req.run_id = RunId("review-run".to_owned());
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let run = JudgementRun {
             status: JudgementStatus::Failed,
             model_families: vec!["codex".to_owned()],
@@ -1863,7 +1936,20 @@ mod tests {
         assert!(prompt.contains("external review template marker reviewer-independence"));
         assert!(prompt.contains("acme/widgets"));
         assert!(prompt.contains("Reviewer independence"));
-        assert!(prompt.contains("No separate evidence paths were supplied."));
+        assert!(prompt.contains("Prepared workspace tree:"));
+        assert!(prompt.contains(root.path().to_string_lossy().as_ref()));
+        assert!(prompt.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(!prompt.contains("No separate evidence paths were supplied."));
+        assert_eq!(
+            body.runner.requests[0].args["evidence"]["workspace_root"].as_str(),
+            Some(root.path().to_string_lossy().as_ref())
+        );
+        assert!(
+            body.runner.requests[0].args["evidence"]["diff"]
+                .as_str()
+                .expect("workflow diff evidence")
+                .contains("+pub fn changed() {}")
+        );
         assert_eq!(
             body.runner.requests[0].args["subject"]["name"].as_str(),
             Some("acme/widgets")
@@ -1879,6 +1965,10 @@ mod tests {
         );
         req.run_id = RunId("review-run".to_owned());
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let runner = FakeEnsembleRunner::new(
             serde_json::to_value(JudgementRun {
                 status: JudgementStatus::Passed,
@@ -1919,6 +2009,36 @@ mod tests {
             request.args["subject"]["name"].as_str(),
             Some("Acme Widgets")
         );
+    }
+
+    #[test]
+    fn review_body_fails_closed_before_launch_without_diff_evidence() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.workspace.root = root.path().to_path_buf();
+        let runner = FakeEnsembleRunner::new(
+            serde_json::to_value(JudgementRun {
+                status: JudgementStatus::Passed,
+                model_families: vec!["codex".to_owned()],
+                briefs: Vec::new(),
+            })
+            .expect("serialise judgement run"),
+            vec![archive_agent("reviewer-codex", "codex")],
+        );
+        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("review without diff evidence fails closed");
+
+        assert!(
+            matches!(error, RunBodyError::MissingReviewEvidence(message) if message.contains("PR diff"))
+        );
+        assert!(body.runner.requests.is_empty());
     }
 
     #[test]
@@ -1964,6 +2084,10 @@ mod tests {
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let runner = FakeEnsembleRunner::new(
             json!({"not": "a judgement run"}),
             vec![archive_agent("reviewer-codex", "codex")],
@@ -1986,6 +2110,10 @@ mod tests {
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let mut agent = archive_agent("reviewer-codex", "codex");
         agent.validated_output = None;
         let runner = FakeEnsembleRunner::new(
@@ -2017,6 +2145,10 @@ mod tests {
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let mut agent = archive_agent("reviewer-codex", "codex");
         agent.engine = "claude".to_owned();
         let runner = FakeEnsembleRunner::new(
@@ -2048,6 +2180,10 @@ mod tests {
             vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
         );
         req.workspace.root = root.path().to_path_buf();
+        write_review_diff(
+            root.path(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+        );
         let runner = FailingEnsembleRunner {
             message: "workflow timed out".to_owned(),
         };

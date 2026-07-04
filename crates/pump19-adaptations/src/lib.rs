@@ -854,10 +854,17 @@ input=$(cat)
 repository=$(printf '%s' "$input" | jq -r '.repository')
 commit_sha=$(printf '%s' "$input" | jq -r '.commit_sha')
 preparation_root=$(printf '%s' "$input" | jq -r '.preparation_root')
+base_sha=$(printf '%s' "$input" | jq -r '.state.extensions["pump19.core.forge_facts"].base.sha // empty')
 
 case "$commit_sha" in
   ""|*[!0123456789abcdefABCDEF]*)
     echo "commit_sha must be a hexadecimal revision" >&2
+    exit 65
+    ;;
+esac
+case "$base_sha" in
+  ""|*[!0123456789abcdefABCDEF]*)
+    echo "base revision is required to derive review diff evidence" >&2
     exit 65
     ;;
 esac
@@ -885,8 +892,16 @@ mkdir -p "$output_tree"
 git_url="$git_base_url/$repository.git"
 git_maybe_auth clone --no-checkout "$git_url" "$tmp/repo" >/dev/null 2>&1
 git_maybe_auth -C "$tmp/repo" fetch origin -- "$commit_sha" >/dev/null 2>&1
+git_maybe_auth -C "$tmp/repo" fetch origin -- "$base_sha" >/dev/null 2>&1
 git -C "$tmp/repo" cat-file -e "$commit_sha^{commit}"
+git -C "$tmp/repo" cat-file -e "$base_sha^{commit}"
 git -C "$tmp/repo" archive "$commit_sha" | tar -x -C "$output_tree"
+mkdir -p "$output_tree/.pump19/review"
+git -C "$tmp/repo" diff --no-ext-diff --no-color "$base_sha" "$commit_sha" -- > "$output_tree/.pump19/review/diff.patch"
+[ -s "$output_tree/.pump19/review/diff.patch" ] || {
+  echo "review diff evidence is empty for $base_sha..$commit_sha" >&2
+  exit 65
+}
 
 jq -nc --arg tree "$output_tree" --arg revision "$commit_sha" \
   '{tree:$tree, revision:$revision}'
@@ -1329,21 +1344,21 @@ pub fn baseline_prompt_templates() -> Vec<PromptTemplate> {
         PromptTemplate {
             id: "review-contract-findings".to_owned(),
             run_kind: RunKind::Review,
-            template: "You are an independent Pump-19 judgement reviewer.
+            template: "You are an independent Pump-19 code reviewer.
 Subject: {{subject_name}} ({{subject_slug}})
 Purpose: {{subject_purpose}}
 
 ## Task
-Review this Pump-19 judgement brief independently. Return JSON matching the schema.
+Review the code change against the brief below. Ground every failed result in the supplied PR diff or the prepared workspace tree. Return JSON matching the schema.
 
 ## Verdict
-Use status \"failed\" when you find a material concern. Use status \"passed\" only when the brief is satisfied. Put the short reason in stdout and diagnostics, if any, in stderr.
+Use status \"failed\" for material correctness, safety, maintainability, contract, or test concerns in the change. Use status \"passed\" when the change satisfies the brief. Put the short reason in stdout and diagnostics, if any, in stderr.
 
 <brief id=\"{{brief_id}}\" title=\"{{brief_title}}\">
 {{brief_body}}
 </brief>
 
-Evidence:
+Review evidence:
 {{evidence}}"
                 .to_owned(),
             extensions: Extensions::new(),
@@ -2392,9 +2407,13 @@ esac
             &work_repo,
             ["config", "user.email", "fixture@example.invalid"],
         );
-        fs::write(work_repo.join("README.md"), "prepared\n")?;
+        fs::write(work_repo.join("README.md"), "base\n")?;
         run_git_in(&work_repo, ["add", "README.md"]);
         run_git_in(&work_repo, ["commit", "-m", "initial"]);
+        let expected_base = git_stdout_in(&work_repo, ["rev-parse", "HEAD"]);
+        fs::write(work_repo.join("README.md"), "prepared\n")?;
+        run_git_in(&work_repo, ["add", "README.md"]);
+        run_git_in(&work_repo, ["commit", "-m", "prepared"]);
         let expected_head = git_stdout_in(&work_repo, ["rev-parse", "HEAD"]);
         run_git_in(
             &work_repo,
@@ -2418,7 +2437,13 @@ esac
             "preparation_root": preparation_root,
             "previous_tree": null,
             "event": {},
-            "state": {}
+            "state": {
+                "extensions": {
+                    "pump19.core.forge_facts": {
+                        "base": {"sha": expected_base}
+                    }
+                }
+            }
         });
 
         let output = run_json_command_with_args(
@@ -2432,6 +2457,9 @@ esac
         let tree = PathBuf::from(prepared["tree"].as_str().expect("tree path"));
         assert_eq!(prepared["revision"], expected_head);
         assert_eq!(fs::read_to_string(tree.join("README.md"))?, "prepared\n");
+        let diff = fs::read_to_string(tree.join(".pump19/review/diff.patch"))?;
+        assert!(diff.contains("-base"));
+        assert!(diff.contains("+prepared"));
         assert!(!tree.join(".git").exists());
         Ok(())
     }

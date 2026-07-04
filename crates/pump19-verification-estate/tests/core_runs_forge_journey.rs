@@ -1021,7 +1021,7 @@ fn archive_agent(agent_id: &str, family: &str) -> ArchiveAgentFixture {
 
 fn ensemble_config(root: &Path, run_kind: &str) -> EnsembleWorkflowConfig {
     let prompt_template = if run_kind == "review" {
-        "configured estate prompt\n{{subject_name}}\n{{subject_slug}}\n{{subject_purpose}}"
+        "configured estate prompt\n{{subject_name}}\n{{subject_slug}}\n{{subject_purpose}}\n{{evidence}}"
     } else {
         "configured estate prompt"
     };
@@ -1032,6 +1032,12 @@ fn ensemble_config(root: &Path, run_kind: &str) -> EnsembleWorkflowConfig {
         prompt_template: prompt_template.to_owned(),
         briefs: pump19_judgement::baseline_judgement_briefs(),
     }
+}
+
+fn write_review_diff(root: &Path, diff: &str) {
+    let evidence_dir = root.join(".pump19/review");
+    fs::create_dir_all(&evidence_dir).expect("create review evidence dir");
+    fs::write(evidence_dir.join("diff.patch"), diff).expect("write review diff");
 }
 
 fn write_archive(root: &Path, agents: &[ArchiveAgentFixture]) {
@@ -3129,6 +3135,10 @@ fn launcher_failure_is_recorded_as_failed_pr_run_state() {
 #[test]
 fn real_run_bodies_produce_findings_decisions_patches_and_finish_outcomes() {
     let review_workspace = tempdir().expect("review workspace");
+    write_review_diff(
+        review_workspace.path(),
+        "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+    );
     let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
         status: pump19_judgement::JudgementStatus::Failed,
         model_families: vec!["codex".to_owned(), "claude".to_owned()],
@@ -3365,6 +3375,10 @@ fn forgejo_normalisation_feeds_core_finish_gate_and_fails_closed_on_missing_auth
 #[test]
 fn review_run_body_uses_host_ensemble_not_workspace_executor() {
     let host_workspace = tempdir().expect("host workspace");
+    write_review_diff(
+        host_workspace.path(),
+        "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+    );
     let judgement_value = serde_json::to_value(pump19_judgement::JudgementRun {
         status: pump19_judgement::JudgementStatus::Failed,
         model_families: vec!["codex".to_owned(), "claude".to_owned()],
@@ -3491,6 +3505,14 @@ fn real_workspace_provider_prepares_container_and_cleans_up_after_launch() {
 #[test]
 fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     let root = tempdir().expect("workspace root");
+    let prepared_tree = root.path().join("prepared-source");
+    fs::create_dir_all(prepared_tree.join("src")).expect("create prepared source");
+    fs::write(prepared_tree.join("src/lib.rs"), "pub fn changed() {}\n")
+        .expect("write prepared source");
+    write_review_diff(
+        &prepared_tree,
+        "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
+    );
     let runtime = RecordingRuntime::default();
     let created_specs = Rc::clone(&runtime.created);
     let execs = Rc::clone(&runtime.execs);
@@ -3540,12 +3562,23 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     );
     let state_store = SharedEstateStateStore::default();
     let state_observer = state_store.clone();
+    let source_requests = Rc::new(RefCell::new(Vec::new()));
     let event = opened_event(contract_facts(
         BranchCurrency::Current,
         ReviewCleanliness::Dirty,
         Vec::new(),
     ));
-    let mut core = Core::new(EmptyEventSource, provider, launcher, state_store);
+    let mut core = Core::with_forge_operations_and_source_preparer(
+        EmptyEventSource,
+        provider,
+        launcher,
+        state_store,
+        RecordingForgeOperations::default(),
+        PreparedTreeSourcePreparer {
+            tree: prepared_tree,
+            requests: Rc::clone(&source_requests),
+        },
+    );
 
     let outcomes = core
         .process_event(&event, &[review_rule(standard_plan())])
@@ -3564,6 +3597,7 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
     assert_eq!(spec.workdir, "/workspace");
     assert!(!spec.host_control_dir.join("pump19.intent.toml").exists());
     assert!(execs.borrow().is_empty());
+    assert_eq!(source_requests.borrow().len(), 1);
 
     let requests = review_requests.borrow();
     let request = requests.first().expect("ensemble workflow invoked");
@@ -3583,6 +3617,18 @@ fn core_real_launcher_and_workspace_provider_run_review_via_host_ensemble() {
         .expect("rendered prompt");
     assert!(prompt.contains("acme/widgets"));
     assert!(prompt.contains("Review changes to acme/widgets"));
+    assert!(prompt.contains("Prepared workspace tree:"));
+    assert!(prompt.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+    assert_eq!(
+        request.args["evidence"]["workspace_root"].as_str(),
+        Some(spec.host_control_dir.to_string_lossy().as_ref())
+    );
+    assert!(
+        request.args["evidence"]["diff"]
+            .as_str()
+            .expect("diff evidence")
+            .contains("+pub fn changed() {}")
+    );
     assert_ne!(
         request.args["workspace_root"].as_str(),
         Some("/workspace"),

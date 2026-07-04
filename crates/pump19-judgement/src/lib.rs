@@ -212,7 +212,7 @@ pub fn baseline_judgement_briefs() -> Vec<JudgementBrief> {
             id: "reviewer-independence".to_owned(),
             title: "Reviewer independence".to_owned(),
             intent_ref: "invariants.reviewer-independence".to_owned(),
-            brief: "Judge whether the proposed verification setup preserves reviewer independence from the recorded author and uses at least two model families."
+            brief: "Review whether this code change preserves reviewer independence, model provenance checks, and family separation wherever it touches launch, workflow, state, or adaptation seams."
                 .to_owned(),
             evidence_paths: Vec::new(),
         },
@@ -220,7 +220,7 @@ pub fn baseline_judgement_briefs() -> Vec<JudgementBrief> {
             id: "material-findings".to_owned(),
             title: "Material findings".to_owned(),
             intent_ref: "invariants.material-findings".to_owned(),
-            brief: "Judge whether the review identifies material correctness, safety, and maintainability issues rather than cosmetic noise."
+            brief: "Review the change for material correctness, safety, maintainability, isolation, error-handling, and contract issues worth another pass. Ignore purely cosmetic noise."
                 .to_owned(),
             evidence_paths: Vec::new(),
         },
@@ -228,7 +228,7 @@ pub fn baseline_judgement_briefs() -> Vec<JudgementBrief> {
             id: "conformance-to-purpose".to_owned(),
             title: "Conformance to stated purpose".to_owned(),
             intent_ref: "behaviours.purpose".to_owned(),
-            brief: "Judge whether the implementation meaningfully serves the subject purpose supplied in the review prompt."
+            brief: "Review whether the code change meaningfully serves the subject purpose, stays within the intended behaviour, and includes appropriate tests or proof for the touched logic."
                 .to_owned(),
             evidence_paths: Vec::new(),
         },
