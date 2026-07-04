@@ -76,8 +76,16 @@ Relative command paths containing `/` are resolved relative to the daemon config
 file, just like the pack and state paths. Bare command names still resolve
 through `PATH`.
 
+Operational failures are operator-facing, not PR-facing. The daemon appends
+run failures, launch refusals and ceiling trips to
+`<state_root>/operator.log.jsonl` as JSON lines with a timestamp, PR, run kind,
+pass, commit and error/refusal detail. The file is append-only from Pump-19's
+point of view: it survives daemon restarts, can be tailed or grepped directly on
+the box, and is deliberately not a visibility knob. Journald/stdout events remain
+useful live noise, but the JSONL file is the deployment-owned permanent record.
+
 The generated packs carry the current contract version from `pump19-contract`
-(`1.4` at this revision).
+(`1.6` at this revision).
 
 Regenerate the baseline deployment assets with:
 
@@ -117,7 +125,7 @@ purpose = "Review changes to the widget service for correctness and maintainabil
 
 When a repository has no entry, Pump-19 renders review prompts with neutral
 subject text derived from the repository slug. Absence is the normal case: it does
-not fail the run and does not produce a failure or refusal comment on the PR.
+not fail the run and does not produce operator-log noise.
 
 The example command env entries use `env:FORGEJO_TOKEN`, which means the daemon
 copies `FORGEJO_TOKEN` from its own environment into the command environment
