@@ -92,6 +92,14 @@ pub enum ForgejoReviewCleanliness {
 pub struct ForgejoPullRequestSnapshot {
     pub repository: String,
     pub id: String,
+    /// PR title evidence used by older Forgejo/Gitea installations that encode
+    /// work-in-progress state as a configurable title prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Native draft evidence from newer forge payloads. Absence means the
+    /// server did not expose a draft flag, not that normalisation failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<bool>,
     pub head_sha: String,
     pub base_sha: String,
     pub branch_currency: ForgejoBranchCurrency,
@@ -188,8 +196,22 @@ pub fn forge_facts(
         finish_label: finish_label(config, &snapshot.labels)?,
         actor_permissions: actor_permissions(&snapshot.actor_permissions),
         author_login: snapshot.author_login.clone(),
+        work_in_progress: snapshot_work_in_progress(snapshot),
         extensions,
     })
+}
+
+fn snapshot_work_in_progress(snapshot: &ForgejoPullRequestSnapshot) -> bool {
+    snapshot.draft == Some(true)
+        || snapshot
+            .title
+            .as_deref()
+            .is_some_and(title_has_work_in_progress_prefix)
+}
+
+fn title_has_work_in_progress_prefix(title: &str) -> bool {
+    let title = title.trim_start();
+    title.starts_with("WIP:") || title.starts_with("[WIP]")
 }
 
 /// Converts a Forgejo activity into a contract event.
@@ -454,6 +476,36 @@ mod tests {
             facts.extensions[EXT_BRANCH_CURRENCY_EVIDENCE],
             json!("unknown_treated_as_stale")
         );
+    }
+
+    #[test]
+    fn work_in_progress_title_prefixes_normalise_to_contract_fact() {
+        for title in ["WIP: still shaping this", "[WIP] still shaping this"] {
+            let mut snapshot = snapshot_fixture();
+            snapshot.title = Some(title.to_owned());
+
+            let facts = forge_facts(&config(), &snapshot).expect("normalise facts");
+
+            assert!(facts.work_in_progress);
+        }
+    }
+
+    #[test]
+    fn native_draft_flag_normalises_to_contract_fact() {
+        let mut snapshot = snapshot_fixture();
+        snapshot.draft = Some(true);
+        snapshot.title = Some("Ready-looking title".to_owned());
+
+        let facts = forge_facts(&config(), &snapshot).expect("normalise facts");
+
+        assert!(facts.work_in_progress);
+    }
+
+    #[test]
+    fn absent_work_in_progress_evidence_means_ready() {
+        let facts = forge_facts(&config(), &snapshot_fixture()).expect("normalise facts");
+
+        assert!(!facts.work_in_progress);
     }
 
     #[test]

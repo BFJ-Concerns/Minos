@@ -584,12 +584,19 @@ while IFS= read -r pull_json; do
   done < "$tmp/label-actors.jsonl"
   actor_permissions_json=$(jq -s 'unique_by(.actor.id)' "$tmp/actor-permissions.jsonl")
   snapshot=$(printf '%s\n%s\n%s\n' "$pull_json" "$labels_json" "$actor_permissions_json" | jq -c -n --arg repository "$repository" --arg cleanliness "$cleanliness" '
-    input as $pull
+      input as $pull
     | input as $labels
     | input as $actor_permissions
     | {
         repository: $repository,
         id: (($pull.number // $pull.id) | tostring),
+        title: ($pull.title // null),
+        draft: (
+          if $pull.draft == true or $pull.is_draft == true then true
+          elif $pull.draft == false or $pull.is_draft == false then false
+          else null
+          end
+        ),
         head_sha: ($pull.head.sha // ""),
         base_sha: ($pull.base.sha // ""),
         branch_currency: (
@@ -1212,14 +1219,19 @@ fn review_on_pr_change_rule() -> TriggerRule {
     TriggerRule {
         id: "review-on-pr-change".to_owned(),
         run_kind: RunKind::Review,
-        criteria: Criteria::Any {
+        criteria: Criteria::All {
             criteria: vec![
-                Criteria::Event {
-                    event: EventKind::PullRequestOpened,
+                Criteria::Any {
+                    criteria: vec![
+                        Criteria::Event {
+                            event: EventKind::PullRequestOpened,
+                        },
+                        Criteria::Event {
+                            event: EventKind::PullRequestUpdated,
+                        },
+                    ],
                 },
-                Criteria::Event {
-                    event: EventKind::PullRequestUpdated,
-                },
+                Criteria::PrReady,
             ],
         },
         agent_plan: AgentPlan {
@@ -1875,7 +1887,10 @@ fn validate_criteria(rule_id: &str, criteria: &Criteria) -> Result<(), Adaptatio
                 rule_id: rule_id.to_owned(),
             })
         }
-        Criteria::Event { .. } | Criteria::State { .. } | Criteria::PrAuthoredBy { .. } => Ok(()),
+        Criteria::Event { .. }
+        | Criteria::State { .. }
+        | Criteria::PrAuthoredBy { .. }
+        | Criteria::PrReady => Ok(()),
     }
 }
 
@@ -2027,7 +2042,7 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 5
+minor = 6
 
 [[rules]]
 id = "review-on-my-prs"
@@ -2077,7 +2092,7 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 5
+minor = 6
 
 [[rules]]
 id = "review-on-my-prs"
@@ -2134,17 +2149,24 @@ model = "claude-stable"
         );
         assert!(matches!(
             loaded[0].criteria,
-            Criteria::Any { ref criteria }
+            Criteria::All { ref criteria }
                 if matches!(
                     criteria.as_slice(),
                     [
-                        Criteria::Event {
-                            event: EventKind::PullRequestOpened
-                        },
-                        Criteria::Event {
-                            event: EventKind::PullRequestUpdated
-                        },
+                        Criteria::Any { criteria: event_criteria },
+                        Criteria::PrReady,
                     ]
+                    if matches!(
+                        event_criteria.as_slice(),
+                        [
+                            Criteria::Event {
+                                event: EventKind::PullRequestOpened
+                            },
+                            Criteria::Event {
+                                event: EventKind::PullRequestUpdated
+                            },
+                        ]
+                    )
                 )
         ));
         assert!(loaded.iter().any(|rule| matches!(
@@ -2315,7 +2337,7 @@ model = "claude-stable"
         )?;
         fs::write(
             fixtures.join("pulls.json"),
-            r#"[{"number":42,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"pump19-finish"}]}]"#,
+            r#"[{"number":42,"title":"Ready for review","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"pump19-finish"}]}]"#,
         )?;
         fs::write(
             fixtures.join("timeline.json"),
@@ -2350,6 +2372,8 @@ esac
         let snapshots: serde_json::Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(snapshots[0]["repository"], "acme/widgets");
         assert_eq!(snapshots[0]["id"], "42");
+        assert_eq!(snapshots[0]["title"], "Ready for review");
+        assert_eq!(snapshots[0]["draft"], false);
         assert_eq!(snapshots[0]["head_sha"], "abc123");
         assert_eq!(snapshots[0]["branch_currency"], "current");
         assert_eq!(snapshots[0]["cleanliness"], "clean");
@@ -3269,6 +3293,7 @@ done
             finish_label: None,
             actor_permissions: Vec::new(),
             author_login: None,
+            work_in_progress: false,
             extensions: Extensions::new(),
         }
     }
@@ -3315,6 +3340,7 @@ done
                     finish_label: None,
                     actor_permissions: Vec::new(),
                     author_login: None,
+                    work_in_progress: false,
                     extensions: Extensions::new(),
                 },
             },

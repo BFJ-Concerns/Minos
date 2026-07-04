@@ -3130,6 +3130,8 @@ exit 75
         ForgejoPullRequestSnapshot {
             repository: "acme/widgets".to_owned(),
             id: "42".to_owned(),
+            title: None,
+            draft: None,
             head_sha: head_sha.to_owned(),
             base_sha: "def456".to_owned(),
             branch_currency: ForgejoBranchCurrency::Current,
@@ -3364,6 +3366,7 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                     .collect(),
             }],
             author_login: None,
+            work_in_progress: false,
             extensions: Extensions::new(),
         }
     }

@@ -983,6 +983,7 @@ where
         event: &ContractEvent,
         rules: &[TriggerRule],
     ) -> Result<Vec<DispatchOutcome>, CoreError> {
+        self.record_forge_event_state(event)?;
         let mut outcomes = Vec::new();
         for rule in rules {
             let state = self.load_state_for_event(event)?;
@@ -1001,6 +1002,19 @@ where
             outcomes.push(self.dispatch_rule(event, rule, state)?);
         }
         Ok(outcomes)
+    }
+
+    fn record_forge_event_state(&mut self, event: &ContractEvent) -> Result<(), CoreError> {
+        if !matches!(
+            event.payload,
+            EventPayload::PullRequestOpened { .. } | EventPayload::PullRequestUpdated { .. }
+        ) {
+            return Ok(());
+        }
+        if let Some(state) = self.load_state_for_event(event)? {
+            self.state_store.save(&state)?;
+        }
+        Ok(())
     }
 
     fn load_state_for_event(
@@ -1025,6 +1039,7 @@ where
             return Ok(exact);
         };
         if latest.commit_sha == facts.head.sha {
+            sync_state_with_forge_facts(&mut latest, facts)?;
             return Ok(Some(latest));
         }
 
@@ -2460,6 +2475,12 @@ pub enum Criteria {
     PrAuthoredBy {
         any_of: Vec<String>,
     },
+    /// Matches when the PR is not marked draft/work-in-progress by the forge.
+    ///
+    /// Forge events carry current readiness directly; downstream events use
+    /// the most recent persisted forge facts. Older contract producers omit
+    /// the fact, which deserialises as ready.
+    PrReady,
     All {
         criteria: Vec<Self>,
     },
@@ -2477,6 +2498,7 @@ impl Criteria {
             Self::PrAuthoredBy { any_of } => {
                 pr_author_login(event, state).is_some_and(|login| any_of.contains(&login))
             }
+            Self::PrReady => pr_ready(event, state),
             Self::All { criteria } => criteria
                 .iter()
                 .all(|criterion| criterion.matches(event, state)),
@@ -2484,6 +2506,23 @@ impl Criteria {
                 .iter()
                 .any(|criterion| criterion.matches(event, state)),
         }
+    }
+}
+
+/// Whether the PR is currently ready for review according to forge facts.
+fn pr_ready(event: &ContractEvent, state: Option<&PrRunState>) -> bool {
+    !pr_work_in_progress(event, state)
+}
+
+fn pr_work_in_progress(event: &ContractEvent, state: Option<&PrRunState>) -> bool {
+    match &event.payload {
+        EventPayload::PullRequestOpened { facts } | EventPayload::PullRequestUpdated { facts } => {
+            facts.work_in_progress
+        }
+        _ => state
+            .and_then(|state| state.extensions.get(EXT_FORGE_FACTS))
+            .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
+            .is_some_and(|facts| facts.work_in_progress),
     }
 }
 
@@ -3144,6 +3183,21 @@ fn initial_state_from_facts(facts: &ForgeFacts) -> PrRunState {
         ceiling: None,
         extensions,
     }
+}
+
+fn sync_state_with_forge_facts(
+    state: &mut PrRunState,
+    facts: &ForgeFacts,
+) -> Result<(), CoreError> {
+    state.current_head_sha = Some(facts.head.sha.clone());
+    state.extensions.insert(
+        EXT_FORGE_FACTS.to_owned(),
+        serde_json::to_value(facts).map_err(|source| CoreError::Json {
+            path: EXT_FORGE_FACTS.to_owned(),
+            source,
+        })?,
+    );
+    Ok(())
 }
 
 #[must_use]
@@ -5148,6 +5202,7 @@ mod tests {
                     .collect(),
             }],
             author_login: None,
+            work_in_progress: false,
             extensions: BTreeMap::new(),
         }
     }
