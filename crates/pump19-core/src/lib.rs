@@ -199,6 +199,52 @@ pub struct FindingCommentFormatRequest {
     pub facts: ForgeFacts,
 }
 
+/// Durable operator-facing event emitted for operational failures.
+///
+/// These records are the audience-correct surface for failures, refusals and
+/// ceiling trips. PR comments remain reserved for product output: material
+/// findings, fix commits and verdicts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OperatorLogEvent {
+    pub contract_version: ContractVersion,
+    pub kind: OperatorLogEventKind,
+    pub pr: PullRequestRef,
+    pub run_id: RunId,
+    pub run_kind: RunKind,
+    pub pass_index: u32,
+    pub commit_sha: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_reason: Option<RunRefusalReason>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorLogEventKind {
+    RunFailure,
+    LaunchRefusal,
+}
+
+/// Records operational events for the deployment operator.
+pub trait OperatorLog {
+    /// Appends an operator-facing operational event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable deployment-owned record cannot be written.
+    fn record(&mut self, event: OperatorLogEvent) -> Result<(), CoreError>;
+}
+
+/// Operator log used by tests and embedding code that does not need a runtime log.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NoopOperatorLog;
+
+impl OperatorLog for NoopOperatorLog {
+    fn record(&mut self, _event: OperatorLogEvent) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 /// Formatter used when a core is constructed without a formatting adaptation.
 ///
 /// Posting a finding comment without an explicit formatter would silently move
@@ -629,6 +675,7 @@ pub struct Core<
     F = NoopForgeOperations,
     P = NoopSourcePreparer,
     C = MissingCommentFormatter,
+    O = NoopOperatorLog,
 > {
     event_source: E,
     pending_events: VecDeque<ContractEvent>,
@@ -639,10 +686,21 @@ pub struct Core<
     forge_operations: F,
     source_preparer: P,
     comment_formatter: C,
+    operator_log: O,
     policy: CorePolicy,
 }
 
-impl<E, W, L, S> Core<E, W, L, S, NoopForgeOperations, NoopSourcePreparer, MissingCommentFormatter>
+impl<E, W, L, S>
+    Core<
+        E,
+        W,
+        L,
+        S,
+        NoopForgeOperations,
+        NoopSourcePreparer,
+        MissingCommentFormatter,
+        NoopOperatorLog,
+    >
 where
     E: EventSource,
     W: WorkspaceProvider,
@@ -704,7 +762,40 @@ where
             forge_operations,
             NoopSourcePreparer,
             MissingCommentFormatter,
+            NoopOperatorLog,
             policy,
+        )
+    }
+}
+
+impl<E, W, L, S, F, O> Core<E, W, L, S, F, NoopSourcePreparer, MissingCommentFormatter, O>
+where
+    E: EventSource,
+    W: WorkspaceProvider,
+    L: RunLauncher,
+    S: RunStateStore,
+    F: ForgeOperations,
+    O: OperatorLog,
+{
+    #[must_use]
+    pub const fn with_forge_operations_and_operator_log(
+        event_source: E,
+        workspace_provider: W,
+        launcher: L,
+        state_store: S,
+        forge_operations: F,
+        operator_log: O,
+    ) -> Self {
+        Self::with_forge_operations_source_preparer_comment_formatter_and_policy(
+            event_source,
+            workspace_provider,
+            launcher,
+            state_store,
+            forge_operations,
+            NoopSourcePreparer,
+            MissingCommentFormatter,
+            operator_log,
+            CorePolicy::human_gate(),
         )
     }
 }
@@ -735,6 +826,7 @@ where
             forge_operations,
             NoopSourcePreparer,
             comment_formatter,
+            NoopOperatorLog,
             CorePolicy::human_gate(),
         )
     }
@@ -766,6 +858,7 @@ where
             forge_operations,
             source_preparer,
             MissingCommentFormatter,
+            NoopOperatorLog,
             CorePolicy::human_gate(),
         )
     }
@@ -788,12 +881,13 @@ where
             forge_operations,
             source_preparer,
             MissingCommentFormatter,
+            NoopOperatorLog,
             policy,
         )
     }
 }
 
-impl<E, W, L, S, F, P, C> Core<E, W, L, S, F, P, C>
+impl<E, W, L, S, F, P, C, O> Core<E, W, L, S, F, P, C, O>
 where
     E: EventSource,
     W: WorkspaceProvider,
@@ -802,6 +896,7 @@ where
     F: ForgeOperations,
     P: SourcePreparer,
     C: CommentFormatter,
+    O: OperatorLog,
 {
     #[must_use]
     #[allow(
@@ -816,6 +911,7 @@ where
         forge_operations: F,
         source_preparer: P,
         comment_formatter: C,
+        operator_log: O,
         policy: CorePolicy,
     ) -> Self {
         Self {
@@ -828,6 +924,7 @@ where
             forge_operations,
             source_preparer,
             comment_formatter,
+            operator_log,
             policy,
         }
     }
@@ -960,7 +1057,7 @@ where
             Some(RunOutcome::Failed),
         );
         self.state_store.save(&state)?;
-        self.surface_failure(&record.run_id, &mut state, message)?;
+        self.record_operator_failure(&state, &record.run_id, message)?;
         self.state_store.save(&state)?;
         record.status = RunStatus::Failed;
         record.outcome = Some(RunOutcome::Failed);
@@ -1140,14 +1237,13 @@ where
             Ok(outcome) => outcome,
             Err(error) => {
                 let message = error.to_string();
-                mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
-                let record_result = self
-                    .state_store
-                    .save(&running_state)
-                    .and_then(|()| {
-                        self.surface_failure(&run_id, &mut running_state, message.as_str())
-                    })
-                    .and_then(|()| self.state_store.save(&running_state));
+                let record_result = self.record_failed_running_state(
+                    &mut running_state,
+                    event,
+                    rule,
+                    &run_id,
+                    &message,
+                );
                 let cleanup_result = self.workspace_provider.cleanup(&workspace);
                 if let Err(record_error) = record_result {
                     finish_before_cleanup(Err(record_error), cleanup_result)?;
@@ -1166,23 +1262,13 @@ where
 
         apply_run_outcome(&mut running_state, rule.run_kind, outcome);
         self.state_store.save(&running_state)?;
-        if let Err(error) =
-            self.apply_authorised_forge_operations(rule.run_kind, &run_id, &mut running_state)
-        {
-            let message = error.to_string();
-            mark_failed(&mut running_state, event, rule, &run_id, message.as_str());
-            let record_result = self
-                .state_store
-                .save(&running_state)
-                .and_then(|()| self.surface_failure(&run_id, &mut running_state, message.as_str()));
-            let cleanup_result = self.workspace_provider.cleanup(&workspace);
-            if let Err(record_error) = record_result {
-                finish_before_cleanup(Err(record_error), cleanup_result)?;
-                unreachable!("an explicit primary error cannot finish successfully");
-            }
-            finish_before_cleanup(Err(error), cleanup_result)?;
-            unreachable!("an explicit primary error cannot finish successfully");
-        }
+        self.apply_forge_operations_or_record_failure(
+            event,
+            rule,
+            &run_id,
+            &mut running_state,
+            &workspace,
+        )?;
         let save_result = self.state_store.save(&running_state);
         let cleanup_result = self.workspace_provider.cleanup(&workspace);
         save_result?;
@@ -1208,6 +1294,44 @@ where
             unreachable!("an explicit primary error cannot finish successfully");
         }
         Ok(())
+    }
+
+    fn apply_forge_operations_or_record_failure(
+        &mut self,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        running_state: &mut PrRunState,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if let Err(error) =
+            self.apply_authorised_forge_operations(rule.run_kind, run_id, running_state)
+        {
+            let message = error.to_string();
+            let record_result =
+                self.record_failed_running_state(running_state, event, rule, run_id, &message);
+            let cleanup_result = self.workspace_provider.cleanup(workspace);
+            if let Err(record_error) = record_result {
+                finish_before_cleanup(Err(record_error), cleanup_result)?;
+                unreachable!("an explicit primary error cannot finish successfully");
+            }
+            finish_before_cleanup(Err(error), cleanup_result)?;
+            unreachable!("an explicit primary error cannot finish successfully");
+        }
+        Ok(())
+    }
+
+    fn record_failed_running_state(
+        &mut self,
+        running_state: &mut PrRunState,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        message: &str,
+    ) -> Result<(), CoreError> {
+        mark_failed(running_state, event, rule, run_id, message);
+        self.state_store.save(running_state)?;
+        self.record_operator_failure(running_state, run_id, message)
     }
 
     fn handle_post_launch_supersession(
@@ -1412,7 +1536,7 @@ where
     ) -> Result<(), CoreError> {
         mark_failed(&mut state, event, rule, run_id, message);
         self.state_store.save(&state)?;
-        self.surface_failure(run_id, &mut state, message)?;
+        self.record_operator_failure(&state, run_id, message)?;
         self.state_store.save(&state)
     }
 
@@ -1427,7 +1551,7 @@ where
     ) -> Result<(), CoreError> {
         mark_failed_refusal(&mut state, event, rule, run_id, refusal, message);
         self.state_store.save(&state)?;
-        self.surface_failure(run_id, &mut state, message)?;
+        self.record_operator_refusal(&state, run_id, message)?;
         self.state_store.save(&state)
     }
 
@@ -1442,106 +1566,41 @@ where
         let message = format!("launch skipped: {refusal:?}");
         mark_skipped_refusal(&mut state, event, rule, run_id, refusal, message.as_str());
         self.state_store.save(&state)?;
-        self.surface_refusal(run_id, &mut state, refusal, message.as_str())?;
+        self.record_operator_refusal(&state, run_id, message.as_str())?;
         self.state_store.save(&state)
     }
 
-    fn surface_failure(
+    fn record_operator_failure(
         &mut self,
+        state: &PrRunState,
         run_id: &RunId,
-        state: &mut PrRunState,
         message: &str,
     ) -> Result<(), CoreError> {
-        let Some(facts) = forge_facts_from_state(state)? else {
-            return Ok(());
-        };
-        let idempotency_key = stable_id("forge-failure", [run_id.0.as_str()]);
-        let expected_head_sha = facts.head.sha;
-        if self.refuse_comment_if_head_moved(
+        self.operator_log.record(operator_log_event(
             state,
             run_id,
-            PublicationOperation::PostFailureComment,
-            idempotency_key.clone(),
-            expected_head_sha.clone(),
-        )? {
-            self.state_store.save(state)?;
-            return Ok(());
-        }
-        let result = self.forge_operations.post_comment(AuthorisedComment {
-            authorisation: AuthorisationContext {
-                pr: state.pr.clone(),
-                observed_head_sha: expected_head_sha.clone(),
-                idempotency_key: idempotency_key.clone(),
-                actor: core_actor(),
-                reason: "core surfaced failed Pump-19 run".to_owned(),
-                evidence: vec![AuthorisationEvidence::RunFailure {
-                    run_id: run_id.clone(),
-                }],
-            },
-            expected_head_sha: expected_head_sha.clone(),
-            body: failure_comment(run_id, message),
-        });
-        record_surface_comment_attempt(
-            state,
-            run_id,
-            PublicationOperation::PostFailureComment,
-            idempotency_key,
-            expected_head_sha,
-            result,
-        );
-        self.state_store.save(state)?;
-        Ok(())
+            OperatorLogEventKind::RunFailure,
+            message,
+            None,
+        )?)
     }
 
-    fn surface_refusal(
+    fn record_operator_refusal(
         &mut self,
+        state: &PrRunState,
         run_id: &RunId,
-        state: &mut PrRunState,
-        refusal: &LaunchRefusal,
         message: &str,
     ) -> Result<(), CoreError> {
-        let Some(facts) = forge_facts_from_state(state)? else {
-            return Ok(());
-        };
-        let reason = format!("{refusal:?}");
-        let idempotency_key = stable_id("forge-refusal", [run_id.0.as_str(), reason.as_str()]);
-        let expected_head_sha = facts.head.sha;
-        if self.refuse_comment_if_head_moved(
+        let refusal_reason = run_record_for(state, run_id)
+            .and_then(|record| record.refusal.as_ref())
+            .map(|refusal| refusal.reason.clone());
+        self.operator_log.record(operator_log_event(
             state,
             run_id,
-            PublicationOperation::PostRefusalComment {
-                reason: reason.clone(),
-            },
-            idempotency_key.clone(),
-            expected_head_sha.clone(),
-        )? {
-            self.state_store.save(state)?;
-            return Ok(());
-        }
-        let result = self.forge_operations.post_comment(AuthorisedComment {
-            authorisation: AuthorisationContext {
-                pr: state.pr.clone(),
-                observed_head_sha: expected_head_sha.clone(),
-                idempotency_key: idempotency_key.clone(),
-                actor: core_actor(),
-                reason: "core surfaced Pump-19 launch refusal".to_owned(),
-                evidence: vec![AuthorisationEvidence::LaunchRefusal {
-                    run_id: run_id.clone(),
-                }],
-            },
-            expected_head_sha: expected_head_sha.clone(),
-            body: refusal_comment(run_id, message),
-        });
-        record_surface_comment_attempt(
-            state,
-            run_id,
-            PublicationOperation::PostRefusalComment { reason },
-            idempotency_key,
-            expected_head_sha,
-            result,
-        );
-        self.state_store.save(state)?;
-        Ok(())
+            OperatorLogEventKind::LaunchRefusal,
+            message,
+            refusal_reason,
+        )?)
     }
 
     fn head_was_superseded_by(&self, state: &PrRunState) -> Result<Option<String>, CoreError> {
@@ -3533,39 +3592,6 @@ fn record_refused_publication_attempt(
     });
 }
 
-fn record_surface_comment_attempt(
-    state: &mut PrRunState,
-    run_id: &RunId,
-    operation: PublicationOperation,
-    idempotency_key: String,
-    expected_head_sha: String,
-    result: Result<ForgeOperationReceipt, ForgeOperationError>,
-) {
-    match result {
-        Ok(receipt) => record_publication_attempt(
-            state,
-            run_id,
-            operation,
-            idempotency_key,
-            Some(expected_head_sha),
-            Ok(receipt_to_contract(receipt)),
-        ),
-        Err(error) => {
-            let message = error.to_string();
-            record_publication_error_attempt(
-                state,
-                run_id,
-                operation,
-                idempotency_key,
-                Some(expected_head_sha),
-                &error,
-                message,
-            );
-            mark_superseded_from_operation_error(state, &error);
-        }
-    }
-}
-
 fn record_publication_error_attempt(
     state: &mut PrRunState,
     run_id: &RunId,
@@ -3632,6 +3658,46 @@ fn has_recorded_ceiling_refusal(state: &PrRunState) -> bool {
             Some(RunRefusalReason::RunCeilingReached)
         )
     })
+}
+
+fn operator_log_event(
+    state: &PrRunState,
+    run_id: &RunId,
+    kind: OperatorLogEventKind,
+    message: &str,
+    refusal_reason: Option<RunRefusalReason>,
+) -> Result<OperatorLogEvent, CoreError> {
+    let record = run_record_for(state, run_id).ok_or_else(|| {
+        CoreError::StateStore(format!(
+            "cannot record operator event for unknown run {}",
+            run_id.0
+        ))
+    })?;
+    Ok(OperatorLogEvent {
+        contract_version: ContractVersion::current(),
+        kind,
+        pr: state.pr.clone(),
+        run_id: run_id.clone(),
+        run_kind: record.run_kind,
+        pass_index: record.pass_index,
+        commit_sha: record.commit_sha.clone(),
+        message: message.to_owned(),
+        refusal_reason,
+    })
+}
+
+fn run_record_for<'a>(state: &'a PrRunState, run_id: &RunId) -> Option<&'a RunRecord> {
+    state
+        .active_run
+        .as_ref()
+        .filter(|record| record.run_id == *run_id)
+        .or_else(|| {
+            state
+                .run_history
+                .iter()
+                .rev()
+                .find(|record| record.run_id == *run_id)
+        })
 }
 
 fn receipt_to_contract(receipt: ForgeOperationReceipt) -> ForgeReceipt {
@@ -3720,14 +3786,6 @@ fn fix_commit_message(patch: &Patch) -> String {
         "{subject}\n\nPump-19 patch: {}\nAnswers findings: {}",
         patch.id.0, findings
     )
-}
-
-fn failure_comment(run_id: &RunId, message: &str) -> String {
-    format!("Pump-19 run failed: {}\n\n{}", run_id.0, message)
-}
-
-fn refusal_comment(run_id: &RunId, message: &str) -> String {
-    format!("Pump-19 run was not launched: {}\n\n{}", run_id.0, message)
 }
 
 fn actor_has_capability(facts: &ForgeFacts, actor: &ActorRef, capability: ActorCapability) -> bool {
@@ -4625,6 +4683,11 @@ mod tests {
         requests: Rc<RefCell<Vec<FindingCommentFormatRequest>>>,
     }
 
+    #[derive(Clone, Debug, Default)]
+    struct RecordingOperatorLog {
+        events: Rc<RefCell<Vec<OperatorLogEvent>>>,
+    }
+
     impl RecordingCommentFormatter {
         fn failing() -> Self {
             Self {
@@ -4649,6 +4712,13 @@ mod tests {
                 "formatted material finding {} via {}",
                 request.finding.id.0, request.decision.id
             ))
+        }
+    }
+
+    impl OperatorLog for RecordingOperatorLog {
+        fn record(&mut self, event: OperatorLogEvent) -> Result<(), CoreError> {
+            self.events.borrow_mut().push(event);
+            Ok(())
         }
     }
 
@@ -5634,7 +5704,9 @@ mod tests {
     fn source_preparation_failure_records_surfaces_and_cleans_workspace() {
         let temp = tempfile::tempdir().expect("temp dir");
         let cleaned = Rc::new(RefCell::new(0));
-        let mut core = Core::with_forge_operations_and_source_preparer(
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
             FakeEventSource::empty(),
             SourceWorkspaceProvider {
                 root: temp.path().join("workspace"),
@@ -5650,6 +5722,9 @@ mod tests {
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
             FailingSourcePreparer,
+            MissingCommentFormatter,
+            operator_log,
+            CorePolicy::human_gate(),
         );
 
         let error = core
@@ -5666,7 +5741,17 @@ mod tests {
         assert_eq!(saved.status, RunStatus::Failed);
         assert_eq!(saved.run_history.len(), 1);
         assert_eq!(saved.run_history[0].status, RunStatus::Failed);
-        assert_eq!(saved.publication.attempts.len(), 1);
+        assert!(saved.publication.attempts.is_empty());
+        assert_eq!(operator_events.borrow().len(), 1);
+        assert_eq!(
+            operator_events.borrow()[0].kind,
+            OperatorLogEventKind::RunFailure
+        );
+        assert!(
+            operator_events.borrow()[0]
+                .message
+                .contains("checkout failed in test")
+        );
         assert_eq!(
             saved
                 .extensions
@@ -6259,7 +6344,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_failure_persists_failed_state_and_surfaces_comment() {
+    fn launch_failure_persists_failed_state_and_operator_log() {
         let mut launcher = FakeRunLauncher::new(vec![
             LaunchProof::EstablishedFresh,
             LaunchProof::EstablishedFresh,
@@ -6267,7 +6352,9 @@ mod tests {
             LaunchProof::EstablishedFresh,
         ]);
         launcher.fail_launch = true;
-        let mut core = Core::with_forge_operations(
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_and_operator_log(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6276,6 +6363,7 @@ mod tests {
             launcher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            operator_log,
         );
 
         let error = core
@@ -6292,12 +6380,14 @@ mod tests {
             .expect("load state")
             .expect("failed state");
         assert_eq!(saved.status, RunStatus::Failed);
-        assert_eq!(core.forge_operations.comments.len(), 1);
-        assert!(
-            core.forge_operations.comments[0]
-                .body
-                .contains("launch failed")
-        );
+        assert!(core.forge_operations.comments.is_empty());
+        assert!(saved.publication.attempts.is_empty());
+        assert_eq!(operator_events.borrow().len(), 1);
+        let event = &operator_events.borrow()[0];
+        assert_eq!(event.kind, OperatorLogEventKind::RunFailure);
+        assert_eq!(event.run_kind, RunKind::Review);
+        assert_eq!(event.pass_index, 1);
+        assert_eq!(event.message, "run launcher failed: launch failed");
     }
 
     #[test]
@@ -6367,7 +6457,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_failure_comment_attempt_is_recorded_without_masking_run_failure() {
+    fn launch_failure_does_not_try_pr_comment_when_comment_channel_fails() {
         let mut launcher = FakeRunLauncher::new(vec![
             LaunchProof::EstablishedFresh,
             LaunchProof::EstablishedFresh,
@@ -6375,7 +6465,9 @@ mod tests {
             LaunchProof::EstablishedFresh,
         ]);
         launcher.fail_launch = true;
-        let mut core = Core::with_forge_operations(
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_and_operator_log(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6387,6 +6479,7 @@ mod tests {
                 fail_comments: true,
                 ..Default::default()
             },
+            operator_log,
         );
 
         let error = core
@@ -6403,17 +6496,9 @@ mod tests {
             .expect("load state")
             .expect("failed state");
         assert_eq!(saved.status, RunStatus::Failed);
-        assert_eq!(saved.publication.attempts.len(), 1);
-        assert_eq!(
-            saved.publication.attempts[0].status,
-            PublicationAttemptStatus::Failed
-        );
-        assert!(
-            saved.publication.attempts[0]
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("comment channel unavailable"))
-        );
+        assert!(core.forge_operations.comments.is_empty());
+        assert!(saved.publication.attempts.is_empty());
+        assert_eq!(operator_events.borrow().len(), 1);
     }
 
     #[test]
@@ -6542,7 +6627,7 @@ mod tests {
     }
 
     #[test]
-    fn run_ceiling_refusal_is_skipped_in_state_and_visible_on_pr() {
+    fn run_ceiling_refusal_is_skipped_in_state_and_visible_to_operator() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
         state.pass_index = 2;
         state.ceiling = Some(RunCeiling {
@@ -6551,7 +6636,9 @@ mod tests {
         });
         let mut store = FakeRunStateStore::default();
         store.save(&state).expect("save state");
-        let mut core = Core::with_forge_operations(
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_and_operator_log(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6560,6 +6647,7 @@ mod tests {
             FakeRunLauncher::new(Vec::new()),
             store,
             RecordingForgeOperations::default(),
+            operator_log,
         );
 
         let outcomes = core
@@ -6574,12 +6662,7 @@ mod tests {
             }]
         );
         assert_eq!(core.launcher.launched, 0);
-        assert_eq!(core.forge_operations.comments.len(), 1);
-        assert!(
-            core.forge_operations.comments[0]
-                .body
-                .contains("RunCeilingReached")
-        );
+        assert!(core.forge_operations.comments.is_empty());
         let saved = core
             .state_store
             .load(&RunStateKey {
@@ -6598,15 +6681,20 @@ mod tests {
                 .map(|refusal| &refusal.reason),
             Some(&RunRefusalReason::RunCeilingReached)
         );
-        assert_eq!(saved.publication.attempts.len(), 1);
-        assert!(matches!(
-            saved.publication.attempts[0].operation,
-            PublicationOperation::PostRefusalComment { .. }
-        ));
+        assert!(saved.publication.attempts.is_empty());
+        assert_eq!(operator_events.borrow().len(), 1);
+        let event = &operator_events.borrow()[0];
+        assert_eq!(event.kind, OperatorLogEventKind::LaunchRefusal);
+        assert_eq!(
+            event.refusal_reason,
+            Some(RunRefusalReason::RunCeilingReached)
+        );
+        assert_eq!(event.run_kind, RunKind::Review);
+        assert!(event.message.contains("RunCeilingReached"));
     }
 
     #[test]
-    fn run_ceiling_refusal_visibility_is_not_reposted_for_same_pr() {
+    fn run_ceiling_refusal_visibility_is_not_relogged_for_same_pr() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
         state.pass_index = 2;
         state.ceiling = Some(RunCeiling {
@@ -6615,7 +6703,9 @@ mod tests {
         });
         let mut store = FakeRunStateStore::default();
         store.save(&state).expect("save state");
-        let mut core = Core::with_forge_operations(
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_and_operator_log(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6624,6 +6714,7 @@ mod tests {
             FakeRunLauncher::new(Vec::new()),
             store,
             RecordingForgeOperations::default(),
+            operator_log,
         );
         let first_event = event();
         let mut second_event = event();
@@ -6651,7 +6742,7 @@ mod tests {
             }]
         );
         assert_eq!(core.launcher.launched, 0);
-        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert!(core.forge_operations.comments.is_empty());
         let saved = core
             .state_store
             .load(&RunStateKey {
@@ -6661,7 +6752,8 @@ mod tests {
             .expect("load state")
             .expect("state");
         assert_eq!(saved.run_history.len(), 1);
-        assert_eq!(saved.publication.attempts.len(), 1);
+        assert!(saved.publication.attempts.is_empty());
+        assert_eq!(operator_events.borrow().len(), 1);
     }
 
     #[test]
@@ -6672,7 +6764,9 @@ mod tests {
             family: ModelFamily("codex".to_owned()),
             reason: "codex CLI unavailable".to_owned(),
         });
-        let mut core = Core::with_forge_operations(
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_and_operator_log(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6681,6 +6775,7 @@ mod tests {
             launcher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            operator_log,
         );
 
         let outcomes = core
@@ -6699,7 +6794,7 @@ mod tests {
             }]
         );
         assert_eq!(core.launcher.launched, 0);
-        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert!(core.forge_operations.comments.is_empty());
         let saved = core
             .state_store
             .load(&RunStateKey {
@@ -6715,6 +6810,14 @@ mod tests {
                 .as_ref()
                 .map(|refusal| &refusal.reason),
             Some(&RunRefusalReason::RequiredFamilyUnavailable)
+        );
+        assert!(saved.publication.attempts.is_empty());
+        assert_eq!(operator_events.borrow().len(), 1);
+        let event = &operator_events.borrow()[0];
+        assert_eq!(event.kind, OperatorLogEventKind::LaunchRefusal);
+        assert_eq!(
+            event.refusal_reason,
+            Some(RunRefusalReason::RequiredFamilyUnavailable)
         );
     }
 
@@ -7255,7 +7358,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_running_recovery_surfaces_failure_and_unblocks_pr() {
+    fn stale_running_recovery_logs_failure_and_unblocks_pr() {
         let run_id = RunId("event-1:review:1".to_owned());
         let mut running = mark_running(
             initial_state_from_event(&event()).expect("initial state"),
@@ -7267,7 +7370,9 @@ mod tests {
         running.status = RunStatus::Running;
         let mut store = FakeRunStateStore::default();
         store.save(&running).expect("save running state");
-        let mut core = Core::with_forge_operations(
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_and_operator_log(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -7280,6 +7385,7 @@ mod tests {
             ]),
             store,
             RecordingForgeOperations::default(),
+            operator_log,
         );
 
         let recovered = core
@@ -7290,10 +7396,11 @@ mod tests {
         assert_eq!(recovered.terminal_replays, 0);
         assert_eq!(recovered.stale_running_failures, 1);
         assert_eq!(core.pending_event_count(), 1);
-        assert_eq!(core.forge_operations.comments.len(), 1);
+        assert!(core.forge_operations.comments.is_empty());
+        assert_eq!(operator_events.borrow().len(), 1);
         assert!(
-            core.forge_operations.comments[0]
-                .body
+            operator_events.borrow()[0]
+                .message
                 .contains("daemon restarted")
         );
         let failed = core
@@ -7341,6 +7448,7 @@ mod tests {
             RecordingForgeOperations::default(),
             NoopSourcePreparer,
             RecordingCommentFormatter::default(),
+            NoopOperatorLog,
             CorePolicy {
                 finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
                     label: "pump19-finish".to_owned(),

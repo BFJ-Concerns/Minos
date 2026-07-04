@@ -4,6 +4,8 @@
 trigger_pack = "adaptations/trigger/triggers.toml"
 prompt_pack = "adaptations/prompt/prompt-pack.toml"
 mechanical_pack = "adaptations/mechanical/mechanical.toml"
+# Durable operator-facing operational events are appended to
+# state/operator.log.jsonl beside the per-PR run state.
 state_root = "state"
 
 [workspace]

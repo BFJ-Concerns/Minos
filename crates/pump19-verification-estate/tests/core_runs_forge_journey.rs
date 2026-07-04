@@ -14,9 +14,8 @@ use pump19_contract::{
     EventPayload, Extensions, Finding, FindingCommentPublication, FindingCommentStatus, FindingId,
     FindingLocation, FinishLabel, ForgeFacts, ForgeReceipt, LoopPassRecord, Mergeability,
     ModelFamily, ModelLineage, ModelProvenance, PatchChange, PrRunState, ProvenanceVerification,
-    PublicationAttemptStatus, PublicationOperation, PublicationState, PullRequestRef,
-    ReviewCleanliness, Revision, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
-    RunRefusalReason, RunStatus, SessionFreshness, SessionId, Severity,
+    PublicationState, PullRequestRef, ReviewCleanliness, Revision, RunCeiling, RunId, RunKind,
+    RunOutcome, RunRecord, RunRefusalReason, RunStatus, SessionFreshness, SessionId, Severity,
 };
 use pump19_core::{
     AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisationEvidence,
@@ -24,7 +23,8 @@ use pump19_core::{
     AuthorisedLabel, AuthorisedMerge, CommentFormatter, Core, CoreError, CorePolicy, Criteria,
     DispatchOutcome, EventKind, EventSource, FindingCommentFormatRequest,
     FinishLabelApplicationPolicy, ForgeOperationError, ForgeOperationReceipt, ForgeOperations,
-    LaunchProof, LaunchRefusal, PreparedAgent, PreparedSource, RunLaunchOutcome, RunLaunchRequest,
+    LaunchProof, LaunchRefusal, NoopOperatorLog, OperatorLog, OperatorLogEvent,
+    OperatorLogEventKind, PreparedAgent, PreparedSource, RunLaunchOutcome, RunLaunchRequest,
     RunLauncher, RunStateKey, RunStateStore, SkipReason, SourcePreparationRequest, SourcePreparer,
     StateCriterion, TriggerRule, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor,
     WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
@@ -201,6 +201,11 @@ struct RecordingForgeOperations {
 }
 
 #[derive(Clone, Debug, Default)]
+struct RecordingOperatorLog {
+    events: Rc<RefCell<Vec<OperatorLogEvent>>>,
+}
+
+#[derive(Clone, Debug, Default)]
 struct EstateCommentFormatter;
 
 impl CommentFormatter for EstateCommentFormatter {
@@ -294,6 +299,13 @@ impl ForgeOperations for RecordingForgeOperations {
             idempotency_key,
             new_head_sha: Some("head-sha-after-fix".to_owned()),
         })
+    }
+}
+
+impl OperatorLog for RecordingOperatorLog {
+    fn record(&mut self, event: OperatorLogEvent) -> Result<(), CoreError> {
+        self.events.borrow_mut().push(event);
+        Ok(())
     }
 }
 
@@ -1832,6 +1844,7 @@ fn convergence_applies_finish_label_and_merges_when_core_has_policy_authority() 
         forge_operations,
         pump19_core::NoopSourcePreparer,
         EstateCommentFormatter,
+        NoopOperatorLog,
         CorePolicy {
             finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
                 label: "pump19-finish".to_owned(),
@@ -2212,7 +2225,7 @@ fn minor_judge_finding_is_recorded_but_suppressed_from_pr_publication() {
 }
 
 #[test]
-fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
+fn run_ceiling_trip_is_skipped_recorded_and_logged_for_operator() {
     let mut state = run_state();
     state.status = RunStatus::Completed;
     state.pass_index = 1;
@@ -2224,13 +2237,15 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
     let observer = state_store.clone();
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
+    let operator_log = RecordingOperatorLog::default();
+    let operator_events = Rc::clone(&operator_log.events);
     let launcher = RecordingLauncher::new(vec![
         LaunchProof::EstablishedFresh,
         LaunchProof::EstablishedFresh,
         LaunchProof::EstablishedFresh,
     ]);
     let recorded_launches = Rc::clone(&launcher.launched);
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_operator_log(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-ceiling-publication-estate")),
@@ -2238,6 +2253,7 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
         launcher,
         state_store,
         forge_operations,
+        operator_log,
     );
 
     let event = opened_event(contract_facts(
@@ -2269,8 +2285,7 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
         }]
     );
     assert!(recorded_launches.borrow().is_empty());
-    assert_eq!(comments.borrow().len(), 1);
-    assert!(comments.borrow()[0].body.contains("RunCeilingReached"));
+    assert!(comments.borrow().is_empty());
     let latest = observer
         .load_latest_for_pr(&pr())
         .expect("load state")
@@ -2283,15 +2298,17 @@ fn run_ceiling_trip_is_skipped_recorded_and_posted_to_the_pr() {
         record.refusal.as_ref().map(|refusal| &refusal.reason),
         Some(&RunRefusalReason::RunCeilingReached)
     );
-    assert_eq!(latest.publication.attempts.len(), 1);
+    assert!(latest.publication.attempts.is_empty());
+    assert_eq!(operator_events.borrow().len(), 1);
+    let event = &operator_events.borrow()[0];
+    assert_eq!(event.kind, OperatorLogEventKind::LaunchRefusal);
     assert_eq!(
-        latest.publication.attempts[0].status,
-        PublicationAttemptStatus::Succeeded
+        event.refusal_reason,
+        Some(RunRefusalReason::RunCeilingReached)
     );
-    assert!(matches!(
-        latest.publication.attempts[0].operation,
-        PublicationOperation::PostRefusalComment { .. }
-    ));
+    assert_eq!(event.run_kind, RunKind::Review);
+    assert_eq!(event.pass_index, 1);
+    assert!(event.message.contains("RunCeilingReached"));
 }
 
 #[test]
@@ -2328,12 +2345,14 @@ fn deployment_example_assets_compose_into_startable_daemon() {
 }
 
 #[test]
-fn required_family_unavailable_is_typed_recorded_and_posted_to_the_pr() {
+fn required_family_unavailable_is_typed_recorded_and_logged_for_operator() {
     let state_store = SharedEstateStateStore::default();
     let observer = state_store.clone();
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
-    let mut core = Core::with_forge_operations(
+    let operator_log = RecordingOperatorLog::default();
+    let operator_events = Rc::clone(&operator_log.events);
+    let mut core = Core::with_forge_operations_and_operator_log(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from(
@@ -2343,6 +2362,7 @@ fn required_family_unavailable_is_typed_recorded_and_posted_to_the_pr() {
         RequiredFamilyUnavailableLauncher,
         state_store,
         forge_operations,
+        operator_log,
     );
 
     let outcomes = core
@@ -2367,12 +2387,7 @@ fn required_family_unavailable_is_typed_recorded_and_posted_to_the_pr() {
             },
         }]
     );
-    assert_eq!(comments.borrow().len(), 1);
-    assert!(
-        comments.borrow()[0]
-            .body
-            .contains("RequiredFamilyUnavailable")
-    );
+    assert!(comments.borrow().is_empty());
     let latest = observer
         .load_latest_for_pr(&pr())
         .expect("load state")
@@ -2386,11 +2401,14 @@ fn required_family_unavailable_is_typed_recorded_and_posted_to_the_pr() {
             .map(|refusal| &refusal.reason),
         Some(&RunRefusalReason::RequiredFamilyUnavailable)
     );
-    assert_eq!(latest.publication.attempts.len(), 1);
-    assert!(matches!(
-        latest.publication.attempts[0].operation,
-        PublicationOperation::PostFailureComment
-    ));
+    assert!(latest.publication.attempts.is_empty());
+    assert_eq!(operator_events.borrow().len(), 1);
+    let event = &operator_events.borrow()[0];
+    assert_eq!(event.kind, OperatorLogEventKind::LaunchRefusal);
+    assert_eq!(
+        event.refusal_reason,
+        Some(RunRefusalReason::RequiredFamilyUnavailable)
+    );
 }
 
 #[test]
@@ -2876,19 +2894,21 @@ fn prepared_source_is_injected_into_credential_free_workspace_before_launch() {
 }
 
 #[test]
-fn source_preparation_failure_records_surfaces_and_cleans_without_launching() {
+fn source_preparation_failure_records_logs_and_cleans_without_launching() {
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
     let state_store = SharedEstateStateStore::default();
     let observer = state_store.clone();
     let cleanups = Rc::new(RefCell::new(Vec::new()));
+    let operator_log = RecordingOperatorLog::default();
+    let operator_events = Rc::clone(&operator_log.events);
     let launcher = RecordingLauncher::new(vec![
         LaunchProof::EstablishedFresh,
         LaunchProof::EstablishedFresh,
         LaunchProof::EstablishedFresh,
     ]);
     let failed_prep_launches = Rc::clone(&launcher.launched);
-    let mut core = Core::with_forge_operations_and_source_preparer(
+    let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
         EmptyEventSource,
         SourceRecordingWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-source-prep-failure-estate")),
@@ -2899,6 +2919,9 @@ fn source_preparation_failure_records_surfaces_and_cleans_without_launching() {
         state_store,
         forge_operations,
         FailingSourcePreparer,
+        EstateCommentFormatter,
+        operator_log,
+        CorePolicy::human_gate(),
     );
 
     let result = core.process_event(
@@ -2917,12 +2940,11 @@ fn source_preparation_failure_records_surfaces_and_cleans_without_launching() {
     ));
     assert!(failed_prep_launches.borrow().is_empty());
     assert_eq!(cleanups.borrow().as_slice(), ["workspace-1"]);
-    assert_eq!(comments.borrow().len(), 1);
-    assert!(
-        comments.borrow()[0]
-            .body
-            .contains("estate source preparation failed")
-    );
+    assert!(comments.borrow().is_empty());
+    assert_eq!(operator_events.borrow().len(), 1);
+    let event = &operator_events.borrow()[0];
+    assert_eq!(event.kind, OperatorLogEventKind::RunFailure);
+    assert!(event.message.contains("estate source preparation failed"));
     assert!(
         observer
             .states()
@@ -2932,7 +2954,7 @@ fn source_preparation_failure_records_surfaces_and_cleans_without_launching() {
 }
 
 #[test]
-fn stale_running_recovery_surfaces_failure_and_reopens_pr_dispatch() {
+fn stale_running_recovery_logs_failure_and_reopens_pr_dispatch() {
     let review_run = RunId("review-running-before-restart".to_owned());
     let mut state = run_state();
     state.status = RunStatus::Running;
@@ -2957,13 +2979,15 @@ fn stale_running_recovery_surfaces_failure_and_reopens_pr_dispatch() {
     let observer = state_store.clone();
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
+    let operator_log = RecordingOperatorLog::default();
+    let operator_events = Rc::clone(&operator_log.events);
     let launcher = RecordingLauncher::new(vec![
         LaunchProof::EstablishedFresh,
         LaunchProof::EstablishedFresh,
         LaunchProof::EstablishedFresh,
     ]);
     let recovery_launches = Rc::clone(&launcher.launched);
-    let mut core = Core::with_forge_operations(
+    let mut core = Core::with_forge_operations_and_operator_log(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-stale-running-recovery-estate")),
@@ -2971,6 +2995,7 @@ fn stale_running_recovery_surfaces_failure_and_reopens_pr_dispatch() {
         launcher,
         state_store,
         forge_operations,
+        operator_log,
     );
 
     let recovered = core
@@ -2979,8 +3004,13 @@ fn stale_running_recovery_surfaces_failure_and_reopens_pr_dispatch() {
     assert_eq!(recovered.queued, 1);
     assert_eq!(recovered.terminal_replays, 0);
     assert_eq!(recovered.stale_running_failures, 1);
-    assert_eq!(comments.borrow().len(), 1);
-    assert!(comments.borrow()[0].body.contains("daemon restarted"));
+    assert!(comments.borrow().is_empty());
+    assert_eq!(operator_events.borrow().len(), 1);
+    assert!(
+        operator_events.borrow()[0]
+            .message
+            .contains("daemon restarted")
+    );
     let failed = observer
         .load_by_run_id(&review_run)
         .expect("load failed state")
@@ -3252,7 +3282,9 @@ fn launcher_failure_is_recorded_as_failed_pr_run_state() {
     let observer = state_store.clone();
     let forge_operations = RecordingForgeOperations::default();
     let comments = Rc::clone(&forge_operations.comments);
-    let mut core = Core::with_forge_operations(
+    let operator_log = RecordingOperatorLog::default();
+    let operator_events = Rc::clone(&operator_log.events);
+    let mut core = Core::with_forge_operations_and_operator_log(
         EmptyEventSource,
         EstateWorkspaceProvider {
             lease: workspace(PathBuf::from("/tmp/pump19-failure-estate")),
@@ -3264,6 +3296,7 @@ fn launcher_failure_is_recorded_as_failed_pr_run_state() {
         ]),
         state_store,
         forge_operations,
+        operator_log,
     );
     let event = opened_event(contract_facts(
         BranchCurrency::Current,
@@ -3283,12 +3316,11 @@ fn launcher_failure_is_recorded_as_failed_pr_run_state() {
             .iter()
             .any(|state| state.status == RunStatus::Failed)
     );
-    assert_eq!(comments.borrow().len(), 1);
-    assert!(
-        comments.borrow()[0]
-            .body
-            .contains("estate forced launch failure")
-    );
+    assert!(comments.borrow().is_empty());
+    assert_eq!(operator_events.borrow().len(), 1);
+    let event = &operator_events.borrow()[0];
+    assert_eq!(event.kind, OperatorLogEventKind::RunFailure);
+    assert!(event.message.contains("estate forced launch failure"));
 }
 
 #[test]

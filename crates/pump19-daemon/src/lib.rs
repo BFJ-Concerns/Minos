@@ -11,7 +11,8 @@
 
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -19,7 +20,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use pump19_adaptations::{
@@ -30,8 +31,8 @@ use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
     AgentLaunchSpec, CommentFormatter, CompletionRecoverySummary, Core, CoreError, CorePolicy,
     DispatchOutcome, FindingCommentFormatRequest, FinishLabelApplicationPolicy, JsonRunStateStore,
-    LaunchProof, PreparedAgent, PreparedSource, SourcePreparationRequest, SourcePreparer,
-    TriggerRule,
+    LaunchProof, OperatorLog, OperatorLogEvent, PreparedAgent, PreparedSource,
+    SourcePreparationRequest, SourcePreparer, TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -471,6 +472,7 @@ type RuntimeCore = Core<
     ForgejoForgeOperations<CommandForgejoClient>,
     RuntimeSourcePreparer,
     RuntimeCommentFormatter,
+    RuntimeOperatorLog,
 >;
 
 type RuntimeLauncher = Pump19RunLauncher<
@@ -670,7 +672,7 @@ trait CoreRunner {
     fn pending_event_count(&self) -> usize;
 }
 
-impl<E, W, L, S, F, P, C> CoreRunner for Core<E, W, L, S, F, P, C>
+impl<E, W, L, S, F, P, C, O> CoreRunner for Core<E, W, L, S, F, P, C, O>
 where
     E: pump19_core::EventSource,
     W: pump19_core::WorkspaceProvider,
@@ -679,6 +681,7 @@ where
     F: pump19_core::ForgeOperations,
     P: pump19_core::SourcePreparer,
     C: pump19_core::CommentFormatter,
+    O: pump19_core::OperatorLog,
 {
     fn run_next(
         &mut self,
@@ -801,6 +804,7 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         config.workspace.root,
         config.workspace.image,
     ));
+    let operator_log = RuntimeOperatorLog::new(config.state_root.join("operator.log.jsonl"));
     let state_store = JsonRunStateStore::new(config.state_root)?;
     let forge_operations =
         ForgejoForgeOperations::new(CommandForgejoClient::new(config.forgejo.operation_command));
@@ -812,9 +816,62 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         forge_operations,
         source_preparer,
         comment_formatter,
+        operator_log,
         policy,
     );
     Ok(Pump19Daemon::new(core, config.loop_control))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeOperatorLog {
+    path: PathBuf,
+}
+
+impl RuntimeOperatorLog {
+    const fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+#[derive(Serialize)]
+struct RuntimeOperatorLogRecord<'a> {
+    logged_at_unix_ms: u128,
+    event: &'a OperatorLogEvent,
+}
+
+impl OperatorLog for RuntimeOperatorLog {
+    fn record(&mut self, event: OperatorLogEvent) -> Result<(), CoreError> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|source| CoreError::Io {
+                path: parent.display().to_string(),
+                source,
+            })?;
+        }
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| CoreError::Io {
+                path: self.path.display().to_string(),
+                source,
+            })?;
+        let logged_at_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let record = RuntimeOperatorLogRecord {
+            logged_at_unix_ms,
+            event: &event,
+        };
+        serde_json::to_writer(&mut file, &record).map_err(|source| CoreError::Json {
+            path: self.path.display().to_string(),
+            source,
+        })?;
+        file.write_all(b"\n").map_err(|source| CoreError::Io {
+            path: self.path.display().to_string(),
+            source,
+        })?;
+        Ok(())
+    }
 }
 
 fn resolve_mechanical_command_programs(pack: &mut MechanicalPack, root: &Path) {
@@ -1447,12 +1504,7 @@ impl CommandForgejoClient {
                     pump19_forge_forgejo::ForgejoClientError::Transport(error.to_string())
                 })?;
         if !output.status.success() {
-            let secrets = self
-                .command
-                .env
-                .values()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
+            let secrets = command_config_secrets(&self.command);
             return Err(command_failure_to_forgejo_error(&output, &secrets));
         }
         serde_json::from_slice::<CommandReceipt>(&output.stdout)
@@ -1553,7 +1605,8 @@ fn run_json_command_with_stdin<'a>(
     stdin: &[u8],
 ) -> Result<Vec<u8>, std::io::Error> {
     let output = run_command_with_stdin_output(config, args, stdin)?;
-    command_output(output)
+    let secrets = command_config_secrets(config);
+    command_output(output, &secrets)
 }
 
 fn run_command_with_stdin_output<'a>(
@@ -1594,16 +1647,22 @@ fn run_json_program(
     if let Some(child_stdin) = child.stdin.as_mut() {
         child_stdin.write_all(stdin)?;
     }
-    command_output(child.wait_with_output()?)
+    command_output(child.wait_with_output()?, &[])
 }
 
-fn command_output(output: std::process::Output) -> Result<Vec<u8>, std::io::Error> {
+fn command_config_secrets(config: &CommandConfig) -> Vec<&str> {
+    config.env.values().map(String::as_str).collect()
+}
+
+fn command_output(
+    output: std::process::Output,
+    secrets: &[&str],
+) -> Result<Vec<u8>, std::io::Error> {
     if output.status.success() {
         return Ok(output.stdout);
     }
     Err(std::io::Error::other(command_exit_message_with_redaction(
-        &output,
-        &[],
+        &output, secrets,
     )))
 }
 
@@ -1688,16 +1747,17 @@ mod tests {
         CertaintyClass, Confidence, ContractVersion, Decision, DecisionSubject, DecisionVerdict,
         Extensions, Finding, FindingId, FindingLocation, ForgeFacts, Mergeability, ModelFamily,
         ModelLineage, ModelProvenance, Patch, PatchChange, PatchId, PrRunState,
-        ProvenanceVerification, PublicationState, ReviewCleanliness, Revision, RunId, RunOutcome,
-        SessionFreshness, SessionId, Severity,
+        ProvenanceVerification, PublicationState, PullRequestRef, ReviewCleanliness, Revision,
+        RunId, RunKind, RunOutcome, RunRefusalReason, SessionFreshness, SessionId, Severity,
     };
     use pump19_core::{
         AgentEngine, AgentLaunchTarget, AgentPlan, AuthorisationEvidence, AuthorisedComment,
         AuthorisedCommentResolution, AuthorisedCommentUpdate, AuthorisedFixPush, AuthorisedLabel,
         AuthorisedMerge, Criteria, EventKind, ForgeOperationError, ForgeOperationReceipt,
-        ForgeOperations, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey,
-        RunStateStore, StateCriterion, WorkspaceExecOutput, WorkspaceExecRequest,
-        WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+        ForgeOperations, OperatorLogEvent, OperatorLogEventKind, RunLaunchOutcome,
+        RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore, StateCriterion,
+        WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
+        WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
     };
     use pump19_forge_forgejo::{
         ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
@@ -2611,6 +2671,49 @@ stop_after_quiet_polls = 1
     }
 
     #[test]
+    fn runtime_operator_log_appends_durable_json_line() {
+        let temp = tempdir().expect("operator log temp dir");
+        let path = temp.path().join("state/operator.log.jsonl");
+        let mut log = RuntimeOperatorLog::new(path.clone());
+
+        log.record(OperatorLogEvent {
+            contract_version: ContractVersion::current(),
+            kind: OperatorLogEventKind::LaunchRefusal,
+            pr: PullRequestRef {
+                repository: "acme/widgets".to_owned(),
+                id: "42".to_owned(),
+            },
+            run_id: RunId("forgejo-pr-opened:review:1".to_owned()),
+            run_kind: RunKind::Review,
+            pass_index: 1,
+            commit_sha: "abc123".to_owned(),
+            message: "launch skipped: RunCeilingReached".to_owned(),
+            refusal_reason: Some(RunRefusalReason::RunCeilingReached),
+        })
+        .expect("operator log append succeeds");
+
+        let text = fs::read_to_string(&path).expect("read operator log");
+        let lines = text.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1);
+        let record =
+            serde_json::from_str::<serde_json::Value>(lines[0]).expect("operator log JSON");
+        assert!(
+            record
+                .get("logged_at_unix_ms")
+                .and_then(serde_json::Value::as_u64)
+                .is_some()
+        );
+        assert_eq!(record["event"]["kind"], "launch_refusal");
+        assert_eq!(record["event"]["pr"]["repository"], "acme/widgets");
+        assert_eq!(record["event"]["run_kind"], "review");
+        assert_eq!(record["event"]["refusal_reason"], "run_ceiling_reached");
+        assert_eq!(
+            record["event"]["message"],
+            "launch skipped: RunCeilingReached"
+        );
+    }
+
+    #[test]
     fn daemon_launcher_threads_repository_intent_into_review_prompt() {
         let dir = tempdir().expect("temp dir");
         let captured_args = dir.path().join("captured-review-args.json");
@@ -3125,6 +3228,37 @@ exit 1
         assert!(message.contains("git push failed: protected branch rejected"));
         assert!(message.contains("Authorization: <redacted>"));
         assert!(message.contains("FORGEJO_TOKEN=<redacted>"));
+        assert!(!message.contains("secret-token-123"));
+    }
+
+    #[test]
+    fn command_polling_client_surfaces_redacted_stderr_on_activity_failure() {
+        let dir = tempdir().expect("temp dir");
+        let script = dir.path().join("poll-failure");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+printf 'poll failed for %s with token %s\n' "$1" "$FORGEJO_TOKEN" >&2
+exit 1
+"#,
+        )
+        .expect("write script");
+        make_executable(&script);
+        let mut env = BTreeMap::new();
+        env.insert("FORGEJO_TOKEN".to_owned(), "secret-token-123".to_owned());
+        let mut client = CommandPollingClient::new(CommandConfig {
+            program: script,
+            args: Vec::new(),
+            env,
+        });
+
+        let error = client
+            .open_pull_requests("acme/widgets")
+            .expect_err("poll failure should include stderr");
+        let message = error.to_string();
+
+        assert!(message.contains("poll failed for acme/widgets"));
+        assert!(message.contains("<redacted>"));
         assert!(!message.contains("secret-token-123"));
     }
 
