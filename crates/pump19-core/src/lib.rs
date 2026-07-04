@@ -1034,13 +1034,25 @@ where
         mut state: PrRunState,
     ) -> Result<Option<ContractEvent>, CoreError> {
         let Some(mut record) = state.active_run.clone() else {
+            let message = "daemon restarted with stale running state but no active run record";
             state.status = RunStatus::Failed;
             state.extensions.insert(
                 EXT_LAST_FAILURE.to_owned(),
-                Value::String(
-                    "daemon restarted with stale running state but no active run record".to_owned(),
-                ),
+                Value::String(message.to_owned()),
             );
+            if let Some(record) = stale_running_record_from_extensions(&state) {
+                let run_id = record.run_id.clone();
+                record_terminal_run(
+                    &mut state,
+                    record,
+                    RunStatus::Failed,
+                    Some(RunOutcome::Failed),
+                );
+                self.state_store.save(&state)?;
+                self.record_operator_failure(&state, &run_id, message)?;
+                self.state_store.save(&state)?;
+                return Ok(None);
+            }
             self.state_store.save(&state)?;
             return Ok(None);
         };
@@ -4076,6 +4088,51 @@ fn record_terminal_run(
         *existing = record;
     } else {
         state.run_history.push(record);
+    }
+}
+
+fn stale_running_record_from_extensions(state: &PrRunState) -> Option<RunRecord> {
+    let run_id = state.extensions.get(EXT_RUNNING_RUN_ID)?.as_str()?;
+    let run_kind = state
+        .extensions
+        .get(EXT_LAST_RUN_KIND)?
+        .as_str()
+        .and_then(run_kind_from_debug_name)?;
+    let event_id = state
+        .extensions
+        .get(EXT_LAST_EVENT_ID)
+        .and_then(Value::as_str)
+        .unwrap_or("unknown-stale-running-event")
+        .to_owned();
+    let rule_id = state
+        .extensions
+        .get(EXT_LAST_RULE_ID)
+        .and_then(Value::as_str)
+        .unwrap_or("unknown-stale-running-rule")
+        .to_owned();
+
+    Some(RunRecord {
+        run_id: RunId(run_id.to_owned()),
+        run_kind,
+        event_id,
+        rule_id,
+        pass_index: state.pass_index,
+        commit_sha: state.commit_sha.clone(),
+        status: RunStatus::Running,
+        outcome: None,
+        refusal: None,
+        ensemble_archive_path: None,
+        provenance: Vec::new(),
+    })
+}
+
+fn run_kind_from_debug_name(value: &str) -> Option<RunKind> {
+    match value {
+        "Review" => Some(RunKind::Review),
+        "Judge" => Some(RunKind::Judge),
+        "Fix" => Some(RunKind::Fix),
+        "Finish" => Some(RunKind::Finish),
+        _ => None,
     }
 }
 
@@ -7426,6 +7483,65 @@ mod tests {
             outcomes.as_slice(),
             [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review"
         ));
+    }
+
+    #[test]
+    fn stale_running_recovery_without_active_run_logs_failure() {
+        let run_id = RunId("event-1:review:1".to_owned());
+        let mut running = mark_running(
+            initial_state_from_event(&event()).expect("initial state"),
+            &event(),
+            &independent_rule(),
+            &run_id,
+            Vec::new(),
+        );
+        running.status = RunStatus::Running;
+        running.active_run = None;
+        let mut store = FakeRunStateStore::default();
+        store
+            .save(&running)
+            .expect("save running state without active run");
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_and_operator_log(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            store,
+            RecordingForgeOperations::default(),
+            operator_log,
+        );
+
+        let recovered = core
+            .rederive_pending_completions()
+            .expect("recover stale running state without active run");
+
+        assert_eq!(recovered.queued, 0);
+        assert_eq!(recovered.terminal_replays, 0);
+        assert_eq!(recovered.stale_running_failures, 1);
+        assert_eq!(core.pending_event_count(), 0);
+        let events = operator_events.borrow();
+        assert_eq!(events.len(), 1);
+        let operator_event = &events[0];
+        assert_eq!(operator_event.kind, OperatorLogEventKind::RunFailure);
+        assert_eq!(operator_event.run_id, run_id);
+        assert_eq!(operator_event.run_kind, RunKind::Review);
+        assert!(operator_event.message.contains("no active run record"));
+        let failed = core
+            .state_store
+            .load_by_run_id(&run_id)
+            .expect("load failed run")
+            .expect("failed state");
+        assert_eq!(failed.status, RunStatus::Failed);
+        assert_eq!(failed.run_history[0].status, RunStatus::Failed);
+        assert_eq!(failed.run_history[0].outcome, Some(RunOutcome::Failed));
     }
 
     #[test]

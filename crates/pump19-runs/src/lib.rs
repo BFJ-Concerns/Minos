@@ -10,7 +10,9 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
@@ -42,6 +44,7 @@ const EXT_MODEL_FAMILY: &str = "pump19.runs.model_family";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 const REVIEW_EVIDENCE_DIR: &str = ".pump19/review";
 const REVIEW_DIFF_FILE: &str = "diff.patch";
+const INLINE_REVIEW_DIFF_BYTE_LIMIT: usize = 64 * 1024;
 const ENSEMBLE_ENV_EXACT_ALLOWLIST: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -1250,6 +1253,19 @@ struct ReviewEvidence {
     diff: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InlineReviewDiff<'a> {
+    excerpt: &'a str,
+    omitted_bytes: usize,
+    omitted_hunks: usize,
+}
+
+impl InlineReviewDiff<'_> {
+    const fn is_truncated(&self) -> bool {
+        self.omitted_bytes > 0
+    }
+}
+
 fn load_review_evidence(workspace_root: &Path) -> Result<ReviewEvidence, RunBodyError> {
     if !workspace_root.is_dir() {
         return Err(RunBodyError::MissingReviewEvidence(format!(
@@ -1283,17 +1299,71 @@ fn review_evidence_text(
     review_evidence: &ReviewEvidence,
     brief: &JudgementBrief,
 ) -> Result<String, RunBodyError> {
+    let inline_diff = inline_review_diff(&review_evidence.diff, INLINE_REVIEW_DIFF_BYTE_LIMIT);
     let mut text = format!(
-        "Prepared workspace tree: {}\nPR diff path: {}\n\n<pr_diff>\n{}\n</pr_diff>",
+        "Prepared workspace tree: {}\nPR diff path: {}\nFull PR diff evidence lives on disk at the path above. Read that file from the prepared workspace when the excerpt below is truncated, and treat the file as authoritative.\n\n",
         review_evidence.workspace_root.display(),
         review_evidence.diff_path.display(),
-        review_evidence.diff
     );
+    if inline_diff.is_truncated() {
+        let _ = writeln!(
+            text,
+            "Bounded PR diff excerpt: showing {} bytes; omitted {} bytes across {} diff hunk(s).",
+            inline_diff.excerpt.len(),
+            inline_diff.omitted_bytes,
+            inline_diff.omitted_hunks
+        );
+    } else {
+        let _ = writeln!(
+            text,
+            "Complete PR diff excerpt: showing {} bytes; no diff bytes omitted.",
+            inline_diff.excerpt.len()
+        );
+    }
+    text.push_str("\n<pr_diff_excerpt>\n");
+    text.push_str(inline_diff.excerpt);
+    if !inline_diff.excerpt.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("</pr_diff_excerpt>");
     if !brief.evidence_paths.is_empty() {
         text.push_str("\n\nAdditional brief evidence:\n");
         text.push_str(&evidence_text(&review_evidence.workspace_root, brief)?);
     }
     Ok(text)
+}
+
+fn inline_review_diff(diff: &str, byte_limit: usize) -> InlineReviewDiff<'_> {
+    if diff.len() <= byte_limit {
+        return InlineReviewDiff {
+            excerpt: diff,
+            omitted_bytes: 0,
+            omitted_hunks: 0,
+        };
+    }
+
+    let mut excerpt_end = 0;
+    for line in diff.split_inclusive('\n') {
+        let next_end = excerpt_end + line.len();
+        if next_end > byte_limit {
+            break;
+        }
+        excerpt_end = next_end;
+    }
+
+    // Keep the excerpt on a valid, reviewable boundary. An empty excerpt can only
+    // happen when the first diff line exceeds the limit, which is still safer
+    // than copying a partial line into an argv-bound prompt.
+    let excerpt = &diff[..excerpt_end];
+    let omitted = &diff[excerpt_end..];
+    InlineReviewDiff {
+        excerpt,
+        omitted_bytes: omitted.len(),
+        omitted_hunks: omitted
+            .lines()
+            .filter(|line| line.starts_with("@@ "))
+            .count(),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -2135,6 +2205,81 @@ mod tests {
             body.runner.requests[0].args["subject"]["name"].as_str(),
             Some("acme/widgets")
         );
+    }
+
+    #[test]
+    fn review_body_bounds_inline_diff_evidence_but_preserves_full_workflow_evidence() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = request(
+            RunKind::Review,
+            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
+        );
+        req.run_id = RunId("review-run".to_owned());
+        req.workspace.root = root.path().to_path_buf();
+        let mut diff = String::from("diff --git a/src/lib.rs b/src/lib.rs\n");
+        for index in 0..80_000 {
+            write!(
+                diff,
+                "@@ -{index},1 +{index},1 @@\n-old_{index}\n+new_{index}\n"
+            )
+            .expect("write generated diff hunk");
+        }
+        diff.push_str("+final sentinel only present in the full diff\n");
+        write_review_diff(root.path(), &diff);
+        let full_diff_len = diff.len();
+        assert!(full_diff_len > 2 * 1024 * 1024);
+        let runner = FakeEnsembleRunner::new(
+            serde_json::to_value(JudgementRun {
+                status: JudgementStatus::Passed,
+                model_families: vec!["codex".to_owned()],
+                briefs: Vec::new(),
+            })
+            .expect("serialise judgement run"),
+            vec![archive_agent("reviewer-codex", "codex")],
+        );
+        let mut config = ensemble_config(root.path());
+        config.prompt_template = "{{evidence}}".to_owned();
+        let mut body = EnsembleReviewBody::new(runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("large diff review launches with bounded prompt evidence");
+
+        let request = &body.runner.requests[0];
+        let prompt = request.args["briefs"][0]["prompt"]
+            .as_str()
+            .expect("workflow brief prompt");
+        assert!(
+            prompt.len() < INLINE_REVIEW_DIFF_BYTE_LIMIT + 2 * 1024,
+            "rendered prompt should keep generous argv headroom; got {} bytes",
+            prompt.len()
+        );
+        assert!(prompt.contains("Bounded PR diff excerpt"));
+        assert!(prompt.contains("Full PR diff evidence lives on disk"));
+        assert!(prompt.contains("omitted "));
+        assert!(prompt.contains("diff hunk(s)"));
+        assert!(prompt.contains(root.path().to_string_lossy().as_ref()));
+        assert!(prompt.contains(".pump19/review/diff.patch"));
+        assert!(!prompt.contains("final sentinel only present in the full diff"));
+        assert_eq!(
+            request.args["evidence"]["workspace_root"].as_str(),
+            Some(root.path().to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            request.args["evidence"]["diff_path"].as_str(),
+            Some(
+                root.path()
+                    .join(REVIEW_EVIDENCE_DIR)
+                    .join(REVIEW_DIFF_FILE)
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        let workflow_diff = request.args["evidence"]["diff"]
+            .as_str()
+            .expect("workflow diff evidence");
+        assert_eq!(workflow_diff.len(), full_diff_len);
+        assert!(workflow_diff.contains("final sentinel only present in the full diff"));
     }
 
     #[test]
