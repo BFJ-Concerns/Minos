@@ -149,19 +149,29 @@ pub fn parse_review_brief(
 ///
 /// # Errors
 ///
-/// Returns an error when the directory cannot be read or a brief file cannot be
-/// read. Malformed frontmatter is returned as warning data instead.
+/// Returns an error when the directory cannot be read for reasons other than
+/// absence, or when a brief file cannot be read. Malformed frontmatter is
+/// returned as warning data instead.
 pub fn load_review_briefs_from_dir(dir: &Path) -> Result<ReviewBriefLoad, ReviewBriefError> {
-    let mut entries = fs::read_dir(dir)
-        .map_err(|source| ReviewBriefError::Io {
-            path: dir.display().to_string(),
-            source,
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| ReviewBriefError::Io {
-            path: dir.display().to_string(),
-            source,
-        })?;
+    let read_dir = match fs::read_dir(dir) {
+        Ok(read_dir) => read_dir,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ReviewBriefLoad::default());
+        }
+        Err(source) => {
+            return Err(ReviewBriefError::Io {
+                path: dir.display().to_string(),
+                source,
+            });
+        }
+    };
+    let mut entries =
+        read_dir
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| ReviewBriefError::Io {
+                path: dir.display().to_string(),
+                source,
+            })?;
     entries.sort_by_key(std::fs::DirEntry::path);
 
     let mut load = ReviewBriefLoad::default();
@@ -377,9 +387,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BriefNamespace, DEFAULT_OCCASION, ReviewBriefExtent, baseline_review_briefs,
-        brief_matches_occasion, load_review_briefs_from_dir, matching_briefs, merge_brief_sets,
-        namespace_briefs, parse_review_brief, write_baseline_review_briefs_to_dir,
+        BriefNamespace, DEFAULT_OCCASION, ReviewBriefExtent, ReviewBriefLoad,
+        baseline_review_briefs, brief_matches_occasion, load_review_briefs_from_dir,
+        matching_briefs, merge_brief_sets, namespace_briefs, parse_review_brief,
+        write_baseline_review_briefs_to_dir,
     };
 
     #[test]
@@ -465,6 +476,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a", "b"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_review_directory_loads_as_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let missing = dir.path().join(".review");
+
+        let load = load_review_briefs_from_dir(&missing)?;
+
+        assert_eq!(load, ReviewBriefLoad::default());
         Ok(())
     }
 

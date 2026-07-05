@@ -938,6 +938,14 @@ command -v tar >/dev/null 2>&1 || {
   echo "tar is required" >&2
   exit 78
 }
+command -v awk >/dev/null 2>&1 || {
+  echo "awk is required" >&2
+  exit 78
+}
+command -v realpath >/dev/null 2>&1 || {
+  echo "realpath is required" >&2
+  exit 78
+}
 
 input=$(cat)
 repository=$(printf '%s' "$input" | jq -r '.repository')
@@ -985,7 +993,17 @@ git_maybe_auth -C "$tmp/repo" fetch origin -- "$base_sha" >/dev/null 2>&1
 git -C "$tmp/repo" cat-file -e "$commit_sha^{commit}"
 git -C "$tmp/repo" cat-file -e "$base_sha^{commit}"
 git -C "$tmp/repo" archive "$commit_sha" | tar -x -C "$output_tree"
+rm -rf -- "$output_tree/.pump19"
 mkdir -p "$output_tree/.pump19/review"
+output_tree_real=$(realpath "$output_tree")
+review_dir_real=$(realpath "$output_tree/.pump19/review")
+case "$review_dir_real" in
+  "$output_tree_real"/*) ;;
+  *)
+    echo "prepared review directory escaped prepared tree" >&2
+    exit 70
+    ;;
+esac
 git -C "$tmp/repo" diff --no-ext-diff --no-color "$base_sha" "$commit_sha" -- > "$output_tree/.pump19/review/diff.patch"
 [ -s "$output_tree/.pump19/review/diff.patch" ] || {
   echo "review diff evidence is empty for $base_sha..$commit_sha" >&2
@@ -2947,6 +2965,78 @@ model = "claude-stable"
             fs::read_to_string(prepared_tree.join(".pump19/review/governing/.review/security.md"))?,
             "base review brief\n"
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn baseline_prepare_source_reclaims_head_pump19_symlink_before_writing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let remotes = dir.path().join("remotes");
+        let bare = remotes.join("acme/widgets.git");
+        let work = dir.path().join("work");
+        let evil_target = dir.path().join("evil-target");
+        fs::create_dir_all(bare.parent().expect("bare parent"))?;
+        fs::create_dir_all(&evil_target)?;
+        run_git(["init", "--bare", bare.to_str().expect("bare path")]);
+        run_git(["init", work.to_str().expect("work path")]);
+        run_git_in(&work, ["config", "user.email", "pump19@example.invalid"]);
+        run_git_in(&work, ["config", "user.name", "Pump 19"]);
+        run_git_in(
+            &work,
+            ["remote", "add", "origin", bare.to_str().expect("bare path")],
+        );
+
+        fs::create_dir_all(work.join(".review"))?;
+        fs::write(work.join("AGENTS.md"), "base root guidance\n")?;
+        fs::write(work.join(".review/security.md"), "base review brief\n")?;
+        fs::write(work.join("src.txt"), "base\n")?;
+        run_git_in(&work, ["add", "."]);
+        run_git_in(&work, ["commit", "-m", "base"]);
+        let base_sha = git_stdout_in(&work, ["rev-parse", "HEAD"]);
+
+        fs::remove_dir_all(work.join(".review"))?;
+        fs::write(work.join("AGENTS.md"), "head root guidance\n")?;
+        fs::write(work.join("src.txt"), "head\n")?;
+        std::os::unix::fs::symlink(&evil_target, work.join(".pump19"))?;
+        run_git_in(&work, ["add", "."]);
+        run_git_in(&work, ["commit", "-m", "head"]);
+        let head_sha = git_stdout_in(&work, ["rev-parse", "HEAD"]);
+        run_git_in(&work, ["push", "origin", "HEAD:main"]);
+
+        let preparation_root = dir.path().join("prepared");
+        let input = serde_json::json!({
+            "repository": "acme/widgets",
+            "commit_sha": head_sha,
+            "preparation_root": preparation_root,
+            "state": {
+                "extensions": {
+                    "pump19.core.forge_facts": {
+                        "base": { "sha": base_sha }
+                    }
+                }
+            }
+        });
+        let base_url = format!("file://{}", remotes.display());
+        let output = run_json_command_with_args(
+            &commands.prepare_source_command,
+            &["--git-base-url", &base_url],
+            &input,
+        )?;
+
+        assert_command_success(&output);
+        let prepared_tree = preparation_root.join("prepared-tree");
+        assert!(prepared_tree.join(".pump19").is_dir());
+        assert!(!prepared_tree.join(".pump19").is_symlink());
+        assert!(prepared_tree.join(".pump19/review/diff.patch").is_file());
+        assert_eq!(
+            fs::read_to_string(prepared_tree.join(".pump19/review/governing/AGENTS.md"))?,
+            "base root guidance\n"
+        );
+        assert!(!evil_target.join("review/diff.patch").exists());
+        assert!(!evil_target.join("review/governing/AGENTS.md").exists());
         Ok(())
     }
 

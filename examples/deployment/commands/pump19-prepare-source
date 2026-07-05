@@ -47,6 +47,14 @@ command -v tar >/dev/null 2>&1 || {
   echo "tar is required" >&2
   exit 78
 }
+command -v awk >/dev/null 2>&1 || {
+  echo "awk is required" >&2
+  exit 78
+}
+command -v realpath >/dev/null 2>&1 || {
+  echo "realpath is required" >&2
+  exit 78
+}
 
 input=$(cat)
 repository=$(printf '%s' "$input" | jq -r '.repository')
@@ -94,7 +102,17 @@ git_maybe_auth -C "$tmp/repo" fetch origin -- "$base_sha" >/dev/null 2>&1
 git -C "$tmp/repo" cat-file -e "$commit_sha^{commit}"
 git -C "$tmp/repo" cat-file -e "$base_sha^{commit}"
 git -C "$tmp/repo" archive "$commit_sha" | tar -x -C "$output_tree"
+rm -rf -- "$output_tree/.pump19"
 mkdir -p "$output_tree/.pump19/review"
+output_tree_real=$(realpath "$output_tree")
+review_dir_real=$(realpath "$output_tree/.pump19/review")
+case "$review_dir_real" in
+  "$output_tree_real"/*) ;;
+  *)
+    echo "prepared review directory escaped prepared tree" >&2
+    exit 70
+    ;;
+esac
 git -C "$tmp/repo" diff --no-ext-diff --no-color "$base_sha" "$commit_sha" -- > "$output_tree/.pump19/review/diff.patch"
 [ -s "$output_tree/.pump19/review/diff.patch" ] || {
   echo "review diff evidence is empty for $base_sha..$commit_sha" >&2
