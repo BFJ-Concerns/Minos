@@ -51,6 +51,7 @@ const EXT_BRIEF_WARNINGS: &str = "pump19.frame.brief_warnings";
 const REVIEW_EVIDENCE_DIR: &str = ".pump19/review";
 const REVIEW_DIFF_FILE: &str = "diff.patch";
 const INLINE_REVIEW_DIFF_BYTE_LIMIT: usize = 64 * 1024;
+const REPAIR_OUTPUT_TIMEOUT_MS: u64 = 120_000;
 const ENSEMBLE_ENV_EXACT_ALLOWLIST: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -616,6 +617,7 @@ fn run_lead_session_fix(
             engine: lead_engine.engine,
             executable: lead_engine.executable,
             working_dir: run_dir.clone(),
+            extra_workspace_roots: vec![request.workspace.root.clone()],
             prompt_path: run_dir.join("mission.md"),
             schema_path: None,
             archive_dir: run_dir.join("archive/fix"),
@@ -700,7 +702,10 @@ fn run_lead_session_frame(
         run_dir: run_dir.clone(),
         repair_target: lead_target.clone(),
     };
-    let engine_run = engine.launch_lead(&review_lead_launch_spec(config, &run_dir), &mut repair)?;
+    let engine_run = engine.launch_lead(
+        &review_lead_launch_spec(config, &run_dir, &request.workspace.root),
+        &mut repair,
+    )?;
 
     if engine_run.classification != ExitClassification::Success {
         return Err(RunBodyError::LeadSession(format!(
@@ -765,11 +770,16 @@ fn run_lead_session_frame(
     })
 }
 
-fn review_lead_launch_spec(config: &LeadSessionFrameConfig, run_dir: &Path) -> LaunchSpec {
+fn review_lead_launch_spec(
+    config: &LeadSessionFrameConfig,
+    run_dir: &Path,
+    workspace_root: &Path,
+) -> LaunchSpec {
     LaunchSpec {
         engine: config.lead_engine.engine,
         executable: config.lead_engine.executable.clone(),
         working_dir: run_dir.to_path_buf(),
+        extra_workspace_roots: vec![workspace_root.to_path_buf()],
         prompt_path: run_dir.join("mission.md"),
         schema_path: Some(run_dir.join("schema/review-output.schema.json")),
         archive_dir: run_dir.join("archive/lead"),
@@ -1230,13 +1240,13 @@ impl RepairStrategy for WorkflowRepairStrategy<'_> {
                     "schema": serde_json::from_str::<Value>(&schema).unwrap_or(Value::Null),
                     "invalid_output": attempt.invalid_output,
                     "errors": [attempt.error],
-                    "agent_timeout_ms": 120_000,
+                    "agent_timeout_ms": REPAIR_OUTPUT_TIMEOUT_MS,
                 }),
                 archive_dir: self
                     .run_dir
                     .join("archive/workflows/repair-output")
                     .join(attempt.attempt.to_string()),
-                timeout_ms: 120_000,
+                timeout_ms: REPAIR_OUTPUT_TIMEOUT_MS,
             })
             .map_err(|error| EngineError::Repair(error.to_string()))?;
         output
@@ -3329,6 +3339,7 @@ mod tests {
         output: Value,
         classification: ExitClassification,
         run_workflow_shim: bool,
+        read_workspace_file: Option<String>,
         edit_workspace_files: Vec<(String, String)>,
         delete_workspace_files: Vec<String>,
         seen_specs: Vec<LaunchSpec>,
@@ -3340,6 +3351,7 @@ mod tests {
                 output,
                 classification: ExitClassification::Success,
                 run_workflow_shim: false,
+                read_workspace_file: None,
                 edit_workspace_files: Vec::new(),
                 delete_workspace_files: Vec::new(),
                 seen_specs: Vec::new(),
@@ -3354,6 +3366,16 @@ mod tests {
             _repair: &mut dyn RepairStrategy,
         ) -> Result<EngineRun, EngineError> {
             self.seen_specs.push(spec.clone());
+            if let Some(path) = &self.read_workspace_file {
+                let manifest = serde_json::from_slice::<RunManifest>(
+                    &fs::read(spec.working_dir.join("manifest.json")).expect("read manifest"),
+                )
+                .expect("parse manifest");
+                let target = PathBuf::from(manifest.workspace.tree_root).join(path);
+                fs::read_to_string(&target).unwrap_or_else(|error| {
+                    panic!("read workspace file {}: {error}", target.display())
+                });
+            }
             if self.run_workflow_shim {
                 let input = spec.working_dir.join("out/repair-input.json");
                 fs::write(
@@ -3722,6 +3744,8 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
             root,
             "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,2 @@\n old\n+new unsafe line\n",
         );
+        fs::create_dir_all(root.join("src")).expect("create src");
+        fs::write(root.join("src/lib.rs"), "old\nnew unsafe line\n").expect("write source");
         req
     }
 
@@ -3850,6 +3874,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         let output = lead_payload(&findings_payload, true, &verdict_payload);
         let mut engine = ScriptedLeadEngine::successful(output);
         engine.run_workflow_shim = true;
+        engine.read_workspace_file = Some("src/lib.rs".to_owned());
         let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
         let config = lead_frame_config(root.path());
         let mut body = LeadSessionReviewBody::new(engine, runner, config);
@@ -3889,7 +3914,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
     }
 
     #[test]
-    fn review_lead_launch_spec_keeps_tree_read_only_but_grants_claude_tools() {
+    fn review_lead_launch_spec_keeps_tree_read_only_and_uses_claude_dsp() {
         let root = tempfile::tempdir().expect("workspace root");
         let config = lead_frame_config(root.path());
         let run_dir = root.path().join("frame-runs/lead-frame-review");
@@ -3903,15 +3928,46 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         )
         .expect("write schema");
 
-        let spec = review_lead_launch_spec(&config, &run_dir);
+        let spec = review_lead_launch_spec(&config, &run_dir, root.path());
         let invocation = EngineSessionLauncher::build_invocation(&spec).expect("build invocation");
 
         assert_eq!(spec.write_access, WriteAccess::ReadOnly);
+        assert_eq!(spec.extra_workspace_roots, vec![root.path().to_path_buf()]);
+        assert!(
+            invocation
+                .args
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+        );
+        assert!(!invocation.args.iter().any(|arg| arg == "--add-dir"));
+    }
+
+    #[test]
+    fn review_lead_launch_spec_grants_codex_the_prepared_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut config = lead_frame_config(root.path());
+        config.lead_engine.engine = EngineKind::Codex;
+        config.lead_engine.executable = PathBuf::from("codex");
+        let run_dir = root.path().join("frame-runs/lead-frame-review");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(run_dir.join("mission.md"), "review the prepared workspace")
+            .expect("write mission");
+        fs::create_dir_all(run_dir.join("schema")).expect("create schema dir");
+        fs::write(
+            run_dir.join("schema/review-output.schema.json"),
+            r#"{"type":"object"}"#,
+        )
+        .expect("write schema");
+
+        let spec = review_lead_launch_spec(&config, &run_dir, root.path());
+        let invocation = EngineSessionLauncher::build_invocation(&spec).expect("build invocation");
+
+        assert_eq!(spec.extra_workspace_roots, vec![root.path().to_path_buf()]);
         assert!(
             invocation
                 .args
                 .windows(2)
-                .any(|pair| pair == ["--permission-mode", "auto"])
+                .any(|pair| pair[0] == "--add-dir" && pair[1] == root.path().display().to_string())
         );
     }
 
@@ -4467,6 +4523,48 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
                 .archive_dir
                 .to_string_lossy()
                 .contains("repair-output")
+        );
+        assert_eq!(
+            body.workflow_runner.requests[0].args["agent_timeout_ms"],
+            json!(REPAIR_OUTPUT_TIMEOUT_MS)
+        );
+        assert_eq!(
+            body.workflow_runner.requests[0].timeout_ms,
+            REPAIR_OUTPUT_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn lead_frame_surfaces_schema_repair_workflow_failure_cleanly() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let codex = root.path().join("fake-codex.sh");
+        fs::write(
+            &codex,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"fake-thread"}'
+printf '%s\n' '{"type":"item.completed","item":{"text":"not json"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
+"#,
+        )
+        .expect("write fake codex");
+        make_executable(&codex).expect("chmod fake codex");
+        let runner = FailingEnsembleRunner {
+            message: "launcher exceeded hard timeout of 120000 ms and was killed".to_owned(),
+        };
+        let mut config = lead_frame_config(root.path());
+        config.lead_engine.executable = codex;
+        let engine = EngineSessionLauncher::new(RepairPolicy { attempts: 1 });
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("repair workflow failure is surfaced");
+
+        assert!(
+            matches!(error, RunBodyError::Engine(EngineError::Repair(message)) if message.contains("hard timeout"))
         );
     }
 

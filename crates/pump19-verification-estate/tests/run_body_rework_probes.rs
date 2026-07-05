@@ -178,6 +178,7 @@ fn live_engine_session_drives_ensemble_workflow_through_payload_file()
             engine: EngineKind::Claude,
             executable: claude,
             working_dir: run_dir.to_path_buf(),
+            extra_workspace_roots: Vec::new(),
             prompt_path: run_dir.join("mission.md"),
             schema_path: Some(run_dir.join("schema.json")),
             archive_dir: run_dir.join("archive/lead"),
@@ -213,6 +214,122 @@ fn live_engine_session_drives_ensemble_workflow_through_payload_file()
     assert!(boundary.contains("\"slot\":\"repair-output\""));
     assert!(boundary.contains("\"input_path\":\"input/repair.json\""));
     assert!(run_dir.join("archive/workflows/repair-output").exists());
+    Ok(())
+}
+
+#[test]
+#[ignore = "spends live Claude tokens; proves the frame run dir can read the separate prepared workspace"]
+fn live_claude_lead_reads_separate_workspace_and_drives_workflow_shim()
+-> Result<(), Box<dyn std::error::Error>> {
+    let claude = command_path("claude")?;
+
+    let root = tempdir()?;
+    let run_dir = root.path().join("frame-runs/lead-frame-review");
+    let workspace_dir = root.path().join("prepared-workspace");
+    fs::create_dir_all(run_dir.join("bin"))?;
+    fs::create_dir_all(run_dir.join("input"))?;
+    fs::create_dir_all(run_dir.join("out"))?;
+    fs::create_dir_all(run_dir.join("archive"))?;
+    fs::create_dir_all(workspace_dir.join("src"))?;
+
+    fs::write(
+        workspace_dir.join("src/probe.txt"),
+        "LIVE_SHAPE_WORKSPACE_MARKER_4d62\n",
+    )?;
+    write_read_only_tree(&workspace_dir)?;
+    fs::write(
+        run_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "run_id": "lead-frame-review",
+            "workspace": {
+                "tree_root": workspace_dir,
+                "changed_files": ["src/probe.txt"],
+                "diff_path": workspace_dir.join(".pump19/review/diff.patch")
+            }
+        }))?,
+    )?;
+    fs::write(
+        run_dir.join("input/review.json"),
+        serde_json::to_vec_pretty(&json!({"marker": "workflow-input"}))?,
+    )?;
+    write_simple_workflow_shim(&run_dir.join("bin/pump19-workflow"))?;
+    fs::write(
+        run_dir.join("schema.json"),
+        r#"{"type":"object","additionalProperties":false,"required":["workspace_marker","workflow_marker","manifest_workspace_root"],"properties":{"workspace_marker":{"type":"string"},"workflow_marker":{"type":"string"},"manifest_workspace_root":{"type":"string"}}}"#,
+    )?;
+    fs::write(
+        run_dir.join("mission.md"),
+        "Read manifest.json. Then read src/probe.txt from manifest.workspace.tree_root. Run exactly:\n./bin/pump19-workflow review input/review.json > out/workflow.json\n\nRead out/workflow.json. Return only this JSON shape: {\"workspace_marker\":\"<trimmed file contents>\",\"workflow_marker\":\"<marker from workflow json>\",\"manifest_workspace_root\":\"<manifest workspace.tree_root>\"}.",
+    )?;
+
+    let run = EngineSessionLauncher::default().launch(
+        &LaunchSpec {
+            engine: EngineKind::Claude,
+            executable: claude,
+            working_dir: run_dir.clone(),
+            extra_workspace_roots: vec![workspace_dir.clone()],
+            prompt_path: run_dir.join("mission.md"),
+            schema_path: Some(run_dir.join("schema.json")),
+            archive_dir: run_dir.join("archive/lead"),
+            requested_model: Some("sonnet".to_owned()),
+            write_access: WriteAccess::ReadOnly,
+            bounds: LaunchBounds {
+                wall_clock: Duration::from_secs(150),
+                max_budget_usd: Some("0.80".to_owned()),
+                max_total_tokens: None,
+            },
+            env: BTreeMap::new(),
+        },
+        &mut NoRepair,
+    )?;
+
+    eprintln!("engine classification: {:?}", run.classification);
+    eprintln!("engine provenance: {:?}", run.provenance);
+    eprintln!("engine output: {:?}", run.output);
+    for transcript in &run.transcripts {
+        eprintln!(
+            "transcript {:?}: {}",
+            transcript.kind,
+            fs::read_to_string(&transcript.path).unwrap_or_default()
+        );
+    }
+
+    assert_eq!(run.classification, ExitClassification::Success);
+    assert_eq!(
+        run.provenance.resolved_model.as_deref(),
+        Some("claude-sonnet-5")
+    );
+    let output = run.output.expect("lead output");
+    assert_eq!(
+        output["workspace_marker"],
+        "LIVE_SHAPE_WORKSPACE_MARKER_4d62"
+    );
+    assert_eq!(output["workflow_marker"], "workflow-shim-ok");
+    assert_eq!(
+        output["manifest_workspace_root"],
+        workspace_dir.display().to_string()
+    );
+    assert_eq!(
+        fs::read_to_string(run_dir.join("out/workflow.json"))?,
+        "{\"marker\":\"workflow-shim-ok\"}\n"
+    );
+    Ok(())
+}
+
+fn write_simple_workflow_shim(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    fs::write(
+        path,
+        r#"#!/bin/sh
+set -eu
+slot=$1
+input_path=$2
+test "$slot" = "review"
+test -f "$input_path"
+mkdir -p out
+printf '{"marker":"workflow-shim-ok"}\n'
+"#,
+    )?;
+    make_executable(path)?;
     Ok(())
 }
 
@@ -266,6 +383,29 @@ ENSEMBLE_RUN_RECORD_DIR="$PWD/archive/workflows/$slot" "{node}" "{ensemble}" --b
     );
     fs::write(path, source)?;
     make_executable(path)?;
+    Ok(())
+}
+
+fn write_read_only_tree(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fn chmod_recursive(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+            let metadata = fs::metadata(path)?;
+            if metadata.is_dir() {
+                for entry in fs::read_dir(path)? {
+                    chmod_recursive(&entry?.path())?;
+                }
+                fs::set_permissions(path, fs::Permissions::from_mode(0o555))?;
+            } else {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o444))?;
+            }
+            Ok(())
+        }
+
+        chmod_recursive(path)?;
+    }
     Ok(())
 }
 
