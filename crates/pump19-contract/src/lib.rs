@@ -70,7 +70,10 @@ pub struct SessionId(pub String);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
+    Lead,
     Reviewer,
+    Verifier,
+    BarCheck,
     Fixer,
     Judge,
     Finish,
@@ -183,6 +186,107 @@ pub enum Confidence {
 pub enum CertaintyClass {
     Advisory,
     Blocking,
+}
+
+/// Repository policy priority for a review finding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriorityClass {
+    P0,
+    P1,
+    P2,
+    P3,
+}
+
+/// Verification state for a candidate finding.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum VerificationStatus {
+    Verified,
+    Rejected { reason: String },
+    Unverified { reason: String },
+}
+
+/// Whether a verifier came from a different model family from the producer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FamilySplit {
+    CrossFamily,
+    SameFamily,
+    Unknown,
+}
+
+/// Evidence cited by a verifier or review-bar checker.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CitedEvidence {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_range: Option<SourceRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Independent verification attached to a candidate finding.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FindingVerification {
+    pub status: VerificationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<ModelProvenance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<CitedEvidence>,
+    pub cross_family: FamilySplit,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+/// Agent-owned account of review coverage for one pass.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CoverageRecord {
+    pub complete: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visited: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unvisited: Vec<String>,
+    pub account: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+/// Independent second-opinion record for the assembled review.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BarCheckRecord {
+    pub passed: bool,
+    pub provenance: ModelProvenance,
+    pub rationale: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+/// Review pass verdict emitted by the new frame.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "verdict")]
+pub enum ReviewVerdict {
+    Converged {
+        bar_check: BarCheckRecord,
+    },
+    FindingsPosted {
+        material: u32,
+        suppressed: u32,
+    },
+    StandingFindings {
+        finding_dedup_keys: Vec<String>,
+        rationale: String,
+    },
+    BarFailed {
+        bar_check: BarCheckRecord,
+    },
+    BarCheckDegraded {
+        attempts: u32,
+        last_error: String,
+    },
+    PartialCoverage,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -522,6 +626,73 @@ pub struct LoopPassRecord {
 pub struct RunCeiling {
     pub max_passes: Option<u32>,
     pub token_budget: Option<u64>,
+}
+
+/// Typed description of the run directory and review inputs prepared for a lead
+/// session.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RunManifest {
+    pub contract_version: ContractVersion,
+    pub run_id: RunId,
+    pub run_kind: RunKind,
+    pub pr: PullRequestRef,
+    pub commit_sha: String,
+    pub base_sha: String,
+    pub occasion: String,
+    pub workspace: ManifestWorkspace,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub changed_lines: BTreeMap<String, Vec<u32>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_briefs: Vec<ManifestBrief>,
+    pub loop_history: ManifestLoopHistory,
+    pub bounds: ManifestBounds,
+    pub repository_policy: ManifestRepositoryPolicy,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: Extensions,
+}
+
+/// Workspace paths exposed to the lead session.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManifestWorkspace {
+    pub tree_root: String,
+    pub diff_path: String,
+    pub governing_content_dir: String,
+}
+
+/// One review brief selected for the run.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManifestBrief {
+    pub id: String,
+    pub title: String,
+    pub occasion: String,
+}
+
+/// Loop-history summary provided to the lead session.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManifestLoopHistory {
+    pub pass_count: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior_verdicts: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fix_survival_by_dedup_key: BTreeMap<String, u32>,
+}
+
+/// Bounds that frame the lead session.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManifestBounds {
+    pub wall_clock_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_budget_usd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+}
+
+/// Repository policy facts used by the frame's mechanical gates.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManifestRepositoryPolicy {
+    pub fix_before_merge_priority: PriorityClass,
 }
 
 /// Forge-neutral facts the core needs for label authority and merge gating.
