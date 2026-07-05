@@ -43,6 +43,12 @@ const EXT_COMPLETION_RECOVERY_FAILURES: &str = "pump19.core.completion_recovery_
 const CONTROL_COMMIT_SHA: &str = "__pump19_pr_control__";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 const MAX_COMPLETION_RECOVERY_FAILURES: u64 = 2;
+/// Suffix used by runtime source preparation for disposable preparation roots.
+///
+/// The core uses this to distinguish a root it may remove wholesale from a
+/// generic trust boundary whose siblings must survive cleanup. The daemon's
+/// `source_preparation_root` builds names with the same exported value.
+pub const SOURCE_PREPARATION_ROOT_SUFFIX: &str = "-source-prep";
 
 /// Core errors raised before a launch decision can be made.
 #[derive(Debug, Error)]
@@ -4530,7 +4536,7 @@ fn prepared_source_cleanup_target<'a>(
     let runtime_preparation_root = cleanup_root
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with("-source-prep"));
+        .is_some_and(|name| name.ends_with(SOURCE_PREPARATION_ROOT_SUFFIX));
     if runtime_preparation_root {
         cleanup_root
     } else {
@@ -5833,6 +5839,56 @@ mod tests {
         assert_eq!(injections.borrow().len(), 1);
         assert!(!prepared_tree.exists());
         assert!(!preparation_root.exists());
+        assert_eq!(*cleaned.borrow(), 1);
+    }
+
+    #[test]
+    fn successful_source_cleanup_preserves_generic_trusted_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let trusted_root = temp.path().join("trusted-preparation-root");
+        let prepared_tree = trusted_root.join("prepared");
+        let sibling = trusted_root.join("keep-me");
+        fs::create_dir_all(prepared_tree.join("src")).expect("create prepared tree");
+        fs::write(prepared_tree.join("src/lib.rs"), "pub fn prepared() {}\n")
+            .expect("write source");
+        fs::write(&sibling, "still here\n").expect("write sibling");
+        let workspace_root = temp.path().join("workspace");
+        let cleaned = Rc::new(RefCell::new(0));
+        let mut core = Core::with_forge_operations_and_source_preparer(
+            FakeEventSource::empty(),
+            SourceWorkspaceProvider {
+                root: workspace_root.clone(),
+                cleaned: Rc::clone(&cleaned),
+                injections: Rc::new(RefCell::new(Vec::new())),
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+            NoopForgeOperations,
+            TreeSourcePreparer {
+                tree: prepared_tree.clone(),
+            },
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("process event");
+
+        assert!(matches!(outcomes[0], DispatchOutcome::Launched { .. }));
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("src/lib.rs")).expect("read injected source"),
+            "pub fn prepared() {}\n"
+        );
+        assert!(!prepared_tree.exists());
+        assert!(trusted_root.exists());
+        assert_eq!(
+            fs::read_to_string(sibling).expect("read sibling"),
+            "still here\n"
+        );
         assert_eq!(*cleaned.borrow(), 1);
     }
 
