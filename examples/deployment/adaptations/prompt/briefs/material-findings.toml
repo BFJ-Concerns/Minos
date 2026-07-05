@@ -1,4 +1,0 @@
-id = "material-findings"
-title = "Material findings"
-intent_ref = "invariants.material-findings"
-brief = "Review the change for material correctness, safety, maintainability, isolation, error-handling, and contract issues worth another pass. Ignore purely cosmetic noise."

@@ -19,6 +19,7 @@ toml.workspace = true
 
 [dev-dependencies]
 pump19-judgement = { path = "../pump19-judgement" }
+pump19-review = { path = "../pump19-review" }
 tempfile.workspace = true
 
 [lints]

@@ -25,7 +25,8 @@ Pass only if the review is quiet, high-confidence, grounded in the diff and
 coverage record, honours the selected briefs and subject guidance, and does not
 claim convergence when coverage is incomplete. Fail reviews that contain
 speculative findings, miss material changed-line issues apparent from the
-provided evidence, include unverified claims, or treat partial coverage as clean.
+provided evidence, include unverified claims, include findings that a linter or
+type-checker would catch, or treat partial coverage as clean.
 
 <assembled_review>
 ${args.assembled_review || ""}

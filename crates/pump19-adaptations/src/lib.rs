@@ -25,8 +25,10 @@ use pump19_contract::{
 use pump19_core::{
     AgentEngine, AgentLaunchTarget, AgentPlan, Criteria, EventKind, StateCriterion, TriggerRule,
 };
-use pump19_judgement::{
-    JudgementBrief, load_judgement_briefs_from_dir, write_baseline_briefs_to_dir,
+use pump19_judgement::JudgementBrief;
+use pump19_review::{
+    ReviewBrief, ReviewBriefWarning, load_review_briefs_from_dir,
+    write_baseline_review_briefs_to_dir,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -69,6 +71,8 @@ pub enum AdaptationError {
     SerialiseToml(#[from] toml::ser::Error),
     #[error("judgement adaptation failed: {0}")]
     Judgement(#[from] pump19_judgement::JudgementError),
+    #[error("review adaptation failed: {0}")]
+    Review(#[from] pump19_review::ReviewBriefError),
     #[error("{unit_kind} {id:?} uses unsupported schema version {actual:?}; expected {expected:?}")]
     UnsupportedSchemaVersion {
         unit_kind: &'static str,
@@ -178,10 +182,13 @@ pub enum WorkflowSlot {
     RepairOutput,
 }
 
-/// Prompt content loaded from a manifest plus existing judgement TOML files.
+/// Prompt content loaded from a manifest plus markdown review-brief files.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PromptPack {
     pub manifest: PromptPackManifest,
+    pub review_briefs: Vec<ReviewBrief>,
+    pub brief_warnings: Vec<ReviewBriefWarning>,
+    /// Legacy judgement-shaped briefs kept until the stage-5 run-body switch.
     pub briefs: Vec<JudgementBrief>,
 }
 
@@ -266,8 +273,18 @@ pub fn load_prompt_pack(manifest_path: &Path) -> Result<PromptPack, AdaptationEr
     )?;
 
     let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    let briefs = load_judgement_briefs_from_dir(&root.join(&manifest.brief_dir))?;
-    let pack = PromptPack { manifest, briefs };
+    let review_brief_load = load_review_briefs_from_dir(&root.join(&manifest.brief_dir))?;
+    let legacy_briefs = review_brief_load
+        .briefs
+        .iter()
+        .map(review_brief_to_legacy_judgement)
+        .collect();
+    let pack = PromptPack {
+        manifest,
+        review_briefs: review_brief_load.briefs,
+        brief_warnings: review_brief_load.warnings,
+        briefs: legacy_briefs,
+    };
     validate_prompt_pack(&pack)?;
     Ok(pack)
 }
@@ -284,7 +301,7 @@ pub fn write_baseline_prompt_pack(root: &Path, id: &str) -> Result<PathBuf, Adap
         source,
     })?;
     let brief_dir = root.join("briefs");
-    write_baseline_briefs_to_dir(&brief_dir)?;
+    write_baseline_review_briefs_to_dir(&brief_dir)?;
     let workflow_dir = root.join("workflows");
     fs::create_dir_all(&workflow_dir).map_err(|source| AdaptationError::Io {
         path: workflow_dir.display().to_string(),
@@ -309,6 +326,16 @@ pub fn write_baseline_prompt_pack(root: &Path, id: &str) -> Result<PathBuf, Adap
     let manifest_path = root.join("prompt-pack.toml");
     write_toml(&manifest_path, &manifest)?;
     Ok(manifest_path)
+}
+
+fn review_brief_to_legacy_judgement(brief: &ReviewBrief) -> JudgementBrief {
+    JudgementBrief {
+        id: brief.id.clone(),
+        title: brief.title.clone(),
+        intent_ref: format!("review.{}", brief.id),
+        brief: brief.body.clone(),
+        evidence_paths: Vec::new(),
+    }
 }
 
 /// Writes the baseline review/fix/judge loop trigger pack into `root`.
@@ -866,9 +893,10 @@ const BASELINE_PREPARE_SOURCE_SH: &str = r#"#!/bin/sh
 set -eu
 
 git_base_url=${PUMP19_GIT_BASE_URL:-}
+governing_paths=${PUMP19_GOVERNING_PATHS:-}
 
 usage() {
-  echo "usage: pump19-prepare-source [--git-base-url URL]" >&2
+  echo "usage: pump19-prepare-source [--git-base-url URL] [--governing-paths PATHS]" >&2
   exit 64
 }
 
@@ -877,6 +905,11 @@ while [ "$#" -gt 0 ]; do
     --git-base-url)
       [ "$#" -ge 2 ] || usage
       git_base_url=${2%/}
+      shift 2
+      ;;
+    --governing-paths)
+      [ "$#" -ge 2 ] || usage
+      governing_paths=$2
       shift 2
       ;;
     --help|-h)
@@ -903,6 +936,14 @@ command -v jq >/dev/null 2>&1 || {
 }
 command -v tar >/dev/null 2>&1 || {
   echo "tar is required" >&2
+  exit 78
+}
+command -v awk >/dev/null 2>&1 || {
+  echo "awk is required" >&2
+  exit 78
+}
+command -v realpath >/dev/null 2>&1 || {
+  echo "realpath is required" >&2
   exit 78
 }
 
@@ -952,12 +993,38 @@ git_maybe_auth -C "$tmp/repo" fetch origin -- "$base_sha" >/dev/null 2>&1
 git -C "$tmp/repo" cat-file -e "$commit_sha^{commit}"
 git -C "$tmp/repo" cat-file -e "$base_sha^{commit}"
 git -C "$tmp/repo" archive "$commit_sha" | tar -x -C "$output_tree"
+rm -rf -- "$output_tree/.pump19"
 mkdir -p "$output_tree/.pump19/review"
+output_tree_real=$(realpath "$output_tree")
+review_dir_real=$(realpath "$output_tree/.pump19/review")
+case "$review_dir_real" in
+  "$output_tree_real"/*) ;;
+  *)
+    echo "prepared review directory escaped prepared tree" >&2
+    exit 70
+    ;;
+esac
 git -C "$tmp/repo" diff --no-ext-diff --no-color "$base_sha" "$commit_sha" -- > "$output_tree/.pump19/review/diff.patch"
 [ -s "$output_tree/.pump19/review/diff.patch" ] || {
   echo "review diff evidence is empty for $base_sha..$commit_sha" >&2
   exit 65
 }
+
+governing_dir="$output_tree/.pump19/review/governing"
+mkdir -p "$governing_dir"
+governing_list="$tmp/governing-paths.txt"
+if [ -n "$governing_paths" ]; then
+  printf '%s' "$governing_paths" | tr ':' '\n' > "$governing_list"
+else
+  git -C "$tmp/repo" ls-tree -r --name-only "$base_sha" \
+    | awk '/(^|\/)(AGENTS|CLAUDE)\.md$/ || /^\.review\// { print }' \
+    > "$governing_list"
+fi
+while IFS= read -r governing_path; do
+  [ -n "$governing_path" ] || continue
+  git -C "$tmp/repo" cat-file -e "$base_sha:$governing_path" 2>/dev/null || continue
+  git -C "$tmp/repo" archive "$base_sha" -- "$governing_path" | tar -x -C "$governing_dir"
+done < "$governing_list"
 
 jq -nc --arg tree "$output_tree" --arg revision "$commit_sha" \
   '{tree:$tree, revision:$revision}'
@@ -1772,17 +1839,34 @@ const verificationSchema = {
 
 function verifierFor(finding, verifiers) {
   const producerFamily = finding.producing_model_family || finding.model_family || "";
-  const crossFamily = verifiers.find((verifier) =>
+  const producerAgentId =
+    finding.producing_agent_id ||
+    finding.producer_agent_id ||
+    finding.reviewer_agent_id ||
+    finding.agent_id ||
+    finding.provenance?.agent_id ||
+    "";
+  const eligibleVerifiers = verifiers.filter((verifier) =>
+    !producerAgentId || verifier.agent_id !== producerAgentId
+  );
+  if (eligibleVerifiers.length === 0) {
+    return {
+      target: null,
+      family_split: "unknown",
+      unavailable_reason: "no non-producer verifier target is available"
+    };
+  }
+  const crossFamily = eligibleVerifiers.find((verifier) =>
     verifier.model_family && producerFamily && verifier.model_family !== producerFamily
   );
   if (crossFamily) {
     return { target: crossFamily, family_split: "cross_family" };
   }
-  const sameFamily = verifiers.find((verifier) => verifier.model_family === producerFamily);
+  const sameFamily = eligibleVerifiers.find((verifier) => verifier.model_family === producerFamily);
   if (sameFamily) {
     return { target: sameFamily, family_split: "same_family" };
   }
-  return { target: verifiers[0], family_split: "unknown" };
+  return { target: eligibleVerifiers[0], family_split: "unknown" };
 }
 
 function optionsFor(target, label) {
@@ -1818,10 +1902,16 @@ if (findings.length > 0 && verifiers.length === 0) {
 
 const calls = findings.map((finding) => {
   const selection = verifierFor(finding, verifiers);
-  return { finding, verifier: selection.target, family_split: selection.family_split };
+  return {
+    finding,
+    verifier: selection.target,
+    family_split: selection.family_split,
+    unavailable_reason: selection.unavailable_reason || ""
+  };
 });
 
-const outputs = await parallel(calls.map(({ finding, verifier }) => () =>
+const runnableCalls = calls.filter((call) => call.verifier !== null);
+const outputs = await parallel(runnableCalls.map(({ finding, verifier }) => () =>
   agent(verificationPrompt(finding), optionsFor(verifier, `${verifier.agent_id}:${finding.dedup_hint || finding.id}`))
 ));
 
@@ -1830,14 +1920,27 @@ if (outputs.some((output) => output === null)) {
 }
 
 return {
-  verifications: outputs.map((output, index) => ({
-    finding_ref: calls[index].finding.dedup_hint || calls[index].finding.id || String(index),
-    verifier_agent_id: calls[index].verifier.agent_id,
-    family_split: calls[index].family_split,
-    verdict: output.verdict,
-    evidence: output.evidence,
-    rationale: output.rationale
-  }))
+  verifications: calls.map((call, index) => {
+    if (call.verifier === null) {
+      return {
+        finding_ref: call.finding.dedup_hint || call.finding.id || String(index),
+        verifier_agent_id: "",
+        family_split: call.family_split,
+        verdict: "rejected",
+        evidence: [],
+        rationale: call.unavailable_reason
+      };
+    }
+    const output = outputs.shift();
+    return {
+      finding_ref: call.finding.dedup_hint || call.finding.id || String(index),
+      verifier_agent_id: call.verifier.agent_id,
+      family_split: call.family_split,
+      verdict: output.verdict,
+      evidence: output.evidence,
+      rationale: output.rationale
+    };
+  })
 };
 "#;
 
@@ -1921,7 +2024,8 @@ Pass only if the review is quiet, high-confidence, grounded in the diff and
 coverage record, honours the selected briefs and subject guidance, and does not
 claim convergence when coverage is incomplete. Fail reviews that contain
 speculative findings, miss material changed-line issues apparent from the
-provided evidence, include unverified claims, or treat partial coverage as clean.
+provided evidence, include unverified claims, include findings that a linter or
+type-checker would catch, or treat partial coverage as clean.
 
 <assembled_review>
 ${args.assembled_review || ""}
@@ -2781,6 +2885,158 @@ model = "claude-stable"
                 && formatter_program == "commands/pump19-format-comments"
                 && formatter_args.is_empty()
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_prepare_source_pins_governing_content_to_base_ref()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let remotes = dir.path().join("remotes");
+        let bare = remotes.join("acme/widgets.git");
+        let work = dir.path().join("work");
+        fs::create_dir_all(bare.parent().expect("bare parent"))?;
+        run_git(["init", "--bare", bare.to_str().expect("bare path")]);
+        run_git(["init", work.to_str().expect("work path")]);
+        run_git_in(&work, ["config", "user.email", "pump19@example.invalid"]);
+        run_git_in(&work, ["config", "user.name", "Pump 19"]);
+        run_git_in(
+            &work,
+            ["remote", "add", "origin", bare.to_str().expect("bare path")],
+        );
+
+        fs::create_dir_all(work.join(".review"))?;
+        fs::create_dir_all(work.join("crates/app"))?;
+        fs::write(work.join("AGENTS.md"), "base root guidance\n")?;
+        fs::write(work.join("crates/app/CLAUDE.md"), "base nested guidance\n")?;
+        fs::write(work.join(".review/security.md"), "base review brief\n")?;
+        fs::write(work.join("src.txt"), "base\n")?;
+        run_git_in(&work, ["add", "."]);
+        run_git_in(&work, ["commit", "-m", "base"]);
+        let base_sha = git_stdout_in(&work, ["rev-parse", "HEAD"]);
+
+        fs::write(work.join("AGENTS.md"), "head root guidance\n")?;
+        fs::write(work.join("crates/app/CLAUDE.md"), "head nested guidance\n")?;
+        fs::write(work.join(".review/security.md"), "head review brief\n")?;
+        fs::write(work.join("src.txt"), "head\n")?;
+        run_git_in(&work, ["add", "."]);
+        run_git_in(&work, ["commit", "-m", "head"]);
+        let head_sha = git_stdout_in(&work, ["rev-parse", "HEAD"]);
+        run_git_in(&work, ["push", "origin", "HEAD:main"]);
+
+        let preparation_root = dir.path().join("prepared");
+        let input = serde_json::json!({
+            "repository": "acme/widgets",
+            "commit_sha": head_sha,
+            "preparation_root": preparation_root,
+            "state": {
+                "extensions": {
+                    "pump19.core.forge_facts": {
+                        "base": { "sha": base_sha }
+                    }
+                }
+            }
+        });
+        let base_url = format!("file://{}", remotes.display());
+        let output = run_json_command_with_args(
+            &commands.prepare_source_command,
+            &["--git-base-url", &base_url],
+            &input,
+        )?;
+
+        assert_command_success(&output);
+        let prepared_tree = preparation_root.join("prepared-tree");
+        assert_eq!(
+            fs::read_to_string(prepared_tree.join("AGENTS.md"))?,
+            "head root guidance\n"
+        );
+        assert_eq!(
+            fs::read_to_string(prepared_tree.join(".pump19/review/governing/AGENTS.md"))?,
+            "base root guidance\n"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                prepared_tree.join(".pump19/review/governing/crates/app/CLAUDE.md")
+            )?,
+            "base nested guidance\n"
+        );
+        assert_eq!(
+            fs::read_to_string(prepared_tree.join(".pump19/review/governing/.review/security.md"))?,
+            "base review brief\n"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn baseline_prepare_source_reclaims_head_pump19_symlink_before_writing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let remotes = dir.path().join("remotes");
+        let bare = remotes.join("acme/widgets.git");
+        let work = dir.path().join("work");
+        let evil_target = dir.path().join("evil-target");
+        fs::create_dir_all(bare.parent().expect("bare parent"))?;
+        fs::create_dir_all(&evil_target)?;
+        run_git(["init", "--bare", bare.to_str().expect("bare path")]);
+        run_git(["init", work.to_str().expect("work path")]);
+        run_git_in(&work, ["config", "user.email", "pump19@example.invalid"]);
+        run_git_in(&work, ["config", "user.name", "Pump 19"]);
+        run_git_in(
+            &work,
+            ["remote", "add", "origin", bare.to_str().expect("bare path")],
+        );
+
+        fs::create_dir_all(work.join(".review"))?;
+        fs::write(work.join("AGENTS.md"), "base root guidance\n")?;
+        fs::write(work.join(".review/security.md"), "base review brief\n")?;
+        fs::write(work.join("src.txt"), "base\n")?;
+        run_git_in(&work, ["add", "."]);
+        run_git_in(&work, ["commit", "-m", "base"]);
+        let base_sha = git_stdout_in(&work, ["rev-parse", "HEAD"]);
+
+        fs::remove_dir_all(work.join(".review"))?;
+        fs::write(work.join("AGENTS.md"), "head root guidance\n")?;
+        fs::write(work.join("src.txt"), "head\n")?;
+        std::os::unix::fs::symlink(&evil_target, work.join(".pump19"))?;
+        run_git_in(&work, ["add", "."]);
+        run_git_in(&work, ["commit", "-m", "head"]);
+        let head_sha = git_stdout_in(&work, ["rev-parse", "HEAD"]);
+        run_git_in(&work, ["push", "origin", "HEAD:main"]);
+
+        let preparation_root = dir.path().join("prepared");
+        let input = serde_json::json!({
+            "repository": "acme/widgets",
+            "commit_sha": head_sha,
+            "preparation_root": preparation_root,
+            "state": {
+                "extensions": {
+                    "pump19.core.forge_facts": {
+                        "base": { "sha": base_sha }
+                    }
+                }
+            }
+        });
+        let base_url = format!("file://{}", remotes.display());
+        let output = run_json_command_with_args(
+            &commands.prepare_source_command,
+            &["--git-base-url", &base_url],
+            &input,
+        )?;
+
+        assert_command_success(&output);
+        let prepared_tree = preparation_root.join("prepared-tree");
+        assert!(prepared_tree.join(".pump19").is_dir());
+        assert!(!prepared_tree.join(".pump19").is_symlink());
+        assert!(prepared_tree.join(".pump19/review/diff.patch").is_file());
+        assert_eq!(
+            fs::read_to_string(prepared_tree.join(".pump19/review/governing/AGENTS.md"))?,
+            "base root guidance\n"
+        );
+        assert!(!evil_target.join("review/diff.patch").exists());
+        assert!(!evil_target.join("review/governing/AGENTS.md").exists());
         Ok(())
     }
 
