@@ -637,7 +637,10 @@ where
         summary.recovered_terminal_events += recovery.terminal_replays;
         summary.recovered_stale_running_events += recovery.stale_running_failures;
         summary.recovery_errors_continued += recovery.errors_continued;
-        summary.quiet_polls = 0;
+        let recovery_has_active_work = recovery_has_active_work(&recovery);
+        if recovery_has_active_work {
+            summary.quiet_polls = 0;
+        }
         let events = completion_recovery_event_fields(&recovery);
         log_daemon_event(
             "info",
@@ -660,8 +663,15 @@ where
                 "pending_events": self.core.pending_event_count(),
             }),
         );
-        Ok(true)
+        Ok(recovery_has_active_work)
     }
+}
+
+const fn recovery_has_active_work(recovery: &CompletionRecoverySummary) -> bool {
+    recovery.queued > 0
+        || recovery.terminal_replays > 0
+        || recovery.stale_running_failures > 0
+        || recovery.errors_continued > 0
 }
 
 fn completion_recovery_event_fields(recovery: &CompletionRecoverySummary) -> Vec<Value> {
@@ -2278,6 +2288,45 @@ mod tests {
         assert_eq!(summary.recovered_stale_running_events, 0);
         assert_eq!(summary.events_processed, 1);
         assert_eq!(summary.quiet_polls, 1);
+    }
+
+    #[test]
+    fn run_loop_treats_parked_only_completion_recovery_as_quiet() {
+        let mut daemon = Pump19Daemon::new(
+            StubCore {
+                outcomes: Rc::new(RefCell::new(vec![Ok(None)])),
+                recovered: Rc::new(RefCell::new(vec![
+                    Ok(CompletionRecoverySummary::default()),
+                    Ok(CompletionRecoverySummary {
+                        parked: 1,
+                        events: vec![pump19_core::CompletionRecoveryEvent {
+                            action: CompletionRecoveryAction::Parked,
+                            event_id: "run-completed-1234".to_owned(),
+                            run_id: RunId("event-1:review:1".to_owned()),
+                            run_kind: RunKind::Review,
+                            pr: PullRequestRef {
+                                repository: "acme/widgets".to_owned(),
+                                id: "42".to_owned(),
+                            },
+                            commit_sha: "abc123".to_owned(),
+                            failures: 2,
+                        }],
+                        ..CompletionRecoverySummary::default()
+                    }),
+                ])),
+            },
+            LoopControlConfig {
+                poll_interval_ms: 0,
+                stop_after_quiet_polls: Some(1),
+            },
+        );
+
+        let summary = daemon.run(&[], &NeverShutdown).expect("run daemon");
+
+        assert_eq!(summary.quiet_polls, 1);
+        assert_eq!(summary.recovered_completion_events, 0);
+        assert_eq!(summary.recovered_terminal_events, 0);
+        assert_eq!(summary.recovered_stale_running_events, 0);
     }
 
     #[test]

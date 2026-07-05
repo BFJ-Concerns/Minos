@@ -40,6 +40,7 @@ const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_LAST_FAILURE: &str = "pump19.core.last_failure";
 const EXT_SELF_EMITTED_EVENT: &str = "pump19.core.self_emitted_event";
 const EXT_COMPLETION_RECOVERY_FAILURES: &str = "pump19.core.completion_recovery_failures";
+const EXT_COMPLETION_RECOVERY_PARKED: &str = "pump19.core.completion_recovery_parked";
 const CONTROL_COMMIT_SHA: &str = "__pump19_pr_control__";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 const MAX_COMPLETION_RECOVERY_FAILURES: u64 = 2;
@@ -1008,7 +1009,7 @@ where
             .map(|event| event.id.clone())
             .collect::<BTreeSet<_>>();
         let mut summary = CompletionRecoverySummary::default();
-        for state in self.state_store.completion_recovery_states()? {
+        for mut state in self.state_store.completion_recovery_states()? {
             if state.status == RunStatus::Running {
                 match self.resolve_stale_running_state(state) {
                     Ok(Some(event)) => {
@@ -1031,13 +1032,16 @@ where
                 }
                 continue;
             }
-            for record in &state.run_history {
+            for record in state.run_history.clone() {
                 if record.status == RunStatus::Failed {
                     continue;
                 }
-                let Some(event) = run_completed_event_from_record(record) else {
+                let Some(event) = run_completed_event_from_record(&record) else {
                     continue;
                 };
+                if completion_event_is_parked(&state, &event) {
+                    continue;
+                }
                 let failures = completion_event_failed_dispatches(&state, &event);
                 let needs_retry = failures > 0;
                 if pending_ids.contains(&event.id)
@@ -1046,11 +1050,13 @@ where
                     continue;
                 }
                 if failures >= MAX_COMPLETION_RECOVERY_FAILURES {
+                    record_completion_recovery_parked(&mut state, &event, failures);
+                    self.state_store.save(&state)?;
                     summary.parked += 1;
                     summary.events.push(completion_recovery_event(
                         CompletionRecoveryAction::Parked,
                         &state,
-                        record,
+                        &record,
                         &event,
                         failures,
                     ));
@@ -1059,7 +1065,7 @@ where
                 summary.events.push(completion_recovery_event(
                     CompletionRecoveryAction::Queued,
                     &state,
-                    record,
+                    &record,
                     &event,
                     failures,
                 ));
@@ -1605,6 +1611,7 @@ where
         refusal: &LaunchRefusal,
         message: &str,
     ) -> Result<(), CoreError> {
+        record_completion_recovery_failure(&mut state, event);
         mark_failed_refusal(&mut state, event, rule, run_id, refusal, message);
         self.state_store.save(&state)?;
         self.record_operator_refusal(&state, run_id, message)?;
@@ -1620,6 +1627,7 @@ where
         refusal: &LaunchRefusal,
     ) -> Result<(), CoreError> {
         let message = format!("launch skipped: {refusal:?}");
+        record_completion_recovery_failure(&mut state, event);
         mark_skipped_refusal(&mut state, event, rule, run_id, refusal, message.as_str());
         self.state_store.save(&state)?;
         self.record_operator_refusal(&state, run_id, message.as_str())?;
@@ -4312,6 +4320,15 @@ fn completion_event_failed_dispatches(state: &PrRunState, event: &ContractEvent)
         .unwrap_or(0)
 }
 
+fn completion_event_is_parked(state: &PrRunState, event: &ContractEvent) -> bool {
+    state
+        .extensions
+        .get(EXT_COMPLETION_RECOVERY_PARKED)
+        .and_then(Value::as_object)
+        .and_then(|parked| parked.get(&event.id))
+        .is_some()
+}
+
 fn record_completion_recovery_failure(state: &mut PrRunState, event: &ContractEvent) {
     if !event
         .extensions
@@ -4338,6 +4355,25 @@ fn record_completion_recovery_failure(state: &mut PrRunState, event: &ContractEv
     state.extensions.insert(
         EXT_COMPLETION_RECOVERY_FAILURES.to_owned(),
         Value::Object(failures),
+    );
+}
+
+fn record_completion_recovery_parked(state: &mut PrRunState, event: &ContractEvent, failures: u64) {
+    let mut parked = state
+        .extensions
+        .remove(EXT_COMPLETION_RECOVERY_PARKED)
+        .and_then(|value| match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .unwrap_or_default();
+    parked.insert(
+        event.id.clone(),
+        Value::Number(serde_json::Number::from(failures)),
+    );
+    state.extensions.insert(
+        EXT_COMPLETION_RECOVERY_PARKED.to_owned(),
+        Value::Object(parked),
     );
 }
 
@@ -6718,6 +6754,94 @@ mod tests {
         assert_eq!(event.pr, pr());
         assert_eq!(event.commit_sha, "abc123");
         assert_eq!(event.failures, MAX_COMPLETION_RECOVERY_FAILURES);
+
+        let quiet = core
+            .rederive_pending_completions()
+            .expect("parked completion stays quiet after transition");
+        assert_eq!(quiet, CompletionRecoverySummary::default());
+    }
+
+    #[test]
+    fn repeated_refused_completion_recovery_parks_poison_event() {
+        let mut review_core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        review_core
+            .process_event(&event(), &[independent_rule()])
+            .expect("review dispatch");
+
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            review_core.state_store,
+        );
+
+        let unavailable_family = || CoreError::RequiredFamilyUnavailable {
+            agent_id: AgentId("judge".to_owned()),
+            family: ModelFamily("glm".to_owned()),
+            reason: "test family unavailable".to_owned(),
+        };
+
+        let first_recovery = core
+            .rederive_pending_completions()
+            .expect("first recovery queues review completion");
+        assert_eq!(first_recovery.queued, 1);
+        core.launcher.prepare_error = Some(unavailable_family());
+        let first_refusal = core
+            .process_next(&[judge_after_review_rule()])
+            .expect("first refusal is recorded")
+            .expect("completion event is processed");
+        assert!(matches!(
+            first_refusal.as_slice(),
+            [DispatchOutcome::Refused {
+                reason: LaunchRefusal::RequiredFamilyUnavailable { .. },
+                ..
+            }]
+        ));
+
+        let second_recovery = core
+            .rederive_pending_completions()
+            .expect("second recovery retries refused completion once");
+        assert_eq!(second_recovery.queued, 1);
+        assert_eq!(second_recovery.parked, 0);
+        core.launcher.prepare_error = Some(unavailable_family());
+        let second_refusal = core
+            .process_next(&[judge_after_review_rule()])
+            .expect("second refusal is recorded")
+            .expect("retried completion event is processed");
+        assert!(matches!(
+            second_refusal.as_slice(),
+            [DispatchOutcome::Refused {
+                reason: LaunchRefusal::RequiredFamilyUnavailable { .. },
+                ..
+            }]
+        ));
+
+        let parked = core
+            .rederive_pending_completions()
+            .expect("repeated refusal parks completion");
+
+        assert_eq!(parked.queued, 0);
+        assert_eq!(parked.parked, 1);
+        assert_eq!(core.pending_event_count(), 0);
+        assert_eq!(parked.events.len(), 1);
+        assert_eq!(parked.events[0].action, CompletionRecoveryAction::Parked);
+        assert_eq!(parked.events[0].failures, MAX_COMPLETION_RECOVERY_FAILURES);
     }
 
     #[test]
