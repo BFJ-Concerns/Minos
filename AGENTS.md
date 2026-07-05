@@ -54,13 +54,30 @@ and letting the core reach around the contract into an adaptation's internals.
 
 An agent's own tests share its blind spots, so verifiers must be independent of
 the author *by construction* and *across model families* (verifiers that share a
-blind spot agree confidently and wrongly). The core establishes and checks this at
-every launch rather than trusting configuration: at least two distinct model
-families across reviewers, reviewers disjoint from fixers, the significance judge
-independent of the reviewers, and fresh agents each pass. It establishes model
-provenance itself and fails closed when it cannot verify it — honour-system
-independence (a self-reported label, or counting agents) is unsound, since two
-agents can wrap one model.
+blind spot agree confidently and wrongly). The session-level invariants are hard:
+fresh agent sessions each pass, fixers disjoint from the reviewers whose findings
+they fix, and no agent verifying its own findings. Family-level diversity is
+applied as the strongest split the deployment offers and recorded when absent —
+graduated and loudly degraded, never refused. Every candidate finding passes
+independent per-finding verification before it may post; there is no separate
+significance judge. The core establishes model provenance itself — it selects and
+launches the engine tools; honour-system independence (a self-reported label, or
+counting agents) is unsound, since two agents can wrap one model.
+
+## Trust calibration: hard boundaries are for PR code, not your agents
+
+The service's own agents are trusted workers whose judgement is checked by other
+agents — per-finding verification, the review-bar check — not by deterministic
+scaffolding that second-guesses them. Watch for over-caution here: individual
+agent outputs are fallible, but agents as a class are far more capable and
+reliable than the posture that shaped earlier generations of this design, and a
+brittle check framework that stalls runs on parsing quirks costs more than the
+occasional wrong call it would have caught. When you feel the urge to bolt a
+deterministic validator onto an agent's judgement, prefer a second agent's
+opinion. Reserve the hard, non-negotiable boundaries for what is actually
+untrusted — PR code under review: credential-free workspaces, forge writes only
+through the core-authorised credentialed step, review-governing content pinned
+to the base ref.
 
 When code here would contradict the commission, that is a commissioning question,
 not a local call.
