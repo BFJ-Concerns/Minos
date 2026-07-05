@@ -62,15 +62,19 @@ The example points at generated baseline deployment assets:
 - `commands/pump19-merge-readiness` runs during finish runs, before the core
   merges: it re-reads the live PR (verdict `not_ready` on a moved head or
   forge-reported conflict), probes a merge against the live base tip, and runs
-  build/test checks. Untrusted PR code never executes on the host — checks run
+  build/test checks. Untrusted PR code never executes on the host: checks run
   in a throwaway, credential-free container (`podman run --rm`, image from
   `PUMP19_MERGE_READINESS_IMAGE`, default `localhost/pump19-workspace:stable`)
-  with network access for dependency downloads. The default check command is
-  toolchain-detected (`cargo build`/`cargo test` for Cargo workspaces, `npm ci`
-  and `npm test` for Node packages, nothing otherwise); override it with
-  `--check-command`. `PUMP19_MERGE_READINESS_TIMEOUT` (seconds, default 3600)
-  bounds the checks. Removing the step from the mechanical pack leaves the
-  contract merge gate alone in charge, as before.
+  with `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`,
+  process/memory/CPU caps, and a bounded `/tmp`. Network access deliberately
+  remains available so normal build and test commands can fetch dependencies;
+  disposability, resource bounds and absence of forge credentials are the
+  containment boundary. The default check command is toolchain-detected
+  (`cargo build`/`cargo test` for Cargo workspaces, `npm ci` and `npm test` for
+  Node packages, nothing otherwise); override it with `--check-command`.
+  `PUMP19_MERGE_READINESS_TIMEOUT` (seconds, default 3600) bounds the checks.
+  Removing the step from the mechanical pack leaves the contract merge gate
+  alone in charge, as before.
 
 Relative command paths containing `/` are resolved relative to the daemon config
 file, just like the pack and state paths. Bare command names still resolve
@@ -85,7 +89,7 @@ the box, and is deliberately not a visibility knob. Journald/stdout events remai
 useful live noise, but the JSONL file is the deployment-owned permanent record.
 
 The generated packs carry the current contract version from `pump19-contract`
-(`1.6` at this revision).
+(`1.7` at this revision).
 
 Regenerate the baseline deployment assets with:
 
@@ -203,9 +207,12 @@ values fail closed. Forgejo documents that write, admin and owner
 collaborators can merge PRs in its repository permissions guide:
 <https://forgejo.org/docs/latest/user/repo-permissions/>.
 
-The poll command marks branch currency `current` when Forgejo reports a merge
-base equal to the PR base SHA. If Forgejo cannot expose a field, the script uses
-the contract's conservative `unknown` value.
+The poll command enriches each list entry with the PR detail endpoint before it
+derives branch currency and mergeability, and retries that detail read briefly
+while Forgejo is still returning lazy mergeability or missing merge-base
+evidence. It marks branch currency `current` when Forgejo reports a merge base
+equal to the PR base SHA. If Forgejo still cannot expose the needed field, the
+script uses the contract's conservative `unknown` value.
 
 The operation command receives one JSON object on stdin and returns:
 

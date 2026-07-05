@@ -29,10 +29,11 @@ use pump19_adaptations::{
 };
 use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
-    AgentLaunchSpec, CommentFormatter, CompletionRecoverySummary, Core, CoreError, CorePolicy,
-    DispatchOutcome, FindingCommentFormatRequest, FinishLabelApplicationPolicy, JsonRunStateStore,
-    LaunchProof, OperatorLog, OperatorLogEvent, PreparedAgent, PreparedSource,
-    SourcePreparationRequest, SourcePreparer, TriggerRule,
+    AgentLaunchSpec, CommentFormatter, CompletionRecoveryAction, CompletionRecoverySummary, Core,
+    CoreError, CorePolicy, DispatchOutcome, FindingCommentFormatRequest,
+    FinishLabelApplicationPolicy, JsonRunStateStore, LaunchProof, OperatorLog, OperatorLogEvent,
+    PreparedAgent, PreparedSource, SOURCE_PREPARATION_ROOT_SUFFIX, SourcePreparationRequest,
+    SourcePreparer, TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -637,7 +638,11 @@ where
         summary.recovered_terminal_events += recovery.terminal_replays;
         summary.recovered_stale_running_events += recovery.stale_running_failures;
         summary.recovery_errors_continued += recovery.errors_continued;
-        summary.quiet_polls = 0;
+        let recovery_has_active_work = recovery_has_active_work(&recovery);
+        if recovery_has_active_work {
+            summary.quiet_polls = 0;
+        }
+        let events = completion_recovery_event_fields(&recovery);
         log_daemon_event(
             "info",
             if recovery.stale_running_failures == 0 {
@@ -650,6 +655,8 @@ where
                 "terminal_replays": recovery.terminal_replays,
                 "stale_running_failures": recovery.stale_running_failures,
                 "errors_continued": recovery.errors_continued,
+                "parked": recovery.parked,
+                "events": events,
                 "total_recovered": summary.recovered_completion_events,
                 "total_terminal_replays": summary.recovered_terminal_events,
                 "total_stale_running_failures": summary.recovered_stale_running_events,
@@ -657,8 +664,37 @@ where
                 "pending_events": self.core.pending_event_count(),
             }),
         );
-        Ok(true)
+        Ok(recovery_has_active_work)
     }
+}
+
+const fn recovery_has_active_work(recovery: &CompletionRecoverySummary) -> bool {
+    recovery.queued > 0
+        || recovery.terminal_replays > 0
+        || recovery.stale_running_failures > 0
+        || recovery.errors_continued > 0
+}
+
+fn completion_recovery_event_fields(recovery: &CompletionRecoverySummary) -> Vec<Value> {
+    recovery
+        .events
+        .iter()
+        .map(|event| {
+            json!({
+                "action": match event.action {
+                    CompletionRecoveryAction::Queued => "queued",
+                    CompletionRecoveryAction::Parked => "parked",
+                },
+                "event_id": event.event_id,
+                "run_id": event.run_id.0,
+                "run_kind": event.run_kind,
+                "repository": event.pr.repository,
+                "pr": event.pr.id,
+                "commit_sha": event.commit_sha,
+                "failures": event.failures,
+            })
+        })
+        .collect()
 }
 
 trait CoreRunner {
@@ -1220,13 +1256,28 @@ impl SourcePreparer for RuntimeSourcePreparer {
             ))
         })?;
 
+        let result = self.prepare_source_in_root(&request, started_at, &preparation_root);
+        if result.is_err() {
+            remove_failed_preparation_root(&preparation_root)?;
+        }
+        result
+    }
+}
+
+impl RuntimeSourcePreparer {
+    fn prepare_source_in_root(
+        &self,
+        request: &SourcePreparationRequest,
+        started_at: Instant,
+        preparation_root: &Path,
+    ) -> Result<PreparedSource, CoreError> {
         let mut prepared = None;
         let mut steps_run = Vec::with_capacity(self.steps.len());
         for step in &self.steps {
             prepared = Some(run_source_preparation_step(
                 step,
-                &request,
-                &preparation_root,
+                request,
+                preparation_root,
                 prepared.as_ref(),
             )?);
             steps_run.push(step.id.clone());
@@ -1234,7 +1285,7 @@ impl SourcePreparer for RuntimeSourcePreparer {
         let mut prepared = prepared.ok_or_else(|| {
             CoreError::SourcePreparation("no source preparation steps configured".to_owned())
         })?;
-        prepared.cleanup_root = Some(preparation_root.clone());
+        prepared.cleanup_root = Some(preparation_root.to_path_buf());
         log_daemon_event(
             "info",
             "source_preparation_succeeded",
@@ -1251,6 +1302,18 @@ impl SourcePreparer for RuntimeSourcePreparer {
         );
         Ok(prepared)
     }
+}
+
+fn remove_failed_preparation_root(preparation_root: &Path) -> Result<(), CoreError> {
+    if !preparation_root.exists() {
+        return Ok(());
+    }
+    fs::remove_dir_all(preparation_root).map_err(|source| {
+        CoreError::SourcePreparation(format!(
+            "remove failed source preparation root {}: {source}",
+            preparation_root.display()
+        ))
+    })
 }
 
 #[derive(Serialize)]
@@ -1298,7 +1361,13 @@ fn source_preparation_root(request: &SourcePreparationRequest) -> PathBuf {
         .root
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    parent.join(format!("{}-source-prep", request.workspace.id))
+    // Keep this suffix coupled to core cleanup: roots ending with
+    // SOURCE_PREPARATION_ROOT_SUFFIX are disposable preparation roots, not just
+    // generic trust boundaries.
+    parent.join(format!(
+        "{}{SOURCE_PREPARATION_ROOT_SUFFIX}",
+        request.workspace.id
+    ))
 }
 
 fn run_source_preparation_step(
@@ -2209,6 +2278,7 @@ mod tests {
                         terminal_replays: 1,
                         stale_running_failures: 0,
                         errors_continued: 0,
+                        ..CompletionRecoverySummary::default()
                     }),
                 ])),
             },
@@ -2225,6 +2295,77 @@ mod tests {
         assert_eq!(summary.recovered_stale_running_events, 0);
         assert_eq!(summary.events_processed, 1);
         assert_eq!(summary.quiet_polls, 1);
+    }
+
+    #[test]
+    fn run_loop_treats_parked_only_completion_recovery_as_quiet() {
+        let mut daemon = Pump19Daemon::new(
+            StubCore {
+                outcomes: Rc::new(RefCell::new(vec![Ok(None)])),
+                recovered: Rc::new(RefCell::new(vec![
+                    Ok(CompletionRecoverySummary::default()),
+                    Ok(CompletionRecoverySummary {
+                        parked: 1,
+                        events: vec![pump19_core::CompletionRecoveryEvent {
+                            action: CompletionRecoveryAction::Parked,
+                            event_id: "run-completed-1234".to_owned(),
+                            run_id: RunId("event-1:review:1".to_owned()),
+                            run_kind: RunKind::Review,
+                            pr: PullRequestRef {
+                                repository: "acme/widgets".to_owned(),
+                                id: "42".to_owned(),
+                            },
+                            commit_sha: "abc123".to_owned(),
+                            failures: 2,
+                        }],
+                        ..CompletionRecoverySummary::default()
+                    }),
+                ])),
+            },
+            LoopControlConfig {
+                poll_interval_ms: 0,
+                stop_after_quiet_polls: Some(1),
+            },
+        );
+
+        let summary = daemon.run(&[], &NeverShutdown).expect("run daemon");
+
+        assert_eq!(summary.quiet_polls, 1);
+        assert_eq!(summary.recovered_completion_events, 0);
+        assert_eq!(summary.recovered_terminal_events, 0);
+        assert_eq!(summary.recovered_stale_running_events, 0);
+    }
+
+    #[test]
+    fn completion_recovery_log_fields_identify_parked_event() {
+        let recovery = CompletionRecoverySummary {
+            parked: 1,
+            events: vec![pump19_core::CompletionRecoveryEvent {
+                action: CompletionRecoveryAction::Parked,
+                event_id: "run-completed-1234".to_owned(),
+                run_id: RunId("event-1:review:1".to_owned()),
+                run_kind: RunKind::Review,
+                pr: PullRequestRef {
+                    repository: "acme/widgets".to_owned(),
+                    id: "42".to_owned(),
+                },
+                commit_sha: "abc123".to_owned(),
+                failures: 2,
+            }],
+            ..CompletionRecoverySummary::default()
+        };
+
+        let fields = completion_recovery_event_fields(&recovery);
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0]["action"], json!("parked"));
+        assert_eq!(fields[0]["event_id"], json!("run-completed-1234"));
+        assert_eq!(fields[0]["run_id"], json!("event-1:review:1"));
+        assert_eq!(fields[0]["run_kind"], json!("review"));
+        assert_eq!(fields[0]["repository"], json!("acme/widgets"));
+        assert_eq!(fields[0]["pr"], json!("42"));
+        assert_eq!(fields[0]["commit_sha"], json!("abc123"));
+        assert_eq!(fields[0]["failures"], json!(2));
     }
 
     #[test]
@@ -2572,6 +2713,73 @@ printf '{{"tree":"{prepared_tree}","revision":"abc123"}}'
                 commit_sha: "abc123".to_owned(),
             }))
         );
+    }
+
+    #[test]
+    fn runtime_source_preparer_removes_preparation_root_after_step_failure() {
+        let dir = tempdir().expect("temp dir");
+        let failed_tree = dir.path().join("workspace-1-source-prep").join("partial");
+        let failing_script = dir.path().join("failing-prepare.sh");
+        write_test_executable(
+            &failing_script,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+cat >/dev/null
+mkdir -p "{failed_tree}"
+printf 'partial\n' > "{failed_tree}/source.txt"
+echo "intentional preparation failure" >&2
+exit 23
+"#,
+                failed_tree = failed_tree.display(),
+            ),
+        );
+        let pack = MechanicalPack {
+            schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
+            contract_version: ContractVersion::current(),
+            id: "test-mechanics".to_owned(),
+            steps: vec![MechanicalStep {
+                id: "prepare-source".to_owned(),
+                kind: MechanicalStepKind::Prepare,
+                execution: MechanicalExecution::Command {
+                    program: failing_script.display().to_string(),
+                    args: Vec::new(),
+                },
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                extensions: Extensions::new(),
+            }],
+            extensions: Extensions::new(),
+        };
+        let mut preparer = runtime_source_preparer(&pack).expect("source preparer");
+        let workspace = WorkspaceLease {
+            id: "workspace-1".to_owned(),
+            root: dir.path().join("workspace"),
+            isolation: WorkspaceIsolation {
+                isolated: true,
+                credential_free: true,
+                egress_bounded: true,
+                resource_bounded: true,
+                ephemeral: true,
+            },
+        };
+        let request = SourcePreparationRequest {
+            run_id: RunId("run-1".to_owned()),
+            run_kind: RunKind::Review,
+            event: probe_event(),
+            state: pending_state("abc123"),
+            workspace,
+            pr: pr(),
+            commit_sha: "abc123".to_owned(),
+        };
+        let preparation_root = source_preparation_root(&request);
+
+        let error = preparer
+            .prepare_source(request)
+            .expect_err("source preparation should fail");
+
+        assert!(matches!(error, CoreError::SourcePreparation(_)));
+        assert!(!preparation_root.exists());
     }
 
     #[test]

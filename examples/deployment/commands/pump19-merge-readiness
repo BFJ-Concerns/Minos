@@ -152,6 +152,22 @@ done
 # unreachable.
 status=0
 timeout "$check_timeout" "$runner_bin" run --rm \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --pids-limit 512 \
+  --memory 2147483648 \
+  --cpu-period 100000 \
+  --cpu-quota 200000 \
+  --tmpfs /tmp:rw,nosuid,nodev,size=1073741824 \
+  --env CARGO_HOME=/workspace/.cargo \
+  --env GIT_CONFIG_GLOBAL=/workspace/.gitconfig \
+  --env GIT_CONFIG_NOSYSTEM=1 \
+  --env GIT_TERMINAL_PROMPT=0 \
+  --env HOME=/workspace/home \
+  --env NPM_CONFIG_CACHE=/workspace/.npm \
+  --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --env SHELL=/bin/sh \
   --volume "$tmp/repo:/workspace:rw" \
   --workdir /workspace \
   "$check_image" \

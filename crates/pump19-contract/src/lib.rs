@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The current public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 6 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 7 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -346,10 +346,6 @@ pub enum PublicationOperation {
     ResolveFindingComment {
         finding_dedup_key: String,
         comment_operation_id: String,
-    },
-    PostFailureComment,
-    PostRefusalComment {
-        reason: String,
     },
     PushFixCommits {
         patch_ids: Vec<PatchId>,

@@ -471,6 +471,8 @@ set -eu
 base_url=
 finish_label=pump19-finish
 curl_bin=${PUMP19_FORGEJO_CURL:-curl}
+detail_attempts=${PUMP19_FORGEJO_DETAIL_ATTEMPTS:-3}
+detail_sleep=${PUMP19_FORGEJO_DETAIL_SLEEP:-1}
 
 usage() {
   echo "usage: pump19-forgejo-poll --base-url URL [--finish-label LABEL] owner/repo" >&2
@@ -534,6 +536,27 @@ printf '%s' "$pulls_json" | jq -c '.[]' > "$tmp/pulls.jsonl"
 
 while IFS= read -r pull_json; do
   pr_id=$(printf '%s' "$pull_json" | jq -r '(.number // .id | tostring)')
+  attempt=1
+  while :; do
+    detail_json=$(api_json "/repos/$repository/pulls/$pr_id" 2>/dev/null || printf '%s' "$pull_json")
+    pull_json=$(printf '%s\n%s\n' "$pull_json" "$detail_json" | jq -c -n '
+      input as $list
+      | input as $detail
+      | $list * $detail
+    ')
+    merge_base_known=$(printf '%s' "$pull_json" | jq -r 'if (.merge_base // "") != "" and (.base.sha // "") != "" then "true" else "false" end')
+    mergeability_known=$(printf '%s' "$pull_json" | jq -r 'if .mergeable == true or .mergeable == false then "true" else "false" end')
+    if [ "$merge_base_known" = "true" ] && [ "$mergeability_known" = "true" ]; then
+      break
+    fi
+    if [ "$attempt" -ge "$detail_attempts" ]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    if [ "$detail_sleep" -gt 0 ]; then
+      sleep "$detail_sleep"
+    fi
+  done
   timeline_json=$(api_json "/repos/$repository/issues/$pr_id/timeline" 2>/dev/null || printf '[]')
   label_actors_json=$(printf '%s\n%s\n' "$pull_json" "$timeline_json" | jq -c -n --arg finish "$finish_label" '
     input as $pull
@@ -795,6 +818,11 @@ case "$operation" in
     while IFS= read -r commit_json; do
       message=$(printf '%s' "$commit_json" | jq -r '.message')
       author=$(printf '%s' "$commit_json" | jq -r '.author_agent_id')
+      model_provenance=$(printf '%s' "$commit_json" | jq -r '.model_provenance_json // empty')
+      model_provenance_trailer=
+      if [ -n "$model_provenance" ]; then
+        model_provenance_trailer=$(printf '%s' "$model_provenance" | jq -c . 2>/dev/null || printf '%s' "$model_provenance" | tr '\n' ' ')
+      fi
       kind=$(printf '%s' "$commit_json" | jq -r '.change.kind')
       if [ "$kind" = "unified_diff" ]; then
         printf '%s' "$commit_json" | jq -r '.change.diff' | git apply
@@ -802,9 +830,15 @@ case "$operation" in
       if [ "$kind" != "description" ]; then
         git add -A
       fi
-      GIT_AUTHOR_NAME="$author" GIT_AUTHOR_EMAIL="pump19@example.invalid" \
-        GIT_COMMITTER_NAME="Pump-19" GIT_COMMITTER_EMAIL="pump19@example.invalid" \
-        git commit --allow-empty -m "$message" >/dev/null 2>&1
+      if [ -n "$model_provenance_trailer" ]; then
+        GIT_AUTHOR_NAME="$author" GIT_AUTHOR_EMAIL="pump19@example.invalid" \
+          GIT_COMMITTER_NAME="Pump-19" GIT_COMMITTER_EMAIL="pump19@example.invalid" \
+          git commit --allow-empty -m "$message" -m "Pump19-Model-Provenance: $model_provenance_trailer" >/dev/null 2>&1
+      else
+        GIT_AUTHOR_NAME="$author" GIT_AUTHOR_EMAIL="pump19@example.invalid" \
+          GIT_COMMITTER_NAME="Pump-19" GIT_COMMITTER_EMAIL="pump19@example.invalid" \
+          git commit --allow-empty -m "$message" >/dev/null 2>&1
+      fi
     done < "$tmp/commits.jsonl"
     new_head=$(git rev-parse HEAD)
     git_auth push origin -- "HEAD:$head_ref" >/dev/null 2>&1
@@ -1128,6 +1162,22 @@ done
 # unreachable.
 status=0
 timeout "$check_timeout" "$runner_bin" run --rm \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --pids-limit 512 \
+  --memory 2147483648 \
+  --cpu-period 100000 \
+  --cpu-quota 200000 \
+  --tmpfs /tmp:rw,nosuid,nodev,size=1073741824 \
+  --env CARGO_HOME=/workspace/.cargo \
+  --env GIT_CONFIG_GLOBAL=/workspace/.gitconfig \
+  --env GIT_CONFIG_NOSYSTEM=1 \
+  --env GIT_TERMINAL_PROMPT=0 \
+  --env HOME=/workspace/home \
+  --env NPM_CONFIG_CACHE=/workspace/.npm \
+  --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --env SHELL=/bin/sh \
   --volume "$tmp/repo:/workspace:rw" \
   --workdir /workspace \
   "$check_image" \
@@ -2057,7 +2107,7 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 6
+minor = 7
 
 [[rules]]
 id = "review-on-my-prs"
@@ -2107,7 +2157,7 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 6
+minor = 7
 
 [[rules]]
 id = "review-on-my-prs"
@@ -2355,6 +2405,10 @@ model = "claude-stable"
             r#"[{"number":42,"title":"Ready for review","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"pump19-finish"}]}]"#,
         )?;
         fs::write(
+            fixtures.join("pull-detail.json"),
+            r#"{"number":42,"title":"Ready for review","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"pump19-finish"}]}"#,
+        )?;
+        fs::write(
             fixtures.join("timeline.json"),
             r#"[{"label":{"name":"pump19-finish"},"user":{"id":7,"login":"pump19","full_name":"Pump 19"}}]"#,
         )?;
@@ -2363,6 +2417,7 @@ model = "claude-stable"
             r#"case "$url" in
   */api/v1/user) cat "$PUMP19_FIXTURES/user.json" ;;
   */api/v1/repos/acme/widgets/pulls\?state=open) cat "$PUMP19_FIXTURES/pulls.json" ;;
+  */api/v1/repos/acme/widgets/pulls/42) cat "$PUMP19_FIXTURES/pull-detail.json" ;;
   */api/v1/repos/acme/widgets/issues/42/timeline) cat "$PUMP19_FIXTURES/timeline.json" ;;
   */api/v1/repos/acme/widgets/collaborators/pump19/permission) printf '{"permission":"write"}' ;;
   *) echo "unexpected URL: $url" >&2; exit 44 ;;
@@ -2401,6 +2456,76 @@ esac
             snapshots[0]["actor_permissions"][0]["can_apply_finish_label"],
             true
         );
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_forgejo_poll_command_resolves_lazy_pr_detail_before_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fixtures = dir.path().join("fixtures");
+        fs::create_dir_all(&fixtures)?;
+        fs::write(fixtures.join("user.json"), r#"{"id":7,"login":"pump19"}"#)?;
+        fs::write(
+            fixtures.join("pulls.json"),
+            r#"[{"number":42,"title":"Ready","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"mergeable":null,"labels":[{"name":"pump19-finish"}]}]"#,
+        )?;
+        fs::write(
+            fixtures.join("pull-detail-pending.json"),
+            r#"{"number":42,"head":{"sha":"abc123"},"base":{"sha":"def456"},"mergeable":null}"#,
+        )?;
+        fs::write(
+            fixtures.join("pull-detail-ready.json"),
+            r#"{"number":42,"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true}"#,
+        )?;
+        fs::write(
+            fixtures.join("timeline.json"),
+            r#"[{"label":{"name":"pump19-finish"},"user":{"id":7,"login":"pump19"}}]"#,
+        )?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/user) cat "$PUMP19_FIXTURES/user.json" ;;
+  */api/v1/repos/acme/widgets/pulls\?state=open) cat "$PUMP19_FIXTURES/pulls.json" ;;
+  */api/v1/repos/acme/widgets/pulls/42)
+    count_file="$PUMP19_FIXTURES/detail-count"
+    count=0
+    [ -f "$count_file" ] && count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s' "$count" > "$count_file"
+    if [ "$count" -lt 2 ]; then
+      cat "$PUMP19_FIXTURES/pull-detail-pending.json"
+    else
+      cat "$PUMP19_FIXTURES/pull-detail-ready.json"
+    fi
+    ;;
+  */api/v1/repos/acme/widgets/issues/42/timeline) cat "$PUMP19_FIXTURES/timeline.json" ;;
+  */api/v1/repos/acme/widgets/collaborators/pump19/permission) printf '{"permission":"write"}' ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+
+        let output = Command::new(&commands.poll_command)
+            .args([
+                "--base-url",
+                "https://forgejo.example",
+                "--finish-label",
+                "pump19-finish",
+                "acme/widgets",
+            ])
+            .env("FORGEJO_TOKEN", "test-token")
+            .env("PUMP19_FORGEJO_CURL", fake_curl)
+            .env("PUMP19_FIXTURES", &fixtures)
+            .env("PUMP19_FORGEJO_DETAIL_SLEEP", "0")
+            .output()?;
+
+        assert_command_success(&output);
+        let snapshots: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(snapshots[0]["branch_currency"], "current");
+        assert_eq!(snapshots[0]["mergeability"], "mergeable");
+        assert_eq!(fs::read_to_string(fixtures.join("detail-count"))?, "2");
         Ok(())
     }
 
@@ -2677,7 +2802,7 @@ esac
                 "patch_id": "patch-1",
                 "message": "Apply Pump-19 fix",
                 "author_agent_id": "fixer-a",
-                "model_provenance_json": "{}",
+                "model_provenance_json": "{\"engine\":\"codex\",\"model\":\"gpt-5\"}",
                 "change": {
                     "kind": "description",
                     "summary": "Fixture-only empty commit"
@@ -2717,6 +2842,18 @@ esac
                 "feature",
             ]),
             new_head
+        );
+        let commit_message = git_stdout([
+            "--git-dir",
+            bare_repo.to_str().expect("bare path"),
+            "log",
+            "-1",
+            "--format=%B",
+            "feature",
+        ]);
+        assert!(
+            commit_message
+                .contains("Pump19-Model-Provenance: {\"engine\":\"codex\",\"model\":\"gpt-5\"}")
         );
         Ok(())
     }
@@ -3011,6 +3148,25 @@ exit "${{PUMP19_STUB_RUNNER_STATUS:-0}}"
         let recorded_args = fs::read_to_string(&fixture.runner_args)?;
         assert!(recorded_args.contains("localhost/pump19-workspace:stable"));
         assert!(recorded_args.contains("/workspace:rw"));
+        assert!(recorded_args.contains("--read-only"));
+        assert!(recorded_args.contains("--cap-drop=ALL"));
+        assert!(recorded_args.contains("--security-opt=no-new-privileges"));
+        assert!(recorded_args.contains("--pids-limit"));
+        assert!(recorded_args.contains("512"));
+        assert!(recorded_args.contains("--memory"));
+        assert!(recorded_args.contains("2147483648"));
+        assert!(recorded_args.contains("CARGO_HOME=/workspace/.cargo"));
+        assert!(recorded_args.contains("GIT_CONFIG_GLOBAL=/workspace/.gitconfig"));
+        assert!(recorded_args.contains("GIT_CONFIG_NOSYSTEM=1"));
+        assert!(recorded_args.contains("GIT_TERMINAL_PROMPT=0"));
+        assert!(recorded_args.contains("HOME=/workspace/home"));
+        assert!(recorded_args.contains("NPM_CONFIG_CACHE=/workspace/.npm"));
+        assert!(
+            recorded_args
+                .contains("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        );
+        assert!(recorded_args.contains("SHELL=/bin/sh"));
+        assert!(!recorded_args.contains("--network=none"));
 
         // Failing container checks: a not_ready verdict, not an execution error.
         let verdict = fixture.verdict("7", &fixture.head);
