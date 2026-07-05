@@ -1170,6 +1170,14 @@ timeout "$check_timeout" "$runner_bin" run --rm \
   --cpu-period 100000 \
   --cpu-quota 200000 \
   --tmpfs /tmp:rw,nosuid,nodev,size=1073741824 \
+  --env CARGO_HOME=/workspace/.cargo \
+  --env GIT_CONFIG_GLOBAL=/workspace/.gitconfig \
+  --env GIT_CONFIG_NOSYSTEM=1 \
+  --env GIT_TERMINAL_PROMPT=0 \
+  --env HOME=/workspace/home \
+  --env NPM_CONFIG_CACHE=/workspace/.npm \
+  --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --env SHELL=/bin/sh \
   --volume "$tmp/repo:/workspace:rw" \
   --workdir /workspace \
   "$check_image" \
@@ -3147,6 +3155,17 @@ exit "${{PUMP19_STUB_RUNNER_STATUS:-0}}"
         assert!(recorded_args.contains("512"));
         assert!(recorded_args.contains("--memory"));
         assert!(recorded_args.contains("2147483648"));
+        assert!(recorded_args.contains("CARGO_HOME=/workspace/.cargo"));
+        assert!(recorded_args.contains("GIT_CONFIG_GLOBAL=/workspace/.gitconfig"));
+        assert!(recorded_args.contains("GIT_CONFIG_NOSYSTEM=1"));
+        assert!(recorded_args.contains("GIT_TERMINAL_PROMPT=0"));
+        assert!(recorded_args.contains("HOME=/workspace/home"));
+        assert!(recorded_args.contains("NPM_CONFIG_CACHE=/workspace/.npm"));
+        assert!(
+            recorded_args
+                .contains("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        );
+        assert!(recorded_args.contains("SHELL=/bin/sh"));
         assert!(!recorded_args.contains("--network=none"));
 
         // Failing container checks: a not_ready verdict, not an execution error.
