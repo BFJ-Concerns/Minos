@@ -21,13 +21,21 @@ use std::{
 };
 
 use pump19_contract::{
-    AgentId, AgentRole, CertaintyClass, Confidence, ContractVersion, Decision, DecisionSubject,
-    DecisionVerdict, Extensions, Finding, FindingId, FindingLocation, ForgeFacts, ModelProvenance,
-    Patch, PatchChange, PatchId, RunId, RunKind, RunOutcome, Severity,
+    AgentId, AgentRole, BarCheckRecord, CertaintyClass, CitedEvidence, Confidence, ContractVersion,
+    CoverageRecord, Decision, DecisionSubject, DecisionVerdict, Extensions, FamilySplit, Finding,
+    FindingId, FindingLocation, FindingVerification, ForgeFacts, ManifestBounds, ManifestBrief,
+    ManifestLoopHistory, ManifestRepositoryPolicy, ManifestWorkspace, ModelProvenance, Patch,
+    PatchChange, PatchId, PriorityClass, ReviewVerdict, RunId, RunKind, RunManifest, RunOutcome,
+    Severity, SourceRange, VerificationStatus,
 };
 use pump19_core::{
     AgentLaunchSpec, CoreError, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher,
     WorkspaceExecutor,
+};
+use pump19_engine::{
+    EngineError, EngineKind, EngineProvenance, EngineRun, EngineSessionLauncher,
+    ExitClassification, LaunchBounds, LaunchSpec, RepairAttempt, RepairStrategy, TranscriptKind,
+    WriteAccess,
 };
 use pump19_judgement::{
     IntentStatement, JudgementBrief, JudgementBriefResult, JudgementRun, JudgementStatus,
@@ -37,11 +45,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
+
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_RAW_STDOUT: &str = "pump19.runs.raw_stdout";
 const EXT_RAW_STDERR: &str = "pump19.runs.raw_stderr";
 const EXT_MODEL_FAMILY: &str = "pump19.runs.model_family";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
+const EXT_FRAME_TITLE: &str = "pump19.frame.title";
+const EXT_FRAME_EXPLANATION: &str = "pump19.frame.explanation";
+const EXT_FRAME_SUGGESTION: &str = "pump19.frame.suggestion";
+const EXT_FRAME_PRIORITY: &str = "pump19.frame.priority";
+const EXT_FRAME_VERIFICATION: &str = "pump19.frame.verification";
+const EXT_BRIEF_WARNINGS: &str = "pump19.frame.brief_warnings";
 const REVIEW_EVIDENCE_DIR: &str = ".pump19/review";
 const REVIEW_DIFF_FILE: &str = "diff.patch";
 const INLINE_REVIEW_DIFF_BYTE_LIMIT: usize = 64 * 1024;
@@ -137,6 +156,20 @@ pub enum RunBodyError {
     PromptTemplate(String),
     #[error("review evidence is missing: {0}")]
     MissingReviewEvidence(String),
+    #[error("frame I/O failed while trying to {action}: {source}")]
+    FrameIo {
+        action: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("engine session failed: {0}")]
+    Engine(#[from] EngineError),
+    #[error("lead session ended without usable output: {0}")]
+    LeadSession(String),
+    #[error("lead output failed validation: {0}")]
+    LeadValidation(String),
+    #[error("review output failed a publication gate: {0}")]
+    PostGate(String),
 }
 
 /// Prepares a concrete agent session for a core-owned launch target.
@@ -260,6 +293,992 @@ pub struct EnsembleWorkflowOutput {
     pub archive_dir: PathBuf,
 }
 
+/// Launch seam for the lead engine session.
+pub trait LeadEngineSession {
+    /// Launches the lead session against a prepared run directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the engine process cannot launch, times out, or the
+    /// configured repair path fails.
+    fn launch_lead(
+        &mut self,
+        spec: &LaunchSpec,
+        repair: &mut dyn RepairStrategy,
+    ) -> Result<EngineRun, EngineError>;
+}
+
+impl LeadEngineSession for EngineSessionLauncher {
+    fn launch_lead(
+        &mut self,
+        spec: &LaunchSpec,
+        repair: &mut dyn RepairStrategy,
+    ) -> Result<EngineRun, EngineError> {
+        self.launch(spec, repair)
+    }
+}
+
+/// Stable workflow slots exposed to the lead session through `pump19-workflow`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewWorkflowSlot {
+    SpecialistFanout,
+    VerifyFindings,
+    AssembleReview,
+    BarCheck,
+    RepairOutput,
+}
+
+impl ReviewWorkflowSlot {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::SpecialistFanout => "specialist-fanout",
+            Self::VerifyFindings => "verify-findings",
+            Self::AssembleReview => "assemble-review",
+            Self::BarCheck => "bar-check",
+            Self::RepairOutput => "repair-output",
+        }
+    }
+}
+
+/// One workflow script made available in a run directory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeadWorkflowScript {
+    pub slot: ReviewWorkflowSlot,
+    pub path: PathBuf,
+}
+
+/// Engine settings for the lead session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeadEngineConfig {
+    pub engine: EngineKind,
+    pub executable: PathBuf,
+    pub requested_model: Option<String>,
+    pub bounds: LaunchBounds,
+    pub write_access: WriteAccess,
+    pub env: BTreeMap<String, String>,
+}
+
+/// Review-frame policy that remains additive until the stage-5 core switch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeadSessionFrameConfig {
+    pub run_root: PathBuf,
+    pub node_program: PathBuf,
+    pub ensemble_launcher: PathBuf,
+    pub workflows: Vec<LeadWorkflowScript>,
+    pub mission_template: String,
+    pub selected_briefs: Vec<ManifestBrief>,
+    pub brief_warnings: Vec<String>,
+    pub occasion: String,
+    pub materiality_threshold: PriorityClass,
+    pub lead_engine: LeadEngineConfig,
+}
+
+/// Result from one frame-driven review pass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeadSessionFrameResult {
+    pub manifest: RunManifest,
+    pub manifest_path: PathBuf,
+    pub run_dir: PathBuf,
+    pub findings: Vec<Finding>,
+    pub suppressed_findings: Vec<SuppressedFinding>,
+    pub coverage: CoverageRecord,
+    pub verdict: ReviewVerdict,
+    pub lead_provenance: EngineProvenance,
+    pub lead_transcripts: Vec<PathBuf>,
+    pub workflow_archives: Vec<PathBuf>,
+    pub repair_attempts: u32,
+}
+
+/// Candidate finding rejected by a frame publication gate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuppressedFinding {
+    pub dedup_key: String,
+    pub reason: String,
+    pub value: Value,
+}
+
+/// Review body backed by one lead engine session framed by deterministic code.
+#[derive(Clone, Debug)]
+pub struct LeadSessionReviewBody<E, R> {
+    engine: E,
+    workflow_runner: R,
+    config: LeadSessionFrameConfig,
+    last_result: Option<LeadSessionFrameResult>,
+}
+
+impl<E, R> LeadSessionReviewBody<E, R> {
+    #[must_use]
+    pub const fn new(engine: E, workflow_runner: R, config: LeadSessionFrameConfig) -> Self {
+        Self {
+            engine,
+            workflow_runner,
+            config,
+            last_result: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn last_result(&self) -> Option<&LeadSessionFrameResult> {
+        self.last_result.as_ref()
+    }
+}
+
+impl<E, R> ReviewRunBody for LeadSessionReviewBody<E, R>
+where
+    E: LeadEngineSession,
+    R: EnsembleWorkflowRunner,
+{
+    fn run_review(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<Vec<Finding>, RunBodyError> {
+        let _ = workspace;
+        self.last_result = None;
+        let result = run_lead_session_frame(
+            &mut self.engine,
+            &mut self.workflow_runner,
+            &self.config,
+            request,
+        )?;
+        let findings = result.findings.clone();
+        self.last_result = Some(result);
+        Ok(findings)
+    }
+
+    fn last_ensemble_archive_path(&self) -> Option<String> {
+        self.last_result
+            .as_ref()
+            .and_then(|result| result.workflow_archives.first())
+            .map(|path| path.display().to_string())
+    }
+}
+
+fn run_lead_session_frame(
+    engine: &mut dyn LeadEngineSession,
+    workflow_runner: &mut dyn EnsembleWorkflowRunner,
+    config: &LeadSessionFrameConfig,
+    request: &RunLaunchRequest,
+) -> Result<LeadSessionFrameResult, RunBodyError> {
+    let review_evidence = load_review_evidence(&request.workspace.root)?;
+    let run_dir = prepare_run_directory(config, request, &review_evidence)?;
+    let manifest = build_run_manifest(config, request, &review_evidence);
+    let manifest_path = run_dir.join("manifest.json");
+    write_json_file(&manifest_path, &manifest)?;
+    write_mission(
+        &run_dir.join("mission.md"),
+        &config.mission_template,
+        &manifest,
+    )?;
+    write_schema(&run_dir.join("schema/review-output.schema.json"))?;
+    write_workflow_shim(config, &run_dir)?;
+    write_exec_shim(&run_dir)?;
+
+    let mut repair = WorkflowRepairStrategy {
+        runner: workflow_runner,
+        config,
+        run_dir: run_dir.clone(),
+    };
+    let engine_run = engine.launch_lead(
+        &LaunchSpec {
+            engine: config.lead_engine.engine,
+            executable: config.lead_engine.executable.clone(),
+            working_dir: run_dir.clone(),
+            prompt_path: run_dir.join("mission.md"),
+            schema_path: Some(run_dir.join("schema/review-output.schema.json")),
+            archive_dir: run_dir.join("archive/lead"),
+            requested_model: config.lead_engine.requested_model.clone(),
+            write_access: config.lead_engine.write_access,
+            bounds: config.lead_engine.bounds.clone(),
+            env: config.lead_engine.env.clone(),
+        },
+        &mut repair,
+    )?;
+
+    if engine_run.classification != ExitClassification::Success {
+        return Err(RunBodyError::LeadSession(format!(
+            "{:?}",
+            engine_run.classification
+        )));
+    }
+    let Some(output) = engine_run.output.clone() else {
+        return Err(RunBodyError::LeadSession(
+            "engine reported success without JSON output".to_owned(),
+        ));
+    };
+    let (payload, frame_repair_attempts) = parse_or_repair_lead_payload(
+        &output,
+        &mut repair,
+        config.lead_engine.engine,
+        run_dir.join("schema/review-output.schema.json"),
+    )?;
+    let coverage = payload.coverage;
+    let (findings, suppressed_findings) = frame_findings(request, &manifest, payload.findings)?;
+    let verdict = frame_verdict(
+        payload.verdict_proposal,
+        &coverage,
+        findings.len(),
+        suppressed_findings.len(),
+    )?;
+    let workflow_archives = workflow_archive_dirs(&run_dir)?;
+    Ok(LeadSessionFrameResult {
+        manifest,
+        manifest_path,
+        run_dir,
+        findings,
+        suppressed_findings,
+        coverage,
+        verdict,
+        lead_provenance: engine_run.provenance,
+        lead_transcripts: engine_run
+            .transcripts
+            .into_iter()
+            .filter(|transcript| transcript.kind != TranscriptKind::FinalOutput)
+            .map(|transcript| transcript.path)
+            .collect(),
+        workflow_archives,
+        repair_attempts: engine_run.repair_attempts + frame_repair_attempts,
+    })
+}
+
+fn parse_or_repair_lead_payload(
+    output: &Value,
+    repair: &mut dyn RepairStrategy,
+    engine: EngineKind,
+    schema_path: PathBuf,
+) -> Result<(LeadReviewPayload, u32), RunBodyError> {
+    match serde_json::from_value::<LeadReviewPayload>(output.clone()) {
+        Ok(payload) => Ok((payload, 0)),
+        Err(error) => {
+            let attempt = RepairAttempt {
+                attempt: 1,
+                engine,
+                schema_path: Some(schema_path),
+                invalid_output: output.to_string(),
+                error: error.to_string(),
+            };
+            let Some(repaired) = repair.repair(attempt)? else {
+                return Err(RunBodyError::EnsembleJson(error));
+            };
+            serde_json::from_str::<LeadReviewPayload>(&repaired)
+                .map(|payload| (payload, 1))
+                .map_err(RunBodyError::EnsembleJson)
+        }
+    }
+}
+
+fn prepare_run_directory(
+    config: &LeadSessionFrameConfig,
+    request: &RunLaunchRequest,
+    review_evidence: &ReviewEvidence,
+) -> Result<PathBuf, RunBodyError> {
+    let run_dir = config.run_root.join(safe_path_segment(&request.run_id.0));
+    create_dir(&run_dir, "create run directory")?;
+    for relative in ["bin", "workflows", "out", "archive/workflows", "schema"] {
+        create_dir(&run_dir.join(relative), "create run directory member")?;
+    }
+    for script in &config.workflows {
+        let target = run_dir
+            .join("workflows")
+            .join(format!("{}.js", script.slot.as_str()));
+        copy_file(&script.path, &target, "copy workflow script")?;
+    }
+    copy_file(
+        &review_evidence.diff_path,
+        &run_dir.join("out/diff.patch"),
+        "copy review diff into run directory",
+    )?;
+    Ok(run_dir)
+}
+
+fn build_run_manifest(
+    config: &LeadSessionFrameConfig,
+    request: &RunLaunchRequest,
+    review_evidence: &ReviewEvidence,
+) -> RunManifest {
+    let changed_lines = changed_lines_from_diff(&review_evidence.diff);
+    let changed_files = changed_lines.keys().cloned().collect::<Vec<_>>();
+    let mut extensions = BTreeMap::new();
+    if !config.brief_warnings.is_empty() {
+        extensions.insert(
+            EXT_BRIEF_WARNINGS.to_owned(),
+            Value::Array(
+                config
+                    .brief_warnings
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    RunManifest {
+        contract_version: ContractVersion::current(),
+        run_id: request.run_id.clone(),
+        run_kind: request.run_kind,
+        pr: request.state.pr.clone(),
+        commit_sha: request.state.commit_sha.clone(),
+        base_sha: base_sha(request).unwrap_or_default(),
+        occasion: config.occasion.clone(),
+        workspace: ManifestWorkspace {
+            tree_root: request.workspace.root.display().to_string(),
+            diff_path: review_evidence.diff_path.display().to_string(),
+            governing_content_dir: request
+                .workspace
+                .root
+                .join(".pump19/review/governing")
+                .display()
+                .to_string(),
+        },
+        changed_files,
+        changed_lines,
+        selected_briefs: config.selected_briefs.clone(),
+        loop_history: ManifestLoopHistory {
+            pass_count: request.state.pass_index,
+            prior_verdicts: request
+                .state
+                .loop_history
+                .iter()
+                .filter_map(|record| record.judge_verdict)
+                .map(|verdict| format!("{verdict:?}"))
+                .collect(),
+            fix_survival_by_dedup_key: fix_survival_by_dedup_key(request),
+        },
+        bounds: ManifestBounds {
+            wall_clock_ms: u64::try_from(config.lead_engine.bounds.wall_clock.as_millis())
+                .unwrap_or(u64::MAX),
+            max_budget_usd: config.lead_engine.bounds.max_budget_usd.clone(),
+            max_total_tokens: config.lead_engine.bounds.max_total_tokens,
+        },
+        repository_policy: ManifestRepositoryPolicy {
+            fix_before_merge_priority: config.materiality_threshold,
+        },
+        extensions,
+    }
+}
+
+fn base_sha(request: &RunLaunchRequest) -> Option<String> {
+    request
+        .state
+        .extensions
+        .get(EXT_FORGE_FACTS)
+        .and_then(|value| value.get("base"))
+        .and_then(|base| base.get("sha"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn fix_survival_by_dedup_key(request: &RunLaunchRequest) -> BTreeMap<String, u32> {
+    let mut survived = BTreeMap::new();
+    for record in &request.state.loop_history {
+        if record.fix_outcome == Some(RunOutcome::NoOp) {
+            for finding in &record.findings {
+                *survived.entry(finding.dedup_key.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    survived
+}
+
+fn write_mission(path: &Path, template: &str, manifest: &RunManifest) -> Result<(), RunBodyError> {
+    let manifest_json =
+        serde_json::to_string_pretty(manifest).map_err(RunBodyError::EnsembleJson)?;
+    let rendered = render_prompt_template(
+        template,
+        &[
+            ("manifest_path", "manifest.json".to_owned()),
+            ("manifest", manifest_json),
+            ("run_id", manifest.run_id.0.clone()),
+        ],
+    )?;
+    write_file(path, rendered.as_bytes(), "write mission prompt")
+}
+
+fn write_schema(path: &Path) -> Result<(), RunBodyError> {
+    write_file(
+        path,
+        REVIEW_OUTPUT_SCHEMA.as_bytes(),
+        "write review output schema",
+    )
+}
+
+fn write_workflow_shim(
+    config: &LeadSessionFrameConfig,
+    run_dir: &Path,
+) -> Result<(), RunBodyError> {
+    let mut cases = String::new();
+    for script in &config.workflows {
+        let _ = writeln!(
+            cases,
+            "  {}) workflow=\"$run_dir/workflows/{}.js\" ;;",
+            script.slot.as_str(),
+            script.slot.as_str()
+        );
+    }
+    let source = format!(
+        r#"#!/bin/sh
+set -eu
+run_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+slot="${{1:?slot is required}}"
+input_path="${{2:?input JSON path is required}}"
+case "$slot" in
+{cases}  *) echo "unsupported workflow slot: $slot" >&2; exit 64 ;;
+esac
+mkdir -p "$run_dir/archive/workflows/$slot" "$run_dir/out"
+printf '{{"slot":"%s","input_path":"%s"}}\n' "$slot" "$input_path" >> "$run_dir/out/workflow-boundary.jsonl"
+wrapper="$run_dir/out/.pump19-workflow-$slot-$$.js"
+trap 'rm -f "$wrapper"' EXIT INT TERM
+awk '
+  BEGIN {{ inserted = 0 }}
+  {{ print }}
+  inserted == 0 && $0 ~ /^}};[[:space:]]*$/ {{
+    print "const args = JSON.parse((await import(\"node:fs\")).readFileSync(process.env.PUMP19_WORKFLOW_INPUT_PATH, \"utf8\"));"
+    inserted = 1
+  }}
+  END {{
+    if (inserted == 0) {{
+      print "workflow script did not expose a top-level meta object terminator" > "/dev/stderr"
+      exit 65
+    }}
+  }}
+' "$workflow" > "$wrapper"
+PUMP19_WORKFLOW_INPUT_PATH="$input_path" ENSEMBLE_RUN_RECORD_DIR="$run_dir/archive/workflows/$slot" "{node}" "{ensemble}" --timeout 180000 "$wrapper"
+"#,
+        node = config.node_program.display(),
+        ensemble = config.ensemble_launcher.display(),
+    );
+    let path = run_dir.join("bin/pump19-workflow");
+    write_file(&path, source.as_bytes(), "write workflow shim")?;
+    make_executable(&path)
+}
+
+fn write_exec_shim(run_dir: &Path) -> Result<(), RunBodyError> {
+    let path = run_dir.join("bin/pump19-exec");
+    write_file(
+        &path,
+        b"#!/bin/sh\nset -eu\necho \"pump19-exec is provided by the stage-5 workspace lease integration\" >&2\nexit 69\n",
+        "write exec shim",
+    )?;
+    make_executable(&path)
+}
+
+fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<PathBuf>, RunBodyError> {
+    let root = run_dir.join("archive/workflows");
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    fs::read_dir(&root)
+        .map_err(|source| RunBodyError::FrameIo {
+            action: format!("read workflow archive root {}", root.display()),
+            source,
+        })?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|source| RunBodyError::FrameIo {
+                    action: format!("read workflow archive root {}", root.display()),
+                    source,
+                })
+        })
+        .filter(|entry| entry.as_ref().map_or(true, |path| path.is_dir()))
+        .collect()
+}
+
+struct WorkflowRepairStrategy<'a> {
+    runner: &'a mut dyn EnsembleWorkflowRunner,
+    config: &'a LeadSessionFrameConfig,
+    run_dir: PathBuf,
+}
+
+impl RepairStrategy for WorkflowRepairStrategy<'_> {
+    fn repair(&mut self, attempt: RepairAttempt) -> Result<Option<String>, EngineError> {
+        let Some(script) = self
+            .config
+            .workflows
+            .iter()
+            .find(|script| script.slot == ReviewWorkflowSlot::RepairOutput)
+        else {
+            return Ok(None);
+        };
+        let schema = attempt
+            .schema_path
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_else(|| "{}".to_owned());
+        let output = self
+            .runner
+            .run_workflow(EnsembleWorkflowRequest {
+                script: script.path.clone(),
+                args: json!({
+                    "repairer": {
+                        "engine": format!("{:?}", attempt.engine).to_lowercase(),
+                        "agent_id": format!("repair-attempt-{}", attempt.attempt),
+                    },
+                    "schema": serde_json::from_str::<Value>(&schema).unwrap_or(Value::Null),
+                    "invalid_output": attempt.invalid_output,
+                    "errors": [attempt.error],
+                    "agent_timeout_ms": 120_000,
+                }),
+                archive_dir: self
+                    .run_dir
+                    .join("archive/workflows/repair-output")
+                    .join(attempt.attempt.to_string()),
+                timeout_ms: 120_000,
+            })
+            .map_err(|error| EngineError::Repair(error.to_string()))?;
+        output
+            .value
+            .get("repaired_output")
+            .and_then(Value::as_str)
+            .map_or_else(
+                || Ok(Some(output.value.to_string())),
+                |text| Ok(Some(text.to_owned())),
+            )
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LeadReviewPayload {
+    findings: Vec<LeadFindingPayload>,
+    coverage: CoverageRecord,
+    verdict_proposal: LeadVerdictProposal,
+    #[serde(default)]
+    session_notes: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LeadFindingPayload {
+    dedup_hint: String,
+    source_brief: String,
+    title: String,
+    explanation: String,
+    #[serde(default)]
+    suggestion: Option<String>,
+    priority: PriorityClass,
+    #[serde(default = "default_certainty")]
+    certainty: CertaintyClass,
+    producer_agent_id: AgentId,
+    locations: Vec<LeadFindingLocation>,
+    verification: LeadFindingVerification,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LeadFindingLocation {
+    path: String,
+    line: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LeadFindingVerification {
+    status: WorkflowVerificationStatus,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    verifier_agent_id: Option<AgentId>,
+    #[serde(default)]
+    evidence: Vec<WorkflowEvidence>,
+    cross_family: WorkflowFamilySplit,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WorkflowVerificationStatus {
+    Verified,
+    Rejected,
+    Unverified,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct WorkflowEvidence {
+    path: String,
+    line: u32,
+    #[serde(default)]
+    quote: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WorkflowFamilySplit {
+    CrossFamily,
+    SameFamily,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", tag = "verdict")]
+enum LeadVerdictProposal {
+    Converged {
+        bar_check: BarCheckRecord,
+    },
+    FindingsPosted,
+    StandingFindings {
+        finding_dedup_keys: Vec<String>,
+        rationale: String,
+    },
+    BarFailed {
+        bar_check: BarCheckRecord,
+    },
+    BarCheckDegraded {
+        attempts: u32,
+        last_error: String,
+    },
+    PartialCoverage,
+}
+
+const fn default_certainty() -> CertaintyClass {
+    CertaintyClass::Advisory
+}
+
+fn frame_findings(
+    request: &RunLaunchRequest,
+    manifest: &RunManifest,
+    payloads: Vec<LeadFindingPayload>,
+) -> Result<(Vec<Finding>, Vec<SuppressedFinding>), RunBodyError> {
+    let mut findings = Vec::new();
+    let mut suppressed = Vec::new();
+    let mut seen = BTreeSet::new();
+    for payload in payloads {
+        let value = serde_json::to_value(&payload).map_err(RunBodyError::EnsembleJson)?;
+        match post_gate_finding(request, manifest, payload, &mut seen) {
+            Ok(finding) => findings.push(finding),
+            Err(reason) => suppressed.push(SuppressedFinding {
+                dedup_key: value
+                    .get("dedup_hint")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_owned(),
+                reason,
+                value,
+            }),
+        }
+    }
+    Ok((findings, suppressed))
+}
+
+fn post_gate_finding(
+    request: &RunLaunchRequest,
+    manifest: &RunManifest,
+    payload: LeadFindingPayload,
+    seen: &mut BTreeSet<String>,
+) -> Result<Finding, String> {
+    if !seen.insert(payload.dedup_hint.clone()) {
+        return Err(format!(
+            "duplicate finding dedup key {}",
+            payload.dedup_hint
+        ));
+    }
+    let verification = finding_verification(request, &payload)?;
+    if verification.status != VerificationStatus::Verified {
+        return Err("finding is not independently verified".to_owned());
+    }
+    let verifier = verification.verifier.as_ref().ok_or_else(|| {
+        "verified finding is unpostable: Unverified{reason:\"missing verifier identity\"}"
+            .to_owned()
+    })?;
+    for location in &payload.locations {
+        let Some(lines) = manifest.changed_lines.get(&location.path) else {
+            return Err(format!(
+                "finding location {}:{} is outside the changed files",
+                location.path, location.line
+            ));
+        };
+        if !lines.contains(&location.line) {
+            return Err(format!(
+                "finding location {}:{} is outside changed lines",
+                location.path, location.line
+            ));
+        }
+    }
+    let producer = request
+        .provenance
+        .iter()
+        .find(|provenance| provenance.agent_id == payload.producer_agent_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "producer provenance {} is absent",
+                payload.producer_agent_id.0
+            )
+        })?;
+    if verifier.agent_id == producer.agent_id {
+        return Err("finding verifier is the producing agent".to_owned());
+    }
+    if verifier.session_id == producer.session_id {
+        return Err("finding verifier reused the producing session".to_owned());
+    }
+    let mut extensions = BTreeMap::new();
+    extensions.insert(
+        EXT_FRAME_TITLE.to_owned(),
+        Value::String(payload.title.clone()),
+    );
+    extensions.insert(
+        EXT_FRAME_EXPLANATION.to_owned(),
+        Value::String(payload.explanation.clone()),
+    );
+    if let Some(suggestion) = &payload.suggestion {
+        extensions.insert(
+            EXT_FRAME_SUGGESTION.to_owned(),
+            Value::String(suggestion.clone()),
+        );
+    }
+    extensions.insert(
+        EXT_FRAME_PRIORITY.to_owned(),
+        serde_json::to_value(payload.priority).map_err(|error| error.to_string())?,
+    );
+    extensions.insert(
+        EXT_FRAME_VERIFICATION.to_owned(),
+        serde_json::to_value(&verification).map_err(|error| error.to_string())?,
+    );
+    Ok(Finding {
+        contract_version: ContractVersion::current(),
+        id: FindingId(stable_id(
+            "finding",
+            [request.run_id.0.as_str(), payload.dedup_hint.as_str()],
+        )),
+        dedup_key: payload.dedup_hint,
+        source_brief: payload.source_brief,
+        dimension: "review".to_owned(),
+        summary: payload.title,
+        severity: severity_for_priority(payload.priority),
+        confidence: Confidence::High,
+        certainty: payload.certainty,
+        provenance: producer,
+        locations: payload
+            .locations
+            .into_iter()
+            .map(|location| FindingLocation::File {
+                path: location.path,
+                line: Some(location.line),
+                range: None,
+            })
+            .collect(),
+        extensions,
+    })
+}
+
+fn finding_verification(
+    request: &RunLaunchRequest,
+    payload: &LeadFindingPayload,
+) -> Result<FindingVerification, String> {
+    let verifier = payload
+        .verification
+        .verifier_agent_id
+        .as_ref()
+        .map(|agent_id| {
+            request
+                .provenance
+                .iter()
+                .find(|provenance| provenance.agent_id == *agent_id)
+                .cloned()
+                .ok_or_else(|| format!("verifier provenance {} is absent", agent_id.0))
+        })
+        .transpose()?;
+    Ok(FindingVerification {
+        status: match &payload.verification.status {
+            WorkflowVerificationStatus::Verified => VerificationStatus::Verified,
+            WorkflowVerificationStatus::Rejected => VerificationStatus::Rejected {
+                reason: payload
+                    .verification
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "verifier rejected the finding".to_owned()),
+            },
+            WorkflowVerificationStatus::Unverified => VerificationStatus::Unverified {
+                reason: payload
+                    .verification
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "verification did not complete".to_owned()),
+            },
+        },
+        verifier,
+        evidence: payload
+            .verification
+            .evidence
+            .iter()
+            .map(|evidence| CitedEvidence {
+                path: evidence.path.clone(),
+                line_range: Some(SourceRange {
+                    start_line: evidence.line,
+                    start_column: None,
+                    end_line: evidence.line,
+                    end_column: None,
+                }),
+                quote: evidence.quote.clone(),
+                note: evidence.note.clone(),
+            })
+            .collect(),
+        cross_family: match payload.verification.cross_family {
+            WorkflowFamilySplit::CrossFamily => FamilySplit::CrossFamily,
+            WorkflowFamilySplit::SameFamily => FamilySplit::SameFamily,
+            WorkflowFamilySplit::Unknown => FamilySplit::Unknown,
+        },
+        extensions: BTreeMap::new(),
+    })
+}
+
+fn frame_verdict(
+    proposal: LeadVerdictProposal,
+    coverage: &CoverageRecord,
+    material_count: usize,
+    suppressed_count: usize,
+) -> Result<ReviewVerdict, RunBodyError> {
+    Ok(match proposal {
+        LeadVerdictProposal::Converged { bar_check } => {
+            if material_count != 0 {
+                return Err(RunBodyError::PostGate(
+                    "convergence proposal included postable material findings".to_owned(),
+                ));
+            }
+            if !coverage.complete {
+                ReviewVerdict::PartialCoverage
+            } else if bar_check.passed {
+                ReviewVerdict::Converged { bar_check }
+            } else {
+                ReviewVerdict::BarFailed { bar_check }
+            }
+        }
+        LeadVerdictProposal::FindingsPosted => ReviewVerdict::FindingsPosted {
+            material: u32::try_from(material_count).unwrap_or(u32::MAX),
+            suppressed: u32::try_from(suppressed_count).unwrap_or(u32::MAX),
+        },
+        LeadVerdictProposal::StandingFindings {
+            finding_dedup_keys,
+            rationale,
+        } => ReviewVerdict::StandingFindings {
+            finding_dedup_keys,
+            rationale,
+        },
+        LeadVerdictProposal::BarFailed { bar_check } => ReviewVerdict::BarFailed { bar_check },
+        LeadVerdictProposal::BarCheckDegraded {
+            attempts,
+            last_error,
+        } => ReviewVerdict::BarCheckDegraded {
+            attempts,
+            last_error,
+        },
+        LeadVerdictProposal::PartialCoverage => ReviewVerdict::PartialCoverage,
+    })
+}
+
+const fn severity_for_priority(priority: PriorityClass) -> Severity {
+    match priority {
+        PriorityClass::P0 => Severity::Critical,
+        PriorityClass::P1 => Severity::High,
+        PriorityClass::P2 => Severity::Medium,
+        PriorityClass::P3 => Severity::Low,
+    }
+}
+
+fn changed_lines_from_diff(diff: &str) -> BTreeMap<String, Vec<u32>> {
+    let mut changed = BTreeMap::<String, Vec<u32>>::new();
+    let mut current_path = None;
+    let mut new_line = 0_u32;
+    for line in diff.lines() {
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            current_path = Some(path.to_owned());
+            continue;
+        }
+        if let Some((start, _count)) = parse_hunk_header(line) {
+            new_line = start;
+            continue;
+        }
+        let Some(path) = &current_path else {
+            continue;
+        };
+        if line.starts_with('+') && !line.starts_with("+++") {
+            changed.entry(path.clone()).or_default().push(new_line);
+            new_line = new_line.saturating_add(1);
+        } else if !line.starts_with('-') {
+            new_line = new_line.saturating_add(1);
+        }
+    }
+    changed
+}
+
+fn parse_hunk_header(line: &str) -> Option<(u32, u32)> {
+    let hunk = line.strip_prefix("@@ ")?;
+    let plus = hunk.split_whitespace().find(|part| part.starts_with('+'))?;
+    let range = plus.trim_start_matches('+');
+    let (start, count) = range.split_once(',').unwrap_or((range, "1"));
+    Some((start.parse().ok()?, count.parse().ok()?))
+}
+
+fn create_dir(path: &Path, action: &str) -> Result<(), RunBodyError> {
+    fs::create_dir_all(path).map_err(|source| RunBodyError::FrameIo {
+        action: format!("{action} {}", path.display()),
+        source,
+    })
+}
+
+fn copy_file(source: &Path, target: &Path, action: &str) -> Result<(), RunBodyError> {
+    fs::copy(source, target)
+        .map(|_bytes| ())
+        .map_err(|source_error| RunBodyError::FrameIo {
+            action: format!("{action} {} to {}", source.display(), target.display()),
+            source: source_error,
+        })
+}
+
+fn write_file(path: &Path, bytes: &[u8], action: &str) -> Result<(), RunBodyError> {
+    fs::write(path, bytes).map_err(|source| RunBodyError::FrameIo {
+        action: format!("{action} {}", path.display()),
+        source,
+    })
+}
+
+fn write_json_file(path: &Path, value: &impl Serialize) -> Result<(), RunBodyError> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(RunBodyError::EnsembleJson)?;
+    write_file(path, &bytes, "write JSON file")
+}
+
+fn make_executable(path: &Path) -> Result<(), RunBodyError> {
+    #[cfg(unix)]
+    {
+        let metadata = fs::metadata(path).map_err(|source| RunBodyError::FrameIo {
+            action: format!("read permissions for {}", path.display()),
+            source,
+        })?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).map_err(|source| RunBodyError::FrameIo {
+            action: format!("set executable bit on {}", path.display()),
+            source,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+const REVIEW_OUTPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings", "coverage", "verdict_proposal", "session_notes"],
+  "properties": {
+    "findings": { "type": "array" },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["complete", "visited", "unvisited", "account"],
+      "properties": {
+        "complete": { "type": "boolean" },
+        "visited": { "type": "array", "items": { "type": "string" } },
+        "unvisited": { "type": "array", "items": { "type": "string" } },
+        "account": { "type": "string" },
+        "extensions": { "type": "object" }
+      }
+    },
+    "verdict_proposal": { "type": "object" },
+    "session_notes": { "type": "string" }
+  }
+}"#;
+
 /// Site-side description of the repository under review.
 ///
 /// This is operator configuration, not subject-repository state. A bare
@@ -316,7 +1335,8 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
         let wrapper =
             TemporaryWorkflowScript::write(&request.script, &request.args, &request.archive_dir)?;
-        let mut child = Command::new(&self.node_program)
+        let mut command = Command::new(&self.node_program);
+        command
             .env_clear()
             .envs(filtered_ensemble_env(env::vars()))
             .arg(&self.launcher_path)
@@ -325,10 +1345,22 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             .arg(wrapper.path())
             .env("ENSEMBLE_RUN_RECORD_DIR", &request.archive_dir)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
             .spawn()
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            RunBodyError::Ensemble("launcher stdout pipe was unavailable".to_owned())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            RunBodyError::Ensemble("launcher stderr pipe was unavailable".to_owned())
+        })?;
+        let stdout_thread = thread::spawn(move || read_stream_to_string(stdout));
+        let stderr_thread = thread::spawn(move || read_stream_to_string(stderr));
         let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
+        let mut timed_out = false;
         loop {
             if let Some(_status) = child
                 .try_wait()
@@ -337,28 +1369,27 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
                 break;
             }
             if Instant::now() >= deadline {
-                child
-                    .kill()
-                    .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-                let _ = child.wait();
-                return Err(RunBodyError::Ensemble(format!(
-                    "launcher exceeded hard timeout of {} ms and was killed",
-                    request.timeout_ms
-                )));
+                kill_child_group(&mut child)?;
+                timed_out = true;
+                break;
             }
             thread::sleep(Duration::from_millis(10));
         }
-        let output = child
-            .wait_with_output()
+        let status = child
+            .wait()
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-        let stdout = String::from_utf8(output.stdout)
-            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-        let stderr = String::from_utf8(output.stderr)
-            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-        if !output.status.success() {
+        let stdout = join_stream_thread(stdout_thread, "read launcher stdout")?;
+        let stderr = join_stream_thread(stderr_thread, "read launcher stderr")?;
+        if timed_out {
+            return Err(RunBodyError::Ensemble(format!(
+                "launcher exceeded hard timeout of {} ms and was killed",
+                request.timeout_ms
+            )));
+        }
+        if !status.success() {
             return Err(RunBodyError::Ensemble(format!(
                 "launcher exited with {:?}: {stderr}",
-                output.status.code()
+                status.code()
             )));
         }
         let value = serde_json::from_str(&stdout).map_err(RunBodyError::EnsembleJson)?;
@@ -367,6 +1398,39 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             archive_dir: request.archive_dir,
         })
     }
+}
+
+fn kill_child_group(child: &mut std::process::Child) -> Result<(), RunBodyError> {
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .arg("-TERM")
+            .arg(format!("-{}", child.id()))
+            .status()
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+    child
+        .kill()
+        .map_err(|error| RunBodyError::Ensemble(error.to_string()))
+}
+
+fn read_stream_to_string(mut stream: impl std::io::Read) -> Result<String, std::io::Error> {
+    let mut content = String::new();
+    stream.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+fn join_stream_thread(
+    thread: thread::JoinHandle<Result<String, std::io::Error>>,
+    action: &str,
+) -> Result<String, RunBodyError> {
+    thread
+        .join()
+        .map_err(|_panic| RunBodyError::Ensemble(format!("{action}: I/O thread panicked")))?
+        .map_err(|error| RunBodyError::Ensemble(format!("{action}: {error}")))
 }
 
 #[derive(Debug)]
@@ -1689,6 +2753,8 @@ mod tests {
         collections::{BTreeMap, VecDeque},
         fs,
         path::{Path, PathBuf},
+        process::Command,
+        time::Duration,
     };
 
     use pump19_contract::{
@@ -1698,6 +2764,7 @@ mod tests {
     use pump19_core::{
         LaunchProof, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation, WorkspaceLease,
     };
+    use pump19_engine::{ModelSource, RepairPolicy, TokenUsage};
     use pump19_judgement::{ReviewerResult, baseline_judgement_briefs};
     use serde_json::json;
 
@@ -1802,6 +2869,85 @@ mod tests {
             _request: EnsembleWorkflowRequest,
         ) -> Result<EnsembleWorkflowOutput, RunBodyError> {
             Err(RunBodyError::Ensemble(self.message.clone()))
+        }
+    }
+
+    #[derive(Debug)]
+    struct ScriptedLeadEngine {
+        output: Value,
+        classification: ExitClassification,
+        run_workflow_shim: bool,
+        seen_specs: Vec<LaunchSpec>,
+    }
+
+    impl ScriptedLeadEngine {
+        fn successful(output: Value) -> Self {
+            Self {
+                output,
+                classification: ExitClassification::Success,
+                run_workflow_shim: false,
+                seen_specs: Vec::new(),
+            }
+        }
+    }
+
+    impl LeadEngineSession for ScriptedLeadEngine {
+        fn launch_lead(
+            &mut self,
+            spec: &LaunchSpec,
+            _repair: &mut dyn RepairStrategy,
+        ) -> Result<EngineRun, EngineError> {
+            self.seen_specs.push(spec.clone());
+            if self.run_workflow_shim {
+                let input = spec.working_dir.join("out/repair-input.json");
+                fs::write(
+                    &input,
+                    r#"{"repairer":{"engine":"codex","agent_id":"repairer"},"schema":{},"invalid_output":"{}","errors":[],"agent_timeout_ms":1000}"#,
+                )
+                .expect("write repair input");
+                let output = Command::new(spec.working_dir.join("bin/pump19-workflow"))
+                    .current_dir(&spec.working_dir)
+                    .arg("repair-output")
+                    .arg(&input)
+                    .output()
+                    .expect("run workflow shim");
+                assert!(
+                    output.status.success(),
+                    "workflow shim failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            let stdout = spec.archive_dir.join("stdout.log");
+            let stderr = spec.archive_dir.join("stderr.log");
+            fs::create_dir_all(&spec.archive_dir).expect("create fake lead archive");
+            fs::write(&stdout, self.output.to_string()).expect("write fake stdout");
+            fs::write(&stderr, "").expect("write fake stderr");
+            Ok(EngineRun {
+                classification: self.classification.clone(),
+                output: (self.classification == ExitClassification::Success)
+                    .then_some(self.output.clone()),
+                final_text: Some(self.output.to_string()),
+                provenance: EngineProvenance {
+                    engine: spec.engine,
+                    session_id: Some("lead-session".to_owned()),
+                    requested_model: spec.requested_model.clone(),
+                    resolved_model: spec.requested_model.clone(),
+                    model_source: ModelSource::RequestedAsOperatorAssertion,
+                    usage: TokenUsage::default(),
+                    cost_usd: None,
+                },
+                transcripts: vec![
+                    pump19_engine::TranscriptPath {
+                        kind: TranscriptKind::Stdout,
+                        path: stdout,
+                    },
+                    pump19_engine::TranscriptPath {
+                        kind: TranscriptKind::Stderr,
+                        path: stderr,
+                    },
+                ],
+                repair_attempts: 0,
+            })
         }
     }
 
@@ -2013,6 +3159,620 @@ mod tests {
             prompt_template: "configured prompt".to_owned(),
             briefs: baseline_judgement_briefs(),
         }
+    }
+
+    fn lead_frame_config(root: &Path) -> LeadSessionFrameConfig {
+        let workflow = root.join("repair-output.js");
+        fs::write(
+            &workflow,
+            "export const meta = {\n  name: \"repair\"\n};\nreturn {};\n",
+        )
+        .expect("write workflow");
+        let ensemble = root.join("ensemble.sh");
+        fs::write(
+            &ensemble,
+            "#!/bin/sh\nset -eu\nmkdir -p \"$ENSEMBLE_RUN_RECORD_DIR\"\nprintf '{\"repaired_output\":\"{}\"}\\n'\n",
+        )
+        .expect("write fake ensemble");
+        make_executable(&ensemble).expect("chmod fake ensemble");
+        LeadSessionFrameConfig {
+            run_root: root.join("frame-runs"),
+            node_program: PathBuf::from("sh"),
+            ensemble_launcher: ensemble,
+            workflows: vec![LeadWorkflowScript {
+                slot: ReviewWorkflowSlot::RepairOutput,
+                path: workflow,
+            }],
+            mission_template:
+                "Use {{manifest_path}} for run {{run_id}}.\n<manifest>\n{{manifest}}\n</manifest>"
+                    .to_owned(),
+            selected_briefs: vec![ManifestBrief {
+                id: "repo:security".to_owned(),
+                title: "Security".to_owned(),
+                occasion: "every-pr".to_owned(),
+            }],
+            brief_warnings: vec!["repo:broken frontmatter loaded body-only".to_owned()],
+            occasion: "every-pr".to_owned(),
+            materiality_threshold: PriorityClass::P1,
+            lead_engine: LeadEngineConfig {
+                engine: EngineKind::Codex,
+                executable: PathBuf::from("codex"),
+                requested_model: Some("gpt-5.5".to_owned()),
+                bounds: LaunchBounds::new(Duration::from_secs(30)),
+                write_access: WriteAccess::ReadOnly,
+                env: BTreeMap::new(),
+            },
+        }
+    }
+
+    fn frame_request(root: &Path) -> RunLaunchRequest {
+        let mut req = request(
+            RunKind::Review,
+            vec![
+                provenance("lead-claude", AgentRole::Lead, "claude"),
+                provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
+                provenance("verifier-claude", AgentRole::Verifier, "claude"),
+                provenance("bar-codex", AgentRole::BarCheck, "codex"),
+            ],
+        );
+        req.run_id = RunId("lead-frame-review".to_owned());
+        req.workspace.root = root.to_path_buf();
+        req.state.extensions.insert(
+            EXT_FORGE_FACTS.to_owned(),
+            json!({
+                "base": {"sha": "base-sha"}
+            }),
+        );
+        write_review_diff(
+            root,
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,2 @@\n old\n+new unsafe line\n",
+        );
+        req
+    }
+
+    fn bar_check() -> BarCheckRecord {
+        BarCheckRecord {
+            passed: true,
+            provenance: provenance("bar-codex", AgentRole::BarCheck, "codex"),
+            rationale: "review clears the bar".to_owned(),
+            extensions: BTreeMap::new(),
+        }
+    }
+
+    fn lead_payload(findings: &Value, complete: bool, verdict: &Value) -> Value {
+        json!({
+            "findings": findings,
+            "coverage": {
+                "complete": complete,
+                "visited": ["src/lib.rs"],
+                "unvisited": if complete { Vec::<String>::new() } else { vec!["src/other.rs".to_owned()] },
+                "account": "read the changed file and relevant context",
+                "extensions": {}
+            },
+            "verdict_proposal": verdict,
+            "session_notes": "fixture"
+        })
+    }
+
+    fn verified_finding(verifier: &str, line: u32) -> Value {
+        json!({
+            "dedup_hint": "src-lib-unsound",
+            "source_brief": "repo:security",
+            "title": "Unsafe state is accepted",
+            "explanation": "The new branch accepts unsafe state.",
+            "suggestion": "Reject unsafe state before storing it.",
+            "priority": "p1",
+            "certainty": "advisory",
+            "producer_agent_id": "reviewer-codex",
+            "locations": [{"path": "src/lib.rs", "line": line}],
+            "verification": {
+                "status": "verified",
+                "verifier_agent_id": verifier,
+                "evidence": [{
+                    "path": "src/lib.rs",
+                    "line": line,
+                    "quote": "new unsafe line",
+                    "note": "the changed branch accepts the bad state"
+                }],
+                "cross_family": "cross_family"
+            }
+        })
+    }
+
+    fn verified_finding_without_verifier(line: u32) -> Value {
+        let mut finding = verified_finding("verifier-claude", line);
+        finding["verification"]
+            .as_object_mut()
+            .expect("verification object")
+            .remove("verifier_agent_id");
+        finding
+    }
+
+    #[test]
+    fn lead_frame_walking_skeleton_drives_workflow_shim_and_records_manifest() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let mut engine = ScriptedLeadEngine::successful(output);
+        engine.run_workflow_shim = true;
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("lead frame review succeeds");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].summary, "Unsafe state is accepted");
+        assert_eq!(result.manifest.base_sha, "base-sha");
+        assert_eq!(
+            result.manifest.extensions[EXT_BRIEF_WARNINGS][0].as_str(),
+            Some("repo:broken frontmatter loaded body-only")
+        );
+        assert_eq!(
+            result.manifest.changed_lines.get("src/lib.rs"),
+            Some(&vec![2])
+        );
+        assert_eq!(result.manifest.selected_briefs[0].id, "repo:security");
+        assert!(result.run_dir.join("bin/pump19-workflow").exists());
+        assert!(result.run_dir.join("bin/pump19-exec").exists());
+        assert!(
+            fs::read_to_string(result.run_dir.join("out/workflow-boundary.jsonl"))
+                .expect("read boundary log")
+                .contains("repair-output")
+        );
+        assert_eq!(
+            result.verdict,
+            ReviewVerdict::FindingsPosted {
+                material: 1,
+                suppressed: 0
+            }
+        );
+    }
+
+    #[test]
+    fn lead_frame_suppresses_self_verified_findings() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([verified_finding("reviewer-codex", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("self-verified finding is suppressed, not fatal");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(result.suppressed_findings.len(), 1);
+        assert!(
+            result.suppressed_findings[0]
+                .reason
+                .contains("producing agent")
+        );
+    }
+
+    #[test]
+    fn lead_frame_suppresses_verified_finding_without_verifier_identity() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([verified_finding_without_verifier(2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("missing verifier identity suppresses finding");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(result.suppressed_findings.len(), 1);
+        assert!(
+            result.suppressed_findings[0]
+                .reason
+                .contains("missing verifier identity")
+        );
+    }
+
+    #[test]
+    fn lead_frame_suppresses_finding_verified_by_producer_session() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        let producer_session = req
+            .provenance
+            .iter()
+            .find(|provenance| provenance.agent_id == AgentId("reviewer-codex".to_owned()))
+            .expect("producer provenance")
+            .session_id
+            .clone();
+        req.provenance
+            .iter_mut()
+            .find(|provenance| provenance.agent_id == AgentId("verifier-claude".to_owned()))
+            .expect("verifier provenance")
+            .session_id = producer_session;
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("producer-session verification suppresses finding");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(result.suppressed_findings.len(), 1);
+        assert!(
+            result.suppressed_findings[0]
+                .reason
+                .contains("producing session")
+        );
+    }
+
+    #[test]
+    fn lead_frame_suppresses_findings_outside_changed_lines() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([verified_finding("verifier-claude", 1)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("out-of-range finding is suppressed, not fatal");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(result.suppressed_findings.len(), 1);
+        assert!(
+            result.suppressed_findings[0]
+                .reason
+                .contains("changed lines")
+        );
+    }
+
+    #[test]
+    fn lead_frame_records_partial_coverage_instead_of_convergence() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([]);
+        let verdict_payload = json!({"verdict": "converged", "bar_check": bar_check()});
+        let output = lead_payload(&findings_payload, false, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("partial coverage records a non-convergent verdict");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(result.verdict, ReviewVerdict::PartialCoverage);
+        assert!(!result.coverage.complete);
+    }
+
+    #[test]
+    fn lead_frame_preserves_degraded_bar_check_under_incomplete_coverage() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([]);
+        let verdict_payload = json!({
+            "verdict": "bar_check_degraded",
+            "attempts": 2,
+            "last_error": "checker unavailable"
+        });
+        let output = lead_payload(&findings_payload, false, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("bar-check degradation survives incomplete coverage");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(
+            result.verdict,
+            ReviewVerdict::BarCheckDegraded {
+                attempts: 2,
+                last_error: "checker unavailable".to_owned()
+            }
+        );
+        assert!(!result.coverage.complete);
+    }
+
+    #[test]
+    fn lead_frame_preserves_standing_findings_under_incomplete_coverage() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([]);
+        let verdict_payload = json!({
+            "verdict": "standing_findings",
+            "finding_dedup_keys": ["src-lib-unsound"],
+            "rationale": "the same finding survived a fix"
+        });
+        let output = lead_payload(&findings_payload, false, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("standing-finding rationale survives incomplete coverage");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(
+            result.verdict,
+            ReviewVerdict::StandingFindings {
+                finding_dedup_keys: vec!["src-lib-unsound".to_owned()],
+                rationale: "the same finding survived a fix".to_owned()
+            }
+        );
+        assert!(!result.coverage.complete);
+    }
+
+    #[test]
+    fn lead_frame_repairs_invalid_lead_json_through_repair_workflow_slot() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let codex = root.path().join("fake-codex.sh");
+        fs::write(
+            &codex,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"fake-thread"}'
+printf '%s\n' '{"type":"item.completed","item":{"text":"not json"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
+"#,
+        )
+        .expect("write fake codex");
+        make_executable(&codex).expect("chmod fake codex");
+        let repaired_findings = json!([verified_finding("verifier-claude", 2)]);
+        let repaired_verdict = json!({"verdict": "findings_posted"});
+        let repaired = lead_payload(&repaired_findings, true, &repaired_verdict);
+        let runner =
+            FakeEnsembleRunner::new(json!({"repaired_output": repaired.to_string()}), Vec::new());
+        let mut config = lead_frame_config(root.path());
+        config.lead_engine.executable = codex;
+        let engine = EngineSessionLauncher::new(RepairPolicy { attempts: 1 });
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("invalid lead JSON is repaired by workflow slot");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(result.repair_attempts, 1);
+        assert_eq!(body.workflow_runner.requests.len(), 1);
+        assert!(
+            body.workflow_runner.requests[0]
+                .archive_dir
+                .to_string_lossy()
+                .contains("repair-output")
+        );
+    }
+
+    #[test]
+    fn lead_frame_repairs_valid_json_with_wrong_review_shape() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let repaired_findings = json!([verified_finding("verifier-claude", 2)]);
+        let repaired_verdict = json!({"verdict": "findings_posted"});
+        let repaired = lead_payload(&repaired_findings, true, &repaired_verdict);
+        let engine = ScriptedLeadEngine::successful(json!({
+            "findings": [],
+            "verdict_proposal": {"verdict": "findings_posted"}
+        }));
+        let runner =
+            FakeEnsembleRunner::new(json!({"repaired_output": repaired.to_string()}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("shape-valid JSON is repaired by workflow slot");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(result.repair_attempts, 1);
+        assert_eq!(body.workflow_runner.requests.len(), 1);
+        assert!(
+            body.workflow_runner.requests[0].args["errors"][0]
+                .as_str()
+                .expect("serde error")
+                .contains("missing field")
+        );
+        assert_eq!(
+            body.workflow_runner.requests[0].args["schema"]["type"],
+            Value::String("object".to_owned())
+        );
+    }
+
+    #[test]
+    fn workflow_shim_passes_large_payload_by_file_not_launcher_argv() {
+        let root = tempfile::tempdir().expect("shim root");
+        let fixture = WorkflowShimFixture::new(root.path());
+        write_workflow_shim(&fixture.config, &fixture.run_dir).expect("write shim");
+        let marker = "large-payload-marker-".repeat(16_000);
+        assert!(marker.len() > 256 * 1024);
+        let input_path = fixture.run_dir.join("out/input.json");
+        fs::write(
+            &input_path,
+            serde_json::to_vec(&json!({"marker": marker})).expect("serialise input"),
+        )
+        .expect("write large payload");
+
+        let output = Command::new(fixture.run_dir.join("bin/pump19-workflow"))
+            .current_dir(&fixture.run_dir)
+            .arg("repair-output")
+            .arg(&input_path)
+            .output()
+            .expect("run shim");
+
+        assert!(
+            output.status.success(),
+            "shim failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let argv = fs::read_to_string(&fixture.captured_argv).expect("read launcher argv");
+        assert!(argv.contains("--timeout\n180000\n"));
+        assert!(!argv.contains("--json-args"));
+        assert!(!argv.contains("large-payload-marker-"));
+        assert!(
+            argv.len() < 4096,
+            "launcher argv should stay bounded; got {} bytes",
+            argv.len()
+        );
+        assert_eq!(
+            fs::read_to_string(&fixture.captured_input_env).expect("read input env"),
+            input_path.display().to_string()
+        );
+        let wrapper = fs::read_to_string(&fixture.captured_wrapper).expect("read wrapper");
+        assert!(wrapper.contains("PUMP19_WORKFLOW_INPUT_PATH"));
+        assert!(!wrapper.contains("large-payload-marker-"));
+    }
+
+    struct WorkflowShimFixture {
+        run_dir: PathBuf,
+        config: LeadSessionFrameConfig,
+        captured_argv: PathBuf,
+        captured_input_env: PathBuf,
+        captured_wrapper: PathBuf,
+    }
+
+    impl WorkflowShimFixture {
+        fn new(root: &Path) -> Self {
+            let run_dir = root.join("run");
+            fs::create_dir_all(run_dir.join("bin")).expect("create bin");
+            fs::create_dir_all(run_dir.join("out")).expect("create out");
+            fs::create_dir_all(run_dir.join("archive/workflows")).expect("create archive");
+            fs::create_dir_all(run_dir.join("workflows")).expect("create workflow dir");
+            let workflow = root.join("repair-output.js");
+            fs::write(
+                &workflow,
+                "export const meta = {\n  name: \"payload-boundary\"\n};\nreturn { marker: args.marker };\n",
+            )
+            .expect("write workflow");
+            fs::copy(&workflow, run_dir.join("workflows/repair-output.js"))
+                .expect("copy workflow into run dir");
+            let captured_argv = root.join("launcher-argv.txt");
+            let captured_input_env = root.join("launcher-input-env.txt");
+            let captured_wrapper = root.join("launcher-wrapper.js");
+            let ensemble = root.join("fake-ensemble.sh");
+            write_fake_shim_ensemble(
+                &ensemble,
+                &captured_argv,
+                &captured_input_env,
+                &captured_wrapper,
+            );
+            Self {
+                run_dir,
+                config: shim_test_config(root, &ensemble, &workflow),
+                captured_argv,
+                captured_input_env,
+                captured_wrapper,
+            }
+        }
+    }
+
+    fn shim_test_config(root: &Path, ensemble: &Path, workflow: &Path) -> LeadSessionFrameConfig {
+        LeadSessionFrameConfig {
+            run_root: root.join("unused"),
+            node_program: PathBuf::from("sh"),
+            ensemble_launcher: ensemble.to_path_buf(),
+            workflows: vec![LeadWorkflowScript {
+                slot: ReviewWorkflowSlot::RepairOutput,
+                path: workflow.to_path_buf(),
+            }],
+            mission_template: String::new(),
+            selected_briefs: Vec::new(),
+            brief_warnings: Vec::new(),
+            occasion: "every-pr".to_owned(),
+            materiality_threshold: PriorityClass::P1,
+            lead_engine: LeadEngineConfig {
+                engine: EngineKind::Codex,
+                executable: PathBuf::from("codex"),
+                requested_model: None,
+                bounds: LaunchBounds::new(Duration::from_secs(30)),
+                write_access: WriteAccess::ReadOnly,
+                env: BTreeMap::new(),
+            },
+        }
+    }
+
+    fn write_fake_shim_ensemble(
+        path: &Path,
+        captured_argv: &Path,
+        captured_input_env: &Path,
+        captured_wrapper: &Path,
+    ) {
+        fs::write(
+            path,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$@" > "{captured_argv}"
+printf '%s' "$PUMP19_WORKFLOW_INPUT_PATH" > "{captured_input_env}"
+script=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --timeout)
+      shift 2
+      ;;
+    --*)
+      shift
+      ;;
+    *)
+      script=$1
+      shift
+      ;;
+  esac
+done
+cp "$script" "{captured_wrapper}"
+printf '{{"ok":true}}\n'
+"#,
+                captured_argv = captured_argv.display(),
+                captured_input_env = captured_input_env.display(),
+                captured_wrapper = captured_wrapper.display(),
+            ),
+        )
+        .expect("write fake ensemble");
+        make_executable(path).expect("chmod fake ensemble");
     }
 
     fn write_review_diff(root: &Path, diff: &str) {
@@ -2575,6 +4335,37 @@ mod tests {
         assert!(
             matches!(error, RunBodyError::Ensemble(message) if message.contains("hard timeout"))
         );
+    }
+
+    #[test]
+    fn host_runner_drains_large_stdout_while_launcher_runs() {
+        let root = tempfile::tempdir().expect("host runner root");
+        let launcher = root.path().join("large-output-launcher.sh");
+        fs::write(
+            &launcher,
+            r#"#!/bin/sh
+head -c 200000 /dev/zero | tr '\0' ' '
+printf '{"ok":true}\n'
+"#,
+        )
+        .expect("write launcher");
+        let workflow = root.path().join("workflow.js");
+        fs::write(
+            &workflow,
+            "export const meta = { name: \"large-output\" };\nreturn null;\n",
+        )
+        .expect("write workflow");
+        let mut runner = HostEnsembleWorkflowRunner::new("sh", &launcher);
+        let request = EnsembleWorkflowRequest {
+            script: workflow,
+            args: json!({}),
+            archive_dir: root.path().join("archive"),
+            timeout_ms: 2_000,
+        };
+
+        let output = runner.run_workflow(request).expect("workflow launches");
+
+        assert_eq!(output.value, json!({"ok": true}));
     }
 
     #[test]

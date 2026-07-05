@@ -269,6 +269,7 @@ version = "0.1.0"
 dependencies = [
  "pump19-contract",
  "pump19-core",
+ "pump19-engine",
  "pump19-judgement",
  "serde",
  "serde_json",

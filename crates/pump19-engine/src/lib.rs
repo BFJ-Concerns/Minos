@@ -11,9 +11,10 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write as _,
+    io::{BufRead as _, BufReader, Write as _},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -21,6 +22,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 
 const STDOUT_TRANSCRIPT: &str = "stdout.log";
 const STDERR_TRANSCRIPT: &str = "stderr.log";
@@ -257,7 +261,7 @@ impl EngineSessionLauncher {
         repair: &mut dyn RepairStrategy,
     ) -> Result<EngineRun, EngineError> {
         let invocation = Self::build_invocation(spec)?;
-        let process = run_process(&invocation, spec.bounds.wall_clock)?;
+        let process = run_process(&invocation, spec)?;
         fs::create_dir_all(&spec.archive_dir).map_err(|source| EngineError::Io {
             action: format!("create archive dir {}", spec.archive_dir.display()),
             source,
@@ -304,7 +308,12 @@ impl EngineSessionLauncher {
             }
         }
 
-        let mut classification = if process.timed_out {
+        let mut classification = if let Some(hit) = process.token_limit_exceeded {
+            ExitClassification::TokenLimitExceeded {
+                limit: hit.limit,
+                observed: hit.observed,
+            }
+        } else if process.timed_out {
             ExitClassification::Timeout
         } else {
             parsed.classification
@@ -356,6 +365,13 @@ struct ProcessOutput {
     stderr: String,
     code: Option<i32>,
     timed_out: bool,
+    token_limit_exceeded: Option<TokenLimitHit>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TokenLimitHit {
+    limit: u64,
+    observed: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -448,7 +464,7 @@ fn opencode_args(spec: &LaunchSpec) -> Result<Vec<String>, EngineError> {
 
 fn run_process(
     invocation: &CommandInvocation,
-    timeout: Duration,
+    spec: &LaunchSpec,
 ) -> Result<ProcessOutput, EngineError> {
     let mut command = Command::new(&invocation.program);
     command
@@ -458,6 +474,8 @@ fn run_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = spawn_with_text_busy_retry(&mut command, &invocation.program)?;
     let Some(mut stdin) = child.stdin.take() else {
         return Err(EngineError::Io {
@@ -465,15 +483,36 @@ fn run_process(
             source: std::io::Error::other("child stdin unavailable"),
         });
     };
-    stdin
-        .write_all(invocation.stdin.as_bytes())
-        .map_err(|source| EngineError::Io {
-            action: "write child stdin".to_owned(),
-            source,
-        })?;
-    drop(stdin);
+    let Some(stdout) = child.stdout.take() else {
+        return Err(EngineError::Io {
+            action: "open child stdout".to_owned(),
+            source: std::io::Error::other("child stdout unavailable"),
+        });
+    };
+    let Some(stderr) = child.stderr.take() else {
+        return Err(EngineError::Io {
+            action: "open child stderr".to_owned(),
+            source: std::io::Error::other("child stderr unavailable"),
+        });
+    };
 
-    let deadline = Instant::now() + timeout;
+    let stdin_payload = invocation.stdin.clone();
+    let stdin_thread = thread::spawn(move || {
+        stdin.write_all(stdin_payload.as_bytes())?;
+        drop(stdin);
+        Ok::<(), std::io::Error>(())
+    });
+    let token_limit = (spec.engine == EngineKind::Codex)
+        .then_some(spec.bounds.max_total_tokens)
+        .flatten();
+    let token_hit = Arc::new(Mutex::new(None));
+    let stdout_token_hit = Arc::clone(&token_hit);
+    let stdout_thread = thread::spawn(move || read_stdout(stdout, token_limit, stdout_token_hit));
+    let stderr_thread = thread::spawn(move || read_to_string(stderr));
+
+    let deadline = Instant::now() + spec.bounds.wall_clock;
+    let mut token_limit_exceeded = None;
+    let mut killed = false;
     loop {
         if child
             .try_wait()
@@ -485,35 +524,123 @@ fn run_process(
         {
             break;
         }
+        let token_hit_value = *token_hit.lock().map_err(|_poisoned| EngineError::Io {
+            action: "read token-limit signal".to_owned(),
+            source: std::io::Error::other("token-limit signal was poisoned"),
+        })?;
+        if let Some(hit) = token_hit_value {
+            kill_child_group(&mut child, "kill token-limited child")?;
+            token_limit_exceeded = Some(hit);
+            killed = true;
+            break;
+        }
         if Instant::now() >= deadline {
-            child.kill().map_err(|source| EngineError::Io {
-                action: "kill timed-out child".to_owned(),
-                source,
-            })?;
-            let output = child.wait_with_output().map_err(|source| EngineError::Io {
-                action: "collect timed-out child".to_owned(),
-                source,
-            })?;
-            return Ok(ProcessOutput {
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                code: output.status.code(),
-                timed_out: true,
-            });
+            kill_child_group(&mut child, "kill timed-out child")?;
+            killed = true;
+            break;
         }
         thread::sleep(Duration::from_millis(10));
     }
 
-    let output = child.wait_with_output().map_err(|source| EngineError::Io {
-        action: "collect child".to_owned(),
+    let status = child.wait().map_err(|source| EngineError::Io {
+        action: "wait for child".to_owned(),
         source,
     })?;
+    let stdout = join_io_thread(stdout_thread, "read child stdout")?;
+    let stderr = join_io_thread(stderr_thread, "read child stderr")?;
+    if !killed {
+        join_io_thread(stdin_thread, "write child stdin")?;
+    }
     Ok(ProcessOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        code: output.status.code(),
-        timed_out: false,
+        stdout,
+        stderr,
+        code: status.code(),
+        timed_out: killed && token_limit_exceeded.is_none(),
+        token_limit_exceeded,
     })
+}
+
+fn kill_child_group(child: &mut std::process::Child, action: &str) -> Result<(), EngineError> {
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .arg("-TERM")
+            .arg(format!("-{}", child.id()))
+            .status()
+            .map_err(|source| EngineError::Io {
+                action: action.to_owned(),
+                source,
+            })?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+    child.kill().map_err(|source| EngineError::Io {
+        action: action.to_owned(),
+        source,
+    })
+}
+
+fn read_stdout(
+    stdout: impl std::io::Read,
+    token_limit: Option<u64>,
+    token_hit: Arc<Mutex<Option<TokenLimitHit>>>,
+) -> Result<String, std::io::Error> {
+    let mut reader = BufReader::new(stdout);
+    let mut content = String::new();
+    let mut line = String::new();
+    let mut sent_limit = false;
+    loop {
+        line.clear();
+        let bytes = reader.read_line(&mut line)?;
+        if bytes == 0 {
+            break;
+        }
+        content.push_str(&line);
+        if !sent_limit
+            && let Some(limit) = token_limit
+            && let Ok(value) = serde_json::from_str::<Value>(line.trim_end())
+            && value.get("type").and_then(Value::as_str) == Some("turn.completed")
+        {
+            let usage = codex_usage(&value);
+            if usage.total_tokens > limit {
+                {
+                    let mut hit = token_hit.lock().map_err(|_poisoned| {
+                        std::io::Error::other("token-limit signal poisoned")
+                    })?;
+                    *hit = Some(TokenLimitHit {
+                        limit,
+                        observed: usage.total_tokens,
+                    });
+                }
+                sent_limit = true;
+            }
+        }
+    }
+    drop(token_hit);
+    Ok(content)
+}
+
+fn read_to_string(mut stream: impl std::io::Read) -> Result<String, std::io::Error> {
+    let mut content = String::new();
+    stream.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+fn join_io_thread<T>(
+    thread: thread::JoinHandle<Result<T, std::io::Error>>,
+    action: &str,
+) -> Result<T, EngineError> {
+    thread
+        .join()
+        .map_err(|_panic| EngineError::Io {
+            action: action.to_owned(),
+            source: std::io::Error::other("I/O thread panicked"),
+        })?
+        .map_err(|source| EngineError::Io {
+            action: action.to_owned(),
+            source,
+        })
 }
 
 fn spawn_with_text_busy_retry(
@@ -917,6 +1044,47 @@ mod tests {
     }
 
     #[test]
+    fn codex_prompt_reaches_cli_through_stdin_dash_route() {
+        let fixture = Fixture::new(EngineKind::Codex);
+        let stdin_capture = fixture.temp.path().join("stdin.txt");
+        let argv_capture = fixture.temp.path().join("argv.txt");
+        write_test_executable(
+            fixture.executable(),
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$CAPTURE_ARGV"
+cat > "$CAPTURE_STDIN"
+printf '%s\n' '{"type":"thread.started","thread_id":"codex-thread"}'
+printf '%s\n' '{"type":"item.completed","item":{"text":"{\"ok\":true}"}}'
+"#,
+        );
+        let mut spec = fixture.spec();
+        spec.env.insert(
+            "CAPTURE_STDIN".to_owned(),
+            stdin_capture.display().to_string(),
+        );
+        spec.env.insert(
+            "CAPTURE_ARGV".to_owned(),
+            argv_capture.display().to_string(),
+        );
+
+        let run = EngineSessionLauncher::default()
+            .launch(&spec, &mut NoRepair)
+            .expect("launch");
+
+        assert_eq!(run.classification, ExitClassification::Success);
+        assert_eq!(
+            fs::read_to_string(stdin_capture).expect("read captured stdin"),
+            "Return JSON"
+        );
+        assert!(
+            fs::read_to_string(argv_capture)
+                .expect("read captured argv")
+                .lines()
+                .any(|arg| arg == "-")
+        );
+    }
+
+    #[test]
     fn opencode_rejects_native_schema_because_pump_disc_has_no_flag() {
         let fixture = Fixture::new(EngineKind::Opencode);
 
@@ -927,6 +1095,48 @@ mod tests {
             error,
             EngineError::OpencodeNativeSchemaUnavailable
         ));
+    }
+
+    #[test]
+    fn opencode_prompt_reaches_cli_through_stdin_dash_route() {
+        let fixture = Fixture::new(EngineKind::Opencode);
+        let stdin_capture = fixture.temp.path().join("stdin.txt");
+        let argv_capture = fixture.temp.path().join("argv.txt");
+        write_test_executable(
+            fixture.executable(),
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$CAPTURE_ARGV"
+cat > "$CAPTURE_STDIN"
+printf '%s\n' '{"type":"step_start","sessionID":"opencode-session"}'
+printf '%s\n' '{"type":"text","sessionID":"opencode-session","part":{"text":"{\"ok\":true}"}}'
+printf '%s\n' '{"type":"step_finish","sessionID":"opencode-session","part":{"tokens":{"total":1,"input":1,"output":0,"reasoning":0}}}'
+"#,
+        );
+        let mut spec = fixture.spec_without_schema();
+        spec.env.insert(
+            "CAPTURE_STDIN".to_owned(),
+            stdin_capture.display().to_string(),
+        );
+        spec.env.insert(
+            "CAPTURE_ARGV".to_owned(),
+            argv_capture.display().to_string(),
+        );
+
+        let run = EngineSessionLauncher::default()
+            .launch(&spec, &mut NoRepair)
+            .expect("launch");
+
+        assert_eq!(run.classification, ExitClassification::Success);
+        assert_eq!(
+            fs::read_to_string(stdin_capture).expect("read captured stdin"),
+            "Return JSON"
+        );
+        assert!(
+            fs::read_to_string(argv_capture)
+                .expect("read captured argv")
+                .lines()
+                .any(|arg| arg == "-")
+        );
     }
 
     #[test]
@@ -1036,6 +1246,64 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_token
                 observed: 13
             }
         );
+    }
+
+    #[test]
+    fn codex_token_limit_kills_process_from_streamed_usage() {
+        let fixture = Fixture::new(EngineKind::Codex);
+        write_test_executable(
+            fixture.executable(),
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2,"reasoning_output_tokens":1}}'
+exec >&-
+sleep 5
+"#,
+        );
+        let mut spec = fixture.spec();
+        spec.bounds.max_total_tokens = Some(12);
+        spec.bounds.wall_clock = Duration::from_secs(10);
+        let started = Instant::now();
+
+        let run = EngineSessionLauncher::default()
+            .launch(&spec, &mut NoRepair)
+            .expect("launch");
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            run.classification,
+            ExitClassification::TokenLimitExceeded {
+                limit: 12,
+                observed: 13
+            }
+        );
+    }
+
+    #[test]
+    fn large_stdout_is_drained_while_process_runs() {
+        let fixture = Fixture::new(EngineKind::Codex);
+        write_test_executable(
+            fixture.executable(),
+            r#"#!/bin/sh
+cat >/dev/null
+i=0
+while [ "$i" -lt 5000 ]; do
+  printf '%s\n' '{"type":"noise","payload":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}'
+  i=$((i + 1))
+done
+printf '%s\n' '{"type":"thread.started","thread_id":"codex-thread"}'
+printf '%s\n' '{"type":"item.completed","item":{"text":"{\"ok\":true}"}}'
+"#,
+        );
+        let mut spec = fixture.spec();
+        spec.bounds.wall_clock = Duration::from_secs(2);
+
+        let run = EngineSessionLauncher::default()
+            .launch(&spec, &mut NoRepair)
+            .expect("launch");
+
+        assert_eq!(run.classification, ExitClassification::Success);
+        assert_eq!(run.output, Some(json!({"ok": true})));
     }
 
     #[test]
