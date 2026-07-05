@@ -2582,6 +2582,7 @@ mod tests {
         let root = tempfile::tempdir().expect("host runner root");
         let launcher = root.path().join("fake-ensemble.sh");
         let captured_argv = root.path().join("argv.txt");
+        let captured_env = root.path().join("env.json");
         let captured_script_path = root.path().join("script-path.txt");
         let captured_wrapper = root.path().join("wrapper.js");
         fs::write(
@@ -2589,6 +2590,7 @@ mod tests {
             format!(
                 r#"#!/bin/sh
 printf '%s\n' "$@" > "{captured_argv}"
+printf '{{"archive_dir":"%s","forge_token":"%s","path":"%s"}}' "$ENSEMBLE_RUN_RECORD_DIR" "$FORGEJO_TOKEN" "$PATH" > "{captured_env}"
 script=
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -2609,6 +2611,7 @@ cp "$script" "{captured_wrapper}"
 printf '{{"ok":true}}\n'
 "#,
                 captured_argv = captured_argv.display(),
+                captured_env = captured_env.display(),
                 captured_script_path = captured_script_path.display(),
                 captured_wrapper = captured_wrapper.display(),
             ),
@@ -2633,10 +2636,21 @@ printf '{{"ok":true}}\n'
 
         assert_eq!(output.value, json!({"ok": true}));
         let argv = fs::read_to_string(captured_argv).expect("read argv");
+        assert!(argv.contains("--timeout\n5000\n"));
         assert!(!argv.contains("--json-args"));
         assert!(!argv.contains("payload-marker-"));
+        let env: Value = serde_json::from_str(&fs::read_to_string(captured_env).expect("read env"))
+            .expect("captured env json");
+        assert_eq!(
+            env["archive_dir"],
+            root.path().join("archive").display().to_string()
+        );
+        assert_eq!(env["forge_token"], "");
+        assert_ne!(env["path"], "");
         let wrapper = fs::read_to_string(captured_wrapper).expect("read wrapper");
         assert!(wrapper.contains("const args = JSON.parse("));
+        assert!(wrapper.contains("export const meta = { name: \"payload\" };"));
+        assert!(wrapper.contains("return { marker: args.marker };"));
         assert!(wrapper.contains("payload-marker-"));
         let wrapper_path = fs::read_to_string(captured_script_path).expect("read wrapper path");
         assert!(
