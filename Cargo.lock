@@ -174,6 +174,7 @@ dependencies = [
  "pump19-contract",
  "pump19-core",
  "pump19-judgement",
+ "pump19-review",
  "serde",
  "serde_json",
  "tempfile",
@@ -210,6 +211,7 @@ dependencies = [
  "pump19-core",
  "pump19-forge-forgejo",
  "pump19-judgement",
+ "pump19-review",
  "pump19-runs",
  "pump19-workspace",
  "serde",
@@ -246,6 +248,16 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "pump19-review"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "tempfile",
  "thiserror",
  "toml",

@@ -1840,6 +1840,7 @@ mod tests {
         ForgejoMergeability, ForgejoReviewCleanliness,
     };
     use pump19_judgement::JudgementBrief;
+    use pump19_review::{ReviewBrief, ReviewBriefExtent};
     use tempfile::tempdir;
 
     use super::*;
@@ -3700,6 +3701,15 @@ exit 1
                 brief_dir: PathBuf::from("briefs"),
                 extensions: Extensions::new(),
             },
+            review_briefs: vec![ReviewBrief {
+                id: "purpose".to_owned(),
+                title: "Purpose".to_owned(),
+                body: "Judge the configured purpose.".to_owned(),
+                scope: vec!["**".to_owned()],
+                extent: ReviewBriefExtent::Standard,
+                run_condition: vec!["every-pr".to_owned()],
+            }],
+            brief_warnings: Vec::new(),
             briefs: vec![JudgementBrief {
                 id: "purpose".to_owned(),
                 title: "Purpose".to_owned(),
@@ -3721,8 +3731,11 @@ exit 1
         .expect("write prompt manifest");
         for brief in &pack.briefs {
             fs::write(
-                brief_root.join(format!("{}.toml", brief.id)),
-                toml::to_string(brief).expect("serialise brief"),
+                brief_root.join(format!("{}.md", brief.id)),
+                format!(
+                    "+++\ntitle = {:?}\nscope = [\"**\"]\nextent = \"standard\"\nrun-condition = [\"every-pr\"]\n+++\n{}\n",
+                    brief.title, brief.brief
+                ),
             )
             .expect("write brief");
         }
