@@ -8,7 +8,6 @@ rust-version.workspace = true
 pump19-contract = { path = "../pump19-contract" }
 pump19-core = { path = "../pump19-core" }
 pump19-engine = { path = "../pump19-engine" }
-pump19-judgement = { path = "../pump19-judgement" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

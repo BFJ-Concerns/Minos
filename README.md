@@ -1,7 +1,7 @@
 # Pump-19
 
 Pump-19 is an agent-native PR review-and-fix daemon. It watches opted-in
-repositories, launches independent review, judge, fix and finish runs, and keeps
+repositories, launches independent review, fix and finish runs, and keeps
 the control logic that enforces independence in a deterministic Rust core.
 
 The current deployable binary is `pump19-daemon`. It is configured with external

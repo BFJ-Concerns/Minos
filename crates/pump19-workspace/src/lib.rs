@@ -228,9 +228,9 @@ impl WorkspaceConfig {
                 "container image must be explicit".to_owned(),
             ));
         }
-        if self.network != NetworkPolicy::Disabled {
+        if self.network != NetworkPolicy::Enabled {
             return Err(WorkspaceError::WeakConfiguration(
-                "network egress must be disabled by default".to_owned(),
+                "workspace network must be enabled for real build fetches".to_owned(),
             ));
         }
         self.resources.validate()?;
@@ -292,7 +292,7 @@ impl ResourceLimits {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NetworkPolicy {
     #[default]
-    Disabled,
+    Enabled,
 }
 
 /// Security controls expected from the container runtime.
@@ -405,9 +405,9 @@ impl ContainerSpec {
     }
 
     fn validate_for_present_isolation(&self) -> Result<(), WorkspaceError> {
-        if self.network != NetworkPolicy::Disabled {
+        if self.network != NetworkPolicy::Enabled {
             return Err(WorkspaceError::WeakConfiguration(
-                "workspace container must disable network egress".to_owned(),
+                "workspace container must use the enabled network policy".to_owned(),
             ));
         }
         if has_credential_env(&self.env) {
@@ -530,7 +530,6 @@ where
             isolation: WorkspaceIsolation {
                 isolated: true,
                 credential_free: true,
-                egress_bounded: true,
                 resource_bounded: true,
                 ephemeral: true,
             },
@@ -703,7 +702,6 @@ fn container_id(request: &WorkspaceRequest) -> String {
 const fn run_kind_slug(kind: RunKind) -> &'static str {
     match kind {
         RunKind::Review => "review",
-        RunKind::Judge => "judge",
         RunKind::Fix => "fix",
         RunKind::Finish => "finish",
     }
@@ -728,7 +726,6 @@ fn create_args(spec: &ContainerSpec) -> Vec<String> {
         "--detach".to_owned(),
         "--name".to_owned(),
         spec.id.clone(),
-        "--network=none".to_owned(),
         "--read-only".to_owned(),
         "--cap-drop=ALL".to_owned(),
         "--security-opt=no-new-privileges".to_owned(),
@@ -916,7 +913,7 @@ mod tests {
 
         let created = provider.runtime().created.borrow();
         let spec = created.first().expect("created spec");
-        assert_eq!(spec.network, NetworkPolicy::Disabled);
+        assert_eq!(spec.network, NetworkPolicy::Enabled);
         assert_eq!(spec.security.root_filesystem, RootFilesystem::ReadOnly);
         assert_eq!(spec.security.capabilities, CapabilityPolicy::DropAll);
         assert_eq!(spec.security.privilege, PrivilegeMode::NoNewPrivileges);
@@ -930,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn command_args_apply_isolation_network_and_resource_bounds() {
+    fn command_args_apply_isolation_and_resource_bounds_with_network_enabled() {
         let temp = TempDir::new().expect("temp dir");
         let spec = ContainerSpec::new(
             &WorkspaceConfig::new(temp.path(), "image"),
@@ -940,7 +937,7 @@ mod tests {
 
         let args = create_args(&spec);
 
-        assert!(args.contains(&"--network=none".to_owned()));
+        assert!(!args.contains(&"--network=none".to_owned()));
         assert!(args.contains(&"--read-only".to_owned()));
         assert!(args.contains(&"--cap-drop=ALL".to_owned()));
         assert!(args.contains(&"--security-opt=no-new-privileges".to_owned()));
