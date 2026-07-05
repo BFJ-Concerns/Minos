@@ -507,8 +507,12 @@ fn run_lead_session_frame(
             "engine reported success without JSON output".to_owned(),
         ));
     };
-    let payload =
-        serde_json::from_value::<LeadReviewPayload>(output).map_err(RunBodyError::EnsembleJson)?;
+    let (payload, frame_repair_attempts) = parse_or_repair_lead_payload(
+        &output,
+        &mut repair,
+        config.lead_engine.engine,
+        run_dir.join("schema/review-output.schema.json"),
+    )?;
     let coverage = payload.coverage;
     let (findings, suppressed_findings) = frame_findings(request, &manifest, payload.findings)?;
     let verdict = frame_verdict(
@@ -534,8 +538,34 @@ fn run_lead_session_frame(
             .map(|transcript| transcript.path)
             .collect(),
         workflow_archives,
-        repair_attempts: engine_run.repair_attempts,
+        repair_attempts: engine_run.repair_attempts + frame_repair_attempts,
     })
+}
+
+fn parse_or_repair_lead_payload(
+    output: &Value,
+    repair: &mut dyn RepairStrategy,
+    engine: EngineKind,
+    schema_path: PathBuf,
+) -> Result<(LeadReviewPayload, u32), RunBodyError> {
+    match serde_json::from_value::<LeadReviewPayload>(output.clone()) {
+        Ok(payload) => Ok((payload, 0)),
+        Err(error) => {
+            let attempt = RepairAttempt {
+                attempt: 1,
+                engine,
+                schema_path: Some(schema_path),
+                invalid_output: output.to_string(),
+                error: error.to_string(),
+            };
+            let Some(repaired) = repair.repair(attempt)? else {
+                return Err(RunBodyError::EnsembleJson(error));
+            };
+            serde_json::from_str::<LeadReviewPayload>(&repaired)
+                .map(|payload| (payload, 1))
+                .map_err(RunBodyError::EnsembleJson)
+        }
+    }
 }
 
 fn prepare_run_directory(
@@ -944,13 +974,10 @@ fn post_gate_finding(
     if verification.status != VerificationStatus::Verified {
         return Err("finding is not independently verified".to_owned());
     }
-    if verification
-        .verifier
-        .as_ref()
-        .is_some_and(|verifier| verifier.agent_id == payload.producer_agent_id)
-    {
-        return Err("finding verifier is the producing agent".to_owned());
-    }
+    let verifier = verification.verifier.as_ref().ok_or_else(|| {
+        "verified finding is unpostable: Unverified{reason:\"missing verifier identity\"}"
+            .to_owned()
+    })?;
     for location in &payload.locations {
         let Some(lines) = manifest.changed_lines.get(&location.path) else {
             return Err(format!(
@@ -976,6 +1003,12 @@ fn post_gate_finding(
                 payload.producer_agent_id.0
             )
         })?;
+    if verifier.agent_id == producer.agent_id {
+        return Err("finding verifier is the producing agent".to_owned());
+    }
+    if verifier.session_id == producer.session_id {
+        return Err("finding verifier reused the producing session".to_owned());
+    }
     let mut extensions = BTreeMap::new();
     extensions.insert(
         EXT_FRAME_TITLE.to_owned(),
@@ -1093,9 +1126,6 @@ fn frame_verdict(
     material_count: usize,
     suppressed_count: usize,
 ) -> Result<ReviewVerdict, RunBodyError> {
-    if !coverage.complete && material_count == 0 {
-        return Ok(ReviewVerdict::PartialCoverage);
-    }
     Ok(match proposal {
         LeadVerdictProposal::Converged { bar_check } => {
             if material_count != 0 {
@@ -3249,6 +3279,15 @@ mod tests {
         })
     }
 
+    fn verified_finding_without_verifier(line: u32) -> Value {
+        let mut finding = verified_finding("verifier-claude", line);
+        finding["verification"]
+            .as_object_mut()
+            .expect("verification object")
+            .remove("verifier_agent_id");
+        finding
+    }
+
     #[test]
     fn lead_frame_walking_skeleton_drives_workflow_shim_and_records_manifest() {
         let root = tempfile::tempdir().expect("workspace root");
@@ -3324,6 +3363,72 @@ mod tests {
     }
 
     #[test]
+    fn lead_frame_suppresses_verified_finding_without_verifier_identity() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([verified_finding_without_verifier(2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("missing verifier identity suppresses finding");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(result.suppressed_findings.len(), 1);
+        assert!(
+            result.suppressed_findings[0]
+                .reason
+                .contains("missing verifier identity")
+        );
+    }
+
+    #[test]
+    fn lead_frame_suppresses_finding_verified_by_producer_session() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        let producer_session = req
+            .provenance
+            .iter()
+            .find(|provenance| provenance.agent_id == AgentId("reviewer-codex".to_owned()))
+            .expect("producer provenance")
+            .session_id
+            .clone();
+        req.provenance
+            .iter_mut()
+            .find(|provenance| provenance.agent_id == AgentId("verifier-claude".to_owned()))
+            .expect("verifier provenance")
+            .session_id = producer_session;
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("producer-session verification suppresses finding");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(result.suppressed_findings.len(), 1);
+        assert!(
+            result.suppressed_findings[0]
+                .reason
+                .contains("producing session")
+        );
+    }
+
+    #[test]
     fn lead_frame_suppresses_findings_outside_changed_lines() {
         let root = tempfile::tempdir().expect("workspace root");
         let req = frame_request(root.path());
@@ -3374,6 +3479,72 @@ mod tests {
     }
 
     #[test]
+    fn lead_frame_preserves_degraded_bar_check_under_incomplete_coverage() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([]);
+        let verdict_payload = json!({
+            "verdict": "bar_check_degraded",
+            "attempts": 2,
+            "last_error": "checker unavailable"
+        });
+        let output = lead_payload(&findings_payload, false, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("bar-check degradation survives incomplete coverage");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(
+            result.verdict,
+            ReviewVerdict::BarCheckDegraded {
+                attempts: 2,
+                last_error: "checker unavailable".to_owned()
+            }
+        );
+        assert!(!result.coverage.complete);
+    }
+
+    #[test]
+    fn lead_frame_preserves_standing_findings_under_incomplete_coverage() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([]);
+        let verdict_payload = json!({
+            "verdict": "standing_findings",
+            "finding_dedup_keys": ["src-lib-unsound"],
+            "rationale": "the same finding survived a fix"
+        });
+        let output = lead_payload(&findings_payload, false, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("standing-finding rationale survives incomplete coverage");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(findings.is_empty());
+        assert_eq!(
+            result.verdict,
+            ReviewVerdict::StandingFindings {
+                finding_dedup_keys: vec!["src-lib-unsound".to_owned()],
+                rationale: "the same finding survived a fix".to_owned()
+            }
+        );
+        assert!(!result.coverage.complete);
+    }
+
+    #[test]
     fn lead_frame_repairs_invalid_lead_json_through_repair_workflow_slot() {
         let root = tempfile::tempdir().expect("workspace root");
         let req = frame_request(root.path());
@@ -3413,6 +3584,43 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
                 .archive_dir
                 .to_string_lossy()
                 .contains("repair-output")
+        );
+    }
+
+    #[test]
+    fn lead_frame_repairs_valid_json_with_wrong_review_shape() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let repaired_findings = json!([verified_finding("verifier-claude", 2)]);
+        let repaired_verdict = json!({"verdict": "findings_posted"});
+        let repaired = lead_payload(&repaired_findings, true, &repaired_verdict);
+        let engine = ScriptedLeadEngine::successful(json!({
+            "findings": [],
+            "verdict_proposal": {"verdict": "findings_posted"}
+        }));
+        let runner =
+            FakeEnsembleRunner::new(json!({"repaired_output": repaired.to_string()}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("shape-valid JSON is repaired by workflow slot");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(result.repair_attempts, 1);
+        assert_eq!(body.workflow_runner.requests.len(), 1);
+        assert!(
+            body.workflow_runner.requests[0].args["errors"][0]
+                .as_str()
+                .expect("serde error")
+                .contains("missing field")
+        );
+        assert_eq!(
+            body.workflow_runner.requests[0].args["schema"]["type"],
+            Value::String("object".to_owned())
         );
     }
 
