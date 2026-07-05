@@ -1621,6 +1621,11 @@ assembly, bar checking, and schema repair. Verification should look for why a
 claim is wrong before accepting it. Record honest coverage: if meaningful changed
 code was not visited, say so instead of proposing convergence.
 
+For a clean review, keep session notes terse and evidence-backed. List the files
+you inspected, state explicitly when no build, test, or lint commands were run,
+and do not use unsupported quality claims such as \"quality bar exceeded\" or
+\"no lint violations expected\".
+
 Write the final review payload to {{review_output_path}}."
                 .to_owned(),
             extensions: Extensions::new(),

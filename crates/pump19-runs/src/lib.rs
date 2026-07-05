@@ -726,6 +726,7 @@ fn run_lead_session_frame(
         &run_dir.join("schema/review-output.schema.json"),
         request.schema_repair_attempts,
     )?;
+    let session_notes = payload.session_notes.clone();
     let coverage = payload.coverage;
     let (findings, suppressed_findings) = frame_findings(request, &manifest, payload.findings)?;
     let verdict = frame_verdict(
@@ -745,6 +746,7 @@ fn run_lead_session_frame(
             coverage: &coverage,
             material_count: findings.len(),
             suppressed_count: suppressed_findings.len(),
+            session_notes: &session_notes,
         },
     )?;
     let workflow_archives = reconcile_workflow_archives(request, &run_dir)?;
@@ -1126,7 +1128,7 @@ fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<WorkflowArchiveDir>, RunB
                     .file_name()
                     .and_then(|name| name.to_str())
                     .and_then(ReviewWorkflowSlot::from_archive_dir_name)?;
-                Some(repair_output_archive_dirs(slot, &path).map(|paths| {
+                Some(numbered_workflow_archive_dirs(slot, &path).map(|paths| {
                     paths
                         .into_iter()
                         .map(|path| WorkflowArchiveDir { slot, path })
@@ -1142,26 +1144,33 @@ fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<WorkflowArchiveDir>, RunB
         .map(|groups| groups.into_iter().flatten().collect())
 }
 
-fn repair_output_archive_dirs(
+fn numbered_workflow_archive_dirs(
     slot: ReviewWorkflowSlot,
     path: &Path,
 ) -> Result<Vec<PathBuf>, RunBodyError> {
-    if slot != ReviewWorkflowSlot::RepairOutput {
+    if !matches!(
+        slot,
+        ReviewWorkflowSlot::RepairOutput | ReviewWorkflowSlot::BarCheck
+    ) {
         return Ok(vec![path.to_path_buf()]);
     }
     let attempt_dirs = fs::read_dir(path)
         .map_err(|source| RunBodyError::FrameIo {
-            action: format!("read repair-output archive root {}", path.display()),
+            action: format!("read numbered workflow archive root {}", path.display()),
             source,
         })?
         .filter_map(|entry| match entry {
             Ok(entry) => entry.path().is_dir().then(|| Ok(entry.path())),
             Err(source) => Some(Err(RunBodyError::FrameIo {
-                action: format!("read repair-output archive root {}", path.display()),
+                action: format!("read numbered workflow archive root {}", path.display()),
                 source,
             })),
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+        .map(|mut paths| {
+            paths.sort();
+            paths
+        })?;
     if attempt_dirs.is_empty() {
         Ok(vec![path.to_path_buf()])
     } else {
@@ -1174,18 +1183,41 @@ fn reconcile_workflow_archives(
     run_dir: &Path,
 ) -> Result<Vec<WorkflowArchiveSessionRef>, RunBodyError> {
     let mut refs = Vec::new();
+    let mut skipped_bar_check_error = None;
+    let mut proved_bar_check_archive = false;
     for archive in workflow_archive_dirs(run_dir)? {
         let expected = expected_targets_for_slot(request, archive.slot)?;
-        let evidence = reconcile_ensemble_archive(&archive.path, &expected)?;
+        let evidence = match reconcile_ensemble_archive(&archive.path, &expected) {
+            Ok(evidence) => evidence,
+            Err(
+                RunBodyError::MissingEnsembleArchive(_)
+                | RunBodyError::MalformedEnsembleArchive { .. },
+            ) if archive.slot == ReviewWorkflowSlot::BarCheck => {
+                skipped_bar_check_error = Some(RunBodyError::EnsembleArchiveMismatch(format!(
+                    "bar-check retry archive {} did not prove the authorised checker",
+                    archive.path.display()
+                )));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         for target in expected
             .into_iter()
             .filter(|target| evidence.agents.contains(&target.agent_id.0))
         {
+            if archive.slot == ReviewWorkflowSlot::BarCheck {
+                proved_bar_check_archive = true;
+            }
             refs.push(WorkflowArchiveSessionRef {
                 role: target.role,
                 agent_id: target.agent_id,
                 path: archive.path.clone(),
             });
+        }
+    }
+    if !proved_bar_check_archive {
+        if let Some(error) = skipped_bar_check_error {
+            return Err(error);
         }
     }
     Ok(refs)
@@ -1606,6 +1638,8 @@ fn retry_degraded_bar_check(
         });
     };
 
+    let checker_provenance = provenance_for_role(request, AgentRole::BarCheck)?;
+    let checker = expected_target(&checker_provenance)?;
     let mut consumed = 0;
     let mut latest_error = last_error;
     for retry_attempt in 1..=request.bar_check_retry_attempts {
@@ -1616,6 +1650,20 @@ fn retry_degraded_bar_check(
                 "run_id": &request.run_id,
                 "attempt": retry_attempt,
                 "previous_error": &latest_error,
+                "checker": {
+                    "engine": &checker.engine,
+                    "model": &checker.model,
+                    "agent_id": &checker.agent_id.0,
+                },
+                "assembled_review": shape.session_notes,
+                "coverage": shape.coverage,
+                "material_count": shape.material_count,
+                "suppressed_count": shape.suppressed_count,
+                "manifest_summary": format!(
+                    "{} material findings; {} suppressed findings",
+                    shape.material_count, shape.suppressed_count
+                ),
+                "diff_path": run_dir.join("out/diff.patch").display().to_string(),
                 "agent_timeout_ms": 120_000,
             }),
             archive_dir: run_dir
@@ -1630,7 +1678,7 @@ fn retry_degraded_bar_check(
                 continue;
             }
         };
-        let retry = match serde_json::from_value::<BarCheckRetryPayload>(output.value) {
+        let retry = match parse_bar_check_retry_payload(output.value, &checker_provenance) {
             Ok(retry) => retry,
             Err(error) => {
                 latest_error = error.to_string();
@@ -1672,6 +1720,7 @@ struct VerdictShape<'a> {
     coverage: &'a CoverageRecord,
     material_count: usize,
     suppressed_count: usize,
+    session_notes: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -1680,6 +1729,27 @@ enum BarCheckRetryPayload {
     Record(BarCheckRecord),
     Wrapped { bar_check: BarCheckRecord },
     Degraded { attempts: u32, last_error: String },
+}
+
+fn parse_bar_check_retry_payload(
+    output: Value,
+    checker_provenance: &ModelProvenance,
+) -> serde_json::Result<BarCheckRetryPayload> {
+    if output.get("passed").is_some()
+        && output.get("rationale").is_some()
+        && output.get("provenance").is_none()
+    {
+        return serde_json::from_value(json!({
+            "passed": output.get("passed").cloned().unwrap_or(Value::Bool(false)),
+            "provenance": checker_provenance,
+            "rationale": output
+                .get("rationale")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new())),
+            "extensions": {},
+        }));
+    }
+    serde_json::from_value(output)
 }
 
 fn authorised_bar_check_provenance(
@@ -4449,6 +4519,107 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
     }
 
     #[test]
+    fn lead_frame_retries_bare_bar_check_schema_with_authorised_context() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.bar_check_retry_attempts = 1;
+        let output = lead_payload(
+            &json!([]),
+            true,
+            &json!({
+                "verdict": "bar_check_degraded",
+                "attempts": 0,
+                "last_error": "lead proposed clean convergence without a schema-valid bar_check"
+            }),
+        );
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(
+            json!({"passed": true, "rationale": "clean review stays inside its evidence"}),
+            vec![archive_agent("bar-codex", "codex")],
+        );
+        let mut config = lead_frame_config(root.path());
+        let bar_workflow = root.path().join("bar-check.js");
+        fs::write(
+            &bar_workflow,
+            "export const meta = {\n  name: \"bar-check\"\n};\nreturn {};\n",
+        )
+        .expect("write bar-check workflow");
+        config.workflows.push(LeadWorkflowScript {
+            slot: ReviewWorkflowSlot::BarCheck,
+            path: bar_workflow,
+        });
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("bare bar-check site schema is wrapped with authorised provenance");
+        let result = body.last_result().expect("frame result recorded");
+        let args = &body.workflow_runner.requests[0].args;
+
+        match &result.verdict {
+            ReviewVerdict::Converged { bar_check } => {
+                assert!(bar_check.passed);
+                assert_eq!(bar_check.provenance.agent_id.0, "bar-codex");
+                assert_eq!(
+                    bar_check.rationale,
+                    "clean review stays inside its evidence"
+                );
+            }
+            other => panic!("expected converged verdict, got {other:?}"),
+        }
+        assert_eq!(args["checker"]["agent_id"], "bar-codex");
+        assert_eq!(args["checker"]["engine"], "codex");
+        assert_eq!(args["checker"]["model"], "codex-2026");
+        assert_eq!(args["assembled_review"], "fixture");
+        assert_eq!(args["coverage"]["complete"], true);
+        assert_eq!(args["material_count"], 0);
+        assert_eq!(args["suppressed_count"], 0);
+        assert!(
+            args["diff_path"]
+                .as_str()
+                .expect("diff path")
+                .ends_with("out/diff.patch")
+        );
+    }
+
+    #[test]
+    fn numbered_bar_check_archives_skip_malformed_failed_retry() {
+        let root = tempfile::tempdir().expect("run root");
+        let req = frame_request(root.path());
+        let archive_root = root.path().join("archive/workflows/bar-check");
+        write_in_progress_archive(&archive_root.join("1"));
+        write_archive(
+            &archive_root.join("2"),
+            &[archive_agent("bar-codex", "codex")],
+        );
+
+        let refs = reconcile_workflow_archives(&req, root.path())
+            .expect("later successful bar-check attempt proves the checker");
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].role, AgentRole::BarCheck);
+        assert!(refs[0].path.ends_with("2"));
+    }
+
+    #[test]
+    fn numbered_bar_check_archives_still_require_proved_success() {
+        let root = tempfile::tempdir().expect("run root");
+        let req = frame_request(root.path());
+        let archive_root = root.path().join("archive/workflows/bar-check");
+        write_in_progress_archive(&archive_root.join("1"));
+
+        let error = reconcile_workflow_archives(&req, root.path())
+            .expect_err("malformed retry alone cannot prove the checker");
+
+        assert!(
+            error
+                .to_string()
+                .contains("did not prove the authorised checker"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn lead_frame_preserves_standing_findings_under_incomplete_coverage() {
         let root = tempfile::tempdir().expect("workspace root");
         let req = frame_request(root.path());
@@ -4860,6 +5031,24 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
             serde_json::to_string_pretty(&manifest).expect("serialise manifest"),
         )
         .expect("write manifest");
+    }
+
+    fn write_in_progress_archive(root: &Path) {
+        let run_dir = root.join("runs/cwd/test/test-run");
+        fs::create_dir_all(&run_dir).expect("create in-progress archive");
+        fs::write(
+            run_dir.join("manifest.json"),
+            r#"{
+  "kind": "run_manifest",
+  "schema_version": 1,
+  "status": "running",
+  "run_id": "cwd:test:test-run",
+  "result": {"archive_path": "result.json", "exit_code": null},
+  "files": []
+}
+"#,
+        )
+        .expect("write in-progress manifest");
     }
 
     #[test]
