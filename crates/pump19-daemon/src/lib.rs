@@ -976,6 +976,7 @@ fn runtime_launcher(
                 prompt_root,
                 subject_intents.clone(),
                 RunKind::Review,
+                LeadFrameEngineKind::Review,
                 WriteAccess::ReadOnly,
             )?,
         ),
@@ -987,6 +988,7 @@ fn runtime_launcher(
                 prompt_root,
                 subject_intents,
                 RunKind::Fix,
+                LeadFrameEngineKind::Fix,
                 WriteAccess::Writable,
             )?,
         ),
@@ -1015,6 +1017,7 @@ fn lead_frame_config(
     prompt_root: &Path,
     subject_intents: BTreeMap<String, SubjectIntent>,
     run_kind: RunKind,
+    lead_engine_kind: LeadFrameEngineKind,
     write_access: WriteAccess,
 ) -> Result<LeadSessionFrameConfig, DaemonError> {
     let mission = prompt_template(prompt_pack, run_kind)
@@ -1030,7 +1033,7 @@ fn lead_frame_config(
             })
         })
         .collect::<Result<Vec<_>, DaemonError>>()?;
-    let lead_engine = lead_engine_config(run_kind, write_access);
+    let lead_engine = lead_engine_config(lead_engine_kind, write_access);
     Ok(LeadSessionFrameConfig {
         run_root: ensemble.archive_root.join("frame-runs"),
         node_program: ensemble.node_program.clone(),
@@ -1058,14 +1061,23 @@ fn lead_frame_config(
     })
 }
 
-fn lead_engine_config(run_kind: RunKind, write_access: WriteAccess) -> LeadEngineConfig {
-    let (engine, executable, requested_model) = match run_kind {
-        RunKind::Fix => (
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LeadFrameEngineKind {
+    Review,
+    Fix,
+}
+
+fn lead_engine_config(
+    lead_engine_kind: LeadFrameEngineKind,
+    write_access: WriteAccess,
+) -> LeadEngineConfig {
+    let (engine, executable, requested_model) = match lead_engine_kind {
+        LeadFrameEngineKind::Fix => (
             EngineKind::Codex,
             PathBuf::from("codex"),
             Some("codex-stable".to_owned()),
         ),
-        RunKind::Review | RunKind::Finish => (
+        LeadFrameEngineKind::Review => (
             EngineKind::Claude,
             PathBuf::from("claude"),
             Some("claude-sonnet-4-5".to_owned()),
@@ -3041,6 +3053,7 @@ stop_after_quiet_polls = 1
             prompt_root,
             config.forgejo.repository_intents.clone(),
             RunKind::Review,
+            LeadFrameEngineKind::Review,
             WriteAccess::ReadOnly,
         )
         .expect("build lead frame config");

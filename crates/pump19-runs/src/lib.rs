@@ -34,8 +34,8 @@ use pump19_core::{
 };
 use pump19_engine::{
     EngineError, EngineKind, EngineProvenance, EngineRun, EngineSessionLauncher,
-    ExitClassification, LaunchBounds, LaunchSpec, RepairAttempt, RepairStrategy, TranscriptKind,
-    WriteAccess,
+    ExitClassification, LaunchBounds, LaunchSpec, ModelSource, RepairAttempt, RepairStrategy,
+    TranscriptKind, WriteAccess,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -221,20 +221,8 @@ pub trait FixRunBody {
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Patch>, RunBodyError>;
 
-    fn last_archive_path(&self) -> Option<String> {
-        None
-    }
-
     fn last_session_archives(&self) -> Vec<SessionArchiveRef> {
-        self.last_archive_path()
-            .map(|path| SessionArchiveRef {
-                role: AgentRole::Fixer,
-                agent_id: AgentId("legacy-fix-body".to_owned()),
-                path,
-                kind: SessionArchiveKind::EnsembleRun,
-            })
-            .into_iter()
-            .collect()
+        Vec::new()
     }
 }
 
@@ -604,8 +592,10 @@ fn run_lead_session_fix(
     let run_dir = prepare_run_directory(config, request, &review_evidence)?;
     let manifest = build_run_manifest(config, request, &review_evidence);
     let fixer = provenance_for_role(request, AgentRole::Fixer)?;
+    let fixer_target = expected_target(&fixer)?;
     let snapshot_dir = run_dir.join("snapshot/pristine");
-    copy_dir_recursive_excluding(&request.workspace.root, &snapshot_dir, &config.run_root)?;
+    let snapshot_exclusions = snapshot_exclusions(&request.workspace.root, &config.run_root);
+    copy_dir_recursive_excluding(&request.workspace.root, &snapshot_dir, &snapshot_exclusions)?;
     let manifest_path = run_dir.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
     let subject = subject_for_repository(&config.subject_intents, &request.state.pr.repository);
@@ -643,9 +633,10 @@ fn run_lead_session_fix(
             engine_run.classification
         )));
     }
+    reconcile_lead_provenance(&engine_run.provenance, &fixer_target)?;
 
     let current_dir = run_dir.join("snapshot/current");
-    copy_dir_recursive_excluding(&request.workspace.root, &current_dir, &config.run_root)?;
+    copy_dir_recursive_excluding(&request.workspace.root, &current_dir, &snapshot_exclusions)?;
     let diff = diff_workspace_snapshot(&snapshot_dir, &current_dir)?;
     let patch = (!diff.trim().is_empty()).then(|| {
         patch_from_change(
@@ -688,6 +679,7 @@ fn run_lead_session_frame(
     let run_dir = prepare_run_directory(config, request, &review_evidence)?;
     let manifest = build_run_manifest(config, request, &review_evidence);
     let lead = provenance_for_role(request, AgentRole::Lead)?;
+    let lead_target = expected_target(&lead)?;
     let manifest_path = run_dir.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
     let subject = subject_for_repository(&config.subject_intents, &request.state.pr.repository);
@@ -707,23 +699,9 @@ fn run_lead_session_frame(
         runner: workflow_runner,
         config,
         run_dir: run_dir.clone(),
-        repair_target: expected_target(&lead)?,
+        repair_target: lead_target.clone(),
     };
-    let engine_run = engine.launch_lead(
-        &LaunchSpec {
-            engine: config.lead_engine.engine,
-            executable: config.lead_engine.executable.clone(),
-            working_dir: run_dir.clone(),
-            prompt_path: run_dir.join("mission.md"),
-            schema_path: Some(run_dir.join("schema/review-output.schema.json")),
-            archive_dir: run_dir.join("archive/lead"),
-            requested_model: config.lead_engine.requested_model.clone(),
-            write_access: config.lead_engine.write_access,
-            bounds: config.lead_engine.bounds.clone(),
-            env: config.lead_engine.env.clone(),
-        },
-        &mut repair,
-    )?;
+    let engine_run = engine.launch_lead(&review_lead_launch_spec(config, &run_dir), &mut repair)?;
 
     if engine_run.classification != ExitClassification::Success {
         return Err(RunBodyError::LeadSession(format!(
@@ -731,6 +709,7 @@ fn run_lead_session_frame(
             engine_run.classification
         )));
     }
+    reconcile_lead_provenance(&engine_run.provenance, &lead_target)?;
     let Some(output) = engine_run.output.clone() else {
         return Err(RunBodyError::LeadSession(
             "engine reported success without JSON output".to_owned(),
@@ -785,6 +764,21 @@ fn run_lead_session_frame(
         workflow_archives,
         repair_attempts: engine_run.repair_attempts + frame_repair_attempts,
     })
+}
+
+fn review_lead_launch_spec(config: &LeadSessionFrameConfig, run_dir: &Path) -> LaunchSpec {
+    LaunchSpec {
+        engine: config.lead_engine.engine,
+        executable: config.lead_engine.executable.clone(),
+        working_dir: run_dir.to_path_buf(),
+        prompt_path: run_dir.join("mission.md"),
+        schema_path: Some(run_dir.join("schema/review-output.schema.json")),
+        archive_dir: run_dir.join("archive/lead"),
+        requested_model: config.lead_engine.requested_model.clone(),
+        write_access: config.lead_engine.write_access,
+        bounds: config.lead_engine.bounds.clone(),
+        env: config.lead_engine.env.clone(),
+    }
 }
 
 fn parse_or_repair_lead_payload(
@@ -1742,7 +1736,7 @@ fn copy_file(source: &Path, target: &Path, action: &str) -> Result<(), RunBodyEr
 fn copy_dir_recursive_excluding(
     source: &Path,
     target: &Path,
-    exclude_root: &Path,
+    exclude_roots: &[PathBuf],
 ) -> Result<(), RunBodyError> {
     create_dir(target, "create snapshot directory")?;
     for entry in fs::read_dir(source).map_err(|source_error| RunBodyError::FrameIo {
@@ -1754,7 +1748,9 @@ fn copy_dir_recursive_excluding(
             source: source_error,
         })?;
         let source_path = entry.path();
-        if source_path == exclude_root || source_path.starts_with(exclude_root) {
+        if exclude_roots.iter().any(|exclude_root| {
+            source_path == *exclude_root || source_path.starts_with(exclude_root)
+        }) {
             continue;
         }
         let target_path = target.join(entry.file_name());
@@ -1764,7 +1760,7 @@ fn copy_dir_recursive_excluding(
                 source,
             })?;
         if metadata.is_dir() {
-            copy_dir_recursive_excluding(&source_path, &target_path, exclude_root)?;
+            copy_dir_recursive_excluding(&source_path, &target_path, exclude_roots)?;
         } else if metadata.file_type().is_symlink() {
             copy_symlink(&source_path, &target_path)?;
         } else {
@@ -1772,6 +1768,10 @@ fn copy_dir_recursive_excluding(
         }
     }
     Ok(())
+}
+
+fn snapshot_exclusions(workspace_root: &Path, run_root: &Path) -> Vec<PathBuf> {
+    vec![run_root.to_path_buf(), workspace_root.join(".pump19")]
 }
 
 #[cfg(unix)]
@@ -1883,8 +1883,8 @@ fn rewrite_diff_line(
         if let (Some(left), Some(right)) = (parts.next(), parts.next()) {
             return format!(
                 "diff --git a/{} b/{}",
-                strip_diff_path(left, snapshot_prefixes),
-                strip_diff_path(right, workspace_prefixes)
+                strip_diff_path_any(left, &[snapshot_prefixes, workspace_prefixes]),
+                strip_diff_path_any(right, &[workspace_prefixes, snapshot_prefixes])
             );
         }
     }
@@ -1908,6 +1908,23 @@ fn strip_diff_path(path: &str, prefixes: &[String]) -> String {
         .iter()
         .find_map(|prefix| path.strip_prefix(prefix).map(ToOwned::to_owned))
         .unwrap_or_else(|| path.to_owned())
+}
+
+fn strip_diff_path_any(path: &str, prefix_sets: &[&[String]]) -> String {
+    strip_diff_path_any_inner(path, prefix_sets).unwrap_or_else(|| {
+        path.strip_prefix("a/")
+            .or_else(|| path.strip_prefix("b/"))
+            .and_then(|unprefixed| strip_diff_path_any_inner(unprefixed, prefix_sets))
+            .unwrap_or_else(|| path.to_owned())
+    })
+}
+
+fn strip_diff_path_any_inner(path: &str, prefix_sets: &[&[String]]) -> Option<String> {
+    prefix_sets.iter().find_map(|prefixes| {
+        prefixes
+            .iter()
+            .find_map(|prefix| path.strip_prefix(prefix).map(ToOwned::to_owned))
+    })
 }
 
 fn write_file(path: &Path, bytes: &[u8], action: &str) -> Result<(), RunBodyError> {
@@ -2854,6 +2871,66 @@ fn expected_target(provenance: &ModelProvenance) -> Result<ExpectedAgentTarget, 
     })
 }
 
+fn reconcile_lead_provenance(
+    actual: &EngineProvenance,
+    expected: &ExpectedAgentTarget,
+) -> Result<(), RunBodyError> {
+    let actual_engine = engine_kind_name(actual.engine);
+    if actual_engine != expected.engine {
+        return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+            "lead agent {} ran engine {} instead of {}",
+            expected.agent_id.0, actual_engine, expected.engine
+        )));
+    }
+
+    match actual.model_source {
+        ModelSource::ResolvedByCli => {
+            let actual_model = actual.resolved_model.as_ref().ok_or_else(|| {
+                RunBodyError::EnsembleArchiveMismatch(format!(
+                    "lead agent {} reported resolved model source without a resolved model",
+                    expected.agent_id.0
+                ))
+            })?;
+            if actual_model != &expected.model {
+                return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                    "lead agent {} resolved model {} instead of {}",
+                    expected.agent_id.0, actual_model, expected.model
+                )));
+            }
+        }
+        ModelSource::RequestedAsOperatorAssertion => {
+            let requested = actual.requested_model.as_ref().ok_or_else(|| {
+                RunBodyError::EnsembleArchiveMismatch(format!(
+                    "lead agent {} used operator-asserted provenance without a requested model",
+                    expected.agent_id.0
+                ))
+            })?;
+            if requested != &expected.model {
+                return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                    "lead agent {} requested model {} instead of {}",
+                    expected.agent_id.0, requested, expected.model
+                )));
+            }
+        }
+        ModelSource::NotReported => {
+            return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                "lead agent {} did not report usable model provenance",
+                expected.agent_id.0
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+const fn engine_kind_name(engine: EngineKind) -> &'static str {
+    match engine {
+        EngineKind::Claude => "claude",
+        EngineKind::Codex => "codex",
+        EngineKind::Opencode => "opencode",
+    }
+}
+
 fn reconcile_ensemble_archive(
     archive_dir: &Path,
     expected_targets: &[ExpectedAgentTarget],
@@ -3230,7 +3307,8 @@ mod tests {
         output: Value,
         classification: ExitClassification,
         run_workflow_shim: bool,
-        edit_workspace_file: Option<(String, String)>,
+        edit_workspace_files: Vec<(String, String)>,
+        delete_workspace_files: Vec<String>,
         seen_specs: Vec<LaunchSpec>,
     }
 
@@ -3240,7 +3318,8 @@ mod tests {
                 output,
                 classification: ExitClassification::Success,
                 run_workflow_shim: false,
-                edit_workspace_file: None,
+                edit_workspace_files: Vec::new(),
+                delete_workspace_files: Vec::new(),
                 seen_specs: Vec::new(),
             }
         }
@@ -3272,7 +3351,7 @@ mod tests {
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
-            if let Some((path, content)) = &self.edit_workspace_file {
+            for (path, content) in &self.edit_workspace_files {
                 let manifest = serde_json::from_slice::<RunManifest>(
                     &fs::read(spec.working_dir.join("manifest.json")).expect("read manifest"),
                 )
@@ -3283,11 +3362,24 @@ mod tests {
                 }
                 fs::write(target, content).expect("edit workspace file");
             }
+            for path in &self.delete_workspace_files {
+                let manifest = serde_json::from_slice::<RunManifest>(
+                    &fs::read(spec.working_dir.join("manifest.json")).expect("read manifest"),
+                )
+                .expect("parse manifest");
+                let target = PathBuf::from(manifest.workspace.tree_root).join(path);
+                fs::remove_file(target).expect("delete workspace file");
+            }
             let stdout = spec.archive_dir.join("stdout.log");
             let stderr = spec.archive_dir.join("stderr.log");
             fs::create_dir_all(&spec.archive_dir).expect("create fake lead archive");
             fs::write(&stdout, self.output.to_string()).expect("write fake stdout");
             fs::write(&stderr, "").expect("write fake stderr");
+            let model_source = if spec.engine == EngineKind::Claude {
+                ModelSource::ResolvedByCli
+            } else {
+                ModelSource::RequestedAsOperatorAssertion
+            };
             Ok(EngineRun {
                 classification: self.classification.clone(),
                 output: (self.classification == ExitClassification::Success)
@@ -3298,7 +3390,7 @@ mod tests {
                     session_id: Some("lead-session".to_owned()),
                     requested_model: spec.requested_model.clone(),
                     resolved_model: spec.requested_model.clone(),
-                    model_source: ModelSource::RequestedAsOperatorAssertion,
+                    model_source,
                     usage: TokenUsage::default(),
                     cost_usd: None,
                 },
@@ -3568,14 +3660,27 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
             occasion: "every-pr".to_owned(),
             materiality_threshold: PriorityClass::P1,
             lead_engine: LeadEngineConfig {
-                engine: EngineKind::Codex,
-                executable: PathBuf::from("codex"),
-                requested_model: Some("gpt-5.5".to_owned()),
+                engine: EngineKind::Claude,
+                executable: PathBuf::from("claude"),
+                requested_model: Some("claude-2026".to_owned()),
                 bounds: LaunchBounds::new(Duration::from_secs(30)),
                 write_access: WriteAccess::ReadOnly,
                 env: BTreeMap::new(),
             },
         }
+    }
+
+    fn fix_frame_config(root: &Path) -> LeadSessionFrameConfig {
+        let mut config = lead_frame_config(root);
+        config.lead_engine = LeadEngineConfig {
+            engine: EngineKind::Codex,
+            executable: PathBuf::from("codex"),
+            requested_model: Some("codex-2026".to_owned()),
+            bounds: LaunchBounds::new(Duration::from_secs(30)),
+            write_access: WriteAccess::Writable,
+            env: BTreeMap::new(),
+        };
+        config
     }
 
     fn frame_request(root: &Path) -> RunLaunchRequest {
@@ -3736,8 +3841,10 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         let root = tempfile::tempdir().expect("workspace root");
         let req = fix_frame_request(root.path());
         let mut engine = ScriptedLeadEngine::successful(json!({"status": "done"}));
-        engine.edit_workspace_file = Some(("src/lib.rs".to_owned(), "fixed\n".to_owned()));
-        let config = lead_frame_config(root.path());
+        engine
+            .edit_workspace_files
+            .push(("src/lib.rs".to_owned(), "fixed\n".to_owned()));
+        let config = fix_frame_config(root.path());
         let mut body = LeadSessionFixBody::new(engine, config);
         let mut workspace = FakeWorkspace::default();
 
@@ -3773,7 +3880,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         let root = tempfile::tempdir().expect("workspace root");
         let req = fix_frame_request(root.path());
         let engine = ScriptedLeadEngine::successful(json!({"status": "done"}));
-        let config = lead_frame_config(root.path());
+        let config = fix_frame_config(root.path());
         let mut body = LeadSessionFixBody::new(engine, config);
         let mut workspace = FakeWorkspace::default();
 
@@ -3783,6 +3890,96 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
 
         assert!(patches.is_empty());
         assert!(body.last_result().expect("fix result").patch.is_none());
+    }
+
+    #[test]
+    fn lead_frame_fails_when_lead_runtime_model_mismatches_authorised_target() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let mut config = lead_frame_config(root.path());
+        config.lead_engine.requested_model = Some("claude-other".to_owned());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("mismatched lead runtime model fails");
+
+        assert!(
+            error.to_string().contains(
+                "lead agent lead-claude resolved model claude-other instead of claude-2026"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn lead_frame_fix_excludes_pump19_control_tree_from_patch() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = fix_frame_request(root.path());
+        let mut engine = ScriptedLeadEngine::successful(json!({"status": "done"}));
+        engine
+            .edit_workspace_files
+            .push(("src/lib.rs".to_owned(), "fixed\n".to_owned()));
+        engine.edit_workspace_files.push((
+            ".pump19/review/scratch.txt".to_owned(),
+            "agent scratch\n".to_owned(),
+        ));
+        let config = fix_frame_config(root.path());
+        let mut body = LeadSessionFixBody::new(engine, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let patches = body
+            .run_fix(&req, &mut workspace)
+            .expect("fix frame succeeds");
+        let diff = if let PatchChange::UnifiedDiff { diff } = &patches[0].change {
+            diff.as_str()
+        } else {
+            ""
+        };
+
+        assert!(diff.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(diff.contains("+fixed"));
+        assert!(!diff.contains(".pump19"));
+        assert!(!diff.contains("agent scratch"));
+    }
+
+    #[test]
+    fn lead_frame_fix_diff_handles_added_and_deleted_files() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = fix_frame_request(root.path());
+        fs::write(root.path().join("src/remove.rs"), "delete me\n").expect("write deleted input");
+        let mut engine = ScriptedLeadEngine::successful(json!({"status": "done"}));
+        engine
+            .edit_workspace_files
+            .push(("src/added.rs".to_owned(), "new file\n".to_owned()));
+        engine
+            .delete_workspace_files
+            .push("src/remove.rs".to_owned());
+        let config = fix_frame_config(root.path());
+        let mut body = LeadSessionFixBody::new(engine, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let patches = body
+            .run_fix(&req, &mut workspace)
+            .expect("fix frame succeeds");
+        let diff = if let PatchChange::UnifiedDiff { diff } = &patches[0].change {
+            diff.as_str()
+        } else {
+            ""
+        };
+
+        assert!(diff.contains("diff --git a/src/added.rs b/src/added.rs"));
+        assert!(diff.contains("--- /dev/null"));
+        assert!(diff.contains("+++ b/src/added.rs"));
+        assert!(diff.contains("diff --git a/src/remove.rs b/src/remove.rs"));
+        assert!(diff.contains("--- a/src/remove.rs"));
+        assert!(diff.contains("+++ /dev/null"));
     }
 
     #[cfg(unix)]
