@@ -697,7 +697,23 @@ case "$slot" in
 esac
 mkdir -p "$run_dir/archive/workflows/$slot" "$run_dir/out"
 printf '{{"slot":"%s","input_path":"%s"}}\n' "$slot" "$input_path" >> "$run_dir/out/workflow-boundary.jsonl"
-ENSEMBLE_RUN_RECORD_DIR="$run_dir/archive/workflows/$slot" "{node}" "{ensemble}" --timeout 180000 --json-args "$(cat "$input_path")" "$workflow"
+wrapper="$run_dir/out/.pump19-workflow-$slot-$$.js"
+trap 'rm -f "$wrapper"' EXIT INT TERM
+awk '
+  BEGIN {{ inserted = 0 }}
+  {{ print }}
+  inserted == 0 && $0 ~ /^}};[[:space:]]*$/ {{
+    print "const args = JSON.parse((await import(\"node:fs\")).readFileSync(process.env.PUMP19_WORKFLOW_INPUT_PATH, \"utf8\"));"
+    inserted = 1
+  }}
+  END {{
+    if (inserted == 0) {{
+      print "workflow script did not expose a top-level meta object terminator" > "/dev/stderr"
+      exit 65
+    }}
+  }}
+' "$workflow" > "$wrapper"
+PUMP19_WORKFLOW_INPUT_PATH="$input_path" ENSEMBLE_RUN_RECORD_DIR="$run_dir/archive/workflows/$slot" "{node}" "{ensemble}" --timeout 180000 "$wrapper"
 "#,
         node = config.node_program.display(),
         ensemble = config.ensemble_launcher.display(),
@@ -3119,7 +3135,7 @@ mod tests {
         let workflow = root.join("repair-output.js");
         fs::write(
             &workflow,
-            "export const meta = { name: \"repair\" };\nreturn {};\n",
+            "export const meta = {\n  name: \"repair\"\n};\nreturn {};\n",
         )
         .expect("write workflow");
         let ensemble = root.join("ensemble.sh");
@@ -3398,6 +3414,157 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
                 .to_string_lossy()
                 .contains("repair-output")
         );
+    }
+
+    #[test]
+    fn workflow_shim_passes_large_payload_by_file_not_launcher_argv() {
+        let root = tempfile::tempdir().expect("shim root");
+        let fixture = WorkflowShimFixture::new(root.path());
+        write_workflow_shim(&fixture.config, &fixture.run_dir).expect("write shim");
+        let marker = "large-payload-marker-".repeat(16_000);
+        assert!(marker.len() > 256 * 1024);
+        let input_path = fixture.run_dir.join("out/input.json");
+        fs::write(
+            &input_path,
+            serde_json::to_vec(&json!({"marker": marker})).expect("serialise input"),
+        )
+        .expect("write large payload");
+
+        let output = Command::new(fixture.run_dir.join("bin/pump19-workflow"))
+            .current_dir(&fixture.run_dir)
+            .arg("repair-output")
+            .arg(&input_path)
+            .output()
+            .expect("run shim");
+
+        assert!(
+            output.status.success(),
+            "shim failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let argv = fs::read_to_string(&fixture.captured_argv).expect("read launcher argv");
+        assert!(argv.contains("--timeout\n180000\n"));
+        assert!(!argv.contains("--json-args"));
+        assert!(!argv.contains("large-payload-marker-"));
+        assert!(
+            argv.len() < 4096,
+            "launcher argv should stay bounded; got {} bytes",
+            argv.len()
+        );
+        assert_eq!(
+            fs::read_to_string(&fixture.captured_input_env).expect("read input env"),
+            input_path.display().to_string()
+        );
+        let wrapper = fs::read_to_string(&fixture.captured_wrapper).expect("read wrapper");
+        assert!(wrapper.contains("PUMP19_WORKFLOW_INPUT_PATH"));
+        assert!(!wrapper.contains("large-payload-marker-"));
+    }
+
+    struct WorkflowShimFixture {
+        run_dir: PathBuf,
+        config: LeadSessionFrameConfig,
+        captured_argv: PathBuf,
+        captured_input_env: PathBuf,
+        captured_wrapper: PathBuf,
+    }
+
+    impl WorkflowShimFixture {
+        fn new(root: &Path) -> Self {
+            let run_dir = root.join("run");
+            fs::create_dir_all(run_dir.join("bin")).expect("create bin");
+            fs::create_dir_all(run_dir.join("out")).expect("create out");
+            fs::create_dir_all(run_dir.join("archive/workflows")).expect("create archive");
+            fs::create_dir_all(run_dir.join("workflows")).expect("create workflow dir");
+            let workflow = root.join("repair-output.js");
+            fs::write(
+                &workflow,
+                "export const meta = {\n  name: \"payload-boundary\"\n};\nreturn { marker: args.marker };\n",
+            )
+            .expect("write workflow");
+            fs::copy(&workflow, run_dir.join("workflows/repair-output.js"))
+                .expect("copy workflow into run dir");
+            let captured_argv = root.join("launcher-argv.txt");
+            let captured_input_env = root.join("launcher-input-env.txt");
+            let captured_wrapper = root.join("launcher-wrapper.js");
+            let ensemble = root.join("fake-ensemble.sh");
+            write_fake_shim_ensemble(
+                &ensemble,
+                &captured_argv,
+                &captured_input_env,
+                &captured_wrapper,
+            );
+            Self {
+                run_dir,
+                config: shim_test_config(root, &ensemble, &workflow),
+                captured_argv,
+                captured_input_env,
+                captured_wrapper,
+            }
+        }
+    }
+
+    fn shim_test_config(root: &Path, ensemble: &Path, workflow: &Path) -> LeadSessionFrameConfig {
+        LeadSessionFrameConfig {
+            run_root: root.join("unused"),
+            node_program: PathBuf::from("sh"),
+            ensemble_launcher: ensemble.to_path_buf(),
+            workflows: vec![LeadWorkflowScript {
+                slot: ReviewWorkflowSlot::RepairOutput,
+                path: workflow.to_path_buf(),
+            }],
+            mission_template: String::new(),
+            selected_briefs: Vec::new(),
+            brief_warnings: Vec::new(),
+            occasion: "every-pr".to_owned(),
+            materiality_threshold: PriorityClass::P1,
+            lead_engine: LeadEngineConfig {
+                engine: EngineKind::Codex,
+                executable: PathBuf::from("codex"),
+                requested_model: None,
+                bounds: LaunchBounds::new(Duration::from_secs(30)),
+                write_access: WriteAccess::ReadOnly,
+                env: BTreeMap::new(),
+            },
+        }
+    }
+
+    fn write_fake_shim_ensemble(
+        path: &Path,
+        captured_argv: &Path,
+        captured_input_env: &Path,
+        captured_wrapper: &Path,
+    ) {
+        fs::write(
+            path,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$@" > "{captured_argv}"
+printf '%s' "$PUMP19_WORKFLOW_INPUT_PATH" > "{captured_input_env}"
+script=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --timeout)
+      shift 2
+      ;;
+    --*)
+      shift
+      ;;
+    *)
+      script=$1
+      shift
+      ;;
+  esac
+done
+cp "$script" "{captured_wrapper}"
+printf '{{"ok":true}}\n'
+"#,
+                captured_argv = captured_argv.display(),
+                captured_input_env = captured_input_env.display(),
+                captured_wrapper = captured_wrapper.display(),
+            ),
+        )
+        .expect("write fake ensemble");
+        make_executable(path).expect("chmod fake ensemble");
     }
 
     fn write_review_diff(root: &Path, diff: &str) {

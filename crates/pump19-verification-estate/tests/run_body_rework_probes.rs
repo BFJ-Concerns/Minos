@@ -234,7 +234,23 @@ esac
 mkdir -p "archive/workflows/$slot" out
 input_size=$(wc -c < "$input_path" | tr -d ' ')
 printf '{{"slot":"%s","input_path":"%s","input_size":%s}}\n' "$slot" "$input_path" "$input_size" >> out/boundary.jsonl
-ENSEMBLE_RUN_RECORD_DIR="$PWD/archive/workflows/$slot" "{node}" "{ensemble}" --budget codex=10000 --concurrency codex=1 --timeout 180000 --json-args "$(cat "$input_path")" "$workflow"
+wrapper="$PWD/out/.pump19-workflow-$slot-$$.js"
+trap 'rm -f "$wrapper"' EXIT INT TERM
+awk '
+  BEGIN {{ inserted = 0 }}
+  {{ print }}
+  inserted == 0 && $0 ~ /^}};[[:space:]]*$/ {{
+    print "const args = JSON.parse((await import(\"node:fs\")).readFileSync(process.env.PUMP19_WORKFLOW_INPUT_PATH, \"utf8\"));"
+    inserted = 1
+  }}
+  END {{
+    if (inserted == 0) {{
+      print "workflow script did not expose a top-level meta object terminator" > "/dev/stderr"
+      exit 65
+    }}
+  }}
+' "$workflow" > "$wrapper"
+PUMP19_WORKFLOW_INPUT_PATH="$input_path" ENSEMBLE_RUN_RECORD_DIR="$PWD/archive/workflows/$slot" "{node}" "{ensemble}" --budget codex=10000 --concurrency codex=1 --timeout 180000 "$wrapper"
 "#,
         node = node.display(),
         ensemble = ensemble.display(),
