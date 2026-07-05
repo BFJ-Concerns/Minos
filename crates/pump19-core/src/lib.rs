@@ -16,15 +16,15 @@ use std::{
 };
 
 use pump19_contract::{
-    ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, CoverageRecord,
-    EventPayload, Extensions, Finding, FindingCommentPublication, FindingCommentStatus,
-    FindingVerification, FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt,
-    IndependenceDegradation, LoopPassRecord, MergePublication, ModelFamily, ModelLineage,
-    ModelProvenance, Patch, PrRunState, PriorityClass, ProvenanceVerification, PublicationAttempt,
-    PublicationAttemptStatus, PublicationOperation, PublicationRefusal, PublicationRefusalReason,
-    PublicationState, PublishedFixCommit, PullRequestRef, ReviewVerdict, RunCeiling, RunId,
-    RunKind, RunOutcome, RunRecord, RunRefusal, RunRefusalReason, RunStatus, SessionArchiveRef,
-    SessionFreshness, SessionId, fixer_disjoint_from_finding_sessions,
+    ActorCapability, ActorRef, AgentId, AgentRole, BarCheckRecord, ContractEvent, ContractVersion,
+    CoverageRecord, EventPayload, Extensions, Finding, FindingCommentPublication,
+    FindingCommentStatus, FindingVerification, FinishLabel, FixPushPublication, ForgeFacts,
+    ForgeReceipt, IndependenceDegradation, LoopPassRecord, MergePublication, ModelFamily,
+    ModelLineage, ModelProvenance, Patch, PrRunState, PriorityClass, ProvenanceVerification,
+    PublicationAttempt, PublicationAttemptStatus, PublicationOperation, PublicationRefusal,
+    PublicationRefusalReason, PublicationState, PublishedFixCommit, PullRequestRef, ReviewVerdict,
+    RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunRefusal, RunRefusalReason, RunStatus,
+    SessionArchiveRef, SessionFreshness, SessionId, fixer_disjoint_from_finding_sessions,
     merge_gate_clean_and_current, sessions_fresh_for_pass,
 };
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,8 @@ const EXT_LAST_FAILURE: &str = "pump19.core.last_failure";
 const EXT_SELF_EMITTED_EVENT: &str = "pump19.core.self_emitted_event";
 const EXT_COMPLETION_RECOVERY_FAILURES: &str = "pump19.core.completion_recovery_failures";
 const EXT_COMPLETION_RECOVERY_PARKED: &str = "pump19.core.completion_recovery_parked";
+const EXT_BAR_CHECK_DEGRADED_PASS: &str = "pump19.core.bar_check_degraded_pass";
+const EXT_BAR_CHECK_DEGRADED_COUNT: &str = "pump19.core.bar_check_degraded_count";
 const CONTROL_COMMIT_SHA: &str = "__pump19_pr_control__";
 const MAX_COMPLETION_RECOVERY_FAILURES: u64 = 2;
 /// Suffix used by runtime source preparation for disposable preparation roots.
@@ -1162,7 +1164,10 @@ where
         let mut outcomes = Vec::new();
         for rule in rules {
             let state = self.load_state_for_event(event)?;
-            if !rule.criteria.matches(event, state.as_ref()) {
+            if !rule
+                .criteria
+                .matches_with_policy(event, state.as_ref(), &self.policy)
+            {
                 continue;
             }
 
@@ -1328,6 +1333,9 @@ where
                 state: running_state.clone(),
                 workspace: workspace.clone(),
                 provenance: prepared,
+                fix_before_merge_priority: self.policy.fix_before_merge_priority,
+                schema_repair_attempts: self.policy.schema_repair_attempts,
+                bar_check_retry_attempts: self.policy.bar_check_retry_attempts,
             },
             &mut self.workspace_provider,
         );
@@ -1358,7 +1366,9 @@ where
             return Ok(outcome);
         }
 
-        apply_run_outcome(&mut running_state, rule.run_kind, outcome);
+        let outcome_degradations = apply_run_outcome(&mut running_state, rule.run_kind, outcome);
+        self.record_operator_degradations(&running_state, &run_id, &outcome_degradations)?;
+        self.record_repeated_bar_check_degradation(&running_state, &run_id)?;
         self.state_store.save(&running_state)?;
         self.apply_forge_operations_or_record_failure(
             event,
@@ -1713,7 +1723,17 @@ where
         let Some(record) = run_record_for(state, run_id) else {
             return Ok(());
         };
-        for degradation in &record.independence_degradations {
+        let degradations = record.independence_degradations.clone();
+        self.record_operator_degradations(state, run_id, &degradations)
+    }
+
+    fn record_operator_degradations(
+        &mut self,
+        state: &PrRunState,
+        run_id: &RunId,
+        degradations: &[IndependenceDegradation],
+    ) -> Result<(), CoreError> {
+        for degradation in degradations {
             self.operator_log.record(operator_log_event(
                 state,
                 run_id,
@@ -1726,6 +1746,23 @@ where
             )?)?;
         }
         Ok(())
+    }
+
+    fn record_repeated_bar_check_degradation(
+        &mut self,
+        state: &PrRunState,
+        run_id: &RunId,
+    ) -> Result<(), CoreError> {
+        if bar_check_degraded_count_for_current_pass(state) <= 1 {
+            return Ok(());
+        }
+        self.operator_log.record(operator_log_event(
+            state,
+            run_id,
+            OperatorLogEventKind::ConfigWarning,
+            "bar check degraded again for the same pass; review retry policy is exhausted",
+            None,
+        )?)
     }
 
     fn head_was_superseded_by(&self, state: &PrRunState) -> Result<Option<String>, CoreError> {
@@ -1778,10 +1815,12 @@ where
             .iter()
             .map(|finding| finding.dedup_key.clone())
             .collect::<std::collections::BTreeSet<_>>();
+        let standing_keys = standing_finding_dedup_keys(state);
 
         for publication in state.publication.finding_comments.clone() {
             if publication.status == FindingCommentStatus::Open
                 && !material_keys.contains(&publication.finding_dedup_key)
+                && !standing_keys.contains(&publication.finding_dedup_key)
             {
                 self.resolve_finding_comment(run_id, state, &facts, &publication)?;
             }
@@ -2663,19 +2702,29 @@ pub enum Criteria {
 impl Criteria {
     #[must_use]
     pub fn matches(&self, event: &ContractEvent, state: Option<&PrRunState>) -> bool {
+        self.matches_with_policy(event, state, &CorePolicy::default())
+    }
+
+    #[must_use]
+    fn matches_with_policy(
+        &self,
+        event: &ContractEvent,
+        state: Option<&PrRunState>,
+        policy: &CorePolicy,
+    ) -> bool {
         match self {
             Self::Event { event: expected } => expected.matches(event),
-            Self::State { state: expected } => expected.matches(state),
+            Self::State { state: expected } => expected.matches(state, policy),
             Self::PrAuthoredBy { any_of } => {
                 pr_author_login(event, state).is_some_and(|login| any_of.contains(&login))
             }
             Self::PrReady => pr_ready(event, state),
             Self::All { criteria } => criteria
                 .iter()
-                .all(|criterion| criterion.matches(event, state)),
+                .all(|criterion| criterion.matches_with_policy(event, state, policy)),
             Self::Any { criteria } => criteria
                 .iter()
-                .any(|criterion| criterion.matches(event, state)),
+                .any(|criterion| criterion.matches_with_policy(event, state, policy)),
         }
     }
 }
@@ -2771,7 +2820,7 @@ pub enum StateCriterion {
 
 impl StateCriterion {
     #[must_use]
-    fn matches(self, state: Option<&PrRunState>) -> bool {
+    fn matches(self, state: Option<&PrRunState>, policy: &CorePolicy) -> bool {
         let Some(state) = state else {
             return false;
         };
@@ -2779,13 +2828,14 @@ impl StateCriterion {
             Self::HasVerifiedMaterialFindings => state
                 .findings
                 .iter()
-                .any(|finding| finding.is_material(PriorityClass::P1)),
+                .any(|finding| finding.is_material(policy.fix_before_merge_priority)),
             Self::HasConverged => matches!(state.verdict, Some(ReviewVerdict::Converged { .. })),
             Self::HasStandingFindings => {
                 matches!(state.verdict, Some(ReviewVerdict::StandingFindings { .. }))
             }
             Self::BarCheckDegraded => {
                 matches!(state.verdict, Some(ReviewVerdict::BarCheckDegraded { .. }))
+                    && bar_check_degraded_count_for_current_pass(state) <= 1
             }
             Self::CleanAndCurrent => state
                 .extensions
@@ -2982,6 +3032,9 @@ pub struct RunLaunchRequest {
     pub state: PrRunState,
     pub workspace: WorkspaceLease,
     pub provenance: Vec<ModelProvenance>,
+    pub fix_before_merge_priority: PriorityClass,
+    pub schema_repair_attempts: u32,
+    pub bar_check_retry_attempts: u32,
 }
 
 /// Artifacts produced by an authorised run body.
@@ -3426,11 +3479,50 @@ fn material_findings_for_pass(state: &PrRunState, threshold: PriorityClass) -> V
         .collect()
 }
 
+fn standing_finding_dedup_keys(state: &PrRunState) -> std::collections::BTreeSet<String> {
+    match &state.verdict {
+        Some(ReviewVerdict::StandingFindings {
+            finding_dedup_keys, ..
+        }) => finding_dedup_keys.iter().cloned().collect(),
+        _ => std::collections::BTreeSet::new(),
+    }
+}
+
+fn bar_check_degraded_count_for_current_pass(state: &PrRunState) -> u64 {
+    let recorded_pass = state
+        .extensions
+        .get(EXT_BAR_CHECK_DEGRADED_PASS)
+        .and_then(Value::as_u64);
+    if recorded_pass != Some(u64::from(state.pass_index)) {
+        return 0;
+    }
+    state
+        .extensions
+        .get(EXT_BAR_CHECK_DEGRADED_COUNT)
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn record_bar_check_degraded_verdict(state: &mut PrRunState, verdict: Option<&ReviewVerdict>) {
+    if !matches!(verdict, Some(ReviewVerdict::BarCheckDegraded { .. })) {
+        return;
+    }
+    let count = bar_check_degraded_count_for_current_pass(state).saturating_add(1);
+    state.extensions.insert(
+        EXT_BAR_CHECK_DEGRADED_PASS.to_owned(),
+        Value::Number(serde_json::Number::from(state.pass_index)),
+    );
+    state.extensions.insert(
+        EXT_BAR_CHECK_DEGRADED_COUNT.to_owned(),
+        Value::Number(serde_json::Number::from(count)),
+    );
+}
+
 const fn state_converged_for_current_pass(state: &PrRunState) -> bool {
     matches!(state.verdict, Some(ReviewVerdict::Converged { .. }))
 }
 
-fn convergence_decision_id_for_current_pass(state: &PrRunState) -> Option<String> {
+fn convergence_finding_id_for_current_pass(state: &PrRunState) -> Option<String> {
     state_converged_for_current_pass(state)
         .then(|| format!("review-pass-{}-converged", state.pass_index))
 }
@@ -3479,7 +3571,7 @@ fn finish_label_authorisation(
         evidence: vec![
             AuthorisationEvidence::Verification {
                 finding_id: pump19_contract::FindingId(
-                    convergence_decision_id_for_current_pass(state)
+                    convergence_finding_id_for_current_pass(state)
                         .unwrap_or_else(|| "converged".to_owned()),
                 ),
                 verifier_session_id: SessionId("review-bar-check".to_owned()),
@@ -4038,11 +4130,17 @@ fn mark_superseded(state: &mut PrRunState, superseded_by: String, fallback: Opti
     }
 }
 
-fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaunchOutcome) {
+fn apply_run_outcome(
+    state: &mut PrRunState,
+    run_kind: RunKind,
+    outcome: RunLaunchOutcome,
+) -> Vec<IndependenceDegradation> {
     state.status = match outcome.outcome {
         RunOutcome::Succeeded | RunOutcome::NoOp => RunStatus::Completed,
         RunOutcome::Failed | RunOutcome::Cancelled => RunStatus::Failed,
     };
+    let mut outcome_degradations = outcome.independence_degradations.clone();
+    extend_derived_independence_degradations(state, &outcome, &mut outcome_degradations);
     if let Some(mut active_run) = state.active_run.take() {
         active_run.status = state.status;
         active_run.outcome = Some(outcome.outcome);
@@ -4051,12 +4149,13 @@ fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaun
             .clone_from(&outcome.session_archives);
         active_run
             .independence_degradations
-            .extend(outcome.independence_degradations.clone());
+            .extend(outcome_degradations.clone());
         record_terminal_run(state, active_run, state.status, Some(outcome.outcome));
     }
     match run_kind {
         RunKind::Review => {
             state.findings = outcome.findings;
+            record_bar_check_degraded_verdict(state, outcome.verdict.as_ref());
             state.verdict = outcome.verdict;
             state.coverage = outcome.coverage;
             state.patches.clear();
@@ -4092,6 +4191,63 @@ fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaun
             Value::Number(serde_json::Number::from(current.saturating_add(tokens))),
         );
     }
+    outcome_degradations
+}
+
+fn extend_derived_independence_degradations(
+    state: &PrRunState,
+    outcome: &RunLaunchOutcome,
+    degradations: &mut Vec<IndependenceDegradation>,
+) {
+    for finding in &outcome.findings {
+        if same_verified_family(
+            Some(&finding.provenance),
+            finding.verification.verifier.as_ref(),
+        ) {
+            push_degradation(
+                degradations,
+                IndependenceDegradation::SameFamilyVerification {
+                    finding_id: finding.id.clone(),
+                },
+            );
+        }
+    }
+
+    let Some(bar_check) = verdict_bar_check(outcome.verdict.as_ref()) else {
+        return;
+    };
+    let lead = state.active_run.as_ref().and_then(|run| {
+        run.provenance
+            .iter()
+            .find(|agent| agent.role == AgentRole::Lead)
+    });
+    if same_verified_family(Some(&bar_check.provenance), lead) {
+        push_degradation(degradations, IndependenceDegradation::SameFamilyBarCheck);
+    }
+}
+
+fn push_degradation(
+    degradations: &mut Vec<IndependenceDegradation>,
+    degradation: IndependenceDegradation,
+) {
+    if !degradations.contains(&degradation) {
+        degradations.push(degradation);
+    }
+}
+
+const fn verdict_bar_check(verdict: Option<&ReviewVerdict>) -> Option<&BarCheckRecord> {
+    match verdict {
+        Some(ReviewVerdict::Converged { bar_check } | ReviewVerdict::BarFailed { bar_check }) => {
+            Some(bar_check)
+        }
+        _ => None,
+    }
+}
+
+fn same_verified_family(left: Option<&ModelProvenance>, right: Option<&ModelProvenance>) -> bool {
+    left.and_then(ModelProvenance::verified_family)
+        .zip(right.and_then(ModelProvenance::verified_family))
+        .is_some_and(|(left, right)| left == right)
 }
 
 fn fallback_run_record(
@@ -5772,6 +5928,27 @@ mod tests {
         }
     }
 
+    fn review_after_bar_check_degraded_rule() -> TriggerRule {
+        TriggerRule {
+            id: "review-after-degraded-bar-check".to_owned(),
+            run_kind: RunKind::Review,
+            criteria: Criteria::All {
+                criteria: vec![
+                    Criteria::Event {
+                        event: EventKind::RunCompleted {
+                            run_kind: Some(RunKind::Review),
+                            outcome: Some(RunOutcome::Succeeded),
+                        },
+                    },
+                    Criteria::State {
+                        state: StateCriterion::BarCheckDegraded,
+                    },
+                ],
+            },
+            agent_plan: independent_rule().agent_plan,
+        }
+    }
+
     #[allow(dead_code)]
     fn finish_on_label_rule() -> TriggerRule {
         TriggerRule {
@@ -6187,6 +6364,47 @@ mod tests {
     }
 
     #[test]
+    fn standing_findings_preserve_open_finding_comments() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let finding = finding_from("reviewer-codex", "codex", "finding-1");
+        upsert_finding_comment_publication(
+            &mut state,
+            &finding,
+            ForgeReceipt {
+                operation_id: "comment-1".to_owned(),
+                idempotency_key: "post-comment-1".to_owned(),
+                new_head_sha: None,
+            },
+            FindingCommentStatus::Open,
+        );
+        state.verdict = Some(ReviewVerdict::StandingFindings {
+            finding_dedup_keys: vec![finding.dedup_key.clone()],
+            rationale: "finding survived the fix and remains posted".to_owned(),
+        });
+        let run_id = RunId("run-review-2".to_owned());
+        let mut core = Core::with_forge_operations_and_comment_formatter(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
+        );
+
+        core.post_material_findings(&run_id, &mut state)
+            .expect("standing findings do not resolve comments");
+
+        assert!(core.forge_operations.comment_resolutions.is_empty());
+        assert_eq!(
+            state.publication.finding_comments[0].status,
+            FindingCommentStatus::Open
+        );
+    }
+
+    #[test]
     fn material_finding_comment_formatter_failure_posts_nothing_and_records_attempt() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
         let finding = finding_from("reviewer-codex", "codex", "finding-1");
@@ -6517,7 +6735,7 @@ mod tests {
         launcher.fail_launch = true;
         let operator_log = RecordingOperatorLog::default();
         let operator_events = Rc::clone(&operator_log.events);
-        let mut core = Core::with_forge_operations_and_operator_log(
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6526,7 +6744,10 @@ mod tests {
             launcher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
             operator_log,
+            CorePolicy::human_gate(),
         );
 
         let error = core
@@ -7104,7 +7325,7 @@ mod tests {
         });
         let operator_log = RecordingOperatorLog::default();
         let operator_events = Rc::clone(&operator_log.events);
-        let mut core = Core::with_forge_operations_and_operator_log(
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -7113,7 +7334,10 @@ mod tests {
             launcher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
             operator_log,
+            CorePolicy::human_gate(),
         );
 
         let outcomes = core
@@ -7754,6 +7978,83 @@ mod tests {
     }
 
     #[test]
+    fn derived_independence_degradations_are_recorded_and_operator_logged() {
+        let mut same_family_finding = finding_from("reviewer-codex", "codex", "finding-1");
+        same_family_finding.verification.verifier = Some(verified_provenance(
+            "verifier-codex",
+            AgentRole::Verifier,
+            "codex",
+        ));
+        let mut rule = independent_rule();
+        rule.agent_plan.verifiers = vec![target("verifier-codex", AgentRole::Verifier, "codex")];
+        rule.agent_plan.bar_check = Some(target("bar-claude", AgentRole::BarCheck, "claude"));
+        let mut launcher = FakeRunLauncher::new(Vec::new());
+        launcher.outcome = RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: vec![same_family_finding.clone()],
+            verdict: Some(ReviewVerdict::Converged {
+                bar_check: BarCheckRecord {
+                    passed: true,
+                    provenance: verified_provenance("bar-claude", AgentRole::BarCheck, "claude"),
+                    rationale: "bar check shared the lead family".to_owned(),
+                    extensions: BTreeMap::new(),
+                },
+            }),
+            coverage: Some(CoverageRecord {
+                complete: true,
+                visited: vec![".".to_owned()],
+                unvisited: Vec::new(),
+                account: "fixture covered the change".to_owned(),
+                extensions: BTreeMap::new(),
+            }),
+            patches: Vec::new(),
+            token_usage: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
+        };
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
+            operator_log,
+            CorePolicy::human_gate(),
+        );
+
+        core.process_event(&event(), &[rule])
+            .expect("process review event");
+
+        let saved = core
+            .state_store
+            .load_latest_for_pr(&pr())
+            .expect("load state")
+            .expect("state saved");
+        let degradations = &saved.run_history[0].independence_degradations;
+        assert!(
+            degradations.contains(&IndependenceDegradation::SameFamilyVerification {
+                finding_id: same_family_finding.id
+            })
+        );
+        assert!(degradations.contains(&IndependenceDegradation::SameFamilyBarCheck));
+        assert_eq!(
+            operator_events
+                .borrow()
+                .iter()
+                .filter(|event| event.kind == OperatorLogEventKind::IndependenceDegradation)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn json_store_round_trips_and_finds_running_state_by_run_id() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut store = JsonRunStateStore::new(dir.path()).expect("store");
@@ -7806,6 +8107,22 @@ mod tests {
     }
 
     #[test]
+    fn material_finding_state_criterion_uses_policy_threshold() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let mut finding = finding_from("reviewer-codex", "codex", "finding-1");
+        finding.priority = PriorityClass::P2;
+        state.findings.push(finding);
+        let criterion = Criteria::State {
+            state: StateCriterion::HasVerifiedMaterialFindings,
+        };
+        let mut policy = CorePolicy::human_gate();
+        policy.fix_before_merge_priority = PriorityClass::P2;
+
+        assert!(!criterion.matches(&event(), Some(&state)));
+        assert!(criterion.matches_with_policy(&event(), Some(&state), &policy));
+    }
+
+    #[test]
     fn state_criteria_match_recorded_convergence_verdict() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
         state.verdict = Some(ReviewVerdict::Converged {
@@ -7823,6 +8140,74 @@ mod tests {
             }
             .matches(&event(), Some(&state))
         );
+    }
+
+    #[test]
+    fn repeated_bar_check_degradation_does_not_refire_review_retry() {
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut launcher = FakeRunLauncher::new(Vec::new());
+        launcher.outcome = RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: Vec::new(),
+            verdict: Some(ReviewVerdict::BarCheckDegraded {
+                attempts: 3,
+                last_error: "bar check unavailable".to_owned(),
+            }),
+            coverage: Some(CoverageRecord {
+                complete: true,
+                visited: vec![".".to_owned()],
+                unvisited: Vec::new(),
+                account: "fixture covered the change".to_owned(),
+                extensions: BTreeMap::new(),
+            }),
+            patches: Vec::new(),
+            token_usage: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
+        };
+        let mut core = Core::with_forge_operations_and_operator_log(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            operator_log,
+        );
+        let open_outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("initial review");
+        let first_run = launched_run_id(&open_outcomes).expect("first review run");
+        let retry_event = run_completed_event("review-one-done", first_run, RunKind::Review);
+        let retry_outcomes = core
+            .process_event(&retry_event, &[review_after_bar_check_degraded_rule()])
+            .expect("retry review");
+        let second_run = launched_run_id(&retry_outcomes).expect("second review run");
+        let second_completion =
+            run_completed_event("review-two-done", second_run.clone(), RunKind::Review);
+
+        let stopped = core
+            .process_event(
+                &second_completion,
+                &[review_after_bar_check_degraded_rule()],
+            )
+            .expect("second degraded review does not retry again");
+
+        assert_eq!(core.launcher.launched, 2);
+        assert!(stopped.is_empty());
+        let saved = core
+            .state_store
+            .load_by_run_id(&second_run)
+            .expect("load second run")
+            .expect("state saved");
+        assert_eq!(bar_check_degraded_count_for_current_pass(&saved), 2);
+        assert!(operator_events.borrow().iter().any(|event| {
+            event.kind == OperatorLogEventKind::ConfigWarning
+                && event.message.contains("retry policy is exhausted")
+        }));
     }
 
     #[test]

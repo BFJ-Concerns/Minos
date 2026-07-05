@@ -48,11 +48,6 @@ use std::os::unix::process::CommandExt as _;
 
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
-const EXT_FRAME_TITLE: &str = "pump19.frame.title";
-const EXT_FRAME_EXPLANATION: &str = "pump19.frame.explanation";
-const EXT_FRAME_SUGGESTION: &str = "pump19.frame.suggestion";
-const EXT_FRAME_PRIORITY: &str = "pump19.frame.priority";
-const EXT_FRAME_VERIFICATION: &str = "pump19.frame.verification";
 const EXT_BRIEF_WARNINGS: &str = "pump19.frame.brief_warnings";
 const REVIEW_EVIDENCE_DIR: &str = ".pump19/review";
 const REVIEW_DIFF_FILE: &str = "diff.patch";
@@ -332,6 +327,26 @@ impl ReviewWorkflowSlot {
             Self::RepairOutput => "repair-output",
         }
     }
+
+    fn from_archive_dir_name(name: &str) -> Option<Self> {
+        match name {
+            "specialist-fanout" => Some(Self::SpecialistFanout),
+            "verify-findings" => Some(Self::VerifyFindings),
+            "assemble-review" => Some(Self::AssembleReview),
+            "bar-check" => Some(Self::BarCheck),
+            "repair-output" => Some(Self::RepairOutput),
+            _ => None,
+        }
+    }
+
+    const fn archive_role(self) -> AgentRole {
+        match self {
+            Self::SpecialistFanout => AgentRole::Reviewer,
+            Self::VerifyFindings => AgentRole::Verifier,
+            Self::AssembleReview | Self::RepairOutput => AgentRole::Lead,
+            Self::BarCheck => AgentRole::BarCheck,
+        }
+    }
 }
 
 /// One workflow script made available in a run directory.
@@ -380,8 +395,14 @@ pub struct LeadSessionFrameResult {
     pub verdict: ReviewVerdict,
     pub lead_provenance: EngineProvenance,
     pub lead_transcripts: Vec<PathBuf>,
-    pub workflow_archives: Vec<PathBuf>,
+    pub workflow_archives: Vec<WorkflowArchiveDir>,
     pub repair_attempts: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowArchiveDir {
+    pub slot: ReviewWorkflowSlot,
+    pub path: PathBuf,
 }
 
 /// Candidate finding rejected by a frame publication gate.
@@ -445,7 +466,7 @@ where
         self.last_result
             .as_ref()
             .and_then(|result| result.workflow_archives.first())
-            .map(|path| path.display().to_string())
+            .map(|archive| archive.path.display().to_string())
     }
 
     fn last_review_verdict(&self) -> Option<ReviewVerdict> {
@@ -478,10 +499,14 @@ where
             result
                 .workflow_archives
                 .iter()
-                .map(|path| SessionArchiveRef {
-                    role: AgentRole::Verifier,
-                    agent_id: AgentId(format!("{}:workflow", result.manifest.run_id.0)),
-                    path: path.display().to_string(),
+                .map(|archive| SessionArchiveRef {
+                    role: archive.slot.archive_role(),
+                    agent_id: AgentId(format!(
+                        "{}:workflow:{}",
+                        result.manifest.run_id.0,
+                        archive.slot.as_str()
+                    )),
+                    path: archive.path.display().to_string(),
                     kind: SessionArchiveKind::EnsembleRun,
                 }),
         );
@@ -548,15 +573,29 @@ fn run_lead_session_frame(
         &output,
         &mut repair,
         config.lead_engine.engine,
-        run_dir.join("schema/review-output.schema.json"),
+        &run_dir.join("schema/review-output.schema.json"),
+        request.schema_repair_attempts,
     )?;
     let coverage = payload.coverage;
     let (findings, suppressed_findings) = frame_findings(request, &manifest, payload.findings)?;
     let verdict = frame_verdict(
+        request,
         payload.verdict_proposal,
         &coverage,
         findings.len(),
         suppressed_findings.len(),
+    )?;
+    let verdict = retry_degraded_bar_check(
+        request,
+        config,
+        workflow_runner,
+        &run_dir,
+        verdict,
+        VerdictShape {
+            coverage: &coverage,
+            material_count: findings.len(),
+            suppressed_count: suppressed_findings.len(),
+        },
     )?;
     let workflow_archives = workflow_archive_dirs(&run_dir)?;
     Ok(LeadSessionFrameResult {
@@ -583,24 +622,33 @@ fn parse_or_repair_lead_payload(
     output: &Value,
     repair: &mut dyn RepairStrategy,
     engine: EngineKind,
-    schema_path: PathBuf,
+    schema_path: &Path,
+    max_attempts: u32,
 ) -> Result<(LeadReviewPayload, u32), RunBodyError> {
     match serde_json::from_value::<LeadReviewPayload>(output.clone()) {
         Ok(payload) => Ok((payload, 0)),
-        Err(error) => {
-            let attempt = RepairAttempt {
-                attempt: 1,
-                engine,
-                schema_path: Some(schema_path),
-                invalid_output: output.to_string(),
-                error: error.to_string(),
-            };
-            let Some(repaired) = repair.repair(attempt)? else {
-                return Err(RunBodyError::EnsembleJson(error));
-            };
-            serde_json::from_str::<LeadReviewPayload>(&repaired)
-                .map(|payload| (payload, 1))
-                .map_err(RunBodyError::EnsembleJson)
+        Err(mut error) => {
+            let mut invalid_output = output.to_string();
+            for attempt_number in 1..=max_attempts {
+                let attempt = RepairAttempt {
+                    attempt: attempt_number,
+                    engine,
+                    schema_path: Some(schema_path.to_path_buf()),
+                    invalid_output,
+                    error: error.to_string(),
+                };
+                let Some(repaired) = repair.repair(attempt)? else {
+                    return Err(RunBodyError::EnsembleJson(error));
+                };
+                match serde_json::from_str::<LeadReviewPayload>(&repaired) {
+                    Ok(payload) => return Ok((payload, attempt_number)),
+                    Err(repair_error) => {
+                        invalid_output = repaired;
+                        error = repair_error;
+                    }
+                }
+            }
+            Err(RunBodyError::EnsembleJson(error))
         }
     }
 }
@@ -689,7 +737,7 @@ fn build_run_manifest(
             max_total_tokens: config.lead_engine.bounds.max_total_tokens,
         },
         repository_policy: ManifestRepositoryPolicy {
-            fix_before_merge_priority: config.materiality_threshold,
+            fix_before_merge_priority: request.fix_before_merge_priority,
         },
         extensions,
     }
@@ -870,7 +918,7 @@ fn make_review_workspace_read_only(_root: &Path, _skip_root: &Path) -> Result<()
     Ok(())
 }
 
-fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<PathBuf>, RunBodyError> {
+fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<WorkflowArchiveDir>, RunBodyError> {
     let root = run_dir.join("archive/workflows");
     if !root.exists() {
         return Ok(Vec::new());
@@ -880,15 +928,23 @@ fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<PathBuf>, RunBodyError> {
             action: format!("read workflow archive root {}", root.display()),
             source,
         })?
-        .map(|entry| {
-            entry
-                .map(|entry| entry.path())
-                .map_err(|source| RunBodyError::FrameIo {
-                    action: format!("read workflow archive root {}", root.display()),
-                    source,
-                })
+        .filter_map(|entry| match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if !path.is_dir() {
+                    return None;
+                }
+                let slot = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(ReviewWorkflowSlot::from_archive_dir_name)?;
+                Some(Ok(WorkflowArchiveDir { slot, path }))
+            }
+            Err(source) => Some(Err(RunBodyError::FrameIo {
+                action: format!("read workflow archive root {}", root.display()),
+                source,
+            })),
         })
-        .filter(|entry| entry.as_ref().map_or(true, |path| path.is_dir()))
         .collect()
 }
 
@@ -1116,29 +1172,6 @@ fn post_gate_finding(
     if verifier.session_id == producer.session_id {
         return Err("finding verifier reused the producing session".to_owned());
     }
-    let mut extensions = BTreeMap::new();
-    extensions.insert(
-        EXT_FRAME_TITLE.to_owned(),
-        Value::String(payload.title.clone()),
-    );
-    extensions.insert(
-        EXT_FRAME_EXPLANATION.to_owned(),
-        Value::String(payload.explanation.clone()),
-    );
-    if let Some(suggestion) = &payload.suggestion {
-        extensions.insert(
-            EXT_FRAME_SUGGESTION.to_owned(),
-            Value::String(suggestion.clone()),
-        );
-    }
-    extensions.insert(
-        EXT_FRAME_PRIORITY.to_owned(),
-        serde_json::to_value(payload.priority).map_err(|error| error.to_string())?,
-    );
-    extensions.insert(
-        EXT_FRAME_VERIFICATION.to_owned(),
-        serde_json::to_value(&verification).map_err(|error| error.to_string())?,
-    );
     Ok(Finding {
         contract_version: ContractVersion::current(),
         id: FindingId(stable_id(
@@ -1163,7 +1196,7 @@ fn post_gate_finding(
                 range: None,
             })
             .collect(),
-        extensions,
+        extensions: BTreeMap::new(),
     })
 }
 
@@ -1229,6 +1262,7 @@ fn finding_verification(
 }
 
 fn frame_verdict(
+    request: &RunLaunchRequest,
     proposal: LeadVerdictProposal,
     coverage: &CoverageRecord,
     material_count: usize,
@@ -1236,6 +1270,12 @@ fn frame_verdict(
 ) -> Result<ReviewVerdict, RunBodyError> {
     Ok(match proposal {
         LeadVerdictProposal::Converged { bar_check } => {
+            if let Err(reason) = authorised_bar_check_provenance(request, &bar_check) {
+                return Ok(ReviewVerdict::BarCheckDegraded {
+                    attempts: 0,
+                    last_error: reason,
+                });
+            }
             if material_count != 0 {
                 return Err(RunBodyError::PostGate(
                     "convergence proposal included postable material findings".to_owned(),
@@ -1260,7 +1300,16 @@ fn frame_verdict(
             finding_dedup_keys,
             rationale,
         },
-        LeadVerdictProposal::BarFailed { bar_check } => ReviewVerdict::BarFailed { bar_check },
+        LeadVerdictProposal::BarFailed { bar_check } => {
+            if let Err(reason) = authorised_bar_check_provenance(request, &bar_check) {
+                ReviewVerdict::BarCheckDegraded {
+                    attempts: 0,
+                    last_error: reason,
+                }
+            } else {
+                ReviewVerdict::BarFailed { bar_check }
+            }
+        }
         LeadVerdictProposal::BarCheckDegraded {
             attempts,
             last_error,
@@ -1270,6 +1319,151 @@ fn frame_verdict(
         },
         LeadVerdictProposal::PartialCoverage => ReviewVerdict::PartialCoverage,
     })
+}
+
+fn retry_degraded_bar_check(
+    request: &RunLaunchRequest,
+    config: &LeadSessionFrameConfig,
+    runner: &mut dyn EnsembleWorkflowRunner,
+    run_dir: &Path,
+    verdict: ReviewVerdict,
+    shape: VerdictShape<'_>,
+) -> Result<ReviewVerdict, RunBodyError> {
+    let ReviewVerdict::BarCheckDegraded {
+        attempts,
+        last_error,
+    } = verdict
+    else {
+        return Ok(verdict);
+    };
+    let Some(script) = config
+        .workflows
+        .iter()
+        .find(|script| script.slot == ReviewWorkflowSlot::BarCheck)
+    else {
+        return Ok(ReviewVerdict::BarCheckDegraded {
+            attempts,
+            last_error,
+        });
+    };
+
+    let mut consumed = 0;
+    let mut latest_error = last_error;
+    for retry_attempt in 1..=request.bar_check_retry_attempts {
+        consumed = retry_attempt;
+        let output = runner.run_workflow(EnsembleWorkflowRequest {
+            script: script.path.clone(),
+            args: json!({
+                "run_id": &request.run_id,
+                "attempt": retry_attempt,
+                "previous_error": &latest_error,
+                "agent_timeout_ms": 120_000,
+            }),
+            archive_dir: run_dir
+                .join("archive/workflows/bar-check")
+                .join(retry_attempt.to_string()),
+            timeout_ms: 120_000,
+        });
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                latest_error = error.to_string();
+                continue;
+            }
+        };
+        let retry = match serde_json::from_value::<BarCheckRetryPayload>(output.value) {
+            Ok(retry) => retry,
+            Err(error) => {
+                latest_error = error.to_string();
+                continue;
+            }
+        };
+        match retry {
+            BarCheckRetryPayload::Record(bar_check)
+            | BarCheckRetryPayload::Wrapped { bar_check } => {
+                return frame_verdict(
+                    request,
+                    if bar_check.passed {
+                        LeadVerdictProposal::Converged { bar_check }
+                    } else {
+                        LeadVerdictProposal::BarFailed { bar_check }
+                    },
+                    shape.coverage,
+                    shape.material_count,
+                    shape.suppressed_count,
+                );
+            }
+            BarCheckRetryPayload::Degraded {
+                attempts: retry_attempts,
+                last_error,
+            } => {
+                consumed = retry_attempts.max(retry_attempt);
+                latest_error = last_error;
+            }
+        }
+    }
+    Ok(ReviewVerdict::BarCheckDegraded {
+        attempts: attempts.saturating_add(consumed),
+        last_error: latest_error,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct VerdictShape<'a> {
+    coverage: &'a CoverageRecord,
+    material_count: usize,
+    suppressed_count: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BarCheckRetryPayload {
+    Record(BarCheckRecord),
+    Wrapped { bar_check: BarCheckRecord },
+    Degraded { attempts: u32, last_error: String },
+}
+
+fn authorised_bar_check_provenance(
+    request: &RunLaunchRequest,
+    bar_check: &BarCheckRecord,
+) -> Result<(), String> {
+    let Some(authorised) = request
+        .provenance
+        .iter()
+        .find(|provenance| provenance.role == AgentRole::BarCheck)
+    else {
+        return Err("bar-check provenance is absent from the authorised plan".to_owned());
+    };
+    if bar_check.provenance.role != AgentRole::BarCheck {
+        return Err("bar-check record was not produced by a bar-check role".to_owned());
+    }
+    if bar_check.provenance.engine != authorised.engine {
+        return Err(format!(
+            "bar-check engine {} did not match authorised engine {}",
+            bar_check.provenance.engine, authorised.engine
+        ));
+    }
+    let Some(record_model) = verified_model(&bar_check.provenance) else {
+        return Err("bar-check record provenance is not verified".to_owned());
+    };
+    let Some(authorised_model) = verified_model(authorised) else {
+        return Err("authorised bar-check provenance is not verified".to_owned());
+    };
+    if record_model != authorised_model {
+        return Err(format!(
+            "bar-check model {record_model} did not match authorised model {authorised_model}"
+        ));
+    }
+    Ok(())
+}
+
+const fn verified_model(provenance: &ModelProvenance) -> Option<&str> {
+    match &provenance.verification {
+        pump19_contract::ProvenanceVerification::Verified { lineage, .. } => {
+            Some(lineage.model.as_str())
+        }
+        pump19_contract::ProvenanceVerification::Unverified { .. } => None,
+    }
 }
 
 fn changed_lines_from_diff(diff: &str) -> BTreeMap<String, Vec<u32>> {
@@ -2092,7 +2286,7 @@ fn material_findings(request: &RunLaunchRequest) -> Vec<&Finding> {
         .state
         .findings
         .iter()
-        .filter(|finding| finding.is_material(PriorityClass::P1))
+        .filter(|finding| finding.is_material(request.fix_before_merge_priority))
         .collect()
 }
 
@@ -2924,6 +3118,9 @@ mod tests {
                 },
             },
             provenance,
+            fix_before_merge_priority: PriorityClass::P1,
+            schema_repair_attempts: 2,
+            bar_check_retry_attempts: 2,
         }
     }
 
@@ -3340,6 +3537,78 @@ mod tests {
     }
 
     #[test]
+    fn lead_frame_degrades_bar_check_with_mismatched_provenance() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let mut mismatched_bar = bar_check();
+        mismatched_bar.provenance = provenance("bar-claude", AgentRole::BarCheck, "claude");
+        let output = lead_payload(
+            &json!([]),
+            true,
+            &json!({"verdict": "converged", "bar_check": mismatched_bar}),
+        );
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("mismatched bar-check provenance degrades verdict");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(matches!(
+            &result.verdict,
+            ReviewVerdict::BarCheckDegraded { last_error, .. }
+                if last_error.contains("did not match authorised")
+        ));
+    }
+
+    #[test]
+    fn lead_frame_retries_degraded_bar_check_in_run() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.bar_check_retry_attempts = 2;
+        let output = lead_payload(
+            &json!([]),
+            true,
+            &json!({
+                "verdict": "bar_check_degraded",
+                "attempts": 1,
+                "last_error": "checker unavailable"
+            }),
+        );
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({"bar_check": bar_check()}), Vec::new());
+        let mut config = lead_frame_config(root.path());
+        let bar_workflow = root.path().join("bar-check.js");
+        fs::write(
+            &bar_workflow,
+            "export const meta = {\n  name: \"bar-check\"\n};\nreturn {};\n",
+        )
+        .expect("write bar-check workflow");
+        config.workflows.push(LeadWorkflowScript {
+            slot: ReviewWorkflowSlot::BarCheck,
+            path: bar_workflow,
+        });
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("bar-check retry succeeds in-run");
+        let result = body.last_result().expect("frame result recorded");
+        let archives = body.last_session_archives();
+
+        assert!(matches!(result.verdict, ReviewVerdict::Converged { .. }));
+        assert_eq!(body.workflow_runner.requests.len(), 1);
+        assert!(
+            archives
+                .iter()
+                .any(|archive| archive.role == AgentRole::BarCheck)
+        );
+    }
+
+    #[test]
     fn lead_frame_preserves_standing_findings_under_incomplete_coverage() {
         let root = tempfile::tempdir().expect("workspace root");
         let req = frame_request(root.path());
@@ -3413,6 +3682,32 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
                 .to_string_lossy()
                 .contains("repair-output")
         );
+    }
+
+    #[test]
+    fn lead_frame_respects_zero_schema_repair_attempts() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.schema_repair_attempts = 0;
+        let repaired_findings = json!([verified_finding("verifier-claude", 2)]);
+        let repaired_verdict = json!({"verdict": "findings_posted"});
+        let repaired = lead_payload(&repaired_findings, true, &repaired_verdict);
+        let engine = ScriptedLeadEngine::successful(json!({
+            "findings": [],
+            "verdict_proposal": {"verdict": "findings_posted"}
+        }));
+        let runner =
+            FakeEnsembleRunner::new(json!({"repaired_output": repaired.to_string()}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("schema repair is disabled");
+
+        assert!(matches!(error, RunBodyError::EnsembleJson(_)));
+        assert!(body.workflow_runner.requests.is_empty());
     }
 
     #[test]
@@ -3823,6 +4118,33 @@ printf '{{"ok":true}}\n'
             vec![FindingId("finding-1".to_owned())]
         );
         assert!(outcome.patches[0].idempotency_key.contains("patch-"));
+    }
+
+    #[test]
+    fn fix_run_uses_policy_materiality_threshold() {
+        let mut req = request(
+            RunKind::Fix,
+            vec![provenance("fixer", AgentRole::Fixer, "codex")],
+        );
+        let mut p2_finding = finding();
+        p2_finding.priority = PriorityClass::P2;
+        req.state.findings.push(p2_finding);
+        req.fix_before_merge_priority = PriorityClass::P2;
+        let mut launcher = Pump19RunLauncher::new(
+            FakeSessions,
+            FakeReview {
+                findings: Vec::new(),
+            },
+            FakeFix,
+            MergeGateFinishBody,
+        );
+        let mut workspace = FakeWorkspace::default();
+
+        let outcome = launcher
+            .launch_run(req, &mut workspace)
+            .expect("launch fix");
+
+        assert_eq!(outcome.patches.len(), 1);
     }
 
     #[test]

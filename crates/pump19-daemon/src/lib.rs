@@ -3341,6 +3341,9 @@ printf 'not json\n'
                 },
             },
             provenance: Vec::new(),
+            fix_before_merge_priority: pump19_contract::PriorityClass::P1,
+            schema_repair_attempts: 2,
+            bar_check_retry_attempts: 2,
         }
     }
 
@@ -3827,7 +3830,7 @@ JSON
 cat > "$run_dir/manifest.json" <<'JSON'
 {{"kind":"run_manifest","schema_version":1,"status":"complete","run_id":"cwd:test:test-run","result":{{"archive_path":"result.json","exit_code":0}},"files":[{{"path":"agents/000001/agent.json","sha256":"fixture","size":1}},{{"path":"agents/000002/agent.json","sha256":"fixture","size":1}}]}}
 JSON
-printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"failed","reviews":[{{"agent_id":"reviewer-codex","model_family":"codex","status":"failed","stdout":"PUMP19_JUDGEMENT: FAIL configured subject reached prompt","stderr":""}}]}}],"model_families":["codex","claude"]}}'
+printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"failed","reviews":[{{"agent_id":"reviewer-codex","model_family":"codex","status":"failed","stdout":"configured subject reached prompt","stderr":""}}]}}],"model_families":["codex","claude"]}}'
 "#,
             captured_args = captured_args.display()
         )
