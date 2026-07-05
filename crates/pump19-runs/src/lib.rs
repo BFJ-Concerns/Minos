@@ -47,11 +47,11 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
 
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
-const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 const EXT_BRIEF_WARNINGS: &str = "pump19.frame.brief_warnings";
 const REVIEW_EVIDENCE_DIR: &str = ".pump19/review";
 const REVIEW_DIFF_FILE: &str = "diff.patch";
 const INLINE_REVIEW_DIFF_BYTE_LIMIT: usize = 64 * 1024;
+const REPAIR_OUTPUT_TIMEOUT_MS: u64 = 120_000;
 const ENSEMBLE_ENV_EXACT_ALLOWLIST: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -617,6 +617,7 @@ fn run_lead_session_fix(
             engine: lead_engine.engine,
             executable: lead_engine.executable,
             working_dir: run_dir.clone(),
+            extra_workspace_roots: vec![request.workspace.root.clone()],
             prompt_path: run_dir.join("mission.md"),
             schema_path: None,
             archive_dir: run_dir.join("archive/fix"),
@@ -701,7 +702,10 @@ fn run_lead_session_frame(
         run_dir: run_dir.clone(),
         repair_target: lead_target.clone(),
     };
-    let engine_run = engine.launch_lead(&review_lead_launch_spec(config, &run_dir), &mut repair)?;
+    let engine_run = engine.launch_lead(
+        &review_lead_launch_spec(config, &run_dir, &request.workspace.root),
+        &mut repair,
+    )?;
 
     if engine_run.classification != ExitClassification::Success {
         return Err(RunBodyError::LeadSession(format!(
@@ -722,6 +726,7 @@ fn run_lead_session_frame(
         &run_dir.join("schema/review-output.schema.json"),
         request.schema_repair_attempts,
     )?;
+    let session_notes = payload.session_notes.clone();
     let coverage = payload.coverage;
     let (findings, suppressed_findings) = frame_findings(request, &manifest, payload.findings)?;
     let verdict = frame_verdict(
@@ -741,6 +746,7 @@ fn run_lead_session_frame(
             coverage: &coverage,
             material_count: findings.len(),
             suppressed_count: suppressed_findings.len(),
+            session_notes: &session_notes,
         },
     )?;
     let workflow_archives = reconcile_workflow_archives(request, &run_dir)?;
@@ -766,11 +772,16 @@ fn run_lead_session_frame(
     })
 }
 
-fn review_lead_launch_spec(config: &LeadSessionFrameConfig, run_dir: &Path) -> LaunchSpec {
+fn review_lead_launch_spec(
+    config: &LeadSessionFrameConfig,
+    run_dir: &Path,
+    workspace_root: &Path,
+) -> LaunchSpec {
     LaunchSpec {
         engine: config.lead_engine.engine,
         executable: config.lead_engine.executable.clone(),
         working_dir: run_dir.to_path_buf(),
+        extra_workspace_roots: vec![workspace_root.to_path_buf()],
         prompt_path: run_dir.join("mission.md"),
         schema_path: Some(run_dir.join("schema/review-output.schema.json")),
         archive_dir: run_dir.join("archive/lead"),
@@ -1117,14 +1128,54 @@ fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<WorkflowArchiveDir>, RunB
                     .file_name()
                     .and_then(|name| name.to_str())
                     .and_then(ReviewWorkflowSlot::from_archive_dir_name)?;
-                Some(Ok(WorkflowArchiveDir { slot, path }))
+                Some(numbered_workflow_archive_dirs(slot, &path).map(|paths| {
+                    paths
+                        .into_iter()
+                        .map(|path| WorkflowArchiveDir { slot, path })
+                        .collect::<Vec<_>>()
+                }))
             }
             Err(source) => Some(Err(RunBodyError::FrameIo {
                 action: format!("read workflow archive root {}", root.display()),
                 source,
             })),
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map(|groups| groups.into_iter().flatten().collect())
+}
+
+fn numbered_workflow_archive_dirs(
+    slot: ReviewWorkflowSlot,
+    path: &Path,
+) -> Result<Vec<PathBuf>, RunBodyError> {
+    if !matches!(
+        slot,
+        ReviewWorkflowSlot::RepairOutput | ReviewWorkflowSlot::BarCheck
+    ) {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let attempt_dirs = fs::read_dir(path)
+        .map_err(|source| RunBodyError::FrameIo {
+            action: format!("read numbered workflow archive root {}", path.display()),
+            source,
+        })?
+        .filter_map(|entry| match entry {
+            Ok(entry) => entry.path().is_dir().then(|| Ok(entry.path())),
+            Err(source) => Some(Err(RunBodyError::FrameIo {
+                action: format!("read numbered workflow archive root {}", path.display()),
+                source,
+            })),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|mut paths| {
+            paths.sort();
+            paths
+        })?;
+    if attempt_dirs.is_empty() {
+        Ok(vec![path.to_path_buf()])
+    } else {
+        Ok(attempt_dirs)
+    }
 }
 
 fn reconcile_workflow_archives(
@@ -1132,18 +1183,41 @@ fn reconcile_workflow_archives(
     run_dir: &Path,
 ) -> Result<Vec<WorkflowArchiveSessionRef>, RunBodyError> {
     let mut refs = Vec::new();
+    let mut skipped_bar_check_error = None;
+    let mut proved_bar_check_archive = false;
     for archive in workflow_archive_dirs(run_dir)? {
         let expected = expected_targets_for_slot(request, archive.slot)?;
-        let evidence = reconcile_ensemble_archive(&archive.path, &expected)?;
+        let evidence = match reconcile_ensemble_archive(&archive.path, &expected) {
+            Ok(evidence) => evidence,
+            Err(
+                RunBodyError::MissingEnsembleArchive(_)
+                | RunBodyError::MalformedEnsembleArchive { .. },
+            ) if archive.slot == ReviewWorkflowSlot::BarCheck => {
+                skipped_bar_check_error = Some(RunBodyError::EnsembleArchiveMismatch(format!(
+                    "bar-check retry archive {} did not prove the authorised checker",
+                    archive.path.display()
+                )));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         for target in expected
             .into_iter()
             .filter(|target| evidence.agents.contains(&target.agent_id.0))
         {
+            if archive.slot == ReviewWorkflowSlot::BarCheck {
+                proved_bar_check_archive = true;
+            }
             refs.push(WorkflowArchiveSessionRef {
                 role: target.role,
                 agent_id: target.agent_id,
                 path: archive.path.clone(),
             });
+        }
+    }
+    if !proved_bar_check_archive {
+        if let Some(error) = skipped_bar_check_error {
+            return Err(error);
         }
     }
     Ok(refs)
@@ -1198,13 +1272,13 @@ impl RepairStrategy for WorkflowRepairStrategy<'_> {
                     "schema": serde_json::from_str::<Value>(&schema).unwrap_or(Value::Null),
                     "invalid_output": attempt.invalid_output,
                     "errors": [attempt.error],
-                    "agent_timeout_ms": 120_000,
+                    "agent_timeout_ms": REPAIR_OUTPUT_TIMEOUT_MS,
                 }),
                 archive_dir: self
                     .run_dir
                     .join("archive/workflows/repair-output")
                     .join(attempt.attempt.to_string()),
-                timeout_ms: 120_000,
+                timeout_ms: REPAIR_OUTPUT_TIMEOUT_MS,
             })
             .map_err(|error| EngineError::Repair(error.to_string()))?;
         output
@@ -1564,6 +1638,8 @@ fn retry_degraded_bar_check(
         });
     };
 
+    let checker_provenance = provenance_for_role(request, AgentRole::BarCheck)?;
+    let checker = expected_target(&checker_provenance)?;
     let mut consumed = 0;
     let mut latest_error = last_error;
     for retry_attempt in 1..=request.bar_check_retry_attempts {
@@ -1574,6 +1650,20 @@ fn retry_degraded_bar_check(
                 "run_id": &request.run_id,
                 "attempt": retry_attempt,
                 "previous_error": &latest_error,
+                "checker": {
+                    "engine": &checker.engine,
+                    "model": &checker.model,
+                    "agent_id": &checker.agent_id.0,
+                },
+                "assembled_review": shape.session_notes,
+                "coverage": shape.coverage,
+                "material_count": shape.material_count,
+                "suppressed_count": shape.suppressed_count,
+                "manifest_summary": format!(
+                    "{} material findings; {} suppressed findings",
+                    shape.material_count, shape.suppressed_count
+                ),
+                "diff_path": run_dir.join("out/diff.patch").display().to_string(),
                 "agent_timeout_ms": 120_000,
             }),
             archive_dir: run_dir
@@ -1588,7 +1678,7 @@ fn retry_degraded_bar_check(
                 continue;
             }
         };
-        let retry = match serde_json::from_value::<BarCheckRetryPayload>(output.value) {
+        let retry = match parse_bar_check_retry_payload(output.value, &checker_provenance) {
             Ok(retry) => retry,
             Err(error) => {
                 latest_error = error.to_string();
@@ -1630,6 +1720,7 @@ struct VerdictShape<'a> {
     coverage: &'a CoverageRecord,
     material_count: usize,
     suppressed_count: usize,
+    session_notes: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -1638,6 +1729,27 @@ enum BarCheckRetryPayload {
     Record(BarCheckRecord),
     Wrapped { bar_check: BarCheckRecord },
     Degraded { attempts: u32, last_error: String },
+}
+
+fn parse_bar_check_retry_payload(
+    output: Value,
+    checker_provenance: &ModelProvenance,
+) -> serde_json::Result<BarCheckRetryPayload> {
+    if output.get("passed").is_some()
+        && output.get("rationale").is_some()
+        && output.get("provenance").is_none()
+    {
+        return serde_json::from_value(json!({
+            "passed": output.get("passed").cloned().unwrap_or(Value::Bool(false)),
+            "provenance": checker_provenance,
+            "rationale": output
+                .get("rationale")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new())),
+            "extensions": {},
+        }));
+    }
+    serde_json::from_value(output)
 }
 
 fn authorised_bar_check_provenance(
@@ -2843,17 +2955,6 @@ fn expected_targets(
 }
 
 fn expected_target(provenance: &ModelProvenance) -> Result<ExpectedAgentTarget, RunBodyError> {
-    let engine = provenance
-        .extensions
-        .get(EXT_AGENT_ENGINE)
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            RunBodyError::EnsembleArchiveMismatch(format!(
-                "missing engine for authorised agent {}",
-                provenance.agent_id.0
-            ))
-        })?
-        .to_owned();
     let pump19_contract::ProvenanceVerification::Verified { lineage, .. } =
         &provenance.verification
     else {
@@ -2865,7 +2966,7 @@ fn expected_target(provenance: &ModelProvenance) -> Result<ExpectedAgentTarget, 
     Ok(ExpectedAgentTarget {
         agent_id: provenance.agent_id.clone(),
         role: provenance.role,
-        engine,
+        engine: provenance.engine.clone(),
         model_family: lineage.family.0.clone(),
         model: lineage.model.clone(),
     })
@@ -3198,6 +3299,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use pump19_core::{AgentEngine, AgentLaunchTarget};
 
     #[test]
     fn host_runner_env_filter_keeps_model_auth_and_drops_forge_credentials() {
@@ -3307,6 +3409,7 @@ mod tests {
         output: Value,
         classification: ExitClassification,
         run_workflow_shim: bool,
+        read_workspace_file: Option<String>,
         edit_workspace_files: Vec<(String, String)>,
         delete_workspace_files: Vec<String>,
         seen_specs: Vec<LaunchSpec>,
@@ -3318,6 +3421,7 @@ mod tests {
                 output,
                 classification: ExitClassification::Success,
                 run_workflow_shim: false,
+                read_workspace_file: None,
                 edit_workspace_files: Vec::new(),
                 delete_workspace_files: Vec::new(),
                 seen_specs: Vec::new(),
@@ -3332,6 +3436,16 @@ mod tests {
             _repair: &mut dyn RepairStrategy,
         ) -> Result<EngineRun, EngineError> {
             self.seen_specs.push(spec.clone());
+            if let Some(path) = &self.read_workspace_file {
+                let manifest = serde_json::from_slice::<RunManifest>(
+                    &fs::read(spec.working_dir.join("manifest.json")).expect("read manifest"),
+                )
+                .expect("parse manifest");
+                let target = PathBuf::from(manifest.workspace.tree_root).join(path);
+                fs::read_to_string(&target).unwrap_or_else(|error| {
+                    panic!("read workspace file {}: {error}", target.display())
+                });
+            }
             if self.run_workflow_shim {
                 let input = spec.working_dir.join("out/repair-input.json");
                 fs::write(
@@ -3464,11 +3578,6 @@ mod tests {
     }
 
     fn provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelProvenance {
-        let mut extensions = BTreeMap::new();
-        extensions.insert(
-            EXT_AGENT_ENGINE.to_owned(),
-            Value::String(engine_for_family(family).to_owned()),
-        );
         ModelProvenance {
             contract_version: ContractVersion::current(),
             agent_id: AgentId(agent_id.to_owned()),
@@ -3484,7 +3593,7 @@ mod tests {
                     model: format!("{family}-2026"),
                 },
             },
-            extensions,
+            extensions: BTreeMap::new(),
         }
     }
 
@@ -3705,7 +3814,44 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
             root,
             "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,2 @@\n old\n+new unsafe line\n",
         );
+        fs::create_dir_all(root.join("src")).expect("create src");
+        fs::write(root.join("src/lib.rs"), "old\nnew unsafe line\n").expect("write source");
         req
+    }
+
+    fn live_core_shaped_provenance_for_target(target: AgentLaunchTarget) -> ModelProvenance {
+        ModelProvenance {
+            contract_version: ContractVersion::current(),
+            agent_id: target.agent_id.clone(),
+            role: target.role,
+            engine: target.engine.as_str().to_owned(),
+            session_id: SessionId(format!("{}-live-core-session", target.agent_id.0)),
+            freshness: SessionFreshness::FreshForPass { pass_index: 1 },
+            verification: ProvenanceVerification::Verified {
+                vendor: target.vendor,
+                control_plane: target.control_plane,
+                lineage: target.lineage,
+            },
+            extensions: BTreeMap::new(),
+        }
+    }
+
+    fn launch_target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
+        AgentLaunchTarget {
+            agent_id: AgentId(agent_id.to_owned()),
+            role,
+            engine: match family {
+                "claude" => AgentEngine::Claude,
+                "codex" => AgentEngine::Codex,
+                _ => AgentEngine::Opencode,
+            },
+            vendor: "local".to_owned(),
+            control_plane: "pump19-core".to_owned(),
+            lineage: ModelLineage {
+                family: ModelFamily(family.to_owned()),
+                model: format!("{family}-2026"),
+            },
+        }
     }
 
     fn fix_frame_request(root: &Path) -> RunLaunchRequest {
@@ -3798,6 +3944,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         let output = lead_payload(&findings_payload, true, &verdict_payload);
         let mut engine = ScriptedLeadEngine::successful(output);
         engine.run_workflow_shim = true;
+        engine.read_workspace_file = Some("src/lib.rs".to_owned());
         let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
         let config = lead_frame_config(root.path());
         let mut body = LeadSessionReviewBody::new(engine, runner, config);
@@ -3834,6 +3981,107 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
                 suppressed: 0
             }
         );
+    }
+
+    #[test]
+    fn review_lead_launch_spec_keeps_tree_read_only_and_uses_claude_dsp() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let config = lead_frame_config(root.path());
+        let run_dir = root.path().join("frame-runs/lead-frame-review");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(run_dir.join("mission.md"), "review the prepared workspace")
+            .expect("write mission");
+        fs::create_dir_all(run_dir.join("schema")).expect("create schema dir");
+        fs::write(
+            run_dir.join("schema/review-output.schema.json"),
+            r#"{"type":"object"}"#,
+        )
+        .expect("write schema");
+
+        let spec = review_lead_launch_spec(&config, &run_dir, root.path());
+        let invocation = EngineSessionLauncher::build_invocation(&spec).expect("build invocation");
+
+        assert_eq!(spec.write_access, WriteAccess::ReadOnly);
+        assert_eq!(spec.extra_workspace_roots, vec![root.path().to_path_buf()]);
+        assert!(
+            invocation
+                .args
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+        );
+        assert!(!invocation.args.iter().any(|arg| arg == "--add-dir"));
+    }
+
+    #[test]
+    fn review_lead_launch_spec_grants_codex_the_prepared_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut config = lead_frame_config(root.path());
+        config.lead_engine.engine = EngineKind::Codex;
+        config.lead_engine.executable = PathBuf::from("codex");
+        let run_dir = root.path().join("frame-runs/lead-frame-review");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(run_dir.join("mission.md"), "review the prepared workspace")
+            .expect("write mission");
+        fs::create_dir_all(run_dir.join("schema")).expect("create schema dir");
+        fs::write(
+            run_dir.join("schema/review-output.schema.json"),
+            r#"{"type":"object"}"#,
+        )
+        .expect("write schema");
+
+        let spec = review_lead_launch_spec(&config, &run_dir, root.path());
+        let invocation = EngineSessionLauncher::build_invocation(&spec).expect("build invocation");
+
+        assert_eq!(spec.extra_workspace_roots, vec![root.path().to_path_buf()]);
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--add-dir" && pair[1] == root.path().display().to_string())
+        );
+    }
+
+    #[test]
+    fn lead_frame_accepts_live_core_provenance_engine_field() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.provenance = vec![
+            live_core_shaped_provenance_for_target(launch_target(
+                "lead-claude",
+                AgentRole::Lead,
+                "claude",
+            )),
+            live_core_shaped_provenance_for_target(launch_target(
+                "reviewer-codex",
+                AgentRole::Reviewer,
+                "codex",
+            )),
+            live_core_shaped_provenance_for_target(launch_target(
+                "verifier-claude",
+                AgentRole::Verifier,
+                "claude",
+            )),
+            live_core_shaped_provenance_for_target(launch_target(
+                "bar-codex",
+                AgentRole::BarCheck,
+                "codex",
+            )),
+        ];
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("lead frame accepts first-class provenance engine");
+
+        assert_eq!(findings.len(), 1);
+        assert!(req.provenance.iter().all(|item| item.extensions.is_empty()));
     }
 
     #[test]
@@ -4271,6 +4519,107 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
     }
 
     #[test]
+    fn lead_frame_retries_bare_bar_check_schema_with_authorised_context() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.bar_check_retry_attempts = 1;
+        let output = lead_payload(
+            &json!([]),
+            true,
+            &json!({
+                "verdict": "bar_check_degraded",
+                "attempts": 0,
+                "last_error": "lead proposed clean convergence without a schema-valid bar_check"
+            }),
+        );
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(
+            json!({"passed": true, "rationale": "clean review stays inside its evidence"}),
+            vec![archive_agent("bar-codex", "codex")],
+        );
+        let mut config = lead_frame_config(root.path());
+        let bar_workflow = root.path().join("bar-check.js");
+        fs::write(
+            &bar_workflow,
+            "export const meta = {\n  name: \"bar-check\"\n};\nreturn {};\n",
+        )
+        .expect("write bar-check workflow");
+        config.workflows.push(LeadWorkflowScript {
+            slot: ReviewWorkflowSlot::BarCheck,
+            path: bar_workflow,
+        });
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("bare bar-check site schema is wrapped with authorised provenance");
+        let result = body.last_result().expect("frame result recorded");
+        let args = &body.workflow_runner.requests[0].args;
+
+        match &result.verdict {
+            ReviewVerdict::Converged { bar_check } => {
+                assert!(bar_check.passed);
+                assert_eq!(bar_check.provenance.agent_id.0, "bar-codex");
+                assert_eq!(
+                    bar_check.rationale,
+                    "clean review stays inside its evidence"
+                );
+            }
+            other => panic!("expected converged verdict, got {other:?}"),
+        }
+        assert_eq!(args["checker"]["agent_id"], "bar-codex");
+        assert_eq!(args["checker"]["engine"], "codex");
+        assert_eq!(args["checker"]["model"], "codex-2026");
+        assert_eq!(args["assembled_review"], "fixture");
+        assert_eq!(args["coverage"]["complete"], true);
+        assert_eq!(args["material_count"], 0);
+        assert_eq!(args["suppressed_count"], 0);
+        assert!(
+            args["diff_path"]
+                .as_str()
+                .expect("diff path")
+                .ends_with("out/diff.patch")
+        );
+    }
+
+    #[test]
+    fn numbered_bar_check_archives_skip_malformed_failed_retry() {
+        let root = tempfile::tempdir().expect("run root");
+        let req = frame_request(root.path());
+        let archive_root = root.path().join("archive/workflows/bar-check");
+        write_in_progress_archive(&archive_root.join("1"));
+        write_archive(
+            &archive_root.join("2"),
+            &[archive_agent("bar-codex", "codex")],
+        );
+
+        let refs = reconcile_workflow_archives(&req, root.path())
+            .expect("later successful bar-check attempt proves the checker");
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].role, AgentRole::BarCheck);
+        assert!(refs[0].path.ends_with("2"));
+    }
+
+    #[test]
+    fn numbered_bar_check_archives_still_require_proved_success() {
+        let root = tempfile::tempdir().expect("run root");
+        let req = frame_request(root.path());
+        let archive_root = root.path().join("archive/workflows/bar-check");
+        write_in_progress_archive(&archive_root.join("1"));
+
+        let error = reconcile_workflow_archives(&req, root.path())
+            .expect_err("malformed retry alone cannot prove the checker");
+
+        assert!(
+            error
+                .to_string()
+                .contains("did not prove the authorised checker"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn lead_frame_preserves_standing_findings_under_incomplete_coverage() {
         let root = tempfile::tempdir().expect("workspace root");
         let req = frame_request(root.path());
@@ -4345,6 +4694,48 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
                 .archive_dir
                 .to_string_lossy()
                 .contains("repair-output")
+        );
+        assert_eq!(
+            body.workflow_runner.requests[0].args["agent_timeout_ms"],
+            json!(REPAIR_OUTPUT_TIMEOUT_MS)
+        );
+        assert_eq!(
+            body.workflow_runner.requests[0].timeout_ms,
+            REPAIR_OUTPUT_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn lead_frame_surfaces_schema_repair_workflow_failure_cleanly() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let codex = root.path().join("fake-codex.sh");
+        fs::write(
+            &codex,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"fake-thread"}'
+printf '%s\n' '{"type":"item.completed","item":{"text":"not json"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
+"#,
+        )
+        .expect("write fake codex");
+        make_executable(&codex).expect("chmod fake codex");
+        let runner = FailingEnsembleRunner {
+            message: "launcher exceeded hard timeout of 120000 ms and was killed".to_owned(),
+        };
+        let mut config = lead_frame_config(root.path());
+        config.lead_engine.executable = codex;
+        let engine = EngineSessionLauncher::new(RepairPolicy { attempts: 1 });
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("repair workflow failure is surfaced");
+
+        assert!(
+            matches!(error, RunBodyError::Engine(EngineError::Repair(message)) if message.contains("hard timeout"))
         );
     }
 
@@ -4440,6 +4831,47 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
         assert_eq!(
             body.workflow_runner.requests[0].args["schema"]["type"],
             Value::String("object".to_owned())
+        );
+    }
+
+    #[test]
+    fn repair_output_attempt_archives_are_reconciled_individually() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let repaired_findings = json!([verified_finding("verifier-claude", 2)]);
+        let repaired_verdict = json!({"verdict": "findings_posted"});
+        let repaired = lead_payload(&repaired_findings, true, &repaired_verdict);
+        let engine = ScriptedLeadEngine::successful(json!({
+            "findings": [],
+            "verdict_proposal": {"verdict": "findings_posted"}
+        }));
+        let runner = FakeEnsembleRunner::new(
+            json!({"repaired_output": repaired.to_string()}),
+            vec![archive_agent("lead-claude", "claude")],
+        );
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("first repair attempt succeeds");
+        let result = body.last_result().expect("frame result recorded");
+        write_archive(
+            &result.run_dir.join("archive/workflows/repair-output/2"),
+            &[archive_agent("lead-claude", "claude")],
+        );
+
+        let archives = reconcile_workflow_archives(&req, &result.run_dir)
+            .expect("numbered repair attempts are separate archives");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            archives
+                .iter()
+                .filter(|archive| archive.role == AgentRole::Lead)
+                .count(),
+            2
         );
     }
 
@@ -4599,6 +5031,24 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
             serde_json::to_string_pretty(&manifest).expect("serialise manifest"),
         )
         .expect("write manifest");
+    }
+
+    fn write_in_progress_archive(root: &Path) {
+        let run_dir = root.join("runs/cwd/test/test-run");
+        fs::create_dir_all(&run_dir).expect("create in-progress archive");
+        fs::write(
+            run_dir.join("manifest.json"),
+            r#"{
+  "kind": "run_manifest",
+  "schema_version": 1,
+  "status": "running",
+  "run_id": "cwd:test:test-run",
+  "result": {"archive_path": "result.json", "exit_code": null},
+  "files": []
+}
+"#,
+        )
+        .expect("write in-progress manifest");
     }
 
     #[test]

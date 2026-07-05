@@ -29,7 +29,6 @@ use std::os::unix::process::CommandExt as _;
 const STDOUT_TRANSCRIPT: &str = "stdout.log";
 const STDERR_TRANSCRIPT: &str = "stderr.log";
 const FINAL_OUTPUT: &str = "final-output.json";
-
 /// The agent CLI family launched by the core-owned engine adapter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +71,10 @@ pub struct LaunchSpec {
     pub engine: EngineKind,
     pub executable: PathBuf,
     pub working_dir: PathBuf,
+    /// Extra prepared roots the session is expected to read or modify outside
+    /// its starting directory. The frame owns the boundary; engine adapters
+    /// translate this into whatever their CLI needs.
+    pub extra_workspace_roots: Vec<PathBuf>,
     pub prompt_path: PathBuf,
     pub schema_path: Option<PathBuf>,
     pub archive_dir: PathBuf,
@@ -391,8 +394,11 @@ fn claude_args(spec: &LaunchSpec) -> Result<Vec<String>, EngineError> {
     ];
     match spec.write_access {
         WriteAccess::ReadOnly => {
-            args.push("--permission-mode".to_owned());
-            args.push("plan".to_owned());
+            // Pump-19's no-write guarantee is the prepared workspace boundary:
+            // review trees are made read-only before launch. Headless sessions
+            // must not stall on permission prompts, so Claude runs in bypass
+            // mode inside that externally contained box.
+            args.push("--dangerously-skip-permissions".to_owned());
         }
         WriteAccess::Writable => {}
     }
@@ -436,6 +442,10 @@ fn codex_args(spec: &LaunchSpec) -> Vec<String> {
     if let Some(model) = &spec.requested_model {
         args.push("--model".to_owned());
         args.push(model.clone());
+    }
+    for root in &spec.extra_workspace_roots {
+        args.push("--add-dir".to_owned());
+        args.push(root.display().to_string());
     }
     if let Some(schema_path) = &spec.schema_path {
         args.push("--output-schema".to_owned());
@@ -980,7 +990,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_invocation_uses_native_schema_budget_and_plan_mode() {
+    fn claude_invocation_uses_native_schema_budget_and_dsp_for_read_only_work() {
         let fixture = Fixture::new(EngineKind::Claude);
         fs::write(fixture.schema(), r#"{"type":"object"}"#).expect("write schema");
 
@@ -996,9 +1006,16 @@ mod tests {
         assert!(
             invocation
                 .args
-                .windows(2)
-                .any(|pair| pair == ["--permission-mode", "plan"])
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
         );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .all(|pair| pair[0] != "--permission-mode")
+        );
+        assert!(!invocation.args.iter().any(|arg| arg == "--add-dir"));
         assert!(
             invocation
                 .args
@@ -1032,6 +1049,12 @@ mod tests {
                 .args
                 .windows(2)
                 .any(|pair| pair == ["-s", "read-only"])
+        );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--add-dir" && pair[1].ends_with("prepared-workspace"))
         );
         assert!(
             invocation
@@ -1457,6 +1480,7 @@ sleep 5
                 engine: self.engine,
                 executable: self.executable().to_owned(),
                 working_dir: self.temp.path().to_owned(),
+                extra_workspace_roots: vec![self.temp.path().join("prepared-workspace")],
                 prompt_path: self.temp.path().join("prompt.md"),
                 schema_path: Some(self.schema().to_owned()),
                 archive_dir: self.temp.path().join("archive"),

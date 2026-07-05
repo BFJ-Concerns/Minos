@@ -3845,11 +3845,6 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
     }
 
     fn provenance_for_target(target: AgentLaunchTarget) -> ModelProvenance {
-        let mut extensions = Extensions::new();
-        extensions.insert(
-            "pump19.core.agent_engine".to_owned(),
-            serde_json::Value::String(target.engine.as_str().to_owned()),
-        );
         ModelProvenance {
             contract_version: ContractVersion::current(),
             agent_id: target.agent_id,
@@ -3862,7 +3857,7 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                 control_plane: target.control_plane,
                 lineage: target.lineage,
             },
-            extensions,
+            extensions: Extensions::new(),
         }
     }
 
