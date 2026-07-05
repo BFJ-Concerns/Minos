@@ -25,7 +25,7 @@ use std::{
 
 use pump19_adaptations::{
     MechanicalExecution, MechanicalPack, MechanicalStep, MechanicalStepKind, PromptPack,
-    PromptTemplate, WorkflowScript, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
+    PromptTemplate, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
 };
 use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
@@ -1194,12 +1194,12 @@ fn workflow_config(
     prompt_root: &Path,
     run_kind: RunKind,
 ) -> Result<EnsembleWorkflowConfig, DaemonError> {
-    let script = workflow_script(prompt_pack, run_kind)
+    let script = legacy_workflow_script(prompt_root, run_kind)
         .ok_or(DaemonError::MissingWorkflowScript(run_kind))?;
     let template = prompt_template(prompt_pack, run_kind)
         .ok_or(DaemonError::MissingPromptTemplate(run_kind))?;
     Ok(EnsembleWorkflowConfig {
-        script: prompt_root.join(&script.path),
+        script,
         archive_root: ensemble.archive_root.clone(),
         timeout_ms: ensemble.timeout_ms,
         prompt_template: template.template.clone(),
@@ -1207,12 +1207,19 @@ fn workflow_config(
     })
 }
 
-fn workflow_script(prompt_pack: &PromptPack, run_kind: RunKind) -> Option<&WorkflowScript> {
-    prompt_pack
-        .manifest
-        .workflow_scripts
-        .iter()
-        .find(|script| script.run_kind == run_kind)
+fn legacy_workflow_script(prompt_root: &Path, run_kind: RunKind) -> Option<PathBuf> {
+    let file_name = match run_kind {
+        RunKind::Review => "review.js",
+        RunKind::Judge => "judge.js",
+        RunKind::Fix => "fix.js",
+        RunKind::Finish => return None,
+    };
+    let path = prompt_root.join("workflows").join(file_name);
+    if path.exists() {
+        return Some(path);
+    }
+    let legacy_root_path = prompt_root.join(file_name);
+    legacy_root_path.exists().then_some(legacy_root_path)
 }
 
 fn prompt_template(prompt_pack: &PromptPack, run_kind: RunKind) -> Option<&PromptTemplate> {
@@ -1810,7 +1817,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use pump19_adaptations::PromptPackManifest;
+    use pump19_adaptations::{PromptPackManifest, WorkflowScript, WorkflowSlot};
     use pump19_contract::{
         ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
         CertaintyClass, Confidence, ContractVersion, Decision, DecisionSubject, DecisionVerdict,
@@ -3673,19 +3680,19 @@ exit 1
                 workflow_scripts: vec![
                     WorkflowScript {
                         id: "review".to_owned(),
-                        run_kind: RunKind::Review,
+                        slot: WorkflowSlot::SpecialistFanout,
                         path: PathBuf::from("review.js"),
                         extensions: Extensions::new(),
                     },
                     WorkflowScript {
                         id: "judge".to_owned(),
-                        run_kind: RunKind::Judge,
+                        slot: WorkflowSlot::VerifyFindings,
                         path: PathBuf::from("judge.js"),
                         extensions: Extensions::new(),
                     },
                     WorkflowScript {
                         id: "fix".to_owned(),
-                        run_kind: RunKind::Fix,
+                        slot: WorkflowSlot::RepairOutput,
                         path: PathBuf::from("fix.js"),
                         extensions: Extensions::new(),
                     },
