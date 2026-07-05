@@ -3,6 +3,7 @@ members = [
     "crates/pump19-adaptations",
     "crates/pump19-contract",
     "crates/pump19-core",
+    "crates/pump19-engine",
     "crates/pump19-forge-forgejo",
     "crates/pump19-judgement",
     "crates/pump19-daemon",

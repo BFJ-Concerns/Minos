@@ -220,6 +220,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump19-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "pump19-forge-forgejo"
 version = "0.1.0"
 dependencies = [
