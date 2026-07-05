@@ -37,6 +37,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
+
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_RAW_STDOUT: &str = "pump19.runs.raw_stdout";
 const EXT_RAW_STDERR: &str = "pump19.runs.raw_stderr";
@@ -316,7 +319,8 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
         let wrapper =
             TemporaryWorkflowScript::write(&request.script, &request.args, &request.archive_dir)?;
-        let mut child = Command::new(&self.node_program)
+        let mut command = Command::new(&self.node_program);
+        command
             .env_clear()
             .envs(filtered_ensemble_env(env::vars()))
             .arg(&self.launcher_path)
@@ -325,10 +329,22 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             .arg(wrapper.path())
             .env("ENSEMBLE_RUN_RECORD_DIR", &request.archive_dir)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
             .spawn()
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            RunBodyError::Ensemble("launcher stdout pipe was unavailable".to_owned())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            RunBodyError::Ensemble("launcher stderr pipe was unavailable".to_owned())
+        })?;
+        let stdout_thread = thread::spawn(move || read_stream_to_string(stdout));
+        let stderr_thread = thread::spawn(move || read_stream_to_string(stderr));
         let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
+        let mut timed_out = false;
         loop {
             if let Some(_status) = child
                 .try_wait()
@@ -337,28 +353,27 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
                 break;
             }
             if Instant::now() >= deadline {
-                child
-                    .kill()
-                    .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-                let _ = child.wait();
-                return Err(RunBodyError::Ensemble(format!(
-                    "launcher exceeded hard timeout of {} ms and was killed",
-                    request.timeout_ms
-                )));
+                kill_child_group(&mut child)?;
+                timed_out = true;
+                break;
             }
             thread::sleep(Duration::from_millis(10));
         }
-        let output = child
-            .wait_with_output()
+        let status = child
+            .wait()
             .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-        let stdout = String::from_utf8(output.stdout)
-            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-        let stderr = String::from_utf8(output.stderr)
-            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
-        if !output.status.success() {
+        let stdout = join_stream_thread(stdout_thread, "read launcher stdout")?;
+        let stderr = join_stream_thread(stderr_thread, "read launcher stderr")?;
+        if timed_out {
+            return Err(RunBodyError::Ensemble(format!(
+                "launcher exceeded hard timeout of {} ms and was killed",
+                request.timeout_ms
+            )));
+        }
+        if !status.success() {
             return Err(RunBodyError::Ensemble(format!(
                 "launcher exited with {:?}: {stderr}",
-                output.status.code()
+                status.code()
             )));
         }
         let value = serde_json::from_str(&stdout).map_err(RunBodyError::EnsembleJson)?;
@@ -367,6 +382,39 @@ impl EnsembleWorkflowRunner for HostEnsembleWorkflowRunner {
             archive_dir: request.archive_dir,
         })
     }
+}
+
+fn kill_child_group(child: &mut std::process::Child) -> Result<(), RunBodyError> {
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .arg("-TERM")
+            .arg(format!("-{}", child.id()))
+            .status()
+            .map_err(|error| RunBodyError::Ensemble(error.to_string()))?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+    child
+        .kill()
+        .map_err(|error| RunBodyError::Ensemble(error.to_string()))
+}
+
+fn read_stream_to_string(mut stream: impl std::io::Read) -> Result<String, std::io::Error> {
+    let mut content = String::new();
+    stream.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+fn join_stream_thread(
+    thread: thread::JoinHandle<Result<String, std::io::Error>>,
+    action: &str,
+) -> Result<String, RunBodyError> {
+    thread
+        .join()
+        .map_err(|_panic| RunBodyError::Ensemble(format!("{action}: I/O thread panicked")))?
+        .map_err(|error| RunBodyError::Ensemble(format!("{action}: {error}")))
 }
 
 #[derive(Debug)]
@@ -2575,6 +2623,37 @@ mod tests {
         assert!(
             matches!(error, RunBodyError::Ensemble(message) if message.contains("hard timeout"))
         );
+    }
+
+    #[test]
+    fn host_runner_drains_large_stdout_while_launcher_runs() {
+        let root = tempfile::tempdir().expect("host runner root");
+        let launcher = root.path().join("large-output-launcher.sh");
+        fs::write(
+            &launcher,
+            r#"#!/bin/sh
+head -c 200000 /dev/zero | tr '\0' ' '
+printf '{"ok":true}\n'
+"#,
+        )
+        .expect("write launcher");
+        let workflow = root.path().join("workflow.js");
+        fs::write(
+            &workflow,
+            "export const meta = { name: \"large-output\" };\nreturn null;\n",
+        )
+        .expect("write workflow");
+        let mut runner = HostEnsembleWorkflowRunner::new("sh", &launcher);
+        let request = EnsembleWorkflowRequest {
+            script: workflow,
+            args: json!({}),
+            archive_dir: root.path().join("archive"),
+            timeout_ms: 2_000,
+        };
+
+        let output = runner.run_workflow(request).expect("workflow launches");
+
+        assert_eq!(output.value, json!({"ok": true}));
     }
 
     #[test]
