@@ -1628,8 +1628,20 @@ Write the final review payload to {{review_output_path}}."
         PromptTemplate {
             id: "fix-material-findings".to_owned(),
             run_kind: RunKind::Fix,
-            template: "## Task
-Produce a fix description for the material findings. Return JSON matching the schema.
+            template: "You are the Pump-19 fix session.
+
+## Mission
+Edit the prepared workspace tree to address the verified material findings.
+Use the command shim for PR-code execution; do not run PR code directly on the host.
+
+## Inputs
+- Run manifest: {{manifest_path}}
+- Prepared workspace tree: {{workspace_tree}}
+- Command shim for PR-code execution: {{exec_command}}
+
+Read the manifest first. Make the smallest source changes that genuinely answer
+the findings below. When finished, return a JSON object such as {\"status\":\"done\"};
+the frame derives the patch from the workspace diff.
 
 <material_findings>
 {{material_findings}}
@@ -1687,7 +1699,6 @@ fn baseline_workflow_sources() -> Vec<(&'static str, &'static str)> {
         ("workflows/assemble-review.js", ASSEMBLE_REVIEW_WORKFLOW_JS),
         ("workflows/bar-check.js", BAR_CHECK_WORKFLOW_JS),
         ("workflows/repair-output.js", REPAIR_OUTPUT_WORKFLOW_JS),
-        ("workflows/fix.js", FIX_WORKFLOW_JS),
     ]
 }
 
@@ -2095,40 +2106,6 @@ if (result === null) {
 return result;
 "#;
 
-const FIX_WORKFLOW_JS: &str = r#"export const meta = {
-  name: "pump19-fix",
-  description: "Run the authorised Pump-19 fixer"
-};
-
-const fixSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["kind", "summary"],
-  properties: {
-    kind: { type: "string", enum: ["description"] },
-    summary: { type: "string" }
-  }
-};
-
-const fixer = args.fixers[0];
-const result = await agent(
-  args.prompt,
-  {
-    engine: fixer.engine,
-    model: fixer.model,
-    label: fixer.agent_id,
-    schema: fixSchema,
-    timeoutMs: args.agent_timeout_ms || 300000
-  }
-);
-
-if (result === null) {
-  throw new Error("fixer output failed schema validation");
-}
-
-return result;
-"#;
-
 /// Validates an already-loaded trigger pack.
 ///
 /// # Errors
@@ -2509,7 +2486,7 @@ mod tests {
         assert!(dir.path().join("workflows/assemble-review.js").exists());
         assert!(dir.path().join("workflows/bar-check.js").exists());
         assert!(dir.path().join("workflows/repair-output.js").exists());
-        assert!(dir.path().join("workflows/fix.js").exists());
+        assert!(!dir.path().join("workflows/fix.js").exists());
         assert!(!review_template.contains("PUMP19_JUDGEMENT"));
         Ok(())
     }
