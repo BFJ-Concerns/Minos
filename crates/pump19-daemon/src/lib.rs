@@ -1220,13 +1220,28 @@ impl SourcePreparer for RuntimeSourcePreparer {
             ))
         })?;
 
+        let result = self.prepare_source_in_root(&request, started_at, &preparation_root);
+        if result.is_err() {
+            remove_failed_preparation_root(&preparation_root)?;
+        }
+        result
+    }
+}
+
+impl RuntimeSourcePreparer {
+    fn prepare_source_in_root(
+        &self,
+        request: &SourcePreparationRequest,
+        started_at: Instant,
+        preparation_root: &Path,
+    ) -> Result<PreparedSource, CoreError> {
         let mut prepared = None;
         let mut steps_run = Vec::with_capacity(self.steps.len());
         for step in &self.steps {
             prepared = Some(run_source_preparation_step(
                 step,
-                &request,
-                &preparation_root,
+                request,
+                preparation_root,
                 prepared.as_ref(),
             )?);
             steps_run.push(step.id.clone());
@@ -1234,7 +1249,7 @@ impl SourcePreparer for RuntimeSourcePreparer {
         let mut prepared = prepared.ok_or_else(|| {
             CoreError::SourcePreparation("no source preparation steps configured".to_owned())
         })?;
-        prepared.cleanup_root = Some(preparation_root.clone());
+        prepared.cleanup_root = Some(preparation_root.to_path_buf());
         log_daemon_event(
             "info",
             "source_preparation_succeeded",
@@ -1251,6 +1266,18 @@ impl SourcePreparer for RuntimeSourcePreparer {
         );
         Ok(prepared)
     }
+}
+
+fn remove_failed_preparation_root(preparation_root: &Path) -> Result<(), CoreError> {
+    if !preparation_root.exists() {
+        return Ok(());
+    }
+    fs::remove_dir_all(preparation_root).map_err(|source| {
+        CoreError::SourcePreparation(format!(
+            "remove failed source preparation root {}: {source}",
+            preparation_root.display()
+        ))
+    })
 }
 
 #[derive(Serialize)]
@@ -2572,6 +2599,73 @@ printf '{{"tree":"{prepared_tree}","revision":"abc123"}}'
                 commit_sha: "abc123".to_owned(),
             }))
         );
+    }
+
+    #[test]
+    fn runtime_source_preparer_removes_preparation_root_after_step_failure() {
+        let dir = tempdir().expect("temp dir");
+        let failed_tree = dir.path().join("workspace-1-source-prep").join("partial");
+        let failing_script = dir.path().join("failing-prepare.sh");
+        write_test_executable(
+            &failing_script,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+cat >/dev/null
+mkdir -p "{failed_tree}"
+printf 'partial\n' > "{failed_tree}/source.txt"
+echo "intentional preparation failure" >&2
+exit 23
+"#,
+                failed_tree = failed_tree.display(),
+            ),
+        );
+        let pack = MechanicalPack {
+            schema_version: pump19_adaptations::AdaptationSchemaVersion::current(),
+            contract_version: ContractVersion::current(),
+            id: "test-mechanics".to_owned(),
+            steps: vec![MechanicalStep {
+                id: "prepare-source".to_owned(),
+                kind: MechanicalStepKind::Prepare,
+                execution: MechanicalExecution::Command {
+                    program: failing_script.display().to_string(),
+                    args: Vec::new(),
+                },
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                extensions: Extensions::new(),
+            }],
+            extensions: Extensions::new(),
+        };
+        let mut preparer = runtime_source_preparer(&pack).expect("source preparer");
+        let workspace = WorkspaceLease {
+            id: "workspace-1".to_owned(),
+            root: dir.path().join("workspace"),
+            isolation: WorkspaceIsolation {
+                isolated: true,
+                credential_free: true,
+                egress_bounded: true,
+                resource_bounded: true,
+                ephemeral: true,
+            },
+        };
+        let request = SourcePreparationRequest {
+            run_id: RunId("run-1".to_owned()),
+            run_kind: RunKind::Review,
+            event: probe_event(),
+            state: pending_state("abc123"),
+            workspace,
+            pr: pr(),
+            commit_sha: "abc123".to_owned(),
+        };
+        let preparation_root = source_preparation_root(&request);
+
+        let error = preparer
+            .prepare_source(request)
+            .expect_err("source preparation should fail");
+
+        assert!(matches!(error, CoreError::SourcePreparation(_)));
+        assert!(!preparation_root.exists());
     }
 
     #[test]
