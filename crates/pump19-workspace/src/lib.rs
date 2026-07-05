@@ -459,13 +459,7 @@ where
     /// cannot be removed.
     pub fn cleanup(&mut self, lease: &WorkspaceLease) -> Result<(), WorkspaceError> {
         self.runtime.remove(&lease.id)?;
-        if lease.root.exists() {
-            fs::remove_dir_all(&lease.root).map_err(|source| WorkspaceError::RemoveRoot {
-                path: lease.root.display().to_string(),
-                source,
-            })?;
-        }
-        Ok(())
+        remove_host_control_dir(&lease.root)
     }
 }
 
@@ -550,6 +544,7 @@ where
 
 fn remove_host_control_dir(path: &Path) -> Result<(), WorkspaceError> {
     if path.exists() {
+        make_tree_removable(path)?;
         fs::remove_dir_all(path).map_err(|source| WorkspaceError::RemoveRoot {
             path: path.display().to_string(),
             source,
@@ -566,6 +561,7 @@ fn clear_directory(path: &Path) -> Result<(), WorkspaceError> {
         })?;
         return Ok(());
     }
+    make_tree_removable(path)?;
     for entry in fs::read_dir(path).map_err(|source| WorkspaceError::RemoveRoot {
         path: path.display().to_string(),
         source,
@@ -581,6 +577,7 @@ fn clear_directory(path: &Path) -> Result<(), WorkspaceError> {
                 source,
             })?;
         if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            make_tree_removable(&entry_path)?;
             fs::remove_dir_all(&entry_path).map_err(|source| WorkspaceError::RemoveRoot {
                 path: entry_path.display().to_string(),
                 source,
@@ -593,6 +590,92 @@ fn clear_directory(path: &Path) -> Result<(), WorkspaceError> {
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn make_tree_removable(path: &Path) -> Result<(), WorkspaceError> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn visit(path: &Path) -> Result<(), WorkspaceError> {
+        let metadata = fs::symlink_metadata(path).map_err(|source| WorkspaceError::RemoveRoot {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+
+        let mut permissions = metadata.permissions();
+        let mode = permissions.mode();
+        if metadata.is_dir() {
+            // The review frame deliberately strips write bits from the prepared
+            // tree. Teardown owns this disposable host copy, so it reopens
+            // directories before descending and deleting them.
+            permissions.set_mode(mode | 0o700);
+            fs::set_permissions(path, permissions).map_err(|source| {
+                WorkspaceError::RemoveRoot {
+                    path: path.display().to_string(),
+                    source,
+                }
+            })?;
+            for entry in fs::read_dir(path).map_err(|source| WorkspaceError::RemoveRoot {
+                path: path.display().to_string(),
+                source,
+            })? {
+                let entry = entry.map_err(|source| WorkspaceError::RemoveRoot {
+                    path: path.display().to_string(),
+                    source,
+                })?;
+                visit(&entry.path())?;
+            }
+        } else {
+            permissions.set_mode(mode | 0o600);
+            fs::set_permissions(path, permissions).map_err(|source| {
+                WorkspaceError::RemoveRoot {
+                    path: path.display().to_string(),
+                    source,
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    visit(path)
+}
+
+#[cfg(not(unix))]
+fn make_tree_removable(path: &Path) -> Result<(), WorkspaceError> {
+    fn visit(path: &Path) -> Result<(), WorkspaceError> {
+        let metadata = fs::symlink_metadata(path).map_err(|source| WorkspaceError::RemoveRoot {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions).map_err(|source| WorkspaceError::RemoveRoot {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).map_err(|source| WorkspaceError::RemoveRoot {
+                path: path.display().to_string(),
+                source,
+            })? {
+                let entry = entry.map_err(|source| WorkspaceError::RemoveRoot {
+                    path: path.display().to_string(),
+                    source,
+                })?;
+                visit(&entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
+    visit(path)
 }
 
 fn copy_directory_contents(source: &Path, destination: &Path) -> Result<(), WorkspaceError> {
@@ -1068,6 +1151,48 @@ mod tests {
         let mut provider = provider(temp.path());
         let lease = provider.prepare(request()).expect("prepare");
         fs::write(lease.root.join("residue"), b"leftover").expect("write residue");
+
+        provider.cleanup(&lease).expect("cleanup");
+
+        assert!(!lease.root.exists());
+        assert_eq!(provider.runtime().removed.borrow().as_slice(), &[lease.id]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_removes_read_only_host_control_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new().expect("temp dir");
+        let mut provider = provider(temp.path());
+        let lease = provider.prepare(request()).expect("prepare");
+        fs::create_dir_all(lease.root.join("src/nested")).expect("create nested source");
+        fs::write(
+            lease.root.join("src/lib.rs"),
+            b"pub fn answer() -> u8 { 19 }\n",
+        )
+        .expect("write source");
+        fs::write(lease.root.join("src/nested/mod.rs"), b"pub mod inner;\n")
+            .expect("write nested source");
+        fs::set_permissions(
+            lease.root.join("src/nested/mod.rs"),
+            fs::Permissions::from_mode(0o444),
+        )
+        .expect("chmod nested file");
+        fs::set_permissions(
+            lease.root.join("src/lib.rs"),
+            fs::Permissions::from_mode(0o444),
+        )
+        .expect("chmod source file");
+        fs::set_permissions(
+            lease.root.join("src/nested"),
+            fs::Permissions::from_mode(0o555),
+        )
+        .expect("chmod nested dir");
+        fs::set_permissions(lease.root.join("src"), fs::Permissions::from_mode(0o555))
+            .expect("chmod src dir");
+        fs::set_permissions(&lease.root, fs::Permissions::from_mode(0o555))
+            .expect("chmod lease root");
 
         provider.cleanup(&lease).expect("cleanup");
 
