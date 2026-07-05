@@ -161,10 +161,21 @@ pub struct PromptTemplate {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowScript {
     pub id: String,
-    pub run_kind: RunKind,
+    pub slot: WorkflowSlot,
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: Extensions,
+}
+
+/// The stable slot a workflow script fills in the review run body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkflowSlot {
+    SpecialistFanout,
+    VerifyFindings,
+    AssembleReview,
+    BarCheck,
+    RepairOutput,
 }
 
 /// Prompt content loaded from a manifest plus existing judgement TOML files.
@@ -1470,7 +1481,7 @@ fn baseline_model_for_family(family: &str) -> String {
     }
 }
 
-/// Returns the compact baseline prompt templates for review, judge, and fix runs.
+/// Returns the compact baseline prompt templates for the current run loop.
 #[must_use]
 pub fn baseline_prompt_templates() -> Vec<PromptTemplate> {
     vec![
@@ -1493,6 +1504,42 @@ Use status \"failed\" for material correctness, safety, maintainability, contrac
 
 Review evidence:
 {{evidence}}"
+                .to_owned(),
+            extensions: Extensions::new(),
+        },
+        PromptTemplate {
+            id: "review-lead-mission".to_owned(),
+            run_kind: RunKind::Review,
+            template: "You are the lead Pump-19 review session.
+
+## Mission
+Produce one deep, independently verified review of the prepared pull request.
+The review is the product: favour a quiet, high-confidence result over volume.
+
+## Inputs
+- Run manifest: {{manifest_path}}
+- Prepared workspace tree: {{workspace_tree}}
+- Workflow shim: {{workflow_command}}
+- Command shim for PR-code execution: {{exec_command}}
+- Final output path: {{review_output_path}}
+
+Read the manifest before judging the change. It contains the changed files,
+changed-line map, selected briefs, prior loop history, and repository policy.
+
+## Review Bar
+Honour the subject repository's pinned guidance and selected briefs. For each
+suspected issue, read the changed file in full and enough related definitions or
+call sites to confirm the problem is real. Keep out linter-catchable issues,
+speculative claims, and pre-existing problems on untouched lines. Findings must
+anchor to changed lines and carry a priority, a one-line title, an explanation,
+and a drop-in suggestion when one exists.
+
+Use the provided workflows for specialist passes, finding verification, review
+assembly, bar checking, and schema repair. Verification should look for why a
+claim is wrong before accepting it. Record honest coverage: if meaningful changed
+code was not visited, say so instead of proposing convergence.
+
+Write the final review payload to {{review_output_path}}."
                 .to_owned(),
             extensions: Extensions::new(),
         },
@@ -1527,26 +1574,38 @@ Produce a fix description for the material findings. Return JSON matching the sc
     ]
 }
 
-/// Returns baseline workflow script declarations for review, judge, and fix runs.
+/// Returns baseline workflow script declarations for the lead-session workflow set.
 #[must_use]
 pub fn baseline_workflow_scripts() -> Vec<WorkflowScript> {
     vec![
         WorkflowScript {
-            id: "review-ensemble".to_owned(),
-            run_kind: RunKind::Review,
-            path: PathBuf::from("workflows/review.js"),
+            id: "specialist-fanout".to_owned(),
+            slot: WorkflowSlot::SpecialistFanout,
+            path: PathBuf::from("workflows/specialist-fanout.js"),
             extensions: Extensions::new(),
         },
         WorkflowScript {
-            id: "judge-ensemble".to_owned(),
-            run_kind: RunKind::Judge,
-            path: PathBuf::from("workflows/judge.js"),
+            id: "verify-findings".to_owned(),
+            slot: WorkflowSlot::VerifyFindings,
+            path: PathBuf::from("workflows/verify-findings.js"),
             extensions: Extensions::new(),
         },
         WorkflowScript {
-            id: "fix-ensemble".to_owned(),
-            run_kind: RunKind::Fix,
-            path: PathBuf::from("workflows/fix.js"),
+            id: "assemble-review".to_owned(),
+            slot: WorkflowSlot::AssembleReview,
+            path: PathBuf::from("workflows/assemble-review.js"),
+            extensions: Extensions::new(),
+        },
+        WorkflowScript {
+            id: "bar-check".to_owned(),
+            slot: WorkflowSlot::BarCheck,
+            path: PathBuf::from("workflows/bar-check.js"),
+            extensions: Extensions::new(),
+        },
+        WorkflowScript {
+            id: "repair-output".to_owned(),
+            slot: WorkflowSlot::RepairOutput,
+            path: PathBuf::from("workflows/repair-output.js"),
             extensions: Extensions::new(),
         },
     ]
@@ -1554,11 +1613,388 @@ pub fn baseline_workflow_scripts() -> Vec<WorkflowScript> {
 
 fn baseline_workflow_sources() -> Vec<(&'static str, &'static str)> {
     vec![
+        (
+            "workflows/specialist-fanout.js",
+            SPECIALIST_FANOUT_WORKFLOW_JS,
+        ),
+        ("workflows/verify-findings.js", VERIFY_FINDINGS_WORKFLOW_JS),
+        ("workflows/assemble-review.js", ASSEMBLE_REVIEW_WORKFLOW_JS),
+        ("workflows/bar-check.js", BAR_CHECK_WORKFLOW_JS),
+        ("workflows/repair-output.js", REPAIR_OUTPUT_WORKFLOW_JS),
+        // Compatibility scripts keep the judge-era loop runnable until the frame
+        // and core recomposition stages consume the slot-keyed workflow set.
         ("workflows/review.js", REVIEW_WORKFLOW_JS),
         ("workflows/judge.js", JUDGE_WORKFLOW_JS),
         ("workflows/fix.js", FIX_WORKFLOW_JS),
     ]
 }
+
+const SPECIALIST_FANOUT_WORKFLOW_JS: &str = r#"export const meta = {
+  name: "pump19-specialist-fanout",
+  description: "Run authorised Pump-19 specialist reviewers over selected briefs"
+};
+
+const findingSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["findings", "coverage_notes"],
+  properties: {
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "dedup_hint",
+          "title",
+          "explanation",
+          "suggestion",
+          "priority",
+          "locations",
+          "evidence_notes"
+        ],
+        properties: {
+          dedup_hint: { type: "string" },
+          title: { type: "string" },
+          explanation: { type: "string" },
+          suggestion: { type: "string" },
+          priority: { type: "string", enum: ["P0", "P1", "P2", "P3"] },
+          locations: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["path", "line"],
+              properties: {
+                path: { type: "string" },
+                line: { type: "integer" }
+              }
+            }
+          },
+          evidence_notes: { type: "array", items: { type: "string" } }
+        }
+      }
+    },
+    coverage_notes: { type: "string" }
+  }
+};
+
+function optionsFor(target, label) {
+  const options = {
+    engine: target.engine,
+    model: target.model,
+    label,
+    schema: findingSchema
+  };
+  if (args.agent_timeout_ms) options.timeoutMs = args.agent_timeout_ms;
+  return options;
+}
+
+function specialistPrompt(brief) {
+  return `You are a Pump-19 specialist reviewer.
+
+Review this pull request only for the brief below. Return JSON matching the schema.
+
+Hold a high confidence bar. Report a finding only when the issue is real,
+material to correctness, safety, maintainability, contract behaviour, or tests,
+and anchored to a changed line. Read the changed file in full and enough related
+definitions or call sites to confirm the claim. Leave out linter-catchable
+issues, speculative risks, and pre-existing problems on untouched lines.
+
+For each finding, provide a stable dedup hint, a one-line title, the concrete
+triggering behaviour, a drop-in suggestion when one exists or an empty string,
+priority P0/P1/P2/P3, changed-line locations, and concise evidence notes.
+
+<brief id="${brief.id}">
+${brief.prompt}
+</brief>`;
+}
+
+const calls = [];
+for (const brief of args.briefs || []) {
+  for (const reviewer of args.reviewers || []) {
+    calls.push({ brief, reviewer });
+  }
+}
+
+const outputs = await parallel(calls.map(({ brief, reviewer }) => () =>
+  agent(specialistPrompt(brief), optionsFor(reviewer, `${reviewer.agent_id}:${brief.id}`))
+));
+
+if (outputs.some((output) => output === null)) {
+  throw new Error("specialist output failed schema validation");
+}
+
+const reports = [];
+for (let i = 0; i < calls.length; i += 1) {
+  const { brief, reviewer } = calls[i];
+  const output = outputs[i];
+  reports.push({
+    brief_id: brief.id,
+    reviewer_agent_id: reviewer.agent_id,
+    model_family: reviewer.model_family,
+    findings: output.findings,
+    coverage_notes: output.coverage_notes
+  });
+}
+
+return { reports };
+"#;
+
+const VERIFY_FINDINGS_WORKFLOW_JS: &str = r#"export const meta = {
+  name: "pump19-verify-findings",
+  description: "Verify candidate Pump-19 findings with deterministic family pairing"
+};
+
+const verificationSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdict", "evidence", "rationale"],
+  properties: {
+    verdict: { type: "string", enum: ["verified", "rejected"] },
+    evidence: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["path", "line", "quote", "note"],
+        properties: {
+          path: { type: "string" },
+          line: { type: "integer" },
+          quote: { type: "string" },
+          note: { type: "string" }
+        }
+      }
+    },
+    rationale: { type: "string" }
+  }
+};
+
+function verifierFor(finding, verifiers) {
+  const producerFamily = finding.producing_model_family || finding.model_family || "";
+  const crossFamily = verifiers.find((verifier) =>
+    verifier.model_family && producerFamily && verifier.model_family !== producerFamily
+  );
+  if (crossFamily) {
+    return { target: crossFamily, family_split: "cross_family" };
+  }
+  const sameFamily = verifiers.find((verifier) => verifier.model_family === producerFamily);
+  if (sameFamily) {
+    return { target: sameFamily, family_split: "same_family" };
+  }
+  return { target: verifiers[0], family_split: "unknown" };
+}
+
+function optionsFor(target, label) {
+  const options = {
+    engine: target.engine,
+    model: target.model,
+    label,
+    schema: verificationSchema
+  };
+  if (args.agent_timeout_ms) options.timeoutMs = args.agent_timeout_ms;
+  return options;
+}
+
+function verificationPrompt(finding) {
+  return `Independently verify this Pump-19 review finding. Return JSON matching the schema.
+
+Your job is to look for why the claim is wrong before accepting it. Verify only
+when the issue is real, anchored to a changed line, supported by cited evidence,
+and worth a review reader's time. Reject speculative claims, linter-catchable
+issues, pre-existing problems on untouched lines, or findings whose evidence
+does not support the stated behaviour.
+
+<finding>
+${JSON.stringify(finding)}
+</finding>`;
+}
+
+const findings = args.findings || [];
+const verifiers = args.verifiers || [];
+if (findings.length > 0 && verifiers.length === 0) {
+  throw new Error("verify-findings requires at least one verifier target");
+}
+
+const calls = findings.map((finding) => {
+  const selection = verifierFor(finding, verifiers);
+  return { finding, verifier: selection.target, family_split: selection.family_split };
+});
+
+const outputs = await parallel(calls.map(({ finding, verifier }) => () =>
+  agent(verificationPrompt(finding), optionsFor(verifier, `${verifier.agent_id}:${finding.dedup_hint || finding.id}`))
+));
+
+if (outputs.some((output) => output === null)) {
+  throw new Error("verification output failed schema validation");
+}
+
+return {
+  verifications: outputs.map((output, index) => ({
+    finding_ref: calls[index].finding.dedup_hint || calls[index].finding.id || String(index),
+    verifier_agent_id: calls[index].verifier.agent_id,
+    family_split: calls[index].family_split,
+    verdict: output.verdict,
+    evidence: output.evidence,
+    rationale: output.rationale
+  }))
+};
+"#;
+
+const ASSEMBLE_REVIEW_WORKFLOW_JS: &str = r#"export const meta = {
+  name: "pump19-assemble-review",
+  description: "Compose the single posted Pump-19 review from verified findings"
+};
+
+const assembledReviewSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["body", "finding_order"],
+  properties: {
+    body: { type: "string" },
+    finding_order: { type: "array", items: { type: "string" } }
+  }
+};
+
+const assembler = args.assembler || (args.assemblers || [])[0];
+if (!assembler) {
+  throw new Error("assemble-review requires an assembler target");
+}
+
+const prompt = `Compose the single Pump-19 review body from the verified findings below.
+Return JSON matching the schema.
+
+Write concise, professional review prose. Lead with the highest-priority
+findings, keep each finding actionable, and preserve the supplied anchors and
+evidence. Do not invent new findings and do not include rejected or unverified
+claims. The Rust frame enforces anchor, changed-line, and deduplication gates;
+your job is readable review prose over the verified set.
+
+<verified_findings>
+${JSON.stringify(args.verified_findings || [])}
+</verified_findings>
+
+<manifest_summary>
+${args.manifest_summary || ""}
+</manifest_summary>`;
+
+const options = {
+  engine: assembler.engine,
+  model: assembler.model,
+  label: assembler.agent_id,
+  schema: assembledReviewSchema
+};
+if (args.agent_timeout_ms) options.timeoutMs = args.agent_timeout_ms;
+
+const result = await agent(prompt, options);
+if (result === null) {
+  throw new Error("assembled review failed schema validation");
+}
+
+return result;
+"#;
+
+const BAR_CHECK_WORKFLOW_JS: &str = r#"export const meta = {
+  name: "pump19-bar-check",
+  description: "Judge an assembled Pump-19 review against the review quality bar"
+};
+
+const barCheckSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["passed", "rationale"],
+  properties: {
+    passed: { type: "boolean" },
+    rationale: { type: "string" }
+  }
+};
+
+const checker = args.checker || (args.checkers || [])[0];
+if (!checker) {
+  throw new Error("bar-check requires a checker target");
+}
+
+const prompt = `Judge this assembled Pump-19 review against the quality bar.
+Return JSON matching the schema.
+
+Pass only if the review is quiet, high-confidence, grounded in the diff and
+coverage record, honours the selected briefs and subject guidance, and does not
+claim convergence when coverage is incomplete. Fail reviews that contain
+speculative findings, miss material changed-line issues apparent from the
+provided evidence, include unverified claims, or treat partial coverage as clean.
+
+<assembled_review>
+${args.assembled_review || ""}
+</assembled_review>
+
+<coverage>
+${JSON.stringify(args.coverage || {})}
+</coverage>
+
+<manifest_summary>
+${args.manifest_summary || ""}
+</manifest_summary>
+
+<diff_path>
+${args.diff_path || ""}
+</diff_path>`;
+
+const options = {
+  engine: checker.engine,
+  model: checker.model,
+  label: checker.agent_id,
+  schema: barCheckSchema
+};
+if (args.agent_timeout_ms) options.timeoutMs = args.agent_timeout_ms;
+
+const result = await agent(prompt, options);
+if (result === null) {
+  throw new Error("bar check failed schema validation");
+}
+
+return result;
+"#;
+
+const REPAIR_OUTPUT_WORKFLOW_JS: &str = r#"export const meta = {
+  name: "pump19-repair-output",
+  description: "Re-emit invalid Pump-19 agent output against the supplied schema"
+};
+
+const repairer = args.repairer || (args.repairers || [])[0];
+if (!repairer) {
+  throw new Error("repair-output requires a repairer target");
+}
+
+const prompt = `Repair this Pump-19 agent output so it validates against the supplied schema.
+
+Preserve the same substantive meaning. Change only structure, field names,
+missing required fields, enum spellings, and JSON formatting needed to satisfy
+the schema. If a required textual field has no source content, use an empty
+string rather than inventing a claim.
+
+<validation_errors>
+${JSON.stringify(args.errors || [])}
+</validation_errors>
+
+<invalid_output>
+${typeof args.invalid_output === "string" ? args.invalid_output : JSON.stringify(args.invalid_output)}
+</invalid_output>`;
+
+const options = {
+  engine: repairer.engine,
+  model: repairer.model,
+  label: repairer.agent_id,
+  schema: args.schema
+};
+if (args.agent_timeout_ms) options.timeoutMs = args.agent_timeout_ms;
+
+const result = await agent(prompt, options);
+if (result === null) {
+  throw new Error("repair output failed schema validation");
+}
+
+return result;
+"#;
 
 const REVIEW_WORKFLOW_JS: &str = r#"export const meta = {
   name: "pump19-review",
@@ -2041,7 +2477,7 @@ mod tests {
 
     use super::{
         AdaptationError, AdaptationSchemaVersion, MechanicalExecution, MechanicalPack,
-        MechanicalStep, MechanicalStepKind, TriggerPack, baseline_mechanical_pack,
+        MechanicalStep, MechanicalStepKind, TriggerPack, WorkflowSlot, baseline_mechanical_pack,
         baseline_trigger_pack, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
         write_baseline_deployment_assets, write_baseline_forgejo_commands,
         write_baseline_mechanical_pack, write_baseline_prompt_pack, write_baseline_trigger_pack,
@@ -2057,12 +2493,43 @@ mod tests {
         let pack = load_prompt_pack(&manifest)?;
 
         assert_eq!(pack.manifest.id, "baseline-review");
-        assert_eq!(pack.manifest.prompt_templates.len(), 3);
-        assert_eq!(pack.manifest.workflow_scripts.len(), 3);
+        assert_eq!(pack.manifest.prompt_templates.len(), 4);
+        assert_eq!(pack.manifest.workflow_scripts.len(), 5);
         assert_eq!(pack.briefs.len(), 3);
         let review_template = &pack.manifest.prompt_templates[0].template;
         assert!(review_template.contains("Return JSON matching the schema."));
         assert!(review_template.contains("Put the short reason in stdout"));
+        assert!(
+            pack.manifest
+                .prompt_templates
+                .iter()
+                .any(|template| template.id == "review-lead-mission"
+                    && template.template.contains("Workflow shim"))
+        );
+        let slots = pack
+            .manifest
+            .workflow_scripts
+            .iter()
+            .map(|script| script.slot)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            slots,
+            vec![
+                WorkflowSlot::SpecialistFanout,
+                WorkflowSlot::VerifyFindings,
+                WorkflowSlot::AssembleReview,
+                WorkflowSlot::BarCheck,
+                WorkflowSlot::RepairOutput,
+            ]
+        );
+        assert!(dir.path().join("workflows/specialist-fanout.js").exists());
+        assert!(dir.path().join("workflows/verify-findings.js").exists());
+        assert!(dir.path().join("workflows/assemble-review.js").exists());
+        assert!(dir.path().join("workflows/bar-check.js").exists());
+        assert!(dir.path().join("workflows/repair-output.js").exists());
+        assert!(dir.path().join("workflows/review.js").exists());
+        assert!(dir.path().join("workflows/judge.js").exists());
+        assert!(dir.path().join("workflows/fix.js").exists());
         assert!(!review_template.contains("PUMP19_JUDGEMENT"));
         Ok(())
     }

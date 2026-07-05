@@ -31,6 +31,41 @@ Review evidence:
 {{evidence}}"""
 
 [[prompt_templates]]
+id = "review-lead-mission"
+run_kind = "review"
+template = """
+You are the lead Pump-19 review session.
+
+## Mission
+Produce one deep, independently verified review of the prepared pull request.
+The review is the product: favour a quiet, high-confidence result over volume.
+
+## Inputs
+- Run manifest: {{manifest_path}}
+- Prepared workspace tree: {{workspace_tree}}
+- Workflow shim: {{workflow_command}}
+- Command shim for PR-code execution: {{exec_command}}
+- Final output path: {{review_output_path}}
+
+Read the manifest before judging the change. It contains the changed files,
+changed-line map, selected briefs, prior loop history, and repository policy.
+
+## Review Bar
+Honour the subject repository's pinned guidance and selected briefs. For each
+suspected issue, read the changed file in full and enough related definitions or
+call sites to confirm the problem is real. Keep out linter-catchable issues,
+speculative claims, and pre-existing problems on untouched lines. Findings must
+anchor to changed lines and carry a priority, a one-line title, an explanation,
+and a drop-in suggestion when one exists.
+
+Use the provided workflows for specialist passes, finding verification, review
+assembly, bar checking, and schema repair. Verification should look for why a
+claim is wrong before accepting it. Record honest coverage: if meaningful changed
+code was not visited, say so instead of proposing convergence.
+
+Write the final review payload to {{review_output_path}}."""
+
+[[prompt_templates]]
 id = "judge-materiality"
 run_kind = "judge"
 template = """
@@ -57,16 +92,26 @@ Produce a fix description for the material findings. Return JSON matching the sc
 </material_findings>"""
 
 [[workflow_scripts]]
-id = "review-ensemble"
-run_kind = "review"
-path = "workflows/review.js"
+id = "specialist-fanout"
+slot = "specialist-fanout"
+path = "workflows/specialist-fanout.js"
 
 [[workflow_scripts]]
-id = "judge-ensemble"
-run_kind = "judge"
-path = "workflows/judge.js"
+id = "verify-findings"
+slot = "verify-findings"
+path = "workflows/verify-findings.js"
 
 [[workflow_scripts]]
-id = "fix-ensemble"
-run_kind = "fix"
-path = "workflows/fix.js"
+id = "assemble-review"
+slot = "assemble-review"
+path = "workflows/assemble-review.js"
+
+[[workflow_scripts]]
+id = "bar-check"
+slot = "bar-check"
+path = "workflows/bar-check.js"
+
+[[workflow_scripts]]
+id = "repair-output"
+slot = "repair-output"
+path = "workflows/repair-output.js"
