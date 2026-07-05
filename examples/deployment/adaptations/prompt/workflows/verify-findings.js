@@ -29,17 +29,34 @@ const verificationSchema = {
 
 function verifierFor(finding, verifiers) {
   const producerFamily = finding.producing_model_family || finding.model_family || "";
-  const crossFamily = verifiers.find((verifier) =>
+  const producerAgentId =
+    finding.producing_agent_id ||
+    finding.producer_agent_id ||
+    finding.reviewer_agent_id ||
+    finding.agent_id ||
+    finding.provenance?.agent_id ||
+    "";
+  const eligibleVerifiers = verifiers.filter((verifier) =>
+    !producerAgentId || verifier.agent_id !== producerAgentId
+  );
+  if (eligibleVerifiers.length === 0) {
+    return {
+      target: null,
+      family_split: "unknown",
+      unavailable_reason: "no non-producer verifier target is available"
+    };
+  }
+  const crossFamily = eligibleVerifiers.find((verifier) =>
     verifier.model_family && producerFamily && verifier.model_family !== producerFamily
   );
   if (crossFamily) {
     return { target: crossFamily, family_split: "cross_family" };
   }
-  const sameFamily = verifiers.find((verifier) => verifier.model_family === producerFamily);
+  const sameFamily = eligibleVerifiers.find((verifier) => verifier.model_family === producerFamily);
   if (sameFamily) {
     return { target: sameFamily, family_split: "same_family" };
   }
-  return { target: verifiers[0], family_split: "unknown" };
+  return { target: eligibleVerifiers[0], family_split: "unknown" };
 }
 
 function optionsFor(target, label) {
@@ -75,10 +92,16 @@ if (findings.length > 0 && verifiers.length === 0) {
 
 const calls = findings.map((finding) => {
   const selection = verifierFor(finding, verifiers);
-  return { finding, verifier: selection.target, family_split: selection.family_split };
+  return {
+    finding,
+    verifier: selection.target,
+    family_split: selection.family_split,
+    unavailable_reason: selection.unavailable_reason || ""
+  };
 });
 
-const outputs = await parallel(calls.map(({ finding, verifier }) => () =>
+const runnableCalls = calls.filter((call) => call.verifier !== null);
+const outputs = await parallel(runnableCalls.map(({ finding, verifier }) => () =>
   agent(verificationPrompt(finding), optionsFor(verifier, `${verifier.agent_id}:${finding.dedup_hint || finding.id}`))
 ));
 
@@ -87,12 +110,25 @@ if (outputs.some((output) => output === null)) {
 }
 
 return {
-  verifications: outputs.map((output, index) => ({
-    finding_ref: calls[index].finding.dedup_hint || calls[index].finding.id || String(index),
-    verifier_agent_id: calls[index].verifier.agent_id,
-    family_split: calls[index].family_split,
-    verdict: output.verdict,
-    evidence: output.evidence,
-    rationale: output.rationale
-  }))
+  verifications: calls.map((call, index) => {
+    if (call.verifier === null) {
+      return {
+        finding_ref: call.finding.dedup_hint || call.finding.id || String(index),
+        verifier_agent_id: "",
+        family_split: call.family_split,
+        verdict: "rejected",
+        evidence: [],
+        rationale: call.unavailable_reason
+      };
+    }
+    const output = outputs.shift();
+    return {
+      finding_ref: call.finding.dedup_hint || call.finding.id || String(index),
+      verifier_agent_id: call.verifier.agent_id,
+      family_split: call.family_split,
+      verdict: output.verdict,
+      evidence: output.evidence,
+      rationale: output.rationale
+    };
+  })
 };
