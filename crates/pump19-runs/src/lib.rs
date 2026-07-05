@@ -34,8 +34,8 @@ use pump19_core::{
 };
 use pump19_engine::{
     EngineError, EngineKind, EngineProvenance, EngineRun, EngineSessionLauncher,
-    ExitClassification, LaunchBounds, LaunchSpec, RepairAttempt, RepairStrategy, TranscriptKind,
-    WriteAccess,
+    ExitClassification, LaunchBounds, LaunchSpec, ModelSource, RepairAttempt, RepairStrategy,
+    TranscriptKind, WriteAccess,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -221,8 +221,8 @@ pub trait FixRunBody {
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Patch>, RunBodyError>;
 
-    fn last_archive_path(&self) -> Option<String> {
-        None
+    fn last_session_archives(&self) -> Vec<SessionArchiveRef> {
+        Vec::new()
     }
 }
 
@@ -338,15 +338,6 @@ impl ReviewWorkflowSlot {
             _ => None,
         }
     }
-
-    const fn archive_role(self) -> AgentRole {
-        match self {
-            Self::SpecialistFanout => AgentRole::Reviewer,
-            Self::VerifyFindings => AgentRole::Verifier,
-            Self::AssembleReview | Self::RepairOutput => AgentRole::Lead,
-            Self::BarCheck => AgentRole::BarCheck,
-        }
-    }
 }
 
 /// One workflow script made available in a run directory.
@@ -395,13 +386,22 @@ pub struct LeadSessionFrameResult {
     pub verdict: ReviewVerdict,
     pub lead_provenance: EngineProvenance,
     pub lead_transcripts: Vec<PathBuf>,
-    pub workflow_archives: Vec<WorkflowArchiveDir>,
+    pub lead_agent_id: AgentId,
+    pub lead_role: AgentRole,
+    pub workflow_archives: Vec<WorkflowArchiveSessionRef>,
     pub repair_attempts: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkflowArchiveDir {
     pub slot: ReviewWorkflowSlot,
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowArchiveSessionRef {
+    pub role: AgentRole,
+    pub agent_id: AgentId,
     pub path: PathBuf,
 }
 
@@ -489,8 +489,8 @@ where
             .lead_transcripts
             .iter()
             .map(|path| SessionArchiveRef {
-                role: AgentRole::Lead,
-                agent_id: AgentId(format!("{}:lead", result.manifest.run_id.0)),
+                role: result.lead_role,
+                agent_id: result.lead_agent_id.clone(),
                 path: path.display().to_string(),
                 kind: SessionArchiveKind::LeadTranscript,
             })
@@ -500,17 +500,172 @@ where
                 .workflow_archives
                 .iter()
                 .map(|archive| SessionArchiveRef {
-                    role: archive.slot.archive_role(),
-                    agent_id: AgentId(format!(
-                        "{}:workflow:{}",
-                        result.manifest.run_id.0,
-                        archive.slot.as_str()
-                    )),
+                    role: archive.role,
+                    agent_id: archive.agent_id.clone(),
                     path: archive.path.display().to_string(),
                     kind: SessionArchiveKind::EnsembleRun,
                 }),
         );
         archives
+    }
+}
+
+/// Fix body backed by one writable lead engine session on the shared frame.
+#[derive(Clone, Debug)]
+pub struct LeadSessionFixBody<E> {
+    engine: E,
+    config: LeadSessionFrameConfig,
+    last_result: Option<LeadSessionFixResult>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeadSessionFixResult {
+    pub manifest: RunManifest,
+    pub manifest_path: PathBuf,
+    pub run_dir: PathBuf,
+    pub patch: Option<Patch>,
+    pub fixer_agent_id: AgentId,
+    pub fixer_transcripts: Vec<PathBuf>,
+}
+
+impl<E> LeadSessionFixBody<E> {
+    #[must_use]
+    pub const fn new(engine: E, config: LeadSessionFrameConfig) -> Self {
+        Self {
+            engine,
+            config,
+            last_result: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn last_result(&self) -> Option<&LeadSessionFixResult> {
+        self.last_result.as_ref()
+    }
+}
+
+impl<E> FixRunBody for LeadSessionFixBody<E>
+where
+    E: LeadEngineSession,
+{
+    fn run_fix(
+        &mut self,
+        request: &RunLaunchRequest,
+        workspace: &mut dyn WorkspaceExecutor,
+    ) -> Result<Vec<Patch>, RunBodyError> {
+        let _ = workspace;
+        self.last_result = None;
+        let material = material_findings(request);
+        if material.is_empty() {
+            return Ok(Vec::new());
+        }
+        let result = run_lead_session_fix(&mut self.engine, &self.config, request, &material)?;
+        let patches = result.patch.clone().into_iter().collect();
+        self.last_result = Some(result);
+        Ok(patches)
+    }
+
+    fn last_session_archives(&self) -> Vec<SessionArchiveRef> {
+        let Some(result) = &self.last_result else {
+            return Vec::new();
+        };
+        result
+            .fixer_transcripts
+            .iter()
+            .map(|path| SessionArchiveRef {
+                role: AgentRole::Fixer,
+                agent_id: result.fixer_agent_id.clone(),
+                path: path.display().to_string(),
+                kind: SessionArchiveKind::LeadTranscript,
+            })
+            .collect()
+    }
+}
+
+fn run_lead_session_fix(
+    engine: &mut dyn LeadEngineSession,
+    config: &LeadSessionFrameConfig,
+    request: &RunLaunchRequest,
+    material: &[&Finding],
+) -> Result<LeadSessionFixResult, RunBodyError> {
+    let review_evidence = load_review_evidence(&request.workspace.root)?;
+    let run_dir = prepare_run_directory(config, request, &review_evidence)?;
+    let manifest = build_run_manifest(config, request, &review_evidence);
+    let fixer = provenance_for_role(request, AgentRole::Fixer)?;
+    let fixer_target = expected_target(&fixer)?;
+    let snapshot_dir = run_dir.join("snapshot/pristine");
+    let snapshot_exclusions = snapshot_exclusions(&request.workspace.root, &config.run_root);
+    copy_dir_recursive_excluding(&request.workspace.root, &snapshot_dir, &snapshot_exclusions)?;
+    let manifest_path = run_dir.join("manifest.json");
+    write_json_file(&manifest_path, &manifest)?;
+    let subject = subject_for_repository(&config.subject_intents, &request.state.pr.repository);
+    write_mission(
+        &run_dir.join("mission.md"),
+        &config.mission_template,
+        &manifest,
+        &subject,
+        material,
+    )?;
+    write_workflow_shim(config, &run_dir)?;
+    write_exec_shim(&run_dir, &request.workspace.id)?;
+
+    let mut no_repair = NoRepairStrategy;
+    let mut lead_engine = config.lead_engine.clone();
+    lead_engine.write_access = WriteAccess::Writable;
+    let engine_run = engine.launch_lead(
+        &LaunchSpec {
+            engine: lead_engine.engine,
+            executable: lead_engine.executable,
+            working_dir: run_dir.clone(),
+            prompt_path: run_dir.join("mission.md"),
+            schema_path: None,
+            archive_dir: run_dir.join("archive/fix"),
+            requested_model: lead_engine.requested_model,
+            write_access: lead_engine.write_access,
+            bounds: lead_engine.bounds,
+            env: lead_engine.env,
+        },
+        &mut no_repair,
+    )?;
+    if engine_run.classification != ExitClassification::Success {
+        return Err(RunBodyError::LeadSession(format!(
+            "{:?}",
+            engine_run.classification
+        )));
+    }
+    reconcile_lead_provenance(&engine_run.provenance, &fixer_target)?;
+
+    let current_dir = run_dir.join("snapshot/current");
+    copy_dir_recursive_excluding(&request.workspace.root, &current_dir, &snapshot_exclusions)?;
+    let diff = diff_workspace_snapshot(&snapshot_dir, &current_dir)?;
+    let patch = (!diff.trim().is_empty()).then(|| {
+        patch_from_change(
+            request,
+            material.to_vec(),
+            PatchChange::UnifiedDiff { diff },
+            fixer.clone(),
+        )
+    });
+    Ok(LeadSessionFixResult {
+        manifest,
+        manifest_path,
+        run_dir,
+        patch,
+        fixer_agent_id: fixer.agent_id,
+        fixer_transcripts: engine_run
+            .transcripts
+            .into_iter()
+            .filter(|transcript| transcript.kind != TranscriptKind::FinalOutput)
+            .map(|transcript| transcript.path)
+            .collect(),
+    })
+}
+
+struct NoRepairStrategy;
+
+impl RepairStrategy for NoRepairStrategy {
+    fn repair(&mut self, _attempt: RepairAttempt) -> Result<Option<String>, EngineError> {
+        Ok(None)
     }
 }
 
@@ -523,6 +678,8 @@ fn run_lead_session_frame(
     let review_evidence = load_review_evidence(&request.workspace.root)?;
     let run_dir = prepare_run_directory(config, request, &review_evidence)?;
     let manifest = build_run_manifest(config, request, &review_evidence);
+    let lead = provenance_for_role(request, AgentRole::Lead)?;
+    let lead_target = expected_target(&lead)?;
     let manifest_path = run_dir.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
     let subject = subject_for_repository(&config.subject_intents, &request.state.pr.repository);
@@ -531,6 +688,7 @@ fn run_lead_session_frame(
         &config.mission_template,
         &manifest,
         &subject,
+        &[],
     )?;
     write_schema(&run_dir.join("schema/review-output.schema.json"))?;
     write_workflow_shim(config, &run_dir)?;
@@ -541,22 +699,9 @@ fn run_lead_session_frame(
         runner: workflow_runner,
         config,
         run_dir: run_dir.clone(),
+        repair_target: lead_target.clone(),
     };
-    let engine_run = engine.launch_lead(
-        &LaunchSpec {
-            engine: config.lead_engine.engine,
-            executable: config.lead_engine.executable.clone(),
-            working_dir: run_dir.clone(),
-            prompt_path: run_dir.join("mission.md"),
-            schema_path: Some(run_dir.join("schema/review-output.schema.json")),
-            archive_dir: run_dir.join("archive/lead"),
-            requested_model: config.lead_engine.requested_model.clone(),
-            write_access: config.lead_engine.write_access,
-            bounds: config.lead_engine.bounds.clone(),
-            env: config.lead_engine.env.clone(),
-        },
-        &mut repair,
-    )?;
+    let engine_run = engine.launch_lead(&review_lead_launch_spec(config, &run_dir), &mut repair)?;
 
     if engine_run.classification != ExitClassification::Success {
         return Err(RunBodyError::LeadSession(format!(
@@ -564,6 +709,7 @@ fn run_lead_session_frame(
             engine_run.classification
         )));
     }
+    reconcile_lead_provenance(&engine_run.provenance, &lead_target)?;
     let Some(output) = engine_run.output.clone() else {
         return Err(RunBodyError::LeadSession(
             "engine reported success without JSON output".to_owned(),
@@ -597,7 +743,7 @@ fn run_lead_session_frame(
             suppressed_count: suppressed_findings.len(),
         },
     )?;
-    let workflow_archives = workflow_archive_dirs(&run_dir)?;
+    let workflow_archives = reconcile_workflow_archives(request, &run_dir)?;
     Ok(LeadSessionFrameResult {
         manifest,
         manifest_path,
@@ -607,6 +753,8 @@ fn run_lead_session_frame(
         coverage,
         verdict,
         lead_provenance: engine_run.provenance,
+        lead_agent_id: lead.agent_id,
+        lead_role: lead.role,
         lead_transcripts: engine_run
             .transcripts
             .into_iter()
@@ -616,6 +764,21 @@ fn run_lead_session_frame(
         workflow_archives,
         repair_attempts: engine_run.repair_attempts + frame_repair_attempts,
     })
+}
+
+fn review_lead_launch_spec(config: &LeadSessionFrameConfig, run_dir: &Path) -> LaunchSpec {
+    LaunchSpec {
+        engine: config.lead_engine.engine,
+        executable: config.lead_engine.executable.clone(),
+        working_dir: run_dir.to_path_buf(),
+        prompt_path: run_dir.join("mission.md"),
+        schema_path: Some(run_dir.join("schema/review-output.schema.json")),
+        archive_dir: run_dir.join("archive/lead"),
+        requested_model: config.lead_engine.requested_model.clone(),
+        write_access: config.lead_engine.write_access,
+        bounds: config.lead_engine.bounds.clone(),
+        env: config.lead_engine.env.clone(),
+    }
 }
 
 fn parse_or_repair_lead_payload(
@@ -771,15 +934,23 @@ fn write_mission(
     template: &str,
     manifest: &RunManifest,
     subject: &SubjectIntent,
+    material_findings: &[&Finding],
 ) -> Result<(), RunBodyError> {
     let manifest_json =
         serde_json::to_string_pretty(manifest).map_err(RunBodyError::EnsembleJson)?;
+    let material_findings_json =
+        serde_json::to_string_pretty(material_findings).map_err(RunBodyError::EnsembleJson)?;
     let rendered = render_prompt_template(
         template,
         &[
             ("manifest_path", "manifest.json".to_owned()),
             ("manifest", manifest_json),
             ("run_id", manifest.run_id.0.clone()),
+            ("workspace_tree", manifest.workspace.tree_root.clone()),
+            ("workflow_command", "bin/pump19-workflow".to_owned()),
+            ("exec_command", "bin/pump19-exec".to_owned()),
+            ("review_output_path", "out/review.json".to_owned()),
+            ("material_findings", material_findings_json),
             ("subject_name", subject.name.clone()),
             ("subject_slug", subject.slug.clone()),
             ("subject_purpose", subject.purpose.clone()),
@@ -956,10 +1127,47 @@ fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<WorkflowArchiveDir>, RunB
         .collect()
 }
 
+fn reconcile_workflow_archives(
+    request: &RunLaunchRequest,
+    run_dir: &Path,
+) -> Result<Vec<WorkflowArchiveSessionRef>, RunBodyError> {
+    let mut refs = Vec::new();
+    for archive in workflow_archive_dirs(run_dir)? {
+        let expected = expected_targets_for_slot(request, archive.slot)?;
+        let evidence = reconcile_ensemble_archive(&archive.path, &expected)?;
+        for target in expected
+            .into_iter()
+            .filter(|target| evidence.agents.contains(&target.agent_id.0))
+        {
+            refs.push(WorkflowArchiveSessionRef {
+                role: target.role,
+                agent_id: target.agent_id,
+                path: archive.path.clone(),
+            });
+        }
+    }
+    Ok(refs)
+}
+
+fn expected_targets_for_slot(
+    request: &RunLaunchRequest,
+    slot: ReviewWorkflowSlot,
+) -> Result<Vec<ExpectedAgentTarget>, RunBodyError> {
+    match slot {
+        ReviewWorkflowSlot::SpecialistFanout => expected_targets(request, AgentRole::Reviewer),
+        ReviewWorkflowSlot::VerifyFindings => expected_targets(request, AgentRole::Verifier),
+        ReviewWorkflowSlot::AssembleReview | ReviewWorkflowSlot::RepairOutput => {
+            expected_targets(request, AgentRole::Lead)
+        }
+        ReviewWorkflowSlot::BarCheck => expected_targets(request, AgentRole::BarCheck),
+    }
+}
+
 struct WorkflowRepairStrategy<'a> {
     runner: &'a mut dyn EnsembleWorkflowRunner,
     config: &'a LeadSessionFrameConfig,
     run_dir: PathBuf,
+    repair_target: ExpectedAgentTarget,
 }
 
 impl RepairStrategy for WorkflowRepairStrategy<'_> {
@@ -983,8 +1191,9 @@ impl RepairStrategy for WorkflowRepairStrategy<'_> {
                 script: script.path.clone(),
                 args: json!({
                     "repairer": {
-                        "engine": format!("{:?}", attempt.engine).to_lowercase(),
-                        "agent_id": format!("repair-attempt-{}", attempt.attempt),
+                        "engine": self.repair_target.engine.clone(),
+                        "model": self.repair_target.model.clone(),
+                        "agent_id": self.repair_target.agent_id.0.clone(),
                     },
                     "schema": serde_json::from_str::<Value>(&schema).unwrap_or(Value::Null),
                     "invalid_output": attempt.invalid_output,
@@ -1524,6 +1733,200 @@ fn copy_file(source: &Path, target: &Path, action: &str) -> Result<(), RunBodyEr
         })
 }
 
+fn copy_dir_recursive_excluding(
+    source: &Path,
+    target: &Path,
+    exclude_roots: &[PathBuf],
+) -> Result<(), RunBodyError> {
+    create_dir(target, "create snapshot directory")?;
+    for entry in fs::read_dir(source).map_err(|source_error| RunBodyError::FrameIo {
+        action: format!("read snapshot source {}", source.display()),
+        source: source_error,
+    })? {
+        let entry = entry.map_err(|source_error| RunBodyError::FrameIo {
+            action: format!("read snapshot source {}", source.display()),
+            source: source_error,
+        })?;
+        let source_path = entry.path();
+        if exclude_roots.iter().any(|exclude_root| {
+            source_path == *exclude_root || source_path.starts_with(exclude_root)
+        }) {
+            continue;
+        }
+        let target_path = target.join(entry.file_name());
+        let metadata =
+            fs::symlink_metadata(&source_path).map_err(|source| RunBodyError::FrameIo {
+                action: format!("inspect snapshot source {}", source_path.display()),
+                source,
+            })?;
+        if metadata.is_dir() {
+            copy_dir_recursive_excluding(&source_path, &target_path, exclude_roots)?;
+        } else if metadata.file_type().is_symlink() {
+            copy_symlink(&source_path, &target_path)?;
+        } else {
+            copy_file(&source_path, &target_path, "copy snapshot file")?;
+        }
+    }
+    Ok(())
+}
+
+fn snapshot_exclusions(workspace_root: &Path, run_root: &Path) -> Vec<PathBuf> {
+    vec![run_root.to_path_buf(), workspace_root.join(".pump19")]
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, target: &Path) -> Result<(), RunBodyError> {
+    let link_target = fs::read_link(source).map_err(|source_error| RunBodyError::FrameIo {
+        action: format!("read snapshot symlink {}", source.display()),
+        source: source_error,
+    })?;
+    std::os::unix::fs::symlink(&link_target, target).map_err(|source_error| RunBodyError::FrameIo {
+        action: format!("copy snapshot symlink {}", source.display()),
+        source: source_error,
+    })
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(source: &Path, target: &Path) -> Result<(), RunBodyError> {
+    copy_file(source, target, "copy snapshot symlink target")
+}
+
+fn diff_workspace_snapshot(snapshot: &Path, workspace: &Path) -> Result<String, RunBodyError> {
+    let snapshot_parent = snapshot.parent().ok_or_else(|| RunBodyError::FrameIo {
+        action: format!("resolve snapshot parent {}", snapshot.display()),
+        source: std::io::Error::other("snapshot has no parent"),
+    })?;
+    let workspace_parent = workspace.parent().ok_or_else(|| RunBodyError::FrameIo {
+        action: format!("resolve workspace parent {}", workspace.display()),
+        source: std::io::Error::other("workspace has no parent"),
+    })?;
+    let snapshot_name = snapshot_file_name(snapshot)?;
+    let workspace_name = snapshot_file_name(workspace)?;
+    let output = Command::new("git")
+        .arg("diff")
+        .arg("--no-index")
+        .arg("--src-prefix=a/")
+        .arg("--dst-prefix=b/")
+        .arg(snapshot)
+        .arg(workspace)
+        .output()
+        .map_err(|source| RunBodyError::FrameIo {
+            action: "run git diff --no-index for fix snapshot".to_owned(),
+            source,
+        })?;
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return Err(RunBodyError::LeadSession(format!(
+            "git diff --no-index failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    let diff = String::from_utf8(output.stdout).map_err(|source| {
+        RunBodyError::LeadValidation(format!("git diff output was not UTF-8: {source}"))
+    })?;
+    Ok(normalise_no_index_diff(
+        &diff,
+        snapshot_parent,
+        &snapshot_name,
+        workspace_parent,
+        &workspace_name,
+    ))
+}
+
+fn snapshot_file_name(path: &Path) -> Result<String, RunBodyError> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| RunBodyError::FrameIo {
+            action: format!("resolve path name {}", path.display()),
+            source: std::io::Error::other("path has no UTF-8 file name"),
+        })
+}
+
+fn normalise_no_index_diff(
+    diff: &str,
+    snapshot_parent: &Path,
+    snapshot_name: &str,
+    workspace_parent: &Path,
+    workspace_name: &str,
+) -> String {
+    let snapshot_prefixes = diff_prefixes(snapshot_parent, snapshot_name, "a");
+    let workspace_prefixes = diff_prefixes(workspace_parent, workspace_name, "b");
+    let mut normalised = String::with_capacity(diff.len());
+    for line in diff.lines() {
+        let line = rewrite_diff_line(line, &snapshot_prefixes, &workspace_prefixes);
+        normalised.push_str(&line);
+        normalised.push('\n');
+    }
+    normalised
+}
+
+fn diff_prefixes(parent: &Path, name: &str, prefix: &str) -> Vec<String> {
+    let display = parent.join(name).display().to_string();
+    let trimmed = display.trim_start_matches('/').to_owned();
+    vec![
+        format!("{prefix}/{display}/"),
+        format!("{prefix}/{trimmed}/"),
+        format!("{prefix}/{name}/"),
+        format!("{display}/"),
+        format!("{trimmed}/"),
+        format!("{name}/"),
+    ]
+}
+
+fn rewrite_diff_line(
+    line: &str,
+    snapshot_prefixes: &[String],
+    workspace_prefixes: &[String],
+) -> String {
+    if let Some(rest) = line.strip_prefix("diff --git ") {
+        let mut parts = rest.split_whitespace();
+        if let (Some(left), Some(right)) = (parts.next(), parts.next()) {
+            return format!(
+                "diff --git a/{} b/{}",
+                strip_diff_path_any(left, &[snapshot_prefixes, workspace_prefixes]),
+                strip_diff_path_any(right, &[workspace_prefixes, snapshot_prefixes])
+            );
+        }
+    }
+    if let Some(path) = line.strip_prefix("--- ") {
+        if path == "/dev/null" {
+            return line.to_owned();
+        }
+        return format!("--- a/{}", strip_diff_path(path, snapshot_prefixes));
+    }
+    if let Some(path) = line.strip_prefix("+++ ") {
+        if path == "/dev/null" {
+            return line.to_owned();
+        }
+        return format!("+++ b/{}", strip_diff_path(path, workspace_prefixes));
+    }
+    line.to_owned()
+}
+
+fn strip_diff_path(path: &str, prefixes: &[String]) -> String {
+    prefixes
+        .iter()
+        .find_map(|prefix| path.strip_prefix(prefix).map(ToOwned::to_owned))
+        .unwrap_or_else(|| path.to_owned())
+}
+
+fn strip_diff_path_any(path: &str, prefix_sets: &[&[String]]) -> String {
+    strip_diff_path_any_inner(path, prefix_sets).unwrap_or_else(|| {
+        path.strip_prefix("a/")
+            .or_else(|| path.strip_prefix("b/"))
+            .and_then(|unprefixed| strip_diff_path_any_inner(unprefixed, prefix_sets))
+            .unwrap_or_else(|| path.to_owned())
+    })
+}
+
+fn strip_diff_path_any_inner(path: &str, prefix_sets: &[&[String]]) -> Option<String> {
+    prefix_sets.iter().find_map(|prefixes| {
+        prefixes
+            .iter()
+            .find_map(|prefix| path.strip_prefix(prefix).map(ToOwned::to_owned))
+    })
+}
+
 fn write_file(path: &Path, bytes: &[u8], action: &str) -> Result<(), RunBodyError> {
     fs::write(path, bytes).map_err(|source| RunBodyError::FrameIo {
         action: format!("{action} {}", path.display()),
@@ -1996,17 +2399,7 @@ where
                     coverage: None,
                     patches,
                     token_usage: None,
-                    session_archives: self
-                        .fix
-                        .last_archive_path()
-                        .map(|path| SessionArchiveRef {
-                            role: AgentRole::Fixer,
-                            agent_id: AgentId("fix-workflow".to_owned()),
-                            path,
-                            kind: SessionArchiveKind::EnsembleRun,
-                        })
-                        .into_iter()
-                        .collect(),
+                    session_archives: self.fix.last_session_archives(),
                     independence_degradations: Vec::new(),
                 }),
             RunKind::Finish => {
@@ -2134,74 +2527,6 @@ where
         reconcile_ensemble_archive(&output.archive_dir, &reviewers)?;
         self.last_archive_path = Some(output.archive_dir.display().to_string());
         serde_json::from_value::<Vec<Finding>>(output.value).map_err(RunBodyError::EnsembleJson)
-    }
-
-    fn last_archive_path(&self) -> Option<String> {
-        self.last_archive_path.clone()
-    }
-}
-
-/// Fix body backed by a host-side ensemble workflow.
-#[derive(Clone, Debug)]
-pub struct EnsembleFixBody<R> {
-    runner: R,
-    config: EnsembleWorkflowConfig,
-    last_archive_path: Option<String>,
-}
-
-impl<R> EnsembleFixBody<R> {
-    #[must_use]
-    pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
-        Self {
-            runner,
-            config,
-            last_archive_path: None,
-        }
-    }
-}
-
-impl<R> FixRunBody for EnsembleFixBody<R>
-where
-    R: EnsembleWorkflowRunner,
-{
-    fn run_fix(
-        &mut self,
-        request: &RunLaunchRequest,
-        workspace: &mut dyn WorkspaceExecutor,
-    ) -> Result<Vec<Patch>, RunBodyError> {
-        self.last_archive_path = None;
-        let _ = workspace;
-        let findings = material_findings(request);
-        if findings.is_empty() {
-            return Ok(Vec::new());
-        }
-        let targets = expected_targets(request, AgentRole::Fixer)?;
-        let provenance = provenance_for_role(request, AgentRole::Fixer)?;
-        let prompt = render_prompt_template(
-            &self.config.prompt_template,
-            &[
-                ("run_id", request.run_id.0.clone()),
-                ("commit_sha", request.state.commit_sha.clone()),
-                ("material_findings", prompt_json(&findings)?),
-            ],
-        )?;
-        let input = json!({
-            "run_id": request.run_id,
-            "pr": request.state.pr,
-            "commit_sha": request.state.commit_sha,
-            "workspace_root": request.workspace.root,
-            "fixers": targets,
-            "prompt": prompt,
-            "material_findings": findings,
-        });
-        let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
-        reconcile_ensemble_archive(&output.archive_dir, &targets)?;
-        self.last_archive_path = Some(output.archive_dir.display().to_string());
-        let change = serde_json::from_value::<PatchChange>(output.value)
-            .map_err(RunBodyError::EnsembleJson)?;
-        Ok(vec![patch_from_change(
-            request, findings, change, provenance,
-        )])
     }
 
     fn last_archive_path(&self) -> Option<String> {
@@ -2383,10 +2708,6 @@ fn render_prompt_template(
     Ok(rendered)
 }
 
-fn prompt_json(value: &impl Serialize) -> Result<String, RunBodyError> {
-    serde_json::to_string_pretty(value).map_err(RunBodyError::EnsembleJson)
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ReviewEvidence {
     workspace_root: PathBuf,
@@ -2548,6 +2869,66 @@ fn expected_target(provenance: &ModelProvenance) -> Result<ExpectedAgentTarget, 
         model_family: lineage.family.0.clone(),
         model: lineage.model.clone(),
     })
+}
+
+fn reconcile_lead_provenance(
+    actual: &EngineProvenance,
+    expected: &ExpectedAgentTarget,
+) -> Result<(), RunBodyError> {
+    let actual_engine = engine_kind_name(actual.engine);
+    if actual_engine != expected.engine {
+        return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+            "lead agent {} ran engine {} instead of {}",
+            expected.agent_id.0, actual_engine, expected.engine
+        )));
+    }
+
+    match actual.model_source {
+        ModelSource::ResolvedByCli => {
+            let actual_model = actual.resolved_model.as_ref().ok_or_else(|| {
+                RunBodyError::EnsembleArchiveMismatch(format!(
+                    "lead agent {} reported resolved model source without a resolved model",
+                    expected.agent_id.0
+                ))
+            })?;
+            if actual_model != &expected.model {
+                return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                    "lead agent {} resolved model {} instead of {}",
+                    expected.agent_id.0, actual_model, expected.model
+                )));
+            }
+        }
+        ModelSource::RequestedAsOperatorAssertion => {
+            let requested = actual.requested_model.as_ref().ok_or_else(|| {
+                RunBodyError::EnsembleArchiveMismatch(format!(
+                    "lead agent {} used operator-asserted provenance without a requested model",
+                    expected.agent_id.0
+                ))
+            })?;
+            if requested != &expected.model {
+                return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                    "lead agent {} requested model {} instead of {}",
+                    expected.agent_id.0, requested, expected.model
+                )));
+            }
+        }
+        ModelSource::NotReported => {
+            return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+                "lead agent {} did not report usable model provenance",
+                expected.agent_id.0
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+const fn engine_kind_name(engine: EngineKind) -> &'static str {
+    match engine {
+        EngineKind::Claude => "claude",
+        EngineKind::Codex => "codex",
+        EngineKind::Opencode => "opencode",
+    }
 }
 
 fn reconcile_ensemble_archive(
@@ -2926,6 +3307,8 @@ mod tests {
         output: Value,
         classification: ExitClassification,
         run_workflow_shim: bool,
+        edit_workspace_files: Vec<(String, String)>,
+        delete_workspace_files: Vec<String>,
         seen_specs: Vec<LaunchSpec>,
     }
 
@@ -2935,6 +3318,8 @@ mod tests {
                 output,
                 classification: ExitClassification::Success,
                 run_workflow_shim: false,
+                edit_workspace_files: Vec::new(),
+                delete_workspace_files: Vec::new(),
                 seen_specs: Vec::new(),
             }
         }
@@ -2966,11 +3351,35 @@ mod tests {
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
+            for (path, content) in &self.edit_workspace_files {
+                let manifest = serde_json::from_slice::<RunManifest>(
+                    &fs::read(spec.working_dir.join("manifest.json")).expect("read manifest"),
+                )
+                .expect("parse manifest");
+                let target = PathBuf::from(manifest.workspace.tree_root).join(path);
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).expect("create edited parent");
+                }
+                fs::write(target, content).expect("edit workspace file");
+            }
+            for path in &self.delete_workspace_files {
+                let manifest = serde_json::from_slice::<RunManifest>(
+                    &fs::read(spec.working_dir.join("manifest.json")).expect("read manifest"),
+                )
+                .expect("parse manifest");
+                let target = PathBuf::from(manifest.workspace.tree_root).join(path);
+                fs::remove_file(target).expect("delete workspace file");
+            }
             let stdout = spec.archive_dir.join("stdout.log");
             let stderr = spec.archive_dir.join("stderr.log");
             fs::create_dir_all(&spec.archive_dir).expect("create fake lead archive");
             fs::write(&stdout, self.output.to_string()).expect("write fake stdout");
             fs::write(&stderr, "").expect("write fake stderr");
+            let model_source = if spec.engine == EngineKind::Claude {
+                ModelSource::ResolvedByCli
+            } else {
+                ModelSource::RequestedAsOperatorAssertion
+            };
             Ok(EngineRun {
                 classification: self.classification.clone(),
                 output: (self.classification == ExitClassification::Success)
@@ -2981,7 +3390,7 @@ mod tests {
                     session_id: Some("lead-session".to_owned()),
                     requested_model: spec.requested_model.clone(),
                     resolved_model: spec.requested_model.clone(),
-                    model_source: ModelSource::RequestedAsOperatorAssertion,
+                    model_source,
                     usage: TokenUsage::default(),
                     cost_usd: None,
                 },
@@ -3203,7 +3612,30 @@ mod tests {
         let ensemble = root.join("ensemble.mjs");
         fs::write(
             &ensemble,
-            "import fs from \"node:fs\";\nfs.mkdirSync(process.env.ENSEMBLE_RUN_RECORD_DIR, { recursive: true });\nconsole.log(JSON.stringify({ repaired_output: \"{}\" }));\n",
+            r#"import fs from "node:fs";
+const root = process.env.ENSEMBLE_RUN_RECORD_DIR;
+const runDir = root + "/runs/cwd/test/test-run";
+fs.mkdirSync(runDir + "/agents/000001", { recursive: true });
+fs.writeFileSync(runDir + "/agents/000001/agent.json", JSON.stringify({
+  id: 1,
+  kind: "agent_record",
+  engine: "claude",
+  label: "lead-claude:repair",
+  model: "claude-2026",
+  resolved_model: "claude-2026",
+  status: "complete",
+  validated_output: { ok: true }
+}, null, 2));
+fs.writeFileSync(runDir + "/manifest.json", JSON.stringify({
+  kind: "run_manifest",
+  schema_version: 1,
+  status: "complete",
+  run_id: "cwd:test:test-run",
+  result: { archive_path: "result.json", exit_code: 0 },
+  files: [{ path: "agents/000001/agent.json", sha256: "fixture", size: 1 }]
+}, null, 2));
+console.log(JSON.stringify({ repaired_output: "{}" }));
+"#,
         )
         .expect("write fake ensemble");
         make_executable(&ensemble).expect("chmod fake ensemble");
@@ -3228,14 +3660,27 @@ mod tests {
             occasion: "every-pr".to_owned(),
             materiality_threshold: PriorityClass::P1,
             lead_engine: LeadEngineConfig {
-                engine: EngineKind::Codex,
-                executable: PathBuf::from("codex"),
-                requested_model: Some("gpt-5.5".to_owned()),
+                engine: EngineKind::Claude,
+                executable: PathBuf::from("claude"),
+                requested_model: Some("claude-2026".to_owned()),
                 bounds: LaunchBounds::new(Duration::from_secs(30)),
                 write_access: WriteAccess::ReadOnly,
                 env: BTreeMap::new(),
             },
         }
+    }
+
+    fn fix_frame_config(root: &Path) -> LeadSessionFrameConfig {
+        let mut config = lead_frame_config(root);
+        config.lead_engine = LeadEngineConfig {
+            engine: EngineKind::Codex,
+            executable: PathBuf::from("codex"),
+            requested_model: Some("codex-2026".to_owned()),
+            bounds: LaunchBounds::new(Duration::from_secs(30)),
+            write_access: WriteAccess::Writable,
+            env: BTreeMap::new(),
+        };
+        config
     }
 
     fn frame_request(root: &Path) -> RunLaunchRequest {
@@ -3260,6 +3705,29 @@ mod tests {
             root,
             "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,2 @@\n old\n+new unsafe line\n",
         );
+        req
+    }
+
+    fn fix_frame_request(root: &Path) -> RunLaunchRequest {
+        let mut req = request(
+            RunKind::Fix,
+            vec![provenance("fixer-codex", AgentRole::Fixer, "codex")],
+        );
+        req.run_id = RunId("lead-frame-fix".to_owned());
+        req.workspace.root = root.to_path_buf();
+        req.state.findings.push(finding());
+        req.state.extensions.insert(
+            EXT_FORGE_FACTS.to_owned(),
+            json!({
+                "base": {"sha": "base-sha"}
+            }),
+        );
+        write_review_diff(
+            root,
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+        );
+        fs::create_dir_all(root.join("src")).expect("create src");
+        fs::write(root.join("src/lib.rs"), "old\n").expect("write source");
         req
     }
 
@@ -3366,6 +3834,189 @@ mod tests {
                 suppressed: 0
             }
         );
+    }
+
+    #[test]
+    fn lead_frame_fix_derives_unified_diff_from_workspace_edit() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = fix_frame_request(root.path());
+        let mut engine = ScriptedLeadEngine::successful(json!({"status": "done"}));
+        engine
+            .edit_workspace_files
+            .push(("src/lib.rs".to_owned(), "fixed\n".to_owned()));
+        let config = fix_frame_config(root.path());
+        let mut body = LeadSessionFixBody::new(engine, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let patches = body
+            .run_fix(&req, &mut workspace)
+            .expect("fix frame succeeds");
+        let archives = body.last_session_archives();
+
+        assert_eq!(patches.len(), 1);
+        let diff = if let PatchChange::UnifiedDiff { diff } = &patches[0].change {
+            diff.as_str()
+        } else {
+            ""
+        };
+        assert!(!diff.is_empty());
+        assert!(diff.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(diff.contains("+fixed"));
+        assert!(!diff.contains("snapshot/pristine"));
+        assert!(!diff.contains("lead-frame-fix"));
+        assert_eq!(patches[0].provenance.agent_id.0, "fixer-codex");
+        assert_eq!(archives.len(), 2);
+        assert!(
+            archives
+                .iter()
+                .all(|archive| archive.role == AgentRole::Fixer
+                    && archive.agent_id == AgentId("fixer-codex".to_owned())
+                    && archive.kind == SessionArchiveKind::LeadTranscript)
+        );
+    }
+
+    #[test]
+    fn lead_frame_fix_reports_noop_when_workspace_is_unchanged() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = fix_frame_request(root.path());
+        let engine = ScriptedLeadEngine::successful(json!({"status": "done"}));
+        let config = fix_frame_config(root.path());
+        let mut body = LeadSessionFixBody::new(engine, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let patches = body
+            .run_fix(&req, &mut workspace)
+            .expect("unchanged fix frame succeeds");
+
+        assert!(patches.is_empty());
+        assert!(body.last_result().expect("fix result").patch.is_none());
+    }
+
+    #[test]
+    fn lead_frame_fails_when_lead_runtime_model_mismatches_authorised_target() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let mut config = lead_frame_config(root.path());
+        config.lead_engine.requested_model = Some("claude-other".to_owned());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("mismatched lead runtime model fails");
+
+        assert!(
+            error.to_string().contains(
+                "lead agent lead-claude resolved model claude-other instead of claude-2026"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn lead_frame_fix_excludes_pump19_control_tree_from_patch() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = fix_frame_request(root.path());
+        let mut engine = ScriptedLeadEngine::successful(json!({"status": "done"}));
+        engine
+            .edit_workspace_files
+            .push(("src/lib.rs".to_owned(), "fixed\n".to_owned()));
+        engine.edit_workspace_files.push((
+            ".pump19/review/scratch.txt".to_owned(),
+            "agent scratch\n".to_owned(),
+        ));
+        let config = fix_frame_config(root.path());
+        let mut body = LeadSessionFixBody::new(engine, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let patches = body
+            .run_fix(&req, &mut workspace)
+            .expect("fix frame succeeds");
+        let diff = if let PatchChange::UnifiedDiff { diff } = &patches[0].change {
+            diff.as_str()
+        } else {
+            ""
+        };
+
+        assert!(diff.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(diff.contains("+fixed"));
+        assert!(!diff.contains(".pump19"));
+        assert!(!diff.contains("agent scratch"));
+    }
+
+    #[test]
+    fn lead_frame_fix_diff_handles_added_and_deleted_files() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = fix_frame_request(root.path());
+        fs::write(root.path().join("src/remove.rs"), "delete me\n").expect("write deleted input");
+        let mut engine = ScriptedLeadEngine::successful(json!({"status": "done"}));
+        engine
+            .edit_workspace_files
+            .push(("src/added.rs".to_owned(), "new file\n".to_owned()));
+        engine
+            .delete_workspace_files
+            .push("src/remove.rs".to_owned());
+        let config = fix_frame_config(root.path());
+        let mut body = LeadSessionFixBody::new(engine, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let patches = body
+            .run_fix(&req, &mut workspace)
+            .expect("fix frame succeeds");
+        let diff = if let PatchChange::UnifiedDiff { diff } = &patches[0].change {
+            diff.as_str()
+        } else {
+            ""
+        };
+
+        assert!(diff.contains("diff --git a/src/added.rs b/src/added.rs"));
+        assert!(diff.contains("--- /dev/null"));
+        assert!(diff.contains("+++ b/src/added.rs"));
+        assert!(diff.contains("diff --git a/src/remove.rs b/src/remove.rs"));
+        assert!(diff.contains("--- a/src/remove.rs"));
+        assert!(diff.contains("+++ /dev/null"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lead_frame_review_makes_host_tree_read_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().expect("workspace root");
+        fs::create_dir_all(root.path().join("src")).expect("create src");
+        fs::write(root.path().join("src/lib.rs"), "old\n").expect("write source");
+        let req = frame_request(root.path());
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("review frame succeeds");
+        let mode = fs::metadata(root.path().join("src/lib.rs"))
+            .expect("source metadata")
+            .permissions()
+            .mode();
+
+        assert_eq!(mode & 0o222, 0);
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755))
+            .expect("restore root permissions");
+        fs::set_permissions(root.path().join("src"), fs::Permissions::from_mode(0o755))
+            .expect("restore src permissions");
+        fs::set_permissions(
+            root.path().join("src/lib.rs"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("restore file permissions");
     }
 
     #[test]
@@ -3587,7 +4238,10 @@ mod tests {
             }),
         );
         let engine = ScriptedLeadEngine::successful(output);
-        let runner = FakeEnsembleRunner::new(json!({"bar_check": bar_check()}), Vec::new());
+        let runner = FakeEnsembleRunner::new(
+            json!({"bar_check": bar_check()}),
+            vec![archive_agent("bar-codex", "codex")],
+        );
         let mut config = lead_frame_config(root.path());
         let bar_workflow = root.path().join("bar-check.js");
         fs::write(
@@ -3668,8 +4322,10 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
         let repaired_findings = json!([verified_finding("verifier-claude", 2)]);
         let repaired_verdict = json!({"verdict": "findings_posted"});
         let repaired = lead_payload(&repaired_findings, true, &repaired_verdict);
-        let runner =
-            FakeEnsembleRunner::new(json!({"repaired_output": repaired.to_string()}), Vec::new());
+        let runner = FakeEnsembleRunner::new(
+            json!({"repaired_output": repaired.to_string()}),
+            vec![archive_agent("lead-claude", "claude")],
+        );
         let mut config = lead_frame_config(root.path());
         config.lead_engine.executable = codex;
         let engine = EngineSessionLauncher::new(RepairPolicy { attempts: 1 });
@@ -3693,6 +4349,34 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
     }
 
     #[test]
+    fn lead_frame_fails_when_workflow_archive_contains_unauthorised_agent() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let repaired_findings = json!([verified_finding("verifier-claude", 2)]);
+        let repaired_verdict = json!({"verdict": "findings_posted"});
+        let repaired = lead_payload(&repaired_findings, true, &repaired_verdict);
+        let engine = ScriptedLeadEngine::successful(json!({
+            "findings": [],
+            "verdict_proposal": {"verdict": "findings_posted"}
+        }));
+        let runner = FakeEnsembleRunner::new(
+            json!({"repaired_output": repaired.to_string()}),
+            vec![archive_agent("intruder-codex", "codex")],
+        );
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let error = body
+            .run_review(&req, &mut workspace)
+            .expect_err("unauthorised workflow archive agent fails the run");
+
+        assert!(
+            matches!(error, RunBodyError::EnsembleArchiveMismatch(message) if message.contains("unauthorised agent"))
+        );
+    }
+
+    #[test]
     fn lead_frame_respects_zero_schema_repair_attempts() {
         let root = tempfile::tempdir().expect("workspace root");
         let mut req = frame_request(root.path());
@@ -3704,8 +4388,10 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
             "findings": [],
             "verdict_proposal": {"verdict": "findings_posted"}
         }));
-        let runner =
-            FakeEnsembleRunner::new(json!({"repaired_output": repaired.to_string()}), Vec::new());
+        let runner = FakeEnsembleRunner::new(
+            json!({"repaired_output": repaired.to_string()}),
+            vec![archive_agent("lead-claude", "claude")],
+        );
         let config = lead_frame_config(root.path());
         let mut body = LeadSessionReviewBody::new(engine, runner, config);
         let mut workspace = FakeWorkspace::default();
@@ -3729,8 +4415,10 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
             "findings": [],
             "verdict_proposal": {"verdict": "findings_posted"}
         }));
-        let runner =
-            FakeEnsembleRunner::new(json!({"repaired_output": repaired.to_string()}), Vec::new());
+        let runner = FakeEnsembleRunner::new(
+            json!({"repaired_output": repaired.to_string()}),
+            vec![archive_agent("lead-claude", "claude")],
+        );
         let config = lead_frame_config(root.path());
         let mut body = LeadSessionReviewBody::new(engine, runner, config);
         let mut workspace = FakeWorkspace::default();

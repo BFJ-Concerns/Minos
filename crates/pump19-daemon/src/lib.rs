@@ -43,10 +43,10 @@ use pump19_forge_forgejo::{
     PollingForgejoActivitySource,
 };
 use pump19_runs::{
-    AgentSessionPreparer, EnsembleFixBody, EnsembleWorkflowConfig, HostEnsembleWorkflowRunner,
-    LeadEngineConfig, LeadSessionFrameConfig, LeadSessionReviewBody, LeadWorkflowScript,
-    MergeReadiness, MergeReadinessCheck, Pump19RunLauncher, ReviewWorkflowSlot, RunBodyError,
-    SubjectIntent, VerifiedMergeGateFinishBody,
+    AgentSessionPreparer, HostEnsembleWorkflowRunner, LeadEngineConfig, LeadSessionFixBody,
+    LeadSessionFrameConfig, LeadSessionReviewBody, LeadWorkflowScript, MergeReadiness,
+    MergeReadinessCheck, Pump19RunLauncher, ReviewWorkflowSlot, RunBodyError, SubjectIntent,
+    VerifiedMergeGateFinishBody,
 };
 use pump19_workspace::{CommandRuntime, ContainerWorkspaceProvider, WorkspaceConfig};
 use serde::{Deserialize, Serialize};
@@ -481,7 +481,7 @@ type RuntimeCore = Core<
 type RuntimeLauncher = Pump19RunLauncher<
     DaemonSessionPreparer,
     LeadSessionReviewBody<EngineSessionLauncher, HostEnsembleWorkflowRunner>,
-    EnsembleFixBody<HostEnsembleWorkflowRunner>,
+    LeadSessionFixBody<EngineSessionLauncher>,
     VerifiedMergeGateFinishBody<Option<RuntimeMergeReadiness>>,
 >;
 
@@ -969,12 +969,28 @@ fn runtime_launcher(
         DaemonSessionPreparer,
         LeadSessionReviewBody::new(
             EngineSessionLauncher::default(),
-            runner.clone(),
-            lead_frame_config(ensemble, prompt_pack, prompt_root, subject_intents)?,
-        ),
-        EnsembleFixBody::new(
             runner,
-            workflow_config(ensemble, prompt_pack, prompt_root, RunKind::Fix)?,
+            lead_frame_config(
+                ensemble,
+                prompt_pack,
+                prompt_root,
+                subject_intents.clone(),
+                RunKind::Review,
+                LeadFrameEngineKind::Review,
+                WriteAccess::ReadOnly,
+            )?,
+        ),
+        LeadSessionFixBody::new(
+            EngineSessionLauncher::default(),
+            lead_frame_config(
+                ensemble,
+                prompt_pack,
+                prompt_root,
+                subject_intents,
+                RunKind::Fix,
+                LeadFrameEngineKind::Fix,
+                WriteAccess::Writable,
+            )?,
         ),
         VerifiedMergeGateFinishBody::new(merge_readiness),
     ))
@@ -1000,9 +1016,12 @@ fn lead_frame_config(
     prompt_pack: &PromptPack,
     prompt_root: &Path,
     subject_intents: BTreeMap<String, SubjectIntent>,
+    run_kind: RunKind,
+    lead_engine_kind: LeadFrameEngineKind,
+    write_access: WriteAccess,
 ) -> Result<LeadSessionFrameConfig, DaemonError> {
-    let mission = prompt_template(prompt_pack, RunKind::Review)
-        .ok_or(DaemonError::MissingPromptTemplate(RunKind::Review))?;
+    let mission = prompt_template(prompt_pack, run_kind)
+        .ok_or(DaemonError::MissingPromptTemplate(run_kind))?;
     let workflows = prompt_pack
         .manifest
         .workflow_scripts
@@ -1014,6 +1033,7 @@ fn lead_frame_config(
             })
         })
         .collect::<Result<Vec<_>, DaemonError>>()?;
+    let lead_engine = lead_engine_config(lead_engine_kind, write_access);
     Ok(LeadSessionFrameConfig {
         run_root: ensemble.archive_root.join("frame-runs"),
         node_program: ensemble.node_program.clone(),
@@ -1037,15 +1057,40 @@ fn lead_frame_config(
         subject_intents,
         occasion: "every-pr".to_owned(),
         materiality_threshold: pump19_contract::PriorityClass::P1,
-        lead_engine: LeadEngineConfig {
-            engine: EngineKind::Claude,
-            executable: PathBuf::from("claude"),
-            requested_model: Some("claude-sonnet-4-5".to_owned()),
-            bounds: LaunchBounds::new(Duration::from_mins(15)),
-            write_access: WriteAccess::ReadOnly,
-            env: BTreeMap::new(),
-        },
+        lead_engine,
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LeadFrameEngineKind {
+    Review,
+    Fix,
+}
+
+fn lead_engine_config(
+    lead_engine_kind: LeadFrameEngineKind,
+    write_access: WriteAccess,
+) -> LeadEngineConfig {
+    let (engine, executable, requested_model) = match lead_engine_kind {
+        LeadFrameEngineKind::Fix => (
+            EngineKind::Codex,
+            PathBuf::from("codex"),
+            Some("codex-stable".to_owned()),
+        ),
+        LeadFrameEngineKind::Review => (
+            EngineKind::Claude,
+            PathBuf::from("claude"),
+            Some("claude-sonnet-4-5".to_owned()),
+        ),
+    };
+    LeadEngineConfig {
+        engine,
+        executable,
+        requested_model,
+        bounds: LaunchBounds::new(Duration::from_mins(15)),
+        write_access,
+        env: BTreeMap::new(),
+    }
 }
 
 const fn review_workflow_slot(slot: WorkflowSlot) -> ReviewWorkflowSlot {
@@ -1270,46 +1315,6 @@ fn runtime_comment_formatter(
         .cloned()
         .ok_or(DaemonError::MissingCommentFormattingStep)?;
     Ok(RuntimeCommentFormatter { step, web_base_url })
-}
-
-fn workflow_config(
-    ensemble: &EnsembleDaemonConfig,
-    prompt_pack: &PromptPack,
-    prompt_root: &Path,
-    run_kind: RunKind,
-) -> Result<EnsembleWorkflowConfig, DaemonError> {
-    let script = legacy_workflow_script(prompt_root, run_kind)
-        .ok_or(DaemonError::MissingWorkflowScript(run_kind))?;
-    let template = prompt_template(prompt_pack, run_kind)
-        .ok_or(DaemonError::MissingPromptTemplate(run_kind))?;
-    Ok(EnsembleWorkflowConfig {
-        script,
-        archive_root: ensemble.archive_root.clone(),
-        timeout_ms: ensemble.timeout_ms,
-        prompt_template: template.template.clone(),
-        briefs: prompt_pack
-            .review_briefs
-            .iter()
-            .map(|brief| pump19_contract::ManifestBrief {
-                id: brief.id.clone(),
-                title: brief.title.clone(),
-                occasion: "every-pr".to_owned(),
-            })
-            .collect(),
-    })
-}
-
-fn legacy_workflow_script(prompt_root: &Path, run_kind: RunKind) -> Option<PathBuf> {
-    let file_name = match run_kind {
-        RunKind::Fix => "fix.js",
-        RunKind::Review | RunKind::Finish => return None,
-    };
-    let path = prompt_root.join("workflows").join(file_name);
-    if path.exists() {
-        return Some(path);
-    }
-    let legacy_root_path = prompt_root.join(file_name);
-    legacy_root_path.exists().then_some(legacy_root_path)
 }
 
 fn prompt_template(prompt_pack: &PromptPack, run_kind: RunKind) -> Option<&PromptTemplate> {
@@ -3047,6 +3052,9 @@ stop_after_quiet_polls = 1
             &prompt_pack,
             prompt_root,
             config.forgejo.repository_intents.clone(),
+            RunKind::Review,
+            LeadFrameEngineKind::Review,
+            WriteAccess::ReadOnly,
         )
         .expect("build lead frame config");
         let subject = frame
@@ -3748,7 +3756,7 @@ exit 1
                     WorkflowScript {
                         id: "fix".to_owned(),
                         slot: WorkflowSlot::RepairOutput,
-                        path: PathBuf::from("fix.js"),
+                        path: PathBuf::from("repair-output.js"),
                         extensions: Extensions::new(),
                     },
                 ],

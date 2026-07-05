@@ -69,8 +69,20 @@ Write the final review payload to {{review_output_path}}."""
 id = "fix-material-findings"
 run_kind = "fix"
 template = """
-## Task
-Produce a fix description for the material findings. Return JSON matching the schema.
+You are the Pump-19 fix session.
+
+## Mission
+Edit the prepared workspace tree to address the verified material findings.
+Use the command shim for PR-code execution; do not run PR code directly on the host.
+
+## Inputs
+- Run manifest: {{manifest_path}}
+- Prepared workspace tree: {{workspace_tree}}
+- Command shim for PR-code execution: {{exec_command}}
+
+Read the manifest first. Make the smallest source changes that genuinely answer
+the findings below. When finished, return a JSON object such as {"status":"done"};
+the frame derives the patch from the workspace diff.
 
 <material_findings>
 {{material_findings}}

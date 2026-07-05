@@ -1,356 +1,240 @@
 # Deploy `pump19-daemon`
 
-This guide starts from a fresh clone and gets the daemon to the point where it
-can watch a Forgejo repository through the command-backed Forgejo seam. Live
-Forgejo and live engine runs are deployment-time checks; the repository smoke
-checks prove config loading and loud startup failures.
+Updated: 2026-07-05
 
-## Prerequisites
+This guide deploys the command-backed Forgejo daemon shipped in this repository.
+The baseline deployment assets are examples, not hidden defaults: copy them,
+replace the placeholders, and point the daemon at the copy.
 
-- Rust toolchain compatible with the workspace `rust-version` in `Cargo.toml`.
-- `/usr/bin/podman`, because workspaces are created through the command runtime
-  in `pump19-workspace`.
-- Node.js and the ensemble launcher path you set in
-  `ensemble.launcher_path`.
-- Authenticated engine CLIs available to ensemble:
-  `codex` for the Codex/GPT-class reviewer, verifier and fixer, `claude` for
-  the Claude-class reviewer, and `opencode` for any configured additional
-  review or bar-check family.
-- `curl`, `jq`, `git` and `tar` for the generated baseline command scripts.
-  The example TOML points at the checked-in scripts under
-  `examples/deployment/commands/`. Custom commands are an override path, not a
-  prerequisite.
-- A workspace container image matching `workspace.image`. The image must contain
-  the toolchains needed by the repositories being reviewed, but it must not need
-  forge credentials.
-
-## Build The Daemon
+## Build
 
 ```sh
 cargo build --release -p pump19-daemon
 ```
 
-The binary is:
+The binary is `target/release/pump19-daemon`.
 
-```sh
-target/release/pump19-daemon
-```
+## Prerequisites
 
-## Configuration Set
+- Rust matching the workspace `rust-version`.
+- `/usr/bin/podman` for disposable review, fix and finish workspaces.
+- Node.js and an Ensemble launcher at `ensemble.launcher_path`.
+- Authenticated engine CLIs on the daemon host:
+  - `claude` for the shipped review lead.
+  - `codex` for the shipped fixer and the Codex reviewer/verifier/bar-check targets.
+  - `opencode` only when a copied pack adds OpenRouter/opencode breadth.
+- `curl`, `jq`, `git` and `tar` for the baseline Forgejo and preparation commands.
+- A workspace image named by `workspace.image`, containing subject-repository
+  build tools but no forge credentials.
 
-Use [`examples/deployment/pump19-daemon.toml`](../examples/deployment/pump19-daemon.toml)
-as the starting point. Paths in the TOML are resolved relative to the config file
-unless absolute.
+## Example Layout
 
-The example points at generated baseline deployment assets:
+Start from [`examples/deployment/pump19-daemon.toml`](../examples/deployment/pump19-daemon.toml).
+Paths in that file resolve relative to the TOML file unless absolute.
 
-- `adaptations/trigger/triggers.toml` composes review on PR open/update, fix
-  after verified material findings, review after a no-op fix, finish on the
-  configured label once the PR is converged, clean and current, and review after
-  a degraded review-bar check.
-- `adaptations/prompt/prompt-pack.toml` supplies the lead review prompt
-  templates, baseline review briefs and ensemble workflow scripts.
-- `adaptations/mechanical/mechanical.toml` declares the source preparation command
-  `commands/pump19-prepare-source` and the merge-readiness command
-  `commands/pump19-merge-readiness`. The preparation command receives
-  source-preparation JSON on stdin and returns a `.git`-free tree archived from
-  the recorded revision.
-- `commands/pump19-forgejo-poll` reads open pull requests from Forgejo REST and
-  emits the daemon's polling snapshot JSON, including the PR author's login.
-- `commands/pump19-forgejo-operation` performs the credentialed write side:
-  post/update/resolve comments, apply labels, merge PRs, and append fix commits
-  to the PR head branch with a non-force `git push`.
-- `commands/pump19-merge-readiness` runs during finish runs, before the core
-  merges: it re-reads the live PR (verdict `not_ready` on a moved head or
-  forge-reported conflict), probes a merge against the live base tip, and runs
-  build/test checks. Untrusted PR code never executes on the host: checks run
-  in a throwaway, credential-free container (`podman run --rm`, image from
-  `PUMP19_MERGE_READINESS_IMAGE`, default `localhost/pump19-workspace:stable`)
-  with `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`,
-  process/memory/CPU caps, and a bounded `/tmp`. Network access deliberately
-  remains available so normal build and test commands can fetch dependencies;
-  disposability, resource bounds and absence of forge credentials are the
-  containment boundary. The default check command is toolchain-detected
-  (`cargo build`/`cargo test` for Cargo workspaces, `npm ci` and `npm test` for
-  Node packages, nothing otherwise); override it with `--check-command`.
-  `PUMP19_MERGE_READINESS_TIMEOUT` (seconds, default 3600) bounds the checks.
-  Removing the step from the mechanical pack leaves the contract merge gate
-  alone in charge, as before.
+The example uses these checked-in assets:
 
-Relative command paths containing `/` are resolved relative to the daemon config
-file, just like the pack and state paths. Bare command names still resolve
-through `PATH`.
+- `adaptations/trigger/triggers.toml`: the five-rule trigger pack.
+- `adaptations/prompt/prompt-pack.toml`: contract `2.0` prompt pack with
+  mission prompts, markdown review briefs and slot-keyed workflow scripts.
+- `adaptations/mechanical/mechanical.toml`: source preparation, merge readiness
+  and comment formatting commands.
+- `commands/pump19-forgejo-poll`: Forgejo polling snapshot command.
+- `commands/pump19-forgejo-operation`: credentialed comment, label, merge and
+  fix-push command.
+- `commands/pump19-prepare-source`: git archive preparation command.
+- `commands/pump19-merge-readiness`: finish-run build/test check.
+- `commands/pump19-format-comments`: finding comment body renderer.
 
-Operational failures are operator-facing, not PR-facing. The daemon appends
-run failures, launch refusals and ceiling trips to
-`<state_root>/operator.log.jsonl` as JSON lines with a timestamp, PR, run kind,
-pass, commit and error/refusal detail. The file is append-only from Pump-19's
-point of view: it survives daemon restarts, can be tailed or grepped directly on
-the box, and is deliberately not a visibility knob. Journald/stdout events remain
-useful live noise, but the JSONL file is the deployment-owned permanent record.
-
-The generated packs carry the current contract version from `pump19-contract`
-(`2.0` at this revision).
-
-Regenerate the baseline deployment assets with:
+Regenerate the baseline assets after changing their generator:
 
 ```sh
 cargo run -p pump19-adaptations --example write_baseline_packs -- examples/deployment
 ```
 
-The normal test suite checks that regenerating produces the checked-in pack and
-command files. Organisations override baselines by copying the generated pack or
-command directories, editing the copy, and pointing `trigger_pack`,
-`prompt_pack`, `mechanical_pack`, `forgejo.poll_command.program` or
-`forgejo.operation_command.program` at the replacement. The core reads the
-contracts, not the directory names.
+The test suite checks that regenerated assets match the checked-in examples.
 
-## Fill Operator Values
+## Contract 2.0 Flow
 
-Replace every `REPLACE_*` value before starting the daemon:
+The shipped packs and daemon use contract `2.0`. The judge/decision vocabulary is
+gone. A review run now records:
 
-- `forgejo.repositories`: repository slugs in the form the polling command
-  expects, for example `acme/widgets`.
-- `--base-url`: the Forgejo instance URL consumed by the baseline command
-  arguments.
+- candidate findings with `title`, `explanation`, optional `suggestion`,
+  `priority`, producer provenance and per-finding verification;
+- a `CoverageRecord` with the lead session's visited/unvisited account;
+- one `ReviewVerdict`: `Converged`, `FindingsPosted`, `StandingFindings`,
+  `BarFailed`, `BarCheckDegraded` or `PartialCoverage`;
+- typed `session_archives` for the lead transcript and every workflow agent
+  session that actually ran.
 
-Repository enrolment is entirely pump-side: putting a slug in
-`forgejo.repositories` is the opt-in. The reviewed repository does not need a
-Pump-19 file in its tree.
+Publication is derived from contract state. Only verified material findings post
+to the PR. Material means `verification.status == verified` and priority at or
+above the repository policy threshold; the shipped daemon policy is P0-P1. A
+review can converge only when there are zero verified material findings, coverage
+is complete, and the review-bar check passed.
 
-Optional per-repository subject intent can be supplied beside the poll list, keyed
-by the same `owner/repository` slug:
+## Trigger Pack
 
-```toml
-[forgejo.repository_intents."acme/widgets"]
-name = "Acme Widgets"
-slug = "widgets"
-purpose = "Review changes to the widget service for correctness and maintainability."
-```
+The baseline trigger pack contains five independent rules:
 
-When a repository has no entry, Pump-19 renders review prompts with neutral
-subject text derived from the repository slug. Absence is the normal case: it does
-not fail the run and does not produce operator-log noise.
+| Rule | Fires | Run |
+|------|-------|-----|
+| `review-on-pr-change` | PR opened or updated, and ready | Review |
+| `fix-after-material-review` | Successful review with verified material findings | Fix |
+| `review-after-noop-fix` | Fix run completed with `no_op` | Review |
+| `finish-on-label` | Finish label applied, state converged, clean and current | Finish |
+| `review-after-degraded-bar-check` | Review completed with `BarCheckDegraded` | Review |
 
-The example command env entries use `env:FORGEJO_TOKEN`, which means the daemon
-copies `FORGEJO_TOKEN` from its own environment into the command environment
-after placeholder validation. `commands/pump19-prepare-source` also reads
-`PUMP19_GIT_BASE_URL` from the daemon environment unless you override it with
-`--git-base-url`.
+Runs do not call each other directly. The loop emerges from these rules and the
+per-PR run state.
 
-If any `REPLACE_*` marker remains, startup fails before loading packs or polling:
+## Prompt Pack
 
-```text
-unfilled placeholder in daemon config examples/deployment/pump19-daemon.toml at forgejo.repositories[0]: "REPLACE_WITH_OWNER/REPOSITORY"; expected replace every REPLACE_* marker before starting the daemon
-```
+The prompt pack has one manifest, one brief directory and five workflow slots.
 
-## Forgejo Token
+`prompt-pack.toml` declares:
 
-Forgejo scoped tokens group permissions by route. Pump-19's command adapters need
-the token to cover:
+- `review-lead-mission`, the lead review session mission.
+- `fix-material-findings`, the writable fix-session mission.
+- baseline markdown briefs in `briefs/`.
+- workflow scripts by slot:
+  `specialist-fanout`, `verify-findings`, `assemble-review`, `bar-check`,
+  `repair-output`.
 
-- `read:repository` to read repository and pull-request state.
-- `write:repository` to push non-force fix commits to PR head branches and, when
-  finish policy allows it, merge PRs.
-- `write:issue` to create/update/resolve PR comments and apply labels.
-
-Limit the token to the repositories Pump-19 watches when your Forgejo instance
-supports repository-scoped tokens. Keep the token in the daemon environment and
-inherit it with `env:FORGEJO_TOKEN`; do not put a token literal in TOML, bake it
-into the workspace image, or store it in adaptation packs. Forgejo's own scope
-reference is at
-<https://forgejo.org/docs/latest/user/token-scope/>.
-
-The baseline scripts avoid passing the token in `curl` or `git` argv. If you
-replace them, keep the same property: secrets must not be visible in process
-arguments.
-
-## Forgejo Command Contracts
-
-The baseline scripts use Forgejo's REST API under `/api/v1`, authenticate with an
-`Authorization: token ...` header sourced from `FORGEJO_TOKEN`, and expect
-repository slugs such as `acme/widgets`. Forgejo's API authentication guide is at
-<https://forgejo.org/docs/latest/user/api-usage/>.
-
-The polling command is executed as:
+The review frame materialises a run directory under `ensemble.archive_root`:
 
 ```text
-<program> <configured args> <repository>
+frame-runs/<run-id>/
+  manifest.json
+  mission.md
+  bin/pump19-workflow
+  bin/pump19-exec
+  workflows/
+  out/
+  archive/
 ```
 
-It writes a JSON array of `ForgejoPullRequestSnapshot` objects to stdout. The
-daemon uses these fields:
+`pump19-workflow <slot> <input.json>` runs only a configured slot script and
+records the Ensemble archive under the run archive. `pump19-exec <cmd...>` is
+the sanctioned command an agent uses for PR-code execution inside the workspace
+container.
 
-```json
-{
-  "repository": "acme/widgets",
-  "id": "42",
-  "title": "Ready for review",
-  "draft": false,
-  "head_sha": "abc123",
-  "base_sha": "main123",
-  "branch_currency": "current",
-  "cleanliness": "dirty",
-  "mergeability": "unknown",
-  "labels": [],
-  "actor_permissions": []
-}
-```
+## Review And Fix Bodies
 
-The baseline poll command fetches open PRs and issue timeline entries for the
-configured finish label. It also carries optional draft evidence from Forgejo's
-native draft flag and PR title; if neither signal is present, the daemon treats
-the PR as ready. It marks a snapshot `clean` when the finish label is present,
-records every finish-label actor the timeline exposes, and queries each actor's
-repository permission. `write`, `admin`, `administrator` and `owner` permission
-values produce `can_apply_finish_label = true` and `can_merge = true`; other
-values fail closed. Forgejo documents that write, admin and owner
-collaborators can merge PRs in its repository permissions guide:
-<https://forgejo.org/docs/latest/user/repo-permissions/>.
+Review runs use `LeadSessionReviewBody`:
 
-The poll command enriches each list entry with the PR detail endpoint before it
-derives branch currency and mergeability, and retries that detail read briefly
-while Forgejo is still returning lazy mergeability or missing merge-base
-evidence. It marks branch currency `current` when Forgejo reports a merge base
-equal to the PR base SHA. If Forgejo still cannot expose the needed field, the
-script uses the contract's conservative `unknown` value.
+- prepare a manifest from the PR diff, changed-line map, base-pinned governing
+  content, selected briefs, loop history and policy;
+- write the run directory and shims;
+- make the host lease tree read-only;
+- launch the Claude-class lead session;
+- repair invalid review output through the `repair-output` workflow within the
+  configured attempt budget;
+- gate findings on schema validity, changed-line anchors, deduplication,
+  verification and no-self-verification;
+- reconcile workflow archives to authorised targets before publication.
 
-The operation command receives one JSON object on stdin and returns:
+Fix runs use `LeadSessionFixBody`:
 
-```json
-{ "operation_id": "forge-operation-id", "new_head_sha": null }
-```
+- keep the host lease tree writable;
+- snapshot the pristine prepared tree before the fixer starts;
+- launch the Codex-class fixer from the authorised `fixer-codex` target;
+- compare pristine and post-fix snapshots with `git diff --no-index`;
+- return a `PatchChange::UnifiedDiff` for the existing credentialed fix-push path.
 
-The `operation` tag is one of `post_comment`, `update_comment`,
-`resolve_comment`, `apply_label`, `merge`, or `push_fix_commits`. Every operation
-includes `metadata` with the observed head SHA, an optional expected head SHA, an
-idempotency key and the core's authorisation reason. Comment operations and fix
-pushes carry expected-head guards; for `push_fix_commits`, the command also
-receives top-level `expected_head_sha` and the commits to append. The command must
-reject stale heads instead of force-pushing or publishing against an old PR head.
+The fixer never receives forge credentials. The core-authorised Forgejo operation
+path applies the diff, creates attributed commits with provenance trailers and
+pushes normally to the PR head branch.
 
-For the baseline operation command, guarded comment operations and fix pushes
-first re-read the PR head. If it has moved, the command exits non-zero and writes
-the contract error shape to stderr:
+## Containment
 
-```json
-{
-  "error": "head_moved",
-  "expected_head_sha": "abc123",
-  "actual_head_sha": "new456"
-}
-```
+The workspace boundary is credential-free, disposable and resource-bounded. The
+workspace network is enabled so real builds can fetch dependencies; egress is
+audited through session transcripts and `pump19-exec` use, not a packet proxy.
 
-The daemon preserves that as the typed `head_moved` publication refusal in run
-state. Other command failures are treated as transport failures and left noisy.
+Review agents run on the host and reach into the prepared tree, but the host
+tree is made read-only before the review lead starts. Toolchain execution uses
+the container copy through `pump19-exec`.
 
-The baseline fix-push path clones the repository, checks out the PR head branch,
-applies `unified_diff` patch changes when present, creates empty commits for
-description-only changes, and pushes `HEAD:<pr-head-ref>` without force. Forked
-or heavily customised Forgejo workflows may need a site-specific override
-script; keep the JSON contract unchanged.
+Fix and finish runs may write the host lease tree. Forge writes remain outside
+the workspace and happen only through the core-authorised credentialed operation
+step.
 
-The source preparation command receives one JSON object on stdin with the
-daemon's `repository`, `commit_sha`, `preparation_root` and run-state context. It
-clones `$PUMP19_GIT_BASE_URL/<repository>.git`, fetches the recorded hexadecimal
-commit, archives it into `<preparation_root>/prepared-tree`, and returns:
+## Forgejo Commands
 
-```json
-{ "tree": "/path/to/prepared-tree", "revision": "abc123..." }
-```
+Set `FORGEJO_TOKEN` in the daemon environment and inherit it with
+`env:FORGEJO_TOKEN`. The baseline scripts avoid passing the token in argv.
 
-The archived tree deliberately contains no `.git` directory; review workspaces
-receive source, not forge credentials or repository metadata.
+The token needs enough Forgejo scope to:
 
-## Optional Knobs
+- read repositories and pull requests;
+- post, update and resolve PR comments;
+- apply the finish label;
+- push fix commits to watched PR head branches;
+- merge PRs when the finish policy allows it.
 
-`forgejo.core_applies_finish_label_on_convergence` defaults to `false`. Keep it
-false for a human merge gate: a person applies `finish_label` after convergence.
-Set it true only when the repository policy explicitly accepts auto-merge of
-agent-authored code.
+The poll command emits normalised PR snapshots. The operation command receives a
+single JSON object on stdin with an `operation` tag:
 
-`forgejo.web_base_url` is the forge web root (for example
-`https://forgejo.example`) used to render file permalinks in finding comments,
-pinned to the reviewed head SHA. Leave it unset to render plain `path:line`
-code spans instead.
+- `post_comment`
+- `update_comment`
+- `resolve_comment`
+- `apply_label`
+- `merge`
+- `push_fix_commits`
 
-Trigger rules can restrict runs to specific PR authors with the
-`pr_authored_by` criterion. Wrap the baseline review rule's criteria in a
-site-pack copy:
+Comment operations and fix pushes are expected-head guarded. If the PR head has
+moved, the operation command returns the typed `head_moved` error shape and the
+core records a publication refusal instead of writing to a stale head.
 
-```toml
-[rules.criteria]
-kind = "all"
+## Mechanical Commands
 
-[[rules.criteria.criteria]]
-kind = "any"
+`pump19-prepare-source` clones from `PUMP19_GIT_BASE_URL`, archives the recorded
+head commit into a `.git`-free prepared tree, and extracts review-governing
+content from the PR base ref into `.pump19/review/governing/`.
 
-[[rules.criteria.criteria.criteria]]
-kind = "event"
+`pump19-merge-readiness` is optional but enabled in the example pack. Finish runs
+call it after the contract merge gate passes. It checks live head currency,
+probes a merge against the current base and runs detected build/test commands in
+a throwaway credential-free container. Remove the step from a copied mechanical
+pack if the contract merge gate alone should decide finish readiness.
 
-[rules.criteria.criteria.criteria.event]
-event = "pull_request_opened"
+`pump19-format-comments` receives the finding, verification and forge facts, then
+returns the comment body. The core still owns whether that body may be posted.
 
-[[rules.criteria.criteria.criteria]]
-kind = "event"
+## Operator Values
 
-[rules.criteria.criteria.criteria.event]
-event = "pull_request_updated"
+Replace every `REPLACE_*` marker before startup. Startup fails before polling if
+any marker remains.
 
-[[rules.criteria.criteria]]
-kind = "pr_authored_by"
-any_of = ["some-login", "another-login"]
-```
+Common values:
 
-The author comes from the poll command's `author_login` snapshot field; when
-the forge does not expose an author the criterion fails closed and the rule
-does not fire.
+- `forgejo.repositories`: watched repository slugs such as `acme/widgets`.
+- `--base-url`: Forgejo web/API root for the baseline poll and operation scripts.
+- `PUMP19_GIT_BASE_URL`: clone base URL used by source preparation.
+- `forgejo.finish_label`: label that authorises finish runs.
+- `forgejo.web_base_url`: optional web root for file permalinks in comments.
+- `forgejo.core_applies_finish_label_on_convergence`: false by default; set true
+  only for repositories that explicitly accept agent auto-merge.
 
-`loop_control.poll_interval_ms` defaults to `5000`.
-`loop_control.stop_after_quiet_polls` defaults to unset, which means the daemon
-keeps polling until SIGINT or SIGTERM. Set it for smoke runs.
+Optional repository intent lives in the daemon TOML under
+`forgejo.repository_intents."<owner>/<repo>"`. Repositories without an entry use
+neutral subject text derived from the slug.
 
-The run ceiling is currently stored in per-PR run state (`ceiling`) rather than
-daemon TOML. Leaving it absent means no core ceiling is enabled. This is an
-operator-surface gap if deployments need a global default ceiling.
+## State And Logs
 
-## Run State And Publication Records
+`state_root` stores per-PR JSON run state and `operator.log.jsonl`.
 
-JSON run state is stored under `state_root`, keyed by repository, PR and commit.
-The current state includes:
+Run state records current head, loop history, findings, verdict, coverage,
+patches, publication attempts, typed session archives and independence
+degradations. Operator-log JSONL records startup/config warnings, launch
+refusals, run failures and policy exhaustion. Operational failures are for the
+operator, not PR comments.
 
-- `current_head_sha`, used to keep stale events from bypassing the current head.
-- `run_history`, where each run record carries `run_id`, `run_kind`, `status`,
-  optional `outcome`, optional typed `refusal`, typed `session_archives`, and
-  recorded independence degradations.
-- `publication.attempts`, where each attempted PR side effect records the
-  operation, idempotency key, optional `expected_head_sha`, status, receipt, error
-  and typed refusal.
-- `ceiling`, the optional per-PR runaway guard.
+Contract `1.x` state is not read by this daemon. Archive old state separately
+before starting a `2.0` deployment.
 
-When the launch gate refuses a run because the ceiling is reached, the run is
-recorded as `skipped` with a `run_ceiling_reached` refusal. When a required model
-family cannot be prepared, the refusal reason is
-`required_family_unavailable`. These records are the durable audit trail; the log
-line is only the operator-facing symptom.
-
-## systemd Unit
-
-Adjust paths, user and environment file names for the host. The environment file
-contains the Forgejo token and clone base URL, so make it readable only by root
-and the daemon user, for example `root:pump19` with mode `0640`, or owned by the
-daemon user with mode `0600`.
-
-Example `/etc/pump19/forgejo.env`:
-
-```sh
-FORGEJO_TOKEN=replace-with-token
-PUMP19_GIT_BASE_URL=https://forgejo.example
-# Merge-readiness checks (optional overrides):
-# PUMP19_FORGEJO_BASE_URL=https://forgejo.example
-# PUMP19_MERGE_READINESS_IMAGE=localhost/pump19-workspace:stable
-# PUMP19_MERGE_READINESS_TIMEOUT=3600
-```
+## systemd Sketch
 
 ```ini
 [Unit]
@@ -371,44 +255,12 @@ RestartSec=10s
 WantedBy=multi-user.target
 ```
 
-## Healthy Logs
+Example environment file:
 
-The daemon writes one JSON object per line to stderr.
-
-Quiet poll with no work:
-
-```json
-{"event":"quiet_poll","fields":{"quiet_polls":1,"stop_after_quiet_polls":null},"level":"info"}
+```sh
+FORGEJO_TOKEN=replace-with-token
+PUMP19_GIT_BASE_URL=https://forgejo.example
+# Optional merge-readiness overrides:
+# PUMP19_MERGE_READINESS_IMAGE=localhost/pump19-workspace:stable
+# PUMP19_MERGE_READINESS_TIMEOUT=3600
 ```
-
-Successful dispatch:
-
-```json
-{"event":"dispatch_outcomes","fields":{"event_index":1,"launches":1,"outcomes":[{"outcome":"launched","rule_id":"review-on-pr-change","run_id":"review-on-pr-change-1"}],"pending_events":0},"level":"info"}
-```
-
-Clean shutdown summary:
-
-```json
-{"event":"daemon_summary","fields":{"dispatch_errors_continued":0,"events_processed":1,"launches":1,"quiet_polls":0,"recovered_completion_events":0,"recovered_stale_running_events":0,"recovered_terminal_events":0,"recovery_errors_continued":0,"stopped_by_shutdown":true},"level":"info"}
-```
-
-## Failing Logs
-
-An unreachable Forgejo polling command is contained as an event-source dispatch
-error. With `stop_after_quiet_polls = 1`, the daemon records the error and exits
-cleanly after the configured quiet/error poll budget:
-
-```json
-{"event":"dispatch_error_continued","fields":{"class":"event_source","continued_errors":1,"error":"event source failed: Forgejo activity source failed: command exited with Some(7): connection refused","retry_after_poll_interval":true},"level":"error"}
-```
-
-Fatal state-store or serialisation errors stop the daemon:
-
-```json
-{"event":"daemon_fatal_core_error","fields":{"class":"state_store","error":"state store failed: ..."},"level":"error"}
-```
-
-When a required model family cannot be prepared, the daemon classifies the core
-error as `required_family_unavailable`; the corresponding run-state record carries
-the typed refusal.
