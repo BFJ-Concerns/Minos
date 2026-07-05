@@ -47,7 +47,6 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
 
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
-const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 const EXT_BRIEF_WARNINGS: &str = "pump19.frame.brief_warnings";
 const REVIEW_EVIDENCE_DIR: &str = ".pump19/review";
 const REVIEW_DIFF_FILE: &str = "diff.patch";
@@ -2843,17 +2842,6 @@ fn expected_targets(
 }
 
 fn expected_target(provenance: &ModelProvenance) -> Result<ExpectedAgentTarget, RunBodyError> {
-    let engine = provenance
-        .extensions
-        .get(EXT_AGENT_ENGINE)
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            RunBodyError::EnsembleArchiveMismatch(format!(
-                "missing engine for authorised agent {}",
-                provenance.agent_id.0
-            ))
-        })?
-        .to_owned();
     let pump19_contract::ProvenanceVerification::Verified { lineage, .. } =
         &provenance.verification
     else {
@@ -2865,7 +2853,7 @@ fn expected_target(provenance: &ModelProvenance) -> Result<ExpectedAgentTarget, 
     Ok(ExpectedAgentTarget {
         agent_id: provenance.agent_id.clone(),
         role: provenance.role,
-        engine,
+        engine: provenance.engine.clone(),
         model_family: lineage.family.0.clone(),
         model: lineage.model.clone(),
     })
@@ -3198,6 +3186,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use pump19_core::{AgentEngine, AgentLaunchTarget};
 
     #[test]
     fn host_runner_env_filter_keeps_model_auth_and_drops_forge_credentials() {
@@ -3464,11 +3453,6 @@ mod tests {
     }
 
     fn provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelProvenance {
-        let mut extensions = BTreeMap::new();
-        extensions.insert(
-            EXT_AGENT_ENGINE.to_owned(),
-            Value::String(engine_for_family(family).to_owned()),
-        );
         ModelProvenance {
             contract_version: ContractVersion::current(),
             agent_id: AgentId(agent_id.to_owned()),
@@ -3484,7 +3468,7 @@ mod tests {
                     model: format!("{family}-2026"),
                 },
             },
-            extensions,
+            extensions: BTreeMap::new(),
         }
     }
 
@@ -3708,6 +3692,41 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         req
     }
 
+    fn live_core_shaped_provenance_for_target(target: AgentLaunchTarget) -> ModelProvenance {
+        ModelProvenance {
+            contract_version: ContractVersion::current(),
+            agent_id: target.agent_id.clone(),
+            role: target.role,
+            engine: target.engine.as_str().to_owned(),
+            session_id: SessionId(format!("{}-live-core-session", target.agent_id.0)),
+            freshness: SessionFreshness::FreshForPass { pass_index: 1 },
+            verification: ProvenanceVerification::Verified {
+                vendor: target.vendor,
+                control_plane: target.control_plane,
+                lineage: target.lineage,
+            },
+            extensions: BTreeMap::new(),
+        }
+    }
+
+    fn launch_target(agent_id: &str, role: AgentRole, family: &str) -> AgentLaunchTarget {
+        AgentLaunchTarget {
+            agent_id: AgentId(agent_id.to_owned()),
+            role,
+            engine: match family {
+                "claude" => AgentEngine::Claude,
+                "codex" => AgentEngine::Codex,
+                _ => AgentEngine::Opencode,
+            },
+            vendor: "local".to_owned(),
+            control_plane: "pump19-core".to_owned(),
+            lineage: ModelLineage {
+                family: ModelFamily(family.to_owned()),
+                model: format!("{family}-2026"),
+            },
+        }
+    }
+
     fn fix_frame_request(root: &Path) -> RunLaunchRequest {
         let mut req = request(
             RunKind::Fix,
@@ -3834,6 +3853,49 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
                 suppressed: 0
             }
         );
+    }
+
+    #[test]
+    fn lead_frame_accepts_live_core_provenance_engine_field() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.provenance = vec![
+            live_core_shaped_provenance_for_target(launch_target(
+                "lead-claude",
+                AgentRole::Lead,
+                "claude",
+            )),
+            live_core_shaped_provenance_for_target(launch_target(
+                "reviewer-codex",
+                AgentRole::Reviewer,
+                "codex",
+            )),
+            live_core_shaped_provenance_for_target(launch_target(
+                "verifier-claude",
+                AgentRole::Verifier,
+                "claude",
+            )),
+            live_core_shaped_provenance_for_target(launch_target(
+                "bar-codex",
+                AgentRole::BarCheck,
+                "codex",
+            )),
+        ];
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("lead frame accepts first-class provenance engine");
+
+        assert_eq!(findings.len(), 1);
+        assert!(req.provenance.iter().all(|item| item.extensions.is_empty()));
     }
 
     #[test]
