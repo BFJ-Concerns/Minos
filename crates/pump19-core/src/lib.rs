@@ -4482,26 +4482,60 @@ fn cleanup_external_prepared_source(
     source: &PreparedSource,
     workspace: &WorkspaceLease,
 ) -> Result<(), CoreError> {
-    if source.tree == workspace.root || !source.tree.exists() {
+    if source.tree == workspace.root {
         return Ok(());
     }
     let Some(cleanup_root) = &source.cleanup_root else {
+        if !source.tree.exists() {
+            return Ok(());
+        }
         return Err(CoreError::SourcePreparation(format!(
             "refusing to remove prepared source tree {} without trusted cleanup root",
             source.tree.display()
         )));
     };
-    if let Err(error) = ensure_source_tree_under_cleanup_root(source, cleanup_root) {
+    if !cleanup_root.exists() {
+        return Ok(());
+    }
+    if source.tree.exists()
+        && let Err(error) = ensure_source_tree_under_cleanup_root(source, cleanup_root)
+    {
         return Err(CoreError::SourcePreparation(format!(
             "refusing to remove prepared source tree: {error}"
         )));
     }
-    fs::remove_dir_all(&source.tree).map_err(|error| {
+    let cleanup_target = prepared_source_cleanup_target(source, cleanup_root);
+    if cleanup_target == workspace.root {
+        return Err(CoreError::SourcePreparation(format!(
+            "refusing to remove trusted preparation root {} because it is the workspace root",
+            cleanup_target.display()
+        )));
+    }
+    fs::remove_dir_all(cleanup_target).map_err(|error| {
         CoreError::SourcePreparation(format!(
-            "remove trusted preparation tree {}: {error}",
-            source.tree.display()
+            "remove trusted preparation root {}: {error}",
+            cleanup_target.display()
         ))
     })
+}
+
+fn prepared_source_cleanup_target<'a>(
+    source: &'a PreparedSource,
+    cleanup_root: &'a Path,
+) -> &'a Path {
+    // Runtime source preparation creates a disposable sibling root named after
+    // the workspace. Other preparers may use cleanup_root only as the trusted
+    // boundary, so deleting it wholesale can remove unrelated fixtures or a
+    // workspace that happens to share the parent.
+    let runtime_preparation_root = cleanup_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("-source-prep"));
+    if runtime_preparation_root {
+        cleanup_root
+    } else {
+        &source.tree
+    }
 }
 
 fn reject_credential_residue_at(root: &Path, path: &Path) -> Result<(), CoreError> {
@@ -5759,7 +5793,8 @@ mod tests {
     #[test]
     fn trusted_source_preparation_injects_tree_before_launch_and_cleans_prepared_tree() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let prepared_tree = temp.path().join("prepared");
+        let preparation_root = temp.path().join("workspace-1-source-prep");
+        let prepared_tree = preparation_root.join("prepared");
         fs::create_dir_all(prepared_tree.join("src")).expect("create prepared tree");
         fs::write(prepared_tree.join("src/lib.rs"), "pub fn prepared() {}\n")
             .expect("write source");
@@ -5797,6 +5832,7 @@ mod tests {
         );
         assert_eq!(injections.borrow().len(), 1);
         assert!(!prepared_tree.exists());
+        assert!(!preparation_root.exists());
         assert_eq!(*cleaned.borrow(), 1);
     }
 

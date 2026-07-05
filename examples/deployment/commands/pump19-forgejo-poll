@@ -4,6 +4,8 @@ set -eu
 base_url=
 finish_label=pump19-finish
 curl_bin=${PUMP19_FORGEJO_CURL:-curl}
+detail_attempts=${PUMP19_FORGEJO_DETAIL_ATTEMPTS:-3}
+detail_sleep=${PUMP19_FORGEJO_DETAIL_SLEEP:-1}
 
 usage() {
   echo "usage: pump19-forgejo-poll --base-url URL [--finish-label LABEL] owner/repo" >&2
@@ -67,6 +69,27 @@ printf '%s' "$pulls_json" | jq -c '.[]' > "$tmp/pulls.jsonl"
 
 while IFS= read -r pull_json; do
   pr_id=$(printf '%s' "$pull_json" | jq -r '(.number // .id | tostring)')
+  attempt=1
+  while :; do
+    detail_json=$(api_json "/repos/$repository/pulls/$pr_id" 2>/dev/null || printf '%s' "$pull_json")
+    pull_json=$(printf '%s\n%s\n' "$pull_json" "$detail_json" | jq -c -n '
+      input as $list
+      | input as $detail
+      | $list * $detail
+    ')
+    merge_base_known=$(printf '%s' "$pull_json" | jq -r 'if (.merge_base // "") != "" and (.base.sha // "") != "" then "true" else "false" end')
+    mergeability_known=$(printf '%s' "$pull_json" | jq -r 'if .mergeable == true or .mergeable == false then "true" else "false" end')
+    if [ "$merge_base_known" = "true" ] && [ "$mergeability_known" = "true" ]; then
+      break
+    fi
+    if [ "$attempt" -ge "$detail_attempts" ]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    if [ "$detail_sleep" -gt 0 ]; then
+      sleep "$detail_sleep"
+    fi
+  done
   timeline_json=$(api_json "/repos/$repository/issues/$pr_id/timeline" 2>/dev/null || printf '[]')
   label_actors_json=$(printf '%s\n%s\n' "$pull_json" "$timeline_json" | jq -c -n --arg finish "$finish_label" '
     input as $pull

@@ -170,6 +170,11 @@ case "$operation" in
     while IFS= read -r commit_json; do
       message=$(printf '%s' "$commit_json" | jq -r '.message')
       author=$(printf '%s' "$commit_json" | jq -r '.author_agent_id')
+      model_provenance=$(printf '%s' "$commit_json" | jq -r '.model_provenance_json // empty')
+      model_provenance_trailer=
+      if [ -n "$model_provenance" ]; then
+        model_provenance_trailer=$(printf '%s' "$model_provenance" | jq -c . 2>/dev/null || printf '%s' "$model_provenance" | tr '\n' ' ')
+      fi
       kind=$(printf '%s' "$commit_json" | jq -r '.change.kind')
       if [ "$kind" = "unified_diff" ]; then
         printf '%s' "$commit_json" | jq -r '.change.diff' | git apply
@@ -177,9 +182,15 @@ case "$operation" in
       if [ "$kind" != "description" ]; then
         git add -A
       fi
-      GIT_AUTHOR_NAME="$author" GIT_AUTHOR_EMAIL="pump19@example.invalid" \
-        GIT_COMMITTER_NAME="Pump-19" GIT_COMMITTER_EMAIL="pump19@example.invalid" \
-        git commit --allow-empty -m "$message" >/dev/null 2>&1
+      if [ -n "$model_provenance_trailer" ]; then
+        GIT_AUTHOR_NAME="$author" GIT_AUTHOR_EMAIL="pump19@example.invalid" \
+          GIT_COMMITTER_NAME="Pump-19" GIT_COMMITTER_EMAIL="pump19@example.invalid" \
+          git commit --allow-empty -m "$message" -m "Pump19-Model-Provenance: $model_provenance_trailer" >/dev/null 2>&1
+      else
+        GIT_AUTHOR_NAME="$author" GIT_AUTHOR_EMAIL="pump19@example.invalid" \
+          GIT_COMMITTER_NAME="Pump-19" GIT_COMMITTER_EMAIL="pump19@example.invalid" \
+          git commit --allow-empty -m "$message" >/dev/null 2>&1
+      fi
     done < "$tmp/commits.jsonl"
     new_head=$(git rev-parse HEAD)
     git_auth push origin -- "HEAD:$head_ref" >/dev/null 2>&1
