@@ -170,7 +170,7 @@ fn live_engine_session_drives_ensemble_workflow_through_payload_file()
     )?;
     fs::write(
         run_dir.join("mission.md"),
-        "Run this exact command from the current directory:\n\n./bin/pump19-workflow repair-output input/repair.json > out/workflow.json\n\nThen read out/workflow.json and out/boundary.jsonl. Reply only with JSON matching the schema: {\"slot\":\"repair-output\",\"marker\":\"...\",\"status\":\"...\",\"boundary_log_present\":true}. The marker must come from the workflow result.",
+        "Run exactly:\n./bin/pump19-workflow repair-output input/repair.json > out/workflow.json\n\nRead out/workflow.json and out/boundary.jsonl. Return only this JSON shape, with marker and status copied from out/workflow.json: {\"slot\":\"repair-output\",\"marker\":\"...\",\"status\":\"...\",\"boundary_log_present\":true}.",
     )?;
 
     let run = EngineSessionLauncher::default().launch(
@@ -181,7 +181,7 @@ fn live_engine_session_drives_ensemble_workflow_through_payload_file()
             prompt_path: run_dir.join("mission.md"),
             schema_path: Some(run_dir.join("schema.json")),
             archive_dir: run_dir.join("archive/lead"),
-            requested_model: None,
+            requested_model: Some("sonnet".to_owned()),
             write_access: WriteAccess::Writable,
             bounds: LaunchBounds {
                 wall_clock: Duration::from_mins(4),
