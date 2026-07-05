@@ -16,16 +16,16 @@ use std::{
 };
 
 use pump19_contract::{
-    ActorCapability, ActorRef, AgentId, AgentRole, ContractEvent, ContractVersion, Decision,
-    DecisionVerdict, EventPayload, Extensions, Finding, FindingCommentPublication,
-    FindingCommentStatus, FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt,
-    LoopPassRecord, MergePublication, ModelFamily, ModelLineage, ModelProvenance, Patch,
-    PrRunState, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
-    PublicationOperation, PublicationRefusal, PublicationRefusalReason, PublicationState,
-    PublishedFixCommit, PullRequestRef, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
-    RunRefusal, RunRefusalReason, RunStatus, SessionFreshness, SessionId,
-    has_two_verified_reviewer_families, judge_independent_of_reviewers,
-    merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
+    ActorCapability, ActorRef, AgentId, AgentRole, BarCheckRecord, ContractEvent, ContractVersion,
+    CoverageRecord, EventPayload, Extensions, Finding, FindingCommentPublication,
+    FindingCommentStatus, FindingVerification, FinishLabel, FixPushPublication, ForgeFacts,
+    ForgeReceipt, IndependenceDegradation, LoopPassRecord, MergePublication, ModelFamily,
+    ModelLineage, ModelProvenance, Patch, PrRunState, PriorityClass, ProvenanceVerification,
+    PublicationAttempt, PublicationAttemptStatus, PublicationOperation, PublicationRefusal,
+    PublicationRefusalReason, PublicationState, PublishedFixCommit, PullRequestRef, ReviewVerdict,
+    RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunRefusal, RunRefusalReason, RunStatus,
+    SessionArchiveRef, SessionFreshness, SessionId, fixer_disjoint_from_finding_sessions,
+    merge_gate_clean_and_current, sessions_fresh_for_pass,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,8 +41,9 @@ const EXT_LAST_FAILURE: &str = "pump19.core.last_failure";
 const EXT_SELF_EMITTED_EVENT: &str = "pump19.core.self_emitted_event";
 const EXT_COMPLETION_RECOVERY_FAILURES: &str = "pump19.core.completion_recovery_failures";
 const EXT_COMPLETION_RECOVERY_PARKED: &str = "pump19.core.completion_recovery_parked";
+const EXT_BAR_CHECK_DEGRADED_PASS: &str = "pump19.core.bar_check_degraded_pass";
+const EXT_BAR_CHECK_DEGRADED_COUNT: &str = "pump19.core.bar_check_degraded_count";
 const CONTROL_COMMIT_SHA: &str = "__pump19_pr_control__";
-const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 const MAX_COMPLETION_RECOVERY_FAILURES: u64 = 2;
 /// Suffix used by runtime source preparation for disposable preparation roots.
 ///
@@ -188,7 +189,7 @@ pub trait SourcePreparer {
 /// The core owns the posting decision and authorisation; this collaborator owns
 /// the prose. Deployments normally back it with a mechanical adaptation step.
 pub trait CommentFormatter {
-    /// Renders a material finding and its judge decision into a PR comment body.
+    /// Renders a material finding and its verification record into a PR comment body.
     ///
     /// # Errors
     ///
@@ -204,7 +205,7 @@ pub trait CommentFormatter {
 pub struct FindingCommentFormatRequest {
     pub run_id: RunId,
     pub finding: Finding,
-    pub decision: Decision,
+    pub verification: FindingVerification,
     pub facts: ForgeFacts,
 }
 
@@ -217,11 +218,16 @@ pub struct FindingCommentFormatRequest {
 pub struct OperatorLogEvent {
     pub contract_version: ContractVersion,
     pub kind: OperatorLogEventKind,
-    pub pr: PullRequestRef,
-    pub run_id: RunId,
-    pub run_kind: RunKind,
-    pub pass_index: u32,
-    pub commit_sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<PullRequestRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_kind: Option<RunKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal_reason: Option<RunRefusalReason>,
@@ -232,6 +238,8 @@ pub struct OperatorLogEvent {
 pub enum OperatorLogEventKind {
     RunFailure,
     LaunchRefusal,
+    ConfigWarning,
+    IndependenceDegradation,
 }
 
 /// Records operational events for the deployment operator.
@@ -437,9 +445,9 @@ pub enum AuthorisationEvidence {
         actor: ActorRef,
         capability: ActorCapability,
     },
-    Decision {
-        decision_id: String,
-        verdict: DecisionVerdict,
+    Verification {
+        finding_id: pump19_contract::FindingId,
+        verifier_session_id: SessionId,
     },
     Finding {
         finding_id: pump19_contract::FindingId,
@@ -541,6 +549,9 @@ pub enum MergeMethod {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CorePolicy {
     pub finish_label_application: FinishLabelApplicationPolicy,
+    pub fix_before_merge_priority: PriorityClass,
+    pub schema_repair_attempts: u32,
+    pub bar_check_retry_attempts: u32,
 }
 
 impl CorePolicy {
@@ -548,6 +559,9 @@ impl CorePolicy {
     pub const fn human_gate() -> Self {
         Self {
             finish_label_application: FinishLabelApplicationPolicy::HumanOnly,
+            fix_before_merge_priority: PriorityClass::P1,
+            schema_repair_attempts: 2,
+            bar_check_retry_attempts: 2,
         }
     }
 }
@@ -1150,7 +1164,10 @@ where
         let mut outcomes = Vec::new();
         for rule in rules {
             let state = self.load_state_for_event(event)?;
-            if !rule.criteria.matches(event, state.as_ref()) {
+            if !rule
+                .criteria
+                .matches_with_policy(event, state.as_ref(), &self.policy)
+            {
                 continue;
             }
 
@@ -1168,14 +1185,28 @@ where
     }
 
     fn record_forge_event_state(&mut self, event: &ContractEvent) -> Result<(), CoreError> {
-        if !matches!(
-            event.payload,
-            EventPayload::PullRequestOpened { .. } | EventPayload::PullRequestUpdated { .. }
-        ) {
-            return Ok(());
-        }
-        if let Some(state) = self.load_state_for_event(event)? {
-            self.state_store.save(&state)?;
+        match &event.payload {
+            EventPayload::PullRequestOpened { .. } | EventPayload::PullRequestUpdated { .. } => {
+                if let Some(state) = self.load_state_for_event(event)? {
+                    self.state_store.save(&state)?;
+                }
+            }
+            EventPayload::LabelApplied { pr, label } => {
+                if let Some(mut state) = self.state_store.load_latest_for_pr(pr)?
+                    && let Some(mut facts) = forge_facts_from_state(&state)?
+                {
+                    facts.finish_label = Some(label.clone());
+                    state.extensions.insert(
+                        EXT_FORGE_FACTS.to_owned(),
+                        serde_json::to_value(&facts).map_err(|source| CoreError::Json {
+                            path: EXT_FORGE_FACTS.to_owned(),
+                            source,
+                        })?,
+                    );
+                    self.state_store.save(&state)?;
+                }
+            }
+            EventPayload::RunCompleted { .. } => {}
         }
         Ok(())
     }
@@ -1231,7 +1262,8 @@ where
         next.publication = latest.publication.clone();
         if latest.status == RunStatus::Completed
             && (!latest.findings.is_empty()
-                || !latest.decisions.is_empty()
+                || latest.verdict.is_some()
+                || latest.coverage.is_some()
                 || !latest.patches.is_empty())
         {
             latest.loop_history.push(loop_record_from_state(
@@ -1263,9 +1295,13 @@ where
         let mut gate_provenance = collect_state_provenance(&state);
         gate_provenance.extend(prepared.iter().cloned());
 
-        if let Some(reason) =
-            evaluate_gate(&gate_provenance, &prepared, state.pass_index, &workspace)
-        {
+        if let Some(reason) = evaluate_gate(
+            &gate_provenance,
+            &prepared,
+            &state.findings,
+            state.pass_index,
+            &workspace,
+        ) {
             let failure = format!("launch refused: {reason:?}");
             let record_result = self.record_failed_launch_refusal(
                 state,
@@ -1287,6 +1323,7 @@ where
 
         let mut running_state = mark_running(state, event, rule, &run_id, prepared.clone());
         self.save_running_or_cleanup(&running_state, &workspace)?;
+        self.record_operator_independence_degradations(&running_state, &run_id)?;
 
         let launch_result = self.launcher.launch_run(
             RunLaunchRequest {
@@ -1296,6 +1333,9 @@ where
                 state: running_state.clone(),
                 workspace: workspace.clone(),
                 provenance: prepared,
+                fix_before_merge_priority: self.policy.fix_before_merge_priority,
+                schema_repair_attempts: self.policy.schema_repair_attempts,
+                bar_check_retry_attempts: self.policy.bar_check_retry_attempts,
             },
             &mut self.workspace_provider,
         );
@@ -1326,7 +1366,9 @@ where
             return Ok(outcome);
         }
 
-        apply_run_outcome(&mut running_state, rule.run_kind, outcome);
+        let outcome_degradations = apply_run_outcome(&mut running_state, rule.run_kind, outcome);
+        self.record_operator_degradations(&running_state, &run_id, &outcome_degradations)?;
+        self.record_repeated_bar_check_degradation(&running_state, &run_id)?;
         self.state_store.save(&running_state)?;
         self.apply_forge_operations_or_record_failure(
             event,
@@ -1673,6 +1715,56 @@ where
         )?)
     }
 
+    fn record_operator_independence_degradations(
+        &mut self,
+        state: &PrRunState,
+        run_id: &RunId,
+    ) -> Result<(), CoreError> {
+        let Some(record) = run_record_for(state, run_id) else {
+            return Ok(());
+        };
+        let degradations = record.independence_degradations.clone();
+        self.record_operator_degradations(state, run_id, &degradations)
+    }
+
+    fn record_operator_degradations(
+        &mut self,
+        state: &PrRunState,
+        run_id: &RunId,
+        degradations: &[IndependenceDegradation],
+    ) -> Result<(), CoreError> {
+        for degradation in degradations {
+            self.operator_log.record(operator_log_event(
+                state,
+                run_id,
+                OperatorLogEventKind::IndependenceDegradation,
+                &format!(
+                    "independence degraded for run {}: {degradation:?}",
+                    run_id.0
+                ),
+                None,
+            )?)?;
+        }
+        Ok(())
+    }
+
+    fn record_repeated_bar_check_degradation(
+        &mut self,
+        state: &PrRunState,
+        run_id: &RunId,
+    ) -> Result<(), CoreError> {
+        if bar_check_degraded_count_for_current_pass(state) <= 1 {
+            return Ok(());
+        }
+        self.operator_log.record(operator_log_event(
+            state,
+            run_id,
+            OperatorLogEventKind::ConfigWarning,
+            "bar check degraded again for the same pass; review retry policy is exhausted",
+            None,
+        )?)
+    }
+
     fn head_was_superseded_by(&self, state: &PrRunState) -> Result<Option<String>, CoreError> {
         let Some(current) = self.state_store.load_latest_for_pr(&state.pr)? else {
             return Ok(None);
@@ -1692,16 +1784,16 @@ where
         state: &mut PrRunState,
     ) -> Result<(), CoreError> {
         match run_kind {
-            RunKind::Judge => self.apply_judge_forge_operations(run_id, state),
+            RunKind::Review => self.apply_review_forge_operations(run_id, state),
             RunKind::Fix => self.push_fix_patches(run_id, state),
             RunKind::Finish if state.status == RunStatus::Completed => {
                 self.merge_finished_pr(run_id, state)
             }
-            RunKind::Review | RunKind::Finish => Ok(()),
+            RunKind::Finish => Ok(()),
         }
     }
 
-    fn apply_judge_forge_operations(
+    fn apply_review_forge_operations(
         &mut self,
         run_id: &RunId,
         state: &mut PrRunState,
@@ -1718,21 +1810,23 @@ where
         let Some(facts) = forge_facts_from_state(state)? else {
             return Ok(());
         };
-        let material = material_findings_for_pass(state);
+        let material = material_findings_for_pass(state, self.policy.fix_before_merge_priority);
         let material_keys = material
             .iter()
-            .map(|(finding, _decision)| finding.dedup_key.clone())
+            .map(|finding| finding.dedup_key.clone())
             .collect::<std::collections::BTreeSet<_>>();
+        let standing_keys = standing_finding_dedup_keys(state);
 
         for publication in state.publication.finding_comments.clone() {
             if publication.status == FindingCommentStatus::Open
                 && !material_keys.contains(&publication.finding_dedup_key)
+                && !standing_keys.contains(&publication.finding_dedup_key)
             {
                 self.resolve_finding_comment(run_id, state, &facts, &publication)?;
             }
         }
 
-        for (finding, decision) in material {
+        for finding in material {
             if let Some(publication) = state
                 .publication
                 .finding_comments
@@ -1740,16 +1834,9 @@ where
                 .find(|publication| publication.finding_dedup_key == finding.dedup_key)
                 .cloned()
             {
-                self.update_finding_comment(
-                    run_id,
-                    state,
-                    &facts,
-                    &finding,
-                    &decision,
-                    &publication,
-                )?;
+                self.update_finding_comment(run_id, state, &facts, &finding, &publication)?;
             } else {
-                self.post_finding_comment(run_id, state, &facts, &finding, &decision)?;
+                self.post_finding_comment(run_id, state, &facts, &finding)?;
             }
         }
         Ok(())
@@ -1761,7 +1848,6 @@ where
         state: &mut PrRunState,
         facts: &ForgeFacts,
         finding: &Finding,
-        decision: &Decision,
     ) -> Result<(), CoreError> {
         let idempotency_key = stable_id(
             "forge-comment",
@@ -1775,9 +1861,8 @@ where
             state,
             facts,
             idempotency_key.clone(),
-            decision,
             finding,
-            "core authorised material finding comment from judge decision",
+            "core authorised material finding comment from independent verification",
         );
         let expected_head_sha = facts.head.sha.clone();
         if self.refuse_comment_if_head_moved(
@@ -1804,7 +1889,6 @@ where
             idempotency_key.clone(),
             expected_head_sha.clone(),
             finding,
-            decision,
             facts,
         )?;
         let result = self.forge_operations.post_comment(AuthorisedComment {
@@ -1833,7 +1917,6 @@ where
         state: &mut PrRunState,
         facts: &ForgeFacts,
         finding: &Finding,
-        decision: &Decision,
         publication: &FindingCommentPublication,
     ) -> Result<(), CoreError> {
         let idempotency_key = stable_id(
@@ -1849,9 +1932,8 @@ where
             state,
             facts,
             idempotency_key.clone(),
-            decision,
             finding,
-            "core authorised material finding comment update from judge decision",
+            "core authorised material finding comment update from independent verification",
         );
         let expected_head_sha = facts.head.sha.clone();
         if self.refuse_comment_if_head_moved(
@@ -1880,7 +1962,6 @@ where
             idempotency_key.clone(),
             expected_head_sha.clone(),
             finding,
-            decision,
             facts,
         )?;
         let result = self
@@ -1915,7 +1996,6 @@ where
         idempotency_key: String,
         expected_head_sha: String,
         finding: &Finding,
-        decision: &Decision,
         facts: &ForgeFacts,
     ) -> Result<String, CoreError> {
         let result = self
@@ -1923,7 +2003,7 @@ where
             .format_finding_comment(FindingCommentFormatRequest {
                 run_id: run_id.clone(),
                 finding: finding.clone(),
-                decision: decision.clone(),
+                verification: finding.verification.clone(),
                 facts: facts.clone(),
             });
         let body = match result {
@@ -2622,19 +2702,29 @@ pub enum Criteria {
 impl Criteria {
     #[must_use]
     pub fn matches(&self, event: &ContractEvent, state: Option<&PrRunState>) -> bool {
+        self.matches_with_policy(event, state, &CorePolicy::default())
+    }
+
+    #[must_use]
+    fn matches_with_policy(
+        &self,
+        event: &ContractEvent,
+        state: Option<&PrRunState>,
+        policy: &CorePolicy,
+    ) -> bool {
         match self {
             Self::Event { event: expected } => expected.matches(event),
-            Self::State { state: expected } => expected.matches(state),
+            Self::State { state: expected } => expected.matches(state, policy),
             Self::PrAuthoredBy { any_of } => {
                 pr_author_login(event, state).is_some_and(|login| any_of.contains(&login))
             }
             Self::PrReady => pr_ready(event, state),
             Self::All { criteria } => criteria
                 .iter()
-                .all(|criterion| criterion.matches(event, state)),
+                .all(|criterion| criterion.matches_with_policy(event, state, policy)),
             Self::Any { criteria } => criteria
                 .iter()
-                .any(|criterion| criterion.matches(event, state)),
+                .any(|criterion| criterion.matches_with_policy(event, state, policy)),
         }
     }
 }
@@ -2720,29 +2810,33 @@ impl EventKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateCriterion {
-    HasMaterialDecision,
+    HasVerifiedMaterialFindings,
     HasConverged,
+    HasStandingFindings,
+    BarCheckDegraded,
     CleanAndCurrent,
     CeilingAllowsPass,
 }
 
 impl StateCriterion {
     #[must_use]
-    fn matches(self, state: Option<&PrRunState>) -> bool {
+    fn matches(self, state: Option<&PrRunState>, policy: &CorePolicy) -> bool {
         let Some(state) = state else {
             return false;
         };
         match self {
-            Self::HasMaterialDecision => state
-                .decisions
+            Self::HasVerifiedMaterialFindings => state
+                .findings
                 .iter()
-                .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
-                .any(|decision| decision.verdict == DecisionVerdict::Material),
-            Self::HasConverged => state
-                .decisions
-                .iter()
-                .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
-                .any(|decision| decision.verdict == DecisionVerdict::Converged),
+                .any(|finding| finding.is_material(policy.fix_before_merge_priority)),
+            Self::HasConverged => matches!(state.verdict, Some(ReviewVerdict::Converged { .. })),
+            Self::HasStandingFindings => {
+                matches!(state.verdict, Some(ReviewVerdict::StandingFindings { .. }))
+            }
+            Self::BarCheckDegraded => {
+                matches!(state.verdict, Some(ReviewVerdict::BarCheckDegraded { .. }))
+                    && bar_check_degraded_count_for_current_pass(state) <= 1
+            }
             Self::CleanAndCurrent => state
                 .extensions
                 .get(EXT_FORGE_FACTS)
@@ -2756,12 +2850,16 @@ impl StateCriterion {
 /// The set of agents whose sessions must be established before a run body starts.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AgentPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<AgentLaunchTarget>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviewers: Vec<AgentLaunchTarget>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fixers: Vec<AgentLaunchTarget>,
+    pub verifiers: Vec<AgentLaunchTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub judge: Option<AgentLaunchTarget>,
+    pub bar_check: Option<AgentLaunchTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixers: Vec<AgentLaunchTarget>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub finishers: Vec<AgentLaunchTarget>,
 }
@@ -2769,11 +2867,19 @@ pub struct AgentPlan {
 impl AgentPlan {
     #[must_use]
     fn targets(&self) -> Vec<AgentLaunchTarget> {
-        let mut targets =
-            Vec::with_capacity(self.reviewers.len() + self.fixers.len() + self.finishers.len() + 1);
+        let mut targets = Vec::with_capacity(
+            self.reviewers.len()
+                + self.verifiers.len()
+                + self.fixers.len()
+                + self.finishers.len()
+                + usize::from(self.lead.is_some())
+                + usize::from(self.bar_check.is_some()),
+        );
+        targets.extend(self.lead.iter().cloned());
         targets.extend(self.reviewers.iter().cloned());
+        targets.extend(self.verifiers.iter().cloned());
+        targets.extend(self.bar_check.iter().cloned());
         targets.extend(self.fixers.iter().cloned());
-        targets.extend(self.judge.iter().cloned());
         targets.extend(self.finishers.iter().cloned());
         targets
     }
@@ -2881,7 +2987,6 @@ pub struct WorkspaceLease {
 pub struct WorkspaceIsolation {
     pub isolated: bool,
     pub credential_free: bool,
-    pub egress_bounded: bool,
     pub resource_bounded: bool,
     pub ephemeral: bool,
 }
@@ -2889,11 +2994,7 @@ pub struct WorkspaceIsolation {
 impl WorkspaceIsolation {
     #[must_use]
     pub const fn present(self) -> bool {
-        self.isolated
-            && self.credential_free
-            && self.egress_bounded
-            && self.resource_bounded
-            && self.ephemeral
+        self.isolated && self.credential_free && self.resource_bounded && self.ephemeral
     }
 }
 
@@ -2931,6 +3032,9 @@ pub struct RunLaunchRequest {
     pub state: PrRunState,
     pub workspace: WorkspaceLease,
     pub provenance: Vec<ModelProvenance>,
+    pub fix_before_merge_priority: PriorityClass,
+    pub schema_repair_attempts: u32,
+    pub bar_check_retry_attempts: u32,
 }
 
 /// Artifacts produced by an authorised run body.
@@ -2938,10 +3042,12 @@ pub struct RunLaunchRequest {
 pub struct RunLaunchOutcome {
     pub outcome: RunOutcome,
     pub findings: Vec<Finding>,
-    pub decisions: Vec<Decision>,
+    pub verdict: Option<ReviewVerdict>,
+    pub coverage: Option<CoverageRecord>,
     pub patches: Vec<Patch>,
     pub token_usage: Option<u64>,
-    pub ensemble_archive_path: Option<String>,
+    pub session_archives: Vec<SessionArchiveRef>,
+    pub independence_degradations: Vec<IndependenceDegradation>,
 }
 
 /// Observable result of evaluating one matching trigger rule.
@@ -2976,13 +3082,7 @@ pub enum LaunchRefusal {
         reason: String,
     },
     WorkspaceIsolationMissing,
-    UnverifiedProvenance {
-        agent_id: AgentId,
-        reason: String,
-    },
-    InsufficientReviewerFamilies,
     ReviewerFixerOverlap,
-    MissingIndependentJudge,
     NonFreshSession {
         agent_id: AgentId,
     },
@@ -3039,20 +3139,15 @@ fn establish_provenance(
         }
     };
 
-    let mut extensions = BTreeMap::new();
-    extensions.insert(
-        EXT_AGENT_ENGINE.to_owned(),
-        Value::String(target.engine.as_str().to_owned()),
-    );
-
     ModelProvenance {
         contract_version: ContractVersion::current(),
         agent_id: target.agent_id.clone(),
         role: target.role,
         session_id: prepared.session_id,
+        engine: target.engine.as_str().to_owned(),
         freshness,
         verification,
-        extensions,
+        extensions: BTreeMap::new(),
     }
 }
 
@@ -3205,10 +3300,36 @@ fn launch_refusal_from_prepare_error(error: &CoreError) -> Option<LaunchRefusal>
     }
 }
 
+fn independence_degradations(provenances: &[ModelProvenance]) -> Vec<IndependenceDegradation> {
+    let verified_families = provenances
+        .iter()
+        .filter_map(ModelProvenance::verified_family)
+        .collect::<BTreeSet<_>>();
+    let mut degradations = Vec::new();
+    if verified_families.len() <= 1 && !provenances.is_empty() {
+        degradations.push(IndependenceDegradation::SingleFamilyDeployment);
+    }
+    degradations.extend(
+        provenances
+            .iter()
+            .filter(|provenance| {
+                matches!(
+                    provenance.verification,
+                    ProvenanceVerification::Unverified { .. }
+                )
+            })
+            .map(|provenance| IndependenceDegradation::FamilyUnknown {
+                agent_id: provenance.agent_id.clone(),
+            }),
+    );
+    degradations
+}
+
 #[must_use]
 fn evaluate_gate(
-    provenances: &[ModelProvenance],
+    _provenances: &[ModelProvenance],
     current_provenances: &[ModelProvenance],
+    findings: &[Finding],
     pass_index: u32,
     workspace: &WorkspaceLease,
 ) -> Option<LaunchRefusal> {
@@ -3216,62 +3337,8 @@ fn evaluate_gate(
         return Some(LaunchRefusal::WorkspaceIsolationMissing);
     }
 
-    if let Some(unverified) =
-        provenances
-            .iter()
-            .find_map(|provenance| match &provenance.verification {
-                ProvenanceVerification::Verified { .. } => None,
-                ProvenanceVerification::Unverified { reason } => Some((provenance, reason)),
-            })
-    {
-        return Some(LaunchRefusal::UnverifiedProvenance {
-            agent_id: unverified.0.agent_id.clone(),
-            reason: unverified.1.clone(),
-        });
-    }
-
-    if !has_two_verified_reviewer_families(provenances) {
-        return Some(LaunchRefusal::InsufficientReviewerFamilies);
-    }
-
-    if !reviewers_disjoint_from_fixers(provenances) {
+    if !fixer_disjoint_from_finding_sessions(current_provenances, findings) {
         return Some(LaunchRefusal::ReviewerFixerOverlap);
-    }
-
-    let all_reviewers = provenances
-        .iter()
-        .filter(|provenance| provenance.role == AgentRole::Reviewer)
-        .cloned()
-        .collect::<Vec<_>>();
-    let current_reviewers = current_provenances
-        .iter()
-        .filter(|provenance| provenance.role == AgentRole::Reviewer)
-        .cloned()
-        .collect::<Vec<_>>();
-    let current_judges = current_provenances
-        .iter()
-        .filter(|provenance| provenance.role == AgentRole::Judge)
-        .collect::<Vec<_>>();
-    let all_judges = provenances
-        .iter()
-        .filter(|provenance| provenance.role == AgentRole::Judge)
-        .collect::<Vec<_>>();
-    let judges = if current_judges.is_empty() {
-        all_judges
-    } else {
-        current_judges
-    };
-    let reviewers = if current_reviewers.is_empty() {
-        all_reviewers
-    } else {
-        current_reviewers
-    };
-    if judges.is_empty()
-        || !judges
-            .iter()
-            .all(|judge| judge_independent_of_reviewers(judge, &reviewers))
-    {
-        return Some(LaunchRefusal::MissingIndependentJudge);
     }
 
     if !sessions_fresh_for_pass(current_provenances, pass_index) {
@@ -3323,7 +3390,8 @@ fn initial_state_from_facts(facts: &ForgeFacts) -> PrRunState {
         loop_history: Vec::new(),
         superseded_by: None,
         findings: Vec::new(),
-        decisions: Vec::new(),
+        verdict: None,
+        coverage: None,
         patches: Vec::new(),
         publication: PublicationState::default(),
         ceiling: None,
@@ -3351,45 +3419,32 @@ fn collect_state_provenance(state: &PrRunState) -> Vec<ModelProvenance> {
     let archived_len = state
         .loop_history
         .iter()
-        .map(|pass| pass.findings.len() + pass.decisions.len() + pass.patches.len())
+        .map(|pass| pass.findings.len() + pass.patches.len())
         .sum::<usize>();
-    let mut provenances = Vec::with_capacity(
-        state.findings.len() + state.decisions.len() + state.patches.len() + archived_len,
-    );
-    // Run records carry the provenance their run launched with, so reviewers
-    // stay visible to later gates (family spread, judge independence) even
-    // when a clean review produced no findings to hang provenance on.
+    let mut provenances =
+        Vec::with_capacity(state.findings.len() + state.patches.len() + archived_len);
+    // Run records carry the provenance their run launched with, so review
+    // sessions stay visible to later gates even when a clean review produced
+    // no findings to hang provenance on.
     provenances.extend(
         state
             .run_history
             .iter()
             .flat_map(|record| record.provenance.iter().cloned()),
     );
-    provenances.extend(
-        state
-            .findings
-            .iter()
-            .map(|finding| finding.provenance.clone()),
-    );
-    provenances.extend(
-        state
-            .decisions
-            .iter()
-            .map(|decision| decision.provenance.clone()),
-    );
+    provenances.extend(state.findings.iter().flat_map(finding_provenance));
     provenances.extend(state.patches.iter().map(|patch| patch.provenance.clone()));
     for pass in &state.loop_history {
-        provenances.extend(
-            pass.findings
-                .iter()
-                .map(|finding| finding.provenance.clone()),
-        );
-        provenances.extend(
-            pass.decisions
-                .iter()
-                .map(|decision| decision.provenance.clone()),
-        );
+        provenances.extend(pass.findings.iter().flat_map(finding_provenance));
         provenances.extend(pass.patches.iter().map(|patch| patch.provenance.clone()));
+    }
+    provenances
+}
+
+fn finding_provenance(finding: &Finding) -> Vec<ModelProvenance> {
+    let mut provenances = vec![finding.provenance.clone()];
+    if let Some(verifier) = &finding.verification.verifier {
+        provenances.push(verifier.clone());
     }
     provenances
 }
@@ -3414,47 +3469,62 @@ fn forge_facts_from_state(state: &PrRunState) -> Result<Option<ForgeFacts>, Core
         .transpose()
 }
 
-fn decision_finding_ids(decision: &Decision) -> Vec<&pump19_contract::FindingId> {
-    match &decision.subject {
-        pump19_contract::DecisionSubject::Finding { finding_id } => vec![finding_id],
-        pump19_contract::DecisionSubject::FindingSet { finding_ids } => {
-            finding_ids.iter().collect()
-        }
-    }
-}
-
-fn material_findings_for_pass(state: &PrRunState) -> Vec<(Finding, Decision)> {
+fn material_findings_for_pass(state: &PrRunState, threshold: PriorityClass) -> Vec<Finding> {
     state
-        .decisions
+        .findings
         .iter()
-        .filter(|decision| decision.verdict == DecisionVerdict::Material)
-        .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
-        .flat_map(|decision| {
-            decision_finding_ids(decision)
-                .into_iter()
-                .filter_map(|finding_id| {
-                    state
-                        .findings
-                        .iter()
-                        .find(|finding| &finding.id == finding_id)
-                        .map(|finding| (finding.clone(), decision.clone()))
-                })
-                .collect::<Vec<_>>()
-        })
+        .filter(|finding| provenance_pass(&finding.provenance) == Some(state.pass_index))
+        .filter(|finding| finding.is_material(threshold))
+        .cloned()
         .collect()
 }
 
-fn state_converged_for_current_pass(state: &PrRunState) -> bool {
-    convergence_decision_id_for_current_pass(state).is_some()
+fn standing_finding_dedup_keys(state: &PrRunState) -> std::collections::BTreeSet<String> {
+    match &state.verdict {
+        Some(ReviewVerdict::StandingFindings {
+            finding_dedup_keys, ..
+        }) => finding_dedup_keys.iter().cloned().collect(),
+        _ => std::collections::BTreeSet::new(),
+    }
 }
 
-fn convergence_decision_id_for_current_pass(state: &PrRunState) -> Option<String> {
+fn bar_check_degraded_count_for_current_pass(state: &PrRunState) -> u64 {
+    let recorded_pass = state
+        .extensions
+        .get(EXT_BAR_CHECK_DEGRADED_PASS)
+        .and_then(Value::as_u64);
+    if recorded_pass != Some(u64::from(state.pass_index)) {
+        return 0;
+    }
     state
-        .decisions
-        .iter()
-        .filter(|decision| provenance_pass(&decision.provenance) == Some(state.pass_index))
-        .find(|decision| decision.verdict == DecisionVerdict::Converged)
-        .map(|decision| decision.id.clone())
+        .extensions
+        .get(EXT_BAR_CHECK_DEGRADED_COUNT)
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn record_bar_check_degraded_verdict(state: &mut PrRunState, verdict: Option<&ReviewVerdict>) {
+    if !matches!(verdict, Some(ReviewVerdict::BarCheckDegraded { .. })) {
+        return;
+    }
+    let count = bar_check_degraded_count_for_current_pass(state).saturating_add(1);
+    state.extensions.insert(
+        EXT_BAR_CHECK_DEGRADED_PASS.to_owned(),
+        Value::Number(serde_json::Number::from(state.pass_index)),
+    );
+    state.extensions.insert(
+        EXT_BAR_CHECK_DEGRADED_COUNT.to_owned(),
+        Value::Number(serde_json::Number::from(count)),
+    );
+}
+
+const fn state_converged_for_current_pass(state: &PrRunState) -> bool {
+    matches!(state.verdict, Some(ReviewVerdict::Converged { .. }))
+}
+
+fn convergence_finding_id_for_current_pass(state: &PrRunState) -> Option<String> {
+    state_converged_for_current_pass(state)
+        .then(|| format!("review-pass-{}-converged", state.pass_index))
 }
 
 fn core_may_apply_finish_label(facts: &ForgeFacts, label: &str) -> bool {
@@ -3499,10 +3569,12 @@ fn finish_label_authorisation(
         actor: actor.clone(),
         reason: "core authorised applying finish label after convergence".to_owned(),
         evidence: vec![
-            AuthorisationEvidence::Decision {
-                decision_id: convergence_decision_id_for_current_pass(state)
-                    .unwrap_or_else(|| "converged".to_owned()),
-                verdict: DecisionVerdict::Converged,
+            AuthorisationEvidence::Verification {
+                finding_id: pump19_contract::FindingId(
+                    convergence_finding_id_for_current_pass(state)
+                        .unwrap_or_else(|| "converged".to_owned()),
+                ),
+                verifier_session_id: SessionId("review-bar-check".to_owned()),
             },
             AuthorisationEvidence::ActorCapability {
                 actor: actor.clone(),
@@ -3557,10 +3629,13 @@ fn finding_comment_authorisation(
     state: &PrRunState,
     facts: &ForgeFacts,
     idempotency_key: String,
-    decision: &Decision,
     finding: &Finding,
     reason: &str,
 ) -> AuthorisationContext {
+    let verifier_session_id = finding.verification.verifier.as_ref().map_or_else(
+        || SessionId("unknown-verifier".to_owned()),
+        |v| v.session_id.clone(),
+    );
     AuthorisationContext {
         pr: state.pr.clone(),
         observed_head_sha: facts.head.sha.clone(),
@@ -3568,9 +3643,9 @@ fn finding_comment_authorisation(
         actor: core_actor(),
         reason: reason.to_owned(),
         evidence: vec![
-            AuthorisationEvidence::Decision {
-                decision_id: decision.id.clone(),
-                verdict: decision.verdict,
+            AuthorisationEvidence::Verification {
+                finding_id: finding.id.clone(),
+                verifier_session_id,
             },
             AuthorisationEvidence::Finding {
                 finding_id: finding.id.clone(),
@@ -3746,11 +3821,11 @@ fn operator_log_event(
     Ok(OperatorLogEvent {
         contract_version: ContractVersion::current(),
         kind,
-        pr: state.pr.clone(),
-        run_id: run_id.clone(),
-        run_kind: record.run_kind,
-        pass_index: record.pass_index,
-        commit_sha: record.commit_sha.clone(),
+        pr: Some(state.pr.clone()),
+        run_id: Some(run_id.clone()),
+        run_kind: Some(record.run_kind),
+        pass_index: Some(record.pass_index),
+        commit_sha: Some(record.commit_sha.clone()),
         message: message.to_owned(),
         refusal_reason,
     })
@@ -3965,7 +4040,8 @@ fn mark_running(
         status: RunStatus::Running,
         outcome: None,
         refusal: None,
-        ensemble_archive_path: None,
+        session_archives: Vec::new(),
+        independence_degradations: independence_degradations(&provenance),
         provenance,
     });
     state.extensions.insert(
@@ -4054,27 +4130,35 @@ fn mark_superseded(state: &mut PrRunState, superseded_by: String, fallback: Opti
     }
 }
 
-fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaunchOutcome) {
+fn apply_run_outcome(
+    state: &mut PrRunState,
+    run_kind: RunKind,
+    outcome: RunLaunchOutcome,
+) -> Vec<IndependenceDegradation> {
     state.status = match outcome.outcome {
         RunOutcome::Succeeded | RunOutcome::NoOp => RunStatus::Completed,
         RunOutcome::Failed | RunOutcome::Cancelled => RunStatus::Failed,
     };
+    let mut outcome_degradations = outcome.independence_degradations.clone();
+    extend_derived_independence_degradations(state, &outcome, &mut outcome_degradations);
     if let Some(mut active_run) = state.active_run.take() {
         active_run.status = state.status;
         active_run.outcome = Some(outcome.outcome);
         active_run
-            .ensemble_archive_path
-            .clone_from(&outcome.ensemble_archive_path);
+            .session_archives
+            .clone_from(&outcome.session_archives);
+        active_run
+            .independence_degradations
+            .extend(outcome_degradations.clone());
         record_terminal_run(state, active_run, state.status, Some(outcome.outcome));
     }
     match run_kind {
         RunKind::Review => {
             state.findings = outcome.findings;
-            state.decisions.clear();
+            record_bar_check_degraded_verdict(state, outcome.verdict.as_ref());
+            state.verdict = outcome.verdict;
+            state.coverage = outcome.coverage;
             state.patches.clear();
-        }
-        RunKind::Judge => {
-            state.decisions = outcome.decisions;
         }
         RunKind::Fix => {
             let patches = outcome.patches;
@@ -4086,7 +4170,8 @@ fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaun
                     Some(outcome.outcome),
                 ));
                 state.findings.clear();
-                state.decisions.clear();
+                state.verdict = None;
+                state.coverage = None;
                 state.patches.clear();
             }
         }
@@ -4106,6 +4191,63 @@ fn apply_run_outcome(state: &mut PrRunState, run_kind: RunKind, outcome: RunLaun
             Value::Number(serde_json::Number::from(current.saturating_add(tokens))),
         );
     }
+    outcome_degradations
+}
+
+fn extend_derived_independence_degradations(
+    state: &PrRunState,
+    outcome: &RunLaunchOutcome,
+    degradations: &mut Vec<IndependenceDegradation>,
+) {
+    for finding in &outcome.findings {
+        if same_verified_family(
+            Some(&finding.provenance),
+            finding.verification.verifier.as_ref(),
+        ) {
+            push_degradation(
+                degradations,
+                IndependenceDegradation::SameFamilyVerification {
+                    finding_id: finding.id.clone(),
+                },
+            );
+        }
+    }
+
+    let Some(bar_check) = verdict_bar_check(outcome.verdict.as_ref()) else {
+        return;
+    };
+    let lead = state.active_run.as_ref().and_then(|run| {
+        run.provenance
+            .iter()
+            .find(|agent| agent.role == AgentRole::Lead)
+    });
+    if same_verified_family(Some(&bar_check.provenance), lead) {
+        push_degradation(degradations, IndependenceDegradation::SameFamilyBarCheck);
+    }
+}
+
+fn push_degradation(
+    degradations: &mut Vec<IndependenceDegradation>,
+    degradation: IndependenceDegradation,
+) {
+    if !degradations.contains(&degradation) {
+        degradations.push(degradation);
+    }
+}
+
+const fn verdict_bar_check(verdict: Option<&ReviewVerdict>) -> Option<&BarCheckRecord> {
+    match verdict {
+        Some(ReviewVerdict::Converged { bar_check } | ReviewVerdict::BarFailed { bar_check }) => {
+            Some(bar_check)
+        }
+        _ => None,
+    }
+}
+
+fn same_verified_family(left: Option<&ModelProvenance>, right: Option<&ModelProvenance>) -> bool {
+    left.and_then(ModelProvenance::verified_family)
+        .zip(right.and_then(ModelProvenance::verified_family))
+        .is_some_and(|(left, right)| left == right)
 }
 
 fn fallback_run_record(
@@ -4124,7 +4266,8 @@ fn fallback_run_record(
         status: state.status,
         outcome: None,
         refusal: None,
-        ensemble_archive_path: None,
+        session_archives: Vec::new(),
+        independence_degradations: Vec::new(),
         provenance: Vec::new(),
     }
 }
@@ -4179,7 +4322,8 @@ fn stale_running_record_from_extensions(state: &PrRunState) -> Option<RunRecord>
         status: RunStatus::Running,
         outcome: None,
         refusal: None,
-        ensemble_archive_path: None,
+        session_archives: Vec::new(),
+        independence_degradations: Vec::new(),
         provenance: Vec::new(),
     })
 }
@@ -4187,7 +4331,6 @@ fn stale_running_record_from_extensions(state: &PrRunState) -> Option<RunRecord>
 fn run_kind_from_debug_name(value: &str) -> Option<RunKind> {
     match value {
         "Review" => Some(RunKind::Review),
-        "Judge" => Some(RunKind::Judge),
         "Fix" => Some(RunKind::Fix),
         "Finish" => Some(RunKind::Finish),
         _ => None,
@@ -4202,12 +4345,7 @@ fn run_refusal_from_launch_refusal(refusal: &LaunchRefusal, message: &str) -> Ru
                 RunRefusalReason::RequiredFamilyUnavailable
             }
             LaunchRefusal::WorkspaceIsolationMissing => RunRefusalReason::WorkspaceIsolationMissing,
-            LaunchRefusal::UnverifiedProvenance { .. } => RunRefusalReason::UnverifiedProvenance,
-            LaunchRefusal::InsufficientReviewerFamilies => {
-                RunRefusalReason::InsufficientReviewerFamilies
-            }
             LaunchRefusal::ReviewerFixerOverlap => RunRefusalReason::ReviewerFixerOverlap,
-            LaunchRefusal::MissingIndependentJudge => RunRefusalReason::MissingIndependentJudge,
             LaunchRefusal::NonFreshSession { .. } => RunRefusalReason::NonFreshSession,
         },
         message: message.to_owned(),
@@ -4264,12 +4402,9 @@ fn loop_record_from_state(
         pass_index: state.pass_index,
         commit_sha: state.commit_sha.clone(),
         findings: state.findings.clone(),
-        decisions: state.decisions.clone(),
         patches,
-        judge_verdict: state.decisions.iter().rev().find_map(|decision| {
-            (provenance_pass(&decision.provenance) == Some(state.pass_index))
-                .then_some(decision.verdict)
-        }),
+        verdict: state.verdict.clone(),
+        coverage: state.coverage.clone(),
         fix_outcome,
     }
 }
@@ -4672,8 +4807,9 @@ mod tests {
     };
 
     use pump19_contract::{
-        ActorCapability, ActorPermissions, ActorRef, BranchCurrency, DecisionSubject, FindingId,
-        FinishLabel, Mergeability, ModelFamily, ReviewCleanliness, Revision,
+        ActorCapability, ActorPermissions, ActorRef, BarCheckRecord, BranchCurrency, FamilySplit,
+        FindingId, FinishLabel, Mergeability, ModelFamily, ReviewCleanliness, Revision,
+        VerificationStatus,
     };
 
     use super::*;
@@ -4690,6 +4826,7 @@ mod tests {
             }
         }
 
+        #[allow(dead_code)]
         fn from_events(events: Vec<ContractEvent>) -> Self {
             Self {
                 events: VecDeque::from(events),
@@ -4774,7 +4911,6 @@ mod tests {
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: true,
-                    egress_bounded: true,
                     resource_bounded: true,
                     ephemeral: true,
                 },
@@ -4943,8 +5079,8 @@ mod tests {
                 ));
             }
             Ok(format!(
-                "formatted material finding {} via {}",
-                request.finding.id.0, request.decision.id
+                "formatted material finding {} via {:?}",
+                request.finding.id.0, request.verification.status
             ))
         }
     }
@@ -5089,6 +5225,7 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
+    #[allow(dead_code)]
     struct LoopLauncher;
 
     impl RunLauncher for LoopLauncher {
@@ -5119,10 +5256,30 @@ mod tests {
                         return Ok(RunLaunchOutcome {
                             outcome: RunOutcome::Succeeded,
                             findings: Vec::new(),
-                            decisions: Vec::new(),
+                            verdict: Some(ReviewVerdict::Converged {
+                                bar_check: BarCheckRecord {
+                                    passed: true,
+                                    provenance: request
+                                        .provenance
+                                        .iter()
+                                        .find(|provenance| provenance.role == AgentRole::BarCheck)
+                                        .cloned()
+                                        .unwrap_or_else(|| reviewers[0].clone()),
+                                    rationale: "deterministic loop converged".to_owned(),
+                                    extensions: BTreeMap::new(),
+                                },
+                            }),
+                            coverage: Some(CoverageRecord {
+                                complete: true,
+                                visited: vec![".".to_owned()],
+                                unvisited: Vec::new(),
+                                account: "fixture covered the change".to_owned(),
+                                extensions: BTreeMap::new(),
+                            }),
                             patches: Vec::new(),
                             token_usage: None,
-                            ensemble_archive_path: None,
+                            session_archives: Vec::new(),
+                            independence_degradations: Vec::new(),
                         });
                     }
                     let primary_reviewer = reviewers.first().expect("primary reviewer").clone();
@@ -5134,10 +5291,21 @@ mod tests {
                         id: pump19_contract::FindingId(finding_id.to_owned()),
                         dedup_key: finding_id.to_owned(),
                         source_brief: "loop".to_owned(),
-                        dimension: "correctness".to_owned(),
-                        summary: format!("finding for pass {}", request.state.pass_index),
-                        severity: pump19_contract::Severity::High,
-                        confidence: pump19_contract::Confidence::High,
+                        title: format!("finding for pass {}", request.state.pass_index),
+                        explanation: "fixture material finding".to_owned(),
+                        suggestion: Some("fix the fixture issue".to_owned()),
+                        priority: PriorityClass::P1,
+                        verification: FindingVerification {
+                            status: VerificationStatus::Verified,
+                            verifier: request
+                                .provenance
+                                .iter()
+                                .find(|provenance| provenance.role == AgentRole::Verifier)
+                                .cloned(),
+                            evidence: Vec::new(),
+                            cross_family: FamilySplit::CrossFamily,
+                            extensions: BTreeMap::new(),
+                        },
                         certainty: pump19_contract::CertaintyClass::Advisory,
                         provenance,
                         locations: vec![pump19_contract::FindingLocation::General {
@@ -5151,52 +5319,21 @@ mod tests {
                             finding_for(primary_finding_id, primary_reviewer),
                             finding_for(judged_finding_id, secondary_reviewer),
                         ],
-                        decisions: Vec::new(),
-                        patches: Vec::new(),
-                        token_usage: None,
-                        ensemble_archive_path: None,
-                    })
-                }
-                RunKind::Judge => {
-                    let judge = request
-                        .provenance
-                        .iter()
-                        .find(|provenance| provenance.role == AgentRole::Judge)
-                        .expect("judge provenance")
-                        .clone();
-                    let (subject, verdict) = request.state.findings.last().map_or_else(
-                        || {
-                            (
-                                DecisionSubject::FindingSet {
-                                    finding_ids: Vec::new(),
-                                },
-                                DecisionVerdict::Converged,
-                            )
-                        },
-                        |finding| {
-                            (
-                                DecisionSubject::Finding {
-                                    finding_id: finding.id.clone(),
-                                },
-                                DecisionVerdict::Material,
-                            )
-                        },
-                    );
-                    Ok(RunLaunchOutcome {
-                        outcome: RunOutcome::Succeeded,
-                        findings: Vec::new(),
-                        decisions: vec![Decision {
-                            contract_version: ContractVersion::current(),
-                            id: format!("decision-pass-{}", request.state.pass_index),
-                            subject,
-                            verdict,
-                            rationale: "deterministic loop verdict".to_owned(),
-                            provenance: judge,
+                        verdict: Some(ReviewVerdict::FindingsPosted {
+                            material: 2,
+                            suppressed: 0,
+                        }),
+                        coverage: Some(CoverageRecord {
+                            complete: true,
+                            visited: vec![".".to_owned()],
+                            unvisited: Vec::new(),
+                            account: "fixture covered the change".to_owned(),
                             extensions: BTreeMap::new(),
-                        }],
+                        }),
                         patches: Vec::new(),
                         token_usage: None,
-                        ensemble_archive_path: None,
+                        session_archives: Vec::new(),
+                        independence_degradations: Vec::new(),
                     })
                 }
                 RunKind::Fix => {
@@ -5209,7 +5346,8 @@ mod tests {
                     Ok(RunLaunchOutcome {
                         outcome: RunOutcome::Succeeded,
                         findings: Vec::new(),
-                        decisions: Vec::new(),
+                        verdict: None,
+                        coverage: None,
                         patches: vec![Patch {
                             contract_version: ContractVersion::current(),
                             id: pump19_contract::PatchId("patch-material".to_owned()),
@@ -5226,16 +5364,19 @@ mod tests {
                             extensions: BTreeMap::new(),
                         }],
                         token_usage: None,
-                        ensemble_archive_path: None,
+                        session_archives: Vec::new(),
+                        independence_degradations: Vec::new(),
                     })
                 }
                 RunKind::Finish => Ok(RunLaunchOutcome {
                     outcome: RunOutcome::Succeeded,
                     findings: Vec::new(),
-                    decisions: Vec::new(),
+                    verdict: None,
+                    coverage: None,
                     patches: Vec::new(),
                     token_usage: None,
-                    ensemble_archive_path: None,
+                    session_archives: Vec::new(),
+                    independence_degradations: Vec::new(),
                 }),
             }
         }
@@ -5249,10 +5390,12 @@ mod tests {
                 outcome: RunLaunchOutcome {
                     outcome: RunOutcome::Succeeded,
                     findings: Vec::new(),
-                    decisions: Vec::new(),
+                    verdict: None,
+                    coverage: None,
                     patches: Vec::new(),
                     token_usage: None,
-                    ensemble_archive_path: None,
+                    session_archives: Vec::new(),
+                    independence_degradations: Vec::new(),
                 },
                 fail_launch: false,
                 fail_launches_remaining: 0,
@@ -5536,6 +5679,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn facts_with_spurious_core_actor_permissions(head_sha: &str) -> ForgeFacts {
         ForgeFacts {
             finish_label: Some(FinishLabel {
@@ -5613,16 +5757,49 @@ mod tests {
             id: pump19_contract::FindingId(id.to_owned()),
             dedup_key: format!("brief:{agent_id}:{id}"),
             source_brief: "review".to_owned(),
-            dimension: "correctness".to_owned(),
-            summary: "A material review finding.".to_owned(),
-            severity: pump19_contract::Severity::High,
-            confidence: pump19_contract::Confidence::High,
+            title: "A material review finding.".to_owned(),
+            explanation: "The fixture issue is material enough to fix.".to_owned(),
+            suggestion: Some("Fix the fixture issue.".to_owned()),
+            priority: PriorityClass::P1,
+            verification: FindingVerification {
+                status: VerificationStatus::Verified,
+                verifier: Some(verified_provenance(
+                    "verifier",
+                    AgentRole::Verifier,
+                    "claude",
+                )),
+                evidence: Vec::new(),
+                cross_family: FamilySplit::CrossFamily,
+                extensions: BTreeMap::new(),
+            },
             certainty: pump19_contract::CertaintyClass::Advisory,
             provenance: verified_provenance(agent_id, AgentRole::Reviewer, family),
             locations: vec![pump19_contract::FindingLocation::General {
                 description: "whole change".to_owned(),
             }],
             extensions: BTreeMap::new(),
+        }
+    }
+
+    fn material_review_outcome() -> RunLaunchOutcome {
+        RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: vec![finding_from("reviewer-codex", "codex", "finding-1")],
+            verdict: Some(ReviewVerdict::FindingsPosted {
+                material: 1,
+                suppressed: 0,
+            }),
+            coverage: Some(CoverageRecord {
+                complete: true,
+                visited: vec![".".to_owned()],
+                unvisited: Vec::new(),
+                account: "fixture covered the change".to_owned(),
+                extensions: BTreeMap::new(),
+            }),
+            patches: Vec::new(),
+            token_usage: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
         }
     }
 
@@ -5634,12 +5811,14 @@ mod tests {
                 event: EventKind::PullRequestOpened,
             },
             agent_plan: AgentPlan {
+                lead: Some(target("lead-claude", AgentRole::Lead, "claude")),
                 reviewers: vec![
                     target("reviewer-codex", AgentRole::Reviewer, "codex"),
                     target("reviewer-claude", AgentRole::Reviewer, "claude"),
                 ],
+                verifiers: vec![target("verifier-claude", AgentRole::Verifier, "claude")],
+                bar_check: Some(target("bar-codex", AgentRole::BarCheck, "codex")),
                 fixers: vec![target("fixer", AgentRole::Fixer, "codex")],
-                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
@@ -5671,6 +5850,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn review_on_fix_rule() -> TriggerRule {
         TriggerRule {
             id: "review-after-fix".to_owned(),
@@ -5682,21 +5862,24 @@ mod tests {
                 },
             },
             agent_plan: AgentPlan {
+                lead: Some(target("lead-claude", AgentRole::Lead, "claude")),
                 reviewers: vec![
                     target("reviewer-codex", AgentRole::Reviewer, "codex"),
                     target("reviewer-claude", AgentRole::Reviewer, "claude"),
                 ],
+                verifiers: vec![target("verifier-claude", AgentRole::Verifier, "claude")],
+                bar_check: Some(target("bar-codex", AgentRole::BarCheck, "codex")),
                 fixers: Vec::new(),
-                judge: None,
                 finishers: Vec::new(),
             },
         }
     }
 
-    fn judge_after_noop_fix_rule() -> TriggerRule {
+    #[allow(dead_code)]
+    fn review_after_noop_fix_rule() -> TriggerRule {
         TriggerRule {
-            id: "judge-after-noop-fix".to_owned(),
-            run_kind: RunKind::Judge,
+            id: "review-after-noop-fix".to_owned(),
+            run_kind: RunKind::Review,
             criteria: Criteria::Event {
                 event: EventKind::RunCompleted {
                     run_kind: Some(RunKind::Fix),
@@ -5704,59 +5887,69 @@ mod tests {
                 },
             },
             agent_plan: AgentPlan {
-                reviewers: Vec::new(),
+                lead: Some(target("lead-claude", AgentRole::Lead, "claude")),
+                reviewers: vec![
+                    target("reviewer-codex", AgentRole::Reviewer, "codex"),
+                    target("reviewer-claude", AgentRole::Reviewer, "claude"),
+                ],
+                verifiers: vec![target("verifier-claude", AgentRole::Verifier, "claude")],
+                bar_check: Some(target("bar-codex", AgentRole::BarCheck, "codex")),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             },
         }
     }
 
-    fn judge_after_review_rule() -> TriggerRule {
+    fn fix_after_material_review_rule() -> TriggerRule {
         TriggerRule {
-            id: "judge-after-review".to_owned(),
-            run_kind: RunKind::Judge,
-            criteria: Criteria::Event {
-                event: EventKind::RunCompleted {
-                    run_kind: Some(RunKind::Review),
-                    outcome: Some(RunOutcome::Succeeded),
-                },
-            },
-            agent_plan: AgentPlan {
-                reviewers: Vec::new(),
-                fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "glm")),
-                finishers: Vec::new(),
-            },
-        }
-    }
-
-    fn fix_after_material_judge_rule() -> TriggerRule {
-        TriggerRule {
-            id: "fix-after-material-judge".to_owned(),
+            id: "fix-after-material-review".to_owned(),
             run_kind: RunKind::Fix,
             criteria: Criteria::All {
                 criteria: vec![
                     Criteria::Event {
                         event: EventKind::RunCompleted {
-                            run_kind: Some(RunKind::Judge),
+                            run_kind: Some(RunKind::Review),
                             outcome: Some(RunOutcome::Succeeded),
                         },
                     },
                     Criteria::State {
-                        state: StateCriterion::HasMaterialDecision,
+                        state: StateCriterion::HasVerifiedMaterialFindings,
                     },
                 ],
             },
             agent_plan: AgentPlan {
+                lead: None,
                 reviewers: Vec::new(),
+                verifiers: Vec::new(),
+                bar_check: None,
                 fixers: vec![target("fixer", AgentRole::Fixer, "codex")],
-                judge: None,
                 finishers: Vec::new(),
             },
         }
     }
 
+    fn review_after_bar_check_degraded_rule() -> TriggerRule {
+        TriggerRule {
+            id: "review-after-degraded-bar-check".to_owned(),
+            run_kind: RunKind::Review,
+            criteria: Criteria::All {
+                criteria: vec![
+                    Criteria::Event {
+                        event: EventKind::RunCompleted {
+                            run_kind: Some(RunKind::Review),
+                            outcome: Some(RunOutcome::Succeeded),
+                        },
+                    },
+                    Criteria::State {
+                        state: StateCriterion::BarCheckDegraded,
+                    },
+                ],
+            },
+            agent_plan: independent_rule().agent_plan,
+        }
+    }
+
+    #[allow(dead_code)]
     fn finish_on_label_rule() -> TriggerRule {
         TriggerRule {
             id: "finish-on-label".to_owned(),
@@ -5799,6 +5992,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn launched_run_id(outcomes: &[DispatchOutcome]) -> Option<RunId> {
         let [DispatchOutcome::Launched { run_id, .. }] = outcomes else {
             return None;
@@ -5810,7 +6004,6 @@ mod tests {
         WorkspaceIsolation {
             isolated: true,
             credential_free: true,
-            egress_bounded: true,
             resource_bounded: true,
             ephemeral: true,
         }
@@ -6115,123 +6308,6 @@ mod tests {
     }
 
     #[test]
-    fn judge_dispatch_does_not_prepare_source_by_default() {
-        let review_run_id = RunId("review-completed".to_owned());
-        let mut state = initial_state_from_event(&event()).expect("initial state");
-        state.status = RunStatus::Completed;
-        state
-            .findings
-            .push(finding_from("reviewer-codex", "codex", "finding-1"));
-        state.run_history.push(RunRecord {
-            run_id: review_run_id.clone(),
-            run_kind: RunKind::Review,
-            event_id: "forgejo-pr-opened".to_owned(),
-            rule_id: "review".to_owned(),
-            pass_index: 1,
-            commit_sha: state.commit_sha.clone(),
-            status: RunStatus::Completed,
-            outcome: Some(RunOutcome::Succeeded),
-            refusal: None,
-            ensemble_archive_path: None,
-            provenance: vec![
-                verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
-                verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
-            ],
-        });
-        let mut store = FakeRunStateStore::default();
-        store.save(&state).expect("save review state");
-        let temp = tempfile::tempdir().expect("temp dir");
-        let mut core = Core::with_forge_operations_and_source_preparer(
-            FakeEventSource::empty(),
-            SourceWorkspaceProvider {
-                root: temp.path().join("workspace"),
-                cleaned: Rc::new(RefCell::new(0)),
-                injections: Rc::new(RefCell::new(Vec::new())),
-            },
-            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
-            store,
-            RecordingForgeOperations::default(),
-            FailingSourcePreparer,
-        );
-
-        let outcomes = core
-            .process_event(
-                &run_completed_event("review-done", review_run_id, RunKind::Review),
-                &[judge_after_review_rule()],
-            )
-            .expect("judge dispatch should not require source preparation");
-
-        assert!(matches!(
-            outcomes.as_slice(),
-            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-review"
-        ));
-        assert_eq!(core.launcher.launched, 1);
-    }
-
-    #[test]
-    fn judge_run_uses_historical_reviewers_for_independence_gate() {
-        let review_run_id = RunId("event-1:review:1".to_owned());
-        let mut state = initial_state_from_event(&event()).expect("initial state");
-        state.status = RunStatus::Completed;
-        state.extensions.insert(
-            EXT_RUNNING_RUN_ID.to_owned(),
-            Value::String(review_run_id.0.clone()),
-        );
-        state
-            .findings
-            .push(finding_from("reviewer-codex", "codex", "finding-1"));
-        state
-            .findings
-            .push(finding_from("reviewer-claude", "claude", "finding-2"));
-
-        let mut store = FakeRunStateStore::default();
-        store.save(&state).expect("save state");
-        let mut core = Core::new(
-            FakeEventSource::empty(),
-            FakeWorkspaceProvider {
-                isolation: isolated_workspace(),
-                cleaned: 0,
-            },
-            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
-            store,
-        );
-        let event = ContractEvent {
-            contract_version: ContractVersion::current(),
-            id: "event-judge".to_owned(),
-            payload: EventPayload::RunCompleted {
-                run_id: review_run_id,
-                run_kind: Some(RunKind::Review),
-                outcome: RunOutcome::Succeeded,
-            },
-            extensions: BTreeMap::new(),
-        };
-        let rule = TriggerRule {
-            id: "judge".to_owned(),
-            run_kind: RunKind::Judge,
-            criteria: Criteria::Event {
-                event: EventKind::RunCompleted {
-                    run_kind: Some(RunKind::Review),
-                    outcome: Some(RunOutcome::Succeeded),
-                },
-            },
-            agent_plan: AgentPlan {
-                reviewers: Vec::new(),
-                fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "glm")),
-                finishers: Vec::new(),
-            },
-        };
-
-        let outcomes = core.process_event(&event, &[rule]).expect("process event");
-
-        assert_eq!(core.launcher.launched, 1);
-        assert!(matches!(
-            outcomes.as_slice(),
-            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge"
-        ));
-    }
-
-    #[test]
     fn run_completed_criteria_match_run_kind_and_outcome() {
         let event = run_completed_event("fix-completed", RunId("run-fix".to_owned()), RunKind::Fix);
 
@@ -6258,26 +6334,11 @@ mod tests {
         );
     }
 
-    fn material_decision_for(finding: &Finding, rationale: &str) -> Decision {
-        Decision {
-            contract_version: ContractVersion::current(),
-            id: "decision-1".to_owned(),
-            subject: pump19_contract::DecisionSubject::Finding {
-                finding_id: finding.id.clone(),
-            },
-            verdict: DecisionVerdict::Material,
-            rationale: rationale.to_owned(),
-            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
-            extensions: BTreeMap::new(),
-        }
-    }
-
     #[test]
     fn material_finding_comment_posts_formatter_body() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
         let finding = finding_from("reviewer-codex", "codex", "finding-1");
-        let decision = material_decision_for(&finding, "Material because the loop can wedge.");
-        let run_id = RunId("run-judge-1".to_owned());
+        let run_id = RunId("run-review-1".to_owned());
         let mut core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
@@ -6290,24 +6351,64 @@ mod tests {
             RecordingCommentFormatter::default(),
         );
 
-        core.post_finding_comment(&run_id, &mut state, &facts(), &finding, &decision)
+        core.post_finding_comment(&run_id, &mut state, &facts(), &finding)
             .expect("post formatted finding");
 
         assert_eq!(core.comment_formatter.requests.borrow().len(), 1);
         assert_eq!(core.forge_operations.comments.len(), 1);
         assert_eq!(
             core.forge_operations.comments[0].body,
-            "formatted material finding finding-1 via decision-1"
+            "formatted material finding finding-1 via Verified"
         );
         assert_eq!(state.publication.finding_comments.len(), 1);
+    }
+
+    #[test]
+    fn standing_findings_preserve_open_finding_comments() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let finding = finding_from("reviewer-codex", "codex", "finding-1");
+        upsert_finding_comment_publication(
+            &mut state,
+            &finding,
+            ForgeReceipt {
+                operation_id: "comment-1".to_owned(),
+                idempotency_key: "post-comment-1".to_owned(),
+                new_head_sha: None,
+            },
+            FindingCommentStatus::Open,
+        );
+        state.verdict = Some(ReviewVerdict::StandingFindings {
+            finding_dedup_keys: vec![finding.dedup_key.clone()],
+            rationale: "finding survived the fix and remains posted".to_owned(),
+        });
+        let run_id = RunId("run-review-2".to_owned());
+        let mut core = Core::with_forge_operations_and_comment_formatter(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
+        );
+
+        core.post_material_findings(&run_id, &mut state)
+            .expect("standing findings do not resolve comments");
+
+        assert!(core.forge_operations.comment_resolutions.is_empty());
+        assert_eq!(
+            state.publication.finding_comments[0].status,
+            FindingCommentStatus::Open
+        );
     }
 
     #[test]
     fn material_finding_comment_formatter_failure_posts_nothing_and_records_attempt() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
         let finding = finding_from("reviewer-codex", "codex", "finding-1");
-        let decision = material_decision_for(&finding, "Material.");
-        let run_id = RunId("run-judge-1".to_owned());
+        let run_id = RunId("run-review-1".to_owned());
         let mut core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
@@ -6321,7 +6422,7 @@ mod tests {
         );
 
         let error = core
-            .post_finding_comment(&run_id, &mut state, &facts(), &finding, &decision)
+            .post_finding_comment(&run_id, &mut state, &facts(), &finding)
             .expect_err("formatter failure is returned");
 
         assert!(
@@ -6601,7 +6702,7 @@ mod tests {
         let stale_completion = core
             .process_event(
                 &run_completed_event("old-review-completed", old_run_id, RunKind::Review),
-                &[judge_after_review_rule()],
+                &[fix_after_material_review_rule()],
             )
             .expect("stale completion");
 
@@ -6619,13 +6720,7 @@ mod tests {
             .expect("old state");
         assert_eq!(old_saved.status, RunStatus::Superseded);
         assert_eq!(old_saved.superseded_by, Some("new-head-sha".to_owned()));
-        assert_eq!(
-            stale_completion,
-            vec![DispatchOutcome::Skipped {
-                rule_id: "judge-after-review".to_owned(),
-                reason: SkipReason::SupersededHead,
-            }]
-        );
+        assert!(stale_completion.is_empty());
         assert!(core.forge_operations.comments.is_empty());
     }
 
@@ -6640,7 +6735,7 @@ mod tests {
         launcher.fail_launch = true;
         let operator_log = RecordingOperatorLog::default();
         let operator_events = Rc::clone(&operator_log.events);
-        let mut core = Core::with_forge_operations_and_operator_log(
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6649,7 +6744,10 @@ mod tests {
             launcher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
             operator_log,
+            CorePolicy::human_gate(),
         );
 
         let error = core
@@ -6671,14 +6769,14 @@ mod tests {
         assert_eq!(operator_events.borrow().len(), 1);
         let event = &operator_events.borrow()[0];
         assert_eq!(event.kind, OperatorLogEventKind::RunFailure);
-        assert_eq!(event.run_kind, RunKind::Review);
-        assert_eq!(event.pass_index, 1);
+        assert_eq!(event.run_kind, Some(RunKind::Review));
+        assert_eq!(event.pass_index, Some(1));
         assert_eq!(event.message, "run launcher failed: launch failed");
     }
 
     #[test]
     fn failed_completion_triggered_run_rearms_from_durable_completion() {
-        let mut review_core = Core::new(
+        let mut review_core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6691,20 +6789,23 @@ mod tests {
                 LaunchProof::EstablishedFresh,
             ]),
             FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
+        review_core.launcher.outcome = material_review_outcome();
         review_core
             .process_event(&event(), &[independent_rule()])
             .expect("review dispatch");
 
-        let mut judge_launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
-        judge_launcher.fail_launches_remaining = 1;
+        let mut fix_launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
+        fix_launcher.fail_launches_remaining = 1;
         let mut core = Core::new(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
                 cleaned: 0,
             },
-            judge_launcher,
+            fix_launcher,
             review_core.state_store,
         );
 
@@ -6713,22 +6814,22 @@ mod tests {
             .expect("rederive review completion");
         assert_eq!(first_recovery.queued, 1);
         let first_error = core
-            .process_next(&[judge_after_review_rule()])
-            .expect_err("transient judge failure is returned");
+            .process_next(&[fix_after_material_review_rule()])
+            .expect_err("transient fix failure is returned");
         assert!(matches!(first_error, CoreError::Launcher(message) if message == "launch failed"));
 
         let second_recovery = core
             .rederive_pending_completions()
-            .expect("rederive failed judge trigger");
+            .expect("rederive failed fix trigger");
         assert_eq!(second_recovery.queued, 1);
         let retry = core
-            .process_next(&[judge_after_review_rule()])
+            .process_next(&[fix_after_material_review_rule()])
             .expect("retry dispatch")
             .expect("retried completion event");
 
         assert!(matches!(
             retry.as_slice(),
-            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-review"
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "fix-after-material-review"
         ));
         assert_eq!(core.launcher.launched, 2);
         let saved = core
@@ -6737,14 +6838,18 @@ mod tests {
             .expect("load state")
             .expect("retried state");
         assert_eq!(saved.status, RunStatus::Completed);
-        assert!(saved.run_history.iter().any(
-            |record| record.run_kind == RunKind::Judge && record.status == RunStatus::Completed
-        ));
+        assert!(
+            saved
+                .run_history
+                .iter()
+                .any(|record| record.run_kind == RunKind::Fix
+                    && record.status == RunStatus::Completed)
+        );
     }
 
     #[test]
     fn repeated_failed_completion_recovery_parks_poison_event_with_identity() {
-        let mut review_core = Core::new(
+        let mut review_core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6757,20 +6862,23 @@ mod tests {
                 LaunchProof::EstablishedFresh,
             ]),
             FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
+        review_core.launcher.outcome = material_review_outcome();
         review_core
             .process_event(&event(), &[independent_rule()])
             .expect("review dispatch");
 
-        let mut judge_launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
-        judge_launcher.fail_launches_remaining = 2;
+        let mut fix_launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
+        fix_launcher.fail_launches_remaining = 2;
         let mut core = Core::new(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
                 cleaned: 0,
             },
-            judge_launcher,
+            fix_launcher,
             review_core.state_store,
         );
 
@@ -6780,8 +6888,8 @@ mod tests {
         assert_eq!(first_recovery.queued, 1);
         assert_eq!(first_recovery.parked, 0);
         let first_error = core
-            .process_next(&[judge_after_review_rule()])
-            .expect_err("first judge dispatch failure is returned");
+            .process_next(&[fix_after_material_review_rule()])
+            .expect_err("first fix dispatch failure is returned");
         assert!(matches!(first_error, CoreError::Launcher(message) if message == "launch failed"));
 
         let second_recovery = core
@@ -6790,8 +6898,8 @@ mod tests {
         assert_eq!(second_recovery.queued, 1);
         assert_eq!(second_recovery.parked, 0);
         let second_error = core
-            .process_next(&[judge_after_review_rule()])
-            .expect_err("second judge dispatch failure is returned");
+            .process_next(&[fix_after_material_review_rule()])
+            .expect_err("second fix dispatch failure is returned");
         assert!(matches!(second_error, CoreError::Launcher(message) if message == "launch failed"));
 
         let parked = core
@@ -6819,7 +6927,7 @@ mod tests {
 
     #[test]
     fn repeated_refused_completion_recovery_parks_poison_event() {
-        let mut review_core = Core::new(
+        let mut review_core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -6832,7 +6940,10 @@ mod tests {
                 LaunchProof::EstablishedFresh,
             ]),
             FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
         );
+        review_core.launcher.outcome = material_review_outcome();
         review_core
             .process_event(&event(), &[independent_rule()])
             .expect("review dispatch");
@@ -6848,8 +6959,8 @@ mod tests {
         );
 
         let unavailable_family = || CoreError::RequiredFamilyUnavailable {
-            agent_id: AgentId("judge".to_owned()),
-            family: ModelFamily("glm".to_owned()),
+            agent_id: AgentId("fixer".to_owned()),
+            family: ModelFamily("codex".to_owned()),
             reason: "test family unavailable".to_owned(),
         };
 
@@ -6859,7 +6970,7 @@ mod tests {
         assert_eq!(first_recovery.queued, 1);
         core.launcher.prepare_error = Some(unavailable_family());
         let first_refusal = core
-            .process_next(&[judge_after_review_rule()])
+            .process_next(&[fix_after_material_review_rule()])
             .expect("first refusal is recorded")
             .expect("completion event is processed");
         assert!(matches!(
@@ -6877,7 +6988,7 @@ mod tests {
         assert_eq!(second_recovery.parked, 0);
         core.launcher.prepare_error = Some(unavailable_family());
         let second_refusal = core
-            .process_next(&[judge_after_review_rule()])
+            .process_next(&[fix_after_material_review_rule()])
             .expect("second refusal is recorded")
             .expect("retried completion event is processed");
         assert!(matches!(
@@ -6965,20 +7076,24 @@ mod tests {
         launcher.outcome = RunLaunchOutcome {
             outcome: RunOutcome::Succeeded,
             findings: Vec::new(),
-            decisions: vec![Decision {
+            verdict: None,
+            coverage: None,
+            patches: vec![Patch {
                 contract_version: ContractVersion::current(),
-                id: "decision-material".to_owned(),
-                subject: DecisionSubject::Finding {
-                    finding_id: finding.id,
+                id: pump19_contract::PatchId("patch-material".to_owned()),
+                run_id: RunId("review-one-done:fix-after-material-review:1".to_owned()),
+                commit_sha: state.commit_sha.clone(),
+                idempotency_key: "patch-material".to_owned(),
+                answers_findings: vec![finding.id],
+                change: pump19_contract::PatchChange::Description {
+                    summary: "fixed material finding".to_owned(),
                 },
-                verdict: DecisionVerdict::Material,
-                rationale: "worth another pass".to_owned(),
-                provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
+                provenance: verified_provenance("fixer", AgentRole::Fixer, "codex"),
                 extensions: BTreeMap::new(),
             }],
-            patches: Vec::new(),
             token_usage: None,
-            ensemble_archive_path: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
         };
         let mut core = Core::with_forge_operations_and_comment_formatter(
             FakeEventSource::empty(),
@@ -6994,18 +7109,18 @@ mod tests {
         let event = run_completed_event("review-one-done", review_run_id, RunKind::Review);
 
         let error = core
-            .process_event(&event, &[judge_after_review_rule()])
+            .process_event(&event, &[fix_after_material_review_rule()])
             .expect_err("forge operation failure is returned");
 
         assert!(
             matches!(error, CoreError::ForgeOperation(message) if message.contains("forge unavailable"))
         );
-        let run_id = RunId("review-one-done:judge-after-review:1".to_owned());
+        let run_id = RunId("review-one-done:fix-after-material-review:1".to_owned());
         let saved = core
             .state_store
             .load_by_run_id(&run_id)
             .expect("load by run")
-            .expect("failed judge state");
+            .expect("failed fix state");
         let records = saved
             .run_history
             .iter()
@@ -7038,7 +7153,7 @@ mod tests {
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
         );
-        let run_id = RunId("run-judge-1".to_owned());
+        let run_id = RunId("run-review-1".to_owned());
 
         let refused = core
             .refuse_comment_if_head_moved(
@@ -7133,7 +7248,7 @@ mod tests {
             event.refusal_reason,
             Some(RunRefusalReason::RunCeilingReached)
         );
-        assert_eq!(event.run_kind, RunKind::Review);
+        assert_eq!(event.run_kind, Some(RunKind::Review));
         assert!(event.message.contains("RunCeilingReached"));
     }
 
@@ -7210,7 +7325,7 @@ mod tests {
         });
         let operator_log = RecordingOperatorLog::default();
         let operator_events = Rc::clone(&operator_log.events);
-        let mut core = Core::with_forge_operations_and_operator_log(
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
             FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
@@ -7219,7 +7334,10 @@ mod tests {
             launcher,
             FakeRunStateStore::default(),
             RecordingForgeOperations::default(),
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
             operator_log,
+            CorePolicy::human_gate(),
         );
 
         let outcomes = core
@@ -7431,7 +7549,6 @@ mod tests {
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: false,
-                    egress_bounded: true,
                     resource_bounded: true,
                     ephemeral: true,
                 },
@@ -7477,328 +7594,6 @@ mod tests {
 
         assert!(matches!(error, CoreError::Launcher(message) if message == "launch failed"));
         assert_eq!(core.workspace_provider.cleaned, 1);
-    }
-
-    #[test]
-    fn process_event_drives_review_fix_rereview_finish_loop() {
-        let rules = vec![
-            review_on_open_or_update_rule(),
-            judge_after_review_rule(),
-            fix_after_material_judge_rule(),
-            finish_on_label_rule(),
-        ];
-        let mut core = Core::with_forge_operations_and_comment_formatter(
-            FakeEventSource::empty(),
-            FakeWorkspaceProvider {
-                isolation: isolated_workspace(),
-                cleaned: 0,
-            },
-            LoopLauncher,
-            FakeRunStateStore::default(),
-            RecordingForgeOperations::default(),
-            RecordingCommentFormatter::default(),
-        );
-
-        let outcomes = core
-            .process_event(&event(), &rules)
-            .expect("PR open launches review");
-        let review_one = launched_run_id(&outcomes).expect("review launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("review-one-done", review_one, RunKind::Review),
-                &rules,
-            )
-            .expect("review completion launches judge");
-        let judge_one = launched_run_id(&outcomes).expect("judge launched");
-        assert_eq!(core.forge_operations.comments.len(), 1);
-        assert!(matches!(
-            core.forge_operations.comments[0]
-                .authorisation
-                .evidence
-                .as_slice(),
-            [
-                AuthorisationEvidence::Decision {
-                    verdict: DecisionVerdict::Material,
-                    ..
-                },
-                AuthorisationEvidence::Finding { .. }
-            ]
-        ));
-
-        let outcomes = core
-            .process_event(
-                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
-                &rules,
-            )
-            .expect("material judge completion launches fix");
-        let fix_one = launched_run_id(&outcomes).expect("fix launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
-                &rules,
-            )
-            .expect("fix completion publishes patches");
-        assert!(outcomes.is_empty());
-        assert_eq!(core.forge_operations.fix_pushes.len(), 1);
-        assert!(
-            core.forge_operations.fix_pushes[0].commits[0]
-                .message
-                .contains("fix: fixed material finding")
-        );
-        assert!(
-            core.forge_operations.fix_pushes[0].commits[0]
-                .message
-                .contains("Answers findings: finding-material")
-        );
-
-        let update_event = ContractEvent {
-            contract_version: ContractVersion::current(),
-            id: "fix-push-updated-pr".to_owned(),
-            payload: EventPayload::PullRequestUpdated {
-                facts: facts_with_head("head-after-fix"),
-            },
-            extensions: BTreeMap::new(),
-        };
-        let outcomes = core
-            .process_event(&update_event, &rules)
-            .expect("PR update launches fresh review");
-        let review_two = launched_run_id(&outcomes).expect("second review launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("review-two-done", review_two, RunKind::Review),
-                &rules,
-            )
-            .expect("second review completion launches judge");
-        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
-
-        let no_fix = core
-            .process_event(
-                &run_completed_event("judge-two-done", judge_two.clone(), RunKind::Judge),
-                &rules,
-            )
-            .expect("minor judge completion is processed");
-        assert!(no_fix.is_empty());
-        assert_eq!(
-            core.forge_operations.comments.len(),
-            1,
-            "pass-one material finding is not reposted after convergence"
-        );
-        let converged = core
-            .state_store
-            .load_by_run_id(&judge_two)
-            .expect("load judge-two state")
-            .expect("judge-two state");
-        assert!(
-            Criteria::State {
-                state: StateCriterion::HasConverged
-            }
-            .matches(&event(), Some(&converged))
-        );
-
-        let finish_label = ContractEvent {
-            contract_version: ContractVersion::current(),
-            id: "finish-label".to_owned(),
-            payload: EventPayload::LabelApplied {
-                pr: pr(),
-                label: facts().finish_label.expect("finish label"),
-            },
-            extensions: BTreeMap::new(),
-        };
-        let outcomes = core
-            .process_event(&finish_label, &rules)
-            .expect("finish label launches finish");
-        let finish = launched_run_id(&outcomes).expect("finish launched");
-        assert!(finish.0.contains("finish-on-label"));
-        assert_eq!(core.forge_operations.merges.len(), 1);
-        let finished = core
-            .state_store
-            .load_by_run_id(&finish)
-            .expect("load finish state")
-            .expect("finish state");
-        assert_eq!(finished.publication.merges.len(), 1);
-        assert!(
-            core.forge_operations.merges[0]
-                .authorisation
-                .evidence
-                .iter()
-                .any(|evidence| matches!(
-                    evidence,
-                    AuthorisationEvidence::MergeGateCleanAndCurrent { .. }
-                ))
-        );
-        assert_eq!(core.workspace_provider.cleaned, 6);
-    }
-
-    #[test]
-    fn judge_launches_after_clean_review_via_recorded_run_provenance() {
-        let review_run_id = RunId("review-clean".to_owned());
-        let mut state = initial_state_from_event(&event()).expect("initial state");
-        state.status = RunStatus::Completed;
-        // A clean review: no findings, so the only reviewer evidence is the
-        // provenance recorded on the run itself.
-        state.run_history.push(RunRecord {
-            run_id: review_run_id.clone(),
-            run_kind: RunKind::Review,
-            event_id: "review-trigger".to_owned(),
-            rule_id: "review-on-pr-change".to_owned(),
-            pass_index: 1,
-            commit_sha: state.commit_sha.clone(),
-            status: RunStatus::Completed,
-            outcome: Some(RunOutcome::Succeeded),
-            refusal: None,
-            ensemble_archive_path: None,
-            provenance: vec![
-                verified_provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
-                verified_provenance("reviewer-claude", AgentRole::Reviewer, "claude"),
-            ],
-        });
-        let mut store = FakeRunStateStore::default();
-        store.save(&state).expect("save clean review state");
-        let mut core = Core::new(
-            FakeEventSource::empty(),
-            FakeWorkspaceProvider {
-                isolation: isolated_workspace(),
-                cleaned: 0,
-            },
-            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
-            store,
-        );
-
-        let outcomes = core
-            .process_event(
-                &run_completed_event_with_outcome(
-                    "review-clean-done",
-                    review_run_id,
-                    RunKind::Review,
-                    RunOutcome::Succeeded,
-                ),
-                &[judge_after_review_rule()],
-            )
-            .expect("clean review completion");
-
-        assert!(matches!(
-            outcomes.as_slice(),
-            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-review"
-        ));
-        assert_eq!(core.launcher.launched, 1);
-    }
-
-    #[test]
-    fn noop_fix_completion_routes_to_judge_with_standing_findings() {
-        let fix_run_id = RunId("fix-noop".to_owned());
-        let mut state = initial_state_from_event(&event()).expect("initial state");
-        let first = finding_from("reviewer-codex", "codex", "finding-1");
-        let second = finding_from("reviewer-claude", "claude", "finding-2");
-        state.status = RunStatus::Completed;
-        state.findings = vec![first.clone(), second];
-        state.decisions.push(Decision {
-            contract_version: ContractVersion::current(),
-            id: "decision-material".to_owned(),
-            subject: DecisionSubject::Finding {
-                finding_id: first.id,
-            },
-            verdict: DecisionVerdict::Material,
-            rationale: "worth another pass".to_owned(),
-            provenance: verified_provenance("judge-old", AgentRole::Judge, "glm"),
-            extensions: BTreeMap::new(),
-        });
-        state.run_history.push(RunRecord {
-            run_id: fix_run_id.clone(),
-            run_kind: RunKind::Fix,
-            event_id: "fix-trigger".to_owned(),
-            rule_id: "fix-after-material-judge".to_owned(),
-            pass_index: 1,
-            commit_sha: state.commit_sha.clone(),
-            status: RunStatus::Completed,
-            outcome: Some(RunOutcome::NoOp),
-            refusal: None,
-            ensemble_archive_path: None,
-            provenance: Vec::new(),
-        });
-        let mut store = FakeRunStateStore::default();
-        store.save(&state).expect("save NoOp state");
-        let mut core = Core::new(
-            FakeEventSource::empty(),
-            FakeWorkspaceProvider {
-                isolation: isolated_workspace(),
-                cleaned: 0,
-            },
-            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
-            store,
-        );
-
-        let outcomes = core
-            .process_event(
-                &run_completed_event_with_outcome(
-                    "fix-noop-done",
-                    fix_run_id,
-                    RunKind::Fix,
-                    RunOutcome::NoOp,
-                ),
-                &[judge_after_noop_fix_rule()],
-            )
-            .expect("NoOp fix completion");
-
-        assert!(matches!(
-            outcomes.as_slice(),
-            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "judge-after-noop-fix"
-        ));
-        assert_eq!(core.launcher.launched, 1);
-    }
-
-    #[test]
-    fn noop_fix_outcome_archives_standing_findings_for_judge() {
-        let run_id = RunId("fix-noop".to_owned());
-        let mut state = initial_state_from_event(&event()).expect("initial state");
-        state.status = RunStatus::Running;
-        state.active_run = Some(RunRecord {
-            run_id,
-            run_kind: RunKind::Fix,
-            event_id: "judge-done".to_owned(),
-            rule_id: "fix-after-material-judge".to_owned(),
-            pass_index: 1,
-            commit_sha: state.commit_sha.clone(),
-            status: RunStatus::Running,
-            outcome: None,
-            refusal: None,
-            ensemble_archive_path: None,
-            provenance: Vec::new(),
-        });
-        let finding = finding_from("reviewer-codex", "codex", "finding-1");
-        state.findings.push(finding.clone());
-        state.decisions.push(Decision {
-            contract_version: ContractVersion::current(),
-            id: "decision-material".to_owned(),
-            subject: DecisionSubject::Finding {
-                finding_id: finding.id,
-            },
-            verdict: DecisionVerdict::Material,
-            rationale: "worth another pass".to_owned(),
-            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
-            extensions: BTreeMap::new(),
-        });
-
-        apply_run_outcome(
-            &mut state,
-            RunKind::Fix,
-            RunLaunchOutcome {
-                outcome: RunOutcome::NoOp,
-                findings: Vec::new(),
-                decisions: Vec::new(),
-                patches: Vec::new(),
-                token_usage: None,
-                ensemble_archive_path: None,
-            },
-        );
-
-        assert_eq!(state.status, RunStatus::Completed);
-        assert!(state.findings.is_empty());
-        assert!(state.decisions.is_empty());
-        assert_eq!(state.loop_history.len(), 1);
-        assert_eq!(state.loop_history[0].findings.len(), 1);
-        assert_eq!(state.loop_history[0].decisions.len(), 1);
-        assert_eq!(state.loop_history[0].fix_outcome, Some(RunOutcome::NoOp));
-        assert_eq!(state.run_history[0].outcome, Some(RunOutcome::NoOp));
     }
 
     #[test]
@@ -7918,8 +7713,8 @@ mod tests {
         assert_eq!(events.len(), 1);
         let operator_event = &events[0];
         assert_eq!(operator_event.kind, OperatorLogEventKind::RunFailure);
-        assert_eq!(operator_event.run_id, run_id);
-        assert_eq!(operator_event.run_kind, RunKind::Review);
+        assert_eq!(operator_event.run_id, Some(run_id.clone()));
+        assert_eq!(operator_event.run_kind, Some(RunKind::Review));
         assert!(operator_event.message.contains("no active run record"));
         let failed = core
             .state_store
@@ -7929,228 +7724,6 @@ mod tests {
         assert_eq!(failed.status, RunStatus::Failed);
         assert_eq!(failed.run_history[0].status, RunStatus::Failed);
         assert_eq!(failed.run_history[0].outcome, Some(RunOutcome::Failed));
-    }
-
-    #[test]
-    fn convergence_applies_finish_label_and_reaches_merge_when_policy_grants_authority() {
-        let rules = vec![
-            independent_rule(),
-            update_review_rule(),
-            judge_after_review_rule(),
-            fix_after_material_judge_rule(),
-            finish_on_label_rule(),
-        ];
-        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
-            FakeEventSource::empty(),
-            FakeWorkspaceProvider {
-                isolation: isolated_workspace(),
-                cleaned: 0,
-            },
-            LoopLauncher,
-            FakeRunStateStore::default(),
-            RecordingForgeOperations::default(),
-            NoopSourcePreparer,
-            RecordingCommentFormatter::default(),
-            NoopOperatorLog,
-            CorePolicy {
-                finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
-                    label: "pump19-finish".to_owned(),
-                },
-            },
-        );
-
-        let opened_facts = core_authority_facts("abc123");
-        assert!(
-            !opened_facts
-                .actor_permissions
-                .iter()
-                .any(|permission| permission.actor == core_actor()),
-            "core authority must derive from local policy, not forge-supplied sentinel permissions"
-        );
-        let outcomes = core
-            .process_event(&event_with_facts(opened_facts), &rules)
-            .expect("PR open launches review");
-        let review_one = launched_run_id(&outcomes).expect("review launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("review-one-done", review_one, RunKind::Review),
-                &rules,
-            )
-            .expect("review completion launches judge");
-        let judge_one = launched_run_id(&outcomes).expect("judge launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
-                &rules,
-            )
-            .expect("material judge completion launches fix");
-        let fix_one = launched_run_id(&outcomes).expect("fix launched");
-        core.process_event(
-            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
-            &rules,
-        )
-        .expect("fix completion publishes patches");
-
-        let outcomes = core
-            .process_event(
-                &ContractEvent {
-                    contract_version: ContractVersion::current(),
-                    id: "fix-push-updated-pr".to_owned(),
-                    payload: EventPayload::PullRequestUpdated {
-                        facts: core_authority_facts("head-after-fix"),
-                    },
-                    extensions: BTreeMap::new(),
-                },
-                &rules,
-            )
-            .expect("PR update launches fresh review");
-        let review_two = launched_run_id(&outcomes).expect("second review launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("review-two-done", review_two, RunKind::Review),
-                &rules,
-            )
-            .expect("second review completion launches judge");
-        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
-
-        core.process_event(
-            &run_completed_event("judge-two-done", judge_two, RunKind::Judge),
-            &rules,
-        )
-        .expect("converged judge applies finish label");
-        let drained = core
-            .drain_available(&rules)
-            .expect("queued label event launches finish");
-
-        assert_eq!(core.forge_operations.labels.len(), 1);
-        assert_eq!(core.forge_operations.labels[0].label, "pump19-finish");
-        assert_eq!(
-            core.forge_operations.labels[0].authorisation.actor,
-            core_actor()
-        );
-        assert_eq!(core.forge_operations.merges.len(), 1);
-        assert_eq!(
-            core.forge_operations.merges[0].authorisation.actor,
-            core_actor()
-        );
-        assert!(
-            drained
-                .iter()
-                .flatten()
-                .any(|outcome| matches!(outcome, DispatchOutcome::Launched { rule_id, .. } if rule_id == "finish-on-label"))
-        );
-    }
-
-    #[test]
-    fn convergence_does_not_apply_finish_label_without_policy_grant() {
-        let rules = vec![
-            independent_rule(),
-            update_review_rule(),
-            judge_after_review_rule(),
-            fix_after_material_judge_rule(),
-            finish_on_label_rule(),
-        ];
-        let mut core = Core::with_forge_operations_and_comment_formatter(
-            FakeEventSource::empty(),
-            FakeWorkspaceProvider {
-                isolation: isolated_workspace(),
-                cleaned: 0,
-            },
-            LoopLauncher,
-            FakeRunStateStore::default(),
-            RecordingForgeOperations::default(),
-            RecordingCommentFormatter::default(),
-        );
-
-        let outcomes = core
-            .process_event(&event_with_facts(core_authority_facts("abc123")), &rules)
-            .expect("PR open launches review");
-        let review = launched_run_id(&outcomes).expect("review launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("review-one-done", review, RunKind::Review),
-                &rules,
-            )
-            .expect("review completion launches judge");
-        let judge_one = launched_run_id(&outcomes).expect("judge launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("judge-one-done", judge_one, RunKind::Judge),
-                &rules,
-            )
-            .expect("material judge completion launches fix");
-        let fix_one = launched_run_id(&outcomes).expect("fix launched");
-        core.process_event(
-            &run_completed_event("fix-one-done", fix_one, RunKind::Fix),
-            &rules,
-        )
-        .expect("fix completion publishes patches");
-        let outcomes = core
-            .process_event(
-                &ContractEvent {
-                    contract_version: ContractVersion::current(),
-                    id: "fix-push-updated-pr".to_owned(),
-                    payload: EventPayload::PullRequestUpdated {
-                        facts: core_authority_facts("head-after-fix"),
-                    },
-                    extensions: BTreeMap::new(),
-                },
-                &rules,
-            )
-            .expect("PR update launches fresh review");
-        let review_two = launched_run_id(&outcomes).expect("second review launched");
-        let outcomes = core
-            .process_event(
-                &run_completed_event("review-two-done", review_two, RunKind::Review),
-                &rules,
-            )
-            .expect("second review completion launches judge");
-        let judge_two = launched_run_id(&outcomes).expect("second judge launched");
-        core.process_event(
-            &run_completed_event("judge-two-done", judge_two.clone(), RunKind::Judge),
-            &rules,
-        )
-        .expect("converged judge does not apply finish label");
-
-        assert!(core.forge_operations.labels.is_empty());
-        assert!(core.forge_operations.merges.is_empty());
-
-        let spoofed_facts = facts_with_spurious_core_actor_permissions("head-after-fix");
-        let spoofed_label = spoofed_facts.finish_label.clone().expect("finish label");
-        let mut spoofed_state = core
-            .state_store
-            .load_by_run_id(&judge_two)
-            .expect("load converged state")
-            .expect("converged state");
-        spoofed_state.extensions.insert(
-            EXT_FORGE_FACTS.to_owned(),
-            serde_json::to_value(&spoofed_facts).expect("serialise spoofed facts"),
-        );
-        core.state_store
-            .save(&spoofed_state)
-            .expect("save spoofed facts");
-
-        let error = core
-            .process_event(
-                &ContractEvent {
-                    contract_version: ContractVersion::current(),
-                    id: "spurious-core-finish-label".to_owned(),
-                    payload: EventPayload::LabelApplied {
-                        pr: pr(),
-                        label: spoofed_label,
-                    },
-                    extensions: BTreeMap::new(),
-                },
-                &[finish_on_label_rule()],
-            )
-            .expect_err("forge-supplied core actor is not trusted without policy grant");
-
-        assert!(matches!(
-            error,
-            CoreError::ForgeOperation(message)
-                if message == "finish label actor lacks merge capability"
-        ));
-        assert!(core.forge_operations.merges.is_empty());
     }
 
     #[test]
@@ -8164,222 +7737,59 @@ mod tests {
     }
 
     #[test]
-    fn drain_available_self_emits_run_completions_without_external_echo() {
-        let rules = vec![
-            independent_rule(),
-            review_on_fix_rule(),
-            judge_after_review_rule(),
-            fix_after_material_judge_rule(),
-        ];
-        let mut core = Core::with_forge_operations_and_comment_formatter(
-            FakeEventSource::from_events(vec![event()]),
+    fn reviewer_fixer_overlap_is_refused_before_launch() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let mut finding = finding_from("reviewer-codex", "codex", "finding-1");
+        finding.provenance.session_id = SessionId("session-1".to_owned());
+        state.findings = vec![finding];
+        state.verdict = Some(ReviewVerdict::FindingsPosted {
+            material: 1,
+            suppressed: 0,
+        });
+        state.run_history.push(RunRecord {
+            run_id: RunId("run-review".to_owned()),
+            run_kind: RunKind::Review,
+            event_id: "event-1".to_owned(),
+            rule_id: "review".to_owned(),
+            pass_index: 1,
+            commit_sha: "abc123".to_owned(),
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Succeeded),
+            refusal: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
+            provenance: Vec::new(),
+        });
+        let mut store = FakeRunStateStore::default();
+        store.save(&state).expect("save state");
+        let mut rule = fix_after_material_review_rule();
+        rule.agent_plan.fixers = vec![target("reviewer-codex", AgentRole::Fixer, "codex")];
+        let mut core = Core::new(
+            FakeEventSource::empty(),
             FakeWorkspaceProvider {
                 isolation: isolated_workspace(),
                 cleaned: 0,
             },
-            LoopLauncher,
-            FakeRunStateStore::default(),
-            RecordingForgeOperations::default(),
-            RecordingCommentFormatter::default(),
+            FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]),
+            store,
         );
-
-        let batches = core.drain_available(&rules).expect("drain event queue");
-
-        assert_eq!(
-            core.workspace_provider.cleaned, 5,
-            "review, judge, fix, re-review, and final judge all launch from one ingress event"
-        );
-        assert_eq!(
-            core.forge_operations.comments.len(),
-            1,
-            "material findings are still posted exactly once"
-        );
-        assert_eq!(batches.len(), 6);
-        assert!(
-            batches
-                .iter()
-                .filter(|batch| matches!(batch.as_slice(), [DispatchOutcome::Launched { .. }]))
-                .count()
-                == 5
-        );
-        let converged = core
-            .state_store
-            .load_latest_for_pr(&pr())
-            .expect("load latest")
-            .expect("converged state");
-        assert!(
-            Criteria::State {
-                state: StateCriterion::HasConverged
-            }
-            .matches(&event(), Some(&converged))
-        );
-
-        let duplicate = core
+        let outcomes = core
             .process_event(
                 &run_completed_event(
-                    stable_id("run-completed", ["event-1:review:1"]).as_str(),
-                    RunId("event-1:review:1".to_owned()),
+                    "review-completed",
+                    RunId("run-review".to_owned()),
                     RunKind::Review,
                 ),
-                &rules,
+                &[rule],
             )
-            .expect("duplicate completion replay");
-        assert_eq!(
-            duplicate,
-            vec![DispatchOutcome::Skipped {
-                rule_id: "judge-after-review".to_owned(),
-                reason: SkipReason::DuplicateDispatch,
-            }]
-        );
-    }
+            .expect("process fix completion");
 
-    #[test]
-    fn rederived_completions_resume_loop_after_core_restart() {
-        let rules = vec![
-            independent_rule(),
-            review_on_fix_rule(),
-            judge_after_review_rule(),
-            fix_after_material_judge_rule(),
-        ];
-        let mut core = Core::with_forge_operations_and_comment_formatter(
-            FakeEventSource::from_events(vec![event()]),
-            FakeWorkspaceProvider {
-                isolation: isolated_workspace(),
-                cleaned: 0,
-            },
-            LoopLauncher,
-            FakeRunStateStore::default(),
-            RecordingForgeOperations::default(),
-            RecordingCommentFormatter::default(),
-        );
-
-        let opened = core
-            .process_next(&rules)
-            .expect("process opened event")
-            .expect("opened event available");
-        assert!(matches!(
-            opened.as_slice(),
-            [DispatchOutcome::Launched {
-                rule_id,
-                run_id: _
-            }] if rule_id == "review"
-        ));
-        assert_eq!(
-            core.pending_event_count(),
-            1,
-            "the first completion is deliberately still only queued in memory"
-        );
-        let persisted_store = core.state_store.clone();
-        drop(core);
-
-        let mut restarted = Core::with_forge_operations_and_comment_formatter(
-            FakeEventSource::from_events(Vec::new()),
-            FakeWorkspaceProvider {
-                isolation: isolated_workspace(),
-                cleaned: 0,
-            },
-            LoopLauncher,
-            persisted_store,
-            RecordingForgeOperations::default(),
-            RecordingCommentFormatter::default(),
-        );
-        let recovered = restarted
-            .rederive_pending_completions()
-            .expect("rederive completions from stored run history");
-        assert_eq!(recovered.queued, 1);
-        assert_eq!(recovered.terminal_replays, 1);
-        assert_eq!(recovered.stale_running_failures, 0);
-
-        let batches = restarted.drain_available(&rules).expect("resume loop");
-
-        assert_eq!(
-            restarted.workspace_provider.cleaned, 4,
-            "judge, fix, re-review, and final judge resume after restart"
-        );
-        assert_eq!(
-            restarted.forge_operations.comments.len(),
-            1,
-            "the material finding still surfaces once after restart"
-        );
-        assert_eq!(batches.len(), 5);
-        let converged = restarted
-            .state_store
-            .load_latest_for_pr(&pr())
-            .expect("load latest")
-            .expect("converged state");
-        assert!(
-            Criteria::State {
-                state: StateCriterion::HasConverged
-            }
-            .matches(&event(), Some(&converged))
-        );
-    }
-
-    #[test]
-    fn single_reviewer_family_is_refused_before_launch() {
-        let mut rule = independent_rule();
-        rule.agent_plan.reviewers[1] = target("reviewer-two", AgentRole::Reviewer, "codex");
-        let (outcomes, launched) = run(rule, Vec::new());
-
-        assert_eq!(launched, 0);
+        assert_eq!(core.launcher.launched, 0);
         assert_eq!(
             outcomes,
             vec![DispatchOutcome::Refused {
-                rule_id: "review".to_owned(),
-                reason: LaunchRefusal::InsufficientReviewerFamilies,
-            }]
-        );
-    }
-
-    #[test]
-    fn reviewer_fixer_overlap_is_refused_before_launch() {
-        let mut rule = independent_rule();
-        rule.agent_plan.fixers = vec![target("reviewer-codex", AgentRole::Fixer, "codex")];
-        let (outcomes, launched) = run(rule, Vec::new());
-
-        assert_eq!(launched, 0);
-        assert_eq!(
-            outcomes,
-            vec![DispatchOutcome::Refused {
-                rule_id: "review".to_owned(),
+                rule_id: "fix-after-material-review".to_owned(),
                 reason: LaunchRefusal::ReviewerFixerOverlap,
-            }]
-        );
-    }
-
-    #[test]
-    fn judge_sharing_reviewer_family_is_refused_before_launch() {
-        let mut rule = independent_rule();
-        rule.agent_plan.judge = Some(target("judge", AgentRole::Judge, "codex"));
-        let (outcomes, launched) = run(rule, Vec::new());
-
-        assert_eq!(launched, 0);
-        assert_eq!(
-            outcomes,
-            vec![DispatchOutcome::Refused {
-                rule_id: "review".to_owned(),
-                reason: LaunchRefusal::MissingIndependentJudge,
-            }]
-        );
-    }
-
-    #[test]
-    fn engine_model_family_mismatch_is_refused_before_launch() {
-        let mut rule = independent_rule();
-        rule.agent_plan.reviewers[1].engine = AgentEngine::Codex;
-        let (outcomes, launched) = run(rule, Vec::new());
-
-        assert_eq!(launched, 0);
-        assert_eq!(
-            outcomes,
-            vec![DispatchOutcome::Refused {
-                rule_id: "review".to_owned(),
-                reason: LaunchRefusal::UnverifiedProvenance {
-                    agent_id: AgentId("reviewer-claude".to_owned()),
-                    reason:
-                        "engine codex cannot map model \"claude-2026\" to a trusted model family"
-                            .to_owned(),
-                },
             }]
         );
     }
@@ -8404,34 +7814,7 @@ mod tests {
             vec![DispatchOutcome::Refused {
                 rule_id: "review".to_owned(),
                 reason: LaunchRefusal::NonFreshSession {
-                    agent_id: AgentId("reviewer-claude".to_owned()),
-                },
-            }]
-        );
-    }
-
-    #[test]
-    fn unverified_provenance_is_refused_before_launch() {
-        let (outcomes, launched) = run(
-            independent_rule(),
-            vec![
-                LaunchProof::EstablishedFresh,
-                LaunchProof::Unverified {
-                    reason: "control plane could not bind session".to_owned(),
-                },
-                LaunchProof::EstablishedFresh,
-                LaunchProof::EstablishedFresh,
-            ],
-        );
-
-        assert_eq!(launched, 0);
-        assert_eq!(
-            outcomes,
-            vec![DispatchOutcome::Refused {
-                rule_id: "review".to_owned(),
-                reason: LaunchRefusal::UnverifiedProvenance {
-                    agent_id: AgentId("reviewer-claude".to_owned()),
-                    reason: "control plane could not bind session".to_owned(),
+                    agent_id: AgentId("reviewer-codex".to_owned()),
                 },
             }]
         );
@@ -8489,7 +7872,6 @@ mod tests {
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: false,
-                    egress_bounded: true,
                     resource_bounded: true,
                     ephemeral: true,
                 },
@@ -8552,10 +7934,12 @@ mod tests {
         launcher.outcome = RunLaunchOutcome {
             outcome: RunOutcome::Failed,
             findings: Vec::new(),
-            decisions: Vec::new(),
+            verdict: None,
+            coverage: None,
             patches: Vec::new(),
             token_usage: Some(7),
-            ensemble_archive_path: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
         };
         let mut core = Core::new(
             FakeEventSource::empty(),
@@ -8590,6 +7974,83 @@ mod tests {
                 .get(EXT_TOKENS_USED)
                 .and_then(Value::as_u64),
             Some(7)
+        );
+    }
+
+    #[test]
+    fn derived_independence_degradations_are_recorded_and_operator_logged() {
+        let mut same_family_finding = finding_from("reviewer-codex", "codex", "finding-1");
+        same_family_finding.verification.verifier = Some(verified_provenance(
+            "verifier-codex",
+            AgentRole::Verifier,
+            "codex",
+        ));
+        let mut rule = independent_rule();
+        rule.agent_plan.verifiers = vec![target("verifier-codex", AgentRole::Verifier, "codex")];
+        rule.agent_plan.bar_check = Some(target("bar-claude", AgentRole::BarCheck, "claude"));
+        let mut launcher = FakeRunLauncher::new(Vec::new());
+        launcher.outcome = RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: vec![same_family_finding.clone()],
+            verdict: Some(ReviewVerdict::Converged {
+                bar_check: BarCheckRecord {
+                    passed: true,
+                    provenance: verified_provenance("bar-claude", AgentRole::BarCheck, "claude"),
+                    rationale: "bar check shared the lead family".to_owned(),
+                    extensions: BTreeMap::new(),
+                },
+            }),
+            coverage: Some(CoverageRecord {
+                complete: true,
+                visited: vec![".".to_owned()],
+                unvisited: Vec::new(),
+                account: "fixture covered the change".to_owned(),
+                extensions: BTreeMap::new(),
+            }),
+            patches: Vec::new(),
+            token_usage: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
+        };
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
+            operator_log,
+            CorePolicy::human_gate(),
+        );
+
+        core.process_event(&event(), &[rule])
+            .expect("process review event");
+
+        let saved = core
+            .state_store
+            .load_latest_for_pr(&pr())
+            .expect("load state")
+            .expect("state saved");
+        let degradations = &saved.run_history[0].independence_degradations;
+        assert!(
+            degradations.contains(&IndependenceDegradation::SameFamilyVerification {
+                finding_id: same_family_finding.id
+            })
+        );
+        assert!(degradations.contains(&IndependenceDegradation::SameFamilyBarCheck));
+        assert_eq!(
+            operator_events
+                .borrow()
+                .iter()
+                .filter(|event| event.kind == OperatorLogEventKind::IndependenceDegradation)
+                .count(),
+            2
         );
     }
 
@@ -8631,59 +8092,46 @@ mod tests {
     }
 
     #[test]
-    fn state_criteria_match_material_decision() {
+    fn state_criteria_match_verified_material_findings() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
-        state.decisions.push(Decision {
-            contract_version: ContractVersion::current(),
-            id: "decision-1".to_owned(),
-            subject: DecisionSubject::Finding {
-                finding_id: pump19_contract::FindingId("finding-1".to_owned()),
-            },
-            verdict: DecisionVerdict::Material,
-            rationale: "worth another pass".to_owned(),
-            provenance: establish_provenance(
-                &target("judge", AgentRole::Judge, "glm"),
-                PreparedAgent {
-                    agent_id: AgentId("judge".to_owned()),
-                    role: AgentRole::Judge,
-                    session_id: SessionId("judge-session".to_owned()),
-                    proof: LaunchProof::EstablishedFresh,
-                },
-                1,
-            ),
-            extensions: BTreeMap::new(),
-        });
+        state
+            .findings
+            .push(finding_from("reviewer-codex", "codex", "finding-1"));
 
         assert!(
             Criteria::State {
-                state: StateCriterion::HasMaterialDecision
+                state: StateCriterion::HasVerifiedMaterialFindings
             }
             .matches(&event(), Some(&state))
         );
     }
 
     #[test]
+    fn material_finding_state_criterion_uses_policy_threshold() {
+        let mut state = initial_state_from_event(&event()).expect("initial state");
+        let mut finding = finding_from("reviewer-codex", "codex", "finding-1");
+        finding.priority = PriorityClass::P2;
+        state.findings.push(finding);
+        let criterion = Criteria::State {
+            state: StateCriterion::HasVerifiedMaterialFindings,
+        };
+        let mut policy = CorePolicy::human_gate();
+        policy.fix_before_merge_priority = PriorityClass::P2;
+
+        assert!(!criterion.matches(&event(), Some(&state)));
+        assert!(criterion.matches_with_policy(&event(), Some(&state), &policy));
+    }
+
+    #[test]
     fn state_criteria_match_recorded_convergence_verdict() {
         let mut state = initial_state_from_event(&event()).expect("initial state");
-        state.decisions.push(Decision {
-            contract_version: ContractVersion::current(),
-            id: "decision-converged".to_owned(),
-            subject: DecisionSubject::FindingSet {
-                finding_ids: Vec::new(),
+        state.verdict = Some(ReviewVerdict::Converged {
+            bar_check: BarCheckRecord {
+                passed: true,
+                provenance: verified_provenance("bar-codex", AgentRole::BarCheck, "codex"),
+                rationale: "review clears the bar".to_owned(),
+                extensions: BTreeMap::new(),
             },
-            verdict: DecisionVerdict::Converged,
-            rationale: "nothing material stands".to_owned(),
-            provenance: establish_provenance(
-                &target("judge", AgentRole::Judge, "glm"),
-                PreparedAgent {
-                    agent_id: AgentId("judge".to_owned()),
-                    role: AgentRole::Judge,
-                    session_id: SessionId("judge-session".to_owned()),
-                    proof: LaunchProof::EstablishedFresh,
-                },
-                1,
-            ),
-            extensions: BTreeMap::new(),
         });
 
         assert!(
@@ -8692,6 +8140,74 @@ mod tests {
             }
             .matches(&event(), Some(&state))
         );
+    }
+
+    #[test]
+    fn repeated_bar_check_degradation_does_not_refire_review_retry() {
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut launcher = FakeRunLauncher::new(Vec::new());
+        launcher.outcome = RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: Vec::new(),
+            verdict: Some(ReviewVerdict::BarCheckDegraded {
+                attempts: 3,
+                last_error: "bar check unavailable".to_owned(),
+            }),
+            coverage: Some(CoverageRecord {
+                complete: true,
+                visited: vec![".".to_owned()],
+                unvisited: Vec::new(),
+                account: "fixture covered the change".to_owned(),
+                extensions: BTreeMap::new(),
+            }),
+            patches: Vec::new(),
+            token_usage: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
+        };
+        let mut core = Core::with_forge_operations_and_operator_log(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            operator_log,
+        );
+        let open_outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("initial review");
+        let first_run = launched_run_id(&open_outcomes).expect("first review run");
+        let retry_event = run_completed_event("review-one-done", first_run, RunKind::Review);
+        let retry_outcomes = core
+            .process_event(&retry_event, &[review_after_bar_check_degraded_rule()])
+            .expect("retry review");
+        let second_run = launched_run_id(&retry_outcomes).expect("second review run");
+        let second_completion =
+            run_completed_event("review-two-done", second_run.clone(), RunKind::Review);
+
+        let stopped = core
+            .process_event(
+                &second_completion,
+                &[review_after_bar_check_degraded_rule()],
+            )
+            .expect("second degraded review does not retry again");
+
+        assert_eq!(core.launcher.launched, 2);
+        assert!(stopped.is_empty());
+        let saved = core
+            .state_store
+            .load_by_run_id(&second_run)
+            .expect("load second run")
+            .expect("state saved");
+        assert_eq!(bar_check_degraded_count_for_current_pass(&saved), 2);
+        assert!(operator_events.borrow().iter().any(|event| {
+            event.kind == OperatorLogEventKind::ConfigWarning
+                && event.message.contains("retry policy is exhausted")
+        }));
     }
 
     #[test]

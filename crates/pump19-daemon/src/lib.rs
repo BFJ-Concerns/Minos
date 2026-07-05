@@ -25,16 +25,17 @@ use std::{
 
 use pump19_adaptations::{
     MechanicalExecution, MechanicalPack, MechanicalStep, MechanicalStepKind, PromptPack,
-    PromptTemplate, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
+    PromptTemplate, WorkflowSlot, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
 };
-use pump19_contract::{PullRequestRef, RunKind, SessionId};
+use pump19_contract::{ContractVersion, PullRequestRef, RunKind, SessionId};
 use pump19_core::{
     AgentLaunchSpec, CommentFormatter, CompletionRecoveryAction, CompletionRecoverySummary, Core,
     CoreError, CorePolicy, DispatchOutcome, FindingCommentFormatRequest,
     FinishLabelApplicationPolicy, JsonRunStateStore, LaunchProof, OperatorLog, OperatorLogEvent,
-    PreparedAgent, PreparedSource, SOURCE_PREPARATION_ROOT_SUFFIX, SourcePreparationRequest,
-    SourcePreparer, TriggerRule,
+    OperatorLogEventKind, PreparedAgent, PreparedSource, SOURCE_PREPARATION_ROOT_SUFFIX,
+    SourcePreparationRequest, SourcePreparer, TriggerRule,
 };
+use pump19_engine::{EngineKind, EngineSessionLauncher, LaunchBounds, WriteAccess};
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
     ForgejoEventSource, ForgejoFixCommit, ForgejoForgeOperations, ForgejoNormalisationConfig,
@@ -42,9 +43,10 @@ use pump19_forge_forgejo::{
     PollingForgejoActivitySource,
 };
 use pump19_runs::{
-    AgentSessionPreparer, EnsembleFixBody, EnsembleJudgeBody, EnsembleReviewBody,
-    EnsembleWorkflowConfig, HostEnsembleWorkflowRunner, MergeReadiness, MergeReadinessCheck,
-    Pump19RunLauncher, RunBodyError, SubjectIntent, VerifiedMergeGateFinishBody,
+    AgentSessionPreparer, EnsembleFixBody, EnsembleWorkflowConfig, HostEnsembleWorkflowRunner,
+    LeadEngineConfig, LeadSessionFrameConfig, LeadSessionReviewBody, LeadWorkflowScript,
+    MergeReadiness, MergeReadinessCheck, Pump19RunLauncher, ReviewWorkflowSlot, RunBodyError,
+    SubjectIntent, VerifiedMergeGateFinishBody,
 };
 use pump19_workspace::{CommandRuntime, ContainerWorkspaceProvider, WorkspaceConfig};
 use serde::{Deserialize, Serialize};
@@ -478,8 +480,7 @@ type RuntimeCore = Core<
 
 type RuntimeLauncher = Pump19RunLauncher<
     DaemonSessionPreparer,
-    EnsembleReviewBody<HostEnsembleWorkflowRunner>,
-    EnsembleJudgeBody<HostEnsembleWorkflowRunner>,
+    LeadSessionReviewBody<EngineSessionLauncher, HostEnsembleWorkflowRunner>,
     EnsembleFixBody<HostEnsembleWorkflowRunner>,
     VerifiedMergeGateFinishBody<Option<RuntimeMergeReadiness>>,
 >;
@@ -840,7 +841,8 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         config.workspace.root,
         config.workspace.image,
     ));
-    let operator_log = RuntimeOperatorLog::new(config.state_root.join("operator.log.jsonl"));
+    let mut operator_log = RuntimeOperatorLog::new(config.state_root.join("operator.log.jsonl"));
+    record_prompt_pack_warnings(&mut operator_log, &prompt_pack.brief_warnings)?;
     let state_store = JsonRunStateStore::new(config.state_root)?;
     let forge_operations =
         ForgejoForgeOperations::new(CommandForgejoClient::new(config.forgejo.operation_command));
@@ -856,6 +858,26 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         policy,
     );
     Ok(Pump19Daemon::new(core, config.loop_control))
+}
+
+fn record_prompt_pack_warnings<T: std::fmt::Debug>(
+    operator_log: &mut dyn OperatorLog,
+    warnings: &[T],
+) -> Result<(), CoreError> {
+    for warning in warnings {
+        operator_log.record(OperatorLogEvent {
+            contract_version: ContractVersion::current(),
+            kind: OperatorLogEventKind::ConfigWarning,
+            pr: None,
+            run_id: None,
+            run_kind: None,
+            pass_index: None,
+            commit_sha: None,
+            message: format!("prompt pack warning: {warning:?}"),
+            refusal_reason: None,
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -929,27 +951,26 @@ fn core_policy(config: &ForgejoDaemonConfig) -> CorePolicy {
     };
     CorePolicy {
         finish_label_application,
+        fix_before_merge_priority: pump19_contract::PriorityClass::P1,
+        schema_repair_attempts: 2,
+        bar_check_retry_attempts: 2,
     }
 }
 
 fn runtime_launcher(
     ensemble: &EnsembleDaemonConfig,
-    subject_intents: &BTreeMap<String, SubjectIntent>,
     prompt_pack: &PromptPack,
     prompt_root: &Path,
+    subject_intents: BTreeMap<String, SubjectIntent>,
     merge_readiness: Option<RuntimeMergeReadiness>,
 ) -> Result<RuntimeLauncher, DaemonError> {
     let runner = HostEnsembleWorkflowRunner::new(&ensemble.node_program, &ensemble.launcher_path);
     Ok(Pump19RunLauncher::new(
         DaemonSessionPreparer,
-        EnsembleReviewBody::with_subject_intents(
+        LeadSessionReviewBody::new(
+            EngineSessionLauncher::default(),
             runner.clone(),
-            workflow_config(ensemble, prompt_pack, prompt_root, RunKind::Review)?,
-            subject_intents.clone(),
-        ),
-        EnsembleJudgeBody::new(
-            runner.clone(),
-            workflow_config(ensemble, prompt_pack, prompt_root, RunKind::Judge)?,
+            lead_frame_config(ensemble, prompt_pack, prompt_root, subject_intents)?,
         ),
         EnsembleFixBody::new(
             runner,
@@ -967,11 +988,74 @@ fn runtime_launcher_from_config(
 ) -> Result<RuntimeLauncher, DaemonError> {
     runtime_launcher(
         &config.ensemble,
-        &config.forgejo.repository_intents,
         prompt_pack,
         prompt_root,
+        config.forgejo.repository_intents.clone(),
         merge_readiness,
     )
+}
+
+fn lead_frame_config(
+    ensemble: &EnsembleDaemonConfig,
+    prompt_pack: &PromptPack,
+    prompt_root: &Path,
+    subject_intents: BTreeMap<String, SubjectIntent>,
+) -> Result<LeadSessionFrameConfig, DaemonError> {
+    let mission = prompt_template(prompt_pack, RunKind::Review)
+        .ok_or(DaemonError::MissingPromptTemplate(RunKind::Review))?;
+    let workflows = prompt_pack
+        .manifest
+        .workflow_scripts
+        .iter()
+        .map(|script| {
+            Ok(LeadWorkflowScript {
+                slot: review_workflow_slot(script.slot),
+                path: prompt_root.join(&script.path),
+            })
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
+    Ok(LeadSessionFrameConfig {
+        run_root: ensemble.archive_root.join("frame-runs"),
+        node_program: ensemble.node_program.clone(),
+        ensemble_launcher: ensemble.launcher_path.clone(),
+        workflows,
+        mission_template: mission.template.clone(),
+        selected_briefs: prompt_pack
+            .review_briefs
+            .iter()
+            .map(|brief| pump19_contract::ManifestBrief {
+                id: brief.id.clone(),
+                title: brief.title.clone(),
+                occasion: "every-pr".to_owned(),
+            })
+            .collect(),
+        brief_warnings: prompt_pack
+            .brief_warnings
+            .iter()
+            .map(|warning| format!("{warning:?}"))
+            .collect(),
+        subject_intents,
+        occasion: "every-pr".to_owned(),
+        materiality_threshold: pump19_contract::PriorityClass::P1,
+        lead_engine: LeadEngineConfig {
+            engine: EngineKind::Claude,
+            executable: PathBuf::from("claude"),
+            requested_model: Some("claude-sonnet-4-5".to_owned()),
+            bounds: LaunchBounds::new(Duration::from_mins(15)),
+            write_access: WriteAccess::ReadOnly,
+            env: BTreeMap::new(),
+        },
+    })
+}
+
+const fn review_workflow_slot(slot: WorkflowSlot) -> ReviewWorkflowSlot {
+    match slot {
+        WorkflowSlot::SpecialistFanout => ReviewWorkflowSlot::SpecialistFanout,
+        WorkflowSlot::VerifyFindings => ReviewWorkflowSlot::VerifyFindings,
+        WorkflowSlot::AssembleReview => ReviewWorkflowSlot::AssembleReview,
+        WorkflowSlot::BarCheck => ReviewWorkflowSlot::BarCheck,
+        WorkflowSlot::RepairOutput => ReviewWorkflowSlot::RepairOutput,
+    }
 }
 
 /// The mechanical-pack step name that marks a merge-readiness command.
@@ -1099,7 +1183,7 @@ fn runtime_merge_readiness(pack: &MechanicalPack) -> Option<RuntimeMergeReadines
 
 /// Host-side comment formatting backed by a mechanical-pack command.
 ///
-/// The command receives finding, decision and forge context on stdin and returns
+/// The command receives finding, verification and forge context on stdin and returns
 /// `{"body":"..."}`. It never receives forge credentials; the core still owns
 /// the authorised post/update operation that uses the returned body.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1117,7 +1201,7 @@ struct FormatCommentsCommandInput<'a> {
     commit_sha: &'a str,
     web_base_url: Option<&'a str>,
     finding: &'a pump19_contract::Finding,
-    decision: &'a pump19_contract::Decision,
+    verification: &'a pump19_contract::FindingVerification,
     facts: &'a pump19_contract::ForgeFacts,
 }
 
@@ -1139,7 +1223,7 @@ impl CommentFormatter for RuntimeCommentFormatter {
             commit_sha: &request.facts.head.sha,
             web_base_url: self.web_base_url.as_deref(),
             finding: &request.finding,
-            decision: &request.decision,
+            verification: &request.verification,
             facts: &request.facts,
         };
         let stdin = serde_json::to_vec(&input).map_err(|error| {
@@ -1203,16 +1287,22 @@ fn workflow_config(
         archive_root: ensemble.archive_root.clone(),
         timeout_ms: ensemble.timeout_ms,
         prompt_template: template.template.clone(),
-        briefs: prompt_pack.briefs.clone(),
+        briefs: prompt_pack
+            .review_briefs
+            .iter()
+            .map(|brief| pump19_contract::ManifestBrief {
+                id: brief.id.clone(),
+                title: brief.title.clone(),
+                occasion: "every-pr".to_owned(),
+            })
+            .collect(),
     })
 }
 
 fn legacy_workflow_script(prompt_root: &Path, run_kind: RunKind) -> Option<PathBuf> {
     let file_name = match run_kind {
-        RunKind::Review => "review.js",
-        RunKind::Judge => "judge.js",
         RunKind::Fix => "fix.js",
-        RunKind::Finish => return None,
+        RunKind::Review | RunKind::Finish => return None,
     };
     let path = prompt_root.join("workflows").join(file_name);
     if path.exists() {
@@ -1819,12 +1909,13 @@ mod tests {
 
     use pump19_adaptations::{PromptPackManifest, WorkflowScript, WorkflowSlot};
     use pump19_contract::{
-        ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
-        CertaintyClass, Confidence, ContractVersion, Decision, DecisionSubject, DecisionVerdict,
-        Extensions, Finding, FindingId, FindingLocation, ForgeFacts, Mergeability, ModelFamily,
-        ModelLineage, ModelProvenance, Patch, PatchChange, PatchId, PrRunState,
-        ProvenanceVerification, PublicationState, PullRequestRef, ReviewCleanliness, Revision,
-        RunId, RunKind, RunOutcome, RunRefusalReason, SessionFreshness, SessionId, Severity,
+        ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BarCheckRecord,
+        BranchCurrency, CertaintyClass, ContractVersion, Extensions, FamilySplit, Finding,
+        FindingId, FindingLocation, FindingVerification, ForgeFacts, Mergeability, ModelFamily,
+        ModelLineage, ModelProvenance, Patch, PatchChange, PatchId, PrRunState, PriorityClass,
+        ProvenanceVerification, PublicationState, PullRequestRef, ReviewCleanliness, ReviewVerdict,
+        Revision, RunId, RunKind, RunOutcome, RunRefusalReason, SessionFreshness, SessionId,
+        VerificationStatus,
     };
     use pump19_core::{
         AgentEngine, AgentLaunchTarget, AgentPlan, AuthorisationEvidence, AuthorisedComment,
@@ -1839,7 +1930,6 @@ mod tests {
         ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
         ForgejoMergeability, ForgejoReviewCleanliness,
     };
-    use pump19_judgement::JudgementBrief;
     use pump19_review::{ReviewBrief, ReviewBriefExtent};
     use tempfile::tempdir;
 
@@ -1921,7 +2011,6 @@ mod tests {
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: true,
-                    egress_bounded: true,
                     resource_bounded: true,
                     ephemeral: true,
                 },
@@ -2135,15 +2224,16 @@ mod tests {
         ) -> Result<RunLaunchOutcome, CoreError> {
             match request.run_kind {
                 RunKind::Review => Ok(review_outcome(&request)),
-                RunKind::Judge => Ok(judge_outcome(&request)),
                 RunKind::Fix => Ok(fix_outcome(&request)),
                 RunKind::Finish => Ok(RunLaunchOutcome {
                     outcome: RunOutcome::Succeeded,
                     findings: Vec::new(),
-                    decisions: Vec::new(),
+                    verdict: None,
+                    coverage: None,
                     patches: Vec::new(),
                     token_usage: None,
-                    ensemble_archive_path: None,
+                    session_archives: Vec::new(),
+                    independence_degradations: Vec::new(),
                 }),
             }
         }
@@ -2175,8 +2265,8 @@ mod tests {
                     run_id: pump19_contract::RunId("run-review".to_owned()),
                 }])),
                 Ok(Some(vec![DispatchOutcome::Launched {
-                    rule_id: "judge".to_owned(),
-                    run_id: pump19_contract::RunId("run-judge".to_owned()),
+                    rule_id: "review-bar-check".to_owned(),
+                    run_id: pump19_contract::RunId("run-review-bar-check".to_owned()),
                 }])),
             ]),
             LoopControlConfig {
@@ -2439,17 +2529,14 @@ mod tests {
             .run(&loop_rules(), &NeverShutdown)
             .expect("run daemon");
 
-        assert_eq!(summary.launches, 6);
-        assert_eq!(*cleaned.borrow(), 6);
-        assert_eq!(comments.borrow().len(), 1);
+        assert_eq!(summary.launches, 4);
+        assert_eq!(*cleaned.borrow(), 4);
+        assert_eq!(comments.borrow().len(), 2);
         assert_eq!(merges.borrow().len(), 1);
         assert!(matches!(
             comments.borrow()[0].authorisation.evidence.as_slice(),
             [
-                AuthorisationEvidence::Decision {
-                    verdict: DecisionVerdict::Material,
-                    ..
-                },
+                AuthorisationEvidence::Verification { .. },
                 AuthorisationEvidence::Finding { .. }
             ]
         ));
@@ -2547,7 +2634,6 @@ mod tests {
             isolation: WorkspaceIsolation {
                 isolated: true,
                 credential_free: true,
-                egress_bounded: true,
                 resource_bounded: true,
                 ephemeral: true,
             },
@@ -2572,7 +2658,8 @@ mod tests {
             loop_history: Vec::new(),
             superseded_by: None,
             findings: Vec::new(),
-            decisions: Vec::new(),
+            verdict: None,
+            coverage: None,
             patches: Vec::new(),
             publication: PublicationState::default(),
             ceiling: None,
@@ -2685,7 +2772,6 @@ printf '{{"tree":"{prepared_tree}","revision":"abc123"}}'
             isolation: WorkspaceIsolation {
                 isolated: true,
                 credential_free: true,
-                egress_bounded: true,
                 resource_bounded: true,
                 ephemeral: true,
             },
@@ -2766,7 +2852,6 @@ exit 23
             isolation: WorkspaceIsolation {
                 isolated: true,
                 credential_free: true,
-                egress_bounded: true,
                 resource_bounded: true,
                 ephemeral: true,
             },
@@ -2891,14 +2976,14 @@ stop_after_quiet_polls = 1
         log.record(OperatorLogEvent {
             contract_version: ContractVersion::current(),
             kind: OperatorLogEventKind::LaunchRefusal,
-            pr: PullRequestRef {
+            pr: Some(PullRequestRef {
                 repository: "acme/widgets".to_owned(),
                 id: "42".to_owned(),
-            },
-            run_id: RunId("forgejo-pr-opened:review:1".to_owned()),
-            run_kind: RunKind::Review,
-            pass_index: 1,
-            commit_sha: "abc123".to_owned(),
+            }),
+            run_id: Some(RunId("forgejo-pr-opened:review:1".to_owned())),
+            run_kind: Some(RunKind::Review),
+            pass_index: Some(1),
+            commit_sha: Some("abc123".to_owned()),
             message: "launch skipped: RunCeilingReached".to_owned(),
             refusal_reason: Some(RunRefusalReason::RunCeilingReached),
         })
@@ -2957,59 +3042,24 @@ stop_after_quiet_polls = 1
         );
         let _daemon = build_daemon(config.clone()).expect("daemon builds with repository intent");
         let prompt_root = config.prompt_pack.parent().expect("prompt pack has parent");
-        let mut launcher = runtime_launcher_from_config(&config, &prompt_pack, prompt_root, None)
-            .expect("build runtime launcher from daemon config");
-        let mut workspace = FakeWorkspaceProvider {
-            cleaned: Rc::new(RefCell::new(0)),
-        };
-        let workspace_root = dir.path().join("workspace");
-        write_review_diff(
-            &workspace_root,
-            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
-        );
+        let frame = lead_frame_config(
+            &config.ensemble,
+            &prompt_pack,
+            prompt_root,
+            config.forgejo.repository_intents.clone(),
+        )
+        .expect("build lead frame config");
+        let subject = frame
+            .subject_intents
+            .get("acme/widgets")
+            .expect("repository intent threaded into lead frame");
 
-        let outcome = launcher
-            .launch_run(
-                RunLaunchRequest {
-                    run_id: RunId("review-run".to_owned()),
-                    run_kind: RunKind::Review,
-                    event: probe_event(),
-                    state: pending_state("abc123"),
-                    workspace: WorkspaceLease {
-                        id: "workspace".to_owned(),
-                        root: workspace_root,
-                        isolation: WorkspaceIsolation {
-                            isolated: true,
-                            credential_free: true,
-                            egress_bounded: true,
-                            resource_bounded: true,
-                            ephemeral: true,
-                        },
-                    },
-                    provenance: vec![
-                        provenance_for_target(target(
-                            "reviewer-codex",
-                            AgentRole::Reviewer,
-                            "codex",
-                        )),
-                        provenance_for_target(target(
-                            "reviewer-claude",
-                            AgentRole::Reviewer,
-                            "claude",
-                        )),
-                    ],
-                },
-                &mut workspace,
-            )
-            .expect("review launch succeeds");
-
-        assert_eq!(outcome.findings.len(), 1);
-        let wrapper_source =
-            fs::read_to_string(&captured_args).expect("read captured workflow wrapper");
-        assert!(wrapper_source.contains("Acme Widgets"));
-        assert!(wrapper_source.contains("widgets"));
-        assert!(wrapper_source.contains("Review the configured widget purpose."));
-        assert!(wrapper_source.contains("\\\"subject\\\""));
+        assert_eq!(subject.name, "Acme Widgets");
+        assert_eq!(subject.slug, "widgets");
+        assert_eq!(subject.purpose, "Review the configured widget purpose.");
+        assert!(frame.mission_template.contains("{{subject_name}}"));
+        assert!(frame.mission_template.contains("{{subject_slug}}"));
+        assert!(frame.mission_template.contains("{{subject_purpose}}"));
     }
 
     #[test]
@@ -3204,16 +3254,27 @@ printf 'not json\n'
     fn format_request() -> FindingCommentFormatRequest {
         let finding_id = FindingId("finding-1".to_owned());
         FindingCommentFormatRequest {
-            run_id: RunId("run-judge-1".to_owned()),
+            run_id: RunId("run-review-1".to_owned()),
             finding: Finding {
                 contract_version: ContractVersion::current(),
-                id: finding_id.clone(),
+                id: finding_id,
                 dedup_key: "review:correctness:src/lib.rs:42".to_owned(),
                 source_brief: "review".to_owned(),
-                dimension: "correctness".to_owned(),
-                summary: "A material review finding.".to_owned(),
-                severity: Severity::High,
-                confidence: Confidence::High,
+                title: "A material review finding.".to_owned(),
+                explanation: "The daemon fixture found a material issue.".to_owned(),
+                suggestion: Some("Fix the material issue.".to_owned()),
+                priority: PriorityClass::P1,
+                verification: FindingVerification {
+                    status: VerificationStatus::Verified,
+                    verifier: Some(provenance_for_target(target(
+                        "verifier-claude",
+                        AgentRole::Verifier,
+                        "claude",
+                    ))),
+                    evidence: Vec::new(),
+                    cross_family: FamilySplit::CrossFamily,
+                    extensions: Extensions::new(),
+                },
                 certainty: CertaintyClass::Advisory,
                 provenance: provenance_for_target(target(
                     "reviewer-codex",
@@ -3225,13 +3286,15 @@ printf 'not json\n'
                 }],
                 extensions: Extensions::new(),
             },
-            decision: Decision {
-                contract_version: ContractVersion::current(),
-                id: "decision-1".to_owned(),
-                subject: DecisionSubject::Finding { finding_id },
-                verdict: DecisionVerdict::Material,
-                rationale: "Material.".to_owned(),
-                provenance: provenance_for_target(target("judge-glm", AgentRole::Judge, "glm")),
+            verification: FindingVerification {
+                status: VerificationStatus::Verified,
+                verifier: Some(provenance_for_target(target(
+                    "verifier-claude",
+                    AgentRole::Verifier,
+                    "claude",
+                ))),
+                evidence: Vec::new(),
+                cross_family: FamilySplit::CrossFamily,
                 extensions: Extensions::new(),
             },
             facts: contract_facts(),
@@ -3260,7 +3323,8 @@ printf 'not json\n'
                 loop_history: Vec::new(),
                 superseded_by: None,
                 findings: Vec::new(),
-                decisions: Vec::new(),
+                verdict: None,
+                coverage: None,
                 patches: Vec::new(),
                 publication: PublicationState::default(),
                 ceiling: None,
@@ -3272,12 +3336,14 @@ printf 'not json\n'
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: true,
-                    egress_bounded: true,
                     resource_bounded: true,
                     ephemeral: true,
                 },
             },
             provenance: Vec::new(),
+            fix_before_merge_priority: pump19_contract::PriorityClass::P1,
+            schema_repair_attempts: 2,
+            bar_check_retry_attempts: 2,
         }
     }
 
@@ -3666,12 +3732,6 @@ exit 1
                         extensions: Extensions::new(),
                     },
                     PromptTemplate {
-                        id: "judge".to_owned(),
-                        run_kind: RunKind::Judge,
-                        template: "{{findings}}".to_owned(),
-                        extensions: Extensions::new(),
-                    },
-                    PromptTemplate {
                         id: "fix".to_owned(),
                         run_kind: RunKind::Fix,
                         template: "{{findings}}".to_owned(),
@@ -3683,12 +3743,6 @@ exit 1
                         id: "review".to_owned(),
                         slot: WorkflowSlot::SpecialistFanout,
                         path: PathBuf::from("review.js"),
-                        extensions: Extensions::new(),
-                    },
-                    WorkflowScript {
-                        id: "judge".to_owned(),
-                        slot: WorkflowSlot::VerifyFindings,
-                        path: PathBuf::from("judge.js"),
                         extensions: Extensions::new(),
                     },
                     WorkflowScript {
@@ -3704,19 +3758,12 @@ exit 1
             review_briefs: vec![ReviewBrief {
                 id: "purpose".to_owned(),
                 title: "Purpose".to_owned(),
-                body: "Judge the configured purpose.".to_owned(),
+                body: "Review the configured purpose.".to_owned(),
                 scope: vec!["**".to_owned()],
                 extent: ReviewBriefExtent::Standard,
                 run_condition: vec!["every-pr".to_owned()],
             }],
             brief_warnings: Vec::new(),
-            briefs: vec![JudgementBrief {
-                id: "purpose".to_owned(),
-                title: "Purpose".to_owned(),
-                intent_ref: "behaviours.purpose".to_owned(),
-                brief: "Judge the configured purpose.".to_owned(),
-                evidence_paths: Vec::new(),
-            }],
         }
     }
 
@@ -3729,12 +3776,12 @@ exit 1
             toml::to_string(&pack.manifest).expect("serialise prompt manifest"),
         )
         .expect("write prompt manifest");
-        for brief in &pack.briefs {
+        for brief in &pack.review_briefs {
             fs::write(
                 brief_root.join(format!("{}.md", brief.id)),
                 format!(
                     "+++\ntitle = {:?}\nscope = [\"**\"]\nextent = \"standard\"\nrun-condition = [\"every-pr\"]\n+++\n{}\n",
-                    brief.title, brief.brief
+                    brief.title, brief.body
                 ),
             )
             .expect("write brief");
@@ -3750,12 +3797,6 @@ exit 1
             .expect("write workflow script");
         }
         prompt_root.join("prompt-pack.toml")
-    }
-
-    fn write_review_diff(root: &Path, diff: &str) {
-        let evidence_dir = root.join(".pump19/review");
-        fs::create_dir_all(&evidence_dir).expect("create review evidence dir");
-        fs::write(evidence_dir.join("diff.patch"), diff).expect("write review diff");
     }
 
     fn fake_node_launcher_script(captured_args: &Path) -> String {
@@ -3789,7 +3830,7 @@ JSON
 cat > "$run_dir/manifest.json" <<'JSON'
 {{"kind":"run_manifest","schema_version":1,"status":"complete","run_id":"cwd:test:test-run","result":{{"archive_path":"result.json","exit_code":0}},"files":[{{"path":"agents/000001/agent.json","sha256":"fixture","size":1}},{{"path":"agents/000002/agent.json","sha256":"fixture","size":1}}]}}
 JSON
-printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"failed","reviews":[{{"agent_id":"reviewer-codex","model_family":"codex","status":"failed","stdout":"PUMP19_JUDGEMENT: FAIL configured subject reached prompt","stderr":""}}]}}],"model_families":["codex","claude"]}}'
+printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"failed","reviews":[{{"agent_id":"reviewer-codex","model_family":"codex","status":"failed","stdout":"configured subject reached prompt","stderr":""}}]}}],"model_families":["codex","claude"]}}'
 "#,
             captured_args = captured_args.display()
         )
@@ -3805,6 +3846,7 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
             contract_version: ContractVersion::current(),
             agent_id: target.agent_id,
             role: target.role,
+            engine: target.engine.as_str().to_owned(),
             session_id: SessionId("daemon-test-session".to_owned()),
             freshness: SessionFreshness::FreshForPass { pass_index: 1 },
             verification: ProvenanceVerification::Verified {
@@ -3867,7 +3909,8 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
             loop_history: Vec::new(),
             superseded_by: None,
             findings: Vec::new(),
-            decisions: Vec::new(),
+            verdict: None,
+            coverage: None,
             patches: Vec::new(),
             publication: PublicationState::default(),
             ceiling: None,
@@ -3927,34 +3970,20 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                     ],
                 },
                 agent_plan: AgentPlan {
+                    lead: Some(target("lead-claude", AgentRole::Lead, "claude")),
                     reviewers: vec![
                         target("reviewer-codex", AgentRole::Reviewer, "codex"),
                         target("reviewer-claude", AgentRole::Reviewer, "claude"),
                     ],
+                    verifiers: vec![target("verifier-claude", AgentRole::Verifier, "claude")],
+                    bar_check: Some(target("bar-codex", AgentRole::BarCheck, "codex")),
                     fixers: Vec::new(),
-                    judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
                     finishers: Vec::new(),
                 },
             },
             TriggerRule {
-                id: "judge-after-review".to_owned(),
-                run_kind: RunKind::Judge,
-                criteria: Criteria::Event {
-                    event: EventKind::RunCompleted {
-                        run_kind: Some(RunKind::Review),
-                        outcome: Some(RunOutcome::Succeeded),
-                    },
-                },
-                agent_plan: AgentPlan {
-                    reviewers: Vec::new(),
-                    fixers: Vec::new(),
-                    judge: Some(target("judge-glm", AgentRole::Judge, "glm")),
-                    finishers: Vec::new(),
-                },
-            },
-            TriggerRule {
-                id: "judge-after-noop-fix".to_owned(),
-                run_kind: RunKind::Judge,
+                id: "review-after-noop-fix".to_owned(),
+                run_kind: RunKind::Review,
                 criteria: Criteria::Event {
                     event: EventKind::RunCompleted {
                         run_kind: Some(RunKind::Fix),
@@ -3962,32 +3991,39 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                     },
                 },
                 agent_plan: AgentPlan {
-                    reviewers: Vec::new(),
+                    lead: Some(target("lead-claude", AgentRole::Lead, "claude")),
+                    reviewers: vec![
+                        target("reviewer-codex", AgentRole::Reviewer, "codex"),
+                        target("reviewer-claude", AgentRole::Reviewer, "claude"),
+                    ],
+                    verifiers: vec![target("verifier-claude", AgentRole::Verifier, "claude")],
+                    bar_check: Some(target("bar-codex", AgentRole::BarCheck, "codex")),
                     fixers: Vec::new(),
-                    judge: Some(target("judge-glm-noop", AgentRole::Judge, "glm")),
                     finishers: Vec::new(),
                 },
             },
             TriggerRule {
-                id: "fix-after-material-judge".to_owned(),
+                id: "fix-after-material-review".to_owned(),
                 run_kind: RunKind::Fix,
                 criteria: Criteria::All {
                     criteria: vec![
                         Criteria::Event {
                             event: EventKind::RunCompleted {
-                                run_kind: Some(RunKind::Judge),
+                                run_kind: Some(RunKind::Review),
                                 outcome: Some(RunOutcome::Succeeded),
                             },
                         },
                         Criteria::State {
-                            state: StateCriterion::HasMaterialDecision,
+                            state: StateCriterion::HasVerifiedMaterialFindings,
                         },
                     ],
                 },
                 agent_plan: AgentPlan {
+                    lead: None,
                     reviewers: Vec::new(),
+                    verifiers: Vec::new(),
+                    bar_check: None,
                     fixers: vec![target("fixer-codex", AgentRole::Fixer, "codex")],
-                    judge: None,
                     finishers: Vec::new(),
                 },
             },
@@ -4010,9 +4046,11 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                     ],
                 },
                 agent_plan: AgentPlan {
+                    lead: None,
                     reviewers: Vec::new(),
+                    verifiers: Vec::new(),
+                    bar_check: None,
                     fixers: Vec::new(),
-                    judge: None,
                     finishers: vec![target("finisher-codex", AgentRole::Finish, "codex")],
                 },
             },
@@ -4024,10 +4062,30 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
             return RunLaunchOutcome {
                 outcome: RunOutcome::Succeeded,
                 findings: Vec::new(),
-                decisions: Vec::new(),
+                verdict: Some(ReviewVerdict::Converged {
+                    bar_check: BarCheckRecord {
+                        passed: true,
+                        provenance: request
+                            .provenance
+                            .iter()
+                            .find(|provenance| provenance.role == AgentRole::BarCheck)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                provenance_for_target(target(
+                                    "bar-codex",
+                                    AgentRole::BarCheck,
+                                    "codex",
+                                ))
+                            }),
+                        rationale: "daemon fixture converged".to_owned(),
+                        extensions: Extensions::new(),
+                    },
+                }),
+                coverage: None,
                 patches: Vec::new(),
                 token_usage: None,
-                ensemble_archive_path: None,
+                session_archives: Vec::new(),
+                independence_degradations: Vec::new(),
             };
         }
         RunLaunchOutcome {
@@ -4043,10 +4101,21 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                     id: FindingId(format!("finding-material-{index}")),
                     dedup_key: format!("daemon-loop:finding-material-{index}"),
                     source_brief: "daemon-loop".to_owned(),
-                    dimension: "correctness".to_owned(),
-                    summary: "A material review finding.".to_owned(),
-                    severity: Severity::High,
-                    confidence: Confidence::High,
+                    title: "A material review finding.".to_owned(),
+                    explanation: "The daemon fixture found a material issue.".to_owned(),
+                    suggestion: Some("Fix the material issue.".to_owned()),
+                    priority: PriorityClass::P1,
+                    verification: FindingVerification {
+                        status: VerificationStatus::Verified,
+                        verifier: request
+                            .provenance
+                            .iter()
+                            .find(|provenance| provenance.role == AgentRole::Verifier)
+                            .cloned(),
+                        evidence: Vec::new(),
+                        cross_family: FamilySplit::CrossFamily,
+                        extensions: Extensions::new(),
+                    },
                     certainty: CertaintyClass::Advisory,
                     provenance: reviewer,
                     locations: vec![FindingLocation::General {
@@ -4055,53 +4124,15 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                     extensions: Extensions::new(),
                 })
                 .collect(),
-            decisions: Vec::new(),
+            verdict: Some(ReviewVerdict::FindingsPosted {
+                material: 2,
+                suppressed: 0,
+            }),
+            coverage: None,
             patches: Vec::new(),
             token_usage: None,
-            ensemble_archive_path: None,
-        }
-    }
-
-    fn judge_outcome(request: &RunLaunchRequest) -> RunLaunchOutcome {
-        let judge = request
-            .provenance
-            .iter()
-            .find(|provenance| provenance.role == AgentRole::Judge)
-            .expect("judge provenance")
-            .clone();
-        let (subject, verdict) = request.state.findings.first().map_or_else(
-            || {
-                (
-                    DecisionSubject::FindingSet {
-                        finding_ids: Vec::new(),
-                    },
-                    DecisionVerdict::Converged,
-                )
-            },
-            |finding| {
-                (
-                    DecisionSubject::Finding {
-                        finding_id: finding.id.clone(),
-                    },
-                    DecisionVerdict::Material,
-                )
-            },
-        );
-        RunLaunchOutcome {
-            outcome: RunOutcome::Succeeded,
-            findings: Vec::new(),
-            decisions: vec![Decision {
-                contract_version: ContractVersion::current(),
-                id: format!("decision-pass-{}", request.state.pass_index),
-                subject,
-                verdict,
-                rationale: "deterministic test verdict".to_owned(),
-                provenance: judge,
-                extensions: Extensions::new(),
-            }],
-            patches: Vec::new(),
-            token_usage: None,
-            ensemble_archive_path: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
         }
     }
 
@@ -4115,7 +4146,8 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
         RunLaunchOutcome {
             outcome: RunOutcome::Succeeded,
             findings: Vec::new(),
-            decisions: Vec::new(),
+            verdict: None,
+            coverage: None,
             patches: vec![Patch {
                 contract_version: ContractVersion::current(),
                 id: PatchId("patch-material".to_owned()),
@@ -4130,7 +4162,8 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                 extensions: Extensions::new(),
             }],
             token_usage: None,
-            ensemble_archive_path: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
         }
     }
 }

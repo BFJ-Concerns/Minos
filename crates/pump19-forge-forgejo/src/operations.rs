@@ -401,6 +401,7 @@ mod tests {
             agent_id: AgentId("fixer-codex".to_owned()),
             role: AgentRole::Fixer,
             session_id: SessionId("session-fix".to_owned()),
+            engine: "codex".to_owned(),
             freshness: SessionFreshness::FreshForPass { pass_index: 1 },
             verification: ProvenanceVerification::Verified {
                 vendor: "openai".to_owned(),

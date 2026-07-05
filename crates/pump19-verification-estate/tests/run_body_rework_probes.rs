@@ -236,21 +236,29 @@ input_size=$(wc -c < "$input_path" | tr -d ' ')
 printf '{{"slot":"%s","input_path":"%s","input_size":%s}}\n' "$slot" "$input_path" "$input_size" >> out/boundary.jsonl
 wrapper="$PWD/out/.pump19-workflow-$slot-$$.js"
 trap 'rm -f "$wrapper"' EXIT INT TERM
-awk '
-  BEGIN {{ inserted = 0 }}
-  {{ print }}
-  inserted == 0 && $0 ~ /^}};[[:space:]]*$/ {{
-    print "const args = JSON.parse((await import(\"node:fs\")).readFileSync(process.env.PUMP19_WORKFLOW_INPUT_PATH, \"utf8\"));"
-    inserted = 1
+"{node}" - "$workflow" "$input_path" "$wrapper" <<'NODE'
+const fs = require("node:fs");
+
+const [workflow, inputPath, wrapper] = process.argv.slice(2);
+const source = fs.readFileSync(workflow, "utf8");
+const payload = fs.readFileSync(inputPath, "utf8");
+const argsLiteral = JSON.stringify(payload);
+const output = [];
+let inserted = false;
+for (const line of source.split(/\r?\n/)) {{
+  output.push(line);
+  if (!inserted && /^}};\s*$/.test(line)) {{
+    output.push("const args = JSON.parse(" + argsLiteral + ");");
+    inserted = true;
   }}
-  END {{
-    if (inserted == 0) {{
-      print "workflow script did not expose a top-level meta object terminator" > "/dev/stderr"
-      exit 65
-    }}
-  }}
-' "$workflow" > "$wrapper"
-PUMP19_WORKFLOW_INPUT_PATH="$input_path" ENSEMBLE_RUN_RECORD_DIR="$PWD/archive/workflows/$slot" "{node}" "{ensemble}" --budget codex=10000 --concurrency codex=1 --timeout 180000 "$wrapper"
+}}
+if (!inserted) {{
+  console.error("workflow script did not expose a top-level meta object terminator");
+  process.exit(65);
+}}
+fs.writeFileSync(wrapper, output.join("\n"));
+NODE
+ENSEMBLE_RUN_RECORD_DIR="$PWD/archive/workflows/$slot" "{node}" "{ensemble}" --budget codex=10000 --concurrency codex=1 --timeout 180000 "$wrapper"
 "#,
         node = node.display(),
         ensemble = ensemble.display(),

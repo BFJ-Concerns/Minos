@@ -5,8 +5,8 @@ major = 1
 minor = 0
 
 [contract_version]
-major = 1
-minor = 7
+major = 2
+minor = 0
 
 [[steps]]
 id = "prepare-source"
@@ -49,7 +49,7 @@ id = "format-comments"
 inputs = [
     "finding_comment_format_request_json",
     "finding",
-    "judge_decision",
+    "finding_verification",
     "forge_facts",
 ]
 outputs = ["finding_comment_body_json"]

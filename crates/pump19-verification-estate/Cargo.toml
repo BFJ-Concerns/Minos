@@ -12,7 +12,6 @@ pump19-core = { path = "../pump19-core" }
 pump19-daemon = { path = "../pump19-daemon" }
 pump19-engine = { path = "../pump19-engine" }
 pump19-forge-forgejo = { path = "../pump19-forge-forgejo" }
-pump19-judgement = { path = "../pump19-judgement" }
 pump19-review = { path = "../pump19-review" }
 pump19-runs = { path = "../pump19-runs" }
 pump19-workspace = { path = "../pump19-workspace" }

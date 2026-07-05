@@ -5,8 +5,8 @@ major = 1
 minor = 0
 
 [contract_version]
-major = 1
-minor = 7
+major = 2
+minor = 0
 
 [[rules]]
 id = "review-on-pr-change"
@@ -33,6 +33,17 @@ event = "pull_request_updated"
 [[rules.criteria.criteria]]
 kind = "pr_ready"
 
+[rules.agent_plan.lead]
+agent_id = "lead-claude"
+role = "lead"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.lead.lineage]
+family = "claude"
+model = "claude-stable"
+
 [[rules.agent_plan.reviewers]]
 agent_id = "reviewer-codex"
 role = "reviewer"
@@ -55,65 +66,41 @@ control_plane = "pump19-core"
 family = "claude"
 model = "claude-stable"
 
-[rules.agent_plan.judge]
-agent_id = "judge-glm"
-role = "judge"
-engine = "opencode"
+[[rules.agent_plan.verifiers]]
+agent_id = "verifier-codex"
+role = "verifier"
+engine = "codex"
 vendor = "baseline"
 control_plane = "pump19-core"
 
-[rules.agent_plan.judge.lineage]
-family = "glm"
-model = "openrouter/z-ai/glm-5.2"
+[rules.agent_plan.verifiers.lineage]
+family = "codex"
+model = "codex-stable"
 
-[[rules]]
-id = "judge-after-review"
-run_kind = "judge"
-
-[rules.criteria]
-kind = "event"
-
-[rules.criteria.event]
-event = "run_completed"
-run_kind = "review"
-outcome = "succeeded"
-
-[rules.agent_plan.judge]
-agent_id = "judge-glm"
-role = "judge"
-engine = "opencode"
+[[rules.agent_plan.verifiers]]
+agent_id = "verifier-claude"
+role = "verifier"
+engine = "claude"
 vendor = "baseline"
 control_plane = "pump19-core"
 
-[rules.agent_plan.judge.lineage]
-family = "glm"
-model = "openrouter/z-ai/glm-5.2"
+[rules.agent_plan.verifiers.lineage]
+family = "claude"
+model = "claude-stable"
 
-[[rules]]
-id = "judge-after-noop-fix"
-run_kind = "judge"
-
-[rules.criteria]
-kind = "event"
-
-[rules.criteria.event]
-event = "run_completed"
-run_kind = "fix"
-outcome = "no_op"
-
-[rules.agent_plan.judge]
-agent_id = "judge-glm"
-role = "judge"
-engine = "opencode"
+[rules.agent_plan.bar_check]
+agent_id = "bar-check-codex"
+role = "bar_check"
+engine = "codex"
 vendor = "baseline"
 control_plane = "pump19-core"
 
-[rules.agent_plan.judge.lineage]
-family = "glm"
-model = "openrouter/z-ai/glm-5.2"
+[rules.agent_plan.bar_check.lineage]
+family = "codex"
+model = "codex-stable"
 
 [[rules]]
-id = "fix-after-material-judge"
+id = "fix-after-material-review"
 run_kind = "fix"
 
 [rules.criteria]
@@ -124,12 +111,12 @@ kind = "event"
 
 [rules.criteria.criteria.event]
 event = "run_completed"
-run_kind = "judge"
+run_kind = "review"
 outcome = "succeeded"
 
 [[rules.criteria.criteria]]
 kind = "state"
-state = "has_material_decision"
+state = "has_verified_material_findings"
 
 [[rules.agent_plan.fixers]]
 agent_id = "fixer-codex"
@@ -139,6 +126,84 @@ vendor = "baseline"
 control_plane = "pump19-core"
 
 [rules.agent_plan.fixers.lineage]
+family = "codex"
+model = "codex-stable"
+
+[[rules]]
+id = "review-after-noop-fix"
+run_kind = "review"
+
+[rules.criteria]
+kind = "event"
+
+[rules.criteria.event]
+event = "run_completed"
+run_kind = "fix"
+outcome = "no_op"
+
+[rules.agent_plan.lead]
+agent_id = "lead-claude"
+role = "lead"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.lead.lineage]
+family = "claude"
+model = "claude-stable"
+
+[[rules.agent_plan.reviewers]]
+agent_id = "reviewer-codex"
+role = "reviewer"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.reviewers.lineage]
+family = "codex"
+model = "codex-stable"
+
+[[rules.agent_plan.reviewers]]
+agent_id = "reviewer-claude"
+role = "reviewer"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.reviewers.lineage]
+family = "claude"
+model = "claude-stable"
+
+[[rules.agent_plan.verifiers]]
+agent_id = "verifier-codex"
+role = "verifier"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.verifiers.lineage]
+family = "codex"
+model = "codex-stable"
+
+[[rules.agent_plan.verifiers]]
+agent_id = "verifier-claude"
+role = "verifier"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.verifiers.lineage]
+family = "claude"
+model = "claude-stable"
+
+[rules.agent_plan.bar_check]
+agent_id = "bar-check-codex"
+role = "bar_check"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.bar_check.lineage]
 family = "codex"
 model = "codex-stable"
 
@@ -172,5 +237,90 @@ vendor = "baseline"
 control_plane = "pump19-core"
 
 [rules.agent_plan.finishers.lineage]
+family = "codex"
+model = "codex-stable"
+
+[[rules]]
+id = "review-after-degraded-bar-check"
+run_kind = "review"
+
+[rules.criteria]
+kind = "all"
+
+[[rules.criteria.criteria]]
+kind = "event"
+
+[rules.criteria.criteria.event]
+event = "run_completed"
+run_kind = "review"
+outcome = "succeeded"
+
+[[rules.criteria.criteria]]
+kind = "state"
+state = "bar_check_degraded"
+
+[rules.agent_plan.lead]
+agent_id = "lead-claude"
+role = "lead"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.lead.lineage]
+family = "claude"
+model = "claude-stable"
+
+[[rules.agent_plan.reviewers]]
+agent_id = "reviewer-codex"
+role = "reviewer"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.reviewers.lineage]
+family = "codex"
+model = "codex-stable"
+
+[[rules.agent_plan.reviewers]]
+agent_id = "reviewer-claude"
+role = "reviewer"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.reviewers.lineage]
+family = "claude"
+model = "claude-stable"
+
+[[rules.agent_plan.verifiers]]
+agent_id = "verifier-codex"
+role = "verifier"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.verifiers.lineage]
+family = "codex"
+model = "codex-stable"
+
+[[rules.agent_plan.verifiers]]
+agent_id = "verifier-claude"
+role = "verifier"
+engine = "claude"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.verifiers.lineage]
+family = "claude"
+model = "claude-stable"
+
+[rules.agent_plan.bar_check]
+agent_id = "bar-check-codex"
+role = "bar_check"
+engine = "codex"
+vendor = "baseline"
+control_plane = "pump19-core"
+
+[rules.agent_plan.bar_check.lineage]
 family = "codex"
 model = "codex-stable"

@@ -9,15 +9,17 @@ command -v jq >/dev/null 2>&1 || {
 input=$(cat)
 body=$(printf '%s' "$input" | jq -r '
   def trim: gsub("^\\s+|\\s+$"; "");
-  def severity_badge($severity):
-    if $severity == "critical" then
-      "<sub><sub>![critical](https://img.shields.io/badge/critical-red?style=flat)</sub></sub>"
-    elif $severity == "high" then
-      "<sub><sub>![high](https://img.shields.io/badge/high-orange?style=flat)</sub></sub>"
-    elif $severity == "medium" then
-      "<sub><sub>![medium](https://img.shields.io/badge/medium-yellow?style=flat)</sub></sub>"
+  def priority_badge($priority):
+    if $priority == "p0" then
+      "<sub><sub>![p0](https://img.shields.io/badge/p0-red?style=flat)</sub></sub>"
+    elif $priority == "p1" then
+      "<sub><sub>![p1](https://img.shields.io/badge/p1-red?style=flat)</sub></sub>"
+    elif $priority == "p2" then
+      "<sub><sub>![p2](https://img.shields.io/badge/p2-orange?style=flat)</sub></sub>"
+    elif $priority == "p3" then
+      "<sub><sub>![p3](https://img.shields.io/badge/p3-yellow?style=flat)</sub></sub>"
     else
-      "<sub><sub>![low](https://img.shields.io/badge/low-blue?style=flat)</sub></sub>"
+      "<sub><sub>![p4](https://img.shields.io/badge/p4-lightgrey?style=flat)</sub></sub>"
     end;
   def finding_location:
     (.finding.locations[0] // null) as $location
@@ -39,8 +41,12 @@ body=$(printf '%s' "$input" | jq -r '
       else
         ""
       end;
+  def verification_status:
+    .finding_verification.status
+    | if type == "object" then (.status // "unknown") else . end;
   (finding_location) as $location
-  | "**\(severity_badge(.finding.severity))  \(.finding.summary | trim)**\n\n\(.decision.rationale | trim)\n\(if $location == "" then "" else "\n\($location)\n" end)\n<sub>Pump-19 · \(.finding.source_brief) · reviewed `\(.facts.head.sha[0:7])` · decision `\(.decision.id)`</sub>"
+  | (verification_status) as $verification
+  | "**\(priority_badge(.finding.priority))  \(.finding.title | trim)**\n\n\(.finding.explanation | trim)\n\(if $location == "" then "" else "\n\($location)\n" end)\n<sub>Pump-19 · \(.finding.source_brief) · reviewed `\(.facts.head.sha[0:7])` · verification `\($verification)`</sub>"
 ')
 
 jq -nc --arg body "$body" '{body:$body}'

@@ -13,9 +13,9 @@ checks prove config loading and loud startup failures.
 - Node.js and the ensemble launcher path you set in
   `ensemble.launcher_path`.
 - Authenticated engine CLIs available to ensemble:
-  `codex` for the Codex/GPT-class reviewer and fixer, `claude` for the
-  Claude-class reviewer, and `opencode` configured for the GLM judge model
-  `openrouter/z-ai/glm-5.2`.
+  `codex` for the Codex/GPT-class reviewer, verifier and fixer, `claude` for
+  the Claude-class reviewer, and `opencode` for any configured additional
+  review or bar-check family.
 - `curl`, `jq`, `git` and `tar` for the generated baseline command scripts.
   The example TOML points at the checked-in scripts under
   `examples/deployment/commands/`. Custom commands are an override path, not a
@@ -44,11 +44,12 @@ unless absolute.
 
 The example points at generated baseline deployment assets:
 
-- `adaptations/trigger/triggers.toml` composes review on PR open/update, judge
-  after review, judge after a no-op fix, fix after a material judge decision, and
-  finish on the configured label once the PR is converged, clean and current.
-- `adaptations/prompt/prompt-pack.toml` supplies the review, judge and fix prompt
-  templates, baseline judgement briefs and ensemble workflow scripts.
+- `adaptations/trigger/triggers.toml` composes review on PR open/update, fix
+  after verified material findings, review after a no-op fix, finish on the
+  configured label once the PR is converged, clean and current, and review after
+  a degraded review-bar check.
+- `adaptations/prompt/prompt-pack.toml` supplies the lead review prompt
+  templates, baseline review briefs and ensemble workflow scripts.
 - `adaptations/mechanical/mechanical.toml` declares the source preparation command
   `commands/pump19-prepare-source` and the merge-readiness command
   `commands/pump19-merge-readiness`. The preparation command receives
@@ -89,7 +90,7 @@ the box, and is deliberately not a visibility knob. Journald/stdout events remai
 useful live noise, but the JSONL file is the deployment-owned permanent record.
 
 The generated packs carry the current contract version from `pump19-contract`
-(`1.7` at this revision).
+(`2.0` at this revision).
 
 Regenerate the baseline deployment assets with:
 
@@ -320,8 +321,8 @@ The current state includes:
 
 - `current_head_sha`, used to keep stale events from bypassing the current head.
 - `run_history`, where each run record carries `run_id`, `run_kind`, `status`,
-  optional `outcome`, optional typed `refusal`, and optional
-  `ensemble_archive_path`.
+  optional `outcome`, optional typed `refusal`, typed `session_archives`, and
+  recorded independence degradations.
 - `publication.attempts`, where each attempted PR side effect records the
   operation, idempotency key, optional `expected_head_sha`, status, receipt, error
   and typed refusal.
