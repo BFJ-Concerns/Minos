@@ -85,7 +85,7 @@ the box, and is deliberately not a visibility knob. Journald/stdout events remai
 useful live noise, but the JSONL file is the deployment-owned permanent record.
 
 The generated packs carry the current contract version from `pump19-contract`
-(`1.6` at this revision).
+(`1.7` at this revision).
 
 Regenerate the baseline deployment assets with:
 

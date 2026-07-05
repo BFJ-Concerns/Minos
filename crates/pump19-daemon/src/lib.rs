@@ -29,10 +29,10 @@ use pump19_adaptations::{
 };
 use pump19_contract::{PullRequestRef, RunKind, SessionId};
 use pump19_core::{
-    AgentLaunchSpec, CommentFormatter, CompletionRecoverySummary, Core, CoreError, CorePolicy,
-    DispatchOutcome, FindingCommentFormatRequest, FinishLabelApplicationPolicy, JsonRunStateStore,
-    LaunchProof, OperatorLog, OperatorLogEvent, PreparedAgent, PreparedSource,
-    SourcePreparationRequest, SourcePreparer, TriggerRule,
+    AgentLaunchSpec, CommentFormatter, CompletionRecoveryAction, CompletionRecoverySummary, Core,
+    CoreError, CorePolicy, DispatchOutcome, FindingCommentFormatRequest,
+    FinishLabelApplicationPolicy, JsonRunStateStore, LaunchProof, OperatorLog, OperatorLogEvent,
+    PreparedAgent, PreparedSource, SourcePreparationRequest, SourcePreparer, TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -638,6 +638,7 @@ where
         summary.recovered_stale_running_events += recovery.stale_running_failures;
         summary.recovery_errors_continued += recovery.errors_continued;
         summary.quiet_polls = 0;
+        let events = completion_recovery_event_fields(&recovery);
         log_daemon_event(
             "info",
             if recovery.stale_running_failures == 0 {
@@ -650,6 +651,8 @@ where
                 "terminal_replays": recovery.terminal_replays,
                 "stale_running_failures": recovery.stale_running_failures,
                 "errors_continued": recovery.errors_continued,
+                "parked": recovery.parked,
+                "events": events,
                 "total_recovered": summary.recovered_completion_events,
                 "total_terminal_replays": summary.recovered_terminal_events,
                 "total_stale_running_failures": summary.recovered_stale_running_events,
@@ -659,6 +662,28 @@ where
         );
         Ok(true)
     }
+}
+
+fn completion_recovery_event_fields(recovery: &CompletionRecoverySummary) -> Vec<Value> {
+    recovery
+        .events
+        .iter()
+        .map(|event| {
+            json!({
+                "action": match event.action {
+                    CompletionRecoveryAction::Queued => "queued",
+                    CompletionRecoveryAction::Parked => "parked",
+                },
+                "event_id": event.event_id,
+                "run_id": event.run_id.0,
+                "run_kind": event.run_kind,
+                "repository": event.pr.repository,
+                "pr": event.pr.id,
+                "commit_sha": event.commit_sha,
+                "failures": event.failures,
+            })
+        })
+        .collect()
 }
 
 trait CoreRunner {
@@ -2209,6 +2234,7 @@ mod tests {
                         terminal_replays: 1,
                         stale_running_failures: 0,
                         errors_continued: 0,
+                        ..CompletionRecoverySummary::default()
                     }),
                 ])),
             },
@@ -2225,6 +2251,38 @@ mod tests {
         assert_eq!(summary.recovered_stale_running_events, 0);
         assert_eq!(summary.events_processed, 1);
         assert_eq!(summary.quiet_polls, 1);
+    }
+
+    #[test]
+    fn completion_recovery_log_fields_identify_parked_event() {
+        let recovery = CompletionRecoverySummary {
+            parked: 1,
+            events: vec![pump19_core::CompletionRecoveryEvent {
+                action: CompletionRecoveryAction::Parked,
+                event_id: "run-completed-1234".to_owned(),
+                run_id: RunId("event-1:review:1".to_owned()),
+                run_kind: RunKind::Review,
+                pr: PullRequestRef {
+                    repository: "acme/widgets".to_owned(),
+                    id: "42".to_owned(),
+                },
+                commit_sha: "abc123".to_owned(),
+                failures: 2,
+            }],
+            ..CompletionRecoverySummary::default()
+        };
+
+        let fields = completion_recovery_event_fields(&recovery);
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0]["action"], json!("parked"));
+        assert_eq!(fields[0]["event_id"], json!("run-completed-1234"));
+        assert_eq!(fields[0]["run_id"], json!("event-1:review:1"));
+        assert_eq!(fields[0]["run_kind"], json!("review"));
+        assert_eq!(fields[0]["repository"], json!("acme/widgets"));
+        assert_eq!(fields[0]["pr"], json!("42"));
+        assert_eq!(fields[0]["commit_sha"], json!("abc123"));
+        assert_eq!(fields[0]["failures"], json!(2));
     }
 
     #[test]

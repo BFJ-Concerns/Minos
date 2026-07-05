@@ -39,8 +39,10 @@ const EXT_TOKENS_USED: &str = "pump19.core.tokens_used";
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
 const EXT_LAST_FAILURE: &str = "pump19.core.last_failure";
 const EXT_SELF_EMITTED_EVENT: &str = "pump19.core.self_emitted_event";
+const EXT_COMPLETION_RECOVERY_FAILURES: &str = "pump19.core.completion_recovery_failures";
 const CONTROL_COMMIT_SHA: &str = "__pump19_pr_control__";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
+const MAX_COMPLETION_RECOVERY_FAILURES: u64 = 2;
 
 /// Core errors raised before a launch decision can be made.
 #[derive(Debug, Error)]
@@ -657,12 +659,33 @@ pub trait RunStateStore {
 }
 
 /// Summary of completion events rederived from durable state after restart.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompletionRecoverySummary {
     pub queued: usize,
     pub terminal_replays: usize,
     pub stale_running_failures: usize,
     pub errors_continued: usize,
+    pub parked: usize,
+    pub events: Vec<CompletionRecoveryEvent>,
+}
+
+/// One completion event considered during restart recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletionRecoveryEvent {
+    pub action: CompletionRecoveryAction,
+    pub event_id: String,
+    pub run_id: RunId,
+    pub run_kind: RunKind,
+    pub pr: PullRequestRef,
+    pub commit_sha: String,
+    pub failures: u64,
+}
+
+/// The recovery action taken for a regenerated completion event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompletionRecoveryAction {
+    Queued,
+    Parked,
 }
 
 /// Deterministic dispatch-and-enforce core.
@@ -1015,12 +1038,31 @@ where
                 let Some(event) = run_completed_event_from_record(record) else {
                     continue;
                 };
-                let needs_retry = completion_event_has_failed_dispatch(&state, &event);
+                let failures = completion_event_failed_dispatches(&state, &event);
+                let needs_retry = failures > 0;
                 if pending_ids.contains(&event.id)
                     || (self.queued_completion_event_ids.contains(&event.id) && !needs_retry)
                 {
                     continue;
                 }
+                if failures >= MAX_COMPLETION_RECOVERY_FAILURES {
+                    summary.parked += 1;
+                    summary.events.push(completion_recovery_event(
+                        CompletionRecoveryAction::Parked,
+                        &state,
+                        record,
+                        &event,
+                        failures,
+                    ));
+                    continue;
+                }
+                summary.events.push(completion_recovery_event(
+                    CompletionRecoveryAction::Queued,
+                    &state,
+                    record,
+                    &event,
+                    failures,
+                ));
                 self.queue_completion_event(event);
                 summary.terminal_replays += 1;
                 summary.queued += 1;
@@ -1341,6 +1383,7 @@ where
         run_id: &RunId,
         message: &str,
     ) -> Result<(), CoreError> {
+        record_completion_recovery_failure(running_state, event);
         mark_failed(running_state, event, rule, run_id, message);
         self.state_store.save(running_state)?;
         self.record_operator_failure(running_state, run_id, message)
@@ -1546,6 +1589,7 @@ where
         run_id: &RunId,
         message: &str,
     ) -> Result<(), CoreError> {
+        record_completion_recovery_failure(&mut state, event);
         mark_failed(&mut state, event, rule, run_id, message);
         self.state_store.save(&state)?;
         self.record_operator_failure(&state, run_id, message)?;
@@ -4251,11 +4295,68 @@ fn state_already_dispatched(state: &PrRunState, event: &ContractEvent, rule: &Tr
         .any(|record| record.status != RunStatus::Failed && record.event_id == event.id)
 }
 
-fn completion_event_has_failed_dispatch(state: &PrRunState, event: &ContractEvent) -> bool {
+fn completion_event_failed_dispatches(state: &PrRunState, event: &ContractEvent) -> u64 {
     state
-        .run_history
-        .iter()
-        .any(|record| record.status == RunStatus::Failed && record.event_id == event.id)
+        .extensions
+        .get(EXT_COMPLETION_RECOVERY_FAILURES)
+        .and_then(Value::as_object)
+        .and_then(|failures| failures.get(&event.id))
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            state
+                .run_history
+                .iter()
+                .any(|record| record.status == RunStatus::Failed && record.event_id == event.id)
+                .then_some(1)
+        })
+        .unwrap_or(0)
+}
+
+fn record_completion_recovery_failure(state: &mut PrRunState, event: &ContractEvent) {
+    if !event
+        .extensions
+        .get(EXT_SELF_EMITTED_EVENT)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    let current = completion_event_failed_dispatches(state, event);
+    let mut failures = state
+        .extensions
+        .remove(EXT_COMPLETION_RECOVERY_FAILURES)
+        .and_then(|value| match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .unwrap_or_default();
+    failures.insert(
+        event.id.clone(),
+        Value::Number(serde_json::Number::from(current.saturating_add(1))),
+    );
+    state.extensions.insert(
+        EXT_COMPLETION_RECOVERY_FAILURES.to_owned(),
+        Value::Object(failures),
+    );
+}
+
+fn completion_recovery_event(
+    action: CompletionRecoveryAction,
+    state: &PrRunState,
+    record: &RunRecord,
+    event: &ContractEvent,
+    failures: u64,
+) -> CompletionRecoveryEvent {
+    CompletionRecoveryEvent {
+        action,
+        event_id: event.id.clone(),
+        run_id: record.run_id.clone(),
+        run_kind: record.run_kind,
+        pr: state.pr.clone(),
+        commit_sha: state.commit_sha.clone(),
+        failures,
+    }
 }
 
 fn run_completed_event_from_state(state: &PrRunState, run_id: &RunId) -> Option<ContractEvent> {
@@ -6511,6 +6612,76 @@ mod tests {
         assert!(saved.run_history.iter().any(
             |record| record.run_kind == RunKind::Judge && record.status == RunStatus::Completed
         ));
+    }
+
+    #[test]
+    fn repeated_failed_completion_recovery_parks_poison_event_with_identity() {
+        let mut review_core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(vec![
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+                LaunchProof::EstablishedFresh,
+            ]),
+            FakeRunStateStore::default(),
+        );
+        review_core
+            .process_event(&event(), &[independent_rule()])
+            .expect("review dispatch");
+
+        let mut judge_launcher = FakeRunLauncher::new(vec![LaunchProof::EstablishedFresh]);
+        judge_launcher.fail_launches_remaining = 2;
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            judge_launcher,
+            review_core.state_store,
+        );
+
+        let first_recovery = core
+            .rederive_pending_completions()
+            .expect("first recovery queues review completion");
+        assert_eq!(first_recovery.queued, 1);
+        assert_eq!(first_recovery.parked, 0);
+        let first_error = core
+            .process_next(&[judge_after_review_rule()])
+            .expect_err("first judge dispatch failure is returned");
+        assert!(matches!(first_error, CoreError::Launcher(message) if message == "launch failed"));
+
+        let second_recovery = core
+            .rederive_pending_completions()
+            .expect("second recovery retries review completion once");
+        assert_eq!(second_recovery.queued, 1);
+        assert_eq!(second_recovery.parked, 0);
+        let second_error = core
+            .process_next(&[judge_after_review_rule()])
+            .expect_err("second judge dispatch failure is returned");
+        assert!(matches!(second_error, CoreError::Launcher(message) if message == "launch failed"));
+
+        let parked = core
+            .rederive_pending_completions()
+            .expect("repeatedly failing completion is parked");
+
+        assert_eq!(parked.queued, 0);
+        assert_eq!(parked.terminal_replays, 0);
+        assert_eq!(parked.parked, 1);
+        assert_eq!(core.pending_event_count(), 0);
+        assert_eq!(parked.events.len(), 1);
+        let event = &parked.events[0];
+        assert_eq!(event.action, CompletionRecoveryAction::Parked);
+        assert_eq!(event.run_id, RunId("event-1:review:1".to_owned()));
+        assert_eq!(event.run_kind, RunKind::Review);
+        assert_eq!(event.pr, pr());
+        assert_eq!(event.commit_sha, "abc123");
+        assert_eq!(event.failures, MAX_COMPLETION_RECOVERY_FAILURES);
     }
 
     #[test]

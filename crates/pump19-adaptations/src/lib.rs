@@ -2057,7 +2057,7 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 6
+minor = 7
 
 [[rules]]
 id = "review-on-my-prs"
@@ -2107,7 +2107,7 @@ minor = 0
 
 [contract_version]
 major = 1
-minor = 6
+minor = 7
 
 [[rules]]
 id = "review-on-my-prs"
