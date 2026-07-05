@@ -32,7 +32,8 @@ use pump19_core::{
     AgentLaunchSpec, CommentFormatter, CompletionRecoveryAction, CompletionRecoverySummary, Core,
     CoreError, CorePolicy, DispatchOutcome, FindingCommentFormatRequest,
     FinishLabelApplicationPolicy, JsonRunStateStore, LaunchProof, OperatorLog, OperatorLogEvent,
-    PreparedAgent, PreparedSource, SourcePreparationRequest, SourcePreparer, TriggerRule,
+    PreparedAgent, PreparedSource, SOURCE_PREPARATION_ROOT_SUFFIX, SourcePreparationRequest,
+    SourcePreparer, TriggerRule,
 };
 use pump19_forge_forgejo::{
     ForgejoActivityError, ForgejoCommandClient, ForgejoCommandMetadata, ForgejoCommandReceipt,
@@ -1350,7 +1351,13 @@ fn source_preparation_root(request: &SourcePreparationRequest) -> PathBuf {
         .root
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    parent.join(format!("{}-source-prep", request.workspace.id))
+    // Keep this suffix coupled to core cleanup: roots ending with
+    // SOURCE_PREPARATION_ROOT_SUFFIX are disposable preparation roots, not just
+    // generic trust boundaries.
+    parent.join(format!(
+        "{}{SOURCE_PREPARATION_ROOT_SUFFIX}",
+        request.workspace.id
+    ))
 }
 
 fn run_source_preparation_step(
