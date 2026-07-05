@@ -29,6 +29,7 @@ use std::os::unix::process::CommandExt as _;
 const STDOUT_TRANSCRIPT: &str = "stdout.log";
 const STDERR_TRANSCRIPT: &str = "stderr.log";
 const FINAL_OUTPUT: &str = "final-output.json";
+const CLAUDE_READ_ONLY_PERMISSION_MODE: &str = "auto";
 
 /// The agent CLI family launched by the core-owned engine adapter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -391,8 +392,12 @@ fn claude_args(spec: &LaunchSpec) -> Result<Vec<String>, EngineError> {
     ];
     match spec.write_access {
         WriteAccess::ReadOnly => {
+            // Pump-19's no-write guarantee is the prepared workspace boundary:
+            // review trees are made read-only before launch. Claude plan mode
+            // also suppresses reads and Bash, which starves the trusted lead of
+            // the shims it must execute.
             args.push("--permission-mode".to_owned());
-            args.push("plan".to_owned());
+            args.push(CLAUDE_READ_ONLY_PERMISSION_MODE.to_owned());
         }
         WriteAccess::Writable => {}
     }
@@ -980,7 +985,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_invocation_uses_native_schema_budget_and_plan_mode() {
+    fn claude_invocation_uses_native_schema_budget_and_auto_mode_for_read_only_work() {
         let fixture = Fixture::new(EngineKind::Claude);
         fs::write(fixture.schema(), r#"{"type":"object"}"#).expect("write schema");
 
@@ -997,7 +1002,7 @@ mod tests {
             invocation
                 .args
                 .windows(2)
-                .any(|pair| pair == ["--permission-mode", "plan"])
+                .any(|pair| pair == ["--permission-mode", "auto"])
         );
         assert!(
             invocation

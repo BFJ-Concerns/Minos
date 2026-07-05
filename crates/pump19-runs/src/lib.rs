@@ -1116,14 +1116,47 @@ fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<WorkflowArchiveDir>, RunB
                     .file_name()
                     .and_then(|name| name.to_str())
                     .and_then(ReviewWorkflowSlot::from_archive_dir_name)?;
-                Some(Ok(WorkflowArchiveDir { slot, path }))
+                Some(repair_output_archive_dirs(slot, &path).map(|paths| {
+                    paths
+                        .into_iter()
+                        .map(|path| WorkflowArchiveDir { slot, path })
+                        .collect::<Vec<_>>()
+                }))
             }
             Err(source) => Some(Err(RunBodyError::FrameIo {
                 action: format!("read workflow archive root {}", root.display()),
                 source,
             })),
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map(|groups| groups.into_iter().flatten().collect())
+}
+
+fn repair_output_archive_dirs(
+    slot: ReviewWorkflowSlot,
+    path: &Path,
+) -> Result<Vec<PathBuf>, RunBodyError> {
+    if slot != ReviewWorkflowSlot::RepairOutput {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let attempt_dirs = fs::read_dir(path)
+        .map_err(|source| RunBodyError::FrameIo {
+            action: format!("read repair-output archive root {}", path.display()),
+            source,
+        })?
+        .filter_map(|entry| match entry {
+            Ok(entry) => entry.path().is_dir().then(|| Ok(entry.path())),
+            Err(source) => Some(Err(RunBodyError::FrameIo {
+                action: format!("read repair-output archive root {}", path.display()),
+                source,
+            })),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if attempt_dirs.is_empty() {
+        Ok(vec![path.to_path_buf()])
+    } else {
+        Ok(attempt_dirs)
+    }
 }
 
 fn reconcile_workflow_archives(
@@ -3856,6 +3889,33 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
     }
 
     #[test]
+    fn review_lead_launch_spec_keeps_tree_read_only_but_grants_claude_tools() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let config = lead_frame_config(root.path());
+        let run_dir = root.path().join("frame-runs/lead-frame-review");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(run_dir.join("mission.md"), "review the prepared workspace")
+            .expect("write mission");
+        fs::create_dir_all(run_dir.join("schema")).expect("create schema dir");
+        fs::write(
+            run_dir.join("schema/review-output.schema.json"),
+            r#"{"type":"object"}"#,
+        )
+        .expect("write schema");
+
+        let spec = review_lead_launch_spec(&config, &run_dir);
+        let invocation = EngineSessionLauncher::build_invocation(&spec).expect("build invocation");
+
+        assert_eq!(spec.write_access, WriteAccess::ReadOnly);
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "auto"])
+        );
+    }
+
+    #[test]
     fn lead_frame_accepts_live_core_provenance_engine_field() {
         let root = tempfile::tempdir().expect("workspace root");
         let mut req = frame_request(root.path());
@@ -4502,6 +4562,47 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
         assert_eq!(
             body.workflow_runner.requests[0].args["schema"]["type"],
             Value::String("object".to_owned())
+        );
+    }
+
+    #[test]
+    fn repair_output_attempt_archives_are_reconciled_individually() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let repaired_findings = json!([verified_finding("verifier-claude", 2)]);
+        let repaired_verdict = json!({"verdict": "findings_posted"});
+        let repaired = lead_payload(&repaired_findings, true, &repaired_verdict);
+        let engine = ScriptedLeadEngine::successful(json!({
+            "findings": [],
+            "verdict_proposal": {"verdict": "findings_posted"}
+        }));
+        let runner = FakeEnsembleRunner::new(
+            json!({"repaired_output": repaired.to_string()}),
+            vec![archive_agent("lead-claude", "claude")],
+        );
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("first repair attempt succeeds");
+        let result = body.last_result().expect("frame result recorded");
+        write_archive(
+            &result.run_dir.join("archive/workflows/repair-output/2"),
+            &[archive_agent("lead-claude", "claude")],
+        );
+
+        let archives = reconcile_workflow_archives(&req, &result.run_dir)
+            .expect("numbered repair attempts are separate archives");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            archives
+                .iter()
+                .filter(|archive| archive.role == AgentRole::Lead)
+                .count(),
+            2
         );
     }
 
