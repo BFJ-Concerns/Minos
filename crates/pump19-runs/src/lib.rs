@@ -21,12 +21,12 @@ use std::{
 };
 
 use pump19_contract::{
-    AgentId, AgentRole, BarCheckRecord, CertaintyClass, CitedEvidence, Confidence, ContractVersion,
-    CoverageRecord, Decision, DecisionSubject, DecisionVerdict, Extensions, FamilySplit, Finding,
-    FindingId, FindingLocation, FindingVerification, ForgeFacts, ManifestBounds, ManifestBrief,
-    ManifestLoopHistory, ManifestRepositoryPolicy, ManifestWorkspace, ModelProvenance, Patch,
-    PatchChange, PatchId, PriorityClass, ReviewVerdict, RunId, RunKind, RunManifest, RunOutcome,
-    Severity, SourceRange, VerificationStatus,
+    AgentId, AgentRole, BarCheckRecord, CertaintyClass, CitedEvidence, ContractVersion,
+    CoverageRecord, FamilySplit, Finding, FindingId, FindingLocation, FindingVerification,
+    ForgeFacts, ManifestBounds, ManifestBrief, ManifestLoopHistory, ManifestRepositoryPolicy,
+    ManifestWorkspace, ModelProvenance, Patch, PatchChange, PatchId, PriorityClass, ReviewVerdict,
+    RunKind, RunManifest, RunOutcome, SessionArchiveKind, SessionArchiveRef, SourceRange,
+    VerificationStatus,
 };
 use pump19_core::{
     AgentLaunchSpec, CoreError, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher,
@@ -36,10 +36,6 @@ use pump19_engine::{
     EngineError, EngineKind, EngineProvenance, EngineRun, EngineSessionLauncher,
     ExitClassification, LaunchBounds, LaunchSpec, RepairAttempt, RepairStrategy, TranscriptKind,
     WriteAccess,
-};
-use pump19_judgement::{
-    IntentStatement, JudgementBrief, JudgementBriefResult, JudgementRun, JudgementStatus,
-    ReviewerResult, evidence_text,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -51,9 +47,6 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
 
 const EXT_FORGE_FACTS: &str = "pump19.core.forge_facts";
-const EXT_RAW_STDOUT: &str = "pump19.runs.raw_stdout";
-const EXT_RAW_STDERR: &str = "pump19.runs.raw_stderr";
-const EXT_MODEL_FAMILY: &str = "pump19.runs.model_family";
 const EXT_AGENT_ENGINE: &str = "pump19.core.agent_engine";
 const EXT_FRAME_TITLE: &str = "pump19.frame.title";
 const EXT_FRAME_EXPLANATION: &str = "pump19.frame.explanation";
@@ -124,8 +117,6 @@ pub enum RunBodyError {
     Session(String),
     #[error("required model family is unavailable: {0}")]
     RequiredFamilyUnavailable(String),
-    #[error("judgement failed: {0}")]
-    Judgement(#[from] pump19_judgement::JudgementError),
     #[error("missing provenance for role {0:?}")]
     MissingRoleProvenance(AgentRole),
     #[error("missing reviewer provenance for agent {0:?}")]
@@ -197,26 +188,28 @@ pub trait ReviewRunBody {
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Finding>, RunBodyError>;
 
-    fn last_ensemble_archive_path(&self) -> Option<String> {
+    fn last_archive_path(&self) -> Option<String> {
         None
     }
-}
 
-/// Executes a significance-judge run after the core has passed the launch gate.
-pub trait JudgeRunBody {
-    /// Rates findings as material or minor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when judging cannot execute or decisions cannot be built.
-    fn run_judge(
-        &mut self,
-        request: &RunLaunchRequest,
-        workspace: &mut dyn WorkspaceExecutor,
-    ) -> Result<Vec<Decision>, RunBodyError>;
-
-    fn last_ensemble_archive_path(&self) -> Option<String> {
+    fn last_review_verdict(&self) -> Option<ReviewVerdict> {
         None
+    }
+
+    fn last_review_coverage(&self) -> Option<CoverageRecord> {
+        None
+    }
+
+    fn last_session_archives(&self) -> Vec<SessionArchiveRef> {
+        self.last_archive_path()
+            .map(|path| SessionArchiveRef {
+                role: AgentRole::Reviewer,
+                agent_id: AgentId("legacy-review-workflow".to_owned()),
+                path,
+                kind: SessionArchiveKind::EnsembleRun,
+            })
+            .into_iter()
+            .collect()
     }
 }
 
@@ -233,7 +226,7 @@ pub trait FixRunBody {
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<Vec<Patch>, RunBodyError>;
 
-    fn last_ensemble_archive_path(&self) -> Option<String> {
+    fn last_archive_path(&self) -> Option<String> {
         None
     }
 }
@@ -251,7 +244,7 @@ pub trait FinishRunBody {
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<RunOutcome, RunBodyError>;
 
-    fn last_ensemble_archive_path(&self) -> Option<String> {
+    fn last_archive_path(&self) -> Option<String> {
         None
     }
 }
@@ -276,7 +269,7 @@ pub struct EnsembleWorkflowConfig {
     pub archive_root: PathBuf,
     pub timeout_ms: u64,
     pub prompt_template: String,
-    pub briefs: Vec<JudgementBrief>,
+    pub briefs: Vec<ManifestBrief>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -369,6 +362,7 @@ pub struct LeadSessionFrameConfig {
     pub mission_template: String,
     pub selected_briefs: Vec<ManifestBrief>,
     pub brief_warnings: Vec<String>,
+    pub subject_intents: BTreeMap<String, SubjectIntent>,
     pub occasion: String,
     pub materiality_threshold: PriorityClass,
     pub lead_engine: LeadEngineConfig,
@@ -447,11 +441,51 @@ where
         Ok(findings)
     }
 
-    fn last_ensemble_archive_path(&self) -> Option<String> {
+    fn last_archive_path(&self) -> Option<String> {
         self.last_result
             .as_ref()
             .and_then(|result| result.workflow_archives.first())
             .map(|path| path.display().to_string())
+    }
+
+    fn last_review_verdict(&self) -> Option<ReviewVerdict> {
+        self.last_result
+            .as_ref()
+            .map(|result| result.verdict.clone())
+    }
+
+    fn last_review_coverage(&self) -> Option<CoverageRecord> {
+        self.last_result
+            .as_ref()
+            .map(|result| result.coverage.clone())
+    }
+
+    fn last_session_archives(&self) -> Vec<SessionArchiveRef> {
+        let Some(result) = &self.last_result else {
+            return Vec::new();
+        };
+        let mut archives = result
+            .lead_transcripts
+            .iter()
+            .map(|path| SessionArchiveRef {
+                role: AgentRole::Lead,
+                agent_id: AgentId(format!("{}:lead", result.manifest.run_id.0)),
+                path: path.display().to_string(),
+                kind: SessionArchiveKind::LeadTranscript,
+            })
+            .collect::<Vec<_>>();
+        archives.extend(
+            result
+                .workflow_archives
+                .iter()
+                .map(|path| SessionArchiveRef {
+                    role: AgentRole::Verifier,
+                    agent_id: AgentId(format!("{}:workflow", result.manifest.run_id.0)),
+                    path: path.display().to_string(),
+                    kind: SessionArchiveKind::EnsembleRun,
+                }),
+        );
+        archives
     }
 }
 
@@ -466,14 +500,17 @@ fn run_lead_session_frame(
     let manifest = build_run_manifest(config, request, &review_evidence);
     let manifest_path = run_dir.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
+    let subject = subject_for_repository(&config.subject_intents, &request.state.pr.repository);
     write_mission(
         &run_dir.join("mission.md"),
         &config.mission_template,
         &manifest,
+        &subject,
     )?;
     write_schema(&run_dir.join("schema/review-output.schema.json"))?;
     write_workflow_shim(config, &run_dir)?;
-    write_exec_shim(&run_dir)?;
+    write_exec_shim(&run_dir, &request.workspace.id)?;
+    make_review_workspace_read_only(&request.workspace.root, &config.run_root)?;
 
     let mut repair = WorkflowRepairStrategy {
         runner: workflow_runner,
@@ -640,7 +677,7 @@ fn build_run_manifest(
                 .state
                 .loop_history
                 .iter()
-                .filter_map(|record| record.judge_verdict)
+                .filter_map(|record| record.verdict.as_ref())
                 .map(|verdict| format!("{verdict:?}"))
                 .collect(),
             fix_survival_by_dedup_key: fix_survival_by_dedup_key(request),
@@ -681,7 +718,12 @@ fn fix_survival_by_dedup_key(request: &RunLaunchRequest) -> BTreeMap<String, u32
     survived
 }
 
-fn write_mission(path: &Path, template: &str, manifest: &RunManifest) -> Result<(), RunBodyError> {
+fn write_mission(
+    path: &Path,
+    template: &str,
+    manifest: &RunManifest,
+    subject: &SubjectIntent,
+) -> Result<(), RunBodyError> {
     let manifest_json =
         serde_json::to_string_pretty(manifest).map_err(RunBodyError::EnsembleJson)?;
     let rendered = render_prompt_template(
@@ -690,9 +732,24 @@ fn write_mission(path: &Path, template: &str, manifest: &RunManifest) -> Result<
             ("manifest_path", "manifest.json".to_owned()),
             ("manifest", manifest_json),
             ("run_id", manifest.run_id.0.clone()),
+            ("subject_name", subject.name.clone()),
+            ("subject_slug", subject.slug.clone()),
+            ("subject_purpose", subject.purpose.clone()),
+            ("brief_body", String::new()),
+            ("evidence", String::new()),
         ],
     )?;
     write_file(path, rendered.as_bytes(), "write mission prompt")
+}
+
+fn subject_for_repository(
+    subject_intents: &BTreeMap<String, SubjectIntent>,
+    repository: &str,
+) -> SubjectIntent {
+    subject_intents
+        .get(repository)
+        .cloned()
+        .unwrap_or_else(|| SubjectIntent::neutral_for_repository(repository))
 }
 
 fn write_schema(path: &Path) -> Result<(), RunBodyError> {
@@ -753,14 +810,64 @@ PUMP19_WORKFLOW_INPUT_PATH="$input_path" ENSEMBLE_RUN_RECORD_DIR="$run_dir/archi
     make_executable(&path)
 }
 
-fn write_exec_shim(run_dir: &Path) -> Result<(), RunBodyError> {
+fn write_exec_shim(run_dir: &Path, workspace_id: &str) -> Result<(), RunBodyError> {
     let path = run_dir.join("bin/pump19-exec");
-    write_file(
-        &path,
-        b"#!/bin/sh\nset -eu\necho \"pump19-exec is provided by the stage-5 workspace lease integration\" >&2\nexit 69\n",
-        "write exec shim",
-    )?;
+    let quoted_workspace = shell_single_quote(workspace_id);
+    let source = format!(
+        r#"#!/bin/sh
+set -eu
+exec podman exec --workdir /workspace {quoted_workspace} "$@"
+"#
+    );
+    write_file(&path, source.as_bytes(), "write exec shim")?;
     make_executable(&path)
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(unix)]
+fn make_review_workspace_read_only(root: &Path, skip_root: &Path) -> Result<(), RunBodyError> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn visit(path: &Path, skip_root: &Path) -> Result<(), RunBodyError> {
+        if path == skip_root || path.starts_with(skip_root) {
+            return Ok(());
+        }
+        let metadata = fs::symlink_metadata(path).map_err(|source| RunBodyError::FrameIo {
+            action: format!("inspect review workspace {}", path.display()),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).map_err(|source| RunBodyError::FrameIo {
+                action: format!("read review workspace {}", path.display()),
+                source,
+            })? {
+                let entry = entry.map_err(|source| RunBodyError::FrameIo {
+                    action: format!("read review workspace {}", path.display()),
+                    source,
+                })?;
+                visit(&entry.path(), skip_root)?;
+            }
+        }
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() & !0o222);
+        fs::set_permissions(path, permissions).map_err(|source| RunBodyError::FrameIo {
+            action: format!("make review workspace read-only {}", path.display()),
+            source,
+        })
+    }
+
+    visit(root, skip_root)
+}
+
+#[cfg(not(unix))]
+fn make_review_workspace_read_only(_root: &Path, _skip_root: &Path) -> Result<(), RunBodyError> {
+    Ok(())
 }
 
 fn workflow_archive_dirs(run_dir: &Path) -> Result<Vec<PathBuf>, RunBodyError> {
@@ -1040,12 +1147,13 @@ fn post_gate_finding(
         )),
         dedup_key: payload.dedup_hint,
         source_brief: payload.source_brief,
-        dimension: "review".to_owned(),
-        summary: payload.title,
-        severity: severity_for_priority(payload.priority),
-        confidence: Confidence::High,
+        title: payload.title,
+        explanation: payload.explanation,
+        suggestion: payload.suggestion,
+        priority: payload.priority,
         certainty: payload.certainty,
         provenance: producer,
+        verification,
         locations: payload
             .locations
             .into_iter()
@@ -1162,15 +1270,6 @@ fn frame_verdict(
         },
         LeadVerdictProposal::PartialCoverage => ReviewVerdict::PartialCoverage,
     })
-}
-
-const fn severity_for_priority(priority: PriorityClass) -> Severity {
-    match priority {
-        PriorityClass::P0 => Severity::Critical,
-        PriorityClass::P1 => Severity::High,
-        PriorityClass::P2 => Severity::Medium,
-        PriorityClass::P3 => Severity::Low,
-    }
 }
 
 fn changed_lines_from_diff(diff: &str) -> BTreeMap<String, Vec<u32>> {
@@ -1294,6 +1393,12 @@ pub struct SubjectIntent {
     pub behaviours: Vec<IntentStatement>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct IntentStatement {
+    pub id: String,
+    pub statement: String,
+}
+
 impl SubjectIntent {
     #[must_use]
     pub fn neutral_for_repository(repository: &str) -> Self {
@@ -1301,7 +1406,7 @@ impl SubjectIntent {
             slug: repository.to_owned(),
             name: repository.to_owned(),
             purpose: format!(
-                "Review changes to {repository} for correctness, safety, maintainability, and alignment with the judgement brief."
+                "Review changes to {repository} for correctness, safety, maintainability, and alignment with the configured review briefs."
             ),
             invariants: Vec::new(),
             behaviours: Vec::new(),
@@ -1615,32 +1720,29 @@ fn ensemble_env_allowed(name: &str) -> bool {
 
 /// `RunLauncher` implementation composed from narrow, testable run-body seams.
 #[derive(Debug)]
-pub struct Pump19RunLauncher<S, R, J, F, N> {
+pub struct Pump19RunLauncher<S, R, F, N> {
     sessions: S,
     review: R,
-    judge: J,
     fix: F,
     finish: N,
 }
 
-impl<S, R, J, F, N> Pump19RunLauncher<S, R, J, F, N> {
+impl<S, R, F, N> Pump19RunLauncher<S, R, F, N> {
     #[must_use]
-    pub const fn new(sessions: S, review: R, judge: J, fix: F, finish: N) -> Self {
+    pub const fn new(sessions: S, review: R, fix: F, finish: N) -> Self {
         Self {
             sessions,
             review,
-            judge,
             fix,
             finish,
         }
     }
 }
 
-impl<S, R, J, F, N> RunLauncher for Pump19RunLauncher<S, R, J, F, N>
+impl<S, R, F, N> RunLauncher for Pump19RunLauncher<S, R, F, N>
 where
     S: AgentSessionPreparer,
     R: ReviewRunBody,
-    J: JudgeRunBody,
     F: FixRunBody,
     N: FinishRunBody,
 {
@@ -1664,60 +1766,69 @@ where
         workspace: &mut dyn WorkspaceExecutor,
     ) -> Result<RunLaunchOutcome, CoreError> {
         let result = match request.run_kind {
-            RunKind::Review => self.review.run_review(&request, workspace).map(|findings| {
-                let ensemble_archive_path = self.review.last_ensemble_archive_path();
-                RunLaunchOutcome {
-                    outcome: RunOutcome::Succeeded,
-                    findings,
-                    decisions: Vec::new(),
-                    patches: Vec::new(),
-                    token_usage: None,
-                    ensemble_archive_path,
-                }
-            }),
-            RunKind::Judge => {
-                self.judge
-                    .run_judge(&request, workspace)
-                    .and_then(|mut decisions| {
-                        if decisions.is_empty() && request.state.findings.is_empty() {
-                            let provenance = provenance_for_role(&request, AgentRole::Judge)?;
-                            decisions.push(convergence_decision(&request, &provenance));
-                        }
-                        Ok(RunLaunchOutcome {
-                            outcome: RunOutcome::Succeeded,
-                            findings: Vec::new(),
-                            decisions,
-                            patches: Vec::new(),
-                            token_usage: None,
-                            ensemble_archive_path: self.judge.last_ensemble_archive_path(),
-                        })
+            RunKind::Review => {
+                self.review
+                    .run_review(&request, workspace)
+                    .map(|findings| RunLaunchOutcome {
+                        outcome: RunOutcome::Succeeded,
+                        findings,
+                        verdict: self.review.last_review_verdict(),
+                        coverage: self.review.last_review_coverage(),
+                        patches: Vec::new(),
+                        token_usage: None,
+                        session_archives: self.review.last_session_archives(),
+                        independence_degradations: Vec::new(),
                     })
             }
-            RunKind::Fix => self.fix.run_fix(&request, workspace).map(|patches| {
-                let ensemble_archive_path = self.fix.last_ensemble_archive_path();
-                RunLaunchOutcome {
+            RunKind::Fix => self
+                .fix
+                .run_fix(&request, workspace)
+                .map(|patches| RunLaunchOutcome {
                     outcome: if patches.is_empty() {
                         RunOutcome::NoOp
                     } else {
                         RunOutcome::Succeeded
                     },
                     findings: Vec::new(),
-                    decisions: Vec::new(),
+                    verdict: None,
+                    coverage: None,
                     patches,
                     token_usage: None,
-                    ensemble_archive_path,
-                }
-            }),
+                    session_archives: self
+                        .fix
+                        .last_archive_path()
+                        .map(|path| SessionArchiveRef {
+                            role: AgentRole::Fixer,
+                            agent_id: AgentId("fix-workflow".to_owned()),
+                            path,
+                            kind: SessionArchiveKind::EnsembleRun,
+                        })
+                        .into_iter()
+                        .collect(),
+                    independence_degradations: Vec::new(),
+                }),
             RunKind::Finish => {
                 self.finish
                     .run_finish(&request, workspace)
                     .map(|outcome| RunLaunchOutcome {
                         outcome,
                         findings: Vec::new(),
-                        decisions: Vec::new(),
+                        verdict: None,
+                        coverage: None,
                         patches: Vec::new(),
                         token_usage: None,
-                        ensemble_archive_path: self.finish.last_ensemble_archive_path(),
+                        session_archives: self
+                            .finish
+                            .last_archive_path()
+                            .map(|path| SessionArchiveRef {
+                                role: AgentRole::Finish,
+                                agent_id: AgentId("finish-workflow".to_owned()),
+                                path,
+                                kind: SessionArchiveKind::EnsembleRun,
+                            })
+                            .into_iter()
+                            .collect(),
+                        independence_degradations: Vec::new(),
                     })
             }
         };
@@ -1780,13 +1891,13 @@ where
             .briefs
             .iter()
             .map(|brief| {
-                let evidence = review_evidence_text(&review_evidence, brief)?;
+                let evidence = review_evidence_text(&review_evidence, brief);
                 let prompt = render_prompt_template(
                     &self.config.prompt_template,
                     &[
                         ("brief_id", brief.id.clone()),
                         ("brief_title", brief.title.clone()),
-                        ("brief_body", brief.brief.clone()),
+                        ("brief_body", String::new()),
                         ("subject_name", subject.name.clone()),
                         ("subject_slug", subject.slug.clone()),
                         ("subject_purpose", subject.purpose.clone()),
@@ -1797,7 +1908,7 @@ where
                     "id": brief.id,
                     "title": brief.title,
                     "prompt": prompt,
-                    "brief": brief.brief,
+                    "brief": "",
                     "evidence": evidence,
                 }))
             })
@@ -1820,98 +1931,10 @@ where
         let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
         reconcile_ensemble_archive(&output.archive_dir, &reviewers)?;
         self.last_archive_path = Some(output.archive_dir.display().to_string());
-        let run = serde_json::from_value::<JudgementRun>(output.value)
-            .map_err(RunBodyError::EnsembleJson)?;
-        findings_from_judgement(request, &run)
+        serde_json::from_value::<Vec<Finding>>(output.value).map_err(RunBodyError::EnsembleJson)
     }
 
-    fn last_ensemble_archive_path(&self) -> Option<String> {
-        self.last_archive_path.clone()
-    }
-}
-
-/// Significance judge body backed by a host-side ensemble workflow.
-#[derive(Clone, Debug)]
-pub struct EnsembleJudgeBody<R> {
-    runner: R,
-    config: EnsembleWorkflowConfig,
-    last_archive_path: Option<String>,
-}
-
-impl<R> EnsembleJudgeBody<R> {
-    #[must_use]
-    pub const fn new(runner: R, config: EnsembleWorkflowConfig) -> Self {
-        Self {
-            runner,
-            config,
-            last_archive_path: None,
-        }
-    }
-}
-
-impl<R> JudgeRunBody for EnsembleJudgeBody<R>
-where
-    R: EnsembleWorkflowRunner,
-{
-    fn run_judge(
-        &mut self,
-        request: &RunLaunchRequest,
-        workspace: &mut dyn WorkspaceExecutor,
-    ) -> Result<Vec<Decision>, RunBodyError> {
-        self.last_archive_path = None;
-        let _ = workspace;
-        let targets = expected_targets(request, AgentRole::Judge)?;
-        let provenance = provenance_for_role(request, AgentRole::Judge)?;
-        let judge_findings = judge_findings(request);
-        let loop_context = json!({
-            "pass_count": request.state.pass_index,
-            "prior_verdicts": prior_judge_verdicts(request),
-            "fix_outcomes": prior_fix_outcomes(request),
-            "loop_history": request.state.loop_history,
-        });
-        let prompt = render_prompt_template(
-            &self.config.prompt_template,
-            &[
-                ("run_id", request.run_id.0.clone()),
-                ("commit_sha", request.state.commit_sha.clone()),
-                ("findings", prompt_json(&judge_findings)?),
-                ("loop_context", prompt_json(&loop_context)?),
-            ],
-        )?;
-        let input = json!({
-            "run_id": request.run_id,
-            "pr": request.state.pr,
-            "commit_sha": request.state.commit_sha,
-            "workspace_root": request.workspace.root,
-            "judges": targets,
-            "prompt": prompt,
-            "pass_count": request.state.pass_index,
-            "current_findings": judge_findings,
-            "findings": judge_findings,
-            "prior_verdicts": prior_judge_verdicts(request),
-            "fix_outcomes": prior_fix_outcomes(request),
-            "loop_history": request.state.loop_history,
-        });
-        let output = run_ensemble_workflow(&mut self.runner, &self.config, request, input)?;
-        reconcile_ensemble_archive(&output.archive_dir, &targets)?;
-        self.last_archive_path = Some(output.archive_dir.display().to_string());
-        let outputs = serde_json::from_value::<Vec<JudgeDecisionOutput>>(output.value)
-            .map_err(RunBodyError::EnsembleJson)?;
-        if outputs.is_empty() && judge_findings.is_empty() {
-            return Ok(vec![convergence_decision(request, &provenance)]);
-        }
-        if outputs.is_empty() {
-            return Err(RunBodyError::Ensemble(
-                "judge returned no decisions for standing findings".to_owned(),
-            ));
-        }
-        Ok(outputs
-            .into_iter()
-            .map(|output| output.into_decision(&request.run_id, &provenance))
-            .collect())
-    }
-
-    fn last_ensemble_archive_path(&self) -> Option<String> {
+    fn last_archive_path(&self) -> Option<String> {
         self.last_archive_path.clone()
     }
 }
@@ -1979,7 +2002,7 @@ where
         )])
     }
 
-    fn last_ensemble_archive_path(&self) -> Option<String> {
+    fn last_archive_path(&self) -> Option<String> {
         self.last_archive_path.clone()
     }
 }
@@ -2064,160 +2087,12 @@ impl<C: MergeReadinessCheck> FinishRunBody for VerifiedMergeGateFinishBody<C> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-struct JudgeDecisionOutput {
-    finding_id: FindingId,
-    verdict: DecisionVerdict,
-    rationale: String,
-}
-
-impl JudgeDecisionOutput {
-    fn into_decision(self, run_id: &RunId, provenance: &ModelProvenance) -> Decision {
-        let finding_id = self.finding_id;
-        Decision {
-            contract_version: ContractVersion::current(),
-            id: stable_id("decision", [run_id.0.as_str(), finding_id.0.as_str()]),
-            subject: DecisionSubject::Finding { finding_id },
-            verdict: self.verdict,
-            rationale: self.rationale,
-            provenance: provenance.clone(),
-            extensions: BTreeMap::new(),
-        }
-    }
-}
-
-fn convergence_decision(request: &RunLaunchRequest, provenance: &ModelProvenance) -> Decision {
-    Decision {
-        contract_version: ContractVersion::current(),
-        id: stable_id("decision-converged", [request.run_id.0.as_str()]),
-        subject: DecisionSubject::FindingSet {
-            finding_ids: Vec::new(),
-        },
-        verdict: DecisionVerdict::Converged,
-        rationale: "No material findings remain for the current pass.".to_owned(),
-        provenance: provenance.clone(),
-        extensions: BTreeMap::new(),
-    }
-}
-
-fn prior_judge_verdicts(request: &RunLaunchRequest) -> Vec<DecisionVerdict> {
-    request
-        .state
-        .loop_history
-        .iter()
-        .filter_map(|pass| pass.judge_verdict)
-        .collect()
-}
-
-fn prior_fix_outcomes(request: &RunLaunchRequest) -> Vec<RunOutcome> {
-    request
-        .state
-        .loop_history
-        .iter()
-        .filter_map(|pass| pass.fix_outcome)
-        .collect()
-}
-
-fn judge_findings(request: &RunLaunchRequest) -> Vec<Finding> {
-    if !request.state.findings.is_empty() {
-        return request.state.findings.clone();
-    }
-    request
-        .state
-        .loop_history
-        .iter()
-        .rev()
-        .find(|pass| pass.fix_outcome == Some(RunOutcome::NoOp) && !pass.findings.is_empty())
-        .map(|pass| pass.findings.clone())
-        .unwrap_or_default()
-}
-
-fn findings_from_judgement(
-    request: &RunLaunchRequest,
-    run: &JudgementRun,
-) -> Result<Vec<Finding>, RunBodyError> {
-    let mut findings = Vec::new();
-    for brief in &run.briefs {
-        for review in &brief.reviews {
-            if review.status == JudgementStatus::Failed {
-                findings.push(finding_from_review(request, brief, review)?);
-            }
-        }
-    }
-    Ok(findings)
-}
-
-fn finding_from_review(
-    request: &RunLaunchRequest,
-    brief: &JudgementBriefResult,
-    review: &ReviewerResult,
-) -> Result<Finding, RunBodyError> {
-    let provenance = reviewer_provenance(request, &review.agent_id)?.clone();
-    let summary = first_line(&review.stdout)
-        .or_else(|| first_line(&review.stderr))
-        .unwrap_or_else(|| format!("Judgement brief {} failed.", brief.brief_id));
-    let dedup_key = finding_dedup_key(brief);
-    let mut extensions = Extensions::new();
-    extensions.insert(
-        EXT_RAW_STDOUT.to_owned(),
-        Value::String(review.stdout.clone()),
-    );
-    extensions.insert(
-        EXT_RAW_STDERR.to_owned(),
-        Value::String(review.stderr.clone()),
-    );
-    extensions.insert(
-        EXT_MODEL_FAMILY.to_owned(),
-        Value::String(review.model_family.clone()),
-    );
-
-    Ok(Finding {
-        contract_version: ContractVersion::current(),
-        id: FindingId(stable_id(
-            "finding",
-            [
-                request.run_id.0.as_str(),
-                brief.brief_id.as_str(),
-                review.agent_id.as_str(),
-            ],
-        )),
-        dedup_key,
-        source_brief: brief.brief_id.clone(),
-        dimension: "judgement".to_owned(),
-        summary,
-        severity: Severity::Medium,
-        confidence: Confidence::Medium,
-        certainty: CertaintyClass::Advisory,
-        provenance,
-        locations: vec![FindingLocation::General {
-            description: format!("Judgement brief {} failed.", brief.brief_id),
-        }],
-        extensions,
-    })
-}
-
-fn finding_dedup_key(brief: &JudgementBriefResult) -> String {
-    stable_id("judgement", [brief.brief_id.as_str(), "general"])
-}
-
 fn material_findings(request: &RunLaunchRequest) -> Vec<&Finding> {
     request
         .state
-        .decisions
+        .findings
         .iter()
-        .filter(|decision| decision.verdict == DecisionVerdict::Material)
-        .filter_map(|decision| match &decision.subject {
-            DecisionSubject::Finding { finding_id } => request
-                .state
-                .findings
-                .iter()
-                .find(|finding| finding.id == *finding_id),
-            DecisionSubject::FindingSet { finding_ids } => request
-                .state
-                .findings
-                .iter()
-                .find(|finding| finding_ids.contains(&finding.id)),
-        })
+        .filter(|finding| finding.is_material(PriorityClass::P1))
         .collect()
 }
 
@@ -2359,10 +2234,7 @@ fn load_review_evidence(workspace_root: &Path) -> Result<ReviewEvidence, RunBody
     })
 }
 
-fn review_evidence_text(
-    review_evidence: &ReviewEvidence,
-    brief: &JudgementBrief,
-) -> Result<String, RunBodyError> {
+fn review_evidence_text(review_evidence: &ReviewEvidence, _brief: &ManifestBrief) -> String {
     let inline_diff = inline_review_diff(&review_evidence.diff, INLINE_REVIEW_DIFF_BYTE_LIMIT);
     let mut text = format!(
         "Prepared workspace tree: {}\nPR diff path: {}\nFull PR diff evidence lives on disk at the path above. Read that file from the prepared workspace when the excerpt below is truncated, and treat the file as authoritative.\n\n",
@@ -2390,11 +2262,7 @@ fn review_evidence_text(
         text.push('\n');
     }
     text.push_str("</pr_diff_excerpt>");
-    if !brief.evidence_paths.is_empty() {
-        text.push_str("\n\nAdditional brief evidence:\n");
-        text.push_str(&evidence_text(&review_evidence.workspace_root, brief)?);
-    }
-    Ok(text)
+    text
 }
 
 fn inline_review_diff(diff: &str, byte_limit: usize) -> InlineReviewDiff<'_> {
@@ -2713,27 +2581,6 @@ fn provenance_for_role(
         .ok_or(RunBodyError::MissingRoleProvenance(role))
 }
 
-fn reviewer_provenance<'a>(
-    request: &'a RunLaunchRequest,
-    agent_id: &str,
-) -> Result<&'a ModelProvenance, RunBodyError> {
-    request
-        .provenance
-        .iter()
-        .find(|provenance| {
-            provenance.role == AgentRole::Reviewer
-                && provenance.agent_id == AgentId(agent_id.to_owned())
-        })
-        .ok_or_else(|| RunBodyError::MissingReviewerProvenance(agent_id.to_owned()))
-}
-
-fn first_line(text: &str) -> Option<String> {
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-}
-
 fn stable_id<'a>(prefix: &str, parts: impl IntoIterator<Item = &'a str>) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for part in parts {
@@ -2758,14 +2605,13 @@ mod tests {
     };
 
     use pump19_contract::{
-        DecisionSubject, LoopPassRecord, ModelFamily, ModelLineage, ProvenanceVerification,
-        PullRequestRef, RunStatus, SessionFreshness, SessionId,
+        ModelFamily, ModelLineage, ProvenanceVerification, PullRequestRef, RunId, RunStatus,
+        SessionFreshness, SessionId,
     };
     use pump19_core::{
         LaunchProof, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceIsolation, WorkspaceLease,
     };
     use pump19_engine::{ModelSource, RepairPolicy, TokenUsage};
-    use pump19_judgement::{ReviewerResult, baseline_judgement_briefs};
     use serde_json::json;
 
     use super::*;
@@ -2859,6 +2705,7 @@ mod tests {
     }
 
     #[derive(Debug)]
+    #[allow(dead_code)]
     struct FailingEnsembleRunner {
         message: String,
     }
@@ -2981,40 +2828,6 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct FakeJudge {
-        verdict: DecisionVerdict,
-    }
-
-    impl JudgeRunBody for FakeJudge {
-        fn run_judge(
-            &mut self,
-            request: &RunLaunchRequest,
-            _workspace: &mut dyn WorkspaceExecutor,
-        ) -> Result<Vec<Decision>, RunBodyError> {
-            let provenance = provenance_for_role(request, AgentRole::Judge)?;
-            Ok(request
-                .state
-                .findings
-                .iter()
-                .map(|finding| Decision {
-                    contract_version: ContractVersion::current(),
-                    id: stable_id(
-                        "decision",
-                        [request.run_id.0.as_str(), finding.id.0.as_str()],
-                    ),
-                    subject: DecisionSubject::Finding {
-                        finding_id: finding.id.clone(),
-                    },
-                    verdict: self.verdict,
-                    rationale: "test verdict".to_owned(),
-                    provenance: provenance.clone(),
-                    extensions: BTreeMap::new(),
-                })
-                .collect())
-        }
-    }
-
-    #[derive(Debug)]
     struct FakeFix;
 
     impl FixRunBody for FakeFix {
@@ -3049,6 +2862,7 @@ mod tests {
             contract_version: ContractVersion::current(),
             agent_id: AgentId(agent_id.to_owned()),
             role,
+            engine: engine_for_family(family).to_owned(),
             session_id: SessionId(format!("{agent_id}-session")),
             freshness: SessionFreshness::FreshForPass { pass_index: 1 },
             verification: ProvenanceVerification::Verified {
@@ -3092,7 +2906,8 @@ mod tests {
                 loop_history: Vec::new(),
                 superseded_by: None,
                 findings: Vec::new(),
-                decisions: Vec::new(),
+                verdict: None,
+                coverage: None,
                 patches: Vec::new(),
                 publication: pump19_contract::PublicationState::default(),
                 ceiling: None,
@@ -3104,7 +2919,6 @@ mod tests {
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: true,
-                    egress_bounded: true,
                     resource_bounded: true,
                     ephemeral: true,
                 },
@@ -3119,10 +2933,17 @@ mod tests {
             id: FindingId("finding-1".to_owned()),
             dedup_key: "dedup".to_owned(),
             source_brief: "brief".to_owned(),
-            dimension: "judgement".to_owned(),
-            summary: "finding".to_owned(),
-            severity: Severity::High,
-            confidence: Confidence::High,
+            title: "finding".to_owned(),
+            explanation: "fixture finding".to_owned(),
+            suggestion: Some("fix the fixture".to_owned()),
+            priority: PriorityClass::P1,
+            verification: FindingVerification {
+                status: VerificationStatus::Verified,
+                verifier: Some(provenance("verifier-claude", AgentRole::Verifier, "claude")),
+                evidence: Vec::new(),
+                cross_family: FamilySplit::CrossFamily,
+                extensions: BTreeMap::new(),
+            },
             certainty: CertaintyClass::Advisory,
             provenance: provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
             locations: vec![FindingLocation::General {
@@ -3140,6 +2961,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn archive_agent(agent_id: &str, family: &str) -> ArchiveAgentFixture {
         ArchiveAgentFixture {
             label: format!("{agent_id}:purpose"),
@@ -3151,13 +2973,18 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn ensemble_config(root: &Path) -> EnsembleWorkflowConfig {
         EnsembleWorkflowConfig {
             script: root.join("workflow.js"),
             archive_root: root.join("archives"),
             timeout_ms: 5_000,
             prompt_template: "configured prompt".to_owned(),
-            briefs: baseline_judgement_briefs(),
+            briefs: vec![ManifestBrief {
+                id: "brief".to_owned(),
+                title: "Brief".to_owned(),
+                occasion: "every-pr".to_owned(),
+            }],
         }
     }
 
@@ -3192,6 +3019,7 @@ mod tests {
                 occasion: "every-pr".to_owned(),
             }],
             brief_warnings: vec!["repo:broken frontmatter loaded body-only".to_owned()],
+            subject_intents: BTreeMap::new(),
             occasion: "every-pr".to_owned(),
             materiality_threshold: PriorityClass::P1,
             lead_engine: LeadEngineConfig {
@@ -3308,7 +3136,7 @@ mod tests {
         let result = body.last_result().expect("frame result recorded");
 
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].summary, "Unsafe state is accepted");
+        assert_eq!(findings[0].title, "Unsafe state is accepted");
         assert_eq!(result.manifest.base_sha, "base-sha");
         assert_eq!(
             result.manifest.extensions[EXT_BRIEF_WARNINGS][0].as_str(),
@@ -3723,6 +3551,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
             mission_template: String::new(),
             selected_briefs: Vec::new(),
             brief_warnings: Vec::new(),
+            subject_intents: BTreeMap::new(),
             occasion: "every-pr".to_owned(),
             materiality_threshold: PriorityClass::P1,
             lead_engine: LeadEngineConfig {
@@ -3822,489 +3651,6 @@ printf '{{"ok":true}}\n'
             serde_json::to_string_pretty(&manifest).expect("serialise manifest"),
         )
         .expect("write manifest");
-    }
-
-    #[test]
-    fn review_maps_failed_judgement_to_advisory_finding() {
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.run_id = RunId("review-run".to_owned());
-        let run = JudgementRun {
-            status: JudgementStatus::Failed,
-            model_families: vec!["codex".to_owned()],
-            briefs: vec![JudgementBriefResult {
-                brief_id: "purpose".to_owned(),
-                status: JudgementStatus::Failed,
-                reviews: vec![ReviewerResult {
-                    agent_id: "reviewer-codex".to_owned(),
-                    model_family: "codex".to_owned(),
-                    status: JudgementStatus::Failed,
-                    stdout: "PUMP19_JUDGEMENT: FAIL stale state".to_owned(),
-                    stderr: String::new(),
-                }],
-            }],
-        };
-
-        let findings = findings_from_judgement(&req, &run).expect("map findings");
-
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].certainty, CertaintyClass::Advisory);
-        assert_eq!(
-            findings[0].provenance.agent_id,
-            AgentId("reviewer-codex".to_owned())
-        );
-        assert_eq!(findings[0].source_brief, "purpose");
-    }
-
-    #[test]
-    fn review_finding_dedup_key_is_stable_across_reviewer_rewording() {
-        let mut first = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        first.run_id = RunId("review-run-1".to_owned());
-        let mut second = first.clone();
-        second.run_id = RunId("review-run-2".to_owned());
-        let run = |stdout: &str| JudgementRun {
-            status: JudgementStatus::Failed,
-            model_families: vec!["codex".to_owned()],
-            briefs: vec![JudgementBriefResult {
-                brief_id: "purpose".to_owned(),
-                status: JudgementStatus::Failed,
-                reviews: vec![ReviewerResult {
-                    agent_id: "reviewer-codex".to_owned(),
-                    model_family: "codex".to_owned(),
-                    status: JudgementStatus::Failed,
-                    stdout: stdout.to_owned(),
-                    stderr: String::new(),
-                }],
-            }],
-        };
-
-        let first_findings =
-            findings_from_judgement(&first, &run("PUMP19_JUDGEMENT: FAIL stale state"))
-                .expect("first findings");
-        let second_findings = findings_from_judgement(
-            &second,
-            &run("PUMP19_JUDGEMENT: FAIL old review state accepted"),
-        )
-        .expect("second findings");
-
-        assert_ne!(first_findings[0].id, second_findings[0].id);
-        assert_eq!(first_findings[0].dedup_key, second_findings[0].dedup_key);
-    }
-
-    #[test]
-    fn review_body_runs_host_ensemble_and_reconciles_archive() {
-        let root = tempfile::tempdir().expect("workspace root");
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.run_id = RunId("review-run".to_owned());
-        req.workspace.root = root.path().to_path_buf();
-        write_review_diff(
-            root.path(),
-            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
-        );
-        let run = JudgementRun {
-            status: JudgementStatus::Failed,
-            model_families: vec!["codex".to_owned()],
-            briefs: vec![JudgementBriefResult {
-                brief_id: "purpose".to_owned(),
-                status: JudgementStatus::Failed,
-                reviews: vec![ReviewerResult {
-                    agent_id: "reviewer-codex".to_owned(),
-                    model_family: "codex".to_owned(),
-                    status: JudgementStatus::Failed,
-                    stdout: "PUMP19_JUDGEMENT: FAIL stale state".to_owned(),
-                    stderr: String::new(),
-                }],
-            }],
-        };
-        let value = serde_json::to_value(run).expect("serialise judgement run");
-        let runner = FakeEnsembleRunner::new(value, vec![archive_agent("reviewer-codex", "codex")]);
-        let mut config = ensemble_config(root.path());
-        config.prompt_template =
-            "external review template marker {{brief_id}}\n{{subject_name}}\n{{brief_title}}\n{{brief_body}}\n{{evidence}}"
-                .to_owned();
-        let mut body = EnsembleReviewBody::new(runner, config);
-        let mut workspace = FakeWorkspace::default();
-
-        let findings = body
-            .run_review(&req, &mut workspace)
-            .expect("review body uses ensemble");
-
-        assert_eq!(findings.len(), 1);
-        assert!(workspace.execs.is_empty());
-        assert_eq!(body.runner.requests.len(), 1);
-        assert!(body.runner.requests[0].archive_dir.ends_with("review-run"));
-        let prompt = body.runner.requests[0].args["briefs"][0]["prompt"]
-            .as_str()
-            .expect("workflow brief prompt");
-        assert!(prompt.contains("external review template marker reviewer-independence"));
-        assert!(prompt.contains("acme/widgets"));
-        assert!(prompt.contains("Reviewer independence"));
-        assert!(prompt.contains("Prepared workspace tree:"));
-        assert!(prompt.contains(root.path().to_string_lossy().as_ref()));
-        assert!(prompt.contains("diff --git a/src/lib.rs b/src/lib.rs"));
-        assert!(!prompt.contains("No separate evidence paths were supplied."));
-        assert_eq!(
-            body.runner.requests[0].args["evidence"]["workspace_root"].as_str(),
-            Some(root.path().to_string_lossy().as_ref())
-        );
-        assert!(
-            body.runner.requests[0].args["evidence"]["diff"]
-                .as_str()
-                .expect("workflow diff evidence")
-                .contains("+pub fn changed() {}")
-        );
-        assert_eq!(
-            body.runner.requests[0].args["subject"]["name"].as_str(),
-            Some("acme/widgets")
-        );
-    }
-
-    #[test]
-    fn review_body_bounds_inline_diff_evidence_but_preserves_full_workflow_evidence() {
-        let root = tempfile::tempdir().expect("workspace root");
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.run_id = RunId("review-run".to_owned());
-        req.workspace.root = root.path().to_path_buf();
-        let mut diff = String::from("diff --git a/src/lib.rs b/src/lib.rs\n");
-        for index in 0..80_000 {
-            write!(
-                diff,
-                "@@ -{index},1 +{index},1 @@\n-old_{index}\n+new_{index}\n"
-            )
-            .expect("write generated diff hunk");
-        }
-        diff.push_str("+final sentinel only present in the full diff\n");
-        write_review_diff(root.path(), &diff);
-        let full_diff_len = diff.len();
-        assert!(full_diff_len > 2 * 1024 * 1024);
-        let runner = FakeEnsembleRunner::new(
-            serde_json::to_value(JudgementRun {
-                status: JudgementStatus::Passed,
-                model_families: vec!["codex".to_owned()],
-                briefs: Vec::new(),
-            })
-            .expect("serialise judgement run"),
-            vec![archive_agent("reviewer-codex", "codex")],
-        );
-        let mut config = ensemble_config(root.path());
-        config.prompt_template = "{{evidence}}".to_owned();
-        let mut body = EnsembleReviewBody::new(runner, config);
-        let mut workspace = FakeWorkspace::default();
-
-        body.run_review(&req, &mut workspace)
-            .expect("large diff review launches with bounded prompt evidence");
-
-        let request = &body.runner.requests[0];
-        let prompt = request.args["briefs"][0]["prompt"]
-            .as_str()
-            .expect("workflow brief prompt");
-        assert!(
-            prompt.len() < INLINE_REVIEW_DIFF_BYTE_LIMIT + 2 * 1024,
-            "rendered prompt should keep generous argv headroom; got {} bytes",
-            prompt.len()
-        );
-        assert!(prompt.contains("Bounded PR diff excerpt"));
-        assert!(prompt.contains("Full PR diff evidence lives on disk"));
-        assert!(prompt.contains("omitted "));
-        assert!(prompt.contains("diff hunk(s)"));
-        assert!(prompt.contains(root.path().to_string_lossy().as_ref()));
-        assert!(prompt.contains(".pump19/review/diff.patch"));
-        assert!(!prompt.contains("final sentinel only present in the full diff"));
-        assert_eq!(
-            request.args["evidence"]["workspace_root"].as_str(),
-            Some(root.path().to_string_lossy().as_ref())
-        );
-        assert_eq!(
-            request.args["evidence"]["diff_path"].as_str(),
-            Some(
-                root.path()
-                    .join(REVIEW_EVIDENCE_DIR)
-                    .join(REVIEW_DIFF_FILE)
-                    .to_string_lossy()
-                    .as_ref()
-            )
-        );
-        let workflow_diff = request.args["evidence"]["diff"]
-            .as_str()
-            .expect("workflow diff evidence");
-        assert_eq!(workflow_diff.len(), full_diff_len);
-        assert!(workflow_diff.contains("final sentinel only present in the full diff"));
-    }
-
-    #[test]
-    fn review_body_uses_configured_pump_side_subject_intent() {
-        let root = tempfile::tempdir().expect("workspace root");
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.run_id = RunId("review-run".to_owned());
-        req.workspace.root = root.path().to_path_buf();
-        write_review_diff(
-            root.path(),
-            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
-        );
-        let runner = FakeEnsembleRunner::new(
-            serde_json::to_value(JudgementRun {
-                status: JudgementStatus::Passed,
-                model_families: vec!["codex".to_owned()],
-                briefs: Vec::new(),
-            })
-            .expect("serialise judgement run"),
-            vec![archive_agent("reviewer-codex", "codex")],
-        );
-        let mut config = ensemble_config(root.path());
-        config.prompt_template =
-            "{{subject_name}}\n{{subject_slug}}\n{{subject_purpose}}".to_owned();
-        let mut subject_intents = BTreeMap::new();
-        subject_intents.insert(
-            "acme/widgets".to_owned(),
-            SubjectIntent {
-                slug: "widgets".to_owned(),
-                name: "Acme Widgets".to_owned(),
-                purpose: "Keep widget rendering honest.".to_owned(),
-                invariants: Vec::new(),
-                behaviours: Vec::new(),
-            },
-        );
-        let mut body = EnsembleReviewBody::with_subject_intents(runner, config, subject_intents);
-        let mut workspace = FakeWorkspace::default();
-
-        body.run_review(&req, &mut workspace)
-            .expect("configured subject does not require workspace intent");
-
-        let request = &body.runner.requests[0];
-        let prompt = request.args["briefs"][0]["prompt"]
-            .as_str()
-            .expect("workflow brief prompt");
-        assert!(prompt.contains("Acme Widgets"));
-        assert!(prompt.contains("widgets"));
-        assert!(prompt.contains("Keep widget rendering honest."));
-        assert_eq!(
-            request.args["subject"]["name"].as_str(),
-            Some("Acme Widgets")
-        );
-    }
-
-    #[test]
-    fn review_body_fails_closed_before_launch_without_diff_evidence() {
-        let root = tempfile::tempdir().expect("workspace root");
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        let runner = FakeEnsembleRunner::new(
-            serde_json::to_value(JudgementRun {
-                status: JudgementStatus::Passed,
-                model_families: vec!["codex".to_owned()],
-                briefs: Vec::new(),
-            })
-            .expect("serialise judgement run"),
-            vec![archive_agent("reviewer-codex", "codex")],
-        );
-        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let error = body
-            .run_review(&req, &mut workspace)
-            .expect_err("review without diff evidence fails closed");
-
-        assert!(
-            matches!(error, RunBodyError::MissingReviewEvidence(message) if message.contains("PR diff"))
-        );
-        assert!(body.runner.requests.is_empty());
-    }
-
-    #[test]
-    fn prompt_template_allows_brace_bearing_variable_content() {
-        let rendered = render_prompt_template(
-            "Evidence:\n{{evidence}}\nFinding:\n{{finding}}",
-            &[
-                (
-                    "evidence",
-                    "Vue template: <h1>{{ title }}</h1>\nLiteral later placeholder: {{finding}}"
-                        .to_owned(),
-                ),
-                ("finding", "actual finding text".to_owned()),
-            ],
-        )
-        .expect("render template");
-
-        assert!(rendered.contains("<h1>{{ title }}</h1>"));
-        assert!(rendered.contains("Literal later placeholder: {{finding}}"));
-        assert!(rendered.contains("Finding:\nactual finding text"));
-    }
-
-    #[test]
-    fn prompt_template_rejects_unknown_template_placeholder_before_rendering_values() {
-        let error = render_prompt_template(
-            "{{known}}\n{{missing}}",
-            &[("known", "content with {{missing}} braces".to_owned())],
-        )
-        .expect_err("unknown template placeholder is rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("unknown {{missing}} placeholder")
-        );
-    }
-
-    #[test]
-    fn review_body_fails_closed_on_malformed_workflow_output() {
-        let root = tempfile::tempdir().expect("workspace root");
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        write_review_diff(
-            root.path(),
-            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
-        );
-        let runner = FakeEnsembleRunner::new(
-            json!({"not": "a judgement run"}),
-            vec![archive_agent("reviewer-codex", "codex")],
-        );
-        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let error = body
-            .run_review(&req, &mut workspace)
-            .expect_err("malformed output fails closed");
-
-        assert!(matches!(error, RunBodyError::EnsembleJson(_)));
-    }
-
-    #[test]
-    fn archive_schema_null_output_fails_closed() {
-        let root = tempfile::tempdir().expect("workspace root");
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        write_review_diff(
-            root.path(),
-            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
-        );
-        let mut agent = archive_agent("reviewer-codex", "codex");
-        agent.validated_output = None;
-        let runner = FakeEnsembleRunner::new(
-            serde_json::to_value(JudgementRun {
-                status: JudgementStatus::Passed,
-                model_families: vec!["codex".to_owned()],
-                briefs: Vec::new(),
-            })
-            .expect("serialise judgement run"),
-            vec![agent],
-        );
-        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let error = body
-            .run_review(&req, &mut workspace)
-            .expect_err("schema-null archive fails closed");
-
-        assert!(
-            matches!(error, RunBodyError::EnsembleArchiveMismatch(message) if message.contains("schema-validated"))
-        );
-    }
-
-    #[test]
-    fn archive_engine_mismatch_fails_closed() {
-        let root = tempfile::tempdir().expect("workspace root");
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        write_review_diff(
-            root.path(),
-            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
-        );
-        let mut agent = archive_agent("reviewer-codex", "codex");
-        agent.engine = "claude".to_owned();
-        let runner = FakeEnsembleRunner::new(
-            serde_json::to_value(JudgementRun {
-                status: JudgementStatus::Passed,
-                model_families: vec!["codex".to_owned()],
-                briefs: Vec::new(),
-            })
-            .expect("serialise judgement run"),
-            vec![agent],
-        );
-        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let error = body
-            .run_review(&req, &mut workspace)
-            .expect_err("engine mismatch fails closed");
-
-        assert!(
-            matches!(error, RunBodyError::EnsembleArchiveMismatch(message) if message.contains("ran engine"))
-        );
-    }
-
-    #[test]
-    fn claude_archive_must_match_requested_model_not_resolved_alias() {
-        let root = tempfile::tempdir().expect("archive root");
-        let mut agent = archive_agent("reviewer-claude", "claude");
-        agent.model = "opus".to_owned();
-        agent.resolved_model = Some("claude-opus-4-8".to_owned());
-        write_archive(root.path(), &[agent]);
-        let expected = ExpectedAgentTarget {
-            agent_id: AgentId("reviewer-claude".to_owned()),
-            role: AgentRole::Reviewer,
-            engine: "claude".to_owned(),
-            model_family: "claude".to_owned(),
-            model: "claude-opus-4-8".to_owned(),
-        };
-
-        let error = reconcile_ensemble_archive(root.path(), &[expected])
-            .expect_err("claude requested model mismatch fails closed");
-
-        assert!(
-            matches!(error, RunBodyError::EnsembleArchiveMismatch(message)
-                if message.contains("ran model Some(\"opus\") instead of claude-opus-4-8"))
-        );
-    }
-
-    #[test]
-    fn runner_error_propagates_as_workflow_failure() {
-        let root = tempfile::tempdir().expect("workspace root");
-        let mut req = request(
-            RunKind::Review,
-            vec![provenance("reviewer-codex", AgentRole::Reviewer, "codex")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        write_review_diff(
-            root.path(),
-            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn changed() {}\n",
-        );
-        let runner = FailingEnsembleRunner {
-            message: "workflow timed out".to_owned(),
-        };
-        let mut body = EnsembleReviewBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let error = body
-            .run_review(&req, &mut workspace)
-            .expect_err("runner errors fail closed");
-
-        assert!(matches!(error, RunBodyError::Ensemble(message) if message.contains("timed out")));
     }
 
     #[test]
@@ -4451,264 +3797,16 @@ printf '{{"ok":true}}\n'
     }
 
     #[test]
-    fn judge_run_produces_material_decisions_for_findings() {
-        let mut req = request(
-            RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "glm")],
-        );
-        req.state.findings.push(finding());
-        let mut launcher = Pump19RunLauncher::new(
-            FakeSessions,
-            FakeReview {
-                findings: Vec::new(),
-            },
-            FakeJudge {
-                verdict: DecisionVerdict::Material,
-            },
-            FakeFix,
-            MergeGateFinishBody,
-        );
-        let mut workspace = FakeWorkspace::default();
-
-        let outcome = launcher
-            .launch_run(req, &mut workspace)
-            .expect("launch judge");
-
-        assert_eq!(outcome.outcome, RunOutcome::Succeeded);
-        assert_eq!(outcome.decisions.len(), 1);
-        assert_eq!(outcome.decisions[0].verdict, DecisionVerdict::Material);
-    }
-
-    #[test]
-    fn judge_workflow_receives_loop_history_without_stale_findings_as_current() {
-        let root = tempfile::tempdir().expect("judge root");
-        let mut req = request(
-            RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "glm")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        let stale = finding();
-        req.state.loop_history.push(LoopPassRecord {
-            pass_index: 1,
-            commit_sha: "old-sha".to_owned(),
-            findings: vec![stale.clone()],
-            decisions: vec![Decision {
-                contract_version: ContractVersion::current(),
-                id: "decision-old".to_owned(),
-                subject: DecisionSubject::Finding {
-                    finding_id: stale.id,
-                },
-                verdict: DecisionVerdict::Material,
-                rationale: "was material".to_owned(),
-                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
-                extensions: BTreeMap::new(),
-            }],
-            patches: Vec::new(),
-            judge_verdict: Some(DecisionVerdict::Material),
-            fix_outcome: Some(RunOutcome::Succeeded),
-        });
-        req.state.pass_index = 2;
-        req.state.findings.push(finding());
-        let runner = FakeEnsembleRunner::new(
-            json!([{"finding_id":"finding-1","verdict":"minor","rationale":"below threshold"}]),
-            vec![archive_agent("judge", "glm")],
-        );
-        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let decisions = judge.run_judge(&req, &mut workspace).expect("judge");
-
-        assert_eq!(decisions.len(), 1);
-        let workflow_args = &judge.runner.requests[0].args;
-        assert_eq!(workflow_args["pass_count"], json!(2));
-        assert_eq!(
-            workflow_args["current_findings"]
-                .as_array()
-                .expect("current")
-                .len(),
-            1
-        );
-        assert_eq!(
-            workflow_args["findings"].as_array().expect("compat").len(),
-            1
-        );
-        assert_eq!(
-            workflow_args["loop_history"]
-                .as_array()
-                .expect("history")
-                .len(),
-            1
-        );
-        assert_eq!(workflow_args["prior_verdicts"], json!(["material"]));
-        assert_eq!(workflow_args["fix_outcomes"], json!(["succeeded"]));
-    }
-
-    #[test]
-    fn judge_run_fails_when_standing_findings_get_no_decisions() {
-        let root = tempfile::tempdir().expect("judge root");
-        let mut req = request(
-            RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "glm")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        req.state.findings.push(finding());
-        let runner = FakeEnsembleRunner::new(json!([]), vec![archive_agent("judge", "glm")]);
-        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let error = judge
-            .run_judge(&req, &mut workspace)
-            .expect_err("empty decisions with findings fail");
-
-        assert!(
-            matches!(error, RunBodyError::Ensemble(message) if message.contains("no decisions"))
-        );
-    }
-
-    #[test]
-    fn judge_replays_noop_fix_findings_from_loop_history() {
-        let root = tempfile::tempdir().expect("judge root");
-        let mut req = request(
-            RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "glm")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        let standing = finding();
-        req.state.loop_history.push(LoopPassRecord {
-            pass_index: 1,
-            commit_sha: "abc123".to_owned(),
-            findings: vec![standing.clone()],
-            decisions: vec![Decision {
-                contract_version: ContractVersion::current(),
-                id: "decision-material".to_owned(),
-                subject: DecisionSubject::Finding {
-                    finding_id: standing.id,
-                },
-                verdict: DecisionVerdict::Material,
-                rationale: "was material before the NoOp fix".to_owned(),
-                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
-                extensions: BTreeMap::new(),
-            }],
-            patches: Vec::new(),
-            judge_verdict: Some(DecisionVerdict::Material),
-            fix_outcome: Some(RunOutcome::NoOp),
-        });
-        let runner = FakeEnsembleRunner::new(
-            json!([{"finding_id":"finding-1","verdict":"minor","rationale":"NoOp exhausted the useful fix path"}]),
-            vec![archive_agent("judge", "glm")],
-        );
-        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let decisions = judge.run_judge(&req, &mut workspace).expect("judge");
-
-        assert_eq!(decisions.len(), 1);
-        assert_eq!(decisions[0].verdict, DecisionVerdict::Minor);
-        let workflow_args = &judge.runner.requests[0].args;
-        assert_eq!(
-            workflow_args["current_findings"]
-                .as_array()
-                .expect("current findings")
-                .len(),
-            1
-        );
-        assert_eq!(workflow_args["fix_outcomes"], json!(["no_op"]));
-    }
-
-    #[test]
-    fn judge_fails_empty_decisions_for_noop_history_findings() {
-        let root = tempfile::tempdir().expect("judge root");
-        let mut req = request(
-            RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "glm")],
-        );
-        req.workspace.root = root.path().to_path_buf();
-        let standing = finding();
-        req.state.loop_history.push(LoopPassRecord {
-            pass_index: 1,
-            commit_sha: "abc123".to_owned(),
-            findings: vec![standing.clone()],
-            decisions: vec![Decision {
-                contract_version: ContractVersion::current(),
-                id: "decision-material".to_owned(),
-                subject: DecisionSubject::Finding {
-                    finding_id: standing.id,
-                },
-                verdict: DecisionVerdict::Material,
-                rationale: "was material before the NoOp fix".to_owned(),
-                provenance: provenance("judge-old", AgentRole::Judge, "glm"),
-                extensions: BTreeMap::new(),
-            }],
-            patches: Vec::new(),
-            judge_verdict: Some(DecisionVerdict::Material),
-            fix_outcome: Some(RunOutcome::NoOp),
-        });
-        let runner = FakeEnsembleRunner::new(json!([]), vec![archive_agent("judge", "glm")]);
-        let mut judge = EnsembleJudgeBody::new(runner, ensemble_config(root.path()));
-        let mut workspace = FakeWorkspace::default();
-
-        let error = judge
-            .run_judge(&req, &mut workspace)
-            .expect_err("NoOp-history findings need decisions");
-
-        assert!(
-            matches!(error, RunBodyError::Ensemble(message) if message.contains("no decisions"))
-        );
-    }
-
-    #[test]
-    fn judge_run_with_no_current_findings_records_convergence() {
-        let req = request(
-            RunKind::Judge,
-            vec![provenance("judge", AgentRole::Judge, "glm")],
-        );
-        let mut launcher = Pump19RunLauncher::new(
-            FakeSessions,
-            FakeReview {
-                findings: Vec::new(),
-            },
-            FakeJudge {
-                verdict: DecisionVerdict::Material,
-            },
-            FakeFix,
-            MergeGateFinishBody,
-        );
-        let mut workspace = FakeWorkspace::default();
-
-        let outcome = launcher
-            .launch_run(req, &mut workspace)
-            .expect("launch judge");
-
-        assert_eq!(outcome.outcome, RunOutcome::Succeeded);
-        assert_eq!(outcome.decisions.len(), 1);
-        assert_eq!(outcome.decisions[0].verdict, DecisionVerdict::Converged);
-    }
-
-    #[test]
     fn fix_run_emits_patch_answering_material_findings() {
         let mut req = request(
             RunKind::Fix,
             vec![provenance("fixer", AgentRole::Fixer, "codex")],
         );
         req.state.findings.push(finding());
-        req.state.decisions.push(Decision {
-            contract_version: ContractVersion::current(),
-            id: "decision-1".to_owned(),
-            subject: DecisionSubject::Finding {
-                finding_id: FindingId("finding-1".to_owned()),
-            },
-            verdict: DecisionVerdict::Material,
-            rationale: "worth fixing".to_owned(),
-            provenance: provenance("judge", AgentRole::Judge, "glm"),
-            extensions: BTreeMap::new(),
-        });
         let mut launcher = Pump19RunLauncher::new(
             FakeSessions,
             FakeReview {
                 findings: Vec::new(),
-            },
-            FakeJudge {
-                verdict: DecisionVerdict::Minor,
             },
             FakeFix,
             MergeGateFinishBody,
@@ -4737,9 +3835,6 @@ printf '{{"ok":true}}\n'
             FakeSessions,
             FakeReview {
                 findings: Vec::new(),
-            },
-            FakeJudge {
-                verdict: DecisionVerdict::Minor,
             },
             FakeFix,
             MergeGateFinishBody,

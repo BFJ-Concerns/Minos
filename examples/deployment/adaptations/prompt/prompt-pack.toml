@@ -6,8 +6,8 @@ major = 1
 minor = 0
 
 [contract_version]
-major = 1
-minor = 7
+major = 2
+minor = 0
 
 [[prompt_templates]]
 id = "review-contract-findings"
@@ -64,21 +64,6 @@ claim is wrong before accepting it. Record honest coverage: if meaningful change
 code was not visited, say so instead of proposing convergence.
 
 Write the final review payload to {{review_output_path}}."""
-
-[[prompt_templates]]
-id = "judge-materiality"
-run_kind = "judge"
-template = """
-## Task
-Judge whether each finding is material enough to justify another fix pass.
-
-<findings>
-{{findings}}
-</findings>
-
-<loop_history>
-{{loop_context}}
-</loop_history>"""
 
 [[prompt_templates]]
 id = "fix-material-findings"

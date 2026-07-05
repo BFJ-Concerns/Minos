@@ -25,7 +25,6 @@ use pump19_contract::{
 use pump19_core::{
     AgentEngine, AgentLaunchTarget, AgentPlan, Criteria, EventKind, StateCriterion, TriggerRule,
 };
-use pump19_judgement::JudgementBrief;
 use pump19_review::{
     ReviewBrief, ReviewBriefWarning, load_review_briefs_from_dir,
     write_baseline_review_briefs_to_dir,
@@ -69,8 +68,6 @@ pub enum AdaptationError {
     },
     #[error("TOML serialise error: {0}")]
     SerialiseToml(#[from] toml::ser::Error),
-    #[error("judgement adaptation failed: {0}")]
-    Judgement(#[from] pump19_judgement::JudgementError),
     #[error("review adaptation failed: {0}")]
     Review(#[from] pump19_review::ReviewBriefError),
     #[error("{unit_kind} {id:?} uses unsupported schema version {actual:?}; expected {expected:?}")]
@@ -188,8 +185,6 @@ pub struct PromptPack {
     pub manifest: PromptPackManifest,
     pub review_briefs: Vec<ReviewBrief>,
     pub brief_warnings: Vec<ReviewBriefWarning>,
-    /// Legacy judgement-shaped briefs kept until the stage-5 run-body switch.
-    pub briefs: Vec<JudgementBrief>,
 }
 
 /// A versioned external trigger pack.
@@ -257,7 +252,7 @@ pub enum MechanicalExecution {
     },
 }
 
-/// Loads a prompt pack manifest and its referenced judgement material.
+/// Loads a prompt pack manifest and its referenced review material.
 ///
 /// # Errors
 ///
@@ -274,16 +269,10 @@ pub fn load_prompt_pack(manifest_path: &Path) -> Result<PromptPack, AdaptationEr
 
     let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let review_brief_load = load_review_briefs_from_dir(&root.join(&manifest.brief_dir))?;
-    let legacy_briefs = review_brief_load
-        .briefs
-        .iter()
-        .map(review_brief_to_legacy_judgement)
-        .collect();
     let pack = PromptPack {
         manifest,
         review_briefs: review_brief_load.briefs,
         brief_warnings: review_brief_load.warnings,
-        briefs: legacy_briefs,
     };
     validate_prompt_pack(&pack)?;
     Ok(pack)
@@ -328,17 +317,7 @@ pub fn write_baseline_prompt_pack(root: &Path, id: &str) -> Result<PathBuf, Adap
     Ok(manifest_path)
 }
 
-fn review_brief_to_legacy_judgement(brief: &ReviewBrief) -> JudgementBrief {
-    JudgementBrief {
-        id: brief.id.clone(),
-        title: brief.title.clone(),
-        intent_ref: format!("review.{}", brief.id),
-        brief: brief.body.clone(),
-        evidence_paths: Vec::new(),
-    }
-}
-
-/// Writes the baseline review/fix/judge loop trigger pack into `root`.
+/// Writes the baseline review/fix loop trigger pack into `root`.
 ///
 /// # Errors
 ///
@@ -1044,15 +1023,17 @@ command -v jq >/dev/null 2>&1 || {
 input=$(cat)
 body=$(printf '%s' "$input" | jq -r '
   def trim: gsub("^\\s+|\\s+$"; "");
-  def severity_badge($severity):
-    if $severity == "critical" then
-      "<sub><sub>![critical](https://img.shields.io/badge/critical-red?style=flat)</sub></sub>"
-    elif $severity == "high" then
-      "<sub><sub>![high](https://img.shields.io/badge/high-orange?style=flat)</sub></sub>"
-    elif $severity == "medium" then
-      "<sub><sub>![medium](https://img.shields.io/badge/medium-yellow?style=flat)</sub></sub>"
+  def priority_badge($priority):
+    if $priority == "p0" then
+      "<sub><sub>![p0](https://img.shields.io/badge/p0-red?style=flat)</sub></sub>"
+    elif $priority == "p1" then
+      "<sub><sub>![p1](https://img.shields.io/badge/p1-red?style=flat)</sub></sub>"
+    elif $priority == "p2" then
+      "<sub><sub>![p2](https://img.shields.io/badge/p2-orange?style=flat)</sub></sub>"
+    elif $priority == "p3" then
+      "<sub><sub>![p3](https://img.shields.io/badge/p3-yellow?style=flat)</sub></sub>"
     else
-      "<sub><sub>![low](https://img.shields.io/badge/low-blue?style=flat)</sub></sub>"
+      "<sub><sub>![p4](https://img.shields.io/badge/p4-lightgrey?style=flat)</sub></sub>"
     end;
   def finding_location:
     (.finding.locations[0] // null) as $location
@@ -1074,8 +1055,12 @@ body=$(printf '%s' "$input" | jq -r '
       else
         ""
       end;
+  def verification_status:
+    .finding_verification.status
+    | if type == "object" then (.status // "unknown") else . end;
   (finding_location) as $location
-  | "**\(severity_badge(.finding.severity))  \(.finding.summary | trim)**\n\n\(.decision.rationale | trim)\n\(if $location == "" then "" else "\n\($location)\n" end)\n<sub>Pump-19 · \(.finding.source_brief) · reviewed `\(.facts.head.sha[0:7])` · decision `\(.decision.id)`</sub>"
+  | (verification_status) as $verification
+  | "**\(priority_badge(.finding.priority))  \(.finding.title | trim)**\n\n\(.finding.explanation | trim)\n\(if $location == "" then "" else "\n\($location)\n" end)\n<sub>Pump-19 · \(.finding.source_brief) · reviewed `\(.facts.head.sha[0:7])` · verification `\($verification)`</sub>"
 ')
 
 jq -nc --arg body "$body" '{body:$body}'
@@ -1323,7 +1308,7 @@ pub fn baseline_mechanical_pack(id: &str) -> MechanicalPack {
                 inputs: vec![
                     "finding_comment_format_request_json".to_owned(),
                     "finding".to_owned(),
-                    "judge_decision".to_owned(),
+                    "finding_verification".to_owned(),
                     "forge_facts".to_owned(),
                 ],
                 outputs: vec!["finding_comment_body_json".to_owned()],
@@ -1334,7 +1319,7 @@ pub fn baseline_mechanical_pack(id: &str) -> MechanicalPack {
     }
 }
 
-/// Returns the baseline trigger pack that composes the review/fix/judge loop.
+/// Returns the baseline trigger pack that composes the review/fix loop.
 #[must_use]
 pub fn baseline_trigger_pack(id: &str) -> TriggerPack {
     TriggerPack {
@@ -1346,15 +1331,15 @@ pub fn baseline_trigger_pack(id: &str) -> TriggerPack {
     }
 }
 
-/// Returns the baseline review/fix/judge loop trigger rules.
+/// Returns the baseline review/fix loop trigger rules.
 #[must_use]
 pub fn baseline_trigger_rules() -> Vec<TriggerRule> {
     vec![
         review_on_pr_change_rule(),
-        judge_after_review_rule(),
-        judge_after_noop_fix_rule(),
-        fix_after_material_judge_rule(),
+        fix_after_material_review_rule(),
+        review_after_noop_fix_rule(),
         finish_on_label_rule(),
+        review_after_degraded_bar_check_rule(),
     ]
 }
 
@@ -1378,65 +1363,59 @@ fn review_on_pr_change_rule() -> TriggerRule {
             ],
         },
         agent_plan: AgentPlan {
+            lead: Some(baseline_target("lead-claude", AgentRole::Lead, "claude")),
             reviewers: baseline_reviewers(),
+            verifiers: baseline_verifiers(),
+            bar_check: Some(baseline_target(
+                "bar-check-codex",
+                AgentRole::BarCheck,
+                "codex",
+            )),
             fixers: Vec::new(),
-            judge: Some(baseline_target("judge-glm", AgentRole::Judge, "glm")),
             finishers: Vec::new(),
         },
     }
 }
 
-fn judge_after_review_rule() -> TriggerRule {
+fn fix_after_material_review_rule() -> TriggerRule {
     TriggerRule {
-        id: "judge-after-review".to_owned(),
-        run_kind: RunKind::Judge,
-        criteria: Criteria::Event {
-            event: EventKind::RunCompleted {
-                run_kind: Some(RunKind::Review),
-                outcome: Some(RunOutcome::Succeeded),
-            },
+        id: "fix-after-material-review".to_owned(),
+        run_kind: RunKind::Fix,
+        criteria: Criteria::All {
+            criteria: vec![
+                Criteria::Event {
+                    event: EventKind::RunCompleted {
+                        run_kind: Some(RunKind::Review),
+                        outcome: Some(RunOutcome::Succeeded),
+                    },
+                },
+                Criteria::State {
+                    state: StateCriterion::HasVerifiedMaterialFindings,
+                },
+            ],
         },
-        agent_plan: judge_plan(),
+        agent_plan: AgentPlan {
+            lead: None,
+            reviewers: Vec::new(),
+            verifiers: Vec::new(),
+            bar_check: None,
+            fixers: vec![baseline_target("fixer-codex", AgentRole::Fixer, "codex")],
+            finishers: Vec::new(),
+        },
     }
 }
 
-fn judge_after_noop_fix_rule() -> TriggerRule {
+fn review_after_noop_fix_rule() -> TriggerRule {
     TriggerRule {
-        id: "judge-after-noop-fix".to_owned(),
-        run_kind: RunKind::Judge,
+        id: "review-after-noop-fix".to_owned(),
+        run_kind: RunKind::Review,
         criteria: Criteria::Event {
             event: EventKind::RunCompleted {
                 run_kind: Some(RunKind::Fix),
                 outcome: Some(RunOutcome::NoOp),
             },
         },
-        agent_plan: judge_plan(),
-    }
-}
-
-fn fix_after_material_judge_rule() -> TriggerRule {
-    TriggerRule {
-        id: "fix-after-material-judge".to_owned(),
-        run_kind: RunKind::Fix,
-        criteria: Criteria::All {
-            criteria: vec![
-                Criteria::Event {
-                    event: EventKind::RunCompleted {
-                        run_kind: Some(RunKind::Judge),
-                        outcome: Some(RunOutcome::Succeeded),
-                    },
-                },
-                Criteria::State {
-                    state: StateCriterion::HasMaterialDecision,
-                },
-            ],
-        },
-        agent_plan: AgentPlan {
-            reviewers: Vec::new(),
-            fixers: vec![baseline_target("fixer-codex", AgentRole::Fixer, "codex")],
-            judge: None,
-            finishers: Vec::new(),
-        },
+        agent_plan: review_agent_plan(),
     }
 }
 
@@ -1460,9 +1439,11 @@ fn finish_on_label_rule() -> TriggerRule {
             ],
         },
         agent_plan: AgentPlan {
+            lead: None,
             reviewers: Vec::new(),
+            verifiers: Vec::new(),
+            bar_check: None,
             fixers: Vec::new(),
-            judge: None,
             finishers: vec![baseline_target(
                 "finisher-codex",
                 AgentRole::Finish,
@@ -1472,13 +1453,47 @@ fn finish_on_label_rule() -> TriggerRule {
     }
 }
 
-fn judge_plan() -> AgentPlan {
+fn review_after_degraded_bar_check_rule() -> TriggerRule {
+    TriggerRule {
+        id: "review-after-degraded-bar-check".to_owned(),
+        run_kind: RunKind::Review,
+        criteria: Criteria::All {
+            criteria: vec![
+                Criteria::Event {
+                    event: EventKind::RunCompleted {
+                        run_kind: Some(RunKind::Review),
+                        outcome: Some(RunOutcome::Succeeded),
+                    },
+                },
+                Criteria::State {
+                    state: StateCriterion::BarCheckDegraded,
+                },
+            ],
+        },
+        agent_plan: review_agent_plan(),
+    }
+}
+
+fn review_agent_plan() -> AgentPlan {
     AgentPlan {
-        reviewers: Vec::new(),
+        lead: Some(baseline_target("lead-claude", AgentRole::Lead, "claude")),
+        reviewers: baseline_reviewers(),
+        verifiers: baseline_verifiers(),
+        bar_check: Some(baseline_target(
+            "bar-check-codex",
+            AgentRole::BarCheck,
+            "codex",
+        )),
         fixers: Vec::new(),
-        judge: Some(baseline_target("judge-glm", AgentRole::Judge, "glm")),
         finishers: Vec::new(),
     }
+}
+
+fn baseline_verifiers() -> Vec<AgentLaunchTarget> {
+    vec![
+        baseline_target("verifier-codex", AgentRole::Verifier, "codex"),
+        baseline_target("verifier-claude", AgentRole::Verifier, "claude"),
+    ]
 }
 
 /// Loads a trigger pack from TOML.
@@ -1611,22 +1626,6 @@ Write the final review payload to {{review_output_path}}."
             extensions: Extensions::new(),
         },
         PromptTemplate {
-            id: "judge-materiality".to_owned(),
-            run_kind: RunKind::Judge,
-            template: "## Task
-Judge whether each finding is material enough to justify another fix pass.
-
-<findings>
-{{findings}}
-</findings>
-
-<loop_history>
-{{loop_context}}
-</loop_history>"
-                .to_owned(),
-            extensions: Extensions::new(),
-        },
-        PromptTemplate {
             id: "fix-material-findings".to_owned(),
             run_kind: RunKind::Fix,
             template: "## Task
@@ -1688,10 +1687,6 @@ fn baseline_workflow_sources() -> Vec<(&'static str, &'static str)> {
         ("workflows/assemble-review.js", ASSEMBLE_REVIEW_WORKFLOW_JS),
         ("workflows/bar-check.js", BAR_CHECK_WORKFLOW_JS),
         ("workflows/repair-output.js", REPAIR_OUTPUT_WORKFLOW_JS),
-        // Compatibility scripts keep the judge-era loop runnable until the frame
-        // and core recomposition stages consume the slot-keyed workflow set.
-        ("workflows/review.js", REVIEW_WORKFLOW_JS),
-        ("workflows/judge.js", JUDGE_WORKFLOW_JS),
         ("workflows/fix.js", FIX_WORKFLOW_JS),
     ]
 }
@@ -2100,125 +2095,6 @@ if (result === null) {
 return result;
 "#;
 
-const REVIEW_WORKFLOW_JS: &str = r#"export const meta = {
-  name: "pump19-review",
-  description: "Run authorised Pump-19 reviewers over judgement briefs"
-};
-
-const reviewSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["status", "stdout", "stderr"],
-  properties: {
-    status: { type: "string", enum: ["passed", "failed"] },
-    stdout: { type: "string" },
-    stderr: { type: "string" }
-  }
-};
-
-function optionsFor(target, label) {
-  return {
-    engine: target.engine,
-    model: target.model,
-    label,
-    schema: reviewSchema,
-    timeoutMs: args.agent_timeout_ms || 300000
-  };
-}
-
-const calls = [];
-for (const brief of args.briefs) {
-  for (const reviewer of args.reviewers) {
-    calls.push({ brief, reviewer });
-  }
-}
-
-const outputs = await parallel(calls.map(({ brief, reviewer }) => () =>
-  agent(brief.prompt, optionsFor(reviewer, `${reviewer.agent_id}:${brief.id}`))
-));
-
-if (outputs.some((output) => output === null)) {
-  throw new Error("reviewer output failed schema validation");
-}
-
-const briefResults = [];
-for (const brief of args.briefs) {
-  const reviews = [];
-  for (let i = 0; i < calls.length; i += 1) {
-    if (calls[i].brief.id !== brief.id) continue;
-    const reviewer = calls[i].reviewer;
-    const output = outputs[i];
-    reviews.push({
-      agent_id: reviewer.agent_id,
-      model_family: reviewer.model_family,
-      status: output.status,
-      stdout: output.stdout,
-      stderr: output.stderr
-    });
-  }
-  briefResults.push({
-    brief_id: brief.id,
-    status: reviews.some((review) => review.status === "failed") ? "failed" : "passed",
-    reviews
-  });
-}
-
-return {
-  status: briefResults.some((brief) => brief.status === "failed") ? "failed" : "passed",
-  briefs: briefResults,
-  model_families: [...new Set(args.reviewers.map((reviewer) => reviewer.model_family))].sort()
-};
-"#;
-
-const JUDGE_WORKFLOW_JS: &str = r#"export const meta = {
-  name: "pump19-judge",
-  description: "Run the authorised Pump-19 significance judge"
-};
-
-const judgeSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["decisions"],
-  properties: {
-    decisions: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["finding_id", "verdict", "rationale"],
-        properties: {
-          finding_id: { type: "string" },
-          verdict: { type: "string", enum: ["material", "minor"] },
-          rationale: { type: "string" }
-        }
-      }
-    }
-  }
-};
-
-const judge = args.judges[0];
-const result = await agent(
-  args.prompt,
-  {
-    engine: judge.engine,
-    model: judge.model,
-    label: judge.agent_id,
-    schema: judgeSchema,
-    timeoutMs: args.agent_timeout_ms || 300000
-  }
-);
-
-if (result === null) {
-  throw new Error("judge output failed schema validation");
-}
-
-if ((args.current_findings || args.findings || []).length > 0 && result.decisions.length === 0) {
-  throw new Error("judge returned no decisions for standing findings");
-}
-
-return result.decisions;
-"#;
-
 const FIX_WORKFLOW_JS: &str = r#"export const meta = {
   name: "pump19-fix",
   description: "Run the authorised Pump-19 fixer"
@@ -2411,7 +2287,7 @@ pub fn validate_prompt_pack(pack: &PromptPack) -> Result<(), AdaptationError> {
             });
         }
     }
-    if pack.briefs.is_empty() {
+    if pack.review_briefs.is_empty() {
         return Err(AdaptationError::EmptyCollection {
             unit_kind: "prompt pack",
             id: pack.manifest.id.clone(),
@@ -2419,7 +2295,7 @@ pub fn validate_prompt_pack(pack: &PromptPack) -> Result<(), AdaptationError> {
         });
     }
     let mut brief_ids = BTreeSet::new();
-    for brief in &pack.briefs {
+    for brief in &pack.review_briefs {
         if brief.id.trim().is_empty() {
             return Err(AdaptationError::EmptyBriefId {
                 pack_id: pack.manifest.id.clone(),
@@ -2432,7 +2308,7 @@ pub fn validate_prompt_pack(pack: &PromptPack) -> Result<(), AdaptationError> {
                 duplicate: brief.id.clone(),
             });
         }
-        if brief.brief.trim().is_empty() {
+        if brief.body.trim().is_empty() {
             return Err(AdaptationError::EmptyBriefText {
                 pack_id: pack.manifest.id.clone(),
                 brief_id: brief.id.clone(),
@@ -2501,10 +2377,12 @@ fn validate_criteria(rule_id: &str, criteria: &Criteria) -> Result<(), Adaptatio
 
 fn validate_agent_plan(rule_id: &str, plan: &AgentPlan) -> Result<(), AdaptationError> {
     for target in plan
-        .reviewers
+        .lead
         .iter()
+        .chain(plan.reviewers.iter())
+        .chain(plan.verifiers.iter())
+        .chain(plan.bar_check.iter())
         .chain(plan.fixers.iter())
-        .chain(plan.judge.iter())
         .chain(plan.finishers.iter())
     {
         if target.agent_id.0.trim().is_empty() {
@@ -2565,11 +2443,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use pump19_contract::{
-        AgentId, AgentRole, BranchCurrency, CertaintyClass, Confidence, ContractEvent,
-        ContractVersion, Decision, DecisionSubject, DecisionVerdict, EventPayload, Extensions,
-        Finding, FindingId, FindingLocation, ForgeFacts, Mergeability, ModelFamily, ModelLineage,
-        ModelProvenance, ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision,
-        RunKind, RunOutcome, SessionFreshness, SessionId, Severity,
+        AgentId, AgentRole, BranchCurrency, CertaintyClass, ContractEvent, ContractVersion,
+        EventPayload, Extensions, FamilySplit, Finding, FindingId, FindingLocation,
+        FindingVerification, ForgeFacts, Mergeability, ModelFamily, ModelLineage, ModelProvenance,
+        PriorityClass, ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision,
+        RunKind, RunOutcome, SessionFreshness, SessionId, VerificationStatus,
     };
     use pump19_core::{
         AgentEngine, AgentLaunchSpec, AgentLaunchTarget, Core, CoreError, Criteria,
@@ -2597,9 +2475,9 @@ mod tests {
         let pack = load_prompt_pack(&manifest)?;
 
         assert_eq!(pack.manifest.id, "baseline-review");
-        assert_eq!(pack.manifest.prompt_templates.len(), 4);
+        assert_eq!(pack.manifest.prompt_templates.len(), 3);
         assert_eq!(pack.manifest.workflow_scripts.len(), 5);
-        assert_eq!(pack.briefs.len(), 3);
+        assert_eq!(pack.review_briefs.len(), 3);
         let review_template = &pack.manifest.prompt_templates[0].template;
         assert!(review_template.contains("Return JSON matching the schema."));
         assert!(review_template.contains("Put the short reason in stdout"));
@@ -2631,8 +2509,6 @@ mod tests {
         assert!(dir.path().join("workflows/assemble-review.js").exists());
         assert!(dir.path().join("workflows/bar-check.js").exists());
         assert!(dir.path().join("workflows/repair-output.js").exists());
-        assert!(dir.path().join("workflows/review.js").exists());
-        assert!(dir.path().join("workflows/judge.js").exists());
         assert!(dir.path().join("workflows/fix.js").exists());
         assert!(!review_template.contains("PUMP19_JUDGEMENT"));
         Ok(())
@@ -2677,8 +2553,8 @@ major = 1
 minor = 0
 
 [contract_version]
-major = 1
-minor = 7
+major = 2
+minor = 0
 
 [[rules]]
 id = "review-on-my-prs"
@@ -2727,8 +2603,8 @@ major = 1
 minor = 0
 
 [contract_version]
-major = 1
-minor = 7
+major = 2
+minor = 0
 
 [[rules]]
 id = "review-on-my-prs"
@@ -2777,10 +2653,10 @@ model = "claude-stable"
             rule_ids,
             vec![
                 "review-on-pr-change",
-                "judge-after-review",
-                "judge-after-noop-fix",
-                "fix-after-material-judge",
+                "fix-after-material-review",
+                "review-after-noop-fix",
                 "finish-on-label",
+                "review-after-degraded-bar-check",
             ]
         );
         assert!(matches!(
@@ -2823,15 +2699,16 @@ model = "claude-stable"
                 }
             } if rule.run_kind == RunKind::Review
         )));
-        let judge_models = loaded
-            .iter()
-            .filter_map(|rule| rule.agent_plan.judge.as_ref())
-            .map(|target| target.lineage.model.as_str())
-            .collect::<Vec<_>>();
+        assert!(loaded.iter().any(|rule| rule.agent_plan.lead.is_some()));
         assert!(
-            judge_models
+            loaded
                 .iter()
-                .all(|model| *model == "openrouter/z-ai/glm-5.2")
+                .any(|rule| !rule.agent_plan.verifiers.is_empty())
+        );
+        assert!(
+            loaded
+                .iter()
+                .any(|rule| rule.agent_plan.bar_check.is_some())
         );
         Ok(())
     }
@@ -3047,13 +2924,13 @@ model = "claude-stable"
         let assets = write_baseline_deployment_assets(generated.path())?;
         let input = serde_json::json!({
             "step_id": "format-comments",
-            "run_id": "run-judge-1",
+            "run_id": "run-review-1",
             "repository": "acme/widgets",
             "pull_request": "17",
             "commit_sha": "abc123",
             "web_base_url": "https://forgejo.example/",
             "finding": finding(),
-            "decision": decision(),
+            "finding_verification": finding().verification,
             "facts": forge_facts(),
         });
         let mut child = Command::new(&assets.commands.format_comments_command)
@@ -3075,11 +2952,11 @@ model = "claude-stable"
 
         assert_eq!(
             output["body"],
-            "**<sub><sub>![high](https://img.shields.io/badge/high-orange?style=flat)</sub></sub>  \
+            "**<sub><sub>![p1](https://img.shields.io/badge/p1-red?style=flat)</sub></sub>  \
              A material review finding.**\n\n\
-             Material because the loop can wedge.\n\n\
+             The loop can wedge.\n\n\
              [`src/lib.rs:42`](https://forgejo.example/acme/widgets/src/commit/abc123/src/lib.rs#L42)\n\n\
-             <sub>Pump-19 · review · reviewed `abc123` · decision `decision-1`</sub>"
+             <sub>Pump-19 · review · reviewed `abc123` · verification `verified`</sub>"
         );
         Ok(())
     }
@@ -4106,12 +3983,14 @@ done
     impl AgentPlanFixture {
         fn standard() -> pump19_core::AgentPlan {
             pump19_core::AgentPlan {
+                lead: Some(target("lead-claude", AgentRole::Lead, "claude")),
                 reviewers: vec![
                     target("codex-reviewer", AgentRole::Reviewer, "codex"),
                     target("claude-reviewer", AgentRole::Reviewer, "claude"),
                 ],
+                verifiers: vec![target("verifier-claude", AgentRole::Verifier, "claude")],
+                bar_check: Some(target("bar-codex", AgentRole::BarCheck, "codex")),
                 fixers: Vec::new(),
-                judge: Some(target("judge", AgentRole::Judge, "glm")),
                 finishers: Vec::new(),
             }
         }
@@ -4152,10 +4031,17 @@ done
             id: FindingId("finding-1".to_owned()),
             dedup_key: "review:correctness:src/lib.rs:42".to_owned(),
             source_brief: "review".to_owned(),
-            dimension: "correctness".to_owned(),
-            summary: "A material review finding.".to_owned(),
-            severity: Severity::High,
-            confidence: Confidence::High,
+            title: "A material review finding.".to_owned(),
+            explanation: "The loop can wedge.".to_owned(),
+            suggestion: Some("Keep the loop moving.".to_owned()),
+            priority: PriorityClass::P1,
+            verification: FindingVerification {
+                status: VerificationStatus::Verified,
+                verifier: Some(provenance("verifier-claude", AgentRole::Verifier, "claude")),
+                evidence: Vec::new(),
+                cross_family: FamilySplit::CrossFamily,
+                extensions: Extensions::new(),
+            },
             certainty: CertaintyClass::Advisory,
             provenance: provenance("reviewer-codex", AgentRole::Reviewer, "codex"),
             locations: vec![FindingLocation::File {
@@ -4163,20 +4049,6 @@ done
                 line: Some(42),
                 range: None,
             }],
-            extensions: Extensions::new(),
-        }
-    }
-
-    fn decision() -> Decision {
-        Decision {
-            contract_version: ContractVersion::current(),
-            id: "decision-1".to_owned(),
-            subject: DecisionSubject::Finding {
-                finding_id: FindingId("finding-1".to_owned()),
-            },
-            verdict: DecisionVerdict::Material,
-            rationale: "Material because the loop can wedge.".to_owned(),
-            provenance: provenance("judge-glm", AgentRole::Judge, "glm"),
             extensions: Extensions::new(),
         }
     }
@@ -4210,6 +4082,7 @@ done
             contract_version: ContractVersion::current(),
             agent_id: AgentId(agent_id.to_owned()),
             role,
+            engine: engine_for_family(family).as_str().to_owned(),
             session_id: SessionId(format!("session-{agent_id}")),
             freshness: SessionFreshness::FreshForPass { pass_index: 1 },
             verification: ProvenanceVerification::Verified {
@@ -4277,7 +4150,6 @@ done
                 isolation: WorkspaceIsolation {
                     isolated: true,
                     credential_free: true,
-                    egress_bounded: true,
                     resource_bounded: true,
                     ephemeral: true,
                 },
@@ -4322,10 +4194,12 @@ done
             Ok(RunLaunchOutcome {
                 outcome: RunOutcome::Succeeded,
                 findings: Vec::new(),
-                decisions: Vec::new(),
+                verdict: None,
+                coverage: None,
                 patches: Vec::new(),
                 token_usage: None,
-                ensemble_archive_path: None,
+                session_archives: Vec::new(),
+                independence_degradations: Vec::new(),
             })
         }
     }

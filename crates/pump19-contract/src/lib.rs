@@ -21,7 +21,7 @@ use serde_json::Value;
 pub type Extensions = BTreeMap<String, Value>;
 
 /// The current public contract version for the review-and-fix service.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 1, minor: 7 };
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion { major: 2, minor: 0 };
 
 /// A version marker present on every top-level contract artefact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -75,7 +75,6 @@ pub enum AgentRole {
     Verifier,
     BarCheck,
     Fixer,
-    Judge,
     Finish,
 }
 
@@ -84,7 +83,6 @@ pub enum AgentRole {
 #[serde(rename_all = "snake_case")]
 pub enum RunKind {
     Review,
-    Judge,
     Fix,
     Finish,
 }
@@ -96,6 +94,7 @@ pub struct ModelProvenance {
     pub agent_id: AgentId,
     pub role: AgentRole,
     pub session_id: SessionId,
+    pub engine: String,
     pub freshness: SessionFreshness,
     pub verification: ProvenanceVerification,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -152,32 +151,27 @@ pub struct Finding {
     pub id: FindingId,
     pub dedup_key: String,
     pub source_brief: String,
-    pub dimension: String,
-    pub summary: String,
-    pub severity: Severity,
-    pub confidence: Confidence,
+    pub title: String,
+    pub explanation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+    pub priority: PriorityClass,
     pub certainty: CertaintyClass,
     pub provenance: ModelProvenance,
+    pub verification: FindingVerification,
     pub locations: Vec<FindingLocation>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: Extensions,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Severity {
-    Low,
-    Medium,
-    High,
-    Critical,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Confidence {
-    Low,
-    Medium,
-    High,
+impl Finding {
+    /// Returns true when the finding is verified and meets the repository's
+    /// configured fix-before-merge threshold.
+    #[must_use]
+    pub const fn is_material(&self, threshold: PriorityClass) -> bool {
+        matches!(self.verification.status, VerificationStatus::Verified)
+            && self.priority.as_rank() <= threshold.as_rank()
+    }
 }
 
 /// The certainty tier carried by every finding.
@@ -196,6 +190,19 @@ pub enum PriorityClass {
     P1,
     P2,
     P3,
+}
+
+impl PriorityClass {
+    /// Returns the ordering rank used for materiality comparisons.
+    #[must_use]
+    pub const fn as_rank(self) -> u8 {
+        match self {
+            Self::P0 => 0,
+            Self::P1 => 1,
+            Self::P2 => 2,
+            Self::P3 => 3,
+        }
+    }
 }
 
 /// Verification state for a candidate finding.
@@ -366,34 +373,6 @@ pub struct CommentPayload {
     pub details: Vec<String>,
 }
 
-/// The significance judge's decision over one finding or a set of findings.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Decision {
-    pub contract_version: ContractVersion,
-    pub id: String,
-    pub subject: DecisionSubject,
-    pub verdict: DecisionVerdict,
-    pub rationale: String,
-    pub provenance: ModelProvenance,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub extensions: Extensions,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum DecisionSubject {
-    Finding { finding_id: FindingId },
-    FindingSet { finding_ids: Vec<FindingId> },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DecisionVerdict {
-    Material,
-    Minor,
-    Converged,
-}
-
 /// Durable publication state for everything Pump-19 writes back to a PR.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PublicationState {
@@ -544,7 +523,10 @@ pub struct PrRunState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
     pub findings: Vec<Finding>,
-    pub decisions: Vec<Decision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<ReviewVerdict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<CoverageRecord>,
     pub patches: Vec<Patch>,
     #[serde(default, skip_serializing_if = "PublicationState::is_empty")]
     pub publication: PublicationState,
@@ -578,13 +560,41 @@ pub struct RunRecord {
     pub outcome: Option<RunOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<RunRefusal>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ensemble_archive_path: Option<String>,
-    /// The verified provenance the run launched with. Persisted so later
-    /// launch gates (judge independence, family spread) can see reviewers
-    /// even when a run produced no findings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_archives: Vec<SessionArchiveRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub independence_degradations: Vec<IndependenceDegradation>,
+    /// The verified provenance the run launched with. Persisted so later launch
+    /// gates can enforce session-level invariants even when a run produced no
+    /// findings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provenance: Vec<ModelProvenance>,
+}
+
+/// A persisted reference to an agent session archive produced during a run.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SessionArchiveRef {
+    pub role: AgentRole,
+    pub agent_id: AgentId,
+    pub path: String,
+    pub kind: SessionArchiveKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionArchiveKind {
+    LeadTranscript,
+    EnsembleRun,
+}
+
+/// A recorded independence degradation that does not refuse launch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum IndependenceDegradation {
+    SingleFamilyDeployment,
+    FamilyUnknown { agent_id: AgentId },
+    SameFamilyVerification { finding_id: FindingId },
+    SameFamilyBarCheck,
 }
 
 /// A launch refusal recorded in run history.
@@ -600,10 +610,7 @@ pub enum RunRefusalReason {
     RunCeilingReached,
     RequiredFamilyUnavailable,
     WorkspaceIsolationMissing,
-    UnverifiedProvenance,
-    InsufficientReviewerFamilies,
     ReviewerFixerOverlap,
-    MissingIndependentJudge,
     NonFreshSession,
 }
 
@@ -613,10 +620,11 @@ pub struct LoopPassRecord {
     pub pass_index: u32,
     pub commit_sha: String,
     pub findings: Vec<Finding>,
-    pub decisions: Vec<Decision>,
     pub patches: Vec<Patch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub judge_verdict: Option<DecisionVerdict>,
+    pub verdict: Option<ReviewVerdict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<CoverageRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix_outcome: Option<RunOutcome>,
 }
@@ -826,60 +834,29 @@ pub enum RunOutcome {
     Cancelled,
 }
 
-/// True when the reviewer set spans at least two verified model families.
+/// True when no finding producer or verifier also appears as a fixer.
 #[must_use]
-pub fn has_two_verified_reviewer_families(provenances: &[ModelProvenance]) -> bool {
-    let families = provenances
+pub fn fixer_disjoint_from_finding_sessions(
+    fixers: &[ModelProvenance],
+    findings: &[Finding],
+) -> bool {
+    let finding_sessions = findings
         .iter()
-        .filter(|provenance| provenance.role == AgentRole::Reviewer)
-        .filter_map(ModelProvenance::verified_family)
+        .flat_map(|finding| {
+            std::iter::once((&finding.provenance.agent_id, &finding.provenance.session_id)).chain(
+                finding
+                    .verification
+                    .verifier
+                    .iter()
+                    .map(|verifier| (&verifier.agent_id, &verifier.session_id)),
+            )
+        })
         .collect::<BTreeSet<_>>();
-    families.len() >= 2
-}
 
-/// True when no recorded reviewer also appears as a fixer.
-#[must_use]
-pub fn reviewers_disjoint_from_fixers(provenances: &[ModelProvenance]) -> bool {
-    let reviewers = provenances
-        .iter()
-        .filter(|provenance| provenance.role == AgentRole::Reviewer)
-        .map(|provenance| &provenance.agent_id)
-        .collect::<BTreeSet<_>>();
-    let fixers = provenances
+    fixers
         .iter()
         .filter(|provenance| provenance.role == AgentRole::Fixer)
-        .map(|provenance| &provenance.agent_id)
-        .collect::<BTreeSet<_>>();
-    reviewers.is_disjoint(&fixers)
-}
-
-/// True when the judge is verified and shares neither agent id nor family with reviewers.
-#[must_use]
-pub fn judge_independent_of_reviewers(
-    judge: &ModelProvenance,
-    reviewers: &[ModelProvenance],
-) -> bool {
-    if judge.role != AgentRole::Judge {
-        return false;
-    }
-    let Some(judge_family) = judge.verified_family() else {
-        return false;
-    };
-    for reviewer in reviewers
-        .iter()
-        .filter(|provenance| provenance.role == AgentRole::Reviewer)
-    {
-        if reviewer.agent_id == judge.agent_id {
-            return false;
-        }
-        let Some(reviewer_family) = reviewer.verified_family() else {
-            return false;
-        };
-        if reviewer_family == judge_family {
-            return false;
-        }
-    }
-    true
+        .all(|fixer| !finding_sessions.contains(&(&fixer.agent_id, &fixer.session_id)))
 }
 
 /// True when every supplied agent session is fresh for the requested pass.
@@ -905,21 +882,21 @@ mod tests {
     use std::collections::BTreeMap;
 
     use serde::{Serialize, de::DeserializeOwned};
-    use serde_json::json;
 
     use super::{
-        ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BranchCurrency,
-        CertaintyClass, Comment, CommentId, CommentPayload, CommentTarget, Confidence,
-        ContractEvent, ContractVersion, Decision, DecisionSubject, DecisionVerdict, EventPayload,
-        Finding, FindingCommentPublication, FindingCommentStatus, FindingId, FindingLocation,
-        FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt, LoopPassRecord,
-        MergePublication, Mergeability, ModelFamily, ModelLineage, ModelProvenance, Patch,
-        PatchChange, PatchId, ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus,
-        PublicationOperation, PublicationRefusal, PublicationRefusalReason, PublicationState,
-        PublishedFixCommit, PullRequestRef, ReviewCleanliness, Revision, RunCeiling, RunId,
-        RunKind, RunOutcome, RunRecord, RunStatus, SessionFreshness, SessionId, Severity,
-        SourceRange, has_two_verified_reviewer_families, judge_independent_of_reviewers,
-        merge_gate_clean_and_current, reviewers_disjoint_from_fixers, sessions_fresh_for_pass,
+        ActorCapability, ActorPermissions, ActorRef, AgentId, AgentRole, BarCheckRecord,
+        BranchCurrency, CertaintyClass, Comment, CommentId, CommentPayload, CommentTarget,
+        ContractEvent, ContractVersion, CoverageRecord, EventPayload, FamilySplit, Finding,
+        FindingCommentPublication, FindingCommentStatus, FindingId, FindingLocation,
+        FindingVerification, FinishLabel, FixPushPublication, ForgeFacts, ForgeReceipt,
+        IndependenceDegradation, LoopPassRecord, MergePublication, Mergeability, ModelFamily,
+        ModelLineage, ModelProvenance, Patch, PatchChange, PatchId, PriorityClass,
+        ProvenanceVerification, PublicationAttempt, PublicationAttemptStatus, PublicationOperation,
+        PublicationRefusal, PublicationRefusalReason, PublicationState, PublishedFixCommit,
+        PullRequestRef, ReviewCleanliness, ReviewVerdict, Revision, RunCeiling, RunId, RunKind,
+        RunOutcome, RunRecord, RunStatus, SessionArchiveKind, SessionArchiveRef, SessionFreshness,
+        SessionId, SourceRange, VerificationStatus, fixer_disjoint_from_finding_sessions,
+        merge_gate_clean_and_current, sessions_fresh_for_pass,
     };
 
     fn round_trip<T>(value: &T)
@@ -959,6 +936,7 @@ mod tests {
             agent_id: AgentId(agent_id.to_owned()),
             role,
             session_id: SessionId(format!("{agent_id}-session")),
+            engine: format!("{family}-engine"),
             freshness: SessionFreshness::FreshForPass { pass_index: 1 },
             verification: ProvenanceVerification::Verified {
                 vendor: "local".to_owned(),
@@ -972,18 +950,33 @@ mod tests {
         }
     }
 
+    fn verification(status: VerificationStatus) -> FindingVerification {
+        FindingVerification {
+            status,
+            verifier: Some(verified_provenance(
+                "verifier",
+                AgentRole::Verifier,
+                "claude",
+            )),
+            evidence: Vec::new(),
+            cross_family: FamilySplit::CrossFamily,
+            extensions: extensions(),
+        }
+    }
+
     fn finding() -> Finding {
         Finding {
             contract_version: version(),
             id: FindingId("finding-1".to_owned()),
             dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
             source_brief: "correctness".to_owned(),
-            dimension: "soundness".to_owned(),
-            summary: "The update accepts stale review state.".to_owned(),
-            severity: Severity::High,
-            confidence: Confidence::High,
+            title: "Stale review state accepted".to_owned(),
+            explanation: "The update accepts stale review state.".to_owned(),
+            suggestion: Some("Reject stale state before publication.".to_owned()),
+            priority: PriorityClass::P1,
             certainty: CertaintyClass::Advisory,
             provenance: verified_provenance("codex-reviewer", AgentRole::Reviewer, "codex"),
+            verification: verification(VerificationStatus::Verified),
             locations: vec![FindingLocation::File {
                 path: "src/lib.rs".to_owned(),
                 line: Some(12),
@@ -1010,20 +1003,6 @@ mod tests {
                 diff: "--- a/src/lib.rs\n+++ b/src/lib.rs\n".to_owned(),
             },
             provenance: verified_provenance("fixer", AgentRole::Fixer, "codex"),
-            extensions: extensions(),
-        }
-    }
-
-    fn decision() -> Decision {
-        Decision {
-            contract_version: version(),
-            id: "decision-1".to_owned(),
-            subject: DecisionSubject::Finding {
-                finding_id: FindingId("finding-1".to_owned()),
-            },
-            verdict: DecisionVerdict::Material,
-            rationale: "The finding affects merge safety.".to_owned(),
-            provenance: verified_provenance("judge", AgentRole::Judge, "glm"),
             extensions: extensions(),
         }
     }
@@ -1062,7 +1041,7 @@ mod tests {
             attempts: vec![
                 PublicationAttempt {
                     contract_version: version(),
-                    run_id: RunId("run-judge-1".to_owned()),
+                    run_id: RunId("run-review-1".to_owned()),
                     operation: PublicationOperation::PostFindingComment {
                         finding_id: FindingId("finding-1".to_owned()),
                         finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
@@ -1080,7 +1059,7 @@ mod tests {
                 },
                 PublicationAttempt {
                     contract_version: version(),
-                    run_id: RunId("run-judge-2".to_owned()),
+                    run_id: RunId("run-review-2".to_owned()),
                     operation: PublicationOperation::ApplyFinishLabel {
                         label: "pump19-finish".to_owned(),
                     },
@@ -1132,6 +1111,27 @@ mod tests {
         }
     }
 
+    fn coverage() -> CoverageRecord {
+        CoverageRecord {
+            complete: true,
+            visited: vec!["src/lib.rs".to_owned()],
+            unvisited: Vec::new(),
+            account: "Read the changed file and call sites.".to_owned(),
+            extensions: extensions(),
+        }
+    }
+
+    fn converged() -> ReviewVerdict {
+        ReviewVerdict::Converged {
+            bar_check: BarCheckRecord {
+                passed: true,
+                provenance: verified_provenance("bar-check", AgentRole::BarCheck, "claude"),
+                rationale: "The assembled review meets the bar.".to_owned(),
+                extensions: extensions(),
+            },
+        }
+    }
+
     #[test]
     fn contract_artifacts_round_trip_through_json() {
         let comment = Comment {
@@ -1163,21 +1163,39 @@ mod tests {
                 status: RunStatus::Completed,
                 outcome: Some(RunOutcome::Succeeded),
                 refusal: None,
-                ensemble_archive_path: Some("/var/lib/pump19/archives/run-review-1".to_owned()),
+                session_archives: vec![
+                    SessionArchiveRef {
+                        role: AgentRole::Lead,
+                        agent_id: AgentId("lead".to_owned()),
+                        path: "/var/lib/pump19/archives/run-review-1/lead.jsonl".to_owned(),
+                        kind: SessionArchiveKind::LeadTranscript,
+                    },
+                    SessionArchiveRef {
+                        role: AgentRole::Verifier,
+                        agent_id: AgentId("verifier".to_owned()),
+                        path: "/var/lib/pump19/archives/run-review-1/verify-findings".to_owned(),
+                        kind: SessionArchiveKind::EnsembleRun,
+                    },
+                ],
+                independence_degradations: vec![IndependenceDegradation::SameFamilyBarCheck],
                 provenance: Vec::new(),
             }],
             loop_history: vec![LoopPassRecord {
                 pass_index: 1,
                 commit_sha: "abc123".to_owned(),
                 findings: vec![finding()],
-                decisions: vec![decision()],
                 patches: vec![patch()],
-                judge_verdict: Some(DecisionVerdict::Material),
+                verdict: Some(ReviewVerdict::FindingsPosted {
+                    material: 1,
+                    suppressed: 0,
+                }),
+                coverage: Some(coverage()),
                 fix_outcome: Some(RunOutcome::Succeeded),
             }],
             superseded_by: None,
             findings: vec![finding()],
-            decisions: vec![decision()],
+            verdict: Some(converged()),
+            coverage: Some(coverage()),
             patches: vec![patch()],
             publication: publication_state(),
             ceiling: Some(RunCeiling {
@@ -1200,7 +1218,6 @@ mod tests {
         round_trip(&finding());
         round_trip(&patch());
         round_trip(&comment);
-        round_trip(&decision());
         round_trip(&run_state);
         round_trip(&verified_provenance(
             "codex-reviewer",
@@ -1212,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn run_state_round_trips_archive_paths_and_refusals() {
+    fn run_state_round_trips_archive_refs_degradations_and_refusals() {
         let state = super::PrRunState {
             contract_version: version(),
             pr: pr(),
@@ -1234,13 +1251,22 @@ mod tests {
                     reason: super::RunRefusalReason::RunCeilingReached,
                     message: "run ceiling reached before launch".to_owned(),
                 }),
-                ensemble_archive_path: Some("/var/lib/pump19/archives/run-review-3".to_owned()),
+                session_archives: vec![SessionArchiveRef {
+                    role: AgentRole::Lead,
+                    agent_id: AgentId("lead".to_owned()),
+                    path: "/var/lib/pump19/archives/run-review-3/lead.jsonl".to_owned(),
+                    kind: SessionArchiveKind::LeadTranscript,
+                }],
+                independence_degradations: vec![IndependenceDegradation::FamilyUnknown {
+                    agent_id: AgentId("local-reviewer".to_owned()),
+                }],
                 provenance: Vec::new(),
             }],
             loop_history: Vec::new(),
             superseded_by: None,
             findings: Vec::new(),
-            decisions: Vec::new(),
+            verdict: None,
+            coverage: None,
             patches: Vec::new(),
             publication: PublicationState::default(),
             ceiling: Some(RunCeiling {
@@ -1252,12 +1278,16 @@ mod tests {
 
         let encoded = serde_json::to_value(&state).expect("serialise state");
         assert_eq!(
-            encoded["run_history"][0]["ensemble_archive_path"],
-            json!("/var/lib/pump19/archives/run-review-3")
+            encoded["run_history"][0]["session_archives"][0]["kind"],
+            serde_json::json!("lead_transcript")
+        );
+        assert_eq!(
+            encoded["run_history"][0]["independence_degradations"][0]["kind"],
+            serde_json::json!("family_unknown")
         );
         assert_eq!(
             encoded["run_history"][0]["refusal"]["reason"],
-            json!("run_ceiling_reached")
+            serde_json::json!("run_ceiling_reached")
         );
         let decoded =
             serde_json::from_value::<super::PrRunState>(encoded).expect("deserialise state");
@@ -1278,12 +1308,13 @@ mod tests {
             loop_history: Vec::new(),
             superseded_by: Some("def456".to_owned()),
             findings: Vec::new(),
-            decisions: Vec::new(),
+            verdict: None,
+            coverage: None,
             patches: Vec::new(),
             publication: PublicationState {
                 attempts: vec![PublicationAttempt {
                     contract_version: version(),
-                    run_id: RunId("run-judge-2".to_owned()),
+                    run_id: RunId("run-review-2".to_owned()),
                     operation: PublicationOperation::PostFindingComment {
                         finding_id: FindingId("finding-1".to_owned()),
                         finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
@@ -1317,19 +1348,19 @@ mod tests {
         let encoded = serde_json::to_value(&state).expect("serialise state");
         assert_eq!(
             encoded["publication"]["attempts"][0]["status"],
-            json!("refused")
+            serde_json::json!("refused")
         );
         assert_eq!(
             encoded["publication"]["attempts"][0]["refusal"]["reason"]["reason"],
-            json!("head_moved")
+            serde_json::json!("head_moved")
         );
         assert_eq!(
             encoded["publication"]["attempts"][0]["refusal"]["reason"]["expected_head_sha"],
-            json!("abc123")
+            serde_json::json!("abc123")
         );
         assert_eq!(
             encoded["publication"]["attempts"][0]["refusal"]["reason"]["actual_head_sha"],
-            json!("def456")
+            serde_json::json!("def456")
         );
 
         let decoded =
@@ -1339,17 +1370,18 @@ mod tests {
 
     #[test]
     fn open_extensions_survive_unknown_json() {
-        let payload = json!({
-            "contract_version": { "major": 1, "minor": 0 },
+        let payload = serde_json::json!({
+            "contract_version": { "major": 2, "minor": 0 },
             "id": "finding-1",
             "dedup_key": "brief:correctness:path:src/lib.rs:12",
             "source_brief": "correctness",
-            "dimension": "soundness",
-            "summary": "The update accepts stale review state.",
-            "severity": "high",
-            "confidence": "high",
+            "title": "Stale review state accepted",
+            "explanation": "The update accepts stale review state.",
+            "suggestion": null,
+            "priority": "p1",
             "certainty": "advisory",
             "provenance": verified_provenance("codex-reviewer", AgentRole::Reviewer, "codex"),
+            "verification": verification(VerificationStatus::Verified),
             "locations": [{ "kind": "general", "description": "whole change" }],
             "extensions": {
                 "forgejo.thread": { "id": 99, "state": "open" },
@@ -1359,209 +1391,71 @@ mod tests {
         let finding = serde_json::from_value::<Finding>(payload).expect("deserialise finding");
         assert_eq!(
             finding.extensions["forgejo.thread"],
-            json!({ "id": 99, "state": "open" })
+            serde_json::json!({ "id": 99, "state": "open" })
         );
 
         let encoded = serde_json::to_value(&finding).expect("serialise finding");
         assert_eq!(
             encoded["extensions"]["reviewer.raw"],
-            json!(["line one", "line two"])
+            serde_json::json!(["line one", "line two"])
         );
     }
 
     #[test]
-    fn older_run_completed_payloads_default_to_unknown_run_kind() {
-        let payload = json!({
-            "contract_version": { "major": 1, "minor": 0 },
-            "id": "legacy-run-completed",
-            "payload": {
-                "event": "run_completed",
-                "run_id": "run-review-1",
-                "outcome": "succeeded"
-            }
-        });
-
-        let event = serde_json::from_value::<ContractEvent>(payload).expect("legacy event");
-
-        assert!(matches!(
-            event.payload,
-            EventPayload::RunCompleted {
-                run_kind: None,
+    fn contract_2_0_run_completed_payload_round_trips() {
+        let event = ContractEvent {
+            contract_version: version(),
+            id: "run-completed".to_owned(),
+            payload: EventPayload::RunCompleted {
+                run_id: RunId("run-review-1".to_owned()),
+                run_kind: Some(RunKind::Review),
                 outcome: RunOutcome::Succeeded,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn older_forge_facts_default_to_ready_pull_request() {
-        let mut payload = serde_json::to_value(forge_facts()).expect("serialise facts");
-        payload
-            .as_object_mut()
-            .expect("facts are an object")
-            .remove("work_in_progress");
-
-        let facts = serde_json::from_value::<ForgeFacts>(payload).expect("legacy facts");
-
-        assert!(!facts.work_in_progress);
-    }
-
-    #[test]
-    fn older_run_state_payloads_default_to_empty_loop_controls() {
-        let payload = json!({
-            "contract_version": { "major": 1, "minor": 1 },
-            "pr": { "repository": "acme/widgets", "id": "42" },
-            "commit_sha": "abc123",
-            "pass_index": 1,
-            "status": "completed",
-            "findings": [],
-            "decisions": [],
-            "patches": [],
-            "ceiling": null
-        });
-
-        let state = serde_json::from_value::<super::PrRunState>(payload).expect("legacy state");
-
-        assert_eq!(state.current_head_sha, None);
-        assert_eq!(state.active_run, None);
-        assert!(state.run_history.is_empty());
-        assert!(state.loop_history.is_empty());
-        assert_eq!(state.superseded_by, None);
-        assert!(state.publication.is_empty());
-        assert!(
-            state
-                .run_history
-                .iter()
-                .all(|record| record.refusal.is_none() && record.ensemble_archive_path.is_none())
-        );
-    }
-
-    #[test]
-    fn v1_2_run_state_payloads_default_to_empty_publication_state() {
-        let payload = json!({
-            "contract_version": { "major": 1, "minor": 2 },
-            "pr": { "repository": "acme/widgets", "id": "42" },
-            "commit_sha": "abc123",
-            "current_head_sha": "abc123",
-            "pass_index": 2,
-            "status": "completed",
-            "active_run": null,
-            "run_history": [],
-            "loop_history": [],
-            "superseded_by": null,
-            "findings": [],
-            "decisions": [],
-            "patches": [],
-            "ceiling": null
-        });
-
-        let state = serde_json::from_value::<super::PrRunState>(payload).expect("v1.2 state");
-
-        assert_eq!(
-            state.contract_version,
-            ContractVersion { major: 1, minor: 2 }
-        );
-        assert_eq!(state.current_head_sha.as_deref(), Some("abc123"));
-        assert!(state.publication.is_empty());
-        assert!(
-            state
-                .run_history
-                .iter()
-                .all(|record| record.refusal.is_none() && record.ensemble_archive_path.is_none())
-        );
-    }
-
-    #[test]
-    fn older_publication_attempt_payloads_default_new_fields() {
-        let payload = json!({
-            "contract_version": { "major": 1, "minor": 3 },
-            "pr": { "repository": "acme/widgets", "id": "42" },
-            "commit_sha": "abc123",
-            "current_head_sha": "abc123",
-            "pass_index": 2,
-            "status": "completed",
-            "active_run": null,
-            "run_history": [],
-            "loop_history": [],
-            "superseded_by": null,
-            "findings": [],
-            "decisions": [],
-            "patches": [],
-            "publication": {
-                "attempts": [{
-                    "contract_version": { "major": 1, "minor": 3 },
-                    "run_id": "run-judge-2",
-                    "operation": {
-                        "kind": "post_finding_comment",
-                        "finding_id": "finding-1",
-                        "finding_dedup_key": "brief:correctness:path:src/lib.rs:12"
-                    },
-                    "idempotency_key": "comment-finding-1",
-                    "status": "succeeded",
-                    "receipt": {
-                        "operation_id": "comment-1",
-                        "idempotency_key": "comment-finding-1",
-                        "new_head_sha": null
-                    },
-                    "error": null
-                }],
-                "finding_comments": [],
-                "fix_pushes": [],
-                "merges": []
             },
-            "ceiling": null
-        });
+            extensions: extensions(),
+        };
 
-        let state = serde_json::from_value::<super::PrRunState>(payload).expect("v1.3 state");
-        let attempt = state
-            .publication
-            .attempts
-            .first()
-            .expect("publication attempt");
-
-        assert_eq!(attempt.expected_head_sha, None);
-        assert_eq!(attempt.refusal, None);
+        round_trip(&event);
     }
 
     #[test]
     fn soundness_predicates_are_expressible_from_contract_types() {
-        let reviewers = vec![
-            verified_provenance("codex-reviewer", AgentRole::Reviewer, "codex"),
-            verified_provenance("claude-reviewer", AgentRole::Reviewer, "claude"),
-        ];
         let fixer = verified_provenance("fixer", AgentRole::Fixer, "codex");
-        let judge = verified_provenance("judge", AgentRole::Judge, "glm");
-        let mut all_provenance = reviewers.clone();
-        all_provenance.push(fixer);
-        all_provenance.push(judge.clone());
+        let conflicting_fixer = verified_provenance("codex-reviewer", AgentRole::Fixer, "codex");
 
-        assert!(has_two_verified_reviewer_families(&all_provenance));
-        assert!(reviewers_disjoint_from_fixers(&all_provenance));
-        assert!(judge_independent_of_reviewers(&judge, &reviewers));
-        assert!(sessions_fresh_for_pass(&all_provenance, 1));
+        assert!(fixer_disjoint_from_finding_sessions(
+            std::slice::from_ref(&fixer),
+            &[finding()]
+        ));
+        assert!(!fixer_disjoint_from_finding_sessions(
+            &[conflicting_fixer],
+            &[finding()]
+        ));
+        assert!(sessions_fresh_for_pass(
+            &[
+                fixer,
+                verified_provenance("lead", AgentRole::Lead, "claude")
+            ],
+            1
+        ));
         assert!(merge_gate_clean_and_current(&forge_facts()));
     }
 
     #[test]
-    fn unverified_provenance_does_not_count_as_a_reviewer_family() {
-        let unverified = ModelProvenance {
-            contract_version: version(),
-            agent_id: AgentId("unknown-reviewer".to_owned()),
-            role: AgentRole::Reviewer,
-            session_id: SessionId("unknown-session".to_owned()),
-            freshness: SessionFreshness::Unknown {
-                reason: "adapter did not provide launch proof".to_owned(),
-            },
-            verification: ProvenanceVerification::Unverified {
-                reason: "core could not verify provider lineage".to_owned(),
-            },
-            extensions: extensions(),
-        };
-        let provenances = vec![
-            verified_provenance("codex-reviewer", AgentRole::Reviewer, "codex"),
-            unverified,
-        ];
+    fn materiality_is_derived_from_verification_and_priority() {
+        let mut material = finding();
+        material.priority = PriorityClass::P1;
+        material.verification.status = VerificationStatus::Verified;
 
-        assert!(!has_two_verified_reviewer_families(&provenances));
+        let mut below_threshold = material.clone();
+        below_threshold.priority = PriorityClass::P3;
+
+        let mut rejected = material.clone();
+        rejected.verification.status = VerificationStatus::Rejected {
+            reason: "not real".to_owned(),
+        };
+
+        assert!(material.is_material(PriorityClass::P1));
+        assert!(!below_threshold.is_material(PriorityClass::P1));
+        assert!(!rejected.is_material(PriorityClass::P1));
     }
 }
