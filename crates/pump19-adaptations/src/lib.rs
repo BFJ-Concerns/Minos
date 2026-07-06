@@ -1606,6 +1606,10 @@ fn baseline_model_for_family(family: &str) -> String {
 
 /// Returns the compact baseline prompt templates for the current run loop.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "pure data table: one vec of template structs with embedded prompt text"
+)]
 pub fn baseline_prompt_templates() -> Vec<PromptTemplate> {
     vec![
         PromptTemplate {
