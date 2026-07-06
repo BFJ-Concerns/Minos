@@ -1308,6 +1308,7 @@ where
         }
 
         if let Some(mut stale) = exact {
+            let superseded_run_id = active_review_run_id(&stale);
             mark_superseded(
                 &mut stale,
                 latest
@@ -1316,12 +1317,19 @@ where
                     .unwrap_or_else(|| latest.commit_sha.clone()),
                 None,
             );
+            if let Some(run_id) = superseded_run_id {
+                self.remove_superseded_review_reaction(&run_id, &mut stale);
+            }
             self.state_store.save(&stale)?;
             return Ok(Some(stale));
         }
 
         if latest.status == RunStatus::Running {
+            let superseded_run_id = active_review_run_id(&latest);
             mark_superseded(&mut latest, facts.head.sha.clone(), None);
+            if let Some(run_id) = superseded_run_id {
+                self.remove_superseded_review_reaction(&run_id, &mut latest);
+            }
             latest.current_head_sha = Some(facts.head.sha.clone());
             self.state_store.save(&latest)?;
         }
@@ -1373,13 +1381,7 @@ where
 
         let mut running_state = mark_running(state, event, rule, &run_id, prepared.clone());
         self.save_running_or_cleanup(&running_state, &workspace)?;
-        self.apply_review_started_reaction_or_fail(
-            event,
-            rule,
-            &run_id,
-            &mut running_state,
-            &workspace,
-        )?;
+        self.apply_review_started_reactions(rule.run_kind, &run_id, &mut running_state);
         self.record_operator_independence_degradations(&running_state, &run_id)?;
 
         let launch_result = self.launcher.launch_run(
@@ -1424,7 +1426,7 @@ where
         }
 
         let outcome_degradations = apply_run_outcome(&mut running_state, rule.run_kind, outcome);
-        self.apply_review_terminal_reactions(rule.run_kind, &run_id, &mut running_state)?;
+        self.apply_review_terminal_reactions(rule.run_kind, &run_id, &mut running_state);
         self.record_operator_degradations(&running_state, &run_id, &outcome_degradations)?;
         self.record_repeated_bar_check_degradation(&running_state, &run_id)?;
         self.state_store.save(&running_state)?;
@@ -1437,8 +1439,7 @@ where
         )?;
         let save_result = self.state_store.save(&running_state);
         let cleanup_result = self.workspace_provider.cleanup(&workspace);
-        save_result?;
-        cleanup_result?;
+        finish_before_cleanup(save_result, cleanup_result)?;
         if let Some(completion_event) = run_completed_event_from_state(&running_state, &run_id) {
             self.queue_completion_event(completion_event);
         }
@@ -1456,32 +1457,6 @@ where
     ) -> Result<(), CoreError> {
         if let Err(error) = self.state_store.save(running_state) {
             let cleanup_result = self.workspace_provider.cleanup(workspace);
-            finish_before_cleanup(Err(error), cleanup_result)?;
-            unreachable!("an explicit primary error cannot finish successfully");
-        }
-        Ok(())
-    }
-
-    fn apply_review_started_reaction_or_fail(
-        &mut self,
-        event: &ContractEvent,
-        rule: &TriggerRule,
-        run_id: &RunId,
-        running_state: &mut PrRunState,
-        workspace: &WorkspaceLease,
-    ) -> Result<(), CoreError> {
-        if rule.run_kind != RunKind::Review {
-            return Ok(());
-        }
-        if let Err(error) = self.apply_review_started_reaction(run_id, running_state) {
-            let message = error.to_string();
-            let record_result =
-                self.record_failed_running_state(running_state, event, rule, run_id, &message);
-            let cleanup_result = self.workspace_provider.cleanup(workspace);
-            if let Err(record_error) = record_result {
-                finish_before_cleanup(Err(record_error), cleanup_result)?;
-                unreachable!("an explicit primary error cannot finish successfully");
-            }
             finish_before_cleanup(Err(error), cleanup_result)?;
             unreachable!("an explicit primary error cannot finish successfully");
         }
@@ -1523,7 +1498,7 @@ where
     ) -> Result<(), CoreError> {
         record_completion_recovery_failure(running_state, event);
         mark_failed(running_state, event, rule, run_id, message);
-        self.apply_review_terminal_reactions(rule.run_kind, run_id, running_state)?;
+        self.apply_review_terminal_reactions(rule.run_kind, run_id, running_state);
         self.state_store.save(running_state)?;
         self.record_operator_failure(running_state, run_id, message)
     }
@@ -1539,7 +1514,7 @@ where
             return Ok(None);
         };
         mark_superseded(running_state, superseded_by.clone(), None);
-        self.apply_review_terminal_reactions(rule.run_kind, run_id, running_state)?;
+        self.apply_review_terminal_reactions(rule.run_kind, run_id, running_state);
         let save_result = self.state_store.save(running_state);
         let cleanup_result = self.workspace_provider.cleanup(workspace);
         finish_before_cleanup(save_result, cleanup_result)?;
@@ -1919,12 +1894,17 @@ where
         self.apply_finish_label_after_convergence(run_id, state)
     }
 
-    fn apply_review_started_reaction(
+    fn apply_review_started_reactions(
         &mut self,
+        run_kind: RunKind,
         run_id: &RunId,
         state: &mut PrRunState,
-    ) -> Result<(), CoreError> {
-        self.apply_presence_reaction(run_id, state, ForgeReaction::Eyes, true)
+    ) {
+        if run_kind != RunKind::Review {
+            return;
+        }
+        self.apply_presence_reaction_best_effort(run_id, state, ForgeReaction::PlusOne, false);
+        self.apply_presence_reaction_best_effort(run_id, state, ForgeReaction::Eyes, true);
     }
 
     fn apply_review_terminal_reactions(
@@ -1932,15 +1912,30 @@ where
         run_kind: RunKind,
         run_id: &RunId,
         state: &mut PrRunState,
-    ) -> Result<(), CoreError> {
+    ) {
         if run_kind != RunKind::Review || state.status == RunStatus::Running {
-            return Ok(());
+            return;
         }
-        self.apply_presence_reaction(run_id, state, ForgeReaction::Eyes, false)?;
+        self.apply_presence_reaction_best_effort(run_id, state, ForgeReaction::Eyes, false);
         if state_converged_for_current_pass(state) {
-            self.apply_presence_reaction(run_id, state, ForgeReaction::PlusOne, true)?;
+            self.apply_presence_reaction_best_effort(run_id, state, ForgeReaction::PlusOne, true);
         }
-        Ok(())
+    }
+
+    fn remove_superseded_review_reaction(&mut self, run_id: &RunId, state: &mut PrRunState) {
+        self.apply_presence_reaction_best_effort(run_id, state, ForgeReaction::Eyes, false);
+    }
+
+    fn apply_presence_reaction_best_effort(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+        reaction: ForgeReaction,
+        apply: bool,
+    ) {
+        if let Err(error) = self.apply_presence_reaction(run_id, state, reaction, apply) {
+            self.record_presence_reaction_degradation(state, run_id, reaction, apply, &error);
+        }
     }
 
     fn apply_presence_reaction(
@@ -2004,6 +1999,35 @@ where
                 self.state_store.save(state)?;
                 Err(error)
             }
+        }
+    }
+
+    fn record_presence_reaction_degradation(
+        &mut self,
+        state: &PrRunState,
+        run_id: &RunId,
+        reaction: ForgeReaction,
+        apply: bool,
+        error: &CoreError,
+    ) {
+        let action = if apply { "apply" } else { "remove" };
+        let message = format!(
+            "presence reaction degraded for run {}: failed to {action} {}: {error}",
+            run_id.0,
+            reaction.as_str()
+        );
+        let Ok(event) = operator_log_event(
+            state,
+            run_id,
+            OperatorLogEventKind::ConfigWarning,
+            &message,
+            None,
+        ) else {
+            eprintln!("{message}");
+            return;
+        };
+        if let Err(log_error) = self.operator_log.record(event) {
+            eprintln!("{message}; operator log failed: {log_error}");
         }
     }
 
@@ -4106,6 +4130,14 @@ fn run_record_for<'a>(state: &'a PrRunState, run_id: &RunId) -> Option<&'a RunRe
         })
 }
 
+fn active_review_run_id(state: &PrRunState) -> Option<RunId> {
+    state
+        .active_run
+        .as_ref()
+        .filter(|record| record.run_kind == RunKind::Review)
+        .map(|record| record.run_id.clone())
+}
+
 fn receipt_to_contract(receipt: ForgeOperationReceipt) -> ForgeReceipt {
     ForgeReceipt {
         operation_id: receipt.operation_id,
@@ -5295,6 +5327,8 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingForgeOperations {
         fail_comments: bool,
+        fail_apply_reactions: bool,
+        fail_remove_reactions: bool,
         comments: Vec<AuthorisedComment>,
         comment_updates: Vec<AuthorisedCommentUpdate>,
         comment_resolutions: Vec<AuthorisedCommentResolution>,
@@ -5421,6 +5455,11 @@ mod tests {
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
             let idempotency_key = request.authorisation.idempotency_key.clone();
             self.applied_reactions.push(request);
+            if self.fail_apply_reactions {
+                return Err(ForgeOperationError::Client(
+                    "reaction apply channel unavailable".to_owned(),
+                ));
+            }
             Ok(ForgeOperationReceipt {
                 operation_id: "reaction".to_owned(),
                 idempotency_key,
@@ -5434,6 +5473,11 @@ mod tests {
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
             let idempotency_key = request.authorisation.idempotency_key.clone();
             self.removed_reactions.push(request);
+            if self.fail_remove_reactions {
+                return Err(ForgeOperationError::Client(
+                    "reaction remove channel unavailable".to_owned(),
+                ));
+            }
             Ok(ForgeOperationReceipt {
                 operation_id: "reaction-remove".to_owned(),
                 idempotency_key,
@@ -7055,6 +7099,18 @@ mod tests {
         assert_eq!(old_saved.superseded_by, Some("new-head-sha".to_owned()));
         assert!(stale_completion.is_empty());
         assert!(core.forge_operations.comments.is_empty());
+        assert_eq!(
+            core.forge_operations
+                .removed_reactions
+                .iter()
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
+            vec![
+                ForgeReaction::Eyes,
+                ForgeReaction::PlusOne,
+                ForgeReaction::Eyes
+            ]
+        );
     }
 
     #[test]
@@ -7112,9 +7168,9 @@ mod tests {
                 .iter()
                 .map(|request| request.reaction)
                 .collect::<Vec<_>>(),
-            vec![ForgeReaction::Eyes]
+            vec![ForgeReaction::PlusOne, ForgeReaction::Eyes]
         );
-        assert_eq!(saved.publication.attempts.len(), 2);
+        assert_eq!(saved.publication.attempts.len(), 3);
         assert_eq!(operator_events.borrow().len(), 1);
         let event = &operator_events.borrow()[0];
         assert_eq!(event.kind, OperatorLogEventKind::RunFailure);
@@ -7161,6 +7217,172 @@ mod tests {
                 .iter()
                 .map(|request| request.reaction)
                 .collect::<Vec<_>>(),
+            vec![ForgeReaction::PlusOne, ForgeReaction::Eyes]
+        );
+    }
+
+    #[test]
+    fn review_start_reaction_failure_records_degradation_and_still_launches() {
+        let mut launcher = FakeRunLauncher::new(vec![
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+        ]);
+        launcher.outcome = material_review_outcome();
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations {
+                fail_apply_reactions: true,
+                ..Default::default()
+            },
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
+            operator_log,
+            CorePolicy::human_gate(),
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("reaction failure must not fail dispatch");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review"
+        ));
+        assert_eq!(core.launcher.launched, 1);
+        assert_eq!(core.workspace_provider.cleaned, 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("saved state");
+        assert_eq!(saved.status, RunStatus::Completed);
+        assert!(
+            saved
+                .publication
+                .attempts
+                .iter()
+                .any(|attempt| attempt.status == PublicationAttemptStatus::Failed)
+        );
+        assert!(
+            operator_events
+                .borrow()
+                .iter()
+                .any(|event| event.kind == OperatorLogEventKind::ConfigWarning
+                    && event.message.contains("failed to apply eyes"))
+        );
+    }
+
+    #[test]
+    fn terminal_reaction_failure_still_cleans_up_and_queues_completion() {
+        let mut launcher = FakeRunLauncher::new(vec![
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+        ]);
+        launcher.outcome = material_review_outcome();
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_source_preparer_comment_formatter_and_policy(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations {
+                fail_remove_reactions: true,
+                ..Default::default()
+            },
+            NoopSourcePreparer,
+            RecordingCommentFormatter::default(),
+            operator_log,
+            CorePolicy::human_gate(),
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[independent_rule()])
+            .expect("terminal reaction failure must not fail dispatch");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { rule_id, .. }] if rule_id == "review"
+        ));
+        assert_eq!(core.workspace_provider.cleaned, 1);
+        assert_eq!(core.pending_event_count(), 1);
+        let saved = core
+            .state_store
+            .load(&RunStateKey::from_facts(&facts()))
+            .expect("load state")
+            .expect("saved state");
+        assert_eq!(saved.status, RunStatus::Completed);
+        assert!(
+            saved
+                .publication
+                .attempts
+                .iter()
+                .any(|attempt| attempt.status == PublicationAttemptStatus::Failed)
+        );
+        assert!(
+            operator_events
+                .borrow()
+                .iter()
+                .any(|event| event.kind == OperatorLogEventKind::ConfigWarning
+                    && event.message.contains("failed to remove eyes"))
+        );
+    }
+
+    #[test]
+    fn new_review_pass_removes_stale_thumbs_up_before_applying_eyes() {
+        let mut launcher = FakeRunLauncher::new(vec![
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+        ]);
+        launcher.outcome = material_review_outcome();
+        let mut core = Core::with_forge_operations_and_comment_formatter(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
+        );
+
+        core.process_event(&event(), &[independent_rule()])
+            .expect("review dispatch");
+
+        assert_eq!(
+            core.forge_operations
+                .removed_reactions
+                .iter()
+                .take(1)
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
+            vec![ForgeReaction::PlusOne]
+        );
+        assert_eq!(
+            core.forge_operations
+                .applied_reactions
+                .iter()
+                .take(1)
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
             vec![ForgeReaction::Eyes]
         );
     }
@@ -7203,7 +7425,7 @@ mod tests {
                 .iter()
                 .map(|request| request.reaction)
                 .collect::<Vec<_>>(),
-            vec![ForgeReaction::Eyes]
+            vec![ForgeReaction::PlusOne, ForgeReaction::Eyes]
         );
     }
 
@@ -7492,10 +7714,10 @@ mod tests {
         );
         assert_eq!(
             core.forge_operations.removed_reactions.len(),
-            1,
-            "failed review should remove stale active presence"
+            2,
+            "failed review should remove stale reactions"
         );
-        assert_eq!(saved.publication.attempts.len(), 2);
+        assert_eq!(saved.publication.attempts.len(), 3);
         assert_eq!(operator_events.borrow().len(), 1);
     }
 
