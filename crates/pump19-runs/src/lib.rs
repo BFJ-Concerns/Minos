@@ -13,12 +13,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     fmt::Write as _,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use pump19_contract::{
@@ -836,12 +836,7 @@ fn prepare_run_directory(
     review_evidence: &ReviewEvidence,
 ) -> Result<PathBuf, RunBodyError> {
     let run_dir = config.run_root.join(safe_path_segment(&request.run_id.0));
-    if run_dir.exists() {
-        fs::remove_dir_all(&run_dir).map_err(|source| RunBodyError::FrameIo {
-            action: format!("clear previous run directory {}", run_dir.display()),
-            source,
-        })?;
-    }
+    move_existing_run_directory_aside(&run_dir)?;
     create_dir(&run_dir, "create run directory")?;
     for relative in ["bin", "workflows", "out", "archive/workflows", "schema"] {
         create_dir(&run_dir.join(relative), "create run directory member")?;
@@ -858,6 +853,65 @@ fn prepare_run_directory(
         "copy review diff into run directory",
     )?;
     Ok(run_dir)
+}
+
+fn move_existing_run_directory_aside(run_dir: &Path) -> Result<(), RunBodyError> {
+    if !run_dir.exists() {
+        return Ok(());
+    }
+
+    let parent = run_dir.parent().ok_or_else(|| RunBodyError::FrameIo {
+        action: format!(
+            "find parent for previous run directory {}",
+            run_dir.display()
+        ),
+        source: io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "run directory has no parent directory",
+        ),
+    })?;
+    let name = run_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| RunBodyError::FrameIo {
+            action: format!("name previous run directory {}", run_dir.display()),
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "run directory name is not valid UTF-8",
+            ),
+        })?;
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+
+    // Re-fired run ids intentionally reuse the deterministic run directory.
+    // Preserve the old attempt as evidence, but remove it from the active path
+    // so stale workflow archives cannot poison the next launch.
+    for sequence in 0..1000 {
+        let superseded = parent.join(format!("{name}.superseded.{timestamp_ms}.{sequence}"));
+        if superseded.exists() {
+            continue;
+        }
+        return fs::rename(run_dir, &superseded).map_err(|source| RunBodyError::FrameIo {
+            action: format!(
+                "move previous run directory {} to {}",
+                run_dir.display(),
+                superseded.display()
+            ),
+            source,
+        });
+    }
+
+    Err(RunBodyError::FrameIo {
+        action: format!(
+            "allocate superseded sibling for previous run directory {}",
+            run_dir.display()
+        ),
+        source: io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "all superseded run directory names were already present",
+        ),
+    })
 }
 
 fn build_run_manifest(
@@ -3298,16 +3352,7 @@ fn reconcile_ensemble_archive(
             manifest.status
         )));
     }
-    if let Some(exit_code) = manifest
-        .result
-        .get("exit_code")
-        .and_then(serde_json::Value::as_i64)
-        .filter(|exit_code| *exit_code != 0)
-    {
-        return Err(RunBodyError::EnsembleArchiveMismatch(format!(
-            "archive exit code {exit_code}"
-        )));
-    }
+    reconcile_manifest_exit_code(&manifest_path, &manifest.result)?;
 
     let run_dir = manifest_path
         .parent()
@@ -3381,6 +3426,28 @@ fn reconcile_ensemble_archive(
         run_id: manifest.run_id,
         agents: seen.into_iter().collect(),
     })
+}
+
+fn reconcile_manifest_exit_code(manifest_path: &Path, result: &Value) -> Result<(), RunBodyError> {
+    let Some(exit_code) = result.get("exit_code") else {
+        return Ok(());
+    };
+    if exit_code.is_null() {
+        return Ok(());
+    }
+    let Some(exit_code) = exit_code.as_i64() else {
+        return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+            "{} has non-integer archive exit_code {}",
+            manifest_path.display(),
+            exit_code
+        )));
+    };
+    if exit_code != 0 {
+        return Err(RunBodyError::EnsembleArchiveMismatch(format!(
+            "archive exit code {exit_code}"
+        )));
+    }
+    Ok(())
 }
 
 fn archive_model_for_engine<'a>(
@@ -4235,10 +4302,11 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
     }
 
     #[test]
-    fn lead_frame_clears_stale_run_directory_before_reusing_run_id() {
+    fn lead_frame_moves_stale_run_directory_before_reusing_run_id() {
         let root = tempfile::tempdir().expect("workspace root");
         let req = frame_request(root.path());
         let config = lead_frame_config(root.path());
+        let run_root = config.run_root.clone();
         let run_dir = config.run_root.join(safe_path_segment(&req.run_id.0));
         fs::create_dir_all(run_dir.join("out")).expect("create stale out dir");
         fs::write(run_dir.join("out/review.json"), "{}").expect("write stale review");
@@ -4266,6 +4334,32 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
                 .exists()
         );
         assert!(!result.run_dir.join("out/review.json").exists());
+
+        let run_dir_name = result
+            .run_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("run directory has UTF-8 name");
+        let superseded = fs::read_dir(&run_root)
+            .expect("read run root")
+            .map(|entry| entry.expect("read run root entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&format!("{run_dir_name}.superseded.")))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            superseded.len(),
+            1,
+            "previous attempt is preserved as a superseded sibling"
+        );
+        assert!(superseded[0].join("out/review.json").exists());
+        assert!(
+            superseded[0]
+                .join("archive/workflows/repair-output/1/runs/cwd/test/test-run/manifest.json")
+                .exists()
+        );
     }
 
     #[test]
@@ -4963,7 +5057,13 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         let mut manifest_json: Value =
             serde_json::from_str(&fs::read_to_string(&manifest).expect("read manifest"))
                 .expect("manifest JSON");
-        manifest_json["result"]["exit_code"] = Value::Null;
+        let live_manifest: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/live-launcher-failures/widget-5/bar-check-null-exit-manifest.json"
+        ))
+        .expect("live Widget #5 nullable exit-code manifest parses");
+        assert_eq!(live_manifest["status"].as_str(), Some("in-progress"));
+        assert!(live_manifest["result"]["exit_code"].is_null());
+        manifest_json["result"] = live_manifest["result"].clone();
         fs::write(
             &manifest,
             serde_json::to_string_pretty(&manifest_json).expect("serialise manifest"),
@@ -4977,6 +5077,48 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].role, AgentRole::BarCheck);
         assert!(refs[0].path.ends_with("bar-check/1"));
+    }
+
+    #[test]
+    fn workflow_archive_reconciliation_rejects_non_integer_manifest_exit_code() {
+        let root = tempfile::tempdir().expect("run root");
+        let archive_root = root.path().join("archive/workflows/bar-check/1");
+        write_archive(&archive_root, &[archive_agent("bar-codex", "codex")]);
+        let manifest = archive_root.join("runs/cwd/test/test-run/manifest.json");
+        let mut manifest_json: Value =
+            serde_json::from_str(&fs::read_to_string(&manifest).expect("read manifest"))
+                .expect("manifest JSON");
+        manifest_json["result"]["exit_code"] = json!("1");
+        fs::write(
+            &manifest,
+            serde_json::to_string_pretty(&manifest_json).expect("serialise manifest"),
+        )
+        .expect("write manifest");
+
+        let req = frame_request(root.path());
+        let error = reconcile_workflow_archives(&req, root.path())
+            .expect_err("mistyped exit_code fails the deterministic archive gate");
+
+        assert!(
+            error.to_string().contains("non-integer archive exit_code"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn live_archived_nullable_bar_check_manifest_parses_through_minimal_projection() {
+        let manifest = serde_json::from_str::<EnsembleRunManifest>(include_str!(
+            "../tests/fixtures/live-launcher-failures/widget-5/bar-check-null-exit-manifest.json"
+        ))
+        .expect("live nullable bar-check manifest parses");
+
+        assert_eq!(manifest.status, "in-progress");
+        assert!(manifest.result.get("exit_code").is_some_and(Value::is_null));
+        assert!(manifest.files.iter().all(|file| {
+            file.path
+                .file_name()
+                .is_none_or(|name| name != "agent.json")
+        }));
     }
 
     #[test]
