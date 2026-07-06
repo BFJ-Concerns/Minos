@@ -1629,9 +1629,12 @@ Read the manifest before judging the change. It contains the changed files,
 changed-line map, selected briefs, prior loop history, and repository policy.
 
 ## Review Bar
-Honour the subject repository's pinned guidance and selected briefs. For each
-suspected issue, read the changed file in full and enough related definitions or
-call sites to confirm the problem is real. Keep out linter-catchable issues,
+Honour the subject repository's pinned guidance and selected briefs. Read every
+changed file in full: that is the coverage bar, not a sampling target. Spend the
+time and token budget you are given reaching it before you record anything as
+unvisited — honest partial coverage is a last resort after a genuine effort, not
+an early exit. For each suspected issue, read enough related definitions or call
+sites to confirm the problem is real. Keep out linter-catchable issues,
 speculative claims, and pre-existing problems on untouched lines. Findings must
 anchor to changed lines and carry a priority, a one-line title, an explanation,
 and a drop-in suggestion when one exists.
@@ -1644,10 +1647,25 @@ finding verification workflow before including them. Verification should look
 for why a claim is wrong before accepting it. Record honest coverage: if
 meaningful changed code was not visited, say so instead of proposing convergence.
 
-For a clean review, keep session notes terse and evidence-backed. List the files
-you inspected, state explicitly when no build, test, or lint commands were run,
-and do not use unsupported quality claims such as \"quality bar exceeded\" or
-\"no lint violations expected\".
+## Clean reviews
+When you find nothing material, the session notes are the review the bar judges,
+so hold them to the same evidence standard as a finding. State only what you did
+and observed:
+- the changed files you read in full, and — just as plainly — any you did not;
+  never describe code you did not read as clean, and never assert coverage the
+  record does not support;
+- that no build, test, or lint commands were run (they are unavailable in the
+  review environment), so nothing that depends on running them is claimed;
+- that within the changed lines you found no material correctness, safety,
+  contract, or test concern.
+Describe the change only in words you have checked against the diff; every
+implementation claim must match the actual changed lines. Do not add quality
+assurances the evidence cannot support — no verified or comprehensive test
+coverage, no adherence to conventions, no proper error handling, no absence of
+forbidden patterns, no \"quality bar exceeded\" or \"no lint violations
+expected\". A clean review that says, in effect, \"I read these files in full,
+ran nothing, and found no material changed-line issue\" clears the bar; reaching
+past that overstates confidence and fails it.
 
 Write the final review payload to {{review_output_path}}."
                 .to_owned(),
