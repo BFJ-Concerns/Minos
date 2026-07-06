@@ -1609,28 +1609,6 @@ fn baseline_model_for_family(family: &str) -> String {
 pub fn baseline_prompt_templates() -> Vec<PromptTemplate> {
     vec![
         PromptTemplate {
-            id: "review-contract-findings".to_owned(),
-            run_kind: RunKind::Review,
-            template: "You are an independent Pump-19 code reviewer.
-Subject: {{subject_name}} ({{subject_slug}})
-Purpose: {{subject_purpose}}
-
-## Task
-Review the code change against the brief below. Ground every failed result in the supplied PR diff or the prepared workspace tree. Return JSON matching the schema.
-
-## Verdict
-Use status \"failed\" for material correctness, safety, maintainability, contract, or test concerns in the change. Use status \"passed\" when the change satisfies the brief. Put the short reason in stdout and diagnostics, if any, in stderr.
-
-<brief id=\"{{brief_id}}\" title=\"{{brief_title}}\">
-{{brief_body}}
-</brief>
-
-Review evidence:
-{{evidence}}"
-                .to_owned(),
-            extensions: Extensions::new(),
-        },
-        PromptTemplate {
             id: "review-lead-mission".to_owned(),
             run_kind: RunKind::Review,
             template: "You are the lead Pump-19 review session.
@@ -2507,27 +2485,25 @@ mod tests {
     };
 
     #[test]
-    fn baseline_prompt_pack_loads_schema_only_review_template()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn baseline_prompt_pack_loads_lead_review_template() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let manifest = write_baseline_prompt_pack(dir.path(), "baseline-review")?;
 
         let pack = load_prompt_pack(&manifest)?;
 
         assert_eq!(pack.manifest.id, "baseline-review");
-        assert_eq!(pack.manifest.prompt_templates.len(), 3);
+        assert_eq!(pack.manifest.prompt_templates.len(), 2);
         assert_eq!(pack.manifest.workflow_scripts.len(), 5);
         assert_eq!(pack.review_briefs.len(), 3);
-        let review_template = &pack.manifest.prompt_templates[0].template;
-        assert!(review_template.contains("Return JSON matching the schema."));
-        assert!(review_template.contains("Put the short reason in stdout"));
+        // The lead mission is the sole review template; the daemon selects it by
+        // id as the lead prompt, so it must be the review-kind template present.
+        let review_template = &pack.manifest.prompt_templates[0];
+        assert_eq!(review_template.id, "review-lead-mission");
+        assert!(review_template.template.contains("Workflow shim"));
         assert!(
-            pack.manifest
-                .prompt_templates
-                .iter()
-                .any(|template| template.id == "review-lead-mission"
-                    && template.template.contains("Workflow shim")
-                    && template.template.contains("native_codex_review_path"))
+            review_template
+                .template
+                .contains("native_codex_review_path")
         );
         let slots = pack
             .manifest
@@ -2551,7 +2527,7 @@ mod tests {
         assert!(dir.path().join("workflows/bar-check.js").exists());
         assert!(dir.path().join("workflows/repair-output.js").exists());
         assert!(!dir.path().join("workflows/fix.js").exists());
-        assert!(!review_template.contains("PUMP19_JUDGEMENT"));
+        assert!(!review_template.template.contains("PUMP19_JUDGEMENT"));
         Ok(())
     }
 
