@@ -836,6 +836,12 @@ fn prepare_run_directory(
     review_evidence: &ReviewEvidence,
 ) -> Result<PathBuf, RunBodyError> {
     let run_dir = config.run_root.join(safe_path_segment(&request.run_id.0));
+    if run_dir.exists() {
+        fs::remove_dir_all(&run_dir).map_err(|source| RunBodyError::FrameIo {
+            action: format!("clear previous run directory {}", run_dir.display()),
+            source,
+        })?;
+    }
     create_dir(&run_dir, "create run directory")?;
     for relative in ["bin", "workflows", "out", "archive/workflows", "schema"] {
         create_dir(&run_dir.join(relative), "create run directory member")?;
@@ -4226,6 +4232,40 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
                 suppressed: 0
             }
         );
+    }
+
+    #[test]
+    fn lead_frame_clears_stale_run_directory_before_reusing_run_id() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let req = frame_request(root.path());
+        let config = lead_frame_config(root.path());
+        let run_dir = config.run_root.join(safe_path_segment(&req.run_id.0));
+        fs::create_dir_all(run_dir.join("out")).expect("create stale out dir");
+        fs::write(run_dir.join("out/review.json"), "{}").expect("write stale review");
+        write_archive(
+            &run_dir.join("archive/workflows/repair-output/1"),
+            &[archive_agent("lead-claude", "claude")],
+        );
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("fresh run ignores stale archive content");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(result.workflow_archives.is_empty());
+        assert!(
+            !result
+                .run_dir
+                .join("archive/workflows/repair-output/1")
+                .exists()
+        );
+        assert!(!result.run_dir.join("out/review.json").exists());
     }
 
     #[test]
