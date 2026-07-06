@@ -376,6 +376,11 @@ impl EngineSessionLauncher {
         spec: &CodexReviewSpec,
     ) -> Result<CommandInvocation, EngineError> {
         let mut args = vec!["-a".to_owned(), "never".to_owned(), "review".to_owned()];
+        args.push("-c".to_owned());
+        args.push(format!(
+            "projects.{}.trust_level=\"trusted\"",
+            toml_string(&spec.working_dir.display().to_string())
+        ));
         if let Some(model) = &spec.requested_model {
             args.push("-c".to_owned());
             args.push(format!("model={}", toml_string(model)));
@@ -1349,17 +1354,24 @@ mod tests {
         let invocation =
             EngineSessionLauncher::build_codex_review_invocation(&spec).expect("build");
 
-        assert_eq!(
-            invocation.args,
-            vec![
-                "-a",
-                "never",
-                "review",
-                "-c",
-                "model=\"codex-stable\"",
-                "--base",
-                "main"
-            ]
+        assert_eq!(&invocation.args[0..3], ["-a", "never", "review"]);
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1].contains("trust_level=\"trusted\""))
+        );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair == ["-c", "model=\"codex-stable\""])
+        );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--base", "main"])
         );
         assert!(invocation.stdin.is_empty());
     }
