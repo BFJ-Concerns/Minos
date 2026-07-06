@@ -24,12 +24,12 @@ use pump19_contract::{
 use pump19_core::{
     AgentEngine, AgentLaunchSpec, AgentLaunchTarget, AgentPlan, AuthorisedComment,
     AuthorisedCommentResolution, AuthorisedCommentUpdate, AuthorisedFixPush, AuthorisedLabel,
-    AuthorisedMerge, CommentFormatter, Core, CoreError, CorePolicy, Criteria, DispatchOutcome,
-    EventKind, FinishLabelApplicationPolicy, ForgeOperationError, ForgeOperationReceipt,
-    ForgeOperations, LaunchProof, NoopSourcePreparer, OperatorLog, OperatorLogEvent, PreparedAgent,
-    RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore, StateCriterion,
-    TriggerRule, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
-    WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+    AuthorisedMerge, AuthorisedReaction, CommentFormatter, Core, CoreError, CorePolicy, Criteria,
+    DispatchOutcome, EventKind, FinishLabelApplicationPolicy, ForgeOperationError,
+    ForgeOperationReceipt, ForgeOperations, LaunchProof, NoopSourcePreparer, OperatorLog,
+    OperatorLogEvent, PreparedAgent, RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey,
+    RunStateStore, StateCriterion, TriggerRule, WorkspaceExecOutput, WorkspaceExecRequest,
+    WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
 };
 use tempfile::tempdir;
 
@@ -167,7 +167,7 @@ fn journey_converged_review_can_apply_finish_label() -> Result<(), Box<dyn std::
         )]),
         CorePolicy {
             finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
-                label: "pump19-finish".to_owned(),
+                label: "Ready".to_owned(),
             },
             ..CorePolicy::human_gate()
         },
@@ -181,7 +181,7 @@ fn journey_converged_review_can_apply_finish_label() -> Result<(), Box<dyn std::
         Some(ReviewVerdict::Converged { .. })
     ));
     assert_eq!(harness.forge.labels.borrow().len(), 1);
-    assert_eq!(harness.forge.labels.borrow()[0].label, "pump19-finish");
+    assert_eq!(harness.forge.labels.borrow()[0].label, "Ready");
     Ok(())
 }
 
@@ -672,6 +672,8 @@ impl RunLauncher for ScriptedLauncher {
 struct RecordingForge {
     comments: Rc<RefCell<Vec<AuthorisedComment>>>,
     labels: Rc<RefCell<Vec<AuthorisedLabel>>>,
+    applied_reactions: Rc<RefCell<Vec<AuthorisedReaction>>>,
+    removed_reactions: Rc<RefCell<Vec<AuthorisedReaction>>>,
     merges: Rc<RefCell<Vec<AuthorisedMerge>>>,
     fix_pushes: Rc<RefCell<Vec<AuthorisedFixPush>>>,
 }
@@ -720,6 +722,32 @@ impl ForgeOperations for RecordingForge {
         self.labels.borrow_mut().push(request);
         Ok(ForgeOperationReceipt {
             operation_id: "label-1".to_owned(),
+            idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn apply_reaction(
+        &mut self,
+        request: AuthorisedReaction,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        let idempotency_key = request.authorisation.idempotency_key.clone();
+        self.applied_reactions.borrow_mut().push(request);
+        Ok(ForgeOperationReceipt {
+            operation_id: "reaction-1".to_owned(),
+            idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn remove_reaction(
+        &mut self,
+        request: AuthorisedReaction,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        let idempotency_key = request.authorisation.idempotency_key.clone();
+        self.removed_reactions.borrow_mut().push(request);
+        Ok(ForgeOperationReceipt {
+            operation_id: "reaction-remove-1".to_owned(),
             idempotency_key,
             new_head_sha: None,
         })
@@ -874,7 +902,7 @@ fn finish_on_label_rule() -> TriggerRule {
             criteria: vec![
                 Criteria::Event {
                     event: EventKind::LabelApplied {
-                        name: Some("pump19-finish".to_owned()),
+                        name: Some("Ready".to_owned()),
                     },
                 },
                 Criteria::State {
@@ -1074,7 +1102,7 @@ fn pr() -> PullRequestRef {
 
 fn finish_label() -> FinishLabel {
     FinishLabel {
-        name: "pump19-finish".to_owned(),
+        name: "Ready".to_owned(),
         applied_by: actor("maintainer"),
     }
 }

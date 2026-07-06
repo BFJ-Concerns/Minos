@@ -1,6 +1,6 @@
 use pump19_core::{
     AuthorisationContext, AuthorisedComment, AuthorisedCommentResolution, AuthorisedCommentUpdate,
-    AuthorisedFixPush, AuthorisedLabel, AuthorisedMerge, ForgeOperationError,
+    AuthorisedFixPush, AuthorisedLabel, AuthorisedMerge, AuthorisedReaction, ForgeOperationError,
     ForgeOperationReceipt, ForgeOperations, MergeMethod,
 };
 
@@ -111,6 +111,38 @@ where
         Ok(receipt_for(receipt, &request.authorisation))
     }
 
+    fn apply_reaction(
+        &mut self,
+        request: AuthorisedReaction,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        validate_authorisation(&request.authorisation)?;
+        let receipt = self
+            .client
+            .apply_pr_reaction(
+                &request.authorisation.pr,
+                request.reaction.as_str(),
+                &metadata(&request.authorisation),
+            )
+            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+        Ok(receipt_for(receipt, &request.authorisation))
+    }
+
+    fn remove_reaction(
+        &mut self,
+        request: AuthorisedReaction,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        validate_authorisation(&request.authorisation)?;
+        let receipt = self
+            .client
+            .remove_pr_reaction(
+                &request.authorisation.pr,
+                request.reaction.as_str(),
+                &metadata(&request.authorisation),
+            )
+            .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
+        Ok(receipt_for(receipt, &request.authorisation))
+    }
+
     fn merge(
         &mut self,
         request: AuthorisedMerge,
@@ -121,6 +153,7 @@ where
             .merge_pr(
                 &request.authorisation.pr,
                 merge_method_as_forgejo_str(request.method),
+                request.delete_branch_after_merge,
                 &metadata(&request.authorisation),
             )
             .map_err(|error| ForgeOperationError::Client(error.to_string()))?;
@@ -329,14 +362,51 @@ mod tests {
             })
         }
 
+        fn apply_pr_reaction(
+            &mut self,
+            pr: &PullRequestRef,
+            content: &str,
+            metadata: &ForgejoCommandMetadata,
+        ) -> Result<ForgejoCommandReceipt, ForgejoClientError> {
+            self.calls.push(format!(
+                "apply-reaction:{}:{}:{content}",
+                pr.repository, pr.id
+            ));
+            self.metadata.push(metadata.clone());
+            Ok(ForgejoCommandReceipt {
+                operation_id: format!("reaction-{content}"),
+                new_head_sha: None,
+            })
+        }
+
+        fn remove_pr_reaction(
+            &mut self,
+            pr: &PullRequestRef,
+            content: &str,
+            metadata: &ForgejoCommandMetadata,
+        ) -> Result<ForgejoCommandReceipt, ForgejoClientError> {
+            self.calls.push(format!(
+                "remove-reaction:{}:{}:{content}",
+                pr.repository, pr.id
+            ));
+            self.metadata.push(metadata.clone());
+            Ok(ForgejoCommandReceipt {
+                operation_id: format!("reaction-remove-{content}"),
+                new_head_sha: None,
+            })
+        }
+
         fn merge_pr(
             &mut self,
             pr: &PullRequestRef,
             method: &str,
+            delete_branch_after_merge: bool,
             metadata: &ForgejoCommandMetadata,
         ) -> Result<ForgejoCommandReceipt, ForgejoClientError> {
-            self.calls
-                .push(format!("merge:{}:{}:{method}", pr.repository, pr.id));
+            self.calls.push(format!(
+                "merge:{}:{}:{method}:delete={delete_branch_after_merge}",
+                pr.repository, pr.id
+            ));
             self.metadata.push(metadata.clone());
             Ok(ForgejoCommandReceipt {
                 operation_id: "merge-1".to_owned(),
@@ -424,6 +494,7 @@ mod tests {
             .merge(AuthorisedMerge {
                 authorisation: authorisation(),
                 method: MergeMethod::Squash,
+                delete_branch_after_merge: true,
             })
             .expect("merge executes");
 
@@ -431,7 +502,7 @@ mod tests {
         assert_eq!(receipt.idempotency_key, "run-1:comment:finding-1");
         assert_eq!(
             operations.client().calls,
-            vec!["merge:acme/widgets:42:squash"]
+            vec!["merge:acme/widgets:42:squash:delete=true"]
         );
         assert_eq!(operations.client().metadata[0].observed_head_sha, "abc123");
         assert_eq!(
@@ -450,7 +521,7 @@ mod tests {
         let error = operations
             .apply_label(AuthorisedLabel {
                 authorisation,
-                label: "pump19-finish".to_owned(),
+                label: "Ready".to_owned(),
             })
             .expect_err("evidence is required");
 

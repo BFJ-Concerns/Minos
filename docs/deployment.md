@@ -170,8 +170,9 @@ The token needs enough Forgejo scope to:
 - read repositories and pull requests;
 - post, update and resolve PR comments;
 - apply the finish label;
+- apply and remove PR reactions for presence signalling;
 - push fix commits to watched PR head branches;
-- merge PRs when the finish policy allows it.
+- merge PRs when the finish policy allows it, deleting merged head branches by default.
 
 The poll command emits normalised PR snapshots. The operation command receives a
 single JSON object on stdin with an `operation` tag:
@@ -180,6 +181,8 @@ single JSON object on stdin with an `operation` tag:
 - `update_comment`
 - `resolve_comment`
 - `apply_label`
+- `apply_reaction`
+- `remove_reaction`
 - `merge`
 - `push_fix_commits`
 
@@ -212,7 +215,7 @@ Common values:
 - `forgejo.repositories`: watched repository slugs such as `acme/widgets`.
 - `--base-url`: Forgejo web/API root for the baseline poll and operation scripts.
 - `PUMP19_GIT_BASE_URL`: clone base URL used by source preparation.
-- `forgejo.finish_label`: label that authorises finish runs.
+- `forgejo.finish_label`: label that authorises finish runs; the shipped default is `Ready`.
 - `forgejo.web_base_url`: optional web root for file permalinks in comments.
 - `forgejo.core_applies_finish_label_on_convergence`: false by default; set true
   only for repositories that explicitly accept agent auto-merge.

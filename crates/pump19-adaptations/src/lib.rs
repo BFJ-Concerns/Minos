@@ -486,7 +486,7 @@ const BASELINE_FORGEJO_POLL_SH: &str = r#"#!/bin/sh
 set -eu
 
 base_url=
-finish_label=pump19-finish
+finish_label=Ready
 curl_bin=${PUMP19_FORGEJO_CURL:-curl}
 detail_attempts=${PUMP19_FORGEJO_DETAIL_ATTEMPTS:-3}
 detail_sleep=${PUMP19_FORGEJO_DETAIL_SLEEP:-1}
@@ -797,9 +797,22 @@ case "$operation" in
     response=$(api_json POST "/repos/$repository/issues/$pr_id/labels" "$body")
     receipt "$(printf '%s' "$response" | jq -r --arg label "$label" 'if type == "array" then (.[-1].id // .[-1].name // $label) else (.id // .name // $label) end | tostring')"
     ;;
+  apply_reaction)
+    content=$(printf '%s' "$input" | jq -r '.content')
+    body=$(jq -nc --arg content "$content" '{content:$content}')
+    response=$(api_json POST "/repos/$repository/issues/$pr_id/reactions" "$body")
+    receipt "$(printf '%s' "$response" | jq -r --arg content "$content" '(.id // .content // $content) | tostring')"
+    ;;
+  remove_reaction)
+    content=$(printf '%s' "$input" | jq -r '.content')
+    body=$(jq -nc --arg content "$content" '{content:$content}')
+    response=$(api_json DELETE "/repos/$repository/issues/$pr_id/reactions" "$body")
+    receipt "$(printf '%s' "$response" | jq -r --arg content "$content" '(.id // .content // $content) | tostring')"
+    ;;
   merge)
     method=$(printf '%s' "$input" | jq -r '.method')
-    body=$(jq -nc --arg method "$method" '{Do:$method}')
+    delete_branch_after_merge=$(printf '%s' "$input" | jq -r '.delete_branch_after_merge // true')
+    body=$(jq -nc --arg method "$method" --argjson delete_branch_after_merge "$delete_branch_after_merge" '{Do:$method, delete_branch_after_merge:$delete_branch_after_merge}')
     response=$(api_json POST "/repos/$repository/pulls/$pr_id/merge" "$body")
     receipt "$(printf '%s' "$response" | jq -r '(.sha // .commit_id // "merge") | tostring')"
     ;;
@@ -1427,7 +1440,7 @@ fn finish_on_label_rule() -> TriggerRule {
             criteria: vec![
                 Criteria::Event {
                     event: EventKind::LabelApplied {
-                        name: Some("pump19-finish".to_owned()),
+                        name: Some("Ready".to_owned()),
                     },
                 },
                 Criteria::State {
@@ -2428,6 +2441,7 @@ mod tests {
         io::Write as _,
         path::{Path, PathBuf},
         process::Command,
+        sync::{Mutex, MutexGuard},
     };
 
     #[cfg(unix)]
@@ -2924,6 +2938,7 @@ model = "claude-stable"
             "finding_verification": finding().verification,
             "facts": forge_facts(),
         });
+        let _command_fixture_guard = command_fixture_lock();
         let mut child = Command::new(&assets.commands.format_comments_command)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -2993,15 +3008,15 @@ model = "claude-stable"
         )?;
         fs::write(
             fixtures.join("pulls.json"),
-            r#"[{"number":42,"title":"Ready for review","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"pump19-finish"}]}]"#,
+            r#"[{"number":42,"title":"Ready for review","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"Ready"}]}]"#,
         )?;
         fs::write(
             fixtures.join("pull-detail.json"),
-            r#"{"number":42,"title":"Ready for review","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"pump19-finish"}]}"#,
+            r#"{"number":42,"title":"Ready for review","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[{"name":"Ready"}]}"#,
         )?;
         fs::write(
             fixtures.join("timeline.json"),
-            r#"[{"label":{"name":"pump19-finish"},"user":{"id":7,"login":"pump19","full_name":"Pump 19"}}]"#,
+            r#"[{"label":{"name":"Ready"},"user":{"id":7,"login":"pump19","full_name":"Pump 19"}}]"#,
         )?;
         let fake_curl = write_fake_curl(
             dir.path(),
@@ -3016,12 +3031,13 @@ esac
 "#,
         )?;
 
+        let _command_fixture_guard = command_fixture_lock();
         let output = Command::new(&commands.poll_command)
             .args([
                 "--base-url",
                 "https://forgejo.example",
                 "--finish-label",
-                "pump19-finish",
+                "Ready",
                 "acme/widgets",
             ])
             .env("FORGEJO_TOKEN", "test-token")
@@ -3060,7 +3076,7 @@ esac
         fs::write(fixtures.join("user.json"), r#"{"id":7,"login":"pump19"}"#)?;
         fs::write(
             fixtures.join("pulls.json"),
-            r#"[{"number":42,"title":"Ready","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"mergeable":null,"labels":[{"name":"pump19-finish"}]}]"#,
+            r#"[{"number":42,"title":"Ready","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"mergeable":null,"labels":[{"name":"Ready"}]}]"#,
         )?;
         fs::write(
             fixtures.join("pull-detail-pending.json"),
@@ -3072,7 +3088,7 @@ esac
         )?;
         fs::write(
             fixtures.join("timeline.json"),
-            r#"[{"label":{"name":"pump19-finish"},"user":{"id":7,"login":"pump19"}}]"#,
+            r#"[{"label":{"name":"Ready"},"user":{"id":7,"login":"pump19"}}]"#,
         )?;
         let fake_curl = write_fake_curl(
             dir.path(),
@@ -3098,12 +3114,13 @@ esac
 "#,
         )?;
 
+        let _command_fixture_guard = command_fixture_lock();
         let output = Command::new(&commands.poll_command)
             .args([
                 "--base-url",
                 "https://forgejo.example",
                 "--finish-label",
-                "pump19-finish",
+                "Ready",
                 "acme/widgets",
             ])
             .env("FORGEJO_TOKEN", "test-token")
@@ -3223,7 +3240,7 @@ esac
         let fake_curl = write_fake_curl(
             dir.path(),
             r#"case "$url" in
-  */api/v1/repos/acme/widgets/issues/42/labels) printf '[{"id":77,"name":"pump19-finish"}]' ;;
+  */api/v1/repos/acme/widgets/issues/42/labels) printf '[{"id":77,"name":"Ready"}]' ;;
   *) echo "unexpected URL: $url" >&2; exit 44 ;;
 esac
 "#,
@@ -3231,7 +3248,7 @@ esac
         let input = serde_json::json!({
             "operation": "apply_label",
             "pr": {"repository": "acme/widgets", "id": "42"},
-            "label": "pump19-finish",
+            "label": "Ready",
             "metadata": unguarded_metadata(),
         });
 
@@ -3244,6 +3261,62 @@ esac
     }
 
     #[test]
+    fn baseline_forgejo_operation_command_applies_reaction_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/repos/acme/widgets/issues/42/reactions) printf '{"id":88,"content":"eyes"}' ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+        let input = serde_json::json!({
+            "operation": "apply_reaction",
+            "pr": {"repository": "acme/widgets", "id": "42"},
+            "content": "eyes",
+            "metadata": unguarded_metadata(),
+        });
+
+        let output = run_operation_command(&commands.operation_command, &fake_curl, &input)?;
+
+        assert_command_success(&output);
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(receipt["operation_id"], "88");
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_forgejo_operation_command_removes_reaction_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/repos/acme/widgets/issues/42/reactions) printf '{"id":89,"content":"eyes"}' ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+        let input = serde_json::json!({
+            "operation": "remove_reaction",
+            "pr": {"repository": "acme/widgets", "id": "42"},
+            "content": "eyes",
+            "metadata": unguarded_metadata(),
+        });
+
+        let output = run_operation_command(&commands.operation_command, &fake_curl, &input)?;
+
+        assert_command_success(&output);
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(receipt["operation_id"], "89");
+        Ok(())
+    }
+
+    #[test]
     fn baseline_forgejo_operation_command_merges_pr_receipt()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
@@ -3251,7 +3324,16 @@ esac
         let fake_curl = write_fake_curl(
             dir.path(),
             r#"case "$url" in
-  */api/v1/repos/acme/widgets/pulls/42/merge) printf '{"sha":"merge123"}' ;;
+  */api/v1/repos/acme/widgets/pulls/42/merge)
+    body_contains_delete=false
+    for arg do
+      case "$arg" in
+        *'"delete_branch_after_merge":true'*) body_contains_delete=true ;;
+      esac
+    done
+    [ "$body_contains_delete" = true ] || { echo "merge payload did not request branch deletion" >&2; exit 46; }
+    printf '{"sha":"merge123"}'
+    ;;
   *) echo "unexpected URL: $url" >&2; exit 44 ;;
 esac
 "#,
@@ -3260,6 +3342,7 @@ esac
             "operation": "merge",
             "pr": {"repository": "acme/widgets", "id": "42"},
             "method": "squash",
+            "delete_branch_after_merge": true,
             "metadata": unguarded_metadata(),
         });
 
@@ -3630,6 +3713,7 @@ esac
                 "pull_request": "42",
                 "commit_sha": commit_sha,
             });
+            let _command_fixture_guard = command_fixture_lock();
             let mut child = Command::new(&self.command)
                 .args([
                     "--base-url",
@@ -3869,6 +3953,7 @@ done
     ) -> Result<std::process::Output, Box<dyn std::error::Error>> {
         use std::io::Write as _;
 
+        let _command_fixture_guard = command_fixture_lock();
         let mut child = Command::new(command)
             .args(args)
             .env("FORGEJO_TOKEN", "test-token")
@@ -3892,6 +3977,7 @@ done
     ) -> Result<std::process::Output, Box<dyn std::error::Error>> {
         use std::io::Write as _;
 
+        let _command_fixture_guard = command_fixture_lock();
         let mut child = Command::new(command)
             .args(args)
             .stdin(std::process::Stdio::piped())
@@ -3904,6 +3990,16 @@ done
             .expect("json command stdin")
             .write_all(input.to_string().as_bytes())?;
         Ok(child.wait_with_output()?)
+    }
+
+    fn command_fixture_lock() -> MutexGuard<'static, ()> {
+        // Generated shell scripts can trip ETXTBSY when the test binary launches
+        // several just-written fixtures at once. The writer is already
+        // write-close-rename; the remaining risk is concurrent fixture exec.
+        static COMMAND_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+        COMMAND_FIXTURE_LOCK
+            .lock()
+            .expect("generated command fixture lock poisoned")
     }
 
     fn run_git<const N: usize>(args: [&str; N]) {

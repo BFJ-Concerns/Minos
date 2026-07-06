@@ -1632,15 +1632,43 @@ impl ForgejoCommandClient for CommandForgejoClient {
         })
     }
 
+    fn apply_pr_reaction(
+        &mut self,
+        pr: &PullRequestRef,
+        content: &str,
+        metadata: &ForgejoCommandMetadata,
+    ) -> Result<ForgejoCommandReceipt, pump19_forge_forgejo::ForgejoClientError> {
+        self.run_operation(&CommandOperation::ApplyReaction {
+            pr,
+            content,
+            metadata,
+        })
+    }
+
+    fn remove_pr_reaction(
+        &mut self,
+        pr: &PullRequestRef,
+        content: &str,
+        metadata: &ForgejoCommandMetadata,
+    ) -> Result<ForgejoCommandReceipt, pump19_forge_forgejo::ForgejoClientError> {
+        self.run_operation(&CommandOperation::RemoveReaction {
+            pr,
+            content,
+            metadata,
+        })
+    }
+
     fn merge_pr(
         &mut self,
         pr: &PullRequestRef,
         method: &str,
+        delete_branch_after_merge: bool,
         metadata: &ForgejoCommandMetadata,
     ) -> Result<ForgejoCommandReceipt, pump19_forge_forgejo::ForgejoClientError> {
         self.run_operation(&CommandOperation::Merge {
             pr,
             method,
+            delete_branch_after_merge,
             metadata,
         })
     }
@@ -1712,9 +1740,20 @@ enum CommandOperation<'a> {
         label: &'a str,
         metadata: &'a ForgejoCommandMetadata,
     },
+    ApplyReaction {
+        pr: &'a PullRequestRef,
+        content: &'a str,
+        metadata: &'a ForgejoCommandMetadata,
+    },
+    RemoveReaction {
+        pr: &'a PullRequestRef,
+        content: &'a str,
+        metadata: &'a ForgejoCommandMetadata,
+    },
     Merge {
         pr: &'a PullRequestRef,
         method: &'a str,
+        delete_branch_after_merge: bool,
         metadata: &'a ForgejoCommandMetadata,
     },
     PushFixCommits {
@@ -1925,11 +1964,11 @@ mod tests {
     use pump19_core::{
         AgentEngine, AgentLaunchTarget, AgentPlan, AuthorisationEvidence, AuthorisedComment,
         AuthorisedCommentResolution, AuthorisedCommentUpdate, AuthorisedFixPush, AuthorisedLabel,
-        AuthorisedMerge, Criteria, EventKind, ForgeOperationError, ForgeOperationReceipt,
-        ForgeOperations, OperatorLogEvent, OperatorLogEventKind, RunLaunchOutcome,
-        RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore, StateCriterion,
-        WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor, WorkspaceIsolation,
-        WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+        AuthorisedMerge, AuthorisedReaction, Criteria, EventKind, ForgeOperationError,
+        ForgeOperationReceipt, ForgeOperations, OperatorLogEvent, OperatorLogEventKind,
+        RunLaunchOutcome, RunLaunchRequest, RunLauncher, RunStateKey, RunStateStore,
+        StateCriterion, WorkspaceExecOutput, WorkspaceExecRequest, WorkspaceExecutor,
+        WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
     };
     use pump19_forge_forgejo::{
         ForgejoActor, ForgejoActorPermission, ForgejoBranchCurrency, ForgejoLabelApplication,
@@ -2046,6 +2085,8 @@ mod tests {
         comment_updates: Rc<RefCell<Vec<AuthorisedCommentUpdate>>>,
         comment_resolutions: Rc<RefCell<Vec<AuthorisedCommentResolution>>>,
         labels: Rc<RefCell<Vec<AuthorisedLabel>>>,
+        applied_reactions: Rc<RefCell<Vec<AuthorisedReaction>>>,
+        removed_reactions: Rc<RefCell<Vec<AuthorisedReaction>>>,
         merges: Rc<RefCell<Vec<AuthorisedMerge>>>,
         fix_pushes: Rc<RefCell<Vec<AuthorisedFixPush>>>,
     }
@@ -2112,6 +2153,32 @@ mod tests {
             self.labels.borrow_mut().push(request);
             Ok(ForgeOperationReceipt {
                 operation_id: "label".to_owned(),
+                idempotency_key,
+                new_head_sha: None,
+            })
+        }
+
+        fn apply_reaction(
+            &mut self,
+            request: AuthorisedReaction,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            let idempotency_key = request.authorisation.idempotency_key.clone();
+            self.applied_reactions.borrow_mut().push(request);
+            Ok(ForgeOperationReceipt {
+                operation_id: "reaction".to_owned(),
+                idempotency_key,
+                new_head_sha: None,
+            })
+        }
+
+        fn remove_reaction(
+            &mut self,
+            request: AuthorisedReaction,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            let idempotency_key = request.authorisation.idempotency_key.clone();
+            self.removed_reactions.borrow_mut().push(request);
+            Ok(ForgeOperationReceipt {
+                operation_id: "reaction-remove".to_owned(),
                 idempotency_key,
                 new_head_sha: None,
             })
@@ -2508,10 +2575,9 @@ mod tests {
                     vec![forgejo_snapshot()],
                 ]),
             },
-            ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
+            ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "Ready"),
         );
-        let source =
-            ForgejoEventSource::new(polling, ForgejoNormalisationConfig::new("pump19-finish"));
+        let source = ForgejoEventSource::new(polling, ForgejoNormalisationConfig::new("Ready"));
         let core = Core::with_forge_operations_and_comment_formatter(
             source,
             FakeWorkspaceProvider {
@@ -2904,7 +2970,7 @@ timeout_ms = 5000
 
 [forgejo]
 repositories = ["acme/widgets"]
-finish_label = "pump19-finish"
+finish_label = "Ready"
 
 [forgejo.repository_intents."acme/widgets"]
 name = "Acme Widgets"
@@ -3094,7 +3160,7 @@ timeout_ms = 5000
 
 [forgejo]
 repositories = ["acme/widgets"]
-finish_label = "pump19-finish"
+finish_label = "Ready"
 
 [forgejo.poll_command]
 program = "commands/poll-forgejo"
@@ -3469,6 +3535,50 @@ exit 75
     }
 
     #[test]
+    fn command_forgejo_client_serialises_reactions_and_branch_deletion() {
+        let dir = tempdir().expect("temp dir");
+        let script = dir.path().join("capture-operation");
+        let capture = dir.path().join("operation.jsonl");
+        write_test_executable(
+            &script,
+            &format!(
+                "#!/bin/sh\ncat >> '{}'\nprintf '\\n' >> '{}'\nprintf '{{\"operation_id\":\"ok\"}}'\n",
+                capture.display(),
+                capture.display()
+            ),
+        );
+        let mut client = CommandForgejoClient::new(CommandConfig {
+            program: script,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        });
+        let metadata = ForgejoCommandMetadata {
+            observed_head_sha: "abc123".to_owned(),
+            expected_head_sha: None,
+            idempotency_key: "presence-1".to_owned(),
+            reason: "test".to_owned(),
+        };
+
+        client
+            .apply_pr_reaction(&pr(), "eyes", &metadata)
+            .expect("apply reaction");
+        client
+            .merge_pr(&pr(), "squash", true, &metadata)
+            .expect("merge");
+
+        let captured = fs::read_to_string(capture).expect("captured operations");
+        let mut lines = captured.lines();
+        let reaction: serde_json::Value =
+            serde_json::from_str(lines.next().expect("reaction line")).expect("reaction JSON");
+        let merge: serde_json::Value =
+            serde_json::from_str(lines.next().expect("merge line")).expect("merge JSON");
+        assert_eq!(reaction["operation"], "apply_reaction");
+        assert_eq!(reaction["content"], "eyes");
+        assert_eq!(merge["operation"], "merge");
+        assert_eq!(merge["delete_branch_after_merge"], true);
+    }
+
+    #[test]
     fn command_forgejo_client_surfaces_redacted_stderr_on_transport_failure() {
         let dir = tempdir().expect("temp dir");
         let script = dir.path().join("transport-failure");
@@ -3614,7 +3724,7 @@ exit 1
             forgejo: ForgejoDaemonConfig {
                 repositories: vec!["acme/widgets".to_owned()],
                 repository_intents: BTreeMap::new(),
-                finish_label: "pump19-finish".to_owned(),
+                finish_label: "Ready".to_owned(),
                 core_applies_finish_label_on_convergence: false,
                 web_base_url: None,
                 poll_command: CommandConfig {
@@ -3658,7 +3768,7 @@ exit 1
             mergeability: ForgejoMergeability::Mergeable,
             labels: include_finish_label
                 .then(|| ForgejoLabelApplication {
-                    name: "pump19-finish".to_owned(),
+                    name: "Ready".to_owned(),
                     applied_by: Some(ForgejoActor {
                         id: "maintainer".to_owned(),
                         display_name: "maintainer".to_owned(),
@@ -4037,7 +4147,7 @@ printf '%s\n' '{{"status":"failed","briefs":[{{"brief_id":"purpose","status":"fa
                     criteria: vec![
                         Criteria::Event {
                             event: EventKind::LabelApplied {
-                                name: Some("pump19-finish".to_owned()),
+                                name: Some("Ready".to_owned()),
                             },
                         },
                         Criteria::State {

@@ -2,7 +2,7 @@
 set -eu
 
 base_url=
-finish_label=pump19-finish
+finish_label=Ready
 curl_bin=${PUMP19_FORGEJO_CURL:-curl}
 detail_attempts=${PUMP19_FORGEJO_DETAIL_ATTEMPTS:-3}
 detail_sleep=${PUMP19_FORGEJO_DETAIL_SLEEP:-1}

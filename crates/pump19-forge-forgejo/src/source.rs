@@ -288,7 +288,7 @@ mod tests {
 
     fn finish_label() -> ForgejoLabelApplication {
         ForgejoLabelApplication {
-            name: "pump19-finish".to_owned(),
+            name: "Ready".to_owned(),
             applied_by: Some(ForgejoActor {
                 id: "core".to_owned(),
                 display_name: "Pump-19 Core".to_owned(),
@@ -329,7 +329,7 @@ mod tests {
             ]),
         };
         let mut event_source =
-            ForgejoEventSource::new(source, ForgejoNormalisationConfig::new("pump19-finish"));
+            ForgejoEventSource::new(source, ForgejoNormalisationConfig::new("Ready"));
 
         let event = event_source
             .next_event()
@@ -354,10 +354,9 @@ mod tests {
         };
         let source = PollingForgejoActivitySource::new(
             client,
-            ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "pump19-finish"),
+            ForgejoPollingConfig::new(vec!["acme/widgets".to_owned()], "Ready"),
         );
-        let mut events =
-            ForgejoEventSource::new(source, ForgejoNormalisationConfig::new("pump19-finish"));
+        let mut events = ForgejoEventSource::new(source, ForgejoNormalisationConfig::new("Ready"));
 
         let opened = events
             .next_event()

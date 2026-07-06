@@ -344,6 +344,26 @@ pub trait ForgeOperations {
         request: AuthorisedLabel,
     ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
 
+    /// Applies an authorised PR reaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request shape is invalid or the forge rejects it.
+    fn apply_reaction(
+        &mut self,
+        request: AuthorisedReaction,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
+
+    /// Removes an authorised PR reaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request shape is invalid or the forge rejects it.
+    fn remove_reaction(
+        &mut self,
+        request: AuthorisedReaction,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError>;
+
     /// Merges an authorised PR.
     ///
     /// # Errors
@@ -388,6 +408,28 @@ impl ForgeOperations for NoopForgeOperations {
     ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
         Ok(ForgeOperationReceipt {
             operation_id: "noop-label".to_owned(),
+            idempotency_key: request.authorisation.idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn apply_reaction(
+        &mut self,
+        request: AuthorisedReaction,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        Ok(ForgeOperationReceipt {
+            operation_id: format!("noop-reaction-{}", request.reaction.as_str()),
+            idempotency_key: request.authorisation.idempotency_key,
+            new_head_sha: None,
+        })
+    }
+
+    fn remove_reaction(
+        &mut self,
+        request: AuthorisedReaction,
+    ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+        Ok(ForgeOperationReceipt {
+            operation_id: format!("noop-reaction-remove-{}", request.reaction.as_str()),
             idempotency_key: request.authorisation.idempotency_key,
             new_head_sha: None,
         })
@@ -464,6 +506,9 @@ pub enum AuthorisationEvidence {
     FinishLabelAuthority {
         label: FinishLabel,
     },
+    Run {
+        run_id: RunId,
+    },
     MergeGateCleanAndCurrent {
         facts_head_sha: String,
     },
@@ -513,11 +558,36 @@ pub struct AuthorisedLabel {
     pub label: String,
 }
 
+/// Authorised request to apply or remove a PR reaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorisedReaction {
+    pub authorisation: AuthorisationContext,
+    pub reaction: ForgeReaction,
+}
+
+/// Reaction content values understood by the core.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForgeReaction {
+    Eyes,
+    PlusOne,
+}
+
+impl ForgeReaction {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Eyes => "eyes",
+            Self::PlusOne => "+1",
+        }
+    }
+}
+
 /// Authorised request to merge a PR.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorisedMerge {
     pub authorisation: AuthorisationContext,
     pub method: MergeMethod,
+    pub delete_branch_after_merge: bool,
 }
 
 /// Authorised request to turn fix patches into ordinary commits on the PR branch.
@@ -1292,37 +1362,24 @@ where
             Err(outcome) => return Ok(outcome),
         };
         let workspace = self.prepare_workspace_or_record_failure(event, rule, &state, &run_id)?;
-        let mut gate_provenance = collect_state_provenance(&state);
-        gate_provenance.extend(prepared.iter().cloned());
-
-        if let Some(reason) = evaluate_gate(
-            &gate_provenance,
-            &prepared,
-            &state.findings,
-            state.pass_index,
-            &workspace,
-        ) {
-            let failure = format!("launch refused: {reason:?}");
-            let record_result = self.record_failed_launch_refusal(
-                state,
-                event,
-                rule,
-                &run_id,
-                &reason,
-                failure.as_str(),
-            );
-            let cleanup_result = self.workspace_provider.cleanup(&workspace);
-            finish_before_cleanup(record_result, cleanup_result)?;
-            return Ok(DispatchOutcome::Refused {
-                rule_id: rule.id.clone(),
-                reason,
-            });
-        }
+        let state = match self
+            .evaluate_gate_or_record_refusal(event, rule, state, &run_id, &workspace, &prepared)?
+        {
+            Ok(state) => state,
+            Err(outcome) => return Ok(outcome),
+        };
 
         self.prepare_and_inject_source(event, rule, &state, &run_id, &workspace)?;
 
         let mut running_state = mark_running(state, event, rule, &run_id, prepared.clone());
         self.save_running_or_cleanup(&running_state, &workspace)?;
+        self.apply_review_started_reaction_or_fail(
+            event,
+            rule,
+            &run_id,
+            &mut running_state,
+            &workspace,
+        )?;
         self.record_operator_independence_degradations(&running_state, &run_id)?;
 
         let launch_result = self.launcher.launch_run(
@@ -1367,6 +1424,7 @@ where
         }
 
         let outcome_degradations = apply_run_outcome(&mut running_state, rule.run_kind, outcome);
+        self.apply_review_terminal_reactions(rule.run_kind, &run_id, &mut running_state)?;
         self.record_operator_degradations(&running_state, &run_id, &outcome_degradations)?;
         self.record_repeated_bar_check_degradation(&running_state, &run_id)?;
         self.state_store.save(&running_state)?;
@@ -1398,6 +1456,32 @@ where
     ) -> Result<(), CoreError> {
         if let Err(error) = self.state_store.save(running_state) {
             let cleanup_result = self.workspace_provider.cleanup(workspace);
+            finish_before_cleanup(Err(error), cleanup_result)?;
+            unreachable!("an explicit primary error cannot finish successfully");
+        }
+        Ok(())
+    }
+
+    fn apply_review_started_reaction_or_fail(
+        &mut self,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        run_id: &RunId,
+        running_state: &mut PrRunState,
+        workspace: &WorkspaceLease,
+    ) -> Result<(), CoreError> {
+        if rule.run_kind != RunKind::Review {
+            return Ok(());
+        }
+        if let Err(error) = self.apply_review_started_reaction(run_id, running_state) {
+            let message = error.to_string();
+            let record_result =
+                self.record_failed_running_state(running_state, event, rule, run_id, &message);
+            let cleanup_result = self.workspace_provider.cleanup(workspace);
+            if let Err(record_error) = record_result {
+                finish_before_cleanup(Err(record_error), cleanup_result)?;
+                unreachable!("an explicit primary error cannot finish successfully");
+            }
             finish_before_cleanup(Err(error), cleanup_result)?;
             unreachable!("an explicit primary error cannot finish successfully");
         }
@@ -1439,6 +1523,7 @@ where
     ) -> Result<(), CoreError> {
         record_completion_recovery_failure(running_state, event);
         mark_failed(running_state, event, rule, run_id, message);
+        self.apply_review_terminal_reactions(rule.run_kind, run_id, running_state)?;
         self.state_store.save(running_state)?;
         self.record_operator_failure(running_state, run_id, message)
     }
@@ -1454,6 +1539,7 @@ where
             return Ok(None);
         };
         mark_superseded(running_state, superseded_by.clone(), None);
+        self.apply_review_terminal_reactions(rule.run_kind, run_id, running_state)?;
         let save_result = self.state_store.save(running_state);
         let cleanup_result = self.workspace_provider.cleanup(workspace);
         finish_before_cleanup(save_result, cleanup_result)?;
@@ -1601,6 +1687,37 @@ where
             return Err(error);
         }
         Ok(())
+    }
+
+    fn evaluate_gate_or_record_refusal(
+        &mut self,
+        event: &ContractEvent,
+        rule: &TriggerRule,
+        state: PrRunState,
+        run_id: &RunId,
+        workspace: &WorkspaceLease,
+        prepared: &[ModelProvenance],
+    ) -> Result<Result<PrRunState, DispatchOutcome>, CoreError> {
+        let mut gate_provenance = collect_state_provenance(&state);
+        gate_provenance.extend(prepared.iter().cloned());
+        let Some(reason) = evaluate_gate(
+            &gate_provenance,
+            prepared,
+            &state.findings,
+            state.pass_index,
+            workspace,
+        ) else {
+            return Ok(Ok(state));
+        };
+        let failure = format!("launch refused: {reason:?}");
+        let record_result =
+            self.record_failed_launch_refusal(state, event, rule, run_id, &reason, &failure);
+        let cleanup_result = self.workspace_provider.cleanup(workspace);
+        finish_before_cleanup(record_result, cleanup_result)?;
+        Ok(Err(DispatchOutcome::Refused {
+            rule_id: rule.id.clone(),
+            reason,
+        }))
     }
 
     fn cleanup_prepared_source_or_fail(
@@ -1800,6 +1917,94 @@ where
     ) -> Result<(), CoreError> {
         self.post_material_findings(run_id, state)?;
         self.apply_finish_label_after_convergence(run_id, state)
+    }
+
+    fn apply_review_started_reaction(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        self.apply_presence_reaction(run_id, state, ForgeReaction::Eyes, true)
+    }
+
+    fn apply_review_terminal_reactions(
+        &mut self,
+        run_kind: RunKind,
+        run_id: &RunId,
+        state: &mut PrRunState,
+    ) -> Result<(), CoreError> {
+        if run_kind != RunKind::Review || state.status == RunStatus::Running {
+            return Ok(());
+        }
+        self.apply_presence_reaction(run_id, state, ForgeReaction::Eyes, false)?;
+        if state_converged_for_current_pass(state) {
+            self.apply_presence_reaction(run_id, state, ForgeReaction::PlusOne, true)?;
+        }
+        Ok(())
+    }
+
+    fn apply_presence_reaction(
+        &mut self,
+        run_id: &RunId,
+        state: &mut PrRunState,
+        reaction: ForgeReaction,
+        apply: bool,
+    ) -> Result<(), CoreError> {
+        let observed_head_sha = forge_facts_from_state(state)?
+            .map_or_else(|| state.commit_sha.clone(), |facts| facts.head.sha);
+        let idempotency_prefix = if apply {
+            "forge-apply-reaction"
+        } else {
+            "forge-remove-reaction"
+        };
+        let idempotency_key = stable_id(
+            idempotency_prefix,
+            [
+                state.pr.repository.as_str(),
+                state.pr.id.as_str(),
+                run_id.0.as_str(),
+                reaction.as_str(),
+            ],
+        );
+        let authorisation = AuthorisationContext {
+            pr: state.pr.clone(),
+            observed_head_sha,
+            idempotency_key: idempotency_key.clone(),
+            actor: core_actor(),
+            reason: if apply {
+                "core authorised PR presence reaction".to_owned()
+            } else {
+                "core authorised removing stale PR presence reaction".to_owned()
+            },
+            evidence: vec![AuthorisationEvidence::Run {
+                run_id: run_id.clone(),
+            }],
+        };
+        let request = AuthorisedReaction {
+            authorisation,
+            reaction,
+        };
+        let operation = if apply {
+            PublicationOperation::ApplyReaction {
+                content: reaction.as_str().to_owned(),
+            }
+        } else {
+            PublicationOperation::RemoveReaction {
+                content: reaction.as_str().to_owned(),
+            }
+        };
+        let result = if apply {
+            self.forge_operations.apply_reaction(request)
+        } else {
+            self.forge_operations.remove_reaction(request)
+        };
+        match record_presence_reaction_attempt(state, run_id, operation, idempotency_key, result) {
+            Ok(_receipt) => Ok(()),
+            Err(error) => {
+                self.state_store.save(state)?;
+                Err(error)
+            }
+        }
     }
 
     fn post_material_findings(
@@ -2403,6 +2608,7 @@ where
         let result = self.forge_operations.merge(AuthorisedMerge {
             authorisation,
             method: MergeMethod::Squash,
+            delete_branch_after_merge: true,
         });
         let receipt = match result {
             Ok(receipt) => {
@@ -3597,6 +3803,41 @@ fn record_finish_label_attempt(
     let operation = PublicationOperation::ApplyFinishLabel {
         label: label.to_owned(),
     };
+    match result {
+        Ok(receipt) => {
+            let receipt = receipt_to_contract(receipt);
+            record_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                None,
+                Ok(receipt.clone()),
+            );
+            Ok(receipt)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            record_publication_attempt(
+                state,
+                run_id,
+                operation,
+                idempotency_key,
+                None,
+                Err(message.clone()),
+            );
+            Err(CoreError::ForgeOperation(message))
+        }
+    }
+}
+
+fn record_presence_reaction_attempt(
+    state: &mut PrRunState,
+    run_id: &RunId,
+    operation: PublicationOperation,
+    idempotency_key: String,
+    result: Result<ForgeOperationReceipt, ForgeOperationError>,
+) -> Result<ForgeReceipt, CoreError> {
     match result {
         Ok(receipt) => {
             let receipt = receipt_to_contract(receipt);
@@ -5038,6 +5279,8 @@ mod tests {
         comment_updates: Vec<AuthorisedCommentUpdate>,
         comment_resolutions: Vec<AuthorisedCommentResolution>,
         labels: Vec<AuthorisedLabel>,
+        applied_reactions: Vec<AuthorisedReaction>,
+        removed_reactions: Vec<AuthorisedReaction>,
         merges: Vec<AuthorisedMerge>,
         fix_pushes: Vec<AuthorisedFixPush>,
     }
@@ -5152,6 +5395,32 @@ mod tests {
             })
         }
 
+        fn apply_reaction(
+            &mut self,
+            request: AuthorisedReaction,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            let idempotency_key = request.authorisation.idempotency_key.clone();
+            self.applied_reactions.push(request);
+            Ok(ForgeOperationReceipt {
+                operation_id: "reaction".to_owned(),
+                idempotency_key,
+                new_head_sha: None,
+            })
+        }
+
+        fn remove_reaction(
+            &mut self,
+            request: AuthorisedReaction,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            let idempotency_key = request.authorisation.idempotency_key.clone();
+            self.removed_reactions.push(request);
+            Ok(ForgeOperationReceipt {
+                operation_id: "reaction-remove".to_owned(),
+                idempotency_key,
+                new_head_sha: None,
+            })
+        }
+
         fn merge(
             &mut self,
             request: AuthorisedMerge,
@@ -5205,6 +5474,20 @@ mod tests {
         fn apply_label(
             &mut self,
             _request: AuthorisedLabel,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            Err(ForgeOperationError::Client("forge unavailable".to_owned()))
+        }
+
+        fn apply_reaction(
+            &mut self,
+            _request: AuthorisedReaction,
+        ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
+            Err(ForgeOperationError::Client("forge unavailable".to_owned()))
+        }
+
+        fn remove_reaction(
+            &mut self,
+            _request: AuthorisedReaction,
         ) -> Result<ForgeOperationReceipt, ForgeOperationError> {
             Err(ForgeOperationError::Client("forge unavailable".to_owned()))
         }
@@ -5650,7 +5933,7 @@ mod tests {
             cleanliness: ReviewCleanliness::Clean,
             mergeability: Mergeability::Mergeable,
             finish_label: Some(FinishLabel {
-                name: "pump19-finish".to_owned(),
+                name: "Ready".to_owned(),
                 applied_by: ActorRef {
                     id: "core".to_owned(),
                     display_name: "core".to_owned(),
@@ -5683,7 +5966,7 @@ mod tests {
     fn facts_with_spurious_core_actor_permissions(head_sha: &str) -> ForgeFacts {
         ForgeFacts {
             finish_label: Some(FinishLabel {
-                name: "pump19-finish".to_owned(),
+                name: "Ready".to_owned(),
                 applied_by: core_actor(),
             }),
             actor_permissions: vec![ActorPermissions {
@@ -5788,6 +6071,36 @@ mod tests {
             verdict: Some(ReviewVerdict::FindingsPosted {
                 material: 1,
                 suppressed: 0,
+            }),
+            coverage: Some(CoverageRecord {
+                complete: true,
+                visited: vec![".".to_owned()],
+                unvisited: Vec::new(),
+                account: "fixture covered the change".to_owned(),
+                extensions: BTreeMap::new(),
+            }),
+            patches: Vec::new(),
+            token_usage: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
+        }
+    }
+
+    fn converged_review_outcome() -> RunLaunchOutcome {
+        RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: Vec::new(),
+            verdict: Some(ReviewVerdict::Converged {
+                bar_check: BarCheckRecord {
+                    passed: true,
+                    provenance: verified_provenance(
+                        "bar-check-codex",
+                        AgentRole::BarCheck,
+                        "codex",
+                    ),
+                    rationale: "fixture review converged".to_owned(),
+                    extensions: BTreeMap::new(),
+                },
             }),
             coverage: Some(CoverageRecord {
                 complete: true,
@@ -5958,7 +6271,7 @@ mod tests {
                 criteria: vec![
                     Criteria::Event {
                         event: EventKind::LabelApplied {
-                            name: Some("pump19-finish".to_owned()),
+                            name: Some("Ready".to_owned()),
                         },
                     },
                     Criteria::State {
@@ -6765,13 +7078,113 @@ mod tests {
             .expect("failed state");
         assert_eq!(saved.status, RunStatus::Failed);
         assert!(core.forge_operations.comments.is_empty());
-        assert!(saved.publication.attempts.is_empty());
+        assert_eq!(
+            core.forge_operations
+                .applied_reactions
+                .iter()
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
+            vec![ForgeReaction::Eyes]
+        );
+        assert_eq!(
+            core.forge_operations
+                .removed_reactions
+                .iter()
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
+            vec![ForgeReaction::Eyes]
+        );
+        assert_eq!(saved.publication.attempts.len(), 2);
         assert_eq!(operator_events.borrow().len(), 1);
         let event = &operator_events.borrow()[0];
         assert_eq!(event.kind, OperatorLogEventKind::RunFailure);
         assert_eq!(event.run_kind, Some(RunKind::Review));
         assert_eq!(event.pass_index, Some(1));
         assert_eq!(event.message, "run launcher failed: launch failed");
+    }
+
+    #[test]
+    fn review_run_lifecycle_adds_and_removes_active_reaction() {
+        let mut launcher = FakeRunLauncher::new(vec![
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+        ]);
+        launcher.outcome = material_review_outcome();
+        let mut core = Core::with_forge_operations_and_comment_formatter(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
+        );
+
+        core.process_event(&event(), &[independent_rule()])
+            .expect("review dispatch");
+
+        assert_eq!(
+            core.forge_operations
+                .applied_reactions
+                .iter()
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
+            vec![ForgeReaction::Eyes]
+        );
+        assert_eq!(
+            core.forge_operations
+                .removed_reactions
+                .iter()
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
+            vec![ForgeReaction::Eyes]
+        );
+    }
+
+    #[test]
+    fn converged_review_replaces_active_reaction_with_thumbs_up() {
+        let mut launcher = FakeRunLauncher::new(vec![
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+        ]);
+        launcher.outcome = converged_review_outcome();
+        let mut core = Core::with_forge_operations_and_comment_formatter(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            RecordingCommentFormatter::default(),
+        );
+
+        core.process_event(&event(), &[independent_rule()])
+            .expect("review dispatch");
+
+        assert_eq!(
+            core.forge_operations
+                .applied_reactions
+                .iter()
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
+            vec![ForgeReaction::Eyes, ForgeReaction::PlusOne]
+        );
+        assert_eq!(
+            core.forge_operations
+                .removed_reactions
+                .iter()
+                .map(|request| request.reaction)
+                .collect::<Vec<_>>(),
+            vec![ForgeReaction::Eyes]
+        );
     }
 
     #[test]
@@ -7052,7 +7465,17 @@ mod tests {
             .expect("failed state");
         assert_eq!(saved.status, RunStatus::Failed);
         assert!(core.forge_operations.comments.is_empty());
-        assert!(saved.publication.attempts.is_empty());
+        assert_eq!(
+            core.forge_operations.applied_reactions.len(),
+            1,
+            "review start should still signal active presence"
+        );
+        assert_eq!(
+            core.forge_operations.removed_reactions.len(),
+            1,
+            "failed review should remove stale active presence"
+        );
+        assert_eq!(saved.publication.attempts.len(), 2);
         assert_eq!(operator_events.borrow().len(), 1);
     }
 
@@ -7733,7 +8156,7 @@ mod tests {
             ..core_authority_facts("abc123")
         };
 
-        assert!(!core_may_apply_finish_label(&facts, "pump19-finish"));
+        assert!(!core_may_apply_finish_label(&facts, "Ready"));
     }
 
     #[test]

@@ -436,6 +436,12 @@ pub enum PublicationOperation {
     ApplyFinishLabel {
         label: String,
     },
+    ApplyReaction {
+        content: String,
+    },
+    RemoveReaction {
+        content: String,
+    },
     MergePullRequest,
 }
 
@@ -1021,7 +1027,7 @@ mod tests {
             cleanliness: ReviewCleanliness::Clean,
             mergeability: Mergeability::Mergeable,
             finish_label: Some(FinishLabel {
-                name: "pump19-finish".to_owned(),
+                name: "Ready".to_owned(),
                 applied_by: actor("core"),
             }),
             actor_permissions: vec![ActorPermissions {
@@ -1038,43 +1044,47 @@ mod tests {
 
     fn publication_state() -> PublicationState {
         PublicationState {
-            attempts: vec![
-                PublicationAttempt {
-                    contract_version: version(),
-                    run_id: RunId("run-review-1".to_owned()),
-                    operation: PublicationOperation::PostFindingComment {
-                        finding_id: FindingId("finding-1".to_owned()),
-                        finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
-                    },
-                    idempotency_key: "comment-finding-1".to_owned(),
-                    expected_head_sha: Some("abc123".to_owned()),
-                    status: PublicationAttemptStatus::Succeeded,
-                    receipt: Some(ForgeReceipt {
-                        operation_id: "comment-1".to_owned(),
+            attempts: {
+                let mut attempts = vec![
+                    PublicationAttempt {
+                        contract_version: version(),
+                        run_id: RunId("run-review-1".to_owned()),
+                        operation: PublicationOperation::PostFindingComment {
+                            finding_id: FindingId("finding-1".to_owned()),
+                            finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
+                        },
                         idempotency_key: "comment-finding-1".to_owned(),
-                        new_head_sha: None,
-                    }),
-                    error: None,
-                    refusal: None,
-                },
-                PublicationAttempt {
-                    contract_version: version(),
-                    run_id: RunId("run-review-2".to_owned()),
-                    operation: PublicationOperation::ApplyFinishLabel {
-                        label: "pump19-finish".to_owned(),
+                        expected_head_sha: Some("abc123".to_owned()),
+                        status: PublicationAttemptStatus::Succeeded,
+                        receipt: Some(ForgeReceipt {
+                            operation_id: "comment-1".to_owned(),
+                            idempotency_key: "comment-finding-1".to_owned(),
+                            new_head_sha: None,
+                        }),
+                        error: None,
+                        refusal: None,
                     },
-                    idempotency_key: "apply-finish-label-1".to_owned(),
-                    expected_head_sha: None,
-                    status: PublicationAttemptStatus::Succeeded,
-                    receipt: Some(ForgeReceipt {
-                        operation_id: "finish-label-1".to_owned(),
+                    PublicationAttempt {
+                        contract_version: version(),
+                        run_id: RunId("run-review-2".to_owned()),
+                        operation: PublicationOperation::ApplyFinishLabel {
+                            label: "Ready".to_owned(),
+                        },
                         idempotency_key: "apply-finish-label-1".to_owned(),
-                        new_head_sha: None,
-                    }),
-                    error: None,
-                    refusal: None,
-                },
-            ],
+                        expected_head_sha: None,
+                        status: PublicationAttemptStatus::Succeeded,
+                        receipt: Some(ForgeReceipt {
+                            operation_id: "finish-label-1".to_owned(),
+                            idempotency_key: "apply-finish-label-1".to_owned(),
+                            new_head_sha: None,
+                        }),
+                        error: None,
+                        refusal: None,
+                    },
+                ];
+                attempts.extend(reaction_publication_attempts());
+                attempts
+            },
             finding_comments: vec![FindingCommentPublication {
                 finding_dedup_key: "brief:correctness:path:src/lib.rs:12".to_owned(),
                 latest_finding_id: FindingId("finding-1".to_owned()),
@@ -1109,6 +1119,45 @@ mod tests {
                 },
             }],
         }
+    }
+
+    fn reaction_publication_attempts() -> Vec<PublicationAttempt> {
+        vec![
+            PublicationAttempt {
+                contract_version: version(),
+                run_id: RunId("run-review-3".to_owned()),
+                operation: PublicationOperation::ApplyReaction {
+                    content: "eyes".to_owned(),
+                },
+                idempotency_key: "apply-eyes-1".to_owned(),
+                expected_head_sha: None,
+                status: PublicationAttemptStatus::Succeeded,
+                receipt: Some(ForgeReceipt {
+                    operation_id: "reaction-eyes-1".to_owned(),
+                    idempotency_key: "apply-eyes-1".to_owned(),
+                    new_head_sha: None,
+                }),
+                error: None,
+                refusal: None,
+            },
+            PublicationAttempt {
+                contract_version: version(),
+                run_id: RunId("run-review-3".to_owned()),
+                operation: PublicationOperation::RemoveReaction {
+                    content: "eyes".to_owned(),
+                },
+                idempotency_key: "remove-eyes-1".to_owned(),
+                expected_head_sha: None,
+                status: PublicationAttemptStatus::Succeeded,
+                receipt: Some(ForgeReceipt {
+                    operation_id: "reaction-remove-eyes-1".to_owned(),
+                    idempotency_key: "remove-eyes-1".to_owned(),
+                    new_head_sha: None,
+                }),
+                error: None,
+                refusal: None,
+            },
+        ]
     }
 
     fn coverage() -> CoverageRecord {

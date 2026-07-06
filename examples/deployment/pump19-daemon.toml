@@ -20,7 +20,7 @@ timeout_ms = 600000
 
 [forgejo]
 repositories = ["REPLACE_WITH_OWNER/REPOSITORY"]
-finish_label = "pump19-finish"
+finish_label = "Ready"
 # Optional pump-side subject intent, keyed by the same owner/repository slug used
 # above. Repositories without an entry are reviewed with neutral subject text
 # derived from their slug; no file is required in the reviewed repository.
@@ -38,7 +38,7 @@ finish_label = "pump19-finish"
 
 [forgejo.poll_command]
 program = "commands/pump19-forgejo-poll"
-args = ["--base-url", "REPLACE_WITH_FORGEJO_BASE_URL", "--finish-label", "pump19-finish"]
+args = ["--base-url", "REPLACE_WITH_FORGEJO_BASE_URL", "--finish-label", "Ready"]
 
 [forgejo.poll_command.env]
 FORGEJO_TOKEN = "env:FORGEJO_TOKEN"
