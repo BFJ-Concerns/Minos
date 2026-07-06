@@ -1020,7 +1020,7 @@ fn lead_frame_config(
     lead_engine_kind: LeadFrameEngineKind,
     write_access: WriteAccess,
 ) -> Result<LeadSessionFrameConfig, DaemonError> {
-    let mission = prompt_template(prompt_pack, run_kind)
+    let mission = mission_prompt_template(prompt_pack, run_kind)
         .ok_or(DaemonError::MissingPromptTemplate(run_kind))?;
     let workflows = prompt_pack
         .manifest
@@ -1324,12 +1324,17 @@ fn runtime_comment_formatter(
     Ok(RuntimeCommentFormatter { step, web_base_url })
 }
 
-fn prompt_template(prompt_pack: &PromptPack, run_kind: RunKind) -> Option<&PromptTemplate> {
+fn mission_prompt_template(prompt_pack: &PromptPack, run_kind: RunKind) -> Option<&PromptTemplate> {
+    let template_id = match run_kind {
+        RunKind::Review => "review-lead-mission",
+        RunKind::Fix => "fix-material-findings",
+        RunKind::Finish => return None,
+    };
     prompt_pack
         .manifest
         .prompt_templates
         .iter()
-        .find(|template| template.run_kind == run_kind)
+        .find(|template| template.run_kind == run_kind && template.id == template_id)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3141,6 +3146,12 @@ stop_after_quiet_polls = 1
         assert!(frame.mission_template.contains("{{subject_name}}"));
         assert!(frame.mission_template.contains("{{subject_slug}}"));
         assert!(frame.mission_template.contains("{{subject_purpose}}"));
+        assert!(
+            frame
+                .mission_template
+                .contains("{{native_codex_review_path}}")
+        );
+        assert!(!frame.mission_template.contains("{{brief_id}}"));
     }
 
     #[test]
@@ -3850,14 +3861,14 @@ exit 1
                 id: "subject-probe".to_owned(),
                 prompt_templates: vec![
                     PromptTemplate {
-                        id: "review".to_owned(),
+                        id: "review-lead-mission".to_owned(),
                         run_kind: RunKind::Review,
-                        template: "Subject: {{subject_name}} ({{subject_slug}})\nPurpose: {{subject_purpose}}\n{{brief_body}}\n{{evidence}}"
+                        template: "Subject: {{subject_name}} ({{subject_slug}})\nPurpose: {{subject_purpose}}\nNative: {{native_codex_review_path}}"
                             .to_owned(),
                         extensions: Extensions::new(),
                     },
                     PromptTemplate {
-                        id: "fix".to_owned(),
+                        id: "fix-material-findings".to_owned(),
                         run_kind: RunKind::Fix,
                         template: "{{findings}}".to_owned(),
                         extensions: Extensions::new(),

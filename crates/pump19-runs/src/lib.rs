@@ -726,8 +726,7 @@ fn run_lead_session_frame(
     let lead_target = expected_target(&lead)?;
     let manifest_path = run_dir.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
-    let native_codex_review =
-        run_native_codex_review(engine, config, request, &manifest, &run_dir)?;
+    let native_codex_review = run_native_codex_review(engine, config, request, &run_dir)?;
     let subject = subject_for_repository(&config.subject_intents, &request.state.pr.repository);
     write_mission(
         &run_dir.join("mission.md"),
@@ -822,7 +821,6 @@ fn run_native_codex_review(
     engine: &mut dyn LeadEngineSession,
     config: &LeadSessionFrameConfig,
     request: &RunLaunchRequest,
-    manifest: &RunManifest,
     run_dir: &Path,
 ) -> Result<Option<NativeCodexReviewResult>, RunBodyError> {
     let Some(native) = &config.native_codex_review else {
@@ -838,16 +836,16 @@ fn run_native_codex_review(
             native.reviewer_agent_id.0
         )));
     }
-    let target = if manifest.base_sha.trim().is_empty() {
-        CodexReviewTarget::Uncommitted
-    } else {
-        CodexReviewTarget::Base(manifest.base_sha.clone())
-    };
+    let review_tree = prepare_native_codex_review_tree(
+        &request.workspace.root,
+        run_dir,
+        &run_dir.join("out/diff.patch"),
+    )?;
     let run = engine.launch_codex_review(&CodexReviewSpec {
         executable: native.executable.clone(),
-        working_dir: request.workspace.root.clone(),
+        working_dir: review_tree,
         archive_dir: run_dir.join("archive/native-codex-review"),
-        target,
+        target: CodexReviewTarget::Base("HEAD".to_owned()),
         requested_model: native.requested_model.clone(),
         bounds: native.bounds.clone(),
         env: native.env.clone(),
@@ -881,6 +879,60 @@ fn run_native_codex_review(
             .map(|transcript| transcript.path)
             .collect(),
     }))
+}
+
+fn prepare_native_codex_review_tree(
+    workspace_root: &Path,
+    run_dir: &Path,
+    diff_path: &Path,
+) -> Result<PathBuf, RunBodyError> {
+    let review_tree = run_dir.join("native-codex-review-worktree");
+    copy_dir_recursive_excluding(
+        workspace_root,
+        &review_tree,
+        &[workspace_root.join(".pump19"), run_dir.to_path_buf()],
+    )?;
+    run_git_for_native_review(&review_tree, ["init", "-q"])?;
+    run_git_for_native_review(
+        &review_tree,
+        ["config", "user.email", "pump19@example.invalid"],
+    )?;
+    run_git_for_native_review(&review_tree, ["config", "user.name", "Pump-19"])?;
+    run_git_for_native_review(
+        &review_tree,
+        ["apply", "--reverse", diff_path.to_str().unwrap_or_default()],
+    )?;
+    run_git_for_native_review(&review_tree, ["add", "-A"])?;
+    run_git_for_native_review(&review_tree, ["commit", "-q", "-m", "pump19-review-base"])?;
+    run_git_for_native_review(
+        &review_tree,
+        ["apply", diff_path.to_str().unwrap_or_default()],
+    )?;
+    Ok(review_tree)
+}
+
+fn run_git_for_native_review<const N: usize>(
+    working_dir: &Path,
+    args: [&str; N],
+) -> Result<(), RunBodyError> {
+    let output = Command::new("git")
+        .current_dir(working_dir)
+        .args(args)
+        .output()
+        .map_err(|source| RunBodyError::FrameIo {
+            action: format!(
+                "run git for native Codex review in {}",
+                working_dir.display()
+            ),
+            source,
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(RunBodyError::LeadSession(format!(
+        "native Codex review git setup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    )))
 }
 
 fn review_lead_launch_spec(

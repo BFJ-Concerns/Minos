@@ -3071,7 +3071,7 @@ impl StateCriterion {
                 .extensions
                 .get(EXT_FORGE_FACTS)
                 .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
-                .map(|facts| forge_facts_with_state_cleanliness(state, facts))
+                .map(|facts| derive_forge_facts_with_state_cleanliness(state, facts))
                 .is_some_and(|facts| merge_gate_clean_and_current(&facts)),
             Self::CeilingAllowsPass => !ceiling_refuses(state),
         }
@@ -3635,7 +3635,7 @@ fn sync_state_with_forge_facts(
     facts: &ForgeFacts,
 ) -> Result<(), CoreError> {
     state.current_head_sha = Some(facts.head.sha.clone());
-    let facts = forge_facts_with_state_cleanliness(state, facts.clone());
+    let facts = derive_forge_facts_with_state_cleanliness(state, facts.clone());
     state.extensions.insert(
         EXT_FORGE_FACTS.to_owned(),
         serde_json::to_value(&facts).map_err(|source| CoreError::Json {
@@ -3698,17 +3698,27 @@ fn forge_facts_from_state(state: &PrRunState) -> Result<Option<ForgeFacts>, Core
                     path: EXT_FORGE_FACTS.to_owned(),
                     source,
                 })
-                .map(|facts| forge_facts_with_state_cleanliness(state, facts))
+                .map(|facts| derive_forge_facts_with_state_cleanliness(state, facts))
         })
         .transpose()
 }
 
-fn forge_facts_with_state_cleanliness(state: &PrRunState, mut facts: ForgeFacts) -> ForgeFacts {
+/// Applies the core's state-derived review cleanliness judgement to forge facts.
+///
+/// External adapters that must derive the same fact should either call this
+/// helper directly or carry conformance tests against it. A looser copy here is
+/// how old heads acquire a suspiciously fresh halo.
+#[must_use]
+pub fn derive_forge_facts_with_state_cleanliness(
+    state: &PrRunState,
+    mut facts: ForgeFacts,
+) -> ForgeFacts {
     let head_still_current = state
         .current_head_sha
         .as_deref()
         .is_none_or(|current| current == state.commit_sha);
-    facts.cleanliness = if state_converged_for_current_pass(state)
+    facts.cleanliness = if state.superseded_by.is_none()
+        && state_converged_for_current_pass(state)
         && facts.head.sha == state.commit_sha
         && head_still_current
     {
@@ -8460,6 +8470,32 @@ mod tests {
 
         assert_eq!(core.forge_operations.labels.len(), 1);
         assert_eq!(core.forge_operations.labels[0].label, "Ready");
+    }
+
+    #[test]
+    fn state_derived_cleanliness_rejects_old_or_superseded_heads() {
+        let mut state = initial_state_from_facts(&facts());
+        state.verdict = Some(ReviewVerdict::Converged {
+            bar_check: BarCheckRecord {
+                passed: true,
+                provenance: verified_provenance("bar-codex", AgentRole::BarCheck, "codex"),
+                rationale: "review clears the bar".to_owned(),
+                extensions: BTreeMap::new(),
+            },
+        });
+
+        let clean = derive_forge_facts_with_state_cleanliness(&state, facts()).cleanliness;
+        assert_eq!(clean, ReviewCleanliness::Clean);
+
+        state.current_head_sha = Some("new-head-sha".to_owned());
+        let stale_cleanliness =
+            derive_forge_facts_with_state_cleanliness(&state, facts()).cleanliness;
+        assert_eq!(stale_cleanliness, ReviewCleanliness::Dirty);
+
+        state.current_head_sha = Some(state.commit_sha.clone());
+        state.superseded_by = Some("new-head-sha".to_owned());
+        let superseded = derive_forge_facts_with_state_cleanliness(&state, facts()).cleanliness;
+        assert_eq!(superseded, ReviewCleanliness::Dirty);
     }
 
     #[test]
