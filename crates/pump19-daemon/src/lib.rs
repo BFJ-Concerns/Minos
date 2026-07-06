@@ -614,14 +614,17 @@ where
         match self.archive_retention.enforce(SystemTime::now()) {
             Ok(retention) => {
                 summary.archive_retention_pruned += retention.pruned;
-                if retention.pruned > 0 {
+                summary.archive_retention_errors_continued += retention.prune_errors;
+                if retention.pruned > 0 || retention.prune_errors > 0 {
                     log_daemon_event(
                         "info",
                         "archive_retention",
                         &json!({
                             "candidates": retention.candidates,
                             "pruned": retention.pruned,
+                            "prune_errors": retention.prune_errors,
                             "total_pruned": summary.archive_retention_pruned,
+                            "total_prune_errors": summary.archive_retention_errors_continued,
                         }),
                     );
                 }

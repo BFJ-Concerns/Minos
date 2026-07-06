@@ -132,18 +132,21 @@ max_terminal_runs_per_pr = 50
 ```
 
 Retention keeps every terminal run archive inside the age window. Once archives
-are older than `keep_days`, the daemon prunes oldest-first until the pull
-request is at or below `max_terminal_runs_per_pr`, while preserving at least
-`keep_terminal_runs_per_pr` terminal archives for that pull request.
-`max_terminal_runs_per_pr` never authorises deleting archives that are still
-inside `keep_days`.
+are older than `keep_days`, the daemon prunes oldest-first down to
+`keep_terminal_runs_per_pr` for that pull request. `max_terminal_runs_per_pr`
+is a separate hard cap: if a pull request has more archives than that, the
+daemon prunes oldest-first until the cap is met. When the minimum is higher than
+the maximum, the minimum wins so retention never deletes below the explicit
+per-PR floor.
 
 Only terminal run archives under `ensemble.archive_root/frame-runs/` are
 eligible. The daemon never prunes the durable `state_root`, active runs, or any
 `.superseded.*` sibling for a run id that is currently active. `.superseded.*`
 siblings for terminal runs age out under the same policy as the main run
-directory. Each prune is appended to `state/operator.log.jsonl` with the PR,
-run id, run kind, pass index and commit SHA before the directory is removed.
+directory. Each successful prune is appended to `state/operator.log.jsonl` with
+the PR, run id, run kind, pass index and commit SHA after the directory is
+removed; failed prune attempts are also operator-logged without claiming
+deletion succeeded.
 
 ## Review And Fix Bodies
 

@@ -4599,6 +4599,9 @@ fn record_terminal_run(
 
 fn stale_running_record_from_extensions(state: &PrRunState) -> Option<RunRecord> {
     let run_id = state.extensions.get(EXT_RUNNING_RUN_ID)?.as_str()?;
+    if run_id.is_empty() {
+        return None;
+    }
     let run_kind = state
         .extensions
         .get(EXT_LAST_RUN_KIND)?
@@ -4715,6 +4718,9 @@ fn loop_record_from_state(
 }
 
 fn state_records_run(state: &PrRunState, run_id: &RunId) -> bool {
+    if run_id.0.is_empty() {
+        return false;
+    }
     state
         .active_run
         .as_ref()
@@ -8401,6 +8407,62 @@ mod tests {
         assert_eq!(failed.status, RunStatus::Failed);
         assert_eq!(failed.run_history[0].status, RunStatus::Failed);
         assert_eq!(failed.run_history[0].outcome, Some(RunOutcome::Failed));
+    }
+
+    #[test]
+    fn stale_running_recovery_rejects_empty_extension_run_id() {
+        let run_id = RunId("event-1:review:1".to_owned());
+        let mut running = mark_running(
+            initial_state_from_event(&event()).expect("initial state"),
+            &event(),
+            &independent_rule(),
+            &run_id,
+            Vec::new(),
+        );
+        running.status = RunStatus::Running;
+        running.active_run = None;
+        running
+            .extensions
+            .insert(EXT_RUNNING_RUN_ID.to_owned(), Value::String(String::new()));
+        let key = RunStateKey::from_state(&running);
+        let mut store = FakeRunStateStore::default();
+        store
+            .save(&running)
+            .expect("save running state without active run");
+        let operator_log = RecordingOperatorLog::default();
+        let operator_events = Rc::clone(&operator_log.events);
+        let mut core = Core::with_forge_operations_and_operator_log(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            store,
+            RecordingForgeOperations::default(),
+            operator_log,
+        );
+
+        let recovered = core
+            .rederive_pending_completions()
+            .expect("recover stale running state with empty extension run id");
+
+        assert_eq!(recovered.queued, 0);
+        assert_eq!(recovered.stale_running_failures, 1);
+        assert!(operator_events.borrow().is_empty());
+        let failed = core
+            .state_store
+            .load(&key)
+            .expect("load failed state")
+            .expect("state");
+        assert_eq!(failed.status, RunStatus::Failed);
+        assert!(failed.run_history.is_empty());
+        assert!(
+            core.state_store
+                .load_by_run_id(&RunId(String::new()))
+                .expect("load empty run id")
+                .is_none()
+        );
     }
 
     #[test]
