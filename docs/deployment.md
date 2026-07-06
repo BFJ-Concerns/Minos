@@ -157,7 +157,9 @@ The container root filesystem is writable and runs as root inside the container
 with runtime-default, namespaced capabilities so agents and readiness checks can
 install missing package-manager tools inside the disposable workspace. This does
 not grant host root: forge credentials and host-side writes remain outside the
-workspace.
+workspace. This writable/runtime-default profile is currently mandatory; the
+workspace provider rejects stricter read-only or cap-dropped profiles because
+they cannot guarantee in-workspace package installation.
 
 Build `workspace.image` as the same Unix user that runs `pump19-daemon`. Rootless
 Podman keeps per-user image stores, so building `localhost/pump19-workspace:stable`
@@ -248,6 +250,12 @@ neutral subject text derived from the slug.
 
 `state_root` stores per-PR JSON run state and `operator.log.jsonl`.
 
+`PUMP19_STATE_ROOT` is required in `[forgejo.poll_command.env]` for deployments
+that enable core-applied finish labels. The poll command derives review
+cleanliness from Pump-19 state through this root; without it, the command
+deliberately reports every PR as dirty, so automatic convergence cannot apply
+the finish label or continue to the finish run.
+
 Run state records current head, loop history, findings, verdict, coverage,
 patches, publication attempts, typed session archives and independence
 degradations. Operator-log JSONL records startup/config warnings, launch
@@ -286,6 +294,6 @@ PUMP19_GIT_BASE_URL=https://forgejo.example
 # Optional merge-readiness overrides:
 # PUMP19_MERGE_READINESS_IMAGE=localhost/pump19-workspace:stable
 # PUMP19_MERGE_READINESS_TIMEOUT=3600
-# Optional poll state root override:
-# PUMP19_STATE_ROOT=state
+# Required when core_applies_finish_label_on_convergence is true:
+PUMP19_STATE_ROOT=state
 ```

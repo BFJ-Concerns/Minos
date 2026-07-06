@@ -559,7 +559,10 @@ state_cleanliness() {
     return
   }
   jq -r --arg head "$2" '
-    if (.commit_sha == $head and .verdict.verdict == "converged")
+    if (.superseded_by == null
+        and .commit_sha == $head
+        and ((.current_head_sha // .commit_sha) == $head)
+        and .verdict.verdict == "converged")
     then "clean"
     else "dirty"
     end
@@ -2482,14 +2485,15 @@ mod tests {
         AgentId, AgentRole, BranchCurrency, CertaintyClass, ContractEvent, ContractVersion,
         EventPayload, Extensions, FamilySplit, Finding, FindingId, FindingLocation,
         FindingVerification, ForgeFacts, Mergeability, ModelFamily, ModelLineage, ModelProvenance,
-        PriorityClass, ProvenanceVerification, PullRequestRef, ReviewCleanliness, Revision,
-        RunKind, RunOutcome, SessionFreshness, SessionId, VerificationStatus,
+        PrRunState, PriorityClass, ProvenanceVerification, PullRequestRef, ReviewCleanliness,
+        Revision, RunKind, RunOutcome, SessionFreshness, SessionId, VerificationStatus,
     };
     use pump19_core::{
         AgentEngine, AgentLaunchSpec, AgentLaunchTarget, Core, CoreError, Criteria,
         DispatchOutcome, EventKind, EventSource, JsonRunStateStore, LaunchProof, PreparedAgent,
         RunLaunchOutcome, RunLaunchRequest, RunLauncher, WorkspaceExecOutput, WorkspaceExecRequest,
         WorkspaceExecutor, WorkspaceIsolation, WorkspaceLease, WorkspaceProvider, WorkspaceRequest,
+        derive_forge_facts_with_state_cleanliness,
     };
     use tempfile::tempdir;
 
@@ -3167,6 +3171,45 @@ esac
         assert_eq!(snapshots[0]["branch_currency"], "current");
         assert_eq!(snapshots[0]["cleanliness"], "clean");
         assert_eq!(snapshots[0]["labels"].as_array().expect("labels").len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_forgejo_poll_cleanliness_conforms_to_core_derivation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            (
+                "clean-current",
+                "abc123",
+                state_json("abc123", Some("abc123"), None),
+            ),
+            (
+                "old-commit",
+                "new456",
+                state_json("abc123", Some("abc123"), None),
+            ),
+            (
+                "moved-current-head",
+                "abc123",
+                state_json("abc123", Some("new456"), None),
+            ),
+            (
+                "superseded",
+                "abc123",
+                state_json("abc123", Some("abc123"), Some("new456")),
+            ),
+        ];
+
+        for (name, live_head, state_json) in cases {
+            let state: PrRunState = serde_json::from_str(&state_json)?;
+            let expected = derive_forge_facts_with_state_cleanliness(&state, poll_facts(live_head))
+                .cleanliness;
+            let actual = poll_command_cleanliness(live_head, &state_json)?;
+            assert_eq!(
+                actual, expected,
+                "poll script cleanliness diverged from core for {name}"
+            );
+        }
         Ok(())
     }
 
@@ -4015,6 +4058,150 @@ done
             ),
         )?;
         Ok(path)
+    }
+
+    fn poll_command_cleanliness(
+        live_head: &str,
+        state_json: &str,
+    ) -> Result<ReviewCleanliness, Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fixtures = dir.path().join("fixtures");
+        fs::create_dir_all(&fixtures)?;
+        fs::write(fixtures.join("user.json"), r#"{"id":7,"login":"pump19"}"#)?;
+        fs::write(fixtures.join("timeline.json"), r"[]")?;
+        fs::write(
+            fixtures.join("pulls.json"),
+            format!(
+                r#"[{{"number":42,"title":"Ready for finish","draft":false,"user":{{"id":9,"login":"example"}},"head":{{"sha":"{live_head}"}},"base":{{"sha":"def456"}},"merge_base":"def456","mergeable":true,"labels":[]}}]"#
+            ),
+        )?;
+        fs::write(
+            fixtures.join("pull-detail.json"),
+            format!(
+                r#"{{"number":42,"title":"Ready for finish","draft":false,"user":{{"id":9,"login":"example"}},"head":{{"sha":"{live_head}"}},"base":{{"sha":"def456"}},"merge_base":"def456","mergeable":true,"labels":[]}}"#
+            ),
+        )?;
+        let state_root = dir.path().join("state");
+        fs::create_dir_all(&state_root)?;
+        fs::write(
+            state_root.join(format!("acme_widgets__42__{live_head}.json")),
+            state_json,
+        )?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/user) cat "$PUMP19_FIXTURES/user.json" ;;
+  */api/v1/repos/acme/widgets/pulls\?state=open) cat "$PUMP19_FIXTURES/pulls.json" ;;
+  */api/v1/repos/acme/widgets/pulls/42) cat "$PUMP19_FIXTURES/pull-detail.json" ;;
+  */api/v1/repos/acme/widgets/issues/42/timeline) cat "$PUMP19_FIXTURES/timeline.json" ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+
+        let _command_fixture_guard = command_fixture_lock();
+        let output = Command::new(&commands.poll_command)
+            .args([
+                "--base-url",
+                "https://forgejo.example",
+                "--finish-label",
+                "Ready",
+                "--state-root",
+                state_root.to_str().expect("state root path"),
+                "acme/widgets",
+            ])
+            .env("FORGEJO_TOKEN", "test-token")
+            .env("PUMP19_FORGEJO_CURL", fake_curl)
+            .env("PUMP19_FIXTURES", &fixtures)
+            .output()?;
+
+        assert_command_success(&output);
+        let snapshots: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        match snapshots[0]["cleanliness"].as_str() {
+            Some("clean") => Ok(ReviewCleanliness::Clean),
+            Some("dirty") => Ok(ReviewCleanliness::Dirty),
+            other => Err(std::io::Error::other(format!(
+                "unexpected cleanliness from poll command: {other:?}"
+            ))
+            .into()),
+        }
+    }
+
+    fn poll_facts(head_sha: &str) -> ForgeFacts {
+        ForgeFacts {
+            contract_version: ContractVersion::current(),
+            pr: PullRequestRef {
+                repository: "acme/widgets".to_owned(),
+                id: "42".to_owned(),
+            },
+            head: Revision {
+                sha: head_sha.to_owned(),
+            },
+            base: Revision {
+                sha: "def456".to_owned(),
+            },
+            branch_currency: BranchCurrency::Current,
+            cleanliness: ReviewCleanliness::Dirty,
+            mergeability: Mergeability::Mergeable,
+            finish_label: None,
+            actor_permissions: Vec::new(),
+            author_login: Some("example".to_owned()),
+            work_in_progress: false,
+            extensions: Extensions::new(),
+        }
+    }
+
+    fn state_json(
+        commit_sha: &str,
+        current_head_sha: Option<&str>,
+        superseded_by: Option<&str>,
+    ) -> String {
+        let current_head_sha =
+            current_head_sha.map_or_else(|| "null".to_owned(), |head| format!(r#""{head}""#));
+        let superseded_by =
+            superseded_by.map_or_else(|| "null".to_owned(), |head| format!(r#""{head}""#));
+        format!(
+            r#"{{
+  "contract_version": {{"major":2,"minor":0}},
+  "pr": {{"repository":"acme/widgets","id":"42"}},
+  "commit_sha": "{commit_sha}",
+  "current_head_sha": {current_head_sha},
+  "pass_index": 1,
+  "status": "completed",
+  "active_run": null,
+  "run_history": [],
+  "loop_history": [],
+  "superseded_by": {superseded_by},
+  "findings": [],
+  "verdict": {{
+    "verdict": "converged",
+    "bar_check": {{
+      "passed": true,
+      "provenance": {{
+        "contract_version": {{"major":2,"minor":0}},
+        "agent_id": "bar-check-codex",
+        "role": "bar_check",
+        "session_id": "session-1",
+        "engine": "codex",
+        "freshness": {{"state":"fresh_for_pass","pass_index":1}},
+        "verification": {{
+          "state": "verified",
+          "vendor": "baseline",
+          "control_plane": "pump19-core",
+          "lineage": {{"family":"codex","model":"codex-stable"}}
+        }}
+      }},
+      "rationale": "fixture"
+    }}
+  }},
+  "coverage": null,
+  "patches": [],
+  "publication": {{}},
+  "ceiling": null,
+  "extensions": {{}}
+}}"#
+        )
     }
 
     fn guarded_metadata() -> serde_json::Value {

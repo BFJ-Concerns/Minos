@@ -1,10 +1,10 @@
 # Pump-19 workspace image (localhost/pump19-workspace:stable).
 #
-# Review and finish workspaces share this image. It carries ordinary
-# subject-repository build tools, but no forge credentials. The disposable
-# container runs with a writable root filesystem, so in-run agents/checks may
-# install missing packages inside the container; credentialed Forgejo writes stay
-# in the core-authorised operation step.
+# Merge-readiness checks use this image for subject-repository build/test work.
+# It carries ordinary build tools, but no forge credentials. The disposable
+# container runs with a writable root filesystem, so in-run checks may install
+# missing packages inside the container; credentialed Forgejo writes stay in the
+# core-authorised operation step.
 #
 # Build it as the same user that runs pump19.service, so rootless Podman stores
 # the tag where the daemon and merge-readiness command will look for it:

@@ -75,7 +75,10 @@ state_cleanliness() {
     return
   }
   jq -r --arg head "$2" '
-    if (.commit_sha == $head and .verdict.verdict == "converged")
+    if (.superseded_by == null
+        and .commit_sha == $head
+        and ((.current_head_sha // .commit_sha) == $head)
+        and .verdict.verdict == "converged")
     then "clean"
     else "dirty"
     end
