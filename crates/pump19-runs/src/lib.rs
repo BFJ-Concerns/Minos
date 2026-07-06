@@ -34,9 +34,9 @@ use pump19_core::{
     WorkspaceExecutor,
 };
 use pump19_engine::{
-    EngineError, EngineKind, EngineProvenance, EngineRun, EngineSessionLauncher,
-    ExitClassification, LaunchBounds, LaunchSpec, ModelSource, RepairAttempt, RepairStrategy,
-    TranscriptKind, WriteAccess,
+    CodexReviewSpec, CodexReviewTarget, EngineError, EngineKind, EngineProvenance, EngineRun,
+    EngineSessionLauncher, ExitClassification, LaunchBounds, LaunchSpec, ModelSource,
+    RepairAttempt, RepairStrategy, TranscriptKind, WriteAccess,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -297,6 +297,14 @@ pub trait LeadEngineSession {
         spec: &LaunchSpec,
         repair: &mut dyn RepairStrategy,
     ) -> Result<EngineRun, EngineError>;
+
+    /// Launches the native Codex review specialist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the process cannot launch or its transcripts cannot
+    /// be archived.
+    fn launch_codex_review(&mut self, spec: &CodexReviewSpec) -> Result<EngineRun, EngineError>;
 }
 
 impl LeadEngineSession for EngineSessionLauncher {
@@ -306,6 +314,10 @@ impl LeadEngineSession for EngineSessionLauncher {
         repair: &mut dyn RepairStrategy,
     ) -> Result<EngineRun, EngineError> {
         self.launch(spec, repair)
+    }
+
+    fn launch_codex_review(&mut self, spec: &CodexReviewSpec) -> Result<EngineRun, EngineError> {
+        self.launch_native_codex_review(spec)
     }
 }
 
@@ -361,6 +373,16 @@ pub struct LeadEngineConfig {
     pub env: BTreeMap<String, String>,
 }
 
+/// Settings for the core-launched native Codex review specialist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeCodexReviewConfig {
+    pub reviewer_agent_id: AgentId,
+    pub executable: PathBuf,
+    pub requested_model: Option<String>,
+    pub bounds: LaunchBounds,
+    pub env: BTreeMap<String, String>,
+}
+
 /// Review-frame policy that remains additive until the stage-5 core switch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LeadSessionFrameConfig {
@@ -375,6 +397,7 @@ pub struct LeadSessionFrameConfig {
     pub occasion: String,
     pub materiality_threshold: PriorityClass,
     pub lead_engine: LeadEngineConfig,
+    pub native_codex_review: Option<NativeCodexReviewConfig>,
 }
 
 /// Result from one frame-driven review pass.
@@ -392,7 +415,16 @@ pub struct LeadSessionFrameResult {
     pub lead_agent_id: AgentId,
     pub lead_role: AgentRole,
     pub workflow_archives: Vec<WorkflowArchiveSessionRef>,
+    pub native_codex_review: Option<NativeCodexReviewResult>,
     pub repair_attempts: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeCodexReviewResult {
+    pub agent_id: AgentId,
+    pub output_path: PathBuf,
+    pub provenance: EngineProvenance,
+    pub transcripts: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -509,6 +541,14 @@ where
                     kind: SessionArchiveKind::EnsembleRun,
                 }),
         );
+        if let Some(native) = &result.native_codex_review {
+            archives.extend(native.transcripts.iter().map(|path| SessionArchiveRef {
+                role: AgentRole::Reviewer,
+                agent_id: native.agent_id.clone(),
+                path: path.display().to_string(),
+                kind: SessionArchiveKind::LeadTranscript,
+            }));
+        }
         archives
     }
 }
@@ -686,6 +726,8 @@ fn run_lead_session_frame(
     let lead_target = expected_target(&lead)?;
     let manifest_path = run_dir.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
+    let native_codex_review =
+        run_native_codex_review(engine, config, request, &manifest, &run_dir)?;
     let subject = subject_for_repository(&config.subject_intents, &request.state.pr.repository);
     write_mission(
         &run_dir.join("mission.md"),
@@ -771,8 +813,74 @@ fn run_lead_session_frame(
             .map(|transcript| transcript.path)
             .collect(),
         workflow_archives,
+        native_codex_review,
         repair_attempts: engine_run.repair_attempts + frame_repair_attempts,
     })
+}
+
+fn run_native_codex_review(
+    engine: &mut dyn LeadEngineSession,
+    config: &LeadSessionFrameConfig,
+    request: &RunLaunchRequest,
+    manifest: &RunManifest,
+    run_dir: &Path,
+) -> Result<Option<NativeCodexReviewResult>, RunBodyError> {
+    let Some(native) = &config.native_codex_review else {
+        return Ok(None);
+    };
+    if !request
+        .provenance
+        .iter()
+        .any(|provenance| provenance.agent_id == native.reviewer_agent_id)
+    {
+        return Err(RunBodyError::LeadSession(format!(
+            "native Codex review target {} is absent from authorised reviewer provenance",
+            native.reviewer_agent_id.0
+        )));
+    }
+    let target = if manifest.base_sha.trim().is_empty() {
+        CodexReviewTarget::Uncommitted
+    } else {
+        CodexReviewTarget::Base(manifest.base_sha.clone())
+    };
+    let run = engine.launch_codex_review(&CodexReviewSpec {
+        executable: native.executable.clone(),
+        working_dir: request.workspace.root.clone(),
+        archive_dir: run_dir.join("archive/native-codex-review"),
+        target,
+        requested_model: native.requested_model.clone(),
+        bounds: native.bounds.clone(),
+        env: native.env.clone(),
+    })?;
+    if run.classification != ExitClassification::Success {
+        return Err(RunBodyError::LeadSession(format!(
+            "native Codex review failed: {:?}",
+            run.classification
+        )));
+    }
+    let output = run.output.clone().ok_or_else(|| {
+        RunBodyError::LeadSession("native Codex review succeeded without parsed output".to_owned())
+    })?;
+    let output_path = run_dir.join("out/native-codex-review.json");
+    write_json_file(
+        &output_path,
+        &json!({
+            "reviewer_agent_id": native.reviewer_agent_id.0,
+            "model_family": "codex",
+            "provenance": run.provenance,
+            "native_output": output
+        }),
+    )?;
+    Ok(Some(NativeCodexReviewResult {
+        agent_id: native.reviewer_agent_id.clone(),
+        output_path,
+        provenance: run.provenance,
+        transcripts: run
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.path)
+            .collect(),
+    }))
 }
 
 fn review_lead_launch_spec(
@@ -1024,6 +1132,10 @@ fn write_mission(
             ("workflow_command", "bin/pump19-workflow".to_owned()),
             ("exec_command", "bin/pump19-exec".to_owned()),
             ("review_output_path", "out/review.json".to_owned()),
+            (
+                "native_codex_review_path",
+                "out/native-codex-review.json".to_owned(),
+            ),
             ("material_findings", material_findings_json),
             ("subject_name", subject.name.clone()),
             ("subject_slug", subject.slug.clone()),
@@ -3839,6 +3951,70 @@ mod tests {
                 repair_attempts: 0,
             })
         }
+
+        fn launch_codex_review(
+            &mut self,
+            spec: &CodexReviewSpec,
+        ) -> Result<EngineRun, EngineError> {
+            self.seen_specs.push(LaunchSpec {
+                engine: EngineKind::Codex,
+                executable: spec.executable.clone(),
+                working_dir: spec.working_dir.clone(),
+                extra_workspace_roots: Vec::new(),
+                prompt_path: spec.working_dir.join("codex-review-native"),
+                schema_path: None,
+                archive_dir: spec.archive_dir.clone(),
+                requested_model: spec.requested_model.clone(),
+                write_access: WriteAccess::ReadOnly,
+                bounds: spec.bounds.clone(),
+                env: spec.env.clone(),
+            });
+            fs::create_dir_all(&spec.archive_dir).expect("create fake native archive");
+            let stdout = spec.archive_dir.join("stdout.log");
+            let stderr = spec.archive_dir.join("stderr.log");
+            fs::write(&stdout, "native review").expect("write fake native stdout");
+            fs::write(
+                &stderr,
+                "session id: native-codex-session\nmodel: codex-2026\n",
+            )
+            .expect("write fake native stderr");
+            Ok(EngineRun {
+                classification: ExitClassification::Success,
+                output: Some(json!({
+                    "summary": "native review",
+                    "findings": [{
+                        "dedup_hint": "codex-review:src/lib.rs:2:unsafe-state",
+                        "title": "Unsafe state is accepted",
+                        "explanation": "The native reviewer saw the changed unsafe line.",
+                        "suggestion": "Reject unsafe state.",
+                        "priority": "P1",
+                        "locations": [{"path": "src/lib.rs", "line": 2}],
+                        "evidence_notes": ["new unsafe line"]
+                    }]
+                })),
+                final_text: Some("native review".to_owned()),
+                provenance: EngineProvenance {
+                    engine: EngineKind::Codex,
+                    session_id: Some("native-codex-session".to_owned()),
+                    requested_model: spec.requested_model.clone(),
+                    resolved_model: Some("codex-2026".to_owned()),
+                    model_source: ModelSource::ResolvedByCli,
+                    usage: TokenUsage::default(),
+                    cost_usd: None,
+                },
+                transcripts: vec![
+                    pump19_engine::TranscriptPath {
+                        kind: TranscriptKind::Stdout,
+                        path: stdout,
+                    },
+                    pump19_engine::TranscriptPath {
+                        kind: TranscriptKind::Stderr,
+                        path: stderr,
+                    },
+                ],
+                repair_attempts: 0,
+            })
+        }
     }
 
     #[derive(Debug)]
@@ -4094,6 +4270,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
                 write_access: WriteAccess::ReadOnly,
                 env: BTreeMap::new(),
             },
+            native_codex_review: None,
         }
     }
 
@@ -4299,6 +4476,55 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
                 suppressed: 0
             }
         );
+    }
+
+    #[test]
+    fn lead_frame_runs_native_codex_review_and_archives_transcripts() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.provenance.push(provenance(
+            "reviewer-codex-native-review",
+            AgentRole::Reviewer,
+            "codex",
+        ));
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let mut config = lead_frame_config(root.path());
+        config.native_codex_review = Some(NativeCodexReviewConfig {
+            reviewer_agent_id: AgentId("reviewer-codex-native-review".to_owned()),
+            executable: PathBuf::from("codex"),
+            requested_model: Some("codex-2026".to_owned()),
+            bounds: LaunchBounds::new(Duration::from_secs(30)),
+            env: BTreeMap::new(),
+        });
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("native review frame succeeds");
+        let result = body.last_result().expect("frame result recorded");
+        let native = result
+            .native_codex_review
+            .as_ref()
+            .expect("native review result recorded");
+        let native_json =
+            fs::read_to_string(&native.output_path).expect("read native review output");
+        let session_archives = body.last_session_archives();
+
+        assert_eq!(native.agent_id.0, "reviewer-codex-native-review");
+        assert!(native_json.contains("native review"));
+        assert_eq!(
+            native.provenance.session_id.as_deref(),
+            Some("native-codex-session")
+        );
+        assert!(session_archives.iter().any(|archive| {
+            archive.agent_id.0 == "reviewer-codex-native-review"
+                && archive.role == AgentRole::Reviewer
+                && archive.kind == SessionArchiveKind::LeadTranscript
+        }));
     }
 
     #[test]
@@ -5517,6 +5743,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
                 write_access: WriteAccess::ReadOnly,
                 env: BTreeMap::new(),
             },
+            native_codex_review: None,
         }
     }
 

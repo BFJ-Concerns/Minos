@@ -84,6 +84,27 @@ pub struct LaunchSpec {
     pub env: BTreeMap<String, String>,
 }
 
+/// The change selector accepted by `codex review`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CodexReviewTarget {
+    Base(String),
+    Commit(String),
+    Uncommitted,
+}
+
+/// A native `codex review` launch. The CLI has no JSON/schema mode on 0.142.5,
+/// so this path captures the raw review and adapts the observed comment shape.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexReviewSpec {
+    pub executable: PathBuf,
+    pub working_dir: PathBuf,
+    pub archive_dir: PathBuf,
+    pub target: CodexReviewTarget,
+    pub requested_model: Option<String>,
+    pub bounds: LaunchBounds,
+    pub env: BTreeMap<String, String>,
+}
+
 /// The process invocation derived from a [`LaunchSpec`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandInvocation {
@@ -264,7 +285,13 @@ impl EngineSessionLauncher {
         repair: &mut dyn RepairStrategy,
     ) -> Result<EngineRun, EngineError> {
         let invocation = Self::build_invocation(spec)?;
-        let process = run_process(&invocation, spec)?;
+        let process = run_process(
+            &invocation,
+            spec.bounds.wall_clock,
+            (spec.engine == EngineKind::Codex)
+                .then_some(spec.bounds.max_total_tokens)
+                .flatten(),
+        )?;
         fs::create_dir_all(&spec.archive_dir).map_err(|source| EngineError::Io {
             action: format!("create archive dir {}", spec.archive_dir.display()),
             source,
@@ -339,6 +366,95 @@ impl EngineSessionLauncher {
             repair_attempts,
         })
     }
+
+    /// Builds the process invocation for Codex CLI's native review command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target selector is empty.
+    pub fn build_codex_review_invocation(
+        spec: &CodexReviewSpec,
+    ) -> Result<CommandInvocation, EngineError> {
+        let mut args = vec!["-a".to_owned(), "never".to_owned(), "review".to_owned()];
+        if let Some(model) = &spec.requested_model {
+            args.push("-c".to_owned());
+            args.push(format!("model={}", toml_string(model)));
+        }
+        match &spec.target {
+            CodexReviewTarget::Base(base) => {
+                if base.trim().is_empty() {
+                    return Err(EngineError::CodexReviewTarget(
+                        "base ref cannot be empty".to_owned(),
+                    ));
+                }
+                args.push("--base".to_owned());
+                args.push(base.clone());
+            }
+            CodexReviewTarget::Commit(commit) => {
+                if commit.trim().is_empty() {
+                    return Err(EngineError::CodexReviewTarget(
+                        "commit ref cannot be empty".to_owned(),
+                    ));
+                }
+                args.push("--commit".to_owned());
+                args.push(commit.clone());
+            }
+            CodexReviewTarget::Uncommitted => args.push("--uncommitted".to_owned()),
+        }
+        Ok(CommandInvocation {
+            program: spec.executable.clone(),
+            args,
+            cwd: spec.working_dir.clone(),
+            stdin: String::new(),
+            env: spec.env.clone(),
+        })
+    }
+
+    /// Launches `codex review`, archives the raw transcripts, and returns parsed
+    /// candidate findings when the observed review-comment format is present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the process cannot launch or transcripts cannot be
+    /// written.
+    pub fn launch_native_codex_review(
+        &self,
+        spec: &CodexReviewSpec,
+    ) -> Result<EngineRun, EngineError> {
+        let invocation = Self::build_codex_review_invocation(spec)?;
+        let process = run_process(
+            &invocation,
+            spec.bounds.wall_clock,
+            spec.bounds.max_total_tokens,
+        )?;
+        fs::create_dir_all(&spec.archive_dir).map_err(|source| EngineError::Io {
+            action: format!("create archive dir {}", spec.archive_dir.display()),
+            source,
+        })?;
+        let transcripts = write_transcripts(&spec.archive_dir, &process)?;
+        let provenance = codex_review_provenance(spec, &process.stderr);
+        let parsed = parse_codex_review_output(spec, &process.stdout, provenance);
+        let classification = if let Some(hit) = process.token_limit_exceeded {
+            ExitClassification::TokenLimitExceeded {
+                limit: hit.limit,
+                observed: hit.observed,
+            }
+        } else if process.timed_out {
+            ExitClassification::Timeout
+        } else if !process_success(&process) {
+            ExitClassification::ProcessFailure { code: process.code }
+        } else {
+            parsed.classification
+        };
+        Ok(EngineRun {
+            classification,
+            output: parsed.output,
+            final_text: Some(process.stdout),
+            provenance: parsed.provenance,
+            transcripts,
+            repair_attempts: 0,
+        })
+    }
 }
 
 /// Errors raised while launching or interpreting an engine CLI.
@@ -358,6 +474,8 @@ pub enum EngineError {
     },
     #[error("opencode has no native schema-output flag on the pump.example target version")]
     OpencodeNativeSchemaUnavailable,
+    #[error("invalid codex review target: {0}")]
+    CodexReviewTarget(String),
     #[error("repair failed: {0}")]
     Repair(String),
 }
@@ -474,7 +592,8 @@ fn opencode_args(spec: &LaunchSpec) -> Result<Vec<String>, EngineError> {
 
 fn run_process(
     invocation: &CommandInvocation,
-    spec: &LaunchSpec,
+    wall_clock: Duration,
+    token_limit: Option<u64>,
 ) -> Result<ProcessOutput, EngineError> {
     let mut command = Command::new(&invocation.program);
     command
@@ -512,15 +631,12 @@ fn run_process(
         drop(stdin);
         Ok::<(), std::io::Error>(())
     });
-    let token_limit = (spec.engine == EngineKind::Codex)
-        .then_some(spec.bounds.max_total_tokens)
-        .flatten();
     let token_hit = Arc::new(Mutex::new(None));
     let stdout_token_hit = Arc::clone(&token_hit);
     let stdout_thread = thread::spawn(move || read_stdout(stdout, token_limit, stdout_token_hit));
     let stderr_thread = thread::spawn(move || read_to_string(stderr));
 
-    let deadline = Instant::now() + spec.bounds.wall_clock;
+    let deadline = Instant::now() + wall_clock;
     let mut token_limit_exceeded = None;
     let mut killed = false;
     loop {
@@ -904,6 +1020,156 @@ fn fill_requested_provenance(
     provenance
 }
 
+fn codex_review_provenance(spec: &CodexReviewSpec, stderr: &str) -> EngineProvenance {
+    let mut provenance = EngineProvenance {
+        engine: EngineKind::Codex,
+        session_id: header_value(stderr, "session id"),
+        requested_model: spec.requested_model.clone(),
+        resolved_model: header_value(stderr, "model").or_else(|| spec.requested_model.clone()),
+        model_source: ModelSource::NotReported,
+        usage: TokenUsage::default(),
+        cost_usd: None,
+    };
+    provenance.model_source = if header_value(stderr, "model").is_some() {
+        ModelSource::ResolvedByCli
+    } else if provenance.resolved_model.is_some() {
+        ModelSource::RequestedAsOperatorAssertion
+    } else {
+        ModelSource::NotReported
+    };
+    provenance
+}
+
+fn parse_codex_review_output(
+    spec: &CodexReviewSpec,
+    stdout: &str,
+    provenance: EngineProvenance,
+) -> ParsedRun {
+    let Some(value) = codex_review_json(spec, stdout) else {
+        return ParsedRun {
+            classification: ExitClassification::InvalidOutput {
+                reason: "codex review output did not contain the observed review-comment format"
+                    .to_owned(),
+            },
+            output: None,
+            final_text: Some(stdout.to_owned()),
+            provenance,
+        };
+    };
+    ParsedRun {
+        classification: ExitClassification::Success,
+        output: Some(value),
+        final_text: Some(stdout.to_owned()),
+        provenance,
+    }
+}
+
+fn codex_review_json(spec: &CodexReviewSpec, stdout: &str) -> Option<Value> {
+    let (summary, comments) = stdout.split_once("Review comment:")?;
+    let mut findings = Vec::new();
+    let mut current: Option<Value> = None;
+    for line in comments.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((priority, title, path, line_number)) =
+            parse_codex_review_heading(trimmed, &spec.working_dir)
+        {
+            if let Some(finding) = current.take() {
+                findings.push(finding);
+            }
+            current = Some(serde_json::json!({
+                "dedup_hint": format!("codex-review:{}:{}:{}", path, line_number, slug(&title)),
+                "title": title,
+                "explanation": "",
+                "suggestion": "",
+                "priority": priority,
+                "locations": [{"path": path, "line": line_number}],
+                "evidence_notes": []
+            }));
+        } else if let Some(finding) = current.as_mut() {
+            let explanation = finding
+                .get_mut("explanation")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let joined = if explanation.is_empty() {
+                trimmed.to_owned()
+            } else {
+                format!("{explanation}\n{trimmed}")
+            };
+            finding["explanation"] = Value::String(joined);
+        }
+    }
+    if let Some(finding) = current {
+        findings.push(finding);
+    }
+    Some(serde_json::json!({
+        "summary": summary.trim(),
+        "findings": findings
+    }))
+}
+
+fn parse_codex_review_heading(
+    line: &str,
+    working_dir: &Path,
+) -> Option<(String, String, String, u32)> {
+    let rest = line.strip_prefix("- [")?;
+    let (priority, rest) = rest.split_once("] ")?;
+    let (title, location) = rest.rsplit_once(" — ")?;
+    let (path, range) = location.rsplit_once(':')?;
+    let start = range.split_once('-').map_or(range, |(start, _end)| start);
+    let line_number = start.parse::<u32>().ok()?;
+    let path = strip_working_dir(path, working_dir);
+    Some((
+        priority.to_ascii_uppercase(),
+        title.trim().to_owned(),
+        path,
+        line_number,
+    ))
+}
+
+fn strip_working_dir(path: &str, working_dir: &Path) -> String {
+    let path = Path::new(path);
+    path.strip_prefix(working_dir)
+        .ok()
+        .and_then(Path::to_str)
+        .unwrap_or_else(|| path.to_str().unwrap_or_default())
+        .trim_start_matches('/')
+        .to_owned()
+}
+
+fn slug(value: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').to_owned()
+}
+
+fn header_value(stderr: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    stderr.lines().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn toml_string(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
 fn process_success(process: &ProcessOutput) -> bool {
     process.code == Some(0)
 }
@@ -980,6 +1246,7 @@ fn u64_field(value: &Value, field: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         fs,
         path::{Path, PathBuf},
     };
@@ -1064,6 +1331,124 @@ mod tests {
                     && pair[1] == fixture.schema().display().to_string())
         );
         assert_eq!(invocation.args.last().map(String::as_str), Some("-"));
+    }
+
+    #[test]
+    fn codex_review_invocation_uses_native_review_subcommand_and_base() {
+        let fixture = Fixture::new(EngineKind::Codex);
+        let spec = CodexReviewSpec {
+            executable: fixture.executable().to_owned(),
+            working_dir: fixture.temp.path().to_owned(),
+            archive_dir: fixture.temp.path().join("archive/native"),
+            target: CodexReviewTarget::Base("main".to_owned()),
+            requested_model: Some("codex-stable".to_owned()),
+            bounds: LaunchBounds::new(Duration::from_secs(30)),
+            env: BTreeMap::new(),
+        };
+
+        let invocation =
+            EngineSessionLauncher::build_codex_review_invocation(&spec).expect("build");
+
+        assert_eq!(
+            invocation.args,
+            vec![
+                "-a",
+                "never",
+                "review",
+                "-c",
+                "model=\"codex-stable\"",
+                "--base",
+                "main"
+            ]
+        );
+        assert!(invocation.stdin.is_empty());
+    }
+
+    #[test]
+    fn codex_review_output_is_adapted_from_captured_comment_format() {
+        let fixture = Fixture::new(EngineKind::Codex);
+        let spec = CodexReviewSpec {
+            executable: fixture.executable().to_owned(),
+            working_dir: fixture.temp.path().to_owned(),
+            archive_dir: fixture.temp.path().join("archive/native"),
+            target: CodexReviewTarget::Base("HEAD".to_owned()),
+            requested_model: None,
+            bounds: LaunchBounds::new(Duration::from_secs(30)),
+            env: BTreeMap::new(),
+        };
+        let stdout = format!(
+            "The parser can panic.\n\nReview comment:\n\n- [P2] Return parse errors instead of panicking — {}/src/lib.rs:6-6\n  Invalid input reaches unwrap.\n",
+            fixture.temp.path().display()
+        );
+
+        let value = codex_review_json(&spec, &stdout).expect("parse review output");
+
+        assert_eq!(value["summary"], "The parser can panic.");
+        assert_eq!(value["findings"][0]["priority"], "P2");
+        assert_eq!(
+            value["findings"][0]["title"],
+            "Return parse errors instead of panicking"
+        );
+        assert_eq!(value["findings"][0]["locations"][0]["path"], "src/lib.rs");
+        assert_eq!(value["findings"][0]["locations"][0]["line"], 6);
+        assert_eq!(
+            value["findings"][0]["explanation"],
+            "Invalid input reaches unwrap."
+        );
+    }
+
+    #[test]
+    #[ignore = "launches the real codex review CLI against a disposable git repo"]
+    fn codex_review_live_shape_finds_fixture_candidate() {
+        let temp = TempDir::new().expect("tempdir");
+        run_git(temp.path(), ["init", "-q"]);
+        run_git(temp.path(), ["config", "user.email", "test@example.com"]);
+        run_git(temp.path(), ["config", "user.name", "Test"]);
+        fs::create_dir_all(temp.path().join("src")).expect("create src");
+        fs::write(
+            temp.path().join("src/lib.rs"),
+            "pub fn reciprocal(x: i32) -> i32 {\n    10 / x\n}\n",
+        )
+        .expect("write initial source");
+        run_git(temp.path(), ["add", "."]);
+        run_git(temp.path(), ["commit", "-q", "-m", "initial"]);
+        fs::write(
+            temp.path().join("src/lib.rs"),
+            "pub fn reciprocal(x: i32) -> i32 {\n    10 / x\n}\n\npub fn parse_port(s: &str) -> u16 {\n    s.parse().unwrap()\n}\n",
+        )
+        .expect("write changed source");
+        let spec = CodexReviewSpec {
+            executable: PathBuf::from("codex"),
+            working_dir: temp.path().to_owned(),
+            archive_dir: temp.path().join("archive/native-codex-review"),
+            target: CodexReviewTarget::Base("HEAD".to_owned()),
+            requested_model: None,
+            bounds: LaunchBounds::new(Duration::from_mins(2)),
+            env: BTreeMap::new(),
+        };
+
+        let run = EngineSessionLauncher::default()
+            .launch_native_codex_review(&spec)
+            .expect("launch real codex review");
+
+        assert_eq!(run.classification, ExitClassification::Success);
+        let findings = run
+            .output
+            .as_ref()
+            .and_then(|value| value.get("findings"))
+            .and_then(Value::as_array)
+            .expect("parsed findings array");
+        assert!(
+            findings.iter().any(|finding| {
+                finding["locations"][0]["path"] == "src/lib.rs"
+                    && finding["locations"][0]["line"] == 6
+            }),
+            "expected codex review to produce a parsed changed-line finding: {:?}",
+            run.output
+        );
+        assert!(run.provenance.session_id.is_some());
+        assert!(spec.archive_dir.join("stdout.log").exists());
+        assert!(spec.archive_dir.join("stderr.log").exists());
     }
 
     #[test]
@@ -1509,6 +1894,19 @@ sleep 5
         fn schema(&self) -> &Path {
             &self.schema
         }
+    }
+
+    fn run_git<const N: usize>(dir: &Path, args: [&str; N]) {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn write_test_executable(path: &Path, source: &str) {

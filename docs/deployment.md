@@ -45,6 +45,8 @@ The example uses these checked-in assets:
 - `commands/pump19-prepare-source`: git archive preparation command.
 - `commands/pump19-merge-readiness`: finish-run build/test check.
 - `commands/pump19-format-comments`: finding comment body renderer.
+- `Containerfile.workspace`: an example credential-free workspace image with
+  Rust, Node and baseline shell tooling.
 
 Regenerate the baseline assets after changing their generator:
 
@@ -151,10 +153,22 @@ pushes normally to the PR head branch.
 The workspace boundary is credential-free, disposable and resource-bounded. The
 workspace network is enabled so real builds can fetch dependencies; egress is
 audited through session transcripts and `pump19-exec` use, not a packet proxy.
+The container root filesystem is writable and runs as root inside the container
+with runtime-default, namespaced capabilities so agents and readiness checks can
+install missing package-manager tools inside the disposable workspace. This does
+not grant host root: forge credentials and host-side writes remain outside the
+workspace.
+
+Build `workspace.image` as the same Unix user that runs `pump19-daemon`. Rootless
+Podman keeps per-user image stores, so building `localhost/pump19-workspace:stable`
+with `sudo podman build` will put the tag somewhere the `bob`/service-user daemon
+does not see. The checked-in [`Containerfile.workspace`](../examples/deployment/Containerfile.workspace)
+is a baseline for Rust and Node repositories; copied deployments may extend it
+with the watched repositories' build tools, but must not add forge credentials.
 
 Review agents run on the host and reach into the prepared tree, but the host
 tree is made read-only before the review lead starts. Toolchain execution uses
-the container copy through `pump19-exec`.
+the writable container copy through `pump19-exec`.
 
 Fix and finish runs may write the host lease tree. Forge writes remain outside
 the workspace and happen only through the core-authorised credentialed operation
@@ -195,6 +209,12 @@ core records a publication refusal instead of writing to a stale head.
 `pump19-prepare-source` clones from `PUMP19_GIT_BASE_URL`, archives the recorded
 head commit into a `.git`-free prepared tree, and extracts review-governing
 content from the PR base ref into `.pump19/review/governing/`.
+
+`pump19-forgejo-poll` reads Forgejo PR state and, when `PUMP19_STATE_ROOT` is set,
+combines it with Pump-19's persisted PR state to derive review cleanliness. A
+converged state for the same head emits `clean` even before the finish label is
+present; other states emit `dirty`, so the finish label is not its own
+cleanliness evidence.
 
 `pump19-merge-readiness` is optional but enabled in the example pack. Finish runs
 call it after the contract merge gate passes. It checks live head currency,
@@ -266,4 +286,6 @@ PUMP19_GIT_BASE_URL=https://forgejo.example
 # Optional merge-readiness overrides:
 # PUMP19_MERGE_READINESS_IMAGE=localhost/pump19-workspace:stable
 # PUMP19_MERGE_READINESS_TIMEOUT=3600
+# Optional poll state root override:
+# PUMP19_STATE_ROOT=state
 ```

@@ -42,6 +42,7 @@ args = ["--base-url", "REPLACE_WITH_FORGEJO_BASE_URL", "--finish-label", "Ready"
 
 [forgejo.poll_command.env]
 FORGEJO_TOKEN = "env:FORGEJO_TOKEN"
+PUMP19_STATE_ROOT = "state"
 
 [forgejo.operation_command]
 program = "commands/pump19-forgejo-operation"

@@ -487,12 +487,13 @@ set -eu
 
 base_url=
 finish_label=Ready
+state_root=${PUMP19_STATE_ROOT:-}
 curl_bin=${PUMP19_FORGEJO_CURL:-curl}
 detail_attempts=${PUMP19_FORGEJO_DETAIL_ATTEMPTS:-3}
 detail_sleep=${PUMP19_FORGEJO_DETAIL_SLEEP:-1}
 
 usage() {
-  echo "usage: pump19-forgejo-poll --base-url URL [--finish-label LABEL] owner/repo" >&2
+  echo "usage: pump19-forgejo-poll --base-url URL [--finish-label LABEL] [--state-root DIR] owner/repo" >&2
   exit 64
 }
 
@@ -506,6 +507,11 @@ while [ "$#" -gt 0 ]; do
     --finish-label)
       [ "$#" -ge 2 ] || usage
       finish_label=$2
+      shift 2
+      ;;
+    --state-root)
+      [ "$#" -ge 2 ] || usage
+      state_root=$2
       shift 2
       ;;
     --help|-h)
@@ -539,6 +545,25 @@ api_json() {
     printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN"
     printf 'header = "Accept: application/json"\n'
   } | "$curl_bin" -fsS -K - "$base_url/api/v1$1"
+}
+
+state_cleanliness() {
+  [ -n "$state_root" ] || {
+    printf '%s\n' dirty
+    return
+  }
+  repository_key=$(printf '%s' "$repository" | tr '/' '_')
+  state_file="$state_root/${repository_key}__${1}__${2}.json"
+  [ -f "$state_file" ] || {
+    printf '%s\n' dirty
+    return
+  }
+  jq -r --arg head "$2" '
+    if (.commit_sha == $head and .verdict.verdict == "converged")
+    then "clean"
+    else "dirty"
+    end
+  ' "$state_file"
 }
 
 user_json=$(api_json "/user")
@@ -597,7 +622,8 @@ while IFS= read -r pull_json; do
     else map({name: $finish, applied_by: {id, display_name}})
     end
   ')
-  cleanliness=$(printf '%s' "$labels_json" | jq -r 'if length > 0 then "clean" else "dirty" end')
+  head_sha=$(printf '%s' "$pull_json" | jq -r '.head.sha // ""')
+  cleanliness=$(state_cleanliness "$pr_id" "$head_sha")
   : > "$tmp/actor-permissions.jsonl"
   printf '%s' "$label_actors_json" | jq -c '.[]' > "$tmp/label-actors.jsonl"
   while IFS= read -r actor_json; do
@@ -1238,8 +1264,6 @@ done
 # unreachable.
 status=0
 timeout "$check_timeout" "$runner_bin" run --rm \
-  --read-only \
-  --cap-drop=ALL \
   --security-opt=no-new-privileges \
   --pids-limit 512 \
   --memory 2147483648 \
@@ -1252,7 +1276,7 @@ timeout "$check_timeout" "$runner_bin" run --rm \
   --env GIT_TERMINAL_PROMPT=0 \
   --env HOME=/workspace/home \
   --env NPM_CONFIG_CACHE=/workspace/.npm \
-  --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --env PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   --env SHELL=/bin/sh \
   --volume "$tmp/repo:/workspace:rw" \
   --workdir /workspace \
@@ -1543,6 +1567,7 @@ pub fn load_mechanical_pack(path: &Path) -> Result<MechanicalPack, AdaptationErr
 fn baseline_reviewers() -> Vec<AgentLaunchTarget> {
     vec![
         baseline_target("reviewer-codex", AgentRole::Reviewer, "codex"),
+        baseline_target("reviewer-codex-native-review", AgentRole::Reviewer, "codex"),
         baseline_target("reviewer-claude", AgentRole::Reviewer, "claude"),
     ]
 }
@@ -1617,6 +1642,7 @@ The review is the product: favour a quiet, high-confidence result over volume.
 - Workflow shim: {{workflow_command}}
 - Command shim for PR-code execution: {{exec_command}}
 - Final output path: {{review_output_path}}
+- Native Codex review candidates: {{native_codex_review_path}}
 
 Read the manifest before judging the change. It contains the changed files,
 changed-line map, selected briefs, prior loop history, and repository policy.
@@ -1630,9 +1656,12 @@ anchor to changed lines and carry a priority, a one-line title, an explanation,
 and a drop-in suggestion when one exists.
 
 Use the provided workflows for specialist passes, finding verification, review
-assembly, bar checking, and schema repair. Verification should look for why a
-claim is wrong before accepting it. Record honest coverage: if meaningful changed
-code was not visited, say so instead of proposing convergence.
+assembly, bar checking, and schema repair. Read {{native_codex_review_path}}
+when it exists; treat its native Codex review findings as additional specialist
+candidates from reviewer-codex-native-review, and pass them through the same
+finding verification workflow before including them. Verification should look
+for why a claim is wrong before accepting it. Record honest coverage: if
+meaningful changed code was not visited, say so instead of proposing convergence.
 
 For a clean review, keep session notes terse and evidence-backed. List the files
 you inspected, state explicitly when no build, test, or lint commands were run,
@@ -1801,9 +1830,11 @@ ${brief.prompt}
 </brief>`;
 }
 
+const nativeCodexReviewerId = "reviewer-codex-native-review";
 const calls = [];
 for (const brief of args.briefs || []) {
   for (const reviewer of args.reviewers || []) {
+    if (reviewer.agent_id === nativeCodexReviewerId) continue;
     calls.push({ brief, reviewer });
   }
 }
@@ -2491,7 +2522,8 @@ mod tests {
                 .prompt_templates
                 .iter()
                 .any(|template| template.id == "review-lead-mission"
-                    && template.template.contains("Workflow shim"))
+                    && template.template.contains("Workflow shim")
+                    && template.template.contains("native_codex_review_path"))
         );
         let slots = pack
             .manifest
@@ -2709,6 +2741,16 @@ model = "claude-stable"
             loaded
                 .iter()
                 .any(|rule| !rule.agent_plan.verifiers.is_empty())
+        );
+        assert!(
+            loaded
+                .iter()
+                .filter(|rule| rule.run_kind == RunKind::Review)
+                .all(|rule| rule
+                    .agent_plan
+                    .reviewers
+                    .iter()
+                    .any(|reviewer| reviewer.agent_id.0 == "reviewer-codex-native-review"))
         );
         assert!(
             loaded
@@ -3053,7 +3095,7 @@ esac
         assert_eq!(snapshots[0]["draft"], false);
         assert_eq!(snapshots[0]["head_sha"], "abc123");
         assert_eq!(snapshots[0]["branch_currency"], "current");
-        assert_eq!(snapshots[0]["cleanliness"], "clean");
+        assert_eq!(snapshots[0]["cleanliness"], "dirty");
         assert_eq!(snapshots[0]["mergeability"], "mergeable");
         assert_eq!(snapshots[0]["labels"][0]["applied_by"]["id"], "7");
         assert_eq!(snapshots[0]["author_login"], "example");
@@ -3063,6 +3105,68 @@ esac
             snapshots[0]["actor_permissions"][0]["can_apply_finish_label"],
             true
         );
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_forgejo_poll_command_derives_cleanliness_from_state_without_finish_label()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let commands = write_baseline_forgejo_commands(&dir.path().join("commands"))?;
+        let fixtures = dir.path().join("fixtures");
+        fs::create_dir_all(&fixtures)?;
+        fs::write(
+            fixtures.join("user.json"),
+            r#"{"id":7,"login":"pump19","full_name":"Pump 19"}"#,
+        )?;
+        fs::write(
+            fixtures.join("pulls.json"),
+            r#"[{"number":42,"title":"Ready for finish","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[]}]"#,
+        )?;
+        fs::write(
+            fixtures.join("pull-detail.json"),
+            r#"{"number":42,"title":"Ready for finish","draft":false,"user":{"id":9,"login":"example"},"head":{"sha":"abc123"},"base":{"sha":"def456"},"merge_base":"def456","mergeable":true,"labels":[]}"#,
+        )?;
+        fs::write(fixtures.join("timeline.json"), r"[]")?;
+        let state_root = dir.path().join("state");
+        fs::create_dir_all(&state_root)?;
+        fs::write(
+            state_root.join("acme_widgets__42__abc123.json"),
+            r#"{"contract_version":{"major":2,"minor":0},"pr":{"repository":"acme/widgets","id":"42"},"commit_sha":"abc123","current_head_sha":"abc123","status":"completed","run_history":[],"findings":[],"verdict":{"verdict":"converged","bar_check":{"passed":true,"provenance":{"contract_version":{"major":2,"minor":0},"agent_id":"bar-check-codex","role":"bar_check","session_id":"session-1","engine":"codex","freshness":{"state":"fresh_for_pass","pass_index":1},"verification":{"state":"verified","vendor":"baseline","control_plane":"pump19-core","lineage":{"family":"codex","model":"codex-stable"}}},"rationale":"fixture"}},"patches":[]}"#,
+        )?;
+        let fake_curl = write_fake_curl(
+            dir.path(),
+            r#"case "$url" in
+  */api/v1/user) cat "$PUMP19_FIXTURES/user.json" ;;
+  */api/v1/repos/acme/widgets/pulls\?state=open) cat "$PUMP19_FIXTURES/pulls.json" ;;
+  */api/v1/repos/acme/widgets/pulls/42) cat "$PUMP19_FIXTURES/pull-detail.json" ;;
+  */api/v1/repos/acme/widgets/issues/42/timeline) cat "$PUMP19_FIXTURES/timeline.json" ;;
+  *) echo "unexpected URL: $url" >&2; exit 44 ;;
+esac
+"#,
+        )?;
+
+        let _command_fixture_guard = command_fixture_lock();
+        let output = Command::new(&commands.poll_command)
+            .args([
+                "--base-url",
+                "https://forgejo.example",
+                "--finish-label",
+                "Ready",
+                "--state-root",
+                state_root.to_str().expect("state root path"),
+                "acme/widgets",
+            ])
+            .env("FORGEJO_TOKEN", "test-token")
+            .env("PUMP19_FORGEJO_CURL", fake_curl)
+            .env("PUMP19_FIXTURES", &fixtures)
+            .output()?;
+
+        assert_command_success(&output);
+        let snapshots: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(snapshots[0]["branch_currency"], "current");
+        assert_eq!(snapshots[0]["cleanliness"], "clean");
+        assert_eq!(snapshots[0]["labels"].as_array().expect("labels").len(), 0);
         Ok(())
     }
 
@@ -3823,8 +3927,8 @@ exit "${{PUMP19_STUB_RUNNER_STATUS:-0}}"
         let recorded_args = fs::read_to_string(&fixture.runner_args)?;
         assert!(recorded_args.contains("localhost/pump19-workspace:stable"));
         assert!(recorded_args.contains("/workspace:rw"));
-        assert!(recorded_args.contains("--read-only"));
-        assert!(recorded_args.contains("--cap-drop=ALL"));
+        assert!(!recorded_args.contains("--read-only"));
+        assert!(!recorded_args.contains("--cap-drop=ALL"));
         assert!(recorded_args.contains("--security-opt=no-new-privileges"));
         assert!(recorded_args.contains("--pids-limit"));
         assert!(recorded_args.contains("512"));
@@ -3836,10 +3940,9 @@ exit "${{PUMP19_STUB_RUNNER_STATUS:-0}}"
         assert!(recorded_args.contains("GIT_TERMINAL_PROMPT=0"));
         assert!(recorded_args.contains("HOME=/workspace/home"));
         assert!(recorded_args.contains("NPM_CONFIG_CACHE=/workspace/.npm"));
-        assert!(
-            recorded_args
-                .contains("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-        );
+        assert!(recorded_args.contains(
+            "PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        ));
         assert!(recorded_args.contains("SHELL=/bin/sh"));
         assert!(!recorded_args.contains("--network=none"));
 

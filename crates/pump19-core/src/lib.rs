@@ -22,10 +22,10 @@ use pump19_contract::{
     ForgeReceipt, IndependenceDegradation, LoopPassRecord, MergePublication, ModelFamily,
     ModelLineage, ModelProvenance, Patch, PrRunState, PriorityClass, ProvenanceVerification,
     PublicationAttempt, PublicationAttemptStatus, PublicationOperation, PublicationRefusal,
-    PublicationRefusalReason, PublicationState, PublishedFixCommit, PullRequestRef, ReviewVerdict,
-    RunCeiling, RunId, RunKind, RunOutcome, RunRecord, RunRefusal, RunRefusalReason, RunStatus,
-    SessionArchiveRef, SessionFreshness, SessionId, fixer_disjoint_from_finding_sessions,
-    merge_gate_clean_and_current, sessions_fresh_for_pass,
+    PublicationRefusalReason, PublicationState, PublishedFixCommit, PullRequestRef,
+    ReviewCleanliness, ReviewVerdict, RunCeiling, RunId, RunKind, RunOutcome, RunRecord,
+    RunRefusal, RunRefusalReason, RunStatus, SessionArchiveRef, SessionFreshness, SessionId,
+    fixer_disjoint_from_finding_sessions, merge_gate_clean_and_current, sessions_fresh_for_pass,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -3047,6 +3047,7 @@ impl StateCriterion {
                 .extensions
                 .get(EXT_FORGE_FACTS)
                 .and_then(|value| serde_json::from_value::<ForgeFacts>(value.clone()).ok())
+                .map(|facts| forge_facts_with_state_cleanliness(state, facts))
                 .is_some_and(|facts| merge_gate_clean_and_current(&facts)),
             Self::CeilingAllowsPass => !ceiling_refuses(state),
         }
@@ -3610,9 +3611,10 @@ fn sync_state_with_forge_facts(
     facts: &ForgeFacts,
 ) -> Result<(), CoreError> {
     state.current_head_sha = Some(facts.head.sha.clone());
+    let facts = forge_facts_with_state_cleanliness(state, facts.clone());
     state.extensions.insert(
         EXT_FORGE_FACTS.to_owned(),
-        serde_json::to_value(facts).map_err(|source| CoreError::Json {
+        serde_json::to_value(&facts).map_err(|source| CoreError::Json {
             path: EXT_FORGE_FACTS.to_owned(),
             source,
         })?,
@@ -3667,12 +3669,30 @@ fn forge_facts_from_state(state: &PrRunState) -> Result<Option<ForgeFacts>, Core
         .extensions
         .get(EXT_FORGE_FACTS)
         .map(|value| {
-            serde_json::from_value::<ForgeFacts>(value.clone()).map_err(|source| CoreError::Json {
-                path: EXT_FORGE_FACTS.to_owned(),
-                source,
-            })
+            serde_json::from_value::<ForgeFacts>(value.clone())
+                .map_err(|source| CoreError::Json {
+                    path: EXT_FORGE_FACTS.to_owned(),
+                    source,
+                })
+                .map(|facts| forge_facts_with_state_cleanliness(state, facts))
         })
         .transpose()
+}
+
+fn forge_facts_with_state_cleanliness(state: &PrRunState, mut facts: ForgeFacts) -> ForgeFacts {
+    let head_still_current = state
+        .current_head_sha
+        .as_deref()
+        .is_none_or(|current| current == state.commit_sha);
+    facts.cleanliness = if state_converged_for_current_pass(state)
+        && facts.head.sha == state.commit_sha
+        && head_still_current
+    {
+        ReviewCleanliness::Clean
+    } else {
+        ReviewCleanliness::Dirty
+    };
+    facts
 }
 
 fn material_findings_for_pass(state: &PrRunState, threshold: PriorityClass) -> Vec<Finding> {
@@ -8157,6 +8177,67 @@ mod tests {
         };
 
         assert!(!core_may_apply_finish_label(&facts, "Ready"));
+    }
+
+    #[test]
+    fn converged_review_applies_finish_label_when_incoming_facts_are_dirty() {
+        let mut dirty_facts = core_authority_facts("abc123");
+        dirty_facts.cleanliness = ReviewCleanliness::Dirty;
+        let mut launcher = FakeRunLauncher::new(vec![
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+            LaunchProof::EstablishedFresh,
+        ]);
+        launcher.outcome = RunLaunchOutcome {
+            outcome: RunOutcome::Succeeded,
+            findings: Vec::new(),
+            verdict: Some(ReviewVerdict::Converged {
+                bar_check: BarCheckRecord {
+                    passed: true,
+                    provenance: verified_provenance(
+                        "bar-check-codex",
+                        AgentRole::BarCheck,
+                        "codex",
+                    ),
+                    rationale: "fixture convergence".to_owned(),
+                    extensions: BTreeMap::new(),
+                },
+            }),
+            coverage: Some(CoverageRecord {
+                complete: true,
+                visited: vec![".".to_owned()],
+                unvisited: Vec::new(),
+                account: "fixture covered the change".to_owned(),
+                extensions: BTreeMap::new(),
+            }),
+            patches: Vec::new(),
+            token_usage: None,
+            session_archives: Vec::new(),
+            independence_degradations: Vec::new(),
+        };
+        let mut core = Core::with_forge_operations_and_policy(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            launcher,
+            FakeRunStateStore::default(),
+            RecordingForgeOperations::default(),
+            CorePolicy {
+                finish_label_application: FinishLabelApplicationPolicy::CoreOnConvergence {
+                    label: "Ready".to_owned(),
+                },
+                ..CorePolicy::human_gate()
+            },
+        );
+
+        core.process_event(&event_with_facts(dirty_facts), &[independent_rule()])
+            .expect("process converged review");
+
+        assert_eq!(core.forge_operations.labels.len(), 1);
+        assert_eq!(core.forge_operations.labels[0].label, "Ready");
     }
 
     #[test]
