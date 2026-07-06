@@ -1530,6 +1530,7 @@ pub fn load_mechanical_pack(path: &Path) -> Result<MechanicalPack, AdaptationErr
 fn baseline_reviewers() -> Vec<AgentLaunchTarget> {
     vec![
         baseline_target("reviewer-codex", AgentRole::Reviewer, "codex"),
+        baseline_target("reviewer-codex-native-review", AgentRole::Reviewer, "codex"),
         baseline_target("reviewer-claude", AgentRole::Reviewer, "claude"),
     ]
 }
@@ -1604,6 +1605,7 @@ The review is the product: favour a quiet, high-confidence result over volume.
 - Workflow shim: {{workflow_command}}
 - Command shim for PR-code execution: {{exec_command}}
 - Final output path: {{review_output_path}}
+- Native Codex review candidates: {{native_codex_review_path}}
 
 Read the manifest before judging the change. It contains the changed files,
 changed-line map, selected briefs, prior loop history, and repository policy.
@@ -1617,9 +1619,12 @@ anchor to changed lines and carry a priority, a one-line title, an explanation,
 and a drop-in suggestion when one exists.
 
 Use the provided workflows for specialist passes, finding verification, review
-assembly, bar checking, and schema repair. Verification should look for why a
-claim is wrong before accepting it. Record honest coverage: if meaningful changed
-code was not visited, say so instead of proposing convergence.
+assembly, bar checking, and schema repair. Read {{native_codex_review_path}}
+when it exists; treat its native Codex review findings as additional specialist
+candidates from reviewer-codex-native-review, and pass them through the same
+finding verification workflow before including them. Verification should look
+for why a claim is wrong before accepting it. Record honest coverage: if
+meaningful changed code was not visited, say so instead of proposing convergence.
 
 For a clean review, keep session notes terse and evidence-backed. List the files
 you inspected, state explicitly when no build, test, or lint commands were run,
@@ -1788,9 +1793,11 @@ ${brief.prompt}
 </brief>`;
 }
 
+const nativeCodexReviewerId = "reviewer-codex-native-review";
 const calls = [];
 for (const brief of args.briefs || []) {
   for (const reviewer of args.reviewers || []) {
+    if (reviewer.agent_id === nativeCodexReviewerId) continue;
     calls.push({ brief, reviewer });
   }
 }
@@ -2477,7 +2484,8 @@ mod tests {
                 .prompt_templates
                 .iter()
                 .any(|template| template.id == "review-lead-mission"
-                    && template.template.contains("Workflow shim"))
+                    && template.template.contains("Workflow shim")
+                    && template.template.contains("native_codex_review_path"))
         );
         let slots = pack
             .manifest
@@ -2695,6 +2703,16 @@ model = "claude-stable"
             loaded
                 .iter()
                 .any(|rule| !rule.agent_plan.verifiers.is_empty())
+        );
+        assert!(
+            loaded
+                .iter()
+                .filter(|rule| rule.run_kind == RunKind::Review)
+                .all(|rule| rule
+                    .agent_plan
+                    .reviewers
+                    .iter()
+                    .any(|reviewer| reviewer.agent_id.0 == "reviewer-codex-native-review"))
         );
         assert!(
             loaded

@@ -79,9 +79,11 @@ ${brief.prompt}
 </brief>`;
 }
 
+const nativeCodexReviewerId = "reviewer-codex-native-review";
 const calls = [];
 for (const brief of args.briefs || []) {
   for (const reviewer of args.reviewers || []) {
+    if (reviewer.agent_id === nativeCodexReviewerId) continue;
     calls.push({ brief, reviewer });
   }
 }

@@ -45,8 +45,8 @@ use pump19_forge_forgejo::{
 use pump19_runs::{
     AgentSessionPreparer, HostEnsembleWorkflowRunner, LeadEngineConfig, LeadSessionFixBody,
     LeadSessionFrameConfig, LeadSessionReviewBody, LeadWorkflowScript, MergeReadiness,
-    MergeReadinessCheck, Pump19RunLauncher, ReviewWorkflowSlot, RunBodyError, SubjectIntent,
-    VerifiedMergeGateFinishBody,
+    MergeReadinessCheck, NativeCodexReviewConfig, Pump19RunLauncher, ReviewWorkflowSlot,
+    RunBodyError, SubjectIntent, VerifiedMergeGateFinishBody,
 };
 use pump19_workspace::{CommandRuntime, ContainerWorkspaceProvider, WorkspaceConfig};
 use serde::{Deserialize, Serialize};
@@ -1058,6 +1058,13 @@ fn lead_frame_config(
         occasion: "every-pr".to_owned(),
         materiality_threshold: pump19_contract::PriorityClass::P1,
         lead_engine,
+        native_codex_review: (run_kind == RunKind::Review).then(|| NativeCodexReviewConfig {
+            reviewer_agent_id: pump19_contract::AgentId("reviewer-codex-native-review".to_owned()),
+            executable: PathBuf::from("codex"),
+            requested_model: None,
+            bounds: LaunchBounds::new(Duration::from_mins(15)),
+            env: BTreeMap::new(),
+        }),
     })
 }
 
