@@ -101,6 +101,8 @@ pub struct CodexReviewSpec {
     pub archive_dir: PathBuf,
     pub target: CodexReviewTarget,
     pub requested_model: Option<String>,
+    pub write_access: WriteAccess,
+    pub changed_lines: BTreeMap<String, Vec<u32>>,
     pub bounds: LaunchBounds,
     pub env: BTreeMap<String, String>,
 }
@@ -376,6 +378,14 @@ impl EngineSessionLauncher {
         spec: &CodexReviewSpec,
     ) -> Result<CommandInvocation, EngineError> {
         let mut args = vec!["-a".to_owned(), "never".to_owned(), "review".to_owned()];
+        args.push("-c".to_owned());
+        args.push(format!(
+            "sandbox_mode={}",
+            toml_string(match spec.write_access {
+                WriteAccess::ReadOnly => "read-only",
+                WriteAccess::Writable => "workspace-write",
+            })
+        ));
         args.push("-c".to_owned());
         args.push(format!(
             "projects.{}.trust_level=\"trusted\"",
@@ -1081,6 +1091,13 @@ fn codex_review_json(spec: &CodexReviewSpec, stdout: &str) -> Option<Value> {
         if let Some((priority, title, path, line_number)) =
             parse_codex_review_heading(trimmed, &spec.working_dir)
         {
+            let line_number = changed_line_within_reported_range(
+                &path,
+                line_number,
+                trimmed,
+                &spec.changed_lines,
+            )
+            .unwrap_or(line_number);
             if let Some(finding) = current.take() {
                 findings.push(finding);
             }
@@ -1133,6 +1150,28 @@ fn parse_codex_review_heading(
         path,
         line_number,
     ))
+}
+
+fn changed_line_within_reported_range(
+    path: &str,
+    fallback: u32,
+    line: &str,
+    changed_lines: &BTreeMap<String, Vec<u32>>,
+) -> Option<u32> {
+    let lines = changed_lines.get(path)?;
+    let location = line.rsplit_once(" — ")?.1;
+    let (_path, range) = location.rsplit_once(':')?;
+    let (start, end) = range.split_once('-')?;
+    let start = start.parse::<u32>().ok()?;
+    let end = end.parse::<u32>().ok()?;
+    if end < start {
+        return None;
+    }
+    lines
+        .iter()
+        .copied()
+        .find(|line| (start..=end).contains(line))
+        .or(Some(fallback))
 }
 
 fn strip_working_dir(path: &str, working_dir: &Path) -> String {
@@ -1347,6 +1386,8 @@ mod tests {
             archive_dir: fixture.temp.path().join("archive/native"),
             target: CodexReviewTarget::Base("main".to_owned()),
             requested_model: Some("codex-stable".to_owned()),
+            write_access: WriteAccess::ReadOnly,
+            changed_lines: BTreeMap::new(),
             bounds: LaunchBounds::new(Duration::from_secs(30)),
             env: BTreeMap::new(),
         };
@@ -1360,6 +1401,12 @@ mod tests {
                 .args
                 .windows(2)
                 .any(|pair| pair[0] == "-c" && pair[1].contains("trust_level=\"trusted\""))
+        );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair == ["-c", "sandbox_mode=\"read-only\""])
         );
         assert!(
             invocation
@@ -1385,6 +1432,8 @@ mod tests {
             archive_dir: fixture.temp.path().join("archive/native"),
             target: CodexReviewTarget::Base("HEAD".to_owned()),
             requested_model: None,
+            write_access: WriteAccess::ReadOnly,
+            changed_lines: BTreeMap::new(),
             bounds: LaunchBounds::new(Duration::from_secs(30)),
             env: BTreeMap::new(),
         };
@@ -1406,6 +1455,37 @@ mod tests {
         assert_eq!(
             value["findings"][0]["explanation"],
             "Invalid input reaches unwrap."
+        );
+    }
+
+    #[test]
+    fn codex_review_range_anchor_prefers_changed_line_inside_range() {
+        let fixture = Fixture::new(EngineKind::Codex);
+        let mut changed_lines = BTreeMap::new();
+        changed_lines.insert("src/lib.rs".to_owned(), vec![8]);
+        let spec = CodexReviewSpec {
+            executable: fixture.executable().to_owned(),
+            working_dir: fixture.temp.path().to_owned(),
+            archive_dir: fixture.temp.path().join("archive/native"),
+            target: CodexReviewTarget::Base("HEAD".to_owned()),
+            requested_model: None,
+            write_access: WriteAccess::ReadOnly,
+            changed_lines,
+            bounds: LaunchBounds::new(Duration::from_secs(30)),
+            env: BTreeMap::new(),
+        };
+        let stdout = format!(
+            "The parser can panic.\n\nReview comment:\n\n- [P2] Return parse errors instead of panicking — {}/src/lib.rs:6-9\n  Invalid input reaches unwrap.\n",
+            fixture.temp.path().display()
+        );
+
+        let value = codex_review_json(&spec, &stdout).expect("parse review output");
+
+        assert_eq!(value["findings"][0]["locations"][0]["path"], "src/lib.rs");
+        assert_eq!(value["findings"][0]["locations"][0]["line"], 8);
+        assert_eq!(
+            value["findings"][0]["dedup_hint"],
+            "codex-review:src/lib.rs:8:return-parse-errors-instead-of-panicking"
         );
     }
 
@@ -1435,6 +1515,8 @@ mod tests {
             archive_dir: temp.path().join("archive/native-codex-review"),
             target: CodexReviewTarget::Base("HEAD".to_owned()),
             requested_model: None,
+            write_access: WriteAccess::ReadOnly,
+            changed_lines: BTreeMap::new(),
             bounds: LaunchBounds::new(Duration::from_mins(2)),
             env: BTreeMap::new(),
         };

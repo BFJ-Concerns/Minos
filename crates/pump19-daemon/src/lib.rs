@@ -1182,7 +1182,7 @@ fn lead_frame_config(
         native_codex_review: (run_kind == RunKind::Review).then(|| NativeCodexReviewConfig {
             reviewer_agent_id: pump19_contract::AgentId("reviewer-codex-native-review".to_owned()),
             executable: PathBuf::from("codex"),
-            requested_model: None,
+            requested_model: Some("codex-stable".to_owned()),
             bounds: LaunchBounds::new(Duration::from_mins(15)),
             env: BTreeMap::new(),
         }),
@@ -3272,6 +3272,13 @@ stop_after_quiet_polls = 1
             frame
                 .mission_template
                 .contains("{{native_codex_review_path}}")
+        );
+        assert_eq!(
+            frame
+                .native_codex_review
+                .as_ref()
+                .and_then(|native| native.requested_model.as_deref()),
+            Some("codex-stable")
         );
         assert!(!frame.mission_template.contains("{{brief_id}}"));
     }
