@@ -308,8 +308,8 @@ pub struct SecurityProfile {
 impl Default for SecurityProfile {
     fn default() -> Self {
         Self {
-            root_filesystem: RootFilesystem::ReadOnly,
-            capabilities: CapabilityPolicy::DropAll,
+            root_filesystem: RootFilesystem::Writable,
+            capabilities: CapabilityPolicy::RuntimeDefault,
             privilege: PrivilegeMode::NoNewPrivileges,
             pid_namespace: NamespacePolicy::Private,
             ipc_namespace: NamespacePolicy::Private,
@@ -319,14 +319,16 @@ impl Default for SecurityProfile {
 
 impl SecurityProfile {
     fn validate(self) -> Result<(), WorkspaceError> {
-        if self.root_filesystem != RootFilesystem::ReadOnly {
+        if self.root_filesystem != RootFilesystem::Writable {
             return Err(WorkspaceError::WeakConfiguration(
-                "container root filesystem must be read-only".to_owned(),
+                "container root filesystem must be writable for in-workspace tool installation"
+                    .to_owned(),
             ));
         }
-        if self.capabilities != CapabilityPolicy::DropAll {
+        if self.capabilities != CapabilityPolicy::RuntimeDefault {
             return Err(WorkspaceError::WeakConfiguration(
-                "container capabilities must be dropped".to_owned(),
+                "container must keep runtime-default namespaced capabilities for package installation"
+                    .to_owned(),
             ));
         }
         if self.privilege != PrivilegeMode::NoNewPrivileges {
@@ -809,8 +811,6 @@ fn create_args(spec: &ContainerSpec) -> Vec<String> {
         "--detach".to_owned(),
         "--name".to_owned(),
         spec.id.clone(),
-        "--read-only".to_owned(),
-        "--cap-drop=ALL".to_owned(),
         "--security-opt=no-new-privileges".to_owned(),
         "--pids-limit".to_owned(),
         spec.resources.pids_limit.to_string(),
@@ -988,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn emitted_container_spec_is_networkless_resource_bounded_and_non_privileged() {
+    fn emitted_container_spec_is_writable_credential_free_and_resource_bounded() {
         let temp = TempDir::new().expect("temp dir");
         let mut provider = provider(temp.path());
 
@@ -997,8 +997,8 @@ mod tests {
         let created = provider.runtime().created.borrow();
         let spec = created.first().expect("created spec");
         assert_eq!(spec.network, NetworkPolicy::Enabled);
-        assert_eq!(spec.security.root_filesystem, RootFilesystem::ReadOnly);
-        assert_eq!(spec.security.capabilities, CapabilityPolicy::DropAll);
+        assert_eq!(spec.security.root_filesystem, RootFilesystem::Writable);
+        assert_eq!(spec.security.capabilities, CapabilityPolicy::RuntimeDefault);
         assert_eq!(spec.security.privilege, PrivilegeMode::NoNewPrivileges);
         assert_eq!(spec.security.pid_namespace, NamespacePolicy::Private);
         assert_eq!(spec.security.ipc_namespace, NamespacePolicy::Private);
@@ -1021,8 +1021,8 @@ mod tests {
         let args = create_args(&spec);
 
         assert!(!args.contains(&"--network=none".to_owned()));
-        assert!(args.contains(&"--read-only".to_owned()));
-        assert!(args.contains(&"--cap-drop=ALL".to_owned()));
+        assert!(!args.contains(&"--read-only".to_owned()));
+        assert!(!args.contains(&"--cap-drop=ALL".to_owned()));
         assert!(args.contains(&"--security-opt=no-new-privileges".to_owned()));
         assert!(args.contains(&"--pids-limit".to_owned()));
         assert!(args.contains(&spec.resources.pids_limit.to_string()));
