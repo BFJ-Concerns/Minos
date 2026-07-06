@@ -3455,7 +3455,7 @@ fn reconcile_lead_provenance(
                     expected.agent_id.0
                 ))
             })?;
-            if actual_model != &expected.model {
+            if !models_match_authorised(expected.engine.as_str(), actual_model, &expected.model) {
                 return Err(RunBodyError::EnsembleArchiveMismatch(format!(
                     "lead agent {} resolved model {} instead of {}",
                     expected.agent_id.0, actual_model, expected.model
@@ -3469,7 +3469,7 @@ fn reconcile_lead_provenance(
                     expected.agent_id.0
                 ))
             })?;
-            if requested != &expected.model {
+            if !models_match_authorised(expected.engine.as_str(), requested, &expected.model) {
                 return Err(RunBodyError::EnsembleArchiveMismatch(format!(
                     "lead agent {} requested model {} instead of {}",
                     expected.agent_id.0, requested, expected.model
@@ -3485,6 +3485,23 @@ fn reconcile_lead_provenance(
     }
 
     Ok(())
+}
+
+fn models_match_authorised(engine: &str, observed: &str, authorised: &str) -> bool {
+    canonical_runtime_model(engine, observed) == canonical_runtime_model(engine, authorised)
+}
+
+fn canonical_runtime_model<'a>(engine: &str, model: &'a str) -> &'a str {
+    let model = model.trim();
+    if engine == "claude" {
+        if model.eq_ignore_ascii_case("claude-stable") {
+            return "claude-sonnet-4-5";
+        }
+        if model.eq_ignore_ascii_case("opus") {
+            return "claude-opus-4-8";
+        }
+    }
+    model
 }
 
 const fn engine_kind_name(engine: EngineKind) -> &'static str {
@@ -4124,6 +4141,15 @@ mod tests {
     }
 
     fn provenance(agent_id: &str, role: AgentRole, family: &str) -> ModelProvenance {
+        provenance_with_model(agent_id, role, family, &format!("{family}-2026"))
+    }
+
+    fn provenance_with_model(
+        agent_id: &str,
+        role: AgentRole,
+        family: &str,
+        model: &str,
+    ) -> ModelProvenance {
         ModelProvenance {
             contract_version: ContractVersion::current(),
             agent_id: AgentId(agent_id.to_owned()),
@@ -4136,7 +4162,7 @@ mod tests {
                 control_plane: "test".to_owned(),
                 lineage: ModelLineage {
                     family: ModelFamily(family.to_owned()),
-                    model: format!("{family}-2026"),
+                    model: model.to_owned(),
                 },
             },
             extensions: BTreeMap::new(),
@@ -4821,6 +4847,37 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
             ),
             "{error}"
         );
+    }
+
+    #[test]
+    fn lead_frame_accepts_authorised_claude_stable_resolving_to_concrete_model() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.provenance.retain(|provenance| {
+            !(provenance.agent_id == AgentId("lead-claude".to_owned())
+                && provenance.role == AgentRole::Lead)
+        });
+        req.provenance.push(provenance_with_model(
+            "lead-claude",
+            AgentRole::Lead,
+            "claude",
+            "claude-stable",
+        ));
+        let findings_payload = json!([verified_finding("verifier-claude", 2)]);
+        let verdict_payload = json!({"verdict": "findings_posted"});
+        let output = lead_payload(&findings_payload, true, &verdict_payload);
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let mut config = lead_frame_config(root.path());
+        config.lead_engine.requested_model = Some("claude-sonnet-4-5".to_owned());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        let findings = body
+            .run_review(&req, &mut workspace)
+            .expect("stable alias authorises its concrete Claude resolution");
+
+        assert_eq!(findings.len(), 1);
     }
 
     #[test]

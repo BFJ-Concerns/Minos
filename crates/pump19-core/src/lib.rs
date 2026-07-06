@@ -3427,6 +3427,7 @@ fn canonicalise_launch_target_model(target: &mut AgentLaunchTarget) {
 fn canonical_model_for_engine_alias(engine: AgentEngine, model: &str) -> Option<&'static str> {
     let model = model.trim().to_ascii_lowercase();
     match engine {
+        AgentEngine::Claude if model == "claude-stable" => Some("claude-sonnet-4-5"),
         AgentEngine::Claude if model == "opus" => Some("claude-opus-4-8"),
         AgentEngine::Codex | AgentEngine::Claude | AgentEngine::Opencode => None,
     }
@@ -8624,6 +8625,50 @@ mod tests {
         assert_eq!(lineage.model, "claude-opus-4-8");
         assert_ne!(lineage.model, "opus");
         assert_eq!(core.launcher.launched, 1);
+    }
+
+    #[test]
+    fn claude_stable_alias_is_canonicalised_before_provenance_gate() {
+        let mut rule = independent_rule();
+        rule.agent_plan
+            .lead
+            .as_mut()
+            .expect("fixture has lead")
+            .lineage
+            .model = "claude-stable".to_owned();
+        let mut core = Core::new(
+            FakeEventSource::empty(),
+            FakeWorkspaceProvider {
+                isolation: isolated_workspace(),
+                cleaned: 0,
+            },
+            FakeRunLauncher::new(Vec::new()),
+            FakeRunStateStore::default(),
+        );
+
+        let outcomes = core
+            .process_event(&event(), &[rule])
+            .expect("process event");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [DispatchOutcome::Launched { .. }]
+        ));
+        let state = core
+            .state_store
+            .load_latest_for_pr(&pr())
+            .expect("load state")
+            .expect("state saved");
+        let lead = state.run_history[0]
+            .provenance
+            .iter()
+            .find(|provenance| provenance.agent_id == AgentId("lead-claude".to_owned()))
+            .expect("lead provenance");
+        let ProvenanceVerification::Verified { lineage, .. } = &lead.verification else {
+            panic!("lead provenance is verified");
+        };
+        assert_eq!(lineage.model, "claude-sonnet-4-5");
+        assert_ne!(lineage.model, "claude-stable");
     }
 
     #[test]

@@ -2505,6 +2505,7 @@ mod tests {
                 .template
                 .contains("native_codex_review_path")
         );
+        assert!(!review_template.template.contains("{{brief_id}}"));
         let slots = pack
             .manifest
             .workflow_scripts
