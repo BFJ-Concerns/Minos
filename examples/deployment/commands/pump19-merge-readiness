@@ -152,8 +152,6 @@ done
 # unreachable.
 status=0
 timeout "$check_timeout" "$runner_bin" run --rm \
-  --read-only \
-  --cap-drop=ALL \
   --security-opt=no-new-privileges \
   --pids-limit 512 \
   --memory 2147483648 \
@@ -166,7 +164,7 @@ timeout "$check_timeout" "$runner_bin" run --rm \
   --env GIT_TERMINAL_PROMPT=0 \
   --env HOME=/workspace/home \
   --env NPM_CONFIG_CACHE=/workspace/.npm \
-  --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --env PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   --env SHELL=/bin/sh \
   --volume "$tmp/repo:/workspace:rw" \
   --workdir /workspace \

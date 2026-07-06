@@ -395,7 +395,7 @@ mod tests {
     use super::*;
 
     fn config() -> ForgejoNormalisationConfig {
-        ForgejoNormalisationConfig::new("pump19-finish")
+        ForgejoNormalisationConfig::new("Ready")
     }
 
     fn snapshot_fixture() -> ForgejoPullRequestSnapshot {
@@ -410,7 +410,7 @@ mod tests {
                 "mergeability": "mergeable",
                 "labels": [
                     {
-                        "name": "pump19-finish",
+                        "name": "Ready",
                         "applied_by": {
                             "id": "core",
                             "display_name": "Pump-19 Core"

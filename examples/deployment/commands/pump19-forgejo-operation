@@ -132,9 +132,22 @@ case "$operation" in
     response=$(api_json POST "/repos/$repository/issues/$pr_id/labels" "$body")
     receipt "$(printf '%s' "$response" | jq -r --arg label "$label" 'if type == "array" then (.[-1].id // .[-1].name // $label) else (.id // .name // $label) end | tostring')"
     ;;
+  apply_reaction)
+    content=$(printf '%s' "$input" | jq -r '.content')
+    body=$(jq -nc --arg content "$content" '{content:$content}')
+    response=$(api_json POST "/repos/$repository/issues/$pr_id/reactions" "$body")
+    receipt "$(printf '%s' "$response" | jq -r --arg content "$content" '(.id // .content // $content) | tostring')"
+    ;;
+  remove_reaction)
+    content=$(printf '%s' "$input" | jq -r '.content')
+    body=$(jq -nc --arg content "$content" '{content:$content}')
+    response=$(api_json DELETE "/repos/$repository/issues/$pr_id/reactions" "$body")
+    receipt "$(printf '%s' "$response" | jq -r --arg content "$content" '(.id // .content // $content) | tostring')"
+    ;;
   merge)
     method=$(printf '%s' "$input" | jq -r '.method')
-    body=$(jq -nc --arg method "$method" '{Do:$method}')
+    delete_branch_after_merge=$(printf '%s' "$input" | jq -r '.delete_branch_after_merge // true')
+    body=$(jq -nc --arg method "$method" --argjson delete_branch_after_merge "$delete_branch_after_merge" '{Do:$method, delete_branch_after_merge:$delete_branch_after_merge}')
     response=$(api_json POST "/repos/$repository/pulls/$pr_id/merge" "$body")
     receipt "$(printf '%s' "$response" | jq -r '(.sha // .commit_id // "merge") | tostring')"
     ;;

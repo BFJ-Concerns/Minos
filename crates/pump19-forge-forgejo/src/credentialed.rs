@@ -134,6 +134,32 @@ pub trait ForgejoCommandClient {
         metadata: &ForgejoCommandMetadata,
     ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
 
+    /// Applies a reaction to a PR issue thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Forgejo rejects the request or the client cannot
+    /// reach Forgejo.
+    fn apply_pr_reaction(
+        &mut self,
+        pr: &PullRequestRef,
+        content: &str,
+        metadata: &ForgejoCommandMetadata,
+    ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
+
+    /// Removes a reaction from a PR issue thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Forgejo rejects the request or the client cannot
+    /// reach Forgejo.
+    fn remove_pr_reaction(
+        &mut self,
+        pr: &PullRequestRef,
+        content: &str,
+        metadata: &ForgejoCommandMetadata,
+    ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
+
     /// Merges a PR at the observed head revision.
     ///
     /// # Errors
@@ -144,6 +170,7 @@ pub trait ForgejoCommandClient {
         &mut self,
         pr: &PullRequestRef,
         method: &str,
+        delete_branch_after_merge: bool,
         metadata: &ForgejoCommandMetadata,
     ) -> Result<ForgejoCommandReceipt, ForgejoClientError>;
 

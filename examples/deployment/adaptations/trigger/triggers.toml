@@ -241,7 +241,7 @@ kind = "event"
 
 [rules.criteria.criteria.event]
 event = "label_applied"
-name = "pump19-finish"
+name = "Ready"
 
 [[rules.criteria.criteria]]
 kind = "state"

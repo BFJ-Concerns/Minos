@@ -2,13 +2,14 @@
 set -eu
 
 base_url=
-finish_label=pump19-finish
+finish_label=Ready
+state_root=${PUMP19_STATE_ROOT:-}
 curl_bin=${PUMP19_FORGEJO_CURL:-curl}
 detail_attempts=${PUMP19_FORGEJO_DETAIL_ATTEMPTS:-3}
 detail_sleep=${PUMP19_FORGEJO_DETAIL_SLEEP:-1}
 
 usage() {
-  echo "usage: pump19-forgejo-poll --base-url URL [--finish-label LABEL] owner/repo" >&2
+  echo "usage: pump19-forgejo-poll --base-url URL [--finish-label LABEL] [--state-root DIR] owner/repo" >&2
   exit 64
 }
 
@@ -22,6 +23,11 @@ while [ "$#" -gt 0 ]; do
     --finish-label)
       [ "$#" -ge 2 ] || usage
       finish_label=$2
+      shift 2
+      ;;
+    --state-root)
+      [ "$#" -ge 2 ] || usage
+      state_root=$2
       shift 2
       ;;
     --help|-h)
@@ -55,6 +61,25 @@ api_json() {
     printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN"
     printf 'header = "Accept: application/json"\n'
   } | "$curl_bin" -fsS -K - "$base_url/api/v1$1"
+}
+
+state_cleanliness() {
+  [ -n "$state_root" ] || {
+    printf '%s\n' dirty
+    return
+  }
+  repository_key=$(printf '%s' "$repository" | tr '/' '_')
+  state_file="$state_root/${repository_key}__${1}__${2}.json"
+  [ -f "$state_file" ] || {
+    printf '%s\n' dirty
+    return
+  }
+  jq -r --arg head "$2" '
+    if (.commit_sha == $head and .verdict.verdict == "converged")
+    then "clean"
+    else "dirty"
+    end
+  ' "$state_file"
 }
 
 user_json=$(api_json "/user")
@@ -113,7 +138,8 @@ while IFS= read -r pull_json; do
     else map({name: $finish, applied_by: {id, display_name}})
     end
   ')
-  cleanliness=$(printf '%s' "$labels_json" | jq -r 'if length > 0 then "clean" else "dirty" end')
+  head_sha=$(printf '%s' "$pull_json" | jq -r '.head.sha // ""')
+  cleanliness=$(state_cleanliness "$pr_id" "$head_sha")
   : > "$tmp/actor-permissions.jsonl"
   printf '%s' "$label_actors_json" | jq -c '.[]' > "$tmp/label-actors.jsonl"
   while IFS= read -r actor_json; do
