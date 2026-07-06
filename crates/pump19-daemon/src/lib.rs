@@ -23,6 +23,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod archive_retention;
+
+use archive_retention::{
+    ArchiveRetentionConfig, ArchiveRetentionSummary, enforce_archive_retention,
+    retention_failure_event,
+};
 use pump19_adaptations::{
     MechanicalExecution, MechanicalPack, MechanicalStep, MechanicalStepKind, PromptPack,
     PromptTemplate, WorkflowSlot, load_mechanical_pack, load_prompt_pack, load_trigger_rules,
@@ -117,6 +123,8 @@ pub struct DaemonConfig {
     pub workspace: WorkspaceDaemonConfig,
     pub ensemble: EnsembleDaemonConfig,
     pub forgejo: ForgejoDaemonConfig,
+    #[serde(default)]
+    pub archive_retention: ArchiveRetentionConfig,
     #[serde(default)]
     pub loop_control: LoopControlConfig,
 }
@@ -287,6 +295,8 @@ pub struct DaemonRunSummary {
     pub recovered_stale_running_events: usize,
     pub recovery_errors_continued: usize,
     pub dispatch_errors_continued: usize,
+    pub archive_retention_pruned: usize,
+    pub archive_retention_errors_continued: usize,
     pub stopped_by_shutdown: bool,
 }
 
@@ -314,6 +324,8 @@ pub fn run_from_config(mut config: DaemonConfig) -> Result<(), DaemonError> {
             "recovered_stale_running_events": summary.recovered_stale_running_events,
             "recovery_errors_continued": summary.recovery_errors_continued,
             "dispatch_errors_continued": summary.dispatch_errors_continued,
+            "archive_retention_pruned": summary.archive_retention_pruned,
+            "archive_retention_errors_continued": summary.archive_retention_errors_continued,
             "stopped_by_shutdown": summary.stopped_by_shutdown,
         }),
     );
@@ -490,17 +502,28 @@ struct Pump19Daemon<C> {
     core: C,
     poll_interval: Duration,
     stop_after_quiet_polls: Option<u32>,
+    archive_retention: ArchiveRetentionRuntime,
 }
 
 impl<C> Pump19Daemon<C>
 where
     C: CoreRunner,
 {
-    const fn new(core: C, loop_control: LoopControlConfig) -> Self {
+    #[cfg(test)]
+    fn new(core: C, loop_control: LoopControlConfig) -> Self {
+        Self::with_archive_retention(core, loop_control, ArchiveRetentionRuntime::disabled())
+    }
+
+    const fn with_archive_retention(
+        core: C,
+        loop_control: LoopControlConfig,
+        archive_retention: ArchiveRetentionRuntime,
+    ) -> Self {
         Self {
             core,
             poll_interval: Duration::from_millis(loop_control.poll_interval_ms),
             stop_after_quiet_polls: loop_control.stop_after_quiet_polls,
+            archive_retention,
         }
     }
 
@@ -511,6 +534,7 @@ where
     ) -> Result<DaemonRunSummary, DaemonError> {
         let mut summary = DaemonRunSummary::default();
         self.rederive_pending_completions(&mut summary)?;
+        self.enforce_archive_retention(&mut summary);
         loop {
             if shutdown.should_shutdown() {
                 summary.stopped_by_shutdown = true;
@@ -543,11 +567,14 @@ where
                             "pending_events": self.core.pending_event_count(),
                         }),
                     );
+                    self.enforce_archive_retention(&mut summary);
                 }
                 Ok(None) => {
                     if self.rederive_pending_completions(&mut summary)? {
+                        self.enforce_archive_retention(&mut summary);
                         continue;
                     }
+                    self.enforce_archive_retention(&mut summary);
                     summary.quiet_polls = summary.quiet_polls.saturating_add(1);
                     log_daemon_event(
                         "info",
@@ -566,45 +593,50 @@ where
                     thread::sleep(self.poll_interval);
                 }
                 Err(error) if core_error_is_daemon_fatal(&error) => {
-                    log_daemon_event(
-                        "error",
-                        "daemon_fatal_core_error",
-                        &json!({
-                            "class": core_error_class(&error),
-                            "error": error.to_string(),
-                        }),
-                    );
+                    log_fatal_core_error(&error);
                     return Err(DaemonError::Core(error));
                 }
                 Err(error) => {
-                    summary.dispatch_errors_continued += 1;
-                    let event_source_error = matches!(error, CoreError::EventSource(_));
-                    let retry_is_poll_interval_paced = true;
-                    if event_source_error {
-                        summary.quiet_polls = summary.quiet_polls.saturating_add(1);
-                    } else {
-                        summary.quiet_polls = 0;
+                    handle_dispatch_error(&error, &mut summary);
+                    if self
+                        .stop_after_quiet_polls
+                        .is_some_and(|limit| summary.quiet_polls >= limit)
+                    {
+                        return Ok(summary);
                     }
+                    thread::sleep(self.poll_interval);
+                }
+            }
+        }
+    }
+
+    fn enforce_archive_retention(&self, summary: &mut DaemonRunSummary) {
+        match self.archive_retention.enforce(SystemTime::now()) {
+            Ok(retention) => {
+                summary.archive_retention_pruned += retention.pruned;
+                if retention.pruned > 0 {
                     log_daemon_event(
-                        "error",
-                        "dispatch_error_continued",
+                        "info",
+                        "archive_retention",
                         &json!({
-                            "class": core_error_class(&error),
-                            "error": error.to_string(),
-                            "continued_errors": summary.dispatch_errors_continued,
-                            "retry_after_poll_interval": retry_is_poll_interval_paced,
+                            "candidates": retention.candidates,
+                            "pruned": retention.pruned,
+                            "total_pruned": summary.archive_retention_pruned,
                         }),
                     );
-                    if retry_is_poll_interval_paced {
-                        if self
-                            .stop_after_quiet_polls
-                            .is_some_and(|limit| summary.quiet_polls >= limit)
-                        {
-                            return Ok(summary);
-                        }
-                        thread::sleep(self.poll_interval);
-                    }
                 }
+            }
+            Err(error) => {
+                summary.archive_retention_errors_continued += 1;
+                log_daemon_event(
+                    "error",
+                    "archive_retention_error_continued",
+                    &json!({
+                        "class": core_error_class(&error),
+                        "error": error.to_string(),
+                        "continued_errors": summary.archive_retention_errors_continued,
+                    }),
+                );
             }
         }
     }
@@ -669,6 +701,60 @@ where
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ArchiveRetentionRuntime {
+    enabled: bool,
+    policy: ArchiveRetentionConfig,
+    state_root: PathBuf,
+    frame_run_root: PathBuf,
+    operator_log_path: PathBuf,
+}
+
+impl ArchiveRetentionRuntime {
+    fn new(config: &DaemonConfig) -> Self {
+        Self {
+            enabled: true,
+            policy: config.archive_retention.clone(),
+            state_root: config.state_root.clone(),
+            frame_run_root: config.ensemble.archive_root.join("frame-runs"),
+            operator_log_path: config.state_root.join("operator.log.jsonl"),
+        }
+    }
+
+    #[cfg(test)]
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            policy: ArchiveRetentionConfig::default(),
+            state_root: PathBuf::new(),
+            frame_run_root: PathBuf::new(),
+            operator_log_path: PathBuf::new(),
+        }
+    }
+
+    fn enforce(&self, now: SystemTime) -> Result<ArchiveRetentionSummary, CoreError> {
+        if !self.enabled {
+            return Ok(ArchiveRetentionSummary::default());
+        }
+        let mut operator_log = RuntimeOperatorLog::new(self.operator_log_path.clone());
+        match enforce_archive_retention(
+            &self.policy,
+            &self.state_root,
+            &self.frame_run_root,
+            &mut operator_log,
+            now,
+        ) {
+            Ok(summary) => Ok(summary),
+            Err(error) => {
+                let _ = operator_log.record(retention_failure_event(format!(
+                    "archive retention failed: {error}"
+                )));
+                Err(error)
+            }
+        }
+    }
+}
+
 const fn recovery_has_active_work(recovery: &CompletionRecoverySummary) -> bool {
     recovery.queued > 0
         || recovery.terminal_replays > 0
@@ -696,6 +782,36 @@ fn completion_recovery_event_fields(recovery: &CompletionRecoverySummary) -> Vec
             })
         })
         .collect()
+}
+
+fn log_fatal_core_error(error: &CoreError) {
+    log_daemon_event(
+        "error",
+        "daemon_fatal_core_error",
+        &json!({
+            "class": core_error_class(error),
+            "error": error.to_string(),
+        }),
+    );
+}
+
+fn handle_dispatch_error(error: &CoreError, summary: &mut DaemonRunSummary) {
+    summary.dispatch_errors_continued += 1;
+    if matches!(error, CoreError::EventSource(_)) {
+        summary.quiet_polls = summary.quiet_polls.saturating_add(1);
+    } else {
+        summary.quiet_polls = 0;
+    }
+    log_daemon_event(
+        "error",
+        "dispatch_error_continued",
+        &json!({
+            "class": core_error_class(error),
+            "error": error.to_string(),
+            "continued_errors": summary.dispatch_errors_continued,
+            "retry_after_poll_interval": true,
+        }),
+    );
 }
 
 trait CoreRunner {
@@ -819,6 +935,7 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         .prompt_pack
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let archive_retention = ArchiveRetentionRuntime::new(&config);
     let launcher = runtime_launcher_from_config(
         &config,
         &prompt_pack,
@@ -857,7 +974,11 @@ fn build_daemon(config: DaemonConfig) -> Result<Pump19Daemon<RuntimeCore>, Daemo
         operator_log,
         policy,
     );
-    Ok(Pump19Daemon::new(core, config.loop_control))
+    Ok(Pump19Daemon::with_archive_retention(
+        core,
+        config.loop_control,
+        archive_retention,
+    ))
 }
 
 fn record_prompt_pack_warnings<T: std::fmt::Debug>(
@@ -3017,6 +3138,7 @@ stop_after_quiet_polls = 1
         );
         assert_eq!(config.loop_control.stop_after_quiet_polls, Some(1));
         assert!(!config.forgejo.core_applies_finish_label_on_convergence);
+        assert_eq!(config.archive_retention.keep_days, 14);
     }
 
     #[test]
@@ -3756,6 +3878,7 @@ exit 1
                     env: BTreeMap::new(),
                 },
             },
+            archive_retention: ArchiveRetentionConfig::default(),
             loop_control: LoopControlConfig::default(),
         }
     }

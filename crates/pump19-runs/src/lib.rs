@@ -26,7 +26,7 @@ use pump19_contract::{
     CoverageRecord, FamilySplit, Finding, FindingId, FindingLocation, FindingVerification,
     ForgeFacts, ManifestBounds, ManifestBrief, ManifestLoopHistory, ManifestRepositoryPolicy,
     ManifestWorkspace, ModelProvenance, Patch, PatchChange, PatchId, PriorityClass, ReviewVerdict,
-    RunKind, RunManifest, RunOutcome, SessionArchiveKind, SessionArchiveRef, SourceRange,
+    RunId, RunKind, RunManifest, RunOutcome, SessionArchiveKind, SessionArchiveRef, SourceRange,
     VerificationStatus,
 };
 use pump19_core::{
@@ -398,6 +398,12 @@ pub struct LeadSessionFrameConfig {
     pub materiality_threshold: PriorityClass,
     pub lead_engine: LeadEngineConfig,
     pub native_codex_review: Option<NativeCodexReviewConfig>,
+}
+
+/// Returns the directory name used for a frame-run archive.
+#[must_use]
+pub fn frame_run_archive_dir_name(run_id: &RunId) -> String {
+    safe_path_segment(&run_id.0)
 }
 
 /// Result from one frame-driven review pass.

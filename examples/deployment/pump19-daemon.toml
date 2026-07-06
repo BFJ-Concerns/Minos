@@ -18,6 +18,17 @@ launcher_path = "node_modules/.bin/ensemble"
 archive_root = "archives"
 timeout_ms = 600000
 
+[archive_retention]
+# Default: keep every terminal frame-run archive for 14 days before pruning.
+keep_days = 14
+# Default: preserve at least two terminal archives for each pull request even
+# after they age out, so a quiet PR still has recent provenance to inspect.
+keep_terminal_runs_per_pr = 2
+# Default: once archives are outside the age window, keep at most this many
+# terminal archives per pull request. Set higher for repositories with long
+# review loops that need a deeper audit trail.
+max_terminal_runs_per_pr = 50
+
 [forgejo]
 repositories = ["REPLACE_WITH_OWNER/REPOSITORY"]
 finish_label = "Ready"

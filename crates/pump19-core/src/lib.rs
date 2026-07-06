@@ -240,6 +240,7 @@ pub enum OperatorLogEventKind {
     LaunchRefusal,
     ConfigWarning,
     IndependenceDegradation,
+    ArchiveRetention,
 }
 
 /// Records operational events for the deployment operator.
@@ -8664,9 +8665,11 @@ mod tests {
             .iter()
             .find(|provenance| provenance.agent_id == AgentId("lead-claude".to_owned()))
             .expect("lead provenance");
-        let ProvenanceVerification::Verified { lineage, .. } = &lead.verification else {
-            panic!("lead provenance is verified");
-        };
+        let lineage = match &lead.verification {
+            ProvenanceVerification::Verified { lineage, .. } => Some(lineage),
+            ProvenanceVerification::Unverified { .. } => None,
+        }
+        .expect("lead provenance is verified");
         assert_eq!(lineage.model, "claude-sonnet-4-5");
         assert_ne!(lineage.model, "claude-stable");
     }

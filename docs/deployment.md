@@ -121,6 +121,30 @@ records the Ensemble archive under the run archive. `pump19-exec <cmd...>` is
 the sanctioned command an agent uses for PR-code execution inside the workspace
 container.
 
+Frame-run archives are bounded by `[archive_retention]` in the daemon config.
+The shipped defaults are deliberately on, not advisory:
+
+```toml
+[archive_retention]
+keep_days = 14
+keep_terminal_runs_per_pr = 2
+max_terminal_runs_per_pr = 50
+```
+
+Retention keeps every terminal run archive inside the age window. Once archives
+are older than `keep_days`, the daemon prunes oldest-first until the pull
+request is at or below `max_terminal_runs_per_pr`, while preserving at least
+`keep_terminal_runs_per_pr` terminal archives for that pull request.
+`max_terminal_runs_per_pr` never authorises deleting archives that are still
+inside `keep_days`.
+
+Only terminal run archives under `ensemble.archive_root/frame-runs/` are
+eligible. The daemon never prunes the durable `state_root`, active runs, or any
+`.superseded.*` sibling for a run id that is currently active. `.superseded.*`
+siblings for terminal runs age out under the same policy as the main run
+directory. Each prune is appended to `state/operator.log.jsonl` with the PR,
+run id, run kind, pass index and commit SHA before the directory is removed.
+
 ## Review And Fix Bodies
 
 Review runs use `LeadSessionReviewBody`:
