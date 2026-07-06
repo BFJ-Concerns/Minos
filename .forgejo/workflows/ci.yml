@@ -20,9 +20,10 @@ jobs:
     container:
       image: rust:1
     steps:
-      # jq for the labelling step.
+      # node runs the JS actions (checkout, rust-cache); jq is for the
+      # labelling step.
       - name: Install system deps
-        run: apt-get update -qq && apt-get install -y -qq jq
+        run: apt-get update -qq && apt-get install -y -qq nodejs jq
 
       - uses: actions/checkout@v4
 
