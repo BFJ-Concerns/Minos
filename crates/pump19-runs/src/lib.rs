@@ -836,8 +836,11 @@ fn run_native_codex_review(
             native.reviewer_agent_id.0
         )));
     }
-    let review_tree =
-        prepare_native_codex_review_tree(&request.workspace.root, run_dir, &run_dir.join("out/diff.patch"))?;
+    let review_tree = prepare_native_codex_review_tree(
+        &request.workspace.root,
+        run_dir,
+        &run_dir.join("out/diff.patch"),
+    )?;
     let run = engine.launch_codex_review(&CodexReviewSpec {
         executable: native.executable.clone(),
         working_dir: review_tree,
@@ -890,7 +893,10 @@ fn prepare_native_codex_review_tree(
         &[workspace_root.join(".pump19"), run_dir.to_path_buf()],
     )?;
     run_git_for_native_review(&review_tree, ["init", "-q"])?;
-    run_git_for_native_review(&review_tree, ["config", "user.email", "pump19@example.invalid"])?;
+    run_git_for_native_review(
+        &review_tree,
+        ["config", "user.email", "pump19@example.invalid"],
+    )?;
     run_git_for_native_review(&review_tree, ["config", "user.name", "Pump-19"])?;
     run_git_for_native_review(
         &review_tree,
@@ -898,7 +904,10 @@ fn prepare_native_codex_review_tree(
     )?;
     run_git_for_native_review(&review_tree, ["add", "-A"])?;
     run_git_for_native_review(&review_tree, ["commit", "-q", "-m", "pump19-review-base"])?;
-    run_git_for_native_review(&review_tree, ["apply", diff_path.to_str().unwrap_or_default()])?;
+    run_git_for_native_review(
+        &review_tree,
+        ["apply", diff_path.to_str().unwrap_or_default()],
+    )?;
     Ok(review_tree)
 }
 
@@ -911,7 +920,10 @@ fn run_git_for_native_review<const N: usize>(
         .args(args)
         .output()
         .map_err(|source| RunBodyError::FrameIo {
-            action: format!("run git for native Codex review in {}", working_dir.display()),
+            action: format!(
+                "run git for native Codex review in {}",
+                working_dir.display()
+            ),
             source,
         })?;
     if output.status.success() {
