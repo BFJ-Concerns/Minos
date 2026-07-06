@@ -2087,6 +2087,15 @@ missing required fields, enum spellings, and JSON formatting needed to satisfy
 the schema. If a required textual field has no source content, use an empty
 string rather than inventing a claim.
 
+For Pump-19 lead review payloads, verdict_proposal is a tagged union whose
+verdict value must be exactly one of: converged, findings_posted,
+standing_findings, bar_failed, bar_check_degraded, or partial_coverage.
+Never emit synonyms such as approved, ready, clean, accept, or approve. If the
+invalid output substantively says there are no findings and the PR is ready,
+but lacks a schema-valid bar_check, preserve that meaning by emitting
+{"verdict":"bar_check_degraded","attempts":0,"last_error":"lead proposed clean convergence without a schema-valid bar_check"}
+so the review frame can launch its authorised bar-check retry.
+
 <validation_errors>
 ${JSON.stringify(args.errors || [])}
 </validation_errors>

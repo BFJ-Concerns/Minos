@@ -3,6 +3,7 @@
     test,
     allow(
         clippy::expect_used,
+        clippy::panic,
         clippy::unwrap_used,
         reason = "unit tests use small fakes and direct fixture assertions"
     )
@@ -130,6 +131,8 @@ pub enum RunBodyError {
     MissingEnsembleArchive(String),
     #[error("ensemble archive is ambiguous under {0}")]
     AmbiguousEnsembleArchive(String),
+    #[error("ensemble archive is incomplete at {0}")]
+    IncompleteEnsembleArchive(String),
     #[error("ensemble archive is malformed at {path}: {source}")]
     MalformedEnsembleArchive {
         path: String,
@@ -1191,6 +1194,7 @@ fn reconcile_workflow_archives(
             Ok(evidence) => evidence,
             Err(
                 RunBodyError::MissingEnsembleArchive(_)
+                | RunBodyError::IncompleteEnsembleArchive(_)
                 | RunBodyError::MalformedEnsembleArchive { .. },
             ) if archive.slot == ReviewWorkflowSlot::BarCheck => {
                 skipped_bar_check_error = Some(RunBodyError::EnsembleArchiveMismatch(format!(
@@ -1215,10 +1219,8 @@ fn reconcile_workflow_archives(
             });
         }
     }
-    if !proved_bar_check_archive {
-        if let Some(error) = skipped_bar_check_error {
-            return Err(error);
-        }
+    if !proved_bar_check_archive && let Some(error) = skipped_bar_check_error {
+        return Err(error);
     }
     Ok(refs)
 }
@@ -2072,12 +2074,15 @@ fn make_executable(path: &Path) -> Result<(), RunBodyError> {
     }
 }
 
-const REVIEW_OUTPUT_SCHEMA: &str = r#"{
+const REVIEW_OUTPUT_SCHEMA: &str = r##"{
   "type": "object",
   "additionalProperties": false,
   "required": ["findings", "coverage", "verdict_proposal", "session_notes"],
   "properties": {
-    "findings": { "type": "array" },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
     "coverage": {
       "type": "object",
       "additionalProperties": true,
@@ -2090,10 +2095,244 @@ const REVIEW_OUTPUT_SCHEMA: &str = r#"{
         "extensions": { "type": "object" }
       }
     },
-    "verdict_proposal": { "type": "object" },
+    "verdict_proposal": { "$ref": "#/$defs/verdict_proposal" },
     "session_notes": { "type": "string" }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dedup_hint",
+        "source_brief",
+        "title",
+        "explanation",
+        "priority",
+        "producer_agent_id",
+        "locations",
+        "verification"
+      ],
+      "properties": {
+        "dedup_hint": { "type": "string" },
+        "source_brief": { "type": "string" },
+        "title": { "type": "string" },
+        "explanation": { "type": "string" },
+        "suggestion": { "type": ["string", "null"] },
+        "priority": { "type": "string", "enum": ["p0", "p1", "p2", "p3"] },
+        "certainty": { "type": "string", "enum": ["advisory", "blocking"] },
+        "producer_agent_id": { "type": "string" },
+        "locations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "line"],
+            "properties": {
+              "path": { "type": "string" },
+              "line": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "cross_family"],
+          "properties": {
+            "status": { "type": "string", "enum": ["verified", "rejected", "unverified"] },
+            "reason": { "type": ["string", "null"] },
+            "verifier_agent_id": { "type": ["string", "null"] },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "line"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "line": { "type": "integer", "minimum": 1 },
+                  "quote": { "type": ["string", "null"] },
+                  "note": { "type": ["string", "null"] }
+                }
+              }
+            },
+            "cross_family": {
+              "type": "string",
+              "enum": ["cross_family", "same_family", "unknown"]
+            }
+          }
+        }
+      }
+    },
+    "contract_version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["major", "minor"],
+      "properties": {
+        "major": { "type": "integer" },
+        "minor": { "type": "integer" }
+      }
+    },
+    "freshness": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "pass_index"],
+          "properties": {
+            "state": { "const": "fresh_for_pass" },
+            "pass_index": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "original_session_id"],
+          "properties": {
+            "state": { "const": "reused" },
+            "original_session_id": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason"],
+          "properties": {
+            "state": { "const": "unknown" },
+            "reason": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "model"],
+      "properties": {
+        "family": { "type": "string" },
+        "model": { "type": "string" }
+      }
+    },
+    "provenance_verification": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "vendor", "control_plane", "lineage"],
+          "properties": {
+            "state": { "const": "verified" },
+            "vendor": { "type": "string" },
+            "control_plane": { "type": "string" },
+            "lineage": { "$ref": "#/$defs/lineage" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason"],
+          "properties": {
+            "state": { "const": "unverified" },
+            "reason": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "model_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "agent_id",
+        "role",
+        "session_id",
+        "engine",
+        "freshness",
+        "verification"
+      ],
+      "properties": {
+        "contract_version": { "$ref": "#/$defs/contract_version" },
+        "agent_id": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["lead", "reviewer", "verifier", "bar_check", "fixer", "finish"]
+        },
+        "session_id": { "type": "string" },
+        "engine": { "type": "string" },
+        "freshness": { "$ref": "#/$defs/freshness" },
+        "verification": { "$ref": "#/$defs/provenance_verification" },
+        "extensions": { "type": "object" }
+      }
+    },
+    "bar_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "provenance", "rationale"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "provenance": { "$ref": "#/$defs/model_provenance" },
+        "rationale": { "type": "string" },
+        "extensions": { "type": "object" }
+      }
+    },
+    "verdict_proposal": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "bar_check"],
+          "properties": {
+            "verdict": { "const": "converged" },
+            "bar_check": { "$ref": "#/$defs/bar_check" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict"],
+          "properties": {
+            "verdict": { "const": "findings_posted" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "finding_dedup_keys", "rationale"],
+          "properties": {
+            "verdict": { "const": "standing_findings" },
+            "finding_dedup_keys": { "type": "array", "items": { "type": "string" } },
+            "rationale": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "bar_check"],
+          "properties": {
+            "verdict": { "const": "bar_failed" },
+            "bar_check": { "$ref": "#/$defs/bar_check" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "attempts", "last_error"],
+          "properties": {
+            "verdict": { "const": "bar_check_degraded" },
+            "attempts": { "type": "integer", "minimum": 0 },
+            "last_error": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict"],
+          "properties": {
+            "verdict": { "const": "partial_coverage" }
+          }
+        }
+      ]
+    }
   }
-}"#;
+}"##;
 
 /// Site-side description of the repository under review.
 ///
@@ -3046,10 +3285,21 @@ fn reconcile_ensemble_archive(
                 source,
             }
         })?;
-    if manifest.status != "complete" || manifest.result.exit_code != 0 {
+    if manifest.status != "complete" {
+        return Err(RunBodyError::IncompleteEnsembleArchive(format!(
+            "{} status {:?}",
+            manifest_path.display(),
+            manifest.status
+        )));
+    }
+    if let Some(exit_code) = manifest
+        .result
+        .get("exit_code")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|exit_code| *exit_code != 0)
+    {
         return Err(RunBodyError::EnsembleArchiveMismatch(format!(
-            "archive status {:?} with exit code {}",
-            manifest.status, manifest.result.exit_code
+            "archive exit code {exit_code}"
         )));
     }
 
@@ -3214,7 +3464,7 @@ pub struct EnsembleArchiveEvidence {
 #[derive(Debug, Deserialize)]
 struct EnsembleRunManifest {
     files: Vec<EnsembleArchiveFile>,
-    result: EnsembleArchiveResult,
+    result: Value,
     run_id: String,
     status: String,
 }
@@ -3222,11 +3472,6 @@ struct EnsembleRunManifest {
 #[derive(Debug, Deserialize)]
 struct EnsembleArchiveFile {
     path: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-struct EnsembleArchiveResult {
-    exit_code: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4583,6 +4828,74 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
     }
 
     #[test]
+    fn review_output_schema_rejects_live_legacy_shapes_before_repair() {
+        let schema: Value =
+            serde_json::from_str(REVIEW_OUTPUT_SCHEMA).expect("review output schema is JSON");
+        let findings = schema["properties"]["findings"]["items"]["$ref"]
+            .as_str()
+            .expect("findings item schema");
+        let verdict = &schema["$defs"]["verdict_proposal"];
+        let verdict_variants = verdict["oneOf"].as_array().expect("verdict variants");
+
+        assert_eq!(findings, "#/$defs/finding");
+        assert!(
+            schema["$defs"]["finding"]["required"]
+                .as_array()
+                .expect("finding required fields")
+                .iter()
+                .any(|field| field == "title")
+        );
+        assert!(
+            verdict_variants.iter().any(|variant| {
+                variant["properties"]["verdict"]["const"] == "converged"
+                    && variant["required"]
+                        .as_array()
+                        .expect("converged required fields")
+                        .iter()
+                        .any(|field| field == "bar_check")
+            }),
+            "clean convergence must include a schema-valid bar_check"
+        );
+        assert!(
+            !verdict_variants.iter().any(|variant| {
+                matches!(
+                    variant["properties"]["verdict"]["const"].as_str(),
+                    Some("approved" | "approve" | "accept")
+                )
+            }),
+            "live approval synonyms must be repaired before Rust deserialisation"
+        );
+    }
+
+    #[test]
+    fn live_archived_lead_outputs_need_schema_repair_before_frame_parse() {
+        let widget_1 = archived_lead_result(include_str!(
+            "../tests/fixtures/live-launcher-failures/widget-1/lead-stdout.log"
+        ));
+        let widget_2 = archived_lead_result(include_str!(
+            "../tests/fixtures/live-launcher-failures/widget-2/lead-stdout.log"
+        ));
+
+        let widget_1_error = serde_json::from_value::<LeadReviewPayload>(widget_1)
+            .expect_err("Widget #1 emitted the pre-contract approval shape");
+        let widget_2_error = serde_json::from_value::<LeadReviewPayload>(widget_2)
+            .expect_err("Widget #2 emitted the pre-contract acceptance shape");
+
+        assert!(
+            widget_1_error
+                .to_string()
+                .contains("missing field `verdict`"),
+            "{widget_1_error}"
+        );
+        assert!(
+            widget_2_error
+                .to_string()
+                .contains("missing field `verdict`"),
+            "{widget_2_error}"
+        );
+    }
+
+    #[test]
     fn numbered_bar_check_archives_skip_malformed_failed_retry() {
         let root = tempfile::tempdir().expect("run root");
         let req = frame_request(root.path());
@@ -4599,6 +4912,54 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].role, AgentRole::BarCheck);
         assert!(refs[0].path.ends_with("2"));
+    }
+
+    #[test]
+    fn workflow_archive_reconciliation_ignores_nullable_manifest_exit_code() {
+        let root = tempfile::tempdir().expect("run root");
+        let archive_root = root.path().join("archive/workflows/bar-check/1");
+        write_archive(&archive_root, &[archive_agent("bar-codex", "codex")]);
+        let manifest = archive_root.join("runs/cwd/test/test-run/manifest.json");
+        let mut manifest_json: Value =
+            serde_json::from_str(&fs::read_to_string(&manifest).expect("read manifest"))
+                .expect("manifest JSON");
+        manifest_json["result"]["exit_code"] = Value::Null;
+        fs::write(
+            &manifest,
+            serde_json::to_string_pretty(&manifest_json).expect("serialise manifest"),
+        )
+        .expect("write manifest");
+
+        let req = frame_request(root.path());
+        let refs = reconcile_workflow_archives(&req, root.path())
+            .expect("nullable non-provenance manifest fields do not hide proved agents");
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].role, AgentRole::BarCheck);
+        assert!(refs[0].path.ends_with("bar-check/1"));
+    }
+
+    #[test]
+    fn live_archived_bar_check_manifest_parses_through_minimal_projection() {
+        let manifest = serde_json::from_str::<EnsembleRunManifest>(include_str!(
+            "../tests/fixtures/live-launcher-failures/widget-10/bar-check-manifest.json"
+        ))
+        .expect("live Widget #10 bar-check manifest parses");
+
+        assert_eq!(manifest.status, "complete");
+        assert_eq!(
+            manifest
+                .result
+                .get("exit_code")
+                .and_then(serde_json::Value::as_i64),
+            Some(0)
+        );
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|file| file.path.ends_with("agent.json"))
+        );
     }
 
     #[test]
@@ -5049,6 +5410,14 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
 "#,
         )
         .expect("write in-progress manifest");
+    }
+
+    fn archived_lead_result(stdout_log: &str) -> Value {
+        let envelope: Value = serde_json::from_str(stdout_log).expect("lead stdout JSON envelope");
+        let result = envelope["result"]
+            .as_str()
+            .expect("lead stdout result string");
+        serde_json::from_str(result).expect("lead result JSON")
     }
 
     #[test]
