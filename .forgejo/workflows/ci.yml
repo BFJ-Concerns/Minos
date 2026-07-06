@@ -48,8 +48,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # workflow_shim_executes_large_payload_under_real_ensemble needs the
+      # bundled Ensemble launcher (PUMP19_TEST_ENSEMBLE_MJS / a dev-box skill
+      # install), which CI does not have yet — see the annexe ISSUES.md entry
+      # (2026-07-06) for wiring a real launcher in and removing this filter.
       - name: Rust tests (nextest, ci profile)
-        run: cargo nextest run --workspace --profile ci
+        run: |
+          cargo nextest run --workspace --profile ci \
+            -E 'not test(workflow_shim_executes_large_payload_under_real_ensemble)'
 
       # A flaky test is one nextest saw fail and then pass on retry: the run
       # is green, but the junit report carries <flakyFailure> elements and the
