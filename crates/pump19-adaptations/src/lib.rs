@@ -1639,6 +1639,13 @@ speculative claims, and pre-existing problems on untouched lines. Findings must
 anchor to changed lines and carry a priority, a one-line title, an explanation,
 and a drop-in suggestion when one exists.
 
+You may run the subject repository's own build, test, or lint through the PR-code
+execution shim: it runs in a disposable, credential-free workspace with network
+access, where you may install any packages or toolchain the repository's build or
+tests need. Actually running a check is the strongest grounding for a claim — but
+claim only what a command you ran reported, and never imply a check you did not
+run.
+
 Use the provided workflows for specialist passes, finding verification, review
 assembly, bar checking, and schema repair. Read {{native_codex_review_path}}
 when it exists; treat its native Codex review findings as additional specialist
@@ -1654,8 +1661,9 @@ and observed:
 - the changed files you read in full, and — just as plainly — any you did not;
   never describe code you did not read as clean, and never assert coverage the
   record does not support;
-- that no build, test, or lint commands were run (they are unavailable in the
-  review environment), so nothing that depends on running them is claimed;
+- which build, test, or lint commands you ran through the execution shim and what
+  they reported — and, for any you did not run, that you did not, claiming nothing
+  that depends on them;
 - that within the changed lines you found no material correctness, safety,
   contract, or test concern.
 Describe the change only in words you have checked against the diff; every
