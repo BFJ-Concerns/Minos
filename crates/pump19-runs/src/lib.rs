@@ -801,7 +801,11 @@ fn run_lead_session_frame(
             session_notes: &session_notes,
         },
     )?;
-    let workflow_archives = reconcile_workflow_archives(request, &run_dir)?;
+    let workflow_archives = reconcile_workflow_archives(
+        request,
+        &run_dir,
+        matches!(verdict, ReviewVerdict::BarCheckDegraded { .. }),
+    )?;
     Ok(LeadSessionFrameResult {
         manifest,
         manifest_path,
@@ -1498,6 +1502,7 @@ fn numbered_workflow_archive_dirs(
 fn reconcile_workflow_archives(
     request: &RunLaunchRequest,
     run_dir: &Path,
+    allow_unproved_degraded_bar_check: bool,
 ) -> Result<Vec<WorkflowArchiveSessionRef>, RunBodyError> {
     let mut refs = Vec::new();
     let mut skipped_bar_check_error = None;
@@ -1511,6 +1516,16 @@ fn reconcile_workflow_archives(
                 | RunBodyError::IncompleteEnsembleArchive(_)
                 | RunBodyError::MalformedEnsembleArchive { .. },
             ) if archive.slot == ReviewWorkflowSlot::BarCheck => {
+                skipped_bar_check_error = Some(RunBodyError::EnsembleArchiveMismatch(format!(
+                    "bar-check retry archive {} did not prove the authorised checker",
+                    archive.path.display()
+                )));
+                continue;
+            }
+            Err(RunBodyError::EnsembleArchiveMismatch(_))
+                if archive.slot == ReviewWorkflowSlot::BarCheck
+                    && allow_unproved_degraded_bar_check =>
+            {
                 skipped_bar_check_error = Some(RunBodyError::EnsembleArchiveMismatch(format!(
                     "bar-check retry archive {} did not prove the authorised checker",
                     archive.path.display()
@@ -1533,7 +1548,10 @@ fn reconcile_workflow_archives(
             });
         }
     }
-    if !proved_bar_check_archive && let Some(error) = skipped_bar_check_error {
+    if !proved_bar_check_archive
+        && let Some(error) = skipped_bar_check_error
+        && !allow_unproved_degraded_bar_check
+    {
         return Err(error);
     }
     Ok(refs)
@@ -2094,7 +2112,7 @@ fn authorised_bar_check_provenance(
     let Some(authorised_model) = verified_model(authorised) else {
         return Err("authorised bar-check provenance is not verified".to_owned());
     };
-    if record_model != authorised_model {
+    if !models_match_authorised(&authorised.engine, record_model, authorised_model) {
         return Err(format!(
             "bar-check model {record_model} did not match authorised model {authorised_model}"
         ));
@@ -3721,7 +3739,9 @@ fn reconcile_ensemble_archive(
             )));
         }
         let actual_model = archive_model_for_engine(&record, &target.engine);
-        if actual_model != Some(&target.model) {
+        if !actual_model
+            .is_some_and(|model| models_match_authorised(&target.engine, model, &target.model))
+        {
             return Err(RunBodyError::EnsembleArchiveMismatch(format!(
                 "agent {} ran model {:?} instead of {}",
                 target.agent_id.0, actual_model, target.model
@@ -5504,6 +5524,45 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
     }
 
     #[test]
+    fn lead_frame_accepts_authorised_claude_stable_bar_check_resolving_to_concrete_model() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.provenance.retain(|provenance| {
+            !(provenance.agent_id == AgentId("bar-codex".to_owned())
+                && provenance.role == AgentRole::BarCheck)
+        });
+        req.provenance.push(provenance_with_model(
+            "bar-codex",
+            AgentRole::BarCheck,
+            "claude",
+            "claude-stable",
+        ));
+        let mut bar_check = bar_check();
+        bar_check.provenance = provenance_with_model(
+            "bar-codex",
+            AgentRole::BarCheck,
+            "claude",
+            "claude-sonnet-4-5",
+        );
+        let output = lead_payload(
+            &json!([]),
+            true,
+            &json!({"verdict": "converged", "bar_check": bar_check}),
+        );
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let config = lead_frame_config(root.path());
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("canonical bar-check model resolution stays authorised");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(matches!(result.verdict, ReviewVerdict::Converged { .. }));
+    }
+
+    #[test]
     fn lead_frame_retries_degraded_bar_check_in_run() {
         let root = tempfile::tempdir().expect("workspace root");
         let mut req = frame_request(root.path());
@@ -5547,6 +5606,52 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
             archives
                 .iter()
                 .any(|archive| archive.role == AgentRole::BarCheck)
+        );
+    }
+
+    #[test]
+    fn lead_frame_preserves_degraded_bar_check_when_retries_do_not_prove_checker() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let mut req = frame_request(root.path());
+        req.bar_check_retry_attempts = 2;
+        let output = lead_payload(
+            &json!([]),
+            true,
+            &json!({
+                "verdict": "bar_check_degraded",
+                "attempts": 1,
+                "last_error": "checker unavailable"
+            }),
+        );
+        let engine = ScriptedLeadEngine::successful(output);
+        let runner = FakeEnsembleRunner::new(json!({}), Vec::new());
+        let mut config = lead_frame_config(root.path());
+        let bar_workflow = root.path().join("bar-check.js");
+        fs::write(
+            &bar_workflow,
+            "export const meta = {\n  name: \"bar-check\"\n};\nreturn {};\n",
+        )
+        .expect("write bar-check workflow");
+        config.workflows.push(LeadWorkflowScript {
+            slot: ReviewWorkflowSlot::BarCheck,
+            path: bar_workflow,
+        });
+        let mut body = LeadSessionReviewBody::new(engine, runner, config);
+        let mut workspace = FakeWorkspace::default();
+
+        body.run_review(&req, &mut workspace)
+            .expect("failed bar-check retry archives do not poison degraded verdict");
+        let result = body.last_result().expect("frame result recorded");
+
+        assert!(matches!(
+            result.verdict,
+            ReviewVerdict::BarCheckDegraded { attempts: 3, .. }
+        ));
+        assert_eq!(body.workflow_runner.requests.len(), 2);
+        assert!(
+            body.last_session_archives()
+                .iter()
+                .all(|archive| archive.role != AgentRole::BarCheck)
         );
     }
 
@@ -5693,7 +5798,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
             &[archive_agent("bar-codex", "codex")],
         );
 
-        let refs = reconcile_workflow_archives(&req, root.path())
+        let refs = reconcile_workflow_archives(&req, root.path(), false)
             .expect("later successful bar-check attempt proves the checker");
 
         assert_eq!(refs.len(), 1);
@@ -5724,7 +5829,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         .expect("write manifest");
 
         let req = frame_request(root.path());
-        let refs = reconcile_workflow_archives(&req, root.path())
+        let refs = reconcile_workflow_archives(&req, root.path(), false)
             .expect("nullable non-provenance manifest fields do not hide proved agents");
 
         assert_eq!(refs.len(), 1);
@@ -5749,7 +5854,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         .expect("write manifest");
 
         let req = frame_request(root.path());
-        let error = reconcile_workflow_archives(&req, root.path())
+        let error = reconcile_workflow_archives(&req, root.path(), false)
             .expect_err("mistyped exit_code fails the deterministic archive gate");
 
         assert!(
@@ -5804,7 +5909,7 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
         let archive_root = root.path().join("archive/workflows/bar-check");
         write_in_progress_archive(&archive_root.join("1"));
 
-        let error = reconcile_workflow_archives(&req, root.path())
+        let error = reconcile_workflow_archives(&req, root.path(), false)
             .expect_err("malformed retry alone cannot prove the checker");
 
         assert!(
@@ -5813,6 +5918,53 @@ console.log(JSON.stringify({ repaired_output: "{}" }));
                 .contains("did not prove the authorised checker"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn degraded_bar_check_verdict_allows_unproved_failed_retry_archives() {
+        let root = tempfile::tempdir().expect("run root");
+        let req = frame_request(root.path());
+        let archive_root = root.path().join("archive/workflows/bar-check");
+        write_in_progress_archive(&archive_root.join("1"));
+
+        let refs = reconcile_workflow_archives(&req, root.path(), true)
+            .expect("exhausted bar-check degradation keeps the review result durable");
+
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn workflow_archive_accepts_authorised_claude_stable_bar_check_resolution() {
+        let root = tempfile::tempdir().expect("run root");
+        let mut req = frame_request(root.path());
+        req.provenance.retain(|provenance| {
+            !(provenance.agent_id == AgentId("bar-codex".to_owned())
+                && provenance.role == AgentRole::BarCheck)
+        });
+        req.provenance.push(provenance_with_model(
+            "bar-codex",
+            AgentRole::BarCheck,
+            "claude",
+            "claude-stable",
+        ));
+        let archive_root = root.path().join("archive/workflows/bar-check/1");
+        write_archive(
+            &archive_root,
+            &[ArchiveAgentFixture {
+                label: "bar-codex".to_owned(),
+                engine: "claude".to_owned(),
+                model: "claude-sonnet-4-5".to_owned(),
+                resolved_model: None,
+                status: "complete".to_owned(),
+                validated_output: Some(json!({"passed": true, "rationale": "ok"})),
+            }],
+        );
+
+        let refs = reconcile_workflow_archives(&req, root.path(), false)
+            .expect("canonical bar-check archive model proves the authorised checker");
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].role, AgentRole::BarCheck);
     }
 
     #[test]
@@ -6058,7 +6210,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
             &[archive_agent("lead-claude", "claude")],
         );
 
-        let archives = reconcile_workflow_archives(&req, &result.run_dir)
+        let archives = reconcile_workflow_archives(&req, &result.run_dir, false)
             .expect("numbered repair attempts are separate archives");
 
         assert_eq!(findings.len(), 1);
