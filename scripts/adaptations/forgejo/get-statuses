@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -eu
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+sha="$3"
+
+api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
+  jq '[.[] | {context: .context, state: .state, creator: (.creator.login // .creator.username // "")}]'

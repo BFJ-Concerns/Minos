@@ -1,0 +1,22 @@
+[listener]
+bind = ":8919"
+
+[forges.forgejo-org]
+adaptation = "/opt/pump19/adaptations/forgejo"
+api-base = "http://forgejo.local:3000"
+webhook-secret-file = "/etc/pump19/webhook.secret"
+credential-file = "/etc/pump19/forgejo.token"
+signature-header = "X-Forgejo-Signature"
+
+[runs]
+dir = "/var/lib/pump19/runs"
+
+[sweep]
+liveness-threshold = "60m"
+log = "/var/log/pump19/sweep.log"
+
+[scrub]
+vars = ["FORGEJO_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PUMP19_FORGE_TOKEN"]
+
+[spawn]
+mode = "systemd"
