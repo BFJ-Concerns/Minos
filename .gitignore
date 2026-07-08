@@ -14,6 +14,9 @@ Thumbs.db
 # Rust build artefacts
 target/
 
+# Go build artefacts
+/pump19
+
 # Claude Code runtime state (the rest of .claude/ is deliberately committable)
 .claude/scheduled_tasks.lock
 .claude/statusline.local.json
