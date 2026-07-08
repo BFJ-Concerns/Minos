@@ -7,77 +7,88 @@ safety-critical software: the caution has to live in the toolchain, not in
 anyone's memory.
 
 **First deliverable: an automated, independent PR review-and-fix service.** When
-anyone opens a pull request in an opted-in repository, cross-engine review agents
-judge the change, separate agents fix what they raise, fresh agents re-review, and
-the loop runs itself until the remaining findings are not worth another pass. It
-runs on any repository, standalone and forge-agnostic. Pump-19 is its own project;
-consumers integrate it, never the reverse.
+anyone opens a pull request in an opted-in repository, review agents judge the
+change to a strong reviewer's standard, every candidate finding is independently
+verified before it may post, separate agents fix what survives, fresh agents
+re-review, and the loop runs itself to convergence — every step visible on the PR
+itself. It runs on any repository, standalone and forge-agnostic. Pump-19 is its
+own project; consumers integrate it, never the reverse.
 
 The wider oracle harness — deterministic intent-derived tests, a machine-readable
-intent artifact, the missing-seam meta-oracle, the provable (SMT) layer, and the
-Foundry agent-tooling side that shares this framework — is the **Direction**, not
-first-build scope. Don't build toward it yet.
+intent artifact, the missing-seam meta-oracle, the provable (SMT) layer — is the
+**Direction**, not first-build scope. Don't build toward it yet.
 
 ## The commission is the contract — start there
 
 Planning, intent, design, and the find/issue logs live in the sibling annexe
 `../Pump-19-Annexe`; its `README.md` is the **commission** — the single source of
-truth for what Pump-19 must do and guarantee, with the full constraints, decisions,
-and glossary. Read it before writing code here. This repo is code-only and
-currently empty; the first implementation seeds from Widget's
-`crates/widget-verification` (a working prototype of the judgement half), and the
-build queue lives in the annexe's `TASKS.md`.
+truth for what Pump-19 must do and guarantee, with the full constraints,
+decisions, and glossary. Read it before writing code here. It was corrected
+2026-07-08 after a containment episode; while a root `CONTAINMENT.md` is present
+in this repo it governs what may be touched — read it first. The pre-containment
+codebase is quarantined evidence, not a base to extend: nothing is carried
+forward by default, and a component earns salvage only by written justification
+against the corrected commission. The build queue lives in the annexe's
+`TASKS.md`.
 
-## Architecture stance: a small core, everything else an adaptation
+## Architecture stance: hooks and labels — the forge already provides the machinery
 
-The load-bearing design decision — keep these seams real as code lands.
+The load-bearing design decision, operator-dictated after the first build failed.
 
-- **A small deterministic dispatch-and-enforce core.** It watches forge and run
-  events, evaluates trigger criteria, launches each run in an isolated workspace,
-  and enforces the soundness invariants itself. The verification is LLM-driven;
-  the control that keeps it sound is not.
-- **Everything an organisation varies is an external, versioned adaptation the
-  core invokes — never a patch to the core:** prompt *content*, *mechanical*
-  scripts/containers the agent merely executes, and the *trigger rules*.
-  Adaptations live outside the core release and survive its upgrades.
-- **The typed, versioned contract is the real boundary** (findings, patches,
-  decisions, run state, model provenance, events). Adaptations build against the
-  contract, not core internals; new needs ride its open extension fields.
-- **Independent, criteria-triggered runs, not a fixed pipeline.** The
-  review→fix→re-review loop is *emergent* — runs know only their own triggers,
-  never each other — which is what lets an organisation recompose it.
+- **Events come from the forge, full stop.** Webhooks hit small, stateless
+  receivers: millisecond criteria check, spawn the run detached, return. A cron
+  reconciliation sweep — judging crashes by run-log liveness against a generous
+  threshold — is the entire crash-recovery story and the system's only hard
+  clock. No daemon, no internal event stream, no recovery machinery.
+- **There is no persistence — the PR is the state.** Labels carry the loop's
+  stage, commit statuses carry machine-checkable outcomes per head SHA, and the
+  posted reviews carry the substance; any crashed component re-derives everything
+  from the PR. Idempotency keys on (PR, head SHA, run label).
+- **Each run is one accountable agent session**: repo checked out, diff and
+  skill in hand, it does the work, posts its own output, manages its labels, and
+  exits. Multi-agent fan-out happens through Ensemble invoked by the lead agent
+  as a tool — never executed unattended by infrastructure. No arbitrary run
+  timeouts: pacing belongs to the lead agent.
+- **Prose for humans, markers for machines.** Reviews post as ordinary review
+  comments; where a machine needs a decision it reads a label, a commit status,
+  or a single trailing marker line — never a schema-validated document.
+- **Everything an organisation varies is an external adaptation**: agent logic
+  as Foundry-synced skills and prompts (consumed as plain files at runtime),
+  mechanical steps as scripts, trigger rules as receiver configuration. The
+  guarantee-carrying gates ride the shipped baseline skills and scripts, which
+  organisations extend rather than replace.
 
-Resist the two failures this prevents: absorbing adaptation logic into the core,
-and letting the core reach around the contract into an adaptation's internals.
+Resist the failure the last build died of: re-implementing what the forge
+already provides (state stores, event streams, resident watchers), and caging
+the agents in deterministic machinery (timeouts, schema repair, unattended
+workflow execution). The quarantined code did both — see `CONTAINMENT.md`.
 
-## Independence is the soundness basis — enforced by the core
+## Independence is the soundness basis
 
-An agent's own tests share its blind spots, so verifiers must be independent of
-the author *by construction* and *across model families* (verifiers that share a
-blind spot agree confidently and wrongly). The session-level invariants are hard:
-fresh agent sessions each pass, fixers disjoint from the reviewers whose findings
-they fix, and no agent verifying its own findings. Family-level diversity is
-applied as the strongest split the deployment offers and recorded when absent —
-graduated and loudly degraded, never refused. Every candidate finding passes
-independent per-finding verification before it may post; there is no separate
-significance judge. The core establishes model provenance itself — it selects and
-launches the engine tools; honour-system independence (a self-reported label, or
-counting agents) is unsound, since two agents can wrap one model.
+An agent's own tests share its blind spots, so verifiers are independent of the
+author by construction. Every run is a fresh session by construction of the
+spawn; fix runs are separate sessions from the reviews whose findings they fix;
+no agent verifies its own findings — within a run, role assignment and verifier
+disjointness are pinned by the versioned Ensemble workflows the lead invokes.
+Family-level diversity is applied as the strongest split the deployment offers,
+recorded and loudly degraded when absent — never refused. Every role names an
+explicit, current-generation pinned model; each run's posted output records the
+engine-resolved model that actually served, and a pin mismatch is a loud
+failure, never a shrug.
 
 ## Trust calibration: hard boundaries are for PR code, not your agents
 
 The service's own agents are trusted workers whose judgement is checked by other
-agents — per-finding verification, the review-bar check — not by deterministic
-scaffolding that second-guesses them. Watch for over-caution here: individual
-agent outputs are fallible, but agents as a class are far more capable and
-reliable than the posture that shaped earlier generations of this design, and a
-brittle check framework that stalls runs on parsing quirks costs more than the
-occasional wrong call it would have caught. When you feel the urge to bolt a
-deterministic validator onto an agent's judgement, prefer a second agent's
-opinion. Reserve the hard, non-negotiable boundaries for what is actually
-untrusted — PR code under review: credential-free workspaces, forge writes only
-through the core-authorised credentialed step, review-governing content pinned
-to the base ref.
+agents — per-finding verification, the review-bar check — never by deterministic
+scaffolding that second-guesses them. When you feel the urge to bolt a validator
+onto an agent's judgement, prefer a second agent's opinion. Reserve the hard
+boundaries for what is actually untrusted — the PR code under review: it
+executes only inside the run's credential-free temp-directory workspace, with
+the service's dedicated hard-capped credentials (forge and model-backend)
+scrubbed from workspace commands as hygiene. The real containment is bounded
+damage, stated honestly: capped dedicated credentials on a disposable,
+disposable box. No nested containers — the box is the container,
+by operator decision.
 
-When code here would contradict the commission, that is a commissioning question,
-not a local call.
+When code here would contradict the commission, that is a commissioning
+question, not a local call.
