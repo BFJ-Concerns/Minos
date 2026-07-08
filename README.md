@@ -83,3 +83,19 @@ statuses, and run-log mtimes; it never reads prose or log content as loop state.
 Reaping is fail-closed. A stale run directory is renamed aside only after the
 transient unit has been stopped and verified gone; `.reaped-*` directories are
 evidence and never live claims.
+
+## End-To-End Harness
+
+`make e2e` is the stable disposable-Forgejo journey gate. It builds `pump19`,
+starts Forgejo 14.0.5 in Docker, installs a local webhook through a
+capture-forward endpoint, and drives:
+
+- PR opened -> receiver -> `Reviewing` -> stub review status/log -> label clear.
+- Duplicate delivery replay -> no duplicate review status.
+- Hung stub killed mid-flight -> sweep reap -> label clear -> re-fire.
+- Head updated mid-run -> stale output discarded -> new head completes.
+- Listener down during delivery -> sweep reconciles the missed review.
+
+Set `PUMP19_E2E_UPDATE_FIXTURES=1 make e2e` to refresh
+`internal/shell/testdata/forgejo14/` from the same run. The normalisation tests
+bind to those captured Forgejo 14.0.5 payloads and headers.

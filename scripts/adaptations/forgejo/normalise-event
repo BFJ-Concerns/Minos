@@ -15,6 +15,7 @@ actor="$(printf '%s' "$payload" | jq -r '.sender.login // .sender.username // ""
 draft="$(printf '%s' "$payload" | jq -r '.pull_request.draft // false')"
 labels="$(printf '%s' "$payload" | jq -r '[.pull_request.labels[]?.name] | join(",")')"
 label_name="$(printf '%s' "$payload" | jq -r '.label.name // ""')"
+ready_present="$(printf '%s' "$payload" | jq -r 'any(.pull_request.labels[]?.name; . == "Ready")')"
 
 occasion=""
 case "$event:$action" in
@@ -24,7 +25,11 @@ case "$event:$action" in
   pull_request:edited) occasion="pr-edited" ;;
   pull_request:closed) occasion="pr-closed" ;;
   pull_request:label_updated|pull_request_label:label_updated)
-    occasion="label-added:${label_name}"
+    if [ "$ready_present" = "true" ]; then
+      occasion="label-added:Ready"
+    else
+      occasion="label-removed:Ready"
+    fi
     ;;
   pull_request:label_cleared|pull_request_label:label_cleared)
     occasion="label-removed:${label_name}"

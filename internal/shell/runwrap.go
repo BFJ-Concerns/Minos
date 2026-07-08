@@ -42,7 +42,9 @@ func RunWrapCommand(ctx context.Context, args []string) error {
 	defer logFile.Close()
 	multiOut := io.MultiWriter(os.Stdout, logFile)
 	multiErr := io.MultiWriter(os.Stderr, logFile)
-	writeMeta(runDir)
+	if err := writeMeta(runDir); err != nil {
+		return err
+	}
 	fmt.Fprintf(logFile, "pump19 run-wrap started at %s\n", time.Now().UTC().Format(time.RFC3339))
 	workspace := os.Getenv("PUMP19_WORKSPACE")
 	if workspace == "" {
@@ -81,14 +83,17 @@ func RunWrapCommand(ctx context.Context, args []string) error {
 	return cmd.Run()
 }
 
-func writeMeta(runDir string) {
+func writeMeta(runDir string) error {
 	meta := []string{
 		"PUMP19_UNIT=" + os.Getenv("PUMP19_UNIT"),
 		"PUMP19_WORKSPACE=" + os.Getenv("PUMP19_WORKSPACE"),
 		"PUMP19_STARTED_AT=" + time.Now().UTC().Format(time.RFC3339),
 		"PUMP19_OCCASION=" + os.Getenv("PUMP19_OCCASION"),
 	}
-	_ = os.WriteFile(filepath.Join(runDir, "meta.env"), []byte(strings.Join(meta, "\n")+"\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(runDir, "meta.env"), []byte(strings.Join(meta, "\n")+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write run metadata: %w", err)
+	}
+	return nil
 }
 
 func envFacts(forge string) Facts {

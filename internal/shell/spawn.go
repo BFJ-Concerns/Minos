@@ -19,6 +19,11 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, kind)
 	unitName := UnitName(facts, kind)
 	env := runEnv(cfg, repo, facts, kind, runDir, unitName, occasion)
+	for _, name := range []string{"PUMP19_STUB_MODE", "PUMP19_STUB_REVIEW_STATE", "PUMP19_STUB_SLOW_SECONDS"} {
+		if value := os.Getenv(name); value != "" {
+			env = append(env, name+"="+value)
+		}
+	}
 	if cfg.Spawn.Mode == "direct" {
 		cmd := exec.CommandContext(ctx, exe, "run-wrap", "--config", cfg.Root)
 		cmd.Env = append(os.Environ(), env...)

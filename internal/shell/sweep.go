@@ -181,11 +181,15 @@ func reapRunDir(ctx context.Context, runDir string) error {
 }
 
 func stopAndVerifyUnitGone(ctx context.Context, unit string) error {
-	stop := exec.CommandContext(ctx, "systemctl", "--user", "stop", unit)
+	stop := systemctlCommand(ctx, "systemctl", "--user", "stop", unit)
 	if out, err := stop.CombinedOutput(); err != nil {
-		return fmt.Errorf("stop unit %s: %w: %s", unit, err, strings.TrimSpace(string(out)))
+		message := strings.TrimSpace(string(out))
+		if strings.Contains(message, "not loaded") {
+			return nil
+		}
+		return fmt.Errorf("stop unit %s: %w: %s", unit, err, message)
 	}
-	show := exec.CommandContext(ctx, "systemctl", "--user", "show", unit, "--property=ActiveState", "--value")
+	show := systemctlCommand(ctx, "systemctl", "--user", "show", unit, "--property=ActiveState", "--value")
 	out, err := show.CombinedOutput()
 	if err != nil {
 		// A collected transient unit may already have disappeared; that is gone.
@@ -197,6 +201,8 @@ func stopAndVerifyUnitGone(ctx context.Context, unit string) error {
 	}
 	return nil
 }
+
+var systemctlCommand = exec.CommandContext
 
 func readMeta(path string) map[string]string {
 	file, err := os.Open(path)
