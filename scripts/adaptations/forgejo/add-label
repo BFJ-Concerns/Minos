@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+label="$4"
+
+api POST "/api/v1/repos/${owner}/${repo}/issues/${pr}/labels" \
+  -H "Content-Type: application/json" \
+  --data "$(jq -nc --arg label "$label" '{labels: [$label]}')" >/dev/null

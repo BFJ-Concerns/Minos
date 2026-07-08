@@ -1,0 +1,106 @@
+package shell
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+)
+
+func ReceiveCommand(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("receive", flag.ContinueOnError)
+	configRoot := fs.String("config", DefaultConfigRoot, "configuration root")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := LoadServiceConfig(*configRoot)
+	if err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hooks/", func(w http.ResponseWriter, r *http.Request) {
+		if err := handleHook(ctx, cfg, w, r); err != nil {
+			log.Printf("hook failed: %v", err)
+		}
+	})
+	log.Printf("pump19 receiver listening on %s", cfg.Listener.Bind)
+	return http.ListenAndServe(cfg.Listener.Bind, mux)
+}
+
+func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r *http.Request) error {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return nil
+	}
+	forgeName := strings.TrimPrefix(r.URL.Path, "/hooks/")
+	forge, ok := cfg.Forges[forgeName]
+	if !ok {
+		http.Error(w, "unknown forge", http.StatusNotFound)
+		return nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return err
+	}
+	secret, err := ReadSecret(forge.WebhookSecretFile)
+	if err != nil {
+		http.Error(w, "secret unavailable", http.StatusInternalServerError)
+		return err
+	}
+	signatureHeader := forge.SignatureHeader
+	if signatureHeader == "" {
+		signatureHeader = "X-Forgejo-Signature"
+	}
+	if !VerifyHexHMACSHA256(body, secret, r.Header.Get(signatureHeader)) {
+		http.Error(w, "bad signature", http.StatusUnauthorized)
+		return nil
+	}
+	adaptation, err := NewAdaptation(forge)
+	if err != nil {
+		http.Error(w, "adaptation unavailable", http.StatusInternalServerError)
+		return err
+	}
+	headers := map[string]string{
+		"X-Forgejo-Event":     r.Header.Get("X-Forgejo-Event"),
+		"X-Forgejo-Delivery":  r.Header.Get("X-Forgejo-Delivery"),
+		"X-Forgejo-Signature": r.Header.Get("X-Forgejo-Signature"),
+	}
+	facts, err := adaptation.NormaliseEvent(ctx, body, headers)
+	if err != nil {
+		http.Error(w, "normalise failed", http.StatusBadRequest)
+		return err
+	}
+	facts.Forge = forgeName
+	repo, err := FindRepoConfig(cfg.Root, facts)
+	if err != nil {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("not opted in\n"))
+		return nil
+	}
+	decision, ok := EvaluateTriggers(facts, repo)
+	if !ok {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("no trigger\n"))
+		return nil
+	}
+	label, err := InFlightLabel(decision.Kind)
+	if err != nil {
+		return err
+	}
+	if facts.HasLabel(label) && !NewHeadOccasion(facts.Occasion) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("already in flight\n"))
+		return nil
+	}
+	if err := SpawnRun(ctx, cfg, repo, facts, decision.Kind, facts.Occasion); err != nil {
+		http.Error(w, "spawn failed", http.StatusInternalServerError)
+		return err
+	}
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = fmt.Fprintf(w, "spawned %s\n", decision.Kind)
+	return nil
+}

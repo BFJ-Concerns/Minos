@@ -1,0 +1,47 @@
+#!/usr/bin/env sh
+set -eu
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+head_sha="$4"
+base_ref="$5"
+
+: "${PUMP19_WORKSPACE:?PUMP19_WORKSPACE is required}"
+: "${PUMP19_DIFF:?PUMP19_DIFF is required}"
+
+rm -rf "$PUMP19_WORKSPACE"
+mkdir -p "$PUMP19_WORKSPACE"
+tmp_askpass="$(mktemp)"
+cleanup() {
+  rm -f "$tmp_askpass"
+}
+trap cleanup EXIT
+cat >"$tmp_askpass" <<EOF
+#!/usr/bin/env sh
+case "\$1" in
+  *Username*) printf '%s\n' x-access-token ;;
+  *Password*) printf '%s\n' "${PUMP19_FORGE_TOKEN}" ;;
+  *) printf '\n' ;;
+esac
+EOF
+chmod 700 "$tmp_askpass"
+
+repo_url="${PUMP19_API_BASE%/}/${owner}/${repo}.git"
+GIT_ASKPASS="$tmp_askpass" git clone --no-checkout "$repo_url" "$PUMP19_WORKSPACE" >/dev/null 2>&1
+(
+  cd "$PUMP19_WORKSPACE"
+  git remote set-url origin "$repo_url"
+  GIT_ASKPASS="$tmp_askpass" git fetch origin "refs/pull/${pr}/head:refs/remotes/origin/pull/${pr}/head" "$base_ref" >/dev/null 2>&1
+  git checkout --detach "$head_sha" >/dev/null 2>&1
+  git diff "origin/${base_ref}...HEAD" >"$PUMP19_DIFF"
+  if grep -R "${PUMP19_FORGE_TOKEN}" .git/config >/dev/null 2>&1; then
+    echo "credential leaked into .git/config" >&2
+    exit 1
+  fi
+  if git remote get-url origin | grep "${PUMP19_FORGE_TOKEN}" >/dev/null 2>&1; then
+    echo "credential leaked into origin URL" >&2
+    exit 1
+  fi
+)

@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+label="$4"
+
+api GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/timeline" |
+  jq -r --arg label "$label" '
+    [.[] | select((.label.name // "") == $label and ((.type // "") | test("label"; "i")))][-1]
+    | .user.login // .user.username // empty
+  '

@@ -1,0 +1,28 @@
+forge = "forgejo-org"
+owner = "BFJ-Concerns"
+repo = "Widget"
+
+[adaptation]
+build = "cargo build --workspace"
+test = "cargo test --workspace"
+briefs = ".review"
+skill = "/opt/pump19/skills/review"
+
+[policy]
+auto-merge = false
+
+[[trigger]]
+run = "review"
+on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
+authors = ["*"]
+drafts = false
+
+[[trigger]]
+run = "fix"
+on = ["review-rejected"]
+actors = ["pump19"]
+
+[[trigger]]
+run = "finish"
+on = ["label-added:Ready"]
+actors = ["bob"]

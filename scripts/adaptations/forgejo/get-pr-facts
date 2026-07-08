@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+set -eu
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}")"
+
+printf 'OCCASION=reconcile\n'
+printf 'FORGE=%s\n' ""
+printf 'OWNER=%s\n' "$owner"
+printf 'REPO=%s\n' "$repo"
+printf 'PR=%s\n' "$pr"
+printf 'HEAD_SHA=%s\n' "$(printf '%s' "$json" | jq -r '.head.sha')"
+printf 'BASE_REF=%s\n' "$(printf '%s' "$json" | jq -r '.base.ref')"
+printf 'AUTHOR=%s\n' "$(printf '%s' "$json" | jq -r '.user.login // .user.username // ""')"
+printf 'ACTOR=%s\n' ""
+printf 'DRAFT=%s\n' "$(printf '%s' "$json" | jq -r '.draft // false')"
+printf 'LABELS=%s\n' "$(printf '%s' "$json" | jq -r '[.labels[]?.name] | join(",")')"

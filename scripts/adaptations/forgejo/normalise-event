@@ -1,0 +1,47 @@
+#!/usr/bin/env sh
+set -eu
+
+payload="$(cat)"
+event="${PUMP19_HEADER_X_FORGEJO_EVENT:-${PUMP19_HEADER_X_GITEA_EVENT:-}}"
+
+action="$(printf '%s' "$payload" | jq -r '.action // ""')"
+owner="$(printf '%s' "$payload" | jq -r '.repository.owner.login // .repository.owner.username // .repository.owner.name // ""')"
+repo="$(printf '%s' "$payload" | jq -r '.repository.name // ""')"
+pr="$(printf '%s' "$payload" | jq -r '.pull_request.number // .pull_request.index // .issue.number // .issue.index // ""')"
+head_sha="$(printf '%s' "$payload" | jq -r '.pull_request.head.sha // ""')"
+base_ref="$(printf '%s' "$payload" | jq -r '.pull_request.base.ref // ""')"
+author="$(printf '%s' "$payload" | jq -r '.pull_request.user.login // .pull_request.user.username // ""')"
+actor="$(printf '%s' "$payload" | jq -r '.sender.login // .sender.username // ""')"
+draft="$(printf '%s' "$payload" | jq -r '.pull_request.draft // false')"
+labels="$(printf '%s' "$payload" | jq -r '[.pull_request.labels[]?.name] | join(",")')"
+label_name="$(printf '%s' "$payload" | jq -r '.label.name // ""')"
+
+occasion=""
+case "$event:$action" in
+  pull_request:opened) occasion="pr-opened" ;;
+  pull_request:reopened) occasion="pr-reopened" ;;
+  pull_request:synchronized) occasion="pr-synchronized" ;;
+  pull_request:edited) occasion="pr-edited" ;;
+  pull_request:closed) occasion="pr-closed" ;;
+  pull_request:label_updated|pull_request_label:label_updated)
+    occasion="label-added:${label_name}"
+    ;;
+  pull_request:label_cleared|pull_request_label:label_cleared)
+    occasion="label-removed:${label_name}"
+    ;;
+  pull_request_approved:*|pull_request_review_approved:*) occasion="review-approved" ;;
+  pull_request_rejected:*|pull_request_review_rejected:*) occasion="review-rejected" ;;
+  issue_comment:created) occasion="comment-created" ;;
+esac
+
+printf 'OCCASION=%s\n' "$occasion"
+printf 'FORGE=%s\n' ""
+printf 'OWNER=%s\n' "$owner"
+printf 'REPO=%s\n' "$repo"
+printf 'PR=%s\n' "$pr"
+printf 'HEAD_SHA=%s\n' "$head_sha"
+printf 'BASE_REF=%s\n' "$base_ref"
+printf 'AUTHOR=%s\n' "$author"
+printf 'ACTOR=%s\n' "$actor"
+printf 'DRAFT=%s\n' "$draft"
+printf 'LABELS=%s\n' "$labels"

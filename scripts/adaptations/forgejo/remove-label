@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+label="$4"
+
+encoded="$(printf '%s' "$label" | jq -sRr @uri)"
+api DELETE "/api/v1/repos/${owner}/${repo}/issues/${pr}/labels/${encoded}" >/dev/null
