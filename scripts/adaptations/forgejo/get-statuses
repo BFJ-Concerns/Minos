@@ -7,4 +7,4 @@ repo="$2"
 sha="$3"
 
 api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
-  jq '[.[] | {context: .context, state: .state, creator: (.creator.login // .creator.username // "")}]'
+  jq '[.[] | {context: .context, state: (.status // .state), creator: (.creator.login // .creator.username // "")}]'
