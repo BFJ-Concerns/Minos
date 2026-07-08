@@ -58,9 +58,11 @@ for _ in {1..120}; do
 done
 
 docker exec -u git "$container" forgejo admin user create \
-  --username bob --password password --email bob@example.invalid --admin || true
+  --username bob --password password --email bob@example.invalid --admin \
+  --must-change-password=false || true
 docker exec -u git "$container" forgejo admin user create \
-  --username pump19 --password password --email pump19@example.invalid || true
+  --username pump19 --password password --email pump19@example.invalid \
+  --must-change-password=false || true
 
 token="$(docker exec -u git "$container" forgejo admin user generate-access-token --username pump19 --token-name pump19-e2e --scopes all 2>/dev/null | awk '/Access token was successfully created/ {print $NF}')"
 if [[ -z "${token}" ]]; then
