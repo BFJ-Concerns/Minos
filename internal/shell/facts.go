@@ -61,7 +61,7 @@ func ParseFacts(r io.Reader) (Facts, error) {
 			}
 		}
 	}
-	if facts.Occasion == "" || facts.Owner == "" || facts.Repo == "" || facts.PR == "" || facts.HeadSHA == "" {
+	if facts.Occasion == "" || facts.Owner == "" || facts.Repo == "" || facts.PR == "" {
 		return Facts{}, fmt.Errorf("normalised facts missing required fields")
 	}
 	return facts, nil

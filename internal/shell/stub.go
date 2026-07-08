@@ -71,7 +71,15 @@ func StubRunCommand(ctx context.Context, args []string) error {
 		select {}
 	case "slow":
 		fmt.Println("stub slow mode started")
-		time.Sleep(2 * time.Second)
+		duration := 2 * time.Second
+		if seconds := os.Getenv("PUMP19_STUB_SLOW_SECONDS"); seconds != "" {
+			parsed, err := time.ParseDuration(seconds + "s")
+			if err != nil {
+				return err
+			}
+			duration = parsed
+		}
+		time.Sleep(duration)
 		fmt.Println("stub slow mode heartbeat")
 	case "crash":
 		fmt.Println("stub crash mode")
