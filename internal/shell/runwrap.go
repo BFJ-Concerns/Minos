@@ -69,24 +69,35 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	facts := envFacts(forgeName)
+	bodyStarted := false
+	failurePhase := "pre-body"
 	defer func() {
 		if err == nil {
 			return
 		}
 		fmt.Fprintf(logFile, "pump19 run-wrap error: %v\n", err)
+		if !bodyStarted {
+			if markerErr := writeRetryableFailure(runDir, failurePhase, err); markerErr != nil {
+				fmt.Fprintf(logFile, "pump19 run-wrap could not record retryable failure: %v\n", markerErr)
+			}
+			return
+		}
 		if statusErr := recordRunWrapFailureStatus(ctx, adaptation, facts, kind, err); statusErr != nil {
 			fmt.Fprintf(logFile, "pump19 run-wrap could not record failure status: %v\n", statusErr)
 		}
 	}()
 	touchRunLog(logPath, logFile, "preparing workspace")
+	failurePhase = "prepare-workspace"
 	if err := adaptation.PrepareWorkspace(ctx, facts, workspace, os.Getenv("PUMP19_DIFF")); err != nil {
 		return err
 	}
 	touchRunLog(logPath, logFile, "workspace ready")
+	failurePhase = "run-body-start"
 	cmd, err := runBodyCommand(ctx)
 	if err != nil {
 		return err
 	}
+	bodyStarted = true
 	cmd.Stdout = multiOut
 	cmd.Stderr = multiErr
 	cmd.Env = os.Environ()
@@ -110,13 +121,25 @@ func recordRunWrapFailureStatus(ctx context.Context, adaptation Adaptation, fact
 	if err != nil {
 		return err
 	}
-	if statuses, err := adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, facts.HeadSHA); err == nil {
-		if _, ok := statusForContext(statuses, contextName); ok {
-			return nil
-		}
+	statuses, err := adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, facts.HeadSHA)
+	if err != nil {
+		return fmt.Errorf("check existing status before wrapper failure write: %w", err)
+	}
+	if _, ok := statusForContext(statuses, contextName); ok {
+		return nil
 	}
 	description := fmt.Sprintf("Pump-19 %s wrapper failed before terminal status", kind)
 	return adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", description)
+}
+
+func writeRetryableFailure(runDir, phase string, cause error) error {
+	values := []string{
+		"PUMP19_RETRYABLE_FAILURE=1",
+		"PUMP19_FAILURE_PHASE=" + phase,
+		"PUMP19_FAILURE_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
+		"PUMP19_FAILURE=" + strings.NewReplacer("\n", " ", "\r", " ").Replace(cause.Error()),
+	}
+	return os.WriteFile(filepath.Join(runDir, "retry.env"), []byte(strings.Join(values, "\n")+"\n"), 0o644)
 }
 
 func touchRunLog(logPath string, logFile *os.File, message string) {
@@ -130,7 +153,7 @@ func writeMeta(runDir string) error {
 	meta := []string{
 		"PUMP19_UNIT=" + os.Getenv("PUMP19_UNIT"),
 		"PUMP19_WORKSPACE=" + os.Getenv("PUMP19_WORKSPACE"),
-		"PUMP19_STARTED_AT=" + time.Now().UTC().Format(time.RFC3339),
+		"PUMP19_STARTED_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
 		"PUMP19_OCCASION=" + os.Getenv("PUMP19_OCCASION"),
 		"PUMP19_HEAD_SHA=" + os.Getenv("PUMP19_HEAD_SHA"),
 	}

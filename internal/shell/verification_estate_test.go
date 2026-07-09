@@ -108,6 +108,31 @@ func TestPartialCoverageNeverReconcilesAsConverged(t *testing.T) {
 	}
 }
 
+func TestStatusForContextMatchesForgejoCombinedOrdering(t *testing.T) {
+	status, ok := statusForContext([]Status{
+		{ID: 11, Context: "pump19/review", State: "success", CreatedUnix: 1234},
+		{ID: 12, Context: "pump19/review", State: "error", CreatedUnix: 1234},
+		{ID: 13, Context: "other", State: "success", CreatedUnix: 1235},
+	}, "pump19/review")
+	if !ok {
+		t.Fatal("expected review status")
+	}
+	if status.State != "error" {
+		t.Fatalf("same-second status tie should choose higher id, got %s", status.State)
+	}
+
+	status, ok = statusForContext([]Status{
+		{ID: 14, Context: "pump19/review", State: "success", CreatedUnix: 1235},
+		{ID: 15, Context: "pump19/review", State: "error", CreatedUnix: 1234},
+	}, "pump19/review")
+	if !ok {
+		t.Fatal("expected review status")
+	}
+	if status.State != "success" {
+		t.Fatalf("newer created_unix should win before id, got %s", status.State)
+	}
+}
+
 func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 	drafts := false
 	repo := RepoConfig{Triggers: []TriggerRule{
@@ -172,6 +197,62 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 				t.Fatalf("decision = %s ok=%v, want %s ok=%v", got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+func TestUnauthorisedReadyIsClearedBeforeReconcile(t *testing.T) {
+	drafts := false
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Drafts: &drafts}}}
+	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Labels: []string{LabelReady}, Draft: false}
+	adaptationDir := t.TempDir()
+	removeFile := filepath.Join(adaptationDir, "removed.args")
+	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'mallory\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+removeFile+"'\n")
+	logFile, err := os.Create(filepath.Join(t.TempDir(), "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	got, err := clearUnauthorisedReady(context.Background(), repo, Adaptation{Dir: adaptationDir}, facts, logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HasLabel(LabelReady) {
+		t.Fatal("unauthorised Ready should be removed from in-memory facts")
+	}
+	data, err := os.ReadFile(removeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Ready") {
+		t.Fatalf("remove-label was not called for Ready:\n%s", data)
+	}
+}
+
+func TestAuthorisedReadyIsNotCleared(t *testing.T) {
+	drafts := false
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Drafts: &drafts}}}
+	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Labels: []string{LabelReady}, Draft: false}
+	adaptationDir := t.TempDir()
+	removeFile := filepath.Join(adaptationDir, "removed.args")
+	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'bob\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+removeFile+"'\n")
+	logFile, err := os.Create(filepath.Join(t.TempDir(), "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	got, err := clearUnauthorisedReady(context.Background(), repo, Adaptation{Dir: adaptationDir}, facts, logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HasLabel(LabelReady) {
+		t.Fatal("authorised Ready should remain")
+	}
+	if _, err := os.Stat(removeFile); !os.IsNotExist(err) {
+		t.Fatalf("remove-label should not be called for authorised Ready: %v", err)
 	}
 }
 
@@ -285,7 +366,7 @@ func TestLabelLessClaimIsReapedWhenStaleAndUnfinished(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer logFile.Close()
-	if err := reapLabelLessClaims(context.Background(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+	if _, err := reapLabelLessClaims(context.Background(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
@@ -351,6 +432,21 @@ func TestRunWrapFailureDoesNotOverwriteBodyStatus(t *testing.T) {
 	}
 	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
 		t.Fatalf("wrapper wrote status despite existing body status: %v", err)
+	}
+}
+
+func TestRunWrapFailureDoesNotWriteStatusWhenStatusReadFails(t *testing.T) {
+	dir := t.TempDir()
+	statusFile := filepath.Join(dir, "status.args")
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nexit 7\n")
+	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	adaptation := Adaptation{Dir: dir}
+	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
+	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err == nil {
+		t.Fatal("expected wrapper status write to fail closed on status read failure")
+	}
+	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
+		t.Fatalf("wrapper wrote status after status read failure: %v", err)
 	}
 }
 

@@ -93,6 +93,15 @@ evidence and never live claims. A claim that dies before an in-flight label is
 visible is reaped by the same fail-closed path once its `run.log` or directory
 mtime is stale.
 
+Failures before the run body starts are treated as retryable infrastructure
+failures, not agent verdicts. `run-wrap` records `retry.env` in the claim
+directory and writes no commit status. The sweep may release the canonical
+claim once by renaming it to `<claim>.retry-1`; that preserved directory is the
+bounded retry evidence, while the freed canonical path allows one reconcile
+retry. A second retryable failure writes an `error` status and discards the
+current failed claim without creating more retry evidence. Once the body starts,
+a non-zero body exit remains a loud terminal `error` status and is not retried.
+
 The receiver resolves Forgejo `label_updated` deliveries through the issue
 timeline before trigger evaluation. Forgejo 14.0.5 records label additions and
 removals as timeline rows with `type:"label"`; `body:"1"` means added and
@@ -117,10 +126,17 @@ capture-forward endpoint, and drives:
 - Duplicate delivery replay -> no duplicate review status.
 - Hung stub killed mid-flight -> sweep reap -> label clear -> re-fire.
 - Head updated mid-run -> stale output discarded -> new head completes.
+- Superseded-head hang -> new head completes -> sweep reaps the abandoned old
+  head without reading forge status for the old SHA.
 - Listener down during delivery -> sweep reconciles the missed review.
-- Unauthorised `Ready` add and authorised `Ready` removal -> no finish run.
+- Unauthorised `Ready` add -> sweep clears it without firing finish; authorised
+  `Ready` re-add -> finish runs.
+- Transient `prepare-workspace` failure -> one bounded retry -> review
+  completes.
 - Persistent run-body failure -> `error` status on the served head and no
   sweep re-fire loop.
+- Same-second status writes agree with Forgejo combined-status ordering; the
+  live Forgejo timeline and pulls paging assumptions are pinned.
 
 Set `PUMP19_E2E_UPDATE_FIXTURES=1 make e2e` to refresh
 `internal/shell/testdata/forgejo14/` from the same run. The normalisation tests
