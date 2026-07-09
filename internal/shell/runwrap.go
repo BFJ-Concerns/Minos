@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func RunWrapCommand(ctx context.Context, args []string) error {
+func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	fs := flag.NewFlagSet("run-wrap", flag.ContinueOnError)
 	configRoot := fs.String("config", DefaultConfigRoot, "configuration root")
 	if err := fs.Parse(args); err != nil {
@@ -69,6 +69,15 @@ func RunWrapCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	facts := envFacts(forgeName)
+	defer func() {
+		if err == nil {
+			return
+		}
+		fmt.Fprintf(logFile, "pump19 run-wrap error: %v\n", err)
+		if statusErr := recordRunWrapFailureStatus(ctx, adaptation, facts, kind, err); statusErr != nil {
+			fmt.Fprintf(logFile, "pump19 run-wrap could not record failure status: %v\n", statusErr)
+		}
+	}()
 	touchRunLog(logPath, logFile, "preparing workspace")
 	if err := adaptation.PrepareWorkspace(ctx, facts, workspace, os.Getenv("PUMP19_DIFF")); err != nil {
 		return err
@@ -86,14 +95,28 @@ func RunWrapCommand(ctx context.Context, args []string) error {
 }
 
 func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {
-	if skill := os.Getenv("PUMP19_SKILL"); skill != "" {
-		return exec.CommandContext(ctx, skill), nil
+	if body := os.Getenv("PUMP19_RUN_BODY"); body != "" {
+		return exec.CommandContext(ctx, body), nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
 	return exec.CommandContext(ctx, exe, "stub-run"), nil
+}
+
+func recordRunWrapFailureStatus(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind, cause error) error {
+	contextName, err := StatusContext(kind)
+	if err != nil {
+		return err
+	}
+	if statuses, err := adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, facts.HeadSHA); err == nil {
+		if _, ok := statusForContext(statuses, contextName); ok {
+			return nil
+		}
+	}
+	description := fmt.Sprintf("Pump-19 %s wrapper failed before terminal status", kind)
+	return adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", description)
 }
 
 func touchRunLog(logPath string, logFile *os.File, message string) {

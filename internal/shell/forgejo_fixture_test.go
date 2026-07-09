@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,25 +16,24 @@ type webhookFixture struct {
 }
 
 func TestForgejo14FixturesNormaliseOccasions(t *testing.T) {
-	tests := []struct {
-		file     string
-		occasion string
-	}{
-		{"001-pull_request-opened.json", "pr-opened"},
-		{"011-pull_request-synchronized.json", "pr-synchronized"},
-		{"017-issue_comment-created.json", "comment-created"},
-		{"018-pull_request-label_updated.json", "label-updated"},
-		{"019-pull_request-label_updated.json", "label-updated"},
-		{"020-pull_request-edited.json", "pr-edited"},
-		{"022-pull_request_approved-reviewed.json", "review-approved"},
-		{"023-pull_request_rejected-reviewed.json", "review-rejected"},
+	files, err := filepath.Glob(filepath.Join("testdata", "forgejo14", "[0-9][0-9][0-9]-*.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.file, func(t *testing.T) {
-			fixture := readFixture(t, tt.file)
+	if len(files) == 0 {
+		t.Fatal("no Forgejo webhook fixtures found")
+	}
+	for _, path := range files {
+		name := filepath.Base(path)
+		occasion, ok := fixtureOccasion(name)
+		if !ok {
+			t.Fatalf("fixture %s has no expected occasion mapping", name)
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture := readFixture(t, name)
 			facts := runNormaliseEvent(t, fixture)
-			if facts.Occasion != tt.occasion {
-				t.Fatalf("occasion = %q, want %q", facts.Occasion, tt.occasion)
+			if facts.Occasion != occasion {
+				t.Fatalf("occasion = %q, want %q", facts.Occasion, occasion)
 			}
 			if facts.Owner != "pump19" || facts.Repo != "subject" || facts.PR == "" {
 				t.Fatalf("repo facts not normalised: %#v", facts)
@@ -46,20 +46,53 @@ func TestForgejo14FixturesNormaliseOccasions(t *testing.T) {
 }
 
 func TestForgejo14ReviewFixturesCarryConsolidatedHeaders(t *testing.T) {
-	approved := readFixture(t, "022-pull_request_approved-reviewed.json")
+	approved := readFixture(t, findFixture(t, "pull_request_approved-reviewed"))
 	if approved.Headers["X-Forgejo-Event"] != "pull_request_approved" {
 		t.Fatalf("approved event header = %q", approved.Headers["X-Forgejo-Event"])
 	}
 	if approved.Headers["X-Forgejo-Event-Type"] != "pull_request_review_approved" {
 		t.Fatalf("approved event-type header = %q", approved.Headers["X-Forgejo-Event-Type"])
 	}
-	rejected := readFixture(t, "023-pull_request_rejected-reviewed.json")
+	rejected := readFixture(t, findFixture(t, "pull_request_rejected-reviewed"))
 	if rejected.Headers["X-Forgejo-Event"] != "pull_request_rejected" {
 		t.Fatalf("rejected event header = %q", rejected.Headers["X-Forgejo-Event"])
 	}
 	if rejected.Headers["X-Forgejo-Event-Type"] != "pull_request_review_rejected" {
 		t.Fatalf("rejected event-type header = %q", rejected.Headers["X-Forgejo-Event-Type"])
 	}
+}
+
+func fixtureOccasion(name string) (string, bool) {
+	switch {
+	case strings.Contains(name, "pull_request-opened"):
+		return "pr-opened", true
+	case strings.Contains(name, "pull_request-synchronized"):
+		return "pr-synchronized", true
+	case strings.Contains(name, "pull_request-label_updated"):
+		return "label-updated", true
+	case strings.Contains(name, "pull_request-edited"):
+		return "pr-edited", true
+	case strings.Contains(name, "pull_request_approved-reviewed"):
+		return "review-approved", true
+	case strings.Contains(name, "pull_request_rejected-reviewed"):
+		return "review-rejected", true
+	case strings.Contains(name, "issue_comment-created"):
+		return "comment-created", true
+	default:
+		return "", false
+	}
+}
+
+func findFixture(t *testing.T, suffix string) string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("testdata", "forgejo14", "*-"+suffix+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no fixture matching %s", suffix)
+	}
+	return filepath.Base(files[0])
 }
 
 func readFixture(t *testing.T, name string) webhookFixture {
