@@ -19,6 +19,7 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 	}
 	repo := RepoConfig{Forge: "local", Owner: "pump19", Repo: "subject"}
 	repo.Adaptation.Skill = filepath.Join(root, "skills", "review")
+	repo.Adaptation.RunBody = filepath.Join(root, "bin", "run-agent")
 	repo.Adaptation.Briefs = ".review"
 	facts := Facts{
 		Forge:   "local",
@@ -48,6 +49,7 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 		"PUMP19_DIFF":       filepath.Join(runDir, "diff.patch"),
 		"PUMP19_ADAPTATION": filepath.Join(root, "adaptations"),
 		"PUMP19_SKILL":      filepath.Join(root, "skills", "review"),
+		"PUMP19_RUN_BODY":   filepath.Join(root, "bin", "run-agent"),
 		"PUMP19_BRIEFS":     ".review",
 		"PUMP19_CONFIG":     cfg.Root,
 		"PUMP19_UNIT":       unit,
@@ -174,10 +176,15 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 }
 
 func TestReconcileReviewActorGuardIsReceiverPathOnly(t *testing.T) {
-	repo := RepoConfig{Triggers: []TriggerRule{{Run: "review", Actors: []string{"bob"}}}}
+	drafts := false
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}, Actors: []string{"bob"}, Drafts: &drafts}}}
 	facts := Facts{Author: "contributor"}
-	if decision, ok, err := reconcileDecision(context.Background(), repo, Adaptation{}, facts, nil); err != nil || ok {
-		t.Fatalf("review actor guard should not be invented from state on reconcile: decision=%s ok=%v err=%v", decision, ok, err)
+	decision, ok, err := reconcileDecision(context.Background(), repo, Adaptation{}, facts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || decision != RunReview {
+		t.Fatalf("review actor guard should be receiver-path-only on reconcile: decision=%s ok=%v", decision, ok)
 	}
 }
 
@@ -300,6 +307,53 @@ func TestRunMetadataWriteFailureIsLoud(t *testing.T) {
 	}
 }
 
+func TestRunBodyCommandUsesRunBodyNotSkill(t *testing.T) {
+	t.Setenv("PUMP19_SKILL", filepath.Join(t.TempDir(), "review-skill.md"))
+	body := filepath.Join(t.TempDir(), "run-body")
+	t.Setenv("PUMP19_RUN_BODY", body)
+	cmd, err := runBodyCommand(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Path != body {
+		t.Fatalf("run body path = %q, want %q", cmd.Path, body)
+	}
+}
+
+func TestRunWrapFailureRecordsStatusWhenBodyDidNot(t *testing.T) {
+	dir := t.TempDir()
+	statusFile := filepath.Join(dir, "status.args")
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	adaptation := Adaptation{Dir: dir}
+	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
+	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(statusFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); !strings.Contains(got, "pump19/review\nerror") {
+		t.Fatalf("set-status args did not record review error:\n%s", got)
+	}
+}
+
+func TestRunWrapFailureDoesNotOverwriteBodyStatus(t *testing.T) {
+	dir := t.TempDir()
+	statusFile := filepath.Join(dir, "status.args")
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[{\"context\":\"pump19/review\",\"state\":\"error\"}]\\n'\n")
+	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	adaptation := Adaptation{Dir: dir}
+	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
+	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
+		t.Fatalf("wrapper wrote status despite existing body status: %v", err)
+	}
+}
+
 func TestLiveRunStateTreatsWarmLogAsAliveAndQuietLogAsDead(t *testing.T) {
 	root := t.TempDir()
 	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42"}
@@ -350,4 +404,11 @@ func testAdaptationWithLabelActor(t *testing.T, actor string) Adaptation {
 		t.Fatal(err)
 	}
 	return Adaptation{Dir: dir}
+}
+
+func writeScript(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
 }

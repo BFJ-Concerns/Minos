@@ -149,29 +149,29 @@ func newestLiveRunDir(root string, facts Facts, kind RunKind) (string, error) {
 		return "", err
 	}
 	pattern := regexp.MustCompile(`^[0-9A-Za-z]{1,12}-` + regexp.QuoteMeta(string(kind)) + `$`)
-	var newest string
-	var newestMod time.Time
+	var newest runClaim
 	for _, entry := range entries {
 		if !entry.IsDir() || isReapedRunDir(entry.Name()) || !pattern.MatchString(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		info, err := entry.Info()
+		claim, err := readRunClaim(path)
 		if err != nil {
 			return "", err
 		}
-		if newest == "" || info.ModTime().After(newestMod) {
-			newest = path
-			newestMod = info.ModTime()
+		if newest.path == "" || runClaimAfter(claim, newest) {
+			newest = claim
 		}
 	}
-	return newest, nil
+	return newest.path, nil
 }
 
 type runClaim struct {
-	path string
-	kind RunKind
-	sha  string
+	path      string
+	kind      RunKind
+	sha       string
+	headSHA   string
+	startedAt time.Time
 }
 
 func labelLessClaims(root string, facts Facts) ([]runClaim, error) {
@@ -193,17 +193,50 @@ func labelLessClaims(root string, facts Facts) ([]runClaim, error) {
 		if matches == nil {
 			continue
 		}
-		kind, err := ParseRunKind(matches[2])
+		claim, err := readRunClaim(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			return nil, err
 		}
-		claims = append(claims, runClaim{
-			path: filepath.Join(dir, entry.Name()),
-			kind: kind,
-			sha:  matches[1],
-		})
+		claims = append(claims, claim)
 	}
 	return claims, nil
+}
+
+func readRunClaim(path string) (runClaim, error) {
+	name := filepath.Base(path)
+	matches := regexp.MustCompile(`^([0-9A-Za-z]{1,12})-(review|fix|finish)$`).FindStringSubmatch(name)
+	if matches == nil {
+		return runClaim{}, fmt.Errorf("invalid run claim name: %s", name)
+	}
+	kind, err := ParseRunKind(matches[2])
+	if err != nil {
+		return runClaim{}, err
+	}
+	meta := readMeta(filepath.Join(path, "meta.env"))
+	claim := runClaim{
+		path:    path,
+		kind:    kind,
+		sha:     matches[1],
+		headSHA: meta["PUMP19_HEAD_SHA"],
+	}
+	if claim.headSHA == "" {
+		claim.headSHA = claim.sha
+	}
+	if started := meta["PUMP19_STARTED_AT"]; started != "" {
+		parsed, err := time.Parse(time.RFC3339, started)
+		if err != nil {
+			return runClaim{}, fmt.Errorf("%s: parse PUMP19_STARTED_AT: %w", path, err)
+		}
+		claim.startedAt = parsed
+	}
+	return claim, nil
+}
+
+func runClaimAfter(left, right runClaim) bool {
+	if !left.startedAt.Equal(right.startedAt) {
+		return left.startedAt.After(right.startedAt)
+	}
+	return left.headSHA > right.headSHA
 }
 
 func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, adaptation Adaptation, facts Facts, currentStatuses []Status, logw *os.File) error {
@@ -217,19 +250,14 @@ func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, adaptation Adap
 			continue
 		}
 		contextName, _ := StatusContext(claim.kind)
-		meta := readMeta(filepath.Join(claim.path, "meta.env"))
-		headSHA := meta["PUMP19_HEAD_SHA"]
-		if headSHA == "" && strings.HasPrefix(facts.HeadSHA, claim.sha) {
-			headSHA = facts.HeadSHA
-		}
+		headSHA := claim.headSHA
 		if headSHA != "" {
 			statuses := currentStatuses
 			if headSHA != facts.HeadSHA {
-				var err error
-				statuses, err = adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, headSHA)
-				if err != nil {
-					return err
+				if !strings.HasPrefix(facts.HeadSHA, claim.sha) {
+					continue
 				}
+				headSHA = facts.HeadSHA
 			}
 			if _, ok := statusForContext(statuses, contextName); ok {
 				continue
@@ -319,7 +347,7 @@ func reconcileDecision(ctx context.Context, repo RepoConfig, adaptation Adaptati
 	reviewContext, _ := StatusContext(RunReview)
 	fixContext, _ := StatusContext(RunFix)
 	finishContext, _ := StatusContext(RunFinish)
-	if _, ok := statusForContext(statuses, reviewContext); !ok && guardsPass(repo, RunReview, facts, facts.Actor) {
+	if _, ok := statusForContext(statuses, reviewContext); !ok && reviewReconcileGuardsPass(repo, facts) {
 		return RunReview, true, nil
 	}
 	reviewStatus, reviewOK := statusForContext(statuses, reviewContext)
@@ -343,6 +371,14 @@ func reconcileDecision(ctx context.Context, repo RepoConfig, adaptation Adaptati
 }
 
 func guardsPass(repo RepoConfig, kind RunKind, facts Facts, actor string) bool {
+	return guardsPassWithActorMode(repo, kind, facts, actor, true)
+}
+
+func reviewReconcileGuardsPass(repo RepoConfig, facts Facts) bool {
+	return guardsPassWithActorMode(repo, RunReview, facts, "", false)
+}
+
+func guardsPassWithActorMode(repo RepoConfig, kind RunKind, facts Facts, actor string, checkActors bool) bool {
 	for _, rule := range repo.Triggers {
 		ruleKind, err := ParseRunKind(rule.Run)
 		if err != nil || ruleKind != kind {
@@ -354,7 +390,7 @@ func guardsPass(repo RepoConfig, kind RunKind, facts Facts, actor string) bool {
 		if len(rule.Authors) > 0 && !matchesGlobAny(rule.Authors, facts.Author) {
 			continue
 		}
-		if len(rule.Actors) > 0 && !matchesGlobAny(rule.Actors, actor) {
+		if checkActors && len(rule.Actors) > 0 && !matchesGlobAny(rule.Actors, actor) {
 			continue
 		}
 		return true

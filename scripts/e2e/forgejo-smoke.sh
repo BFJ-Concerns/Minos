@@ -63,6 +63,27 @@ status_is() {
   fi
 }
 
+status_count() {
+  local sha="$1"
+  local context="$2"
+  api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
+    jq --arg context "$context" '[.[] | select(.context == $context)] | length'
+}
+
+assert_no_status_after() {
+  local description="$1"
+  local sha="$2"
+  local context="$3"
+  sleep 3
+  local count
+  count="$(status_count "$sha" "$context")"
+  if [[ "$count" != "0" ]]; then
+    echo "${description}: expected no ${context} status, found ${count}" >&2
+    return 1
+  fi
+  echo "ok: ${description}"
+}
+
 label_has() {
   local pr="$1"
   local label="$2"
@@ -80,6 +101,12 @@ status_state() {
   local context="$2"
   api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
     jq -r --arg context "$context" '[.[] | select(.context == $context) | (.status // .state)][0] // ""'
+}
+
+capture_timeline_fixture() {
+  local pr="$1"
+  local name="$2"
+  api GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/timeline" >"${fixture_dir}/${name}.json"
 }
 
 labels_csv() {
@@ -116,6 +143,39 @@ push_update() {
     git push origin "$branch" >/dev/null 2>&1
     git rev-parse HEAD
   )
+}
+
+write_repo_config() {
+  local run_body="${1:-}"
+  cat >"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
+forge = "local"
+owner = "${owner}"
+repo = "${repo}"
+
+[adaptation]
+briefs = ".review"
+EOF
+  if [[ -n "$run_body" ]]; then
+    printf 'run-body = "%s"\n' "$run_body" >>"$work/config/repos/local--${owner}--${repo}.toml"
+  fi
+  cat >>"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
+
+[[trigger]]
+run = "review"
+on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
+authors = ["*"]
+drafts = false
+
+[[trigger]]
+run = "fix"
+on = ["review-rejected"]
+actors = ["pump19"]
+
+[[trigger]]
+run = "finish"
+on = ["label-added:Ready"]
+actors = ["bob"]
+EOF
 }
 
 head_sha() {
@@ -171,10 +231,14 @@ docker exec -u git "$container" forgejo admin user create \
   --username bob --password password --email bob@example.invalid --admin --must-change-password=false >/dev/null
 docker exec -u git "$container" forgejo admin user create \
   --username "$owner" --password password --email pump19@example.invalid --must-change-password=false >/dev/null
+docker exec -u git "$container" forgejo admin user create \
+  --username mallory --password password --email mallory@example.invalid --admin --must-change-password=false >/dev/null
 bot_token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
   --username "$owner" --token-name pump19-e2e --scopes 'write:repository,write:issue,write:user' --raw)"
 ben_token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
   --username bob --token-name bob-e2e --scopes 'write:repository,write:issue,write:user' --raw)"
+mallory_token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
+  --username mallory --token-name mallory-e2e --scopes 'write:repository,write:issue,write:user' --raw)"
 printf '%s\n' "$bot_token" >"$work/token"
 printf '%s\n' "$secret" >"$work/webhook.secret"
 
@@ -206,30 +270,7 @@ vars = ["PUMP19_FORGE_TOKEN"]
 
 EOF
 
-cat >"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
-forge = "local"
-owner = "${owner}"
-repo = "${repo}"
-
-[adaptation]
-briefs = ".review"
-
-[[trigger]]
-run = "review"
-on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
-authors = ["*"]
-drafts = false
-
-[[trigger]]
-run = "fix"
-on = ["review-rejected"]
-actors = ["pump19"]
-
-[[trigger]]
-run = "finish"
-on = ["label-added:Ready"]
-actors = ["bob"]
-EOF
+write_repo_config ""
 
 PUMP19_FIXTURE_DIR="$fixture_dir" \
 PUMP19_CAPTURE_PORT="$capture_port" \
@@ -258,6 +299,16 @@ wait_for_call "journey 1 label cleared" label_lacks "$pr1" Reviewing
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels" '{"labels":["Ready"]}' >/dev/null
 wait_for_call "journey 1 finish status" status_is "$sha1" "pump19/finish" success
 wait_for_call "journey 1 finishing cleared" label_lacks "$pr1" Finishing
+
+pr_ready="$(create_branch_and_pr ready-removal "ready removal")"
+sha_ready="$(head_sha "$pr_ready")"
+wait_for_call "ready-removal review status" status_is "$sha_ready" "pump19/review" success
+api_with_token "$mallory_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels" '{"labels":["Ready"]}' >/dev/null
+assert_no_status_after "unauthorised Ready add does not fire finish" "$sha_ready" "pump19/finish"
+encoded_ready="$(printf '%s' Ready | jq -sRr @uri)"
+api_with_token "$ben_token" DELETE "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels/${encoded_ready}" >/dev/null
+wait_for_call "Ready removed" label_lacks "$pr_ready" Ready
+assert_no_status_after "Ready removal does not fire finish" "$sha_ready" "pump19/finish"
 
 first_fixture="$(ls "$fixture_dir"/*pull_request-opened.json | head -n1)"
 curl -fsS -X POST "http://127.0.0.1:${hook_port}/hooks/local" \
@@ -315,12 +366,51 @@ sleep 1
 run_sweep normal
 wait_for_call "journey 5 sweep-fired status" status_is "$sha4" "pump19/review" success
 
+failing_body="${work}/failing-run-body"
+cat >"$failing_body" <<'EOF'
+#!/usr/bin/env sh
+echo "persistent body failure"
+exit 42
+EOF
+chmod +x "$failing_body"
+write_repo_config "$failing_body"
+"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-failing-body.log" 2>&1 &
+receiver_pid="$!"
+pr_fail="$(create_branch_and_pr persistent-failure "persistent failure")"
+sha_fail="$(head_sha "$pr_fail")"
+wait_for_call "persistent failure records review error" status_is "$sha_fail" "pump19/review" error
+sleep 3
+run_sweep normal
+run_sweep normal
+failure_status_count="$(status_count "$sha_fail" "pump19/review")"
+if [[ "$failure_status_count" != "1" ]]; then
+  echo "persistent failure produced ${failure_status_count} review statuses" >&2
+  exit 1
+fi
+reaped_failure_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -name '*.reaped-*' | wc -l | tr -d ' ')"
+if [[ "$reaped_failure_count" != "0" ]]; then
+  echo "persistent failure accumulated ${reaped_failure_count} reaped directories" >&2
+  exit 1
+fi
+echo "ok: persistent failure is loud and not re-fired"
+kill "$receiver_pid" >/dev/null 2>&1 || true
+receiver_pid=""
+write_repo_config ""
+
 # Spike A capture tail: fire the extra Forgejo 14.0.5 webhook shapes the
 # normaliser needs to know about. These do not participate in the journeys.
-api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/comments" '{"body":"fixture issue comment"}' >/dev/null
-api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels" '{"labels":["Ready"]}' >/dev/null
+timeline_pr="$(create_branch_and_pr fixture-timeline "fixture timeline")"
+api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${timeline_pr}/comments" '{"body":"fixture issue comment"}' >/dev/null
+api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${timeline_pr}/labels" '{"labels":["Ready"]}' >/dev/null
+capture_timeline_fixture "$timeline_pr" "timeline-ready-added"
 encoded_ready="$(printf '%s' Ready | jq -sRr @uri)"
-api_with_token "$ben_token" DELETE "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels/${encoded_ready}" >/dev/null
+api_with_token "$ben_token" DELETE "/api/v1/repos/${owner}/${repo}/issues/${timeline_pr}/labels/${encoded_ready}" >/dev/null
+capture_timeline_fixture "$timeline_pr" "timeline-ready-removed"
+api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${timeline_pr}/labels" '{"labels":["Partial Coverage"]}' >/dev/null
+capture_timeline_fixture "$timeline_pr" "timeline-partial-coverage-added"
+encoded_partial="$(printf '%s' "Partial Coverage" | jq -sRr @uri)"
+api_with_token "$ben_token" DELETE "/api/v1/repos/${owner}/${repo}/issues/${timeline_pr}/labels/${encoded_partial}" >/dev/null
+capture_timeline_fixture "$timeline_pr" "timeline-partial-coverage-removed"
 api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${pr1}" '{"title":"journey-one undraft probe"}' >/dev/null || true
 approve_pr="$(create_branch_and_pr fixture-approve "fixture approve")"
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/pulls/${approve_pr}/reviews" '{"body":"fixture approve","event":"APPROVED"}' >/dev/null || true

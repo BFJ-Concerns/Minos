@@ -43,10 +43,11 @@ type RepoConfig struct {
 	Owner      string `toml:"owner"`
 	Repo       string `toml:"repo"`
 	Adaptation struct {
-		Build  string `toml:"build"`
-		Test   string `toml:"test"`
-		Briefs string `toml:"briefs"`
-		Skill  string `toml:"skill"`
+		Build   string `toml:"build"`
+		Test    string `toml:"test"`
+		Briefs  string `toml:"briefs"`
+		Skill   string `toml:"skill"`
+		RunBody string `toml:"run-body"`
 	} `toml:"adaptation"`
 	Policy struct {
 		AutoMerge bool `toml:"auto-merge"`
