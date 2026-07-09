@@ -293,6 +293,72 @@ func TestLabelLessClaimIsReapedWhenStaleAndUnfinished(t *testing.T) {
 	}
 }
 
+func TestPersistentLabelLessCurrentHeadFailureIsLoudBeforeRefire(t *testing.T) {
+	root := t.TempDir()
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Sweep.LivenessThreshold.Duration = time.Hour
+	cfg.Forges = map[string]ForgeConfig{
+		"local": {Adaptation: filepath.Join(root, "adaptations")},
+	}
+	repo := RepoConfig{
+		Forge: "local",
+		Owner: "pump19",
+		Repo:  "subject",
+		Triggers: []TriggerRule{{
+			Run:     "review",
+			On:      []string{"pr-opened"},
+			Authors: []string{"*"},
+		}},
+	}
+	facts := Facts{
+		Occasion: "pr-opened",
+		Forge:    "local",
+		Owner:    "pump19",
+		Repo:     "subject",
+		PR:       "42",
+		HeadSHA:  "abcdef1234567890",
+		Author:   "contributor",
+	}
+	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "run.log"), []byte("run body failed before posting status\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(runDir, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	statusMarker := filepath.Join(root, "status-written")
+	spawnMarker := filepath.Join(root, "spawn-called")
+	writeExecutable(t, filepath.Join(root, "adaptations", "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+	writeExecutable(t, filepath.Join(root, "adaptations", "set-status"), "#!/usr/bin/env sh\nprintf '%s=%s\\n' \"$4\" \"$5\" >\"$PUMP19_STATUS_MARKER\"\n")
+	writeExecutable(t, filepath.Join(root, "bin", "systemd-run"), "#!/usr/bin/env sh\nprintf 'spawned\\n' >\"$PUMP19_SPAWN_MARKER\"\n")
+	t.Setenv("PUMP19_STATUS_MARKER", statusMarker)
+	t.Setenv("PUMP19_SPAWN_MARKER", spawnMarker)
+	t.Setenv("PATH", filepath.Join(root, "bin")+":"+os.Getenv("PATH"))
+
+	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	err = sweepPR(context.Background(), cfg, repo, Adaptation{Dir: filepath.Join(root, "adaptations")}, facts, logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statusMarker); err != nil {
+		t.Fatalf("persistent current-head run failure wrote no PR-visible status: %v", err)
+	}
+	if _, err := os.Stat(spawnMarker); err == nil {
+		t.Fatal("persistent current-head run failure was silently re-fired")
+	}
+}
+
 func TestRunMetadataWriteFailureIsLoud(t *testing.T) {
 	missingRunDir := filepath.Join(t.TempDir(), "missing", "run")
 	if err := writeMeta(missingRunDir); err == nil {
@@ -340,6 +406,16 @@ func envMap(pairs []string) map[string]string {
 		values[key] = value
 	}
 	return values
+}
+
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testAdaptationWithLabelActor(t *testing.T, actor string) Adaptation {

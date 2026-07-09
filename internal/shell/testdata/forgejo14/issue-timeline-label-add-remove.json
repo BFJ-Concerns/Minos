@@ -1,0 +1,42 @@
+[
+  {
+    "type": "label",
+    "label": {
+      "name": "Reviewing"
+    },
+    "body": "1",
+    "user": {
+      "login": "pump19"
+    }
+  },
+  {
+    "type": "label",
+    "label": {
+      "name": "Reviewing"
+    },
+    "body": "",
+    "user": {
+      "login": "pump19"
+    }
+  },
+  {
+    "type": "label",
+    "label": {
+      "name": "Ready"
+    },
+    "body": "1",
+    "user": {
+      "login": "mallory"
+    }
+  },
+  {
+    "type": "label",
+    "label": {
+      "name": "Ready"
+    },
+    "body": "",
+    "user": {
+      "login": "bob"
+    }
+  }
+]

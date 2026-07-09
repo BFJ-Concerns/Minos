@@ -22,16 +22,16 @@ func TestForgejoLabelActorUsesLatestMatchingTimelineEvent(t *testing.T) {
 }
 
 func TestForgejoLatestLabelEventReportsGenericAddedAndRemovedOccasions(t *testing.T) {
-	out := runForgejoScript(t, "latest-label-event", `[{
-		"type":"label","label":{"name":"Ready"},"user":{"login":"bob"}
-	},{
-		"type":"unlabel","label":{"name":"Needs Work"},"user":{"login":"mallory"}
-	}]`, "owner", "repo", "1")
+	fixture, err := os.ReadFile(filepath.Join("testdata", "forgejo14", "issue-timeline-label-add-remove.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runForgejoScript(t, "latest-label-event", string(fixture), "owner", "repo", "1")
 	values, err := parseKeyValues(strings.NewReader(out))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if values["ACTION"] != "removed" || values["LABEL"] != "Needs Work" || values["ACTOR"] != "mallory" {
+	if values["ACTION"] != "removed" || values["LABEL"] != "Ready" || values["ACTOR"] != "bob" {
 		t.Fatalf("latest label event = %#v", values)
 	}
 }
