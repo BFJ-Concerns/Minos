@@ -27,9 +27,6 @@ type ServiceConfig struct {
 	Scrub struct {
 		Vars []string `toml:"vars"`
 	} `toml:"scrub"`
-	Spawn struct {
-		Mode string `toml:"mode"`
-	} `toml:"spawn"`
 }
 
 type ForgeConfig struct {
@@ -79,7 +76,6 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	cfg.Listener.Bind = ":8919"
 	cfg.Runs.Dir = "/var/lib/pump19/runs"
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
-	cfg.Spawn.Mode = "systemd"
 	if _, err := toml.DecodeFile(filepath.Join(root, "service.toml"), &cfg); err != nil {
 		return ServiceConfig{}, err
 	}
@@ -92,9 +88,6 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	}
 	if cfg.Sweep.LivenessThreshold.Duration == 0 {
 		cfg.Sweep.LivenessThreshold.Duration = time.Hour
-	}
-	if cfg.Spawn.Mode == "" {
-		cfg.Spawn.Mode = "systemd"
 	}
 	return cfg, nil
 }

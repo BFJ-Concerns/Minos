@@ -46,6 +46,7 @@ func RunWrapCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Fprintf(logFile, "pump19 run-wrap started at %s\n", time.Now().UTC().Format(time.RFC3339))
+	touchRunLog(logPath, logFile, "metadata written")
 	workspace := os.Getenv("PUMP19_WORKSPACE")
 	if workspace == "" {
 		return fmt.Errorf("PUMP19_WORKSPACE is required")
@@ -68,19 +69,38 @@ func RunWrapCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	facts := envFacts(forgeName)
+	touchRunLog(logPath, logFile, "preparing workspace")
 	if err := adaptation.PrepareWorkspace(ctx, facts, workspace, os.Getenv("PUMP19_DIFF")); err != nil {
 		return err
 	}
-	exe, err := os.Executable()
+	touchRunLog(logPath, logFile, "workspace ready")
+	cmd, err := runBodyCommand(ctx)
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, exe, "stub-run")
 	cmd.Stdout = multiOut
 	cmd.Stderr = multiErr
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "PUMP19_RUN_KIND="+string(kind))
 	return cmd.Run()
+}
+
+func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {
+	if skill := os.Getenv("PUMP19_SKILL"); skill != "" {
+		return exec.CommandContext(ctx, skill), nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return exec.CommandContext(ctx, exe, "stub-run"), nil
+}
+
+func touchRunLog(logPath string, logFile *os.File, message string) {
+	fmt.Fprintf(logFile, "pump19 run-wrap: %s at %s\n", message, time.Now().UTC().Format(time.RFC3339))
+	_ = logFile.Sync()
+	now := time.Now()
+	_ = os.Chtimes(logPath, now, now)
 }
 
 func writeMeta(runDir string) error {
@@ -89,6 +109,7 @@ func writeMeta(runDir string) error {
 		"PUMP19_WORKSPACE=" + os.Getenv("PUMP19_WORKSPACE"),
 		"PUMP19_STARTED_AT=" + time.Now().UTC().Format(time.RFC3339),
 		"PUMP19_OCCASION=" + os.Getenv("PUMP19_OCCASION"),
+		"PUMP19_HEAD_SHA=" + os.Getenv("PUMP19_HEAD_SHA"),
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "meta.env"), []byte(strings.Join(meta, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write run metadata: %w", err)

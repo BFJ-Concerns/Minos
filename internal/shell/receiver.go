@@ -74,12 +74,23 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		http.Error(w, "normalise failed", http.StatusBadRequest)
 		return err
 	}
+	if facts.Occasion == "" {
+		log.Printf("hook delivery ignored: unmapped forge event")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("unmapped event\n"))
+		return nil
+	}
 	facts.Forge = forgeName
 	repo, err := FindRepoConfig(cfg.Root, facts)
 	if err != nil {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("not opted in\n"))
 		return nil
+	}
+	facts, err = resolveReceiverFacts(ctx, adaptation, facts)
+	if err != nil {
+		http.Error(w, "label event resolution failed", http.StatusBadRequest)
+		return err
 	}
 	decision, ok := EvaluateTriggers(facts, repo)
 	if !ok {
@@ -103,4 +114,27 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = fmt.Fprintf(w, "spawned %s\n", decision.Kind)
 	return nil
+}
+
+func resolveReceiverFacts(ctx context.Context, adaptation Adaptation, facts Facts) (Facts, error) {
+	if facts.Occasion != "label-updated" {
+		return facts, nil
+	}
+	event, err := adaptation.LatestLabelEvent(ctx, facts.Owner, facts.Repo, facts.PR)
+	if err != nil {
+		return Facts{}, err
+	}
+	if event.Label == "" || event.Action == "" {
+		return facts, nil
+	}
+	facts.Occasion = "label-" + event.Action + ":" + event.Label
+	facts.Actor = event.Actor
+	if event.Action == "added" {
+		actor, err := adaptation.LabelActor(ctx, facts.Owner, facts.Repo, facts.PR, event.Label)
+		if err != nil {
+			return Facts{}, err
+		}
+		facts.Actor = actor
+	}
+	return facts, nil
 }

@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -56,7 +55,7 @@ func StubRunCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer func() {
-		newer := newerLiveRunDirExists(cfg.Runs.Dir, facts, kind)
+		newer := newerLiveRunDirExists(cfg.Runs.Dir, facts, kind, os.Getenv("PUMP19_RUN_DIR"))
 		if !newer {
 			_ = adaptation.RemoveLabel(context.Background(), facts.Owner, facts.Repo, facts.PR, label)
 		}
@@ -106,20 +105,18 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	return adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, state, description)
 }
 
-func newerLiveRunDirExists(root string, facts Facts, kind RunKind) bool {
-	// The exact same deterministic directory is this run's own claim. Newer
-	// heads use a different sha prefix, and reaped directories are evidence only.
-	pattern := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, "*", kind)
-	matches, _ := filepathGlob(pattern)
-	for _, match := range matches {
-		if isReapedRunDir(match) {
-			continue
-		}
-		if match != os.Getenv("PUMP19_RUN_DIR") {
-			return true
-		}
+func newerLiveRunDirExists(root string, facts Facts, kind RunKind, currentRunDir string) bool {
+	current, err := os.Stat(currentRunDir)
+	if err != nil {
+		return false
 	}
-	return false
+	runDir, err := newestLiveRunDir(root, facts, kind)
+	if err != nil || runDir == "" || runDir == currentRunDir {
+		return false
+	}
+	newest, err := os.Stat(runDir)
+	if err != nil {
+		return false
+	}
+	return newest.ModTime().After(current.ModTime())
 }
-
-var filepathGlob = filepath.Glob

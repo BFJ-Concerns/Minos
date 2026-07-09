@@ -19,9 +19,9 @@ The rebuilt shell is deliberately small:
 - `pump19 run-wrap --config /etc/pump19` owns run mechanics: atomic run claim,
   log and metadata creation, workspace preparation, body execution, and
   workspace cleanup.
-- `pump19 stub-run` is this unit's stand-in body. Later run-skill units replace
-  it with real review, fix, and finish agents without changing the wrapper
-  contract.
+- `pump19 stub-run` is this unit's stand-in body. If `PUMP19_SKILL` is set,
+  `run-wrap` executes that path instead; an empty `PUMP19_SKILL` keeps the
+  shipped stub default.
 - `pump19 ws-exec --config /etc/pump19 -- command ...` runs PR-controlled build
   or test commands inside `PUMP19_WORKSPACE` with configured service credentials
   scrubbed from the environment.
@@ -62,27 +62,43 @@ PUMP19_RUN_KIND       review | fix | finish
 PUMP19_OCCASION       triggering occasion, or reconcile
 PUMP19_FORGE          configured forge name
 PUMP19_REPO           owner/name
+PUMP19_OWNER          repository owner
+PUMP19_REPO_NAME      bare repository name
 PUMP19_PR             pull request number
 PUMP19_HEAD_SHA       full head SHA the run serves
 PUMP19_BASE_REF       base branch
 PUMP19_WORKSPACE      prepared clone-shaped checkout
 PUMP19_DIFF           PR diff path
 PUMP19_ADAPTATION     forge adaptation scripts directory
-PUMP19_SKILL          run skill path
+PUMP19_SKILL          run-body executable path; empty means pump19 stub-run
 PUMP19_BRIEFS         brief directory
 PUMP19_CONFIG         configuration root
+PUMP19_UNIT           transient systemd unit name
 ```
 
 The run directory path is the `(PR, head SHA, run kind)` claim. `run-wrap`
-creates it with atomic `mkdir`; a loser exits cleanly and touches nothing. The
-run body owns forge-visible state: it re-reads PR facts, applies and removes its
-in-flight label, guards against head changes before posting, writes the terminal
-status for the served head, and keeps `run.log` warm. The sweep reads only labels,
-statuses, and run-log mtimes; it never reads prose or log content as loop state.
+creates it with atomic `mkdir`; a loser exits cleanly and touches nothing.
+`PUMP19_WORKSPACE` is a per-run path under the host temp directory, and
+`run-wrap` removes it on normal exit. The run body owns forge-visible state: it
+re-reads PR facts, applies and removes its in-flight label, guards against head
+changes before posting, writes the terminal status for the served head, and
+keeps `run.log` warm. The sweep reads only labels, statuses, and run-log mtimes;
+it never reads prose or log content as loop state.
 
 Reaping is fail-closed. A stale run directory is renamed aside only after the
 transient unit has been stopped and verified gone; `.reaped-*` directories are
-evidence and never live claims.
+evidence and never live claims. A claim that dies before an in-flight label is
+visible is reaped by the same fail-closed path once its `run.log` or directory
+mtime is stale.
+
+The receiver resolves Forgejo `label_updated` deliveries through the issue
+timeline before trigger evaluation. The resulting occasion uses the generic
+`label-added:{Name}` or `label-removed:{Name}` vocabulary; for label additions,
+actor guards use the actor returned by `label-actor`, binding merge permission
+to the act of applying the label. On the reconcile path, fix actors come from
+the review status creator and finish actors come from `label-actor(Ready)`.
+Review actor guards are receiver-path-only because the open-PR state read has no
+delivery actor to recover.
 
 ## End-To-End Harness
 

@@ -18,16 +18,15 @@ func TestForgejo14FixturesNormaliseOccasions(t *testing.T) {
 	tests := []struct {
 		file     string
 		occasion string
-		headSHA  bool
 	}{
-		{"001-pull_request-opened.json", "pr-opened", true},
-		{"011-pull_request-synchronized.json", "pr-synchronized", true},
-		{"017-issue_comment-created.json", "comment-created", true},
-		{"018-pull_request-label_updated.json", "label-added:Ready", true},
-		{"019-pull_request-label_updated.json", "label-removed:Ready", true},
-		{"020-pull_request-edited.json", "pr-edited", true},
-		{"022-pull_request_approved-reviewed.json", "review-approved", true},
-		{"023-pull_request_rejected-reviewed.json", "review-rejected", true},
+		{"001-pull_request-opened.json", "pr-opened"},
+		{"011-pull_request-synchronized.json", "pr-synchronized"},
+		{"017-issue_comment-created.json", "comment-created"},
+		{"018-pull_request-label_updated.json", "label-updated"},
+		{"019-pull_request-label_updated.json", "label-updated"},
+		{"020-pull_request-edited.json", "pr-edited"},
+		{"022-pull_request_approved-reviewed.json", "review-approved"},
+		{"023-pull_request_rejected-reviewed.json", "review-rejected"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
@@ -39,11 +38,8 @@ func TestForgejo14FixturesNormaliseOccasions(t *testing.T) {
 			if facts.Owner != "pump19" || facts.Repo != "subject" || facts.PR == "" {
 				t.Fatalf("repo facts not normalised: %#v", facts)
 			}
-			if tt.headSHA && facts.HeadSHA == "" {
+			if facts.HeadSHA == "" {
 				t.Fatalf("expected head SHA in %#v", facts)
-			}
-			if !tt.headSHA && facts.HeadSHA != "" {
-				t.Fatalf("expected no head SHA for comment fixture, got %#v", facts)
 			}
 		})
 	}

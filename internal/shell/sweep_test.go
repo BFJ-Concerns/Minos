@@ -69,8 +69,47 @@ func TestReapTargetNameDoesNotOverwriteEvidence(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target := dir + ".reaped-" + "1"
-	if isReapedRunDir(target) == false {
-		t.Fatal("reaped evidence directory should be recognised")
+	original := reapedSuffix
+	reapedSuffix = func() int64 { return 1 }
+	t.Cleanup(func() {
+		reapedSuffix = original
+	})
+	if err := os.Mkdir(dir+".reaped-1", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := reapRunDir(t.Context(), dir); err == nil {
+		t.Fatal("expected reap to fail rather than overwrite existing evidence")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("canonical run dir should remain after collision: %v", err)
+	}
+}
+
+func TestNewerLiveRunDirExistsMeansNewer(t *testing.T) {
+	root := t.TempDir()
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7"}
+	oldRun := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, "111111111111", RunReview)
+	currentRun := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, "222222222222", RunReview)
+	newRun := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, "333333333333", RunReview)
+	for _, dir := range []string{oldRun, currentRun, newRun} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	if err := os.Chtimes(oldRun, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(currentRun, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newRun, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if !newerLiveRunDirExists(root, facts, RunReview, currentRun) {
+		t.Fatal("expected a later live run to count as newer")
+	}
+	if newerLiveRunDirExists(root, facts, RunReview, newRun) {
+		t.Fatal("older live runs must not count as newer")
 	}
 }

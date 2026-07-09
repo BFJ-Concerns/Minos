@@ -5,17 +5,27 @@ set -eu
 owner="$1"
 repo="$2"
 
-api GET "/api/v1/repos/${owner}/${repo}/pulls?state=open" |
-  jq -r '.[] | [
-    "OCCASION=reconcile",
-    "FORGE=",
-    ("OWNER=" + "'"$owner"'"),
-    ("REPO=" + "'"$repo"'"),
-    ("PR=" + ((.number // .index) | tostring)),
-    ("HEAD_SHA=" + .head.sha),
-    ("BASE_REF=" + .base.ref),
-    ("AUTHOR=" + (.user.login // .user.username // "")),
-    "ACTOR=",
-    ("DRAFT=" + ((.draft // false) | tostring)),
-    ("LABELS=" + ([.labels[]?.name] | join(",")))
-  ] | .[], ""'
+page=1
+limit=50
+while :; do
+  json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls?state=open&limit=${limit}&page=${page}")"
+  count="$(printf '%s' "$json" | jq 'length')"
+  if [ "$count" -eq 0 ]; then
+    break
+  fi
+  printf '%s' "$json" |
+    jq -r '.[] | [
+      "OCCASION=reconcile",
+      "FORGE=",
+      ("OWNER=" + "'"$owner"'"),
+      ("REPO=" + "'"$repo"'"),
+      ("PR=" + ((.number // .index) | tostring)),
+      ("HEAD_SHA=" + .head.sha),
+      ("BASE_REF=" + .base.ref),
+      ("AUTHOR=" + (.user.login // .user.username // "")),
+      "ACTOR=",
+      ("DRAFT=" + ((.draft // false) | tostring)),
+      ("LABELS=" + ([.labels[]?.name] | join(",")))
+    ] | .[], ""'
+  page=$((page + 1))
+done

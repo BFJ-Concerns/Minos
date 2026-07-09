@@ -63,6 +63,12 @@ status_is() {
   fi
 }
 
+status_present() {
+  local sha="$1"
+  local context="$2"
+  [[ -n "$(status_state "$sha" "$context")" ]]
+}
+
 label_has() {
   local pr="$1"
   local label="$2"
@@ -204,8 +210,6 @@ log = "${work}/logs/sweep.log"
 [scrub]
 vars = ["PUMP19_FORGE_TOKEN"]
 
-[spawn]
-mode = "systemd"
 EOF
 
 cat >"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
@@ -215,7 +219,6 @@ repo = "${repo}"
 
 [adaptation]
 briefs = ".review"
-skill = "${root}/README.md"
 
 [[trigger]]
 run = "review"
@@ -258,6 +261,27 @@ pr1="$(create_branch_and_pr journey-one "journey one")"
 sha1="$(head_sha "$pr1")"
 wait_for_call "journey 1 review status" status_is "$sha1" "pump19/review" success
 wait_for_call "journey 1 label cleared" label_lacks "$pr1" Reviewing
+api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels" '{"labels":["Ready"]}' >/dev/null
+wait_for_call "journey 1 finish status" status_is "$sha1" "pump19/finish" success
+wait_for_call "journey 1 finishing cleared" label_lacks "$pr1" Finishing
+
+pr_remove="$(create_branch_and_pr ready-removal "ready removal")"
+sha_remove="$(head_sha "$pr_remove")"
+wait_for_call "journey 1b review status" status_is "$sha_remove" "pump19/review" success
+api POST "/api/v1/repos/${owner}/${repo}/issues/${pr_remove}/labels" '{"labels":["Ready"]}' >/dev/null
+sleep 2
+if [[ -n "$(status_state "$sha_remove" "pump19/finish")" ]]; then
+  echo "non-author Ready add fired finish" >&2
+  exit 1
+fi
+encoded_ready="$(printf '%s' Ready | jq -sRr @uri)"
+api_with_token "$ben_token" DELETE "/api/v1/repos/${owner}/${repo}/issues/${pr_remove}/labels/${encoded_ready}" >/dev/null
+sleep 2
+if [[ -n "$(status_state "$sha_remove" "pump19/finish")" ]]; then
+  echo "Ready removal fired finish" >&2
+  exit 1
+fi
+echo "ok: journey 1b Ready removal does not fire finish"
 
 first_fixture="$(ls "$fixture_dir"/*pull_request-opened.json | head -n1)"
 curl -fsS -X POST "http://127.0.0.1:${hook_port}/hooks/local" \
@@ -299,6 +323,7 @@ old_sha="$(head_sha "$pr3")"
 sleep 1
 new_sha="$(push_update journey-four "journey four update")"
 wait_for_call "journey 4 new-head status" status_is "$new_sha" "pump19/review" success
+wait_for_call "journey 4 reviewing cleared" label_lacks "$pr3" Reviewing
 old_count="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${old_sha}/statuses" | jq '[.[] | select(.context == "pump19/review")] | length')"
 if [[ "$old_count" != "0" ]]; then
   echo "old head received ${old_count} statuses after head moved" >&2
@@ -314,11 +339,61 @@ sleep 1
 run_sweep normal
 wait_for_call "journey 5 sweep-fired status" status_is "$sha4" "pump19/review" success
 
+failing_body="$work/failing-run-body"
+cat >"$failing_body" <<'EOF'
+#!/usr/bin/env sh
+echo "persistent body failure" >&2
+exit 42
+EOF
+chmod +x "$failing_body"
+cat >"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
+forge = "local"
+owner = "${owner}"
+repo = "${repo}"
+
+[adaptation]
+skill = "${failing_body}"
+briefs = ".review"
+
+[[trigger]]
+run = "review"
+on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
+authors = ["*"]
+drafts = false
+
+[[trigger]]
+run = "fix"
+on = ["review-rejected"]
+actors = ["pump19"]
+
+[[trigger]]
+run = "finish"
+on = ["label-added:Ready"]
+actors = ["bob"]
+EOF
+
+if [[ -n "${receiver_pid:-}" ]]; then
+  kill "$receiver_pid" >/dev/null 2>&1 || true
+fi
+PUMP19_STUB_MODE=normal "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-persistent-failure.log" 2>&1 &
+receiver_pid="$!"
+sleep 1
+pr6="$(create_branch_and_pr persistent-failure "persistent failure")"
+sha6="$(head_sha "$pr6")"
+sleep 3
+run_sweep normal
+sleep 3
+run_sweep normal
+if ! status_present "$sha6" "pump19/review"; then
+  echo "persistent run-body failure left no PR-visible review status" >&2
+  exit 1
+fi
+echo "ok: journey 6 persistent run-body failure is PR-visible"
+
 # Spike A capture tail: fire the extra Forgejo 14.0.5 webhook shapes the
 # normaliser needs to know about. These do not participate in the journeys.
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/comments" '{"body":"fixture issue comment"}' >/dev/null
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels" '{"labels":["Ready"]}' >/dev/null
-encoded_ready="$(printf '%s' Ready | jq -sRr @uri)"
 api_with_token "$ben_token" DELETE "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels/${encoded_ready}" >/dev/null
 api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${pr1}" '{"title":"journey-one undraft probe"}' >/dev/null || true
 approve_pr="$(create_branch_and_pr fixture-approve "fixture approve")"

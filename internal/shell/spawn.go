@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -23,11 +24,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		if value := os.Getenv(name); value != "" {
 			env = append(env, name+"="+value)
 		}
-	}
-	if cfg.Spawn.Mode == "direct" {
-		cmd := exec.CommandContext(ctx, exe, "run-wrap", "--config", cfg.Root)
-		cmd.Env = append(os.Environ(), env...)
-		return cmd.Start()
 	}
 	args := []string{"--user", "--collect", "--unit", unitName}
 	for _, pair := range env {
@@ -48,7 +44,7 @@ func UnitName(facts Facts, kind RunKind) string {
 }
 
 func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, kind RunKind, runDir, unitName, occasion string) []string {
-	workspace := runDir + ".workspace"
+	workspace := filepath.Join(os.TempDir(), "pump19-workspaces", unitName)
 	diff := runDir + "/diff.patch"
 	skill := repo.Adaptation.Skill
 	briefs := repo.Adaptation.Briefs

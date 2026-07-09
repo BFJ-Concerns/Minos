@@ -24,6 +24,12 @@ type Status struct {
 	Creator string `json:"creator"`
 }
 
+type LabelEvent struct {
+	Action string
+	Label  string
+	Actor  string
+}
+
 func NewAdaptation(forge ForgeConfig) (Adaptation, error) {
 	credential := ""
 	if forge.CredentialFile != "" {
@@ -67,7 +73,7 @@ func (a Adaptation) NormaliseEvent(ctx context.Context, body []byte, headers map
 	if err != nil {
 		return Facts{}, err
 	}
-	return ParseFacts(bytes.NewReader(out))
+	return ParseFactsAllowUnmapped(bytes.NewReader(out))
 }
 
 func (a Adaptation) GetPRFacts(ctx context.Context, forge, owner, repo, pr string) (Facts, error) {
@@ -137,6 +143,22 @@ func (a Adaptation) LabelActor(ctx context.Context, owner, repo, pr, label strin
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func (a Adaptation) LatestLabelEvent(ctx context.Context, owner, repo, pr string) (LabelEvent, error) {
+	out, err := a.Run(ctx, "latest-label-event", nil, nil, owner, repo, pr)
+	if err != nil {
+		return LabelEvent{}, err
+	}
+	values, err := parseKeyValues(bytes.NewReader(out))
+	if err != nil {
+		return LabelEvent{}, err
+	}
+	return LabelEvent{
+		Action: values["ACTION"],
+		Label:  values["LABEL"],
+		Actor:  values["ACTOR"],
+	}, nil
 }
 
 func (a Adaptation) PrepareWorkspace(ctx context.Context, facts Facts, workspace, diffPath string) error {
