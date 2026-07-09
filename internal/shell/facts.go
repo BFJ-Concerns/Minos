@@ -38,6 +38,14 @@ func (f Facts) HasLabel(label string) bool {
 }
 
 func ParseFacts(r io.Reader) (Facts, error) {
+	return parseFacts(r, false)
+}
+
+func ParseFactsAllowUnmapped(r io.Reader) (Facts, error) {
+	return parseFacts(r, true)
+}
+
+func parseFacts(r io.Reader, allowEmptyOccasion bool) (Facts, error) {
 	values, err := parseKeyValues(r)
 	if err != nil {
 		return Facts{}, err
@@ -61,7 +69,7 @@ func ParseFacts(r io.Reader) (Facts, error) {
 			}
 		}
 	}
-	if facts.Occasion == "" || facts.Owner == "" || facts.Repo == "" || facts.PR == "" {
+	if (!allowEmptyOccasion && facts.Occasion == "") || facts.Owner == "" || facts.Repo == "" || facts.PR == "" {
 		return Facts{}, fmt.Errorf("normalised facts missing required fields")
 	}
 	return facts, nil

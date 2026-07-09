@@ -90,6 +90,9 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 			return err
 		}
 	}
+	if err := reapLabelLessClaims(ctx, cfg, adaptation, facts, statuses, logw); err != nil {
+		return err
+	}
 	decision, ok, err := reconcileDecision(ctx, repo, adaptation, facts, statuses)
 	if err != nil {
 		return err
@@ -120,6 +123,11 @@ func liveRunState(root string, facts Facts, kind RunKind, threshold time.Duratio
 	if err != nil || runDir == "" {
 		return runDir, false, err
 	}
+	_, alive, err := runState(runDir, threshold)
+	return runDir, alive, err
+}
+
+func runState(runDir string, threshold time.Duration) (string, bool, error) {
 	statPath := filepath.Join(runDir, "run.log")
 	stat, err := os.Stat(statPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -160,6 +168,89 @@ func newestLiveRunDir(root string, facts Facts, kind RunKind) (string, error) {
 	return newest, nil
 }
 
+type runClaim struct {
+	path string
+	kind RunKind
+	sha  string
+}
+
+func labelLessClaims(root string, facts Facts) ([]runClaim, error) {
+	dir := filepath.Join(root, facts.Forge+"--"+facts.Owner+"--"+facts.Repo, "pr"+facts.PR)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	pattern := regexp.MustCompile(`^([0-9A-Za-z]{1,12})-(review|fix|finish)$`)
+	var claims []runClaim
+	for _, entry := range entries {
+		if !entry.IsDir() || isReapedRunDir(entry.Name()) {
+			continue
+		}
+		matches := pattern.FindStringSubmatch(entry.Name())
+		if matches == nil {
+			continue
+		}
+		kind, err := ParseRunKind(matches[2])
+		if err != nil {
+			return nil, err
+		}
+		claims = append(claims, runClaim{
+			path: filepath.Join(dir, entry.Name()),
+			kind: kind,
+			sha:  matches[1],
+		})
+	}
+	return claims, nil
+}
+
+func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, adaptation Adaptation, facts Facts, currentStatuses []Status, logw *os.File) error {
+	claims, err := labelLessClaims(cfg.Runs.Dir, facts)
+	if err != nil {
+		return err
+	}
+	for _, claim := range claims {
+		label, _ := InFlightLabel(claim.kind)
+		if facts.HasLabel(label) {
+			continue
+		}
+		contextName, _ := StatusContext(claim.kind)
+		meta := readMeta(filepath.Join(claim.path, "meta.env"))
+		headSHA := meta["PUMP19_HEAD_SHA"]
+		if headSHA == "" && strings.HasPrefix(facts.HeadSHA, claim.sha) {
+			headSHA = facts.HeadSHA
+		}
+		if headSHA != "" {
+			statuses := currentStatuses
+			if headSHA != facts.HeadSHA {
+				var err error
+				statuses, err = adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, headSHA)
+				if err != nil {
+					return err
+				}
+			}
+			if _, ok := statusForContext(statuses, contextName); ok {
+				continue
+			}
+		}
+		_, alive, err := runState(claim.path, cfg.Sweep.LivenessThreshold.Duration)
+		if err != nil {
+			return err
+		}
+		if alive {
+			continue
+		}
+		if err := reapRunDir(ctx, claim.path); err != nil {
+			fmt.Fprintf(logw, "label-less reap failed closed for %s: %v\n", claim.path, err)
+			continue
+		}
+		fmt.Fprintf(logw, "reaped label-less %s for %s#%s\n", claim.path, facts.RepoSlug(), facts.PR)
+	}
+	return nil
+}
+
 func reapRunDir(ctx context.Context, runDir string) error {
 	meta := readMeta(filepath.Join(runDir, "meta.env"))
 	unit := meta["PUMP19_UNIT"]
@@ -173,11 +264,18 @@ func reapRunDir(ctx context.Context, runDir string) error {
 			return err
 		}
 	}
-	target := fmt.Sprintf("%s.reaped-%d", runDir, time.Now().UnixNano())
+	target := fmt.Sprintf("%s.reaped-%d", runDir, reapedSuffix())
+	// os.Rename can clobber an empty directory on Unix. The nanosecond suffix
+	// makes a natural collision vanishingly unlikely; this explicit Lstat turns
+	// a forced collision into a hard fail so evidence is not replaced.
 	if _, err := os.Lstat(target); err == nil {
 		return fmt.Errorf("reap target already exists: %s", target)
 	}
 	return os.Rename(runDir, target)
+}
+
+var reapedSuffix = func() int64 {
+	return time.Now().UnixNano()
 }
 
 func stopAndVerifyUnitGone(ctx context.Context, unit string) error {

@@ -44,7 +44,7 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 		"PUMP19_PR":         "42",
 		"PUMP19_HEAD_SHA":   "abcdef1234567890",
 		"PUMP19_BASE_REF":   "main",
-		"PUMP19_WORKSPACE":  runDir + ".workspace",
+		"PUMP19_WORKSPACE":  filepath.Join(os.TempDir(), "pump19-workspaces", unit),
 		"PUMP19_DIFF":       filepath.Join(runDir, "diff.patch"),
 		"PUMP19_ADAPTATION": filepath.Join(root, "adaptations"),
 		"PUMP19_SKILL":      filepath.Join(root, "skills", "review"),
@@ -59,6 +59,9 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 	}
 	if strings.Contains(env["PUMP19_RUN_DIR"], ".reaped-") {
 		t.Fatalf("spawn handed a reaped evidence path as the live claim: %s", env["PUMP19_RUN_DIR"])
+	}
+	if strings.HasPrefix(env["PUMP19_WORKSPACE"], cfg.Runs.Dir) {
+		t.Fatalf("workspace should be in temp storage, got %s", env["PUMP19_WORKSPACE"])
 	}
 }
 
@@ -100,6 +103,81 @@ func TestPartialCoverageNeverReconcilesAsConverged(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("partial coverage without findings must not auto-fire, got decision=%s", decision)
+	}
+}
+
+func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
+	drafts := false
+	repo := RepoConfig{Triggers: []TriggerRule{
+		{Run: "review", Authors: []string{"*"}, Drafts: &drafts},
+		{Run: "fix", Actors: []string{"pump19"}},
+		{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}},
+	}}
+	facts := Facts{
+		Forge:   "local",
+		Owner:   "pump19",
+		Repo:    "subject",
+		PR:      "42",
+		HeadSHA: "abcdef1234567890",
+		Author:  "contributor",
+		Draft:   false,
+	}
+	reviewContext, _ := StatusContext(RunReview)
+	fixContext, _ := StatusContext(RunFix)
+	finishContext, _ := StatusContext(RunFinish)
+	adaptation := testAdaptationWithLabelActor(t, "bob")
+
+	tests := []struct {
+		name     string
+		labels   []string
+		statuses []Status
+		want     RunKind
+		wantOK   bool
+	}{
+		{name: "missing review fires review", want: RunReview, wantOK: true},
+		{
+			name:     "failed review fires fix from status creator",
+			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "pump19"}},
+			want:     RunFix,
+			wantOK:   true,
+		},
+		{
+			name:     "existing fix status blocks duplicate fix",
+			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "pump19"}, {Context: fixContext, State: "success", Creator: "pump19"}},
+		},
+		{
+			name:     "ready label fires finish from label actor",
+			labels:   []string{LabelReady},
+			statuses: []Status{{Context: reviewContext, State: "success", Creator: "pump19"}},
+			want:     RunFinish,
+			wantOK:   true,
+		},
+		{
+			name:     "existing finish status blocks duplicate finish",
+			labels:   []string{LabelReady},
+			statuses: []Status{{Context: reviewContext, State: "success", Creator: "pump19"}, {Context: finishContext, State: "success", Creator: "bob"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := facts
+			f.Labels = tt.labels
+			got, ok, err := reconcileDecision(context.Background(), repo, adaptation, f, tt.statuses)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("decision = %s ok=%v, want %s ok=%v", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestReconcileReviewActorGuardIsReceiverPathOnly(t *testing.T) {
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "review", Actors: []string{"bob"}}}}
+	facts := Facts{Author: "contributor"}
+	if decision, ok, err := reconcileDecision(context.Background(), repo, Adaptation{}, facts, nil); err != nil || ok {
+		t.Fatalf("review actor guard should not be invented from state on reconcile: decision=%s ok=%v err=%v", decision, ok, err)
 	}
 }
 
@@ -159,6 +237,62 @@ func TestReapReleasesPreBodyClaimWithoutMetadata(t *testing.T) {
 	}
 }
 
+func TestReapFailsRatherThanOverwritingEvidence(t *testing.T) {
+	original := reapedSuffix
+	reapedSuffix = func() int64 { return 1 }
+	t.Cleanup(func() {
+		reapedSuffix = original
+	})
+	root := t.TempDir()
+	runDir := filepath.Join(root, "run")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(runDir+".reaped-1", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := reapRunDir(context.Background(), runDir); err == nil {
+		t.Fatal("expected reap collision to fail")
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("canonical claim was removed after collision: %v", err)
+	}
+}
+
+func TestLabelLessClaimIsReapedWhenStaleAndUnfinished(t *testing.T) {
+	root := t.TempDir()
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Sweep.LivenessThreshold.Duration = time.Hour
+	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "abcdef1234567890"}
+	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(runDir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+	if err := reapLabelLessClaims(context.Background(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("label-less claim still present: %v", err)
+	}
+	matches, err := filepath.Glob(runDir + ".reaped-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one reaped claim, got %v", matches)
+	}
+}
+
 func TestRunMetadataWriteFailureIsLoud(t *testing.T) {
 	missingRunDir := filepath.Join(t.TempDir(), "missing", "run")
 	if err := writeMeta(missingRunDir); err == nil {
@@ -206,4 +340,14 @@ func envMap(pairs []string) map[string]string {
 		values[key] = value
 	}
 	return values
+}
+
+func testAdaptationWithLabelActor(t *testing.T, actor string) Adaptation {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "label-actor")
+	if err := os.WriteFile(script, []byte("#!/usr/bin/env sh\nprintf '%s\\n' \""+actor+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return Adaptation{Dir: dir}
 }

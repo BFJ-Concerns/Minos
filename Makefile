@@ -9,7 +9,11 @@ build:
 check: scripts test build
 
 scripts:
-	find scripts/adaptations/forgejo -maxdepth 1 -type f -exec sh -n {} \;
+	@set -eu; \
+	for script in scripts/adaptations/forgejo/*; do \
+		[ -f "$$script" ] || continue; \
+		sh -n "$$script"; \
+	done
 
 e2e: build
 	./scripts/e2e/forgejo-smoke.sh
