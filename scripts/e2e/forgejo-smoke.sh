@@ -12,15 +12,11 @@ secret="pump19-secret"
 owner="pump19"
 repo="subject"
 fixture_dir="${PUMP19_E2E_FIXTURE_DIR:-${work}/fixtures}"
-cleanup_units=()
 
 cleanup() {
   set +e
   [[ -n "${receiver_pid:-}" ]] && kill "$receiver_pid" >/dev/null 2>&1
   [[ -n "${capture_pid:-}" ]] && kill "$capture_pid" >/dev/null 2>&1
-  for unit in "${cleanup_units[@]:-}"; do
-    [[ -n "$unit" ]] && systemctl --user stop "$unit" >/dev/null 2>&1
-  done
   docker rm -f "$container" >/dev/null 2>&1
 }
 trap cleanup EXIT
@@ -104,22 +100,7 @@ status_state() {
   local sha="$1"
   local context="$2"
   api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
-    jq -r --arg context "$context" '[.[] | select(.context == $context) | (.status // .state)][0] // ""'
-}
-
-combined_status_state() {
-  local sha="$1"
-  api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/status" |
-    jq -r '.state // ""'
-}
-
-set_status() {
-  local sha="$1"
-  local context="$2"
-  local state="$3"
-  local description="$4"
-  api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha}" \
-    "$(jq -nc --arg context "$context" --arg state "$state" --arg description "$description" '{context:$context,state:$state,description:$description}')" >/dev/null
+    jq -r --arg context "$context" 'sort_by([(.created_unix // 0), (.id // 0)]) | reverse | [.[] | select(.context == $context) | (.status // .state)][0] // ""'
 }
 
 capture_timeline_fixture() {
@@ -132,13 +113,6 @@ labels_csv() {
   local pr="$1"
   api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}" |
     jq -r '[.labels[]?.name] | join(",")'
-}
-
-label_actor() {
-  local pr="$1"
-  local label="$2"
-  PUMP19_API_BASE="http://127.0.0.1:${port}" PUMP19_FORGE_TOKEN="$bot_token" \
-    "$work/adaptations/label-actor" "$owner" "$repo" "$pr" "$label"
 }
 
 create_branch_and_pr() {
@@ -211,15 +185,6 @@ head_sha() {
 
 run_sweep() {
   PUMP19_STUB_MODE="${1:-normal}" "${root}/pump19" sweep --config "$work/config"
-}
-
-latest_run_meta_value() {
-  local pr="$1"
-  local key="$2"
-  find "$work/runs/local--${owner}--${repo}/pr${pr}" -name meta.env -print0 |
-    xargs -0 grep -h "^${key}=" |
-    tail -n1 |
-    cut -d= -f2-
 }
 
 mkdir -p "$work/config/repos" "$work/runs" "$work/logs" "$work/adaptations" "$work/forgejo/gitea/conf" "$fixture_dir"
@@ -334,16 +299,20 @@ wait_for_call "journey 1 label cleared" label_lacks "$pr1" Reviewing
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels" '{"labels":["Ready"]}' >/dev/null
 wait_for_call "journey 1 finish status" status_is "$sha1" "pump19/finish" success
 wait_for_call "journey 1 finishing cleared" label_lacks "$pr1" Finishing
+run_sweep normal
+wait_for_call "authorised Ready survives sweep" label_has "$pr1" Ready
 
 pr_ready="$(create_branch_and_pr ready-removal "ready removal")"
 sha_ready="$(head_sha "$pr_ready")"
 wait_for_call "ready-removal review status" status_is "$sha_ready" "pump19/review" success
 api_with_token "$mallory_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels" '{"labels":["Ready"]}' >/dev/null
 assert_no_status_after "unauthorised Ready add does not fire finish" "$sha_ready" "pump19/finish"
-encoded_ready="$(printf '%s' Ready | jq -sRr @uri)"
-api_with_token "$ben_token" DELETE "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels/${encoded_ready}" >/dev/null
-wait_for_call "Ready removed" label_lacks "$pr_ready" Ready
-assert_no_status_after "Ready removal does not fire finish" "$sha_ready" "pump19/finish"
+run_sweep normal
+wait_for_call "unauthorised Ready cleared by sweep" label_lacks "$pr_ready" Ready
+assert_no_status_after "unauthorised Ready clearance does not fire finish" "$sha_ready" "pump19/finish"
+api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels" '{"labels":["Ready"]}' >/dev/null
+wait_for_call "authorised Ready re-add fires finish" status_is "$sha_ready" "pump19/finish" success
+wait_for_call "ready-removal finishing cleared" label_lacks "$pr_ready" Finishing
 
 first_fixture="$(ls "$fixture_dir"/*pull_request-opened.json | head -n1)"
 curl -fsS -X POST "http://127.0.0.1:${hook_port}/hooks/local" \
@@ -394,12 +363,106 @@ fi
 echo "ok: journey 4 stale output discarded"
 
 kill "$receiver_pid" >/dev/null 2>&1 || true
+sleep 1
+PUMP19_STUB_MODE=hang "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-superseded-hang.log" 2>&1 &
+receiver_pid="$!"
+pr_superseded="$(create_branch_and_pr superseded-hang "superseded hang")"
+wait_for_call "superseded hang reviewing label" label_has "$pr_superseded" Reviewing
+old_meta=""
+for _ in {1..60}; do
+  if [[ -d "$work/runs/local--${owner}--${repo}/pr${pr_superseded}" ]]; then
+    old_meta="$(find "$work/runs/local--${owner}--${repo}/pr${pr_superseded}" -name meta.env -print -quit)"
+  fi
+  [[ -n "$old_meta" ]] && break
+  sleep 1
+done
+if [[ -z "$old_meta" ]]; then
+  echo "superseded hang did not write metadata" >&2
+  exit 1
+fi
+old_run_dir="$(dirname "$old_meta")"
+old_unit="$(grep -h '^PUMP19_UNIT=' "$old_meta" | tail -n1 | cut -d= -f2-)"
+old_workspace="$(grep -h '^PUMP19_WORKSPACE=' "$old_meta" | tail -n1 | cut -d= -f2-)"
+kill "$receiver_pid" >/dev/null 2>&1 || true
+sleep 1
+"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-after-superseded-hang.log" 2>&1 &
+receiver_pid="$!"
+new_superseded_sha="$(push_update superseded-hang "superseded hang update")"
+wait_for_call "superseded hang new-head status" status_is "$new_superseded_sha" "pump19/review" success
+wait_for_call "superseded hang reviewing cleared" label_lacks "$pr_superseded" Reviewing
+sleep 3
+run_sweep normal
+if [[ -e "$old_run_dir" ]]; then
+  echo "superseded abandoned claim still has canonical directory: ${old_run_dir}" >&2
+  exit 1
+fi
+superseded_reaped_count="$(find "$(dirname "$old_run_dir")" -maxdepth 1 -name "$(basename "$old_run_dir").reaped-*" | wc -l | tr -d ' ')"
+if [[ "$superseded_reaped_count" != "1" ]]; then
+  echo "superseded abandoned claim produced ${superseded_reaped_count} reaped directories" >&2
+  exit 1
+fi
+if [[ -n "$old_workspace" && -e "$old_workspace" ]]; then
+  echo "superseded abandoned workspace still exists: ${old_workspace}" >&2
+  exit 1
+fi
+if [[ -n "$old_unit" ]]; then
+  old_unit_state="$(systemctl --user show "$old_unit" --property=ActiveState --value 2>/dev/null || true)"
+  if [[ -n "$old_unit_state" && "$old_unit_state" != "inactive" && "$old_unit_state" != "failed" ]]; then
+    echo "superseded abandoned unit still active: ${old_unit} ${old_unit_state}" >&2
+    exit 1
+  fi
+fi
+echo "ok: superseded abandoned run reaped"
+
+kill "$receiver_pid" >/dev/null 2>&1 || true
 receiver_pid=""
 pr4="$(create_branch_and_pr journey-five "journey five")"
 sha4="$(head_sha "$pr4")"
 sleep 1
 run_sweep normal
 wait_for_call "journey 5 sweep-fired status" status_is "$sha4" "pump19/review" success
+
+prepare_workspace="${work}/adaptations/prepare-workspace"
+real_prepare_workspace="${prepare_workspace}.real"
+mv "$prepare_workspace" "$real_prepare_workspace"
+cat >"$prepare_workspace" <<EOF
+#!/usr/bin/env sh
+if [ ! -e "${work}/prepare-workspace.failed-once" ]; then
+  touch "${work}/prepare-workspace.failed-once"
+  exit 51
+fi
+exec "${real_prepare_workspace}" "\$@"
+EOF
+chmod +x "$prepare_workspace"
+"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-transient-prepare.log" 2>&1 &
+receiver_pid="$!"
+pr_transient="$(create_branch_and_pr transient-prepare "transient prepare")"
+sha_transient="$(head_sha "$pr_transient")"
+transient_retry_marker=""
+for _ in {1..60}; do
+  if [[ -d "$work/runs/local--${owner}--${repo}/pr${pr_transient}" ]]; then
+    transient_retry_marker="$(find "$work/runs/local--${owner}--${repo}/pr${pr_transient}" -path '*.retry-*' -prune -o -name retry.env -print -quit)"
+  fi
+  [[ -n "$transient_retry_marker" ]] && break
+  sleep 1
+done
+if [[ -z "$transient_retry_marker" ]]; then
+  echo "transient prepare failure did not record retry.env" >&2
+  exit 1
+fi
+assert_no_status_after "transient prepare failure does not poison head" "$sha_transient" "pump19/review"
+mv "$real_prepare_workspace" "$prepare_workspace"
+run_sweep normal
+wait_for_call "transient prepare recovers review status" status_is "$sha_transient" "pump19/review" success
+wait_for_call "transient prepare reviewing absent after recovery" label_lacks "$pr_transient" Reviewing
+transient_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_transient}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
+if [[ "$transient_retry_count" != "1" ]]; then
+  echo "transient prepare left ${transient_retry_count} retry evidence directories" >&2
+  exit 1
+fi
+echo "ok: transient prepare-workspace failure retries once and recovers"
+kill "$receiver_pid" >/dev/null 2>&1 || true
+receiver_pid=""
 
 failing_body="${work}/failing-run-body"
 cat >"$failing_body" <<'EOF'
@@ -432,100 +495,19 @@ kill "$receiver_pid" >/dev/null 2>&1 || true
 receiver_pid=""
 write_repo_config ""
 
-kill "$receiver_pid" >/dev/null 2>&1 || true
-PUMP19_STUB_MODE=hang "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-superseded-hang.log" 2>&1 &
-receiver_pid="$!"
-pr_superseded="$(create_branch_and_pr superseded-hang "superseded hang")"
-sha_superseded_old="$(head_sha "$pr_superseded")"
-wait_for_call "superseded-head hang applied Reviewing" label_has "$pr_superseded" Reviewing
-unit_superseded="$(latest_run_meta_value "$pr_superseded" PUMP19_UNIT)"
-workspace_superseded="$(latest_run_meta_value "$pr_superseded" PUMP19_WORKSPACE)"
-cleanup_units+=("$unit_superseded")
-kill "$receiver_pid" >/dev/null 2>&1 || true
-PUMP19_STUB_MODE=normal "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-superseded-normal.log" 2>&1 &
-receiver_pid="$!"
-sha_superseded_new="$(push_update superseded-hang "superseded recovered head")"
-wait_for_call "superseded-head new review status" status_is "$sha_superseded_new" "pump19/review" success
-wait_for_call "superseded-head new run cleared Reviewing" label_lacks "$pr_superseded" Reviewing
-sleep 3
-run_sweep normal
-run_sweep normal
-run_sweep normal
-unit_state="$(systemctl --user show "$unit_superseded" --property=ActiveState --value 2>/dev/null || true)"
-if [[ "$unit_state" != "" && "$unit_state" != "inactive" && "$unit_state" != "failed" ]]; then
-  echo "superseded-head hung run still active after sweeps: ${unit_state} (${sha_superseded_old} -> ${sha_superseded_new})" >&2
+api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "pump19/review" '{context:$context,state:"success",description:"same-second success probe"}')" >/dev/null
+api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "pump19/review" '{context:$context,state:"error",description:"same-second error probe"}')" >/dev/null
+latest_review_state="$(PUMP19_API_BASE="http://127.0.0.1:${port}" PUMP19_FORGE_TOKEN="$bot_token" "$work/adaptations/get-statuses" "$owner" "$repo" "$sha4" | jq -r '[.[] | select(.context == "pump19/review")][0].state')"
+combined_state="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha4}/status" | jq -r '.state // .status // ""')"
+case "$latest_review_state" in
+  error) service_combined_state="failure" ;;
+  *) service_combined_state="$latest_review_state" ;;
+esac
+if [[ "$service_combined_state" != "$combined_state" ]]; then
+  echo "same-second status ordering disagrees: adaptation=${latest_review_state} combined=${combined_state}" >&2
   exit 1
 fi
-if [[ -d "$workspace_superseded" ]]; then
-  echo "superseded-head hung run workspace still present: ${workspace_superseded}" >&2
-  exit 1
-fi
-if ! find "$work/runs/local--${owner}--${repo}/pr${pr_superseded}" -name '*.reaped-*' | grep -q .; then
-  echo "superseded-head hung run left no reaped evidence directory" >&2
-  exit 1
-fi
-echo "ok: superseded-head hung run is reaped with workspace deletion"
-
-cp "$work/adaptations/prepare-workspace" "$work/prepare-workspace.good"
-cat >"$work/adaptations/prepare-workspace" <<'EOF'
-#!/usr/bin/env sh
-echo "transient prepare-workspace failure" >&2
-exit 1
-EOF
-chmod +x "$work/adaptations/prepare-workspace"
-kill "$receiver_pid" >/dev/null 2>&1 || true
-PUMP19_STUB_MODE=normal "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-transient-wrap.log" 2>&1 &
-receiver_pid="$!"
-pr_transient="$(create_branch_and_pr transient-wrap "transient wrap")"
-sha_transient="$(head_sha "$pr_transient")"
-wait_for_call "transient wrap failure became visible" status_is "$sha_transient" "pump19/review" error
-cp "$work/prepare-workspace.good" "$work/adaptations/prepare-workspace"
-sleep 3
-run_sweep normal
-run_sweep normal
-run_sweep normal
-wait_for_call "transient wrap failure recovered" status_is "$sha_transient" "pump19/review" success
-echo "ok: transient wrap failure recovers"
-
-pr_status_tie="$(create_branch_and_pr same-second-status "same second status")"
-sha_status_tie="$(head_sha "$pr_status_tie")"
-set_status "$sha_status_tie" "pump19/review" success "written first"
-set_status "$sha_status_tie" "pump19/review" error "written second"
-service_status="$(status_state "$sha_status_tie" "pump19/review")"
-forge_status="$(combined_status_state "$sha_status_tie")"
-if [[ "$service_status" != "$forge_status" ]]; then
-  echo "same-second status disagreement: service reads ${service_status}, forge combined view is ${forge_status}" >&2
-  exit 1
-fi
-echo "ok: same-second service status read agrees with forge combined view"
-
-kill "$receiver_pid" >/dev/null 2>&1 || true
-PUMP19_STUB_MODE=normal "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-ready-poison.log" 2>&1 &
-receiver_pid="$!"
-pr_poison="$(create_branch_and_pr ready-poison "ready poison")"
-sha_poison="$(head_sha "$pr_poison")"
-wait_for_call "ready-poison review status" status_is "$sha_poison" "pump19/review" success
-api_with_token "$mallory_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_poison}/labels" '{"labels":["Ready"]}' >/dev/null
-assert_no_status_after "unauthorised Ready poisoning does not fire finish" "$sha_poison" "pump19/finish"
-if [[ "$(label_actor "$pr_poison" Ready)" != "mallory" ]]; then
-  echo "ready-poison setup did not attribute Ready to mallory" >&2
-  exit 1
-fi
-run_sweep normal
-wait_for_call "unauthorised Ready is cleared by sweep" label_lacks "$pr_poison" Ready
-api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_poison}/labels" '{"labels":["Ready"]}' >/dev/null
-wait_for_call "authorised Ready re-add fires finish after clearance" status_is "$sha_poison" "pump19/finish" success
-pr_authorised_ready="$(create_branch_and_pr authorised-ready-survives "authorised Ready survives")"
-sha_authorised_ready="$(head_sha "$pr_authorised_ready")"
-wait_for_call "authorised-ready-survives review status" status_is "$sha_authorised_ready" "pump19/review" success
-api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_authorised_ready}/labels" '{"labels":["Ready"]}' >/dev/null
-wait_for_call "authorised-ready-survives finish status" status_is "$sha_authorised_ready" "pump19/finish" success
-run_sweep normal
-if ! label_has "$pr_authorised_ready" Ready; then
-  echo "sweep cleared an authorised Ready label" >&2
-  exit 1
-fi
-echo "ok: unauthorised Ready poisoning is cleared and authorised Ready survives"
+echo "ok: same-second status ordering agrees with Forgejo combined status"
 
 # Spike A capture tail: fire the extra Forgejo 14.0.5 webhook shapes the
 # normaliser needs to know about. These do not participate in the journeys.
@@ -552,5 +534,28 @@ if [[ -n "${PUMP19_E2E_UPDATE_FIXTURES:-}" ]]; then
   mkdir -p "$root/internal/shell/testdata/forgejo14"
   cp "$fixture_dir"/*.json "$root/internal/shell/testdata/forgejo14/"
 fi
+
+for index in {1..35}; do
+  api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${timeline_pr}/comments" "$(jq -nc --arg body "timeline paging probe ${index}" '{body:$body}')" >/dev/null
+done
+timeline_total="$(api GET "/api/v1/repos/${owner}/${repo}/issues/${timeline_pr}/timeline" | jq 'length')"
+if (( timeline_total <= 30 )); then
+  echo "timeline endpoint returned only ${timeline_total} events; unpaged assumption is false" >&2
+  exit 1
+fi
+for index in {1..35}; do
+  create_branch_and_pr "paging-pr-${index}" "paging pr ${index}" >/dev/null
+done
+explicit_pulls_total="$(api GET "/api/v1/repos/${owner}/${repo}/pulls?state=open&limit=50" | jq 'length')"
+default_pulls_total="$(api GET "/api/v1/repos/${owner}/${repo}/pulls?state=open" | jq 'length')"
+if (( explicit_pulls_total <= 30 )); then
+  echo "paging setup has only ${explicit_pulls_total} open pulls; cannot prove default cap" >&2
+  exit 1
+fi
+if (( default_pulls_total != 30 )); then
+  echo "pulls endpoint returned ${default_pulls_total} rows by default; expected Forgejo cap of 30" >&2
+  exit 1
+fi
+echo "ok: Forgejo paging assumptions pinned"
 
 echo "Forgejo e2e passed. Work dir: ${work}"

@@ -19,9 +19,11 @@ type Adaptation struct {
 }
 
 type Status struct {
-	Context string `json:"context"`
-	State   string `json:"state"`
-	Creator string `json:"creator"`
+	ID          int64  `json:"id"`
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	Creator     string `json:"creator"`
+	CreatedUnix int64  `json:"created_unix"`
 }
 
 type LabelEvent struct {
@@ -175,10 +177,26 @@ func headerEnvName(header string) string {
 }
 
 func statusForContext(statuses []Status, contextName string) (Status, bool) {
+	var newest Status
+	found := false
 	for _, status := range statuses {
-		if status.Context == contextName {
-			return status, true
+		if status.Context != contextName {
+			continue
+		}
+		if !found || statusNewer(status, newest) {
+			newest = status
+			found = true
 		}
 	}
-	return Status{}, false
+	return newest, found
+}
+
+func statusNewer(left, right Status) bool {
+	if left.CreatedUnix != right.CreatedUnix {
+		return left.CreatedUnix > right.CreatedUnix
+	}
+	if left.ID != right.ID {
+		return left.ID > right.ID
+	}
+	return false
 }

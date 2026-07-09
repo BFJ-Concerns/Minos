@@ -7,4 +7,4 @@ repo="$2"
 sha="$3"
 
 api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
-  jq '[.[] | {context: .context, state: (.status // .state), creator: (.creator.login // .creator.username // "")}]'
+  jq 'sort_by([(.created_unix // 0), (.id // 0)]) | reverse | [.[] | {id: (.id // 0), context: .context, state: (.status // .state), creator: (.creator.login // .creator.username // ""), created_unix: (.created_unix // 0)}]'
