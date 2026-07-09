@@ -204,8 +204,6 @@ log = "${work}/logs/sweep.log"
 [scrub]
 vars = ["PUMP19_FORGE_TOKEN"]
 
-[spawn]
-mode = "systemd"
 EOF
 
 cat >"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
@@ -215,7 +213,6 @@ repo = "${repo}"
 
 [adaptation]
 briefs = ".review"
-skill = "${root}/README.md"
 
 [[trigger]]
 run = "review"
@@ -258,6 +255,9 @@ pr1="$(create_branch_and_pr journey-one "journey one")"
 sha1="$(head_sha "$pr1")"
 wait_for_call "journey 1 review status" status_is "$sha1" "pump19/review" success
 wait_for_call "journey 1 label cleared" label_lacks "$pr1" Reviewing
+api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels" '{"labels":["Ready"]}' >/dev/null
+wait_for_call "journey 1 finish status" status_is "$sha1" "pump19/finish" success
+wait_for_call "journey 1 finishing cleared" label_lacks "$pr1" Finishing
 
 first_fixture="$(ls "$fixture_dir"/*pull_request-opened.json | head -n1)"
 curl -fsS -X POST "http://127.0.0.1:${hook_port}/hooks/local" \
@@ -299,6 +299,7 @@ old_sha="$(head_sha "$pr3")"
 sleep 1
 new_sha="$(push_update journey-four "journey four update")"
 wait_for_call "journey 4 new-head status" status_is "$new_sha" "pump19/review" success
+wait_for_call "journey 4 reviewing cleared" label_lacks "$pr3" Reviewing
 old_count="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${old_sha}/statuses" | jq '[.[] | select(.context == "pump19/review")] | length')"
 if [[ "$old_count" != "0" ]]; then
   echo "old head received ${old_count} statuses after head moved" >&2
