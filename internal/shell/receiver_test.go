@@ -7,8 +7,8 @@ import (
 )
 
 func TestResolveReceiverFactsBindsReadyActorToLabelApplication(t *testing.T) {
-	adaptation := testLabelEventAdaptation(t, "added", LabelReady, "mallory", "bob")
-	facts := Facts{Occasion: "label-updated", Owner: "pump19", Repo: "subject", PR: "1", Actor: "bob", Labels: []string{LabelReady}}
+	adaptation := fixtureTimelineAdaptation(t, "timeline-ready-added.json")
+	facts := Facts{Occasion: "label-updated", Owner: "pump19", Repo: "subject", PR: "1", Actor: "mallory", Labels: []string{LabelReady}}
 	got, err := resolveReceiverFacts(t.Context(), adaptation, facts)
 	if err != nil {
 		t.Fatal(err)
@@ -16,19 +16,19 @@ func TestResolveReceiverFactsBindsReadyActorToLabelApplication(t *testing.T) {
 	if got.Occasion != "label-added:Ready" {
 		t.Fatalf("occasion = %q", got.Occasion)
 	}
-	if got.Actor != "mallory" {
-		t.Fatalf("actor = %q, want label actor mallory", got.Actor)
+	if got.Actor != "bob" {
+		t.Fatalf("actor = %q, want label actor bob", got.Actor)
 	}
 }
 
 func TestResolveReceiverFactsSupportsGenericLabelRemovalVocabulary(t *testing.T) {
-	adaptation := testLabelEventAdaptation(t, "removed", "Needs Work", "ignored", "bob")
-	facts := Facts{Occasion: "label-updated", Owner: "pump19", Repo: "subject", PR: "1", Actor: "bob"}
+	adaptation := fixtureTimelineAdaptation(t, "timeline-ready-removed.json")
+	facts := Facts{Occasion: "label-updated", Owner: "pump19", Repo: "subject", PR: "1", Actor: "mallory"}
 	got, err := resolveReceiverFacts(t.Context(), adaptation, facts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Occasion != "label-removed:Needs Work" {
+	if got.Occasion != "label-removed:Ready" {
 		t.Fatalf("occasion = %q", got.Occasion)
 	}
 	if got.Actor != "bob" {
@@ -36,17 +36,21 @@ func TestResolveReceiverFactsSupportsGenericLabelRemovalVocabulary(t *testing.T)
 	}
 }
 
-func testLabelEventAdaptation(t *testing.T, action, label, labelActor, eventActor string) Adaptation {
+func fixtureTimelineAdaptation(t *testing.T, fixture string) Adaptation {
 	t.Helper()
-	dir := t.TempDir()
-	latest := "#!/usr/bin/env sh\n" +
-		"printf 'ACTION=%s\\nLABEL=%s\\nACTOR=%s\\n' '" + action + "' '" + label + "' '" + eventActor + "'\n"
-	if err := os.WriteFile(filepath.Join(dir, "latest-label-event"), []byte(latest), 0o755); err != nil {
+	fakeBin := t.TempDir()
+	curl := filepath.Join(fakeBin, "curl")
+	data, err := os.ReadFile(filepath.Join("testdata", "forgejo14", fixture))
+	if err != nil {
 		t.Fatal(err)
 	}
-	labelActorScript := "#!/usr/bin/env sh\nprintf '%s\\n' '" + labelActor + "'\n"
-	if err := os.WriteFile(filepath.Join(dir, "label-actor"), []byte(labelActorScript), 0o755); err != nil {
+	if err := os.WriteFile(curl, []byte("#!/usr/bin/env sh\ncat <<'JSON'\n"+string(data)+"\nJSON\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return Adaptation{Dir: dir}
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+	return Adaptation{
+		Dir:        filepath.Join("..", "..", "scripts", "adaptations", "forgejo"),
+		APIBase:    "http://forge.invalid",
+		Credential: "token",
+	}
 }

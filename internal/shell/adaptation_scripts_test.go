@@ -9,30 +9,47 @@ import (
 )
 
 func TestForgejoLabelActorUsesLatestMatchingTimelineEvent(t *testing.T) {
-	out := runForgejoScript(t, "label-actor", `[{
-		"type":"label","label":{"name":"Ready"},"user":{"login":"bob"}
-	},{
-		"type":"unlabel","label":{"name":"Ready"},"user":{"login":"bob"}
-	},{
-		"type":"label","label":{"name":"Ready"},"user":{"login":"mallory"}
-	}]`, "owner", "repo", "1", "Ready")
-	if strings.TrimSpace(out) != "mallory" {
-		t.Fatalf("label actor = %q, want mallory", out)
+	tests := []struct {
+		fixture string
+		label   string
+		actor   string
+	}{
+		{"timeline-ready-added.json", LabelReady, "bob"},
+		{"timeline-partial-coverage-added.json", LabelPartialCoverage, "bob"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			out := runForgejoScriptWithFixture(t, "label-actor", tt.fixture, "owner", "repo", "1", tt.label)
+			if strings.TrimSpace(out) != tt.actor {
+				t.Fatalf("label actor = %q, want %s", out, tt.actor)
+			}
+		})
 	}
 }
 
 func TestForgejoLatestLabelEventReportsGenericAddedAndRemovedOccasions(t *testing.T) {
-	fixture, err := os.ReadFile(filepath.Join("testdata", "forgejo14", "issue-timeline-label-add-remove.json"))
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		fixture string
+		action  string
+		label   string
+		actor   string
+	}{
+		{"timeline-ready-added.json", "added", LabelReady, "bob"},
+		{"timeline-ready-removed.json", "removed", LabelReady, "bob"},
+		{"timeline-partial-coverage-added.json", "added", LabelPartialCoverage, "bob"},
+		{"timeline-partial-coverage-removed.json", "removed", LabelPartialCoverage, "bob"},
 	}
-	out := runForgejoScript(t, "latest-label-event", string(fixture), "owner", "repo", "1")
-	values, err := parseKeyValues(strings.NewReader(out))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if values["ACTION"] != "removed" || values["LABEL"] != "Ready" || values["ACTOR"] != "bob" {
-		t.Fatalf("latest label event = %#v", values)
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			out := runForgejoScriptWithFixture(t, "latest-label-event", tt.fixture, "owner", "repo", "1")
+			values, err := parseKeyValues(strings.NewReader(out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if values["ACTION"] != tt.action || values["LABEL"] != tt.label || values["ACTOR"] != tt.actor {
+				t.Fatalf("latest label event = %#v, want action=%s label=%s actor=%s", values, tt.action, tt.label, tt.actor)
+			}
+		})
 	}
 }
 
@@ -86,4 +103,13 @@ func runForgejoScript(t *testing.T, name, curlOutput string, args ...string) str
 		t.Fatalf("%s failed: %v\n%s", name, err, out)
 	}
 	return string(out)
+}
+
+func runForgejoScriptWithFixture(t *testing.T, name, fixture string, args ...string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "forgejo14", fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runForgejoScript(t, name, string(data), args...)
 }

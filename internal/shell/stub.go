@@ -106,7 +106,7 @@ func StubRunCommand(ctx context.Context, args []string) error {
 }
 
 func newerLiveRunDirExists(root string, facts Facts, kind RunKind, currentRunDir string) bool {
-	current, err := os.Stat(currentRunDir)
+	current, err := readRunClaim(currentRunDir)
 	if err != nil {
 		return false
 	}
@@ -114,9 +114,9 @@ func newerLiveRunDirExists(root string, facts Facts, kind RunKind, currentRunDir
 	if err != nil || runDir == "" || runDir == currentRunDir {
 		return false
 	}
-	newest, err := os.Stat(runDir)
+	newest, err := readRunClaim(runDir)
 	if err != nil {
 		return false
 	}
-	return newest.ModTime().After(current.ModTime())
+	return runClaimAfter(newest, current)
 }

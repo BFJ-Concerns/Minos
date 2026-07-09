@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const maxRetryableRunWrapRetries = 1
+
 func SweepCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
 	configRoot := fs.String("config", DefaultConfigRoot, "configuration root")
@@ -81,6 +83,20 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 			fmt.Fprintf(logw, "alive %s for %s#%s at %s\n", kind, facts.RepoSlug(), facts.PR, runDir)
 			return nil
 		}
+		var handledRetry, releasedRetry bool
+		statuses, handledRetry, releasedRetry, err = handleRetryableClaim(ctx, adaptation, facts, kind, runDir, statuses, logw)
+		if err != nil {
+			return err
+		}
+		if handledRetry {
+			if releasedRetry {
+				if err := adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
+					return err
+				}
+				facts.Labels = removeFactLabel(facts.Labels, label)
+			}
+			continue
+		}
 		if err := reapRunDir(ctx, runDir); err != nil {
 			fmt.Fprintf(logw, "reap failed closed for %s: %v\n", runDir, err)
 			return nil
@@ -90,7 +106,12 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 			return err
 		}
 	}
-	if err := reapLabelLessClaims(ctx, cfg, adaptation, facts, statuses, logw); err != nil {
+	statuses, err = reapLabelLessClaims(ctx, cfg, adaptation, facts, statuses, logw)
+	if err != nil {
+		return err
+	}
+	facts, err = clearUnauthorisedReady(ctx, repo, adaptation, facts, logw)
+	if err != nil {
 		return err
 	}
 	decision, ok, err := reconcileDecision(ctx, repo, adaptation, facts, statuses)
@@ -149,29 +170,34 @@ func newestLiveRunDir(root string, facts Facts, kind RunKind) (string, error) {
 		return "", err
 	}
 	pattern := regexp.MustCompile(`^[0-9A-Za-z]{1,12}-` + regexp.QuoteMeta(string(kind)) + `$`)
-	var newest string
-	var newestMod time.Time
+	var newest runClaim
 	for _, entry := range entries {
-		if !entry.IsDir() || isReapedRunDir(entry.Name()) || !pattern.MatchString(entry.Name()) {
+		if !entry.IsDir() || isReapedRunDir(entry.Name()) || isRetryEvidenceDir(entry.Name()) || !pattern.MatchString(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		info, err := entry.Info()
+		claim, err := readRunClaim(path)
 		if err != nil {
 			return "", err
 		}
-		if newest == "" || info.ModTime().After(newestMod) {
-			newest = path
-			newestMod = info.ModTime()
+		if claim.metaErr != nil {
+			continue
+		}
+		if newest.path == "" || runClaimAfter(claim, newest) {
+			newest = claim
 		}
 	}
-	return newest, nil
+	return newest.path, nil
 }
 
 type runClaim struct {
-	path string
-	kind RunKind
-	sha  string
+	path        string
+	kind        RunKind
+	sha         string
+	headSHA     string
+	startedAt   time.Time
+	metaMissing bool
+	metaErr     error
 }
 
 func labelLessClaims(root string, facts Facts) ([]runClaim, error) {
@@ -186,61 +212,105 @@ func labelLessClaims(root string, facts Facts) ([]runClaim, error) {
 	pattern := regexp.MustCompile(`^([0-9A-Za-z]{1,12})-(review|fix|finish)$`)
 	var claims []runClaim
 	for _, entry := range entries {
-		if !entry.IsDir() || isReapedRunDir(entry.Name()) {
+		if !entry.IsDir() || isReapedRunDir(entry.Name()) || isRetryEvidenceDir(entry.Name()) {
 			continue
 		}
 		matches := pattern.FindStringSubmatch(entry.Name())
 		if matches == nil {
 			continue
 		}
-		kind, err := ParseRunKind(matches[2])
+		claim, err := readRunClaim(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			return nil, err
 		}
-		claims = append(claims, runClaim{
-			path: filepath.Join(dir, entry.Name()),
-			kind: kind,
-			sha:  matches[1],
-		})
+		claims = append(claims, claim)
 	}
 	return claims, nil
 }
 
-func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, adaptation Adaptation, facts Facts, currentStatuses []Status, logw *os.File) error {
+func readRunClaim(path string) (runClaim, error) {
+	name := filepath.Base(path)
+	matches := regexp.MustCompile(`^([0-9A-Za-z]{1,12})-(review|fix|finish)$`).FindStringSubmatch(name)
+	if matches == nil {
+		return runClaim{}, fmt.Errorf("invalid run claim name: %s", name)
+	}
+	kind, err := ParseRunKind(matches[2])
+	if err != nil {
+		return runClaim{}, err
+	}
+	meta, metaErr := readMetaFile(filepath.Join(path, "meta.env"))
+	claim := runClaim{
+		path:        path,
+		kind:        kind,
+		sha:         matches[1],
+		headSHA:     meta["PUMP19_HEAD_SHA"],
+		metaMissing: errors.Is(metaErr, os.ErrNotExist),
+	}
+	if metaErr != nil && !claim.metaMissing {
+		claim.metaErr = metaErr
+		return claim, nil
+	}
+	if claim.headSHA == "" {
+		claim.headSHA = claim.sha
+	}
+	if started := meta["PUMP19_STARTED_AT"]; started != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, started)
+		if err != nil {
+			claim.metaErr = fmt.Errorf("parse PUMP19_STARTED_AT: %w", err)
+			return claim, nil
+		}
+		claim.startedAt = parsed
+	}
+	return claim, nil
+}
+
+func runClaimAfter(left, right runClaim) bool {
+	if left.metaMissing != right.metaMissing {
+		return left.metaMissing
+	}
+	if !left.startedAt.Equal(right.startedAt) {
+		return left.startedAt.After(right.startedAt)
+	}
+	return left.path > right.path
+}
+
+func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, adaptation Adaptation, facts Facts, currentStatuses []Status, logw *os.File) ([]Status, error) {
 	claims, err := labelLessClaims(cfg.Runs.Dir, facts)
 	if err != nil {
-		return err
+		return currentStatuses, err
 	}
 	for _, claim := range claims {
+		if claim.metaErr != nil {
+			fmt.Fprintf(logw, "skip claim with unreadable meta %s: %v\n", claim.path, claim.metaErr)
+			continue
+		}
 		label, _ := InFlightLabel(claim.kind)
 		if facts.HasLabel(label) {
 			continue
 		}
 		contextName, _ := StatusContext(claim.kind)
-		meta := readMeta(filepath.Join(claim.path, "meta.env"))
-		headSHA := meta["PUMP19_HEAD_SHA"]
-		if headSHA == "" && strings.HasPrefix(facts.HeadSHA, claim.sha) {
-			headSHA = facts.HeadSHA
-		}
-		if headSHA != "" {
-			statuses := currentStatuses
-			if headSHA != facts.HeadSHA {
-				var err error
-				statuses, err = adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, headSHA)
-				if err != nil {
-					return err
-				}
-			}
-			if _, ok := statusForContext(statuses, contextName); ok {
+		currentHead := claim.headSHA == facts.HeadSHA || strings.HasPrefix(facts.HeadSHA, claim.sha)
+		if currentHead {
+			if _, ok := statusForContext(currentStatuses, contextName); ok {
 				continue
 			}
 		}
 		_, alive, err := runState(claim.path, cfg.Sweep.LivenessThreshold.Duration)
 		if err != nil {
-			return err
+			return currentStatuses, err
 		}
 		if alive {
 			continue
+		}
+		if currentHead && hasRetryableFailure(claim.path) {
+			var handledRetry bool
+			currentStatuses, handledRetry, _, err = handleRetryableClaim(ctx, adaptation, facts, claim.kind, claim.path, currentStatuses, logw)
+			if err != nil {
+				return currentStatuses, err
+			}
+			if handledRetry {
+				continue
+			}
 		}
 		if err := reapRunDir(ctx, claim.path); err != nil {
 			fmt.Fprintf(logw, "label-less reap failed closed for %s: %v\n", claim.path, err)
@@ -248,10 +318,74 @@ func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, adaptation Adap
 		}
 		fmt.Fprintf(logw, "reaped label-less %s for %s#%s\n", claim.path, facts.RepoSlug(), facts.PR)
 	}
-	return nil
+	return currentStatuses, nil
+}
+
+func handleRetryableClaim(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind, runDir string, currentStatuses []Status, logw *os.File) ([]Status, bool, bool, error) {
+	if !hasRetryableFailure(runDir) {
+		return currentStatuses, false, false, nil
+	}
+	contextName, _ := StatusContext(kind)
+	if _, ok := statusForContext(currentStatuses, contextName); ok {
+		return currentStatuses, false, false, nil
+	}
+	retryCount, err := retryEvidenceCount(runDir)
+	if err != nil {
+		return currentStatuses, false, false, err
+	}
+	if retryCount < maxRetryableRunWrapRetries {
+		if err := releaseRetryableClaim(ctx, runDir, retryCount+1); err != nil {
+			fmt.Fprintf(logw, "retry release failed closed for %s: %v\n", runDir, err)
+			return currentStatuses, true, false, nil
+		}
+		fmt.Fprintf(logw, "released retryable %s attempt %d for %s#%s\n", runDir, retryCount+1, facts.RepoSlug(), facts.PR)
+		return currentStatuses, true, true, nil
+	}
+	if err := adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", "Pump-19 wrapper failure retry exhausted"); err != nil {
+		return currentStatuses, false, false, err
+	}
+	currentStatuses = append(currentStatuses, Status{Context: contextName, State: "error", CreatedUnix: time.Now().Unix()})
+	if err := discardRunDir(ctx, runDir); err != nil {
+		fmt.Fprintf(logw, "retry exhaustion cleanup failed for %s: %v\n", runDir, err)
+		return currentStatuses, true, false, nil
+	}
+	fmt.Fprintf(logw, "retry exhausted for %s; wrote %s error on %s#%s\n", runDir, contextName, facts.RepoSlug(), facts.PR)
+	return currentStatuses, true, true, nil
 }
 
 func reapRunDir(ctx context.Context, runDir string) error {
+	if err := cleanupRunDirResources(ctx, runDir); err != nil {
+		return err
+	}
+	target := fmt.Sprintf("%s.reaped-%d", runDir, reapedSuffix())
+	// os.Rename can clobber an empty directory on Unix. The nanosecond suffix
+	// makes a natural collision vanishingly unlikely; this explicit Lstat turns
+	// a forced collision into a hard fail so evidence is not replaced.
+	if _, err := os.Lstat(target); err == nil {
+		return fmt.Errorf("reap target already exists: %s", target)
+	}
+	return os.Rename(runDir, target)
+}
+
+func releaseRetryableClaim(ctx context.Context, runDir string, attempt int) error {
+	if err := cleanupRunDirResources(ctx, runDir); err != nil {
+		return err
+	}
+	target := fmt.Sprintf("%s.retry-%d", runDir, attempt)
+	if _, err := os.Lstat(target); err == nil {
+		return fmt.Errorf("retry evidence already exists: %s", target)
+	}
+	return os.Rename(runDir, target)
+}
+
+func discardRunDir(ctx context.Context, runDir string) error {
+	if err := cleanupRunDirResources(ctx, runDir); err != nil {
+		return err
+	}
+	return os.RemoveAll(runDir)
+}
+
+func cleanupRunDirResources(ctx context.Context, runDir string) error {
 	meta := readMeta(filepath.Join(runDir, "meta.env"))
 	unit := meta["PUMP19_UNIT"]
 	if unit != "" {
@@ -264,14 +398,63 @@ func reapRunDir(ctx context.Context, runDir string) error {
 			return err
 		}
 	}
-	target := fmt.Sprintf("%s.reaped-%d", runDir, reapedSuffix())
-	// os.Rename can clobber an empty directory on Unix. The nanosecond suffix
-	// makes a natural collision vanishingly unlikely; this explicit Lstat turns
-	// a forced collision into a hard fail so evidence is not replaced.
-	if _, err := os.Lstat(target); err == nil {
-		return fmt.Errorf("reap target already exists: %s", target)
+	return nil
+}
+
+func isRetryEvidenceDir(name string) bool {
+	return strings.Contains(name, ".retry-")
+}
+
+func hasRetryableFailure(runDir string) bool {
+	values, err := readMetaFile(filepath.Join(runDir, "retry.env"))
+	return err == nil && values["PUMP19_RETRYABLE_FAILURE"] == "1"
+}
+
+func retryEvidenceCount(runDir string) (int, error) {
+	matches, err := filepath.Glob(runDir + ".retry-*")
+	if err != nil {
+		return 0, err
 	}
-	return os.Rename(runDir, target)
+	return len(matches), nil
+}
+
+func clearUnauthorisedReady(ctx context.Context, repo RepoConfig, adaptation Adaptation, facts Facts, logw *os.File) (Facts, error) {
+	if !facts.HasLabel(LabelReady) || !hasRunTrigger(repo, RunFinish) {
+		return facts, nil
+	}
+	actor, err := adaptation.LabelActor(ctx, facts.Owner, facts.Repo, facts.PR, LabelReady)
+	if err != nil {
+		return facts, err
+	}
+	if guardsPass(repo, RunFinish, facts, actor) {
+		return facts, nil
+	}
+	if err := adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, LabelReady); err != nil {
+		return facts, err
+	}
+	fmt.Fprintf(logw, "clear unauthorised %s on %s#%s actor=%s\n", LabelReady, facts.RepoSlug(), facts.PR, actor)
+	facts.Labels = removeFactLabel(facts.Labels, LabelReady)
+	return facts, nil
+}
+
+func hasRunTrigger(repo RepoConfig, kind RunKind) bool {
+	for _, rule := range repo.Triggers {
+		ruleKind, err := ParseRunKind(rule.Run)
+		if err == nil && ruleKind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func removeFactLabel(labels []string, label string) []string {
+	filtered := labels[:0]
+	for _, existing := range labels {
+		if existing != label {
+			filtered = append(filtered, existing)
+		}
+	}
+	return filtered
 }
 
 var reapedSuffix = func() int64 {
@@ -303,23 +486,31 @@ func stopAndVerifyUnitGone(ctx context.Context, unit string) error {
 var systemctlCommand = exec.CommandContext
 
 func readMeta(path string) map[string]string {
-	file, err := os.Open(path)
-	if err != nil {
-		return map[string]string{}
-	}
-	defer file.Close()
-	values, err := parseKeyValues(file)
+	values, err := readMetaFile(path)
 	if err != nil {
 		return map[string]string{}
 	}
 	return values
 }
 
+func readMetaFile(path string) (map[string]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	values, err := parseKeyValues(file)
+	if err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
 func reconcileDecision(ctx context.Context, repo RepoConfig, adaptation Adaptation, facts Facts, statuses []Status) (RunKind, bool, error) {
 	reviewContext, _ := StatusContext(RunReview)
 	fixContext, _ := StatusContext(RunFix)
 	finishContext, _ := StatusContext(RunFinish)
-	if _, ok := statusForContext(statuses, reviewContext); !ok && guardsPass(repo, RunReview, facts, facts.Actor) {
+	if _, ok := statusForContext(statuses, reviewContext); !ok && reviewReconcileGuardsPass(repo, facts) {
 		return RunReview, true, nil
 	}
 	reviewStatus, reviewOK := statusForContext(statuses, reviewContext)
@@ -343,6 +534,14 @@ func reconcileDecision(ctx context.Context, repo RepoConfig, adaptation Adaptati
 }
 
 func guardsPass(repo RepoConfig, kind RunKind, facts Facts, actor string) bool {
+	return guardsPassWithActorMode(repo, kind, facts, actor, true)
+}
+
+func reviewReconcileGuardsPass(repo RepoConfig, facts Facts) bool {
+	return guardsPassWithActorMode(repo, RunReview, facts, "", false)
+}
+
+func guardsPassWithActorMode(repo RepoConfig, kind RunKind, facts Facts, actor string, checkActors bool) bool {
 	for _, rule := range repo.Triggers {
 		ruleKind, err := ParseRunKind(rule.Run)
 		if err != nil || ruleKind != kind {
@@ -354,7 +553,7 @@ func guardsPass(repo RepoConfig, kind RunKind, facts Facts, actor string) bool {
 		if len(rule.Authors) > 0 && !matchesGlobAny(rule.Authors, facts.Author) {
 			continue
 		}
-		if len(rule.Actors) > 0 && !matchesGlobAny(rule.Actors, actor) {
+		if checkActors && len(rule.Actors) > 0 && !matchesGlobAny(rule.Actors, actor) {
 			continue
 		}
 		return true

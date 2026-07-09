@@ -12,7 +12,7 @@ api GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/timeline" |
     | if $event == null then
         "ACTION=\nLABEL=\nACTOR="
       else
-        "ACTION=" + (if (($event.type // "") | test("unlabel|remove|delete|clear"; "i")) then "removed" else "added" end),
+        "ACTION=" + (if (($event.body // "") == "1") then "added" else "removed" end),
         "LABEL=" + ($event.label.name // ""),
         "ACTOR=" + ($event.user.login // $event.user.username // "")
       end

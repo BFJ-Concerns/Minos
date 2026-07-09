@@ -47,6 +47,7 @@ func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, kind RunKind, runDi
 	workspace := filepath.Join(os.TempDir(), "pump19-workspaces", unitName)
 	diff := runDir + "/diff.patch"
 	skill := repo.Adaptation.Skill
+	runBody := repo.Adaptation.RunBody
 	briefs := repo.Adaptation.Briefs
 	if briefs == "" {
 		briefs = ".review"
@@ -67,6 +68,7 @@ func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, kind RunKind, runDi
 		"PUMP19_DIFF=" + diff,
 		"PUMP19_ADAPTATION=" + forge.Adaptation,
 		"PUMP19_SKILL=" + skill,
+		"PUMP19_RUN_BODY=" + runBody,
 		"PUMP19_BRIEFS=" + briefs,
 		"PUMP19_CONFIG=" + cfg.Root,
 		"PUMP19_UNIT=" + unitName,

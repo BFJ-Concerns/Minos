@@ -19,6 +19,7 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 	}
 	repo := RepoConfig{Forge: "local", Owner: "pump19", Repo: "subject"}
 	repo.Adaptation.Skill = filepath.Join(root, "skills", "review")
+	repo.Adaptation.RunBody = filepath.Join(root, "bin", "run-agent")
 	repo.Adaptation.Briefs = ".review"
 	facts := Facts{
 		Forge:   "local",
@@ -48,6 +49,7 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 		"PUMP19_DIFF":       filepath.Join(runDir, "diff.patch"),
 		"PUMP19_ADAPTATION": filepath.Join(root, "adaptations"),
 		"PUMP19_SKILL":      filepath.Join(root, "skills", "review"),
+		"PUMP19_RUN_BODY":   filepath.Join(root, "bin", "run-agent"),
 		"PUMP19_BRIEFS":     ".review",
 		"PUMP19_CONFIG":     cfg.Root,
 		"PUMP19_UNIT":       unit,
@@ -103,6 +105,31 @@ func TestPartialCoverageNeverReconcilesAsConverged(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("partial coverage without findings must not auto-fire, got decision=%s", decision)
+	}
+}
+
+func TestStatusForContextMatchesForgejoCombinedOrdering(t *testing.T) {
+	status, ok := statusForContext([]Status{
+		{ID: 11, Context: "pump19/review", State: "success", CreatedUnix: 1234},
+		{ID: 12, Context: "pump19/review", State: "error", CreatedUnix: 1234},
+		{ID: 13, Context: "other", State: "success", CreatedUnix: 1235},
+	}, "pump19/review")
+	if !ok {
+		t.Fatal("expected review status")
+	}
+	if status.State != "error" {
+		t.Fatalf("same-second status tie should choose higher id, got %s", status.State)
+	}
+
+	status, ok = statusForContext([]Status{
+		{ID: 14, Context: "pump19/review", State: "success", CreatedUnix: 1235},
+		{ID: 15, Context: "pump19/review", State: "error", CreatedUnix: 1234},
+	}, "pump19/review")
+	if !ok {
+		t.Fatal("expected review status")
+	}
+	if status.State != "success" {
+		t.Fatalf("newer created_unix should win before id, got %s", status.State)
 	}
 }
 
@@ -173,11 +200,72 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 	}
 }
 
+func TestUnauthorisedReadyIsClearedBeforeReconcile(t *testing.T) {
+	drafts := false
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Drafts: &drafts}}}
+	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Labels: []string{LabelReady}, Draft: false}
+	adaptationDir := t.TempDir()
+	removeFile := filepath.Join(adaptationDir, "removed.args")
+	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'mallory\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+removeFile+"'\n")
+	logFile, err := os.Create(filepath.Join(t.TempDir(), "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	got, err := clearUnauthorisedReady(context.Background(), repo, Adaptation{Dir: adaptationDir}, facts, logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HasLabel(LabelReady) {
+		t.Fatal("unauthorised Ready should be removed from in-memory facts")
+	}
+	data, err := os.ReadFile(removeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Ready") {
+		t.Fatalf("remove-label was not called for Ready:\n%s", data)
+	}
+}
+
+func TestAuthorisedReadyIsNotCleared(t *testing.T) {
+	drafts := false
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Drafts: &drafts}}}
+	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Labels: []string{LabelReady}, Draft: false}
+	adaptationDir := t.TempDir()
+	removeFile := filepath.Join(adaptationDir, "removed.args")
+	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'bob\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+removeFile+"'\n")
+	logFile, err := os.Create(filepath.Join(t.TempDir(), "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	got, err := clearUnauthorisedReady(context.Background(), repo, Adaptation{Dir: adaptationDir}, facts, logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HasLabel(LabelReady) {
+		t.Fatal("authorised Ready should remain")
+	}
+	if _, err := os.Stat(removeFile); !os.IsNotExist(err) {
+		t.Fatalf("remove-label should not be called for authorised Ready: %v", err)
+	}
+}
+
 func TestReconcileReviewActorGuardIsReceiverPathOnly(t *testing.T) {
-	repo := RepoConfig{Triggers: []TriggerRule{{Run: "review", Actors: []string{"bob"}}}}
+	drafts := false
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}, Actors: []string{"bob"}, Drafts: &drafts}}}
 	facts := Facts{Author: "contributor"}
-	if decision, ok, err := reconcileDecision(context.Background(), repo, Adaptation{}, facts, nil); err != nil || ok {
-		t.Fatalf("review actor guard should not be invented from state on reconcile: decision=%s ok=%v err=%v", decision, ok, err)
+	decision, ok, err := reconcileDecision(context.Background(), repo, Adaptation{}, facts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || decision != RunReview {
+		t.Fatalf("review actor guard should be receiver-path-only on reconcile: decision=%s ok=%v", decision, ok)
 	}
 }
 
@@ -278,7 +366,7 @@ func TestLabelLessClaimIsReapedWhenStaleAndUnfinished(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer logFile.Close()
-	if err := reapLabelLessClaims(context.Background(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+	if _, err := reapLabelLessClaims(context.Background(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
@@ -293,76 +381,72 @@ func TestLabelLessClaimIsReapedWhenStaleAndUnfinished(t *testing.T) {
 	}
 }
 
-func TestPersistentLabelLessCurrentHeadFailureIsLoudBeforeRefire(t *testing.T) {
-	root := t.TempDir()
-	cfg := ServiceConfig{}
-	cfg.Runs.Dir = filepath.Join(root, "runs")
-	cfg.Sweep.LivenessThreshold.Duration = time.Hour
-	cfg.Forges = map[string]ForgeConfig{
-		"local": {Adaptation: filepath.Join(root, "adaptations")},
-	}
-	repo := RepoConfig{
-		Forge: "local",
-		Owner: "pump19",
-		Repo:  "subject",
-		Triggers: []TriggerRule{{
-			Run:     "review",
-			On:      []string{"pr-opened"},
-			Authors: []string{"*"},
-		}},
-	}
-	facts := Facts{
-		Occasion: "pr-opened",
-		Forge:    "local",
-		Owner:    "pump19",
-		Repo:     "subject",
-		PR:       "42",
-		HeadSHA:  "abcdef1234567890",
-		Author:   "contributor",
-	}
-	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "run.log"), []byte("run body failed before posting status\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-2 * time.Hour)
-	if err := os.Chtimes(runDir, old, old); err != nil {
-		t.Fatal(err)
-	}
-
-	statusMarker := filepath.Join(root, "status-written")
-	spawnMarker := filepath.Join(root, "spawn-called")
-	writeExecutable(t, filepath.Join(root, "adaptations", "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
-	writeExecutable(t, filepath.Join(root, "adaptations", "set-status"), "#!/usr/bin/env sh\nprintf '%s=%s\\n' \"$4\" \"$5\" >\"$PUMP19_STATUS_MARKER\"\n")
-	writeExecutable(t, filepath.Join(root, "bin", "systemd-run"), "#!/usr/bin/env sh\nprintf 'spawned\\n' >\"$PUMP19_SPAWN_MARKER\"\n")
-	t.Setenv("PUMP19_STATUS_MARKER", statusMarker)
-	t.Setenv("PUMP19_SPAWN_MARKER", spawnMarker)
-	t.Setenv("PATH", filepath.Join(root, "bin")+":"+os.Getenv("PATH"))
-
-	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logFile.Close()
-
-	err = sweepPR(context.Background(), cfg, repo, Adaptation{Dir: filepath.Join(root, "adaptations")}, facts, logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(statusMarker); err != nil {
-		t.Fatalf("persistent current-head run failure wrote no PR-visible status: %v", err)
-	}
-	if _, err := os.Stat(spawnMarker); err == nil {
-		t.Fatal("persistent current-head run failure was silently re-fired")
-	}
-}
-
 func TestRunMetadataWriteFailureIsLoud(t *testing.T) {
 	missingRunDir := filepath.Join(t.TempDir(), "missing", "run")
 	if err := writeMeta(missingRunDir); err == nil {
 		t.Fatal("expected metadata write failure for a missing run directory")
+	}
+}
+
+func TestRunBodyCommandUsesRunBodyNotSkill(t *testing.T) {
+	t.Setenv("PUMP19_SKILL", filepath.Join(t.TempDir(), "review-skill.md"))
+	body := filepath.Join(t.TempDir(), "run-body")
+	t.Setenv("PUMP19_RUN_BODY", body)
+	cmd, err := runBodyCommand(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Path != body {
+		t.Fatalf("run body path = %q, want %q", cmd.Path, body)
+	}
+}
+
+func TestRunWrapFailureRecordsStatusWhenBodyDidNot(t *testing.T) {
+	dir := t.TempDir()
+	statusFile := filepath.Join(dir, "status.args")
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	adaptation := Adaptation{Dir: dir}
+	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
+	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(statusFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); !strings.Contains(got, "pump19/review\nerror") {
+		t.Fatalf("set-status args did not record review error:\n%s", got)
+	}
+}
+
+func TestRunWrapFailureDoesNotOverwriteBodyStatus(t *testing.T) {
+	dir := t.TempDir()
+	statusFile := filepath.Join(dir, "status.args")
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[{\"context\":\"pump19/review\",\"state\":\"error\"}]\\n'\n")
+	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	adaptation := Adaptation{Dir: dir}
+	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
+	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
+		t.Fatalf("wrapper wrote status despite existing body status: %v", err)
+	}
+}
+
+func TestRunWrapFailureDoesNotWriteStatusWhenStatusReadFails(t *testing.T) {
+	dir := t.TempDir()
+	statusFile := filepath.Join(dir, "status.args")
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nexit 7\n")
+	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	adaptation := Adaptation{Dir: dir}
+	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
+	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err == nil {
+		t.Fatal("expected wrapper status write to fail closed on status read failure")
+	}
+	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
+		t.Fatalf("wrapper wrote status after status read failure: %v", err)
 	}
 }
 
@@ -408,16 +492,6 @@ func envMap(pairs []string) map[string]string {
 	return values
 }
 
-func writeExecutable(t *testing.T, path, body string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func testAdaptationWithLabelActor(t *testing.T, actor string) Adaptation {
 	t.Helper()
 	dir := t.TempDir()
@@ -426,4 +500,11 @@ func testAdaptationWithLabelActor(t *testing.T, actor string) Adaptation {
 		t.Fatal(err)
 	}
 	return Adaptation{Dir: dir}
+}
+
+func writeScript(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
 }

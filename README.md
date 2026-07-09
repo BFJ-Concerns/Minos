@@ -19,9 +19,10 @@ The rebuilt shell is deliberately small:
 - `pump19 run-wrap --config /etc/pump19` owns run mechanics: atomic run claim,
   log and metadata creation, workspace preparation, body execution, and
   workspace cleanup.
-- `pump19 stub-run` is this unit's stand-in body. If `PUMP19_SKILL` is set,
-  `run-wrap` executes that path instead; an empty `PUMP19_SKILL` keeps the
-  shipped stub default.
+- `pump19 stub-run` is this unit's stand-in body. If `PUMP19_RUN_BODY` is set,
+  `run-wrap` executes that path instead; an empty `PUMP19_RUN_BODY` keeps the
+  shipped stub default. `PUMP19_SKILL` remains the skill/prompt file the body
+  reads.
 - `pump19 ws-exec --config /etc/pump19 -- command ...` runs PR-controlled build
   or test commands inside `PUMP19_WORKSPACE` with configured service credentials
   scrubbed from the environment.
@@ -70,7 +71,8 @@ PUMP19_BASE_REF       base branch
 PUMP19_WORKSPACE      prepared clone-shaped checkout
 PUMP19_DIFF           PR diff path
 PUMP19_ADAPTATION     forge adaptation scripts directory
-PUMP19_SKILL          run-body executable path; empty means pump19 stub-run
+PUMP19_SKILL          run skill/prompt file path
+PUMP19_RUN_BODY       run-body executable path; empty means pump19 stub-run
 PUMP19_BRIEFS         brief directory
 PUMP19_CONFIG         configuration root
 PUMP19_UNIT           transient systemd unit name
@@ -91,14 +93,28 @@ evidence and never live claims. A claim that dies before an in-flight label is
 visible is reaped by the same fail-closed path once its `run.log` or directory
 mtime is stale.
 
+Failures before the run body starts are treated as retryable infrastructure
+failures, not agent verdicts. `run-wrap` records `retry.env` in the claim
+directory and writes no commit status. The sweep may release the canonical
+claim once by renaming it to `<claim>.retry-1`; that preserved directory is the
+bounded retry evidence, while the freed canonical path allows one reconcile
+retry. A second retryable failure writes an `error` status and discards the
+current failed claim without creating more retry evidence. Once the body starts,
+a non-zero body exit remains a loud terminal `error` status and is not retried.
+
 The receiver resolves Forgejo `label_updated` deliveries through the issue
-timeline before trigger evaluation. The resulting occasion uses the generic
+timeline before trigger evaluation. Forgejo 14.0.5 records label additions and
+removals as timeline rows with `type:"label"`; `body:"1"` means added and
+`body:""` means removed. The resulting occasion uses the generic
 `label-added:{Name}` or `label-removed:{Name}` vocabulary; for label additions,
 actor guards use the actor returned by `label-actor`, binding merge permission
-to the act of applying the label. On the reconcile path, fix actors come from
-the review status creator and finish actors come from `label-actor(Ready)`.
-Review actor guards are receiver-path-only because the open-PR state read has no
-delivery actor to recover.
+to the act of applying the label. The receiver reads the latest timeline label
+event, so a later label write may mask the delivered event; the safe polarity is
+delay only, because the sweep's state-derived finish implication recovers a
+missed `Ready`, while a masked event must not wrongly fire a run. On the
+reconcile path, fix actors come from the review status creator and finish actors
+come from `label-actor(Ready)`. Review actor guards are receiver-path-only
+because the open-PR state read has no delivery actor to recover.
 
 ## End-To-End Harness
 
@@ -110,8 +126,18 @@ capture-forward endpoint, and drives:
 - Duplicate delivery replay -> no duplicate review status.
 - Hung stub killed mid-flight -> sweep reap -> label clear -> re-fire.
 - Head updated mid-run -> stale output discarded -> new head completes.
+- Superseded-head hang -> new head completes -> sweep reaps the abandoned old
+  head without reading forge status for the old SHA.
 - Listener down during delivery -> sweep reconciles the missed review.
+- Unauthorised `Ready` add -> sweep clears it without firing finish; authorised
+  `Ready` re-add -> finish runs.
+- Transient `prepare-workspace` failure -> one bounded retry -> review
+  completes.
+- Persistent run-body failure -> `error` status on the served head and no
+  sweep re-fire loop.
+- Same-second status writes agree with Forgejo combined-status ordering; the
+  live Forgejo timeline and pulls paging assumptions are pinned.
 
 Set `PUMP19_E2E_UPDATE_FIXTURES=1 make e2e` to refresh
 `internal/shell/testdata/forgejo14/` from the same run. The normalisation tests
-bind to those captured Forgejo 14.0.5 payloads and headers.
+bind to those captured Forgejo 14.0.5 payloads, headers, and timeline fixtures.
