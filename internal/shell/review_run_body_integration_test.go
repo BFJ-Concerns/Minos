@@ -181,16 +181,18 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	t.Setenv("PUMP19_STANDIN_AFTER_READY_CONTINUE", "")
 
 	negativeCases := []struct {
-		name      string
-		head      string
-		verdict   string
-		autoMerge string
-		labels    []string
+		name             string
+		head             string
+		verdict          string
+		autoMerge        string
+		labels           []string
+		flakyAfterStatus bool
 	}{
 		{name: "standing-findings", head: "dddddddddddddddd", verdict: "standing-findings", autoMerge: "true"},
 		{name: "partial-coverage", head: "1111111111111111", verdict: "partial-coverage", autoMerge: "true"},
 		{name: "auto-merge-disabled", head: "2222222222222222", verdict: "converged", autoMerge: "false"},
 		{name: "flaky-tests", head: "3333333333333333", verdict: "converged", autoMerge: "true", labels: []string{"Flaky Tests"}},
+		{name: "flaky-arrives-on-post-status-refresh", head: "5555555555555555", verdict: "converged", autoMerge: "true", flakyAfterStatus: true},
 	}
 	for _, tc := range negativeCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -198,12 +200,18 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 			setReviewRunEnv(t, root, configRoot, installRoot, tc.head, "")
 			t.Setenv("PUMP19_STANDIN_VERDICT", tc.verdict)
 			t.Setenv("PUMP19_AUTO_MERGE", tc.autoMerge)
+			if tc.flakyAfterStatus {
+				t.Setenv("PUMP19_FIXTURE_FLAKY_AFTER_STATUS", "1")
+			}
 			writeFixtureLabels(t, filepath.Join(stateDir, "labels"), tc.labels)
 			if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 				t.Fatal(err)
 			}
 			if readyAfter := fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelReady); readyAfter != readyBefore {
 				t.Fatalf("Ready applications = %d, want unchanged %d", readyAfter, readyBefore)
+			}
+			if tc.flakyAfterStatus {
+				assertContainsFile(t, filepath.Join(stateDir, "labels"), "Flaky Tests")
 			}
 		})
 	}
@@ -444,15 +452,17 @@ func assertReviewReadyOrder(t *testing.T, path, head string) {
 	if post < 0 || status <= post || ready <= status {
 		t.Fatalf("review publication order for %s = post:%d status:%d Ready:%d\n%s", head, post, status, ready, data)
 	}
-	freshFacts := false
+	freshFacts := 0
 	for _, line := range lines[status+1 : ready] {
 		if line == "get-pr-facts:"+head {
-			freshFacts = true
-			break
+			freshFacts++
 		}
 	}
-	if !freshFacts {
-		t.Fatalf("Ready apply for %s had no fresh PR-facts read after terminal status\n%s", head, data)
+	// The first read is the explicit post-status flaky-label refresh. The
+	// second is run-guard current immediately before the Ready mutation. Merely
+	// finding either read would let the currency guard mask a missing refresh.
+	if freshFacts != 2 {
+		t.Fatalf("PR-facts reads between terminal status and Ready for %s = %d, want 2\n%s", head, freshFacts, data)
 	}
 }
 
@@ -489,7 +499,7 @@ func setReadyJourneyFinishEnv(t *testing.T, root, configRoot, installRoot, head 
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
-	for _, key := range []string{"PUMP19_STANDIN_VERDICT", "PUMP19_STANDIN_MISMATCH_AFTER_CLAIM", "PUMP19_FIXTURE_FAIL_READY_APPLY", "PUMP19_STANDIN_AFTER_READY_READY", "PUMP19_STANDIN_AFTER_READY_CONTINUE"} {
+	for _, key := range []string{"PUMP19_STANDIN_VERDICT", "PUMP19_STANDIN_MISMATCH_AFTER_CLAIM", "PUMP19_FIXTURE_FAIL_READY_APPLY", "PUMP19_FIXTURE_FLAKY_AFTER_STATUS", "PUMP19_STANDIN_AFTER_READY_READY", "PUMP19_STANDIN_AFTER_READY_CONTINUE"} {
 		t.Setenv(key, "")
 	}
 }
@@ -613,6 +623,14 @@ git -C "$PUMP19_WORKSPACE" diff origin/main...HEAD >"$PUMP19_DIFF"
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\ncat '"+filepath.Join(stateDir, "statuses.json")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "get-pr-facts"), `#!/usr/bin/env sh
 printf 'get-pr-facts:%s\n' "$PUMP19_HEAD_SHA" >>'`+operations+`'
+if [ "${PUMP19_FIXTURE_FLAKY_AFTER_STATUS:-}" = 1 ] &&
+   grep -Fxq "set-status:$PUMP19_HEAD_SHA:pump19/review:success" '`+operations+`' &&
+   ! grep -Fxq "$PUMP19_HEAD_SHA" '`+filepath.Join(stateDir, "flaky-after-status-injected")+`' 2>/dev/null; then
+  # Inject on the first facts read after success. This exercises the mission's
+  # explicit refresh rather than merely starting the run with a flaky label.
+  printf 'Flaky Tests\n' >>'`+filepath.Join(stateDir, "labels")+`'
+  printf '%s\n' "$PUMP19_HEAD_SHA" >>'`+filepath.Join(stateDir, "flaky-after-status-injected")+`'
+fi
 head=$(cat '`+filepath.Join(stateDir, "head")+`')
 labels=$(paste -sd, '`+filepath.Join(stateDir, "labels")+`')
 printf 'OCCASION=reconcile\nOWNER=%s\nREPO=%s\nPR=%s\nHEAD_SHA=%s\nBASE_REF=main\nLABELS=%s\n' "$1" "$2" "$3" "$head" "$labels"
