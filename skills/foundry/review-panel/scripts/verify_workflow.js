@@ -9,10 +9,11 @@ export const meta = {
 
 export const defaults = {
   // Worker policy — declared once, inherited by every agent() call. Checkers
-  // and the bar judge are verification legs: cross-family review work on the
-  // Codex review tier at the resting level, with the Claude entries governing
-  // only the recorded degradation path when a Codex call does not return.
-  // Pinned because an unpinned call rides the ambient default model silently.
+  // and the bar judge are verification legs: review work at the resting level
+  // on whichever family a finding's checker runs on — Codex for the panel's
+  // Claude-produced findings, Claude for the Codex leg's — with the other
+  // family as each finding's recorded degradation path. Pinned because an
+  // unpinned call rides the ambient default model silently.
   // NOTE: the runtime's extractor reads this block only when it directly
   // follows meta — whitespace between them, nothing else.
   codex: { model: 'gpt-5.6-sol', effort: 'medium' },
@@ -150,10 +151,15 @@ const BAR_SCHEMA = {
 function checkerPrompt(finding) {
   const brief = briefByName.get(finding.brief)
   // An aspect's path is absolute (it ships with the skill); a repo brief's is
-  // relative to the reviewed repository.
+  // relative to the reviewed repository. The Codex leg has no brief file at
+  // all — its reviewer's mandate is general correctness of the branch diff —
+  // so its checker is told that rather than left to wonder about a missing brief.
+  const codexLeg = plan.codex_review
   const briefLine = brief
     ? `The brief it was judged against is \`${brief.path.startsWith('/') ? brief.path : `${root}/${brief.path}`}\` — read it.`
-    : `Its brief ("${finding.brief}") is not in the plan; judge the finding on its own terms.`
+    : codexLeg && finding.brief === codexLeg.name
+      ? `It was produced by an external general reviewer of the branch diff (the Codex CLI's built-in review). There is no brief file: its mandate is general correctness, so judge applicability against that.`
+      : `Its brief ("${finding.brief}") is not in the plan; judge the finding on its own terms.`
   const attributionLine =
     plan.mode === 'full' || !plan.base_ref
       ? 'This run has no base branch, so the attribution dimension is not applicable — return "not-applicable" for it.'
@@ -167,21 +173,28 @@ function checkerPrompt(finding) {
   ].join('\n\n')
 }
 
-// Dispatch one checker per finding: Codex first, so a differently-trained
-// family judges Claude-produced findings. A checker that errors or returns an
-// invalid verdict resolves to null; those findings are retried on Claude —
-// still never their producer (a fresh clean-context session), so the exclusion
-// is structural — and the achieved pairing is recorded per finding rather than
-// the run refusing. A finding no checker confirms is suppressed: verification
-// is a gate, not an annotation.
+// Dispatch one checker per finding, preferring the family opposite the
+// finding's producer, so a differently-trained family judges every finding:
+// the panel's reviewers run on Claude, so their findings go to Codex checkers;
+// the Codex leg's findings (producer `…@codex-cli`) go to Claude checkers. A
+// checker that errors or returns an invalid verdict resolves to null; those
+// findings are retried on the other family — still never their producer (a
+// fresh clean-context session), so the exclusion is structural — and the
+// achieved pairing is recorded per finding rather than the run refusing. A
+// finding no checker confirms is suppressed: verification is a gate, not an
+// annotation.
 phase('Check')
+const otherEngine = (engine) => (engine === 'codex' ? 'claude' : 'codex')
+const preferredEngine = (finding) =>
+  String(finding.producer || '').endsWith('@codex-cli') ? 'claude' : 'codex'
 let checked = []
 if (verify && findings.length) {
-  log(`Checking ${findings.length} finding(s) — Codex first, Claude on degradation.`)
-  const codexResults = await parallel(
-    findings.map((finding) => () =>
+  log(`Checking ${findings.length} finding(s) — each on the family opposite its producer, the other on degradation.`)
+  const preferred = findings.map(preferredEngine)
+  const firstResults = await parallel(
+    findings.map((finding, i) => () =>
       agent(checkerPrompt(finding), {
-        engine: 'codex',
+        engine: preferred[i],
         label: `check:${finding.brief}:${finding.file ?? '?'}`,
         phase: 'Check',
         schema: CHECK_SCHEMA,
@@ -189,16 +202,16 @@ if (verify && findings.length) {
     ),
   )
   const retryIdx = []
-  codexResults.forEach((r, i) => {
+  firstResults.forEach((r, i) => {
     if (!r) retryIdx.push(i)
   })
-  let claudeResults = []
+  let retryResults = []
   if (retryIdx.length) {
-    log(`${retryIdx.length} checker(s) did not return on Codex — retrying on Claude (recorded as degraded pairing).`)
-    claudeResults = await parallel(
+    log(`${retryIdx.length} checker(s) did not return on their preferred family — retrying on the other (recorded as degraded pairing).`)
+    retryResults = await parallel(
       retryIdx.map((i) => () =>
         agent(checkerPrompt(findings[i]), {
-          engine: 'claude',
+          engine: otherEngine(preferred[i]),
           label: `check:${findings[i].brief}:${findings[i].file ?? '?'} (degraded)`,
           phase: 'Check',
           schema: CHECK_SCHEMA,
@@ -207,9 +220,13 @@ if (verify && findings.length) {
     )
   }
   checked = findings.map((finding, i) => {
-    if (codexResults[i]) return { finding, verdicts: codexResults[i], checked_by: 'codex' }
+    if (firstResults[i]) {
+      return { finding, verdicts: firstResults[i], checked_by: preferred[i], degraded_pairing: false }
+    }
     const j = retryIdx.indexOf(i)
-    if (j !== -1 && claudeResults[j]) return { finding, verdicts: claudeResults[j], checked_by: 'claude' }
+    if (j !== -1 && retryResults[j]) {
+      return { finding, verdicts: retryResults[j], checked_by: otherEngine(preferred[i]), degraded_pairing: true }
+    }
     return { finding, verdicts: null, checked_by: null }
   })
 } else {
@@ -276,8 +293,10 @@ for (const { finding, verdicts, checked_by } of checked) {
 }
 
 const byEngine = { codex: 0, claude: 0 }
-for (const { checked_by } of checked) {
+let degradedPairings = 0
+for (const { checked_by, degraded_pairing } of checked) {
   if (checked_by === 'codex' || checked_by === 'claude') byEngine[checked_by] += 1
+  if (degraded_pairing) degradedPairings += 1
 }
 const checkFailed = suppressed.filter((s) => s.kind === 'check-failed').length
 const verification = {
@@ -287,7 +306,11 @@ const verification = {
   check_failed: checkFailed,
   reclassified: reclassified.length,
   by_engine: byEngine,
-  degraded: byEngine.claude > 0 || checkFailed > 0,
+  // Degraded means a finding was checked by its second-choice family, or not
+  // checked at all — engine counts alone can't say this now that different
+  // findings legitimately prefer different families.
+  degraded_pairings: degradedPairings,
+  degraded: degradedPairings > 0 || checkFailed > 0,
 }
 
 // The bar trigger, computed from the assembled state — never from a reviewer's

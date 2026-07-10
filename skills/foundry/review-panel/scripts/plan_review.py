@@ -17,6 +17,10 @@ The panel plans two sources of concerns identically:
   - **Briefs** — the repository's own standing concerns under `.review/`,
     optional. A repo without the directory still gets the full aspect panel.
 
+A third member is planned beside them: the **Codex leg** — the Codex CLI's
+built-in reviewer, run by run_codex_review.py rather than the agent fan-out.
+The plan's `codex_review` entry says whether it runs or why it was skipped.
+
 Scope resolution for briefs mirrors the convention documented in SKILL.md: a
 brief's position inside `.review/` determines what it reviews.
 
@@ -33,6 +37,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 
@@ -87,6 +92,47 @@ MAX_SHARDS_PER_BRIEF = 24
 # size) rather than let that happen; the fixes are to scope the brief to a
 # subtree or, if it is really a per-file concern, declare `sweep: per-file`.
 WHOLE_VIEW_CAPACITY = 150
+
+# The Codex leg — the Codex CLI's built-in reviewer, run beside the agent
+# fan-out by run_codex_review.py. It shares the name namespace with aspects and
+# briefs so it can be selected or excluded like any other concern.
+CODEX_LEG_NAME = "codex-review"
+CODEX_LEG_TITLE = "Codex Review"
+
+
+def plan_codex_leg(args, selected, outcome):
+    """The plan's codex_review entry: planned, or skipped with the reason.
+
+    The leg reviews the branch diff with `codex review --base <ref>`, so it is
+    diff-mode only, and it needs the codex CLI on the machine. Every exclusion
+    is recorded as a skip with its reason — an unchecked concern, never a
+    silent absence — mirroring how aspects and briefs are skipped.
+    """
+    entry = {
+        "name": CODEX_LEG_NAME,
+        "title": CODEX_LEG_TITLE,
+        "kind": "external",
+        "skip_reason": None,
+        "skip_kind": None,
+    }
+    if args.no_codex:
+        entry["skip_reason"] = "Excluded by --no-codex."
+        entry["skip_kind"] = "flag"
+    elif selected and CODEX_LEG_NAME not in selected:
+        entry["skip_reason"] = "Not among the names this run was restricted to."
+        entry["skip_kind"] = "flag"
+    elif args.mode == "full":
+        entry["skip_reason"] = (
+            "codex review reviews a branch diff; a full audit has no diff to hand it."
+        )
+        entry["skip_kind"] = "mode"
+    elif outcome == "empty-diff":
+        entry["skip_reason"] = "No changed files between the base and HEAD."
+        entry["skip_kind"] = "empty"
+    elif shutil.which("codex") is None:
+        entry["skip_reason"] = "codex CLI not found on PATH."
+        entry["skip_kind"] = "unavailable"
+    return entry
 
 
 def run_git(args, cwd):
@@ -509,6 +555,12 @@ def main():
              ".review/ briefs.",
     )
     parser.add_argument(
+        "--no-codex",
+        action="store_true",
+        help="Plan without the Codex leg (the Codex CLI's built-in review, "
+             "run beside the agent fan-out on every diff run).",
+    )
+    parser.add_argument(
         "briefs",
         nargs="*",
         help="Optional aspect/brief names (filename without .md) to restrict the "
@@ -537,8 +589,18 @@ def main():
         discover_briefs(review_dir) if os.path.isdir(review_dir) else []
     )
     if not aspect_paths and not brief_paths:
-        print(json.dumps({"error": "Nothing to plan: the flags exclude the bundled aspects and this repo has no .review/ briefs."}))
-        sys.exit(1)
+        # The Codex leg is a third plannable member: a diff run that still has
+        # it — not excluded, CLI present — proceeds as a leg-only run rather
+        # than refusing. Only when the leg too is out is there nothing to plan.
+        codex_can_run = (
+            not args.no_codex and args.mode == "diff" and shutil.which("codex") is not None
+        )
+        if not codex_can_run:
+            print(json.dumps({"error":
+                "Nothing to plan: the flags exclude the bundled aspects, this repo "
+                "has no .review/ briefs, and the Codex leg is excluded or "
+                "unavailable."}))
+            sys.exit(1)
 
     # --skip-aspect name=reason — parsed up front so a malformed value fails the
     # run before anything is planned. A reasonless skip is refused: the reason is
@@ -593,6 +655,7 @@ def main():
         "merge_base": None,   # sha the three-dot diff compares against, diff mode
         "warnings": warnings,
         "briefs": [],
+        "codex_review": None,
     }
 
     # Optional selection: restrict the run to named aspects/briefs. Used to
@@ -606,6 +669,11 @@ def main():
         print(json.dumps({"error":
             "Explicitly selected aspect(s) cannot be relevance-skipped: "
             + ", ".join(named_and_skipped)}))
+        sys.exit(1)
+    if args.no_codex and CODEX_LEG_NAME in selected:
+        print(json.dumps({"error":
+            f"'{CODEX_LEG_NAME}' was selected by name and excluded by --no-codex; "
+            "drop one of the two."}))
         sys.exit(1)
 
     # A diff run needs the changed-file set and base ref. They feed diff-extent
@@ -675,6 +743,14 @@ def main():
             warnings.append(f"No changed files between {base} and HEAD{hint}.")
             plan["outcome"] = "empty-diff"
 
+    # The Codex leg is planned alongside the concerns: run on a default diff
+    # run, or skipped with a recorded reason. Selecting it by name counts as a
+    # match, so `/review-panel codex-review` runs the leg alone without the
+    # "no names matched" error firing.
+    plan["codex_review"] = plan_codex_leg(args, selected, plan["outcome"])
+    if CODEX_LEG_NAME in selected:
+        matched.add(CODEX_LEG_NAME)
+
     # Aspects plan first, then briefs, through the same pipeline. Entries carry
     # `kind` so downstream stages can tell them apart; an aspect's `path` is
     # absolute (it lives in the installed skill), a brief's is repo-relative.
@@ -691,7 +767,10 @@ def main():
     }
     sources = [("aspect", path, os.path.splitext(os.path.basename(path))[0])
                for path in aspect_paths]
-    taken = set(aspect_stems)
+    # The Codex leg's name is reserved alongside the aspect stems, so a repo
+    # brief named codex-review is renamed (with a warning) instead of silently
+    # sharing an identity with the leg.
+    taken = set(aspect_stems) | {CODEX_LEG_NAME}
     for path in brief_paths:
         stem = os.path.splitext(os.path.basename(path))[0]
         name = stem
