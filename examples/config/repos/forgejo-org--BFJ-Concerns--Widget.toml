@@ -1,4 +1,4 @@
-forge = "forgejo-org"
+forge = "forgejo"
 owner = "BFJ-Concerns"
 repo = "Widget"
 
@@ -44,4 +44,4 @@ actors = ["REPLACE_WITH_AUTHORISED_FINISH_LOGINS"]
 [[trigger]]
 run = "flaky"
 on = ["label-added:Flaky Tests"]
-actors = ["bob", "pump19"]
+actors = ["bob", "Minos", "forgejo-actions"]

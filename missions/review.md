@@ -74,6 +74,13 @@ the mission says, not as the skill says:
 deployment-static paths. Invoke Ensemble as a tool while conducting the run;
 infrastructure has not invoked it for you.
 
+**Run every fan-out and long command in the foreground and stay with it.**
+This session ends the moment you stop with no tool call in flight: a
+dispatched background task cannot notify you afterwards, so yielding to
+"wait" for background work ends the run with the review unpublished. Invoke
+Ensemble, reviewer fan-outs, and long scripts as foreground calls that return
+their results directly, however long they take.
+
 ## Integrity and claim
 
 Run `$PUMP19_REVIEW_SCRIPTS/extract-governing` first. A non-zero exit is a run

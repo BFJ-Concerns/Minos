@@ -87,6 +87,11 @@ therefore never executes against repository-controlled git configuration,
 hooks, or filters. It never force-pushes. Use the resolved lead model from
 `$PUMP19_RUN_DIR/resolved-lead.json` for `MODEL` and its provenance trailer.
 
+Run every long command — the repeated test runs this repair lives on
+included — in the foreground and stay with it. This session ends the moment
+you stop with no tool call in flight, so a backgrounded task ends the run
+unfinished; nothing can notify you afterwards.
+
 Read the first stdout token:
 
 - `landed SHA` — the repair committed and pushed; continue to the successful

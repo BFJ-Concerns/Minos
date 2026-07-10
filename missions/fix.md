@@ -106,6 +106,11 @@ summary. A fix run is a single accountable session with no Ensemble workers, so
 there is no worker archive and no provenance assembly — the lead record is the
 whole provenance.
 
+Run every long command — builds, test suites — in the foreground and stay
+with it. This session ends the moment you stop with no tool call in flight,
+so a backgrounded task ends the run unfinished; nothing can notify you
+afterwards.
+
 ## Output contract
 
 A fix run publishes exactly one outcome as machine state: a single PR comment

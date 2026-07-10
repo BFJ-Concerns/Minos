@@ -1,12 +1,14 @@
 ---
 name: review-panel
-description: The standard code review — use this whenever the user asks for a code review, a security review, a review of their code, changes, branch, or PR, or a check before merging; those requests are this skill's job, not something to answer inline. Convenes a panel of clean-context reviewers over bundled aspects (correctness bugs, error handling, comment accuracy, behavioural test coverage, type design, behaviour-preserving simplification, and security — each dispatched only when the diff makes it relevant) together with the repo's own `.review/` briefs where they exist; every finding is quote-checked in code and, by default, verified by an independent checker before it posts, and a review-bar judge can assess the assembled review. Also use to review against the project's review briefs, audit the codebase against `.review/`, baseline a new brief, or run an occasion-specific (release, nightly) review. Diff mode (default) posts review comments on the PR and routes pre-existing findings to the project's annexe; full mode audits all in-scope code and reports to chat. Review only — it never applies the fixes it suggests; for authoring and refining the briefs themselves use review-brief.
-argument-hint: '[--full] [--base <ref>] [--occasion <name>] [--no-aspects] [--no-briefs] [--no-verify] [--bar] [name …]'
+description: The standard code review — use this whenever the user asks for a code review, a security review, a review of their code, changes, branch, or PR, or a check before merging; those requests are this skill's job, not something to answer inline. Convenes a panel of clean-context reviewers over bundled aspects (correctness bugs, error handling, comment accuracy, behavioural test coverage, type design, behaviour-preserving simplification, and security — each dispatched only when the diff makes it relevant) together with the repo's own `.review/` briefs where they exist, plus the Codex CLI's built-in diff review as an extra panel member on diff runs; every finding is quote-checked in code and, by default, verified by an independent checker before it posts, and a review-bar judge can assess the assembled review. Also use to review against the project's review briefs, audit the codebase against `.review/`, baseline a new brief, or run an occasion-specific (release, nightly) review. Diff mode (default) posts review comments on the PR and routes pre-existing findings to the project's annexe; full mode audits all in-scope code and reports to chat. Review only — it never applies the fixes it suggests; for authoring and refining the briefs themselves use review-brief.
+argument-hint: '[--full] [--base <ref>] [--occasion <name>] [--no-aspects] [--no-briefs] [--no-codex] [--no-verify] [--bar] [name …]'
 allowed-tools:
 - Bash(git rev-parse:*)
 - Bash(git diff:*)
 - Bash(gh pr view:*)
 - Bash(python3 *plan_review.py*)
+- Bash(python3 *run_codex_review.py*)
+- Bash(python3 *merge_codex_review.py*)
 - Bash(python3 *validate_quotes.py*)
 - Bash(python3 *assemble_verify_input.py*)
 - Bash(python3 *post_pr_comments.py*)
@@ -22,7 +24,9 @@ allowed-tools:
 
 Convene a panel of review agents over a change: the bundled **standard
 aspects** — the review dimensions any codebase needs — together with the
-repository's own **`.review/` briefs** where it keeps them. Each concern gets
+repository's own **`.review/` briefs** where it keeps them, and, on a diff
+run, the **Codex leg** — the Codex CLI's built-in reviewer, bringing a second
+model family's reading of the change. Each concern gets
 its own clean-context reviewer, blind to the others, scoped to the relevant
 files, split across several reviewers when its file set is large; the panel's
 findings are collated and every one passes through the verification gate
@@ -126,6 +130,37 @@ authoring; this skill reads them. (The same frontmatter keys work in aspect
 files, plus `relevance:` — but aspects ship with the skill and are not edited
 per repo.)
 
+## The Codex leg
+
+On a diff run the panel also convenes the Codex CLI's built-in reviewer —
+`codex review`, run non-interactively against the same base — as one more
+panel member, so the review carries a second model family's reading of the
+change alongside the aspect and brief reviewers. `run_codex_review.py` runs
+the CLI and maps its findings into the panel's finding shape (the priorities
+already share the P0–P3 scale; the `code_quote` is filled mechanically with
+the verbatim lines at each cited location, so the validator can confine the
+finding to real, cited code), and `merge_codex_review.py` folds them into the
+run before the validation gate. From there they are panel findings like any
+other: quote-validated, independently checked, posted under the **Codex
+Review** title, and de-duplicated against the other concerns' findings. The
+leg's findings arrive classified change-introduced — the CLI reviews the
+branch diff, so that is what its findings describe — and the checkers'
+attribution dimension holds them to it: one that is really pre-existing comes
+back attribution-indeterminate and still posts, the conservative direction.
+Because their producer is Codex, the checker gate sends them to Claude
+checkers — the family opposite the producer, mirroring how the panel's
+Claude-produced findings go to Codex checkers.
+
+The leg runs on every diff-mode run by default, and is selectable and
+excludable like any concern: name it as `codex-review` to run it alone, or
+pass `--no-codex` to leave it out. The planner skips it — recorded and
+reported like every other skip — under `--full` (`codex review` reviews a
+branch diff; it has no whole-scope audit mode), on an empty diff, when name
+selection names other concerns without it, or when the machine has no `codex`
+CLI. A leg that was planned but fails — the CLI errors or times out — is a
+coverage gap, reported with the run's reviewer failures, never a silent
+absence.
+
 ## Runs
 
 | Invocation | What runs | Output |
@@ -137,6 +172,7 @@ per repo.)
 | `/review-panel --occasion <name> …` | As the run would otherwise, with occasion-declaring briefs selected by `<name>` | as the run would otherwise |
 | `/review-panel --no-aspects …` | Briefs only — the repo's own concerns without the standard panel | as the run would otherwise |
 | `/review-panel --no-briefs …` | Aspects only — the standard panel without the repo's briefs | as the run would otherwise |
+| `/review-panel --no-codex …` | As the run would otherwise, without the Codex leg | as the run would otherwise |
 | `/review-panel --no-verify …` | As the run would otherwise, skipping per-finding verification | as the run would otherwise |
 | `/review-panel --bar …` | As the run would otherwise, plus the bar check on the assembled review | as the run would otherwise, plus the bar verdict |
 
@@ -201,9 +237,9 @@ skill is the user's opt-in to multi-agent orchestration — do not ask again
 before running them. The agents dispatch as clean-context background sessions,
 so the runtime's live requirements apply; if the runtime or its primary engine
 is unavailable, stop and report that rather than hand-rolling a substitute
-fan-out. (The verification stage prefers the opposite model family and degrades
-to the reviewers' own, recording the achieved pairing — that degradation is the
-workflow's to make, not yours.)
+fan-out. (The verification stage prefers the family opposite each finding's
+producer and degrades to the other, recording the achieved pairing — that
+degradation is the workflow's to make, not yours.)
 
 <!-- foundry:engine-placeholders ensemble-runtime start -->
 
@@ -251,12 +287,13 @@ blocked it rather than engineering around it silently.
 
 1. **Plan.** Run the discovery script from the target repo, translating the
    slash arguments: `--full` → `--full`, `--base <ref>` → `--base <ref>`,
-   `--occasion <name>` → `--occasion <name>`, `--no-aspects`/`--no-briefs` →
-   the same, and any bare words → aspect/brief names to restrict to.
+   `--occasion <name>` → `--occasion <name>`,
+   `--no-aspects`/`--no-briefs`/`--no-codex` → the same, and any bare words →
+   aspect/brief names (or `codex-review`) to restrict to.
    (`--no-verify` and `--bar` are step-4 inputs, not planner flags.)
 
    ```bash
-   python3 ~/.claude/skills/review-panel/scripts/plan_review.py [--full] [--base <ref>] [--occasion <name>] [--no-aspects] [--no-briefs] [name …] > /tmp/claude/review-panel-plan.json
+   python3 ~/.claude/skills/review-panel/scripts/plan_review.py [--full] [--base <ref>] [--occasion <name>] [--no-aspects] [--no-briefs] [--no-codex] [name …] > /tmp/claude/review-panel-plan.json
    ```
 
    Then read the file to inspect the plan. When the user's request names an
@@ -279,7 +316,7 @@ blocked it rather than engineering around it silently.
    sees which and why.
 
    **If the plan's `outcome` is `"empty-diff"`**, every diff-extent concern has
-   been skipped. If no concern remains active, stop here and report the EMPTY
+   been skipped, the Codex leg among them. If no concern remains active, stop here and report the EMPTY
    DIFF outcome as described under Runs — no phrasing of that report may read as
    a clean pass. If full-extent briefs remain active, continue: they audit
    regardless of the diff, and the branch-review portion is still reported as
@@ -298,14 +335,15 @@ blocked it rather than engineering around it silently.
    `skip_reason` and `skip_kind` (`relevance`, `empty`, `occasion`, or
    `capacity`) instead of shards.
 
-   It returns JSON: the concerns (under `briefs`), the detected `pr`, the
-   `base_ref`, the `base_source`, `warnings`, and the three static method-file
-   paths (`template_path` for reviewers, `checker_method_path` for the
-   per-finding checkers, `bar_method_path` for the bar judge). If it returns an
-   `error` (no git repo, a broken skill install, nothing to plan, a missing
-   method file, or an unresolvable `--base`), report it and stop. Surface any
-   `warnings` to the user — they usually mean a brief is mis-scoped or a name
-   collides.
+   It returns JSON: the concerns (under `briefs`), the Codex leg's entry
+   (under `codex_review` — planned, or skipped with its reason), the detected
+   `pr`, the `base_ref`, the `base_source`, `warnings`, and the three static
+   method-file paths (`template_path` for reviewers, `checker_method_path` for
+   the per-finding checkers, `bar_method_path` for the bar judge). If it
+   returns an `error` (no git repo, a broken skill install, nothing to plan, a
+   missing method file, or an unresolvable `--base`), report it and stop.
+   Surface any `warnings` to the user — they usually mean a brief is
+   mis-scoped or a name collides.
 
    Tell the user what was diffed: the `base_ref` and how it was chosen
    (`base_source` is `pr`, `explicit`, or `default`). When it's `default` the
@@ -317,14 +355,38 @@ blocked it rather than engineering around it silently.
    measured size and the fixes (scope to a subtree, or declare
    `sweep: per-file`).
 
-2. **Fan out via the ensemble runtime.** Run the bundled workflow through the
-   runtime, wrapping the plan file from step 1 as the script's JSON input:
+2. **Fan out via the ensemble runtime — with the Codex leg running beside
+   it.** First start the Codex leg as a background task — run this command
+   through the shell tool's background mode (not `&`), so it works while the
+   panel reviews and you are told when it exits. It takes minutes on the CLI's
+   own model; when the plan skipped the leg it exits immediately, emitting the
+   skip for the merge to record. Running it in the foreground instead is
+   merely slower, never wrong:
+
+   ```bash
+   python3 ~/.claude/skills/review-panel/scripts/run_codex_review.py /tmp/claude/review-panel-plan.json > /tmp/claude/codex-leg.json
+   ```
+
+   Then run the bundled workflow through the runtime, wrapping the plan file
+   from step 1 as the script's JSON input:
 
    ```bash
    node ~/.claude/skills/ensemble-workflow/scripts/ensemble.mjs \
      --json-args "{\"plan\": $(cat /tmp/claude/review-panel-plan.json)}" \
      ~/.claude/skills/review-panel/scripts/review_workflow.js \
      > /tmp/claude/review-panel-result.json 2> /tmp/claude/review-panel-run.log
+   ```
+
+   When **both** have exited — wait for the leg's background task to finish,
+   never merge a half-written file — fold the leg into the workflow result.
+   Run the merge unconditionally, so a skipped or failed leg still lands in
+   the run's coverage account rather than vanishing (the leg script reports
+   its own failures inside `codex-leg.json`; if the merge command itself
+   errors on an unreadable leg file, treat the leg as failed, report it with
+   the run's failures, and continue with the unmerged result):
+
+   ```bash
+   python3 ~/.claude/skills/review-panel/scripts/merge_codex_review.py /tmp/claude/review-panel-result.json /tmp/claude/codex-leg.json > /tmp/claude/review-panel-combined.json
    ```
 
    The runtime prints the workflow's return value as one line of JSON on stdout —
@@ -363,11 +425,11 @@ blocked it rather than engineering around it silently.
    Report), and `sweep_advisories` lists full-extent briefs that were split
    without a declared `sweep` (also see Report).
 
-3. **Validate quotes.** Run the zero-model validator over the workflow result —
+3. **Validate quotes.** Run the zero-model validator over the combined result —
    mechanical code, no judgement, before any checker spends a call:
 
    ```bash
-   python3 ~/.claude/skills/review-panel/scripts/validate_quotes.py --base <base_ref> /tmp/claude/review-panel-result.json > /tmp/claude/review-panel-validated.json
+   python3 ~/.claude/skills/review-panel/scripts/validate_quotes.py --base <base_ref> /tmp/claude/review-panel-combined.json > /tmp/claude/review-panel-validated.json
    ```
 
    (Omit `--base` on a `--full` run, which has none.) The validator distrusts
@@ -405,9 +467,11 @@ blocked it rather than engineering around it silently.
    trigger-fired mode, and nothing otherwise.
 
    Each checker is a fresh clean-context agent that is never the finding's
-   producer, preferring the opposite model family (recorded per finding as
-   `checked_by`; a family that does not return degrades to the other, recorded
-   rather than refused). Checkers return per-dimension verdicts and the workflow
+   producer, preferring the family opposite the producer — Codex checkers for
+   the panel's Claude-produced findings, Claude checkers for the Codex leg's
+   (recorded per finding as `checked_by`; a family that does not return
+   degrades to the other, recorded rather than refused). Checkers return
+   per-dimension verdicts and the workflow
    applies them in code: a finding failing **evidence**, **applicability**, or
    **genuine-issue** validity is suppressed as rejected; a dishonest
    **priority** is reclassified, never suppressed; a failed **attribution**
@@ -426,7 +490,10 @@ blocked it rather than engineering around it silently.
    spot check the checkers would otherwise subsume: read each surviving finding
    against its `code_quote` and drop any where the quote does not actually
    support the claim or is generic filler — the validator proved the quote
-   exists, not that it means what the finding says.
+   exists, not that it means what the finding says. Judge a Codex-leg finding
+   (`brief: "codex-review"`) by reading the code at its cited location instead:
+   its quote is a mechanical extract of those lines, not evidence the reviewer
+   chose, so "does the quote support the claim" is the wrong test for it.
 
    **Full mode, or diff mode with no PR** — nothing is posted to the forge.
    Present a summary grouped by review title, then by priority (P0 → P3); lead
@@ -515,6 +582,11 @@ blocked it rather than engineering around it silently.
    - **Failed reviewers**: if the workflow returns any `failures`, report them —
      each is part of a review whose files went **unreviewed** this run, so that
      concern is only partly checked. Name the affected review and offer to re-run.
+     A failed Codex leg appears here too — its `coverage` entry carries the
+     CLI error that caused it.
+   - **The Codex leg's verdict**: when the leg ran, its `reviews` entry's
+     notes carry Codex's overall verdict on the patch — include that verdict
+     in the run summary alongside the panel's own results.
    - **Verification**: report the `verification` record — findings checked, the
      achieved engine pairing, any degradation — plus what the gates removed:
      `suppressed_by_validator` and `suppressed_by_checkers` (count and one line
@@ -539,6 +611,10 @@ blocked it rather than engineering around it silently.
 - Reviewers are deliberately narrow and sceptical of their own findings — a
   concern with zero findings against a small diff is normal and correct. Do not
   pad the report to look thorough.
+- The Codex leg needs the `codex` CLI installed and signed in on the reviewing
+  machine. Without it the panel still runs in full: the planner records the leg
+  as skipped ("codex CLI not found on PATH") and the run reports it with the
+  other skips.
 - The forge is detected from the origin remote, in both the planner and the
   poster: a github.com remote goes through the `gh` CLI, any other remote is
   treated as a Forgejo (or Gitea) instance and goes through its API. Neither
