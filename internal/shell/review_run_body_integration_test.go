@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
@@ -87,6 +88,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(firstRun, "new-comments.json"), "finding=F-7KQ3")
 	assertContainsFile(t, filepath.Join(firstRun, "governing", "AGENTS.md"), "base guidance")
 	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+	assertReviewDispatchRecord(t, filepath.Join(stateDir, "dispatch.tsv"), installRoot)
 
 	finding2 := filepath.Join(root, "finding-2.json")
 	if err := os.WriteFile(finding2, []byte(`{"finding":"F-7KQ3","path":"file.txt","line":2,"priority":"P1","body":"Still present"}`), 0o644); err != nil {
@@ -121,6 +123,45 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(partialRun, "review.md"), "verdict=partial-coverage")
 	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Partial Coverage")
 
+	// The head may move after the run claims Reviewing but before it posts. Hold
+	// the deterministic engine at that exact seam, advance the forge fixture,
+	// and prove the real mission path yields without a mutation.
+	postedBeforeStale, err := os.ReadFile(filepath.Join(stateDir, "posted-review.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleReady := filepath.Join(root, "stale-ready")
+	staleContinue := filepath.Join(root, "stale-continue")
+	setReviewRunEnv(t, root, configRoot, installRoot, "ffffffffffffffff", "", resolved)
+	t.Setenv("PUMP19_STANDIN_BEFORE_POST_READY", staleReady)
+	t.Setenv("PUMP19_STANDIN_BEFORE_POST_CONTINUE", staleContinue)
+	staleResult := make(chan error, 1)
+	go func() {
+		staleResult <- RunWrapCommand(t.Context(), []string{"--config", configRoot})
+	}()
+	if !waitForReviewFixturePath(staleReady, 5*time.Second) {
+		_ = os.WriteFile(staleContinue, nil, 0o644)
+		t.Fatal("stand-in did not reach the before-post stale-yield seam")
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "head"), []byte("newer-head-sha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleContinue, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-staleResult; err != nil {
+		t.Fatalf("stale run should yield cleanly: %v", err)
+	}
+	postedAfterStale, err := os.ReadFile(filepath.Join(stateDir, "posted-review.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(postedAfterStale) != string(postedBeforeStale) {
+		t.Fatal("stale run posted a review after the head moved")
+	}
+	t.Setenv("PUMP19_STANDIN_BEFORE_POST_READY", "")
+	t.Setenv("PUMP19_STANDIN_BEFORE_POST_CONTINUE", "")
+
 	postedBeforeMismatch, err := os.ReadFile(filepath.Join(stateDir, "posted-review.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -132,11 +173,13 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	}
 	setReviewRunEnv(t, root, configRoot, installRoot, "eeeeeeeeeeeeeeee", "", mismatch)
 	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
-	t.Setenv("PUMP19_STANDIN_LEAD_MODEL", "floating-alias-surprise")
+	t.Setenv("PUMP19_STANDIN_MISMATCH_AFTER_CLAIM", "floating-alias-surprise")
+	t.Setenv("PUMP19_UNIT", "")
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
 		t.Fatal("model mismatch unexpectedly completed")
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nerror")
+	assertContainsFile(t, filepath.Join(stateDir, "labels"), "Reviewing")
 	postedAfterMismatch, err := os.ReadFile(filepath.Join(stateDir, "posted-review.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -144,10 +187,68 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	if string(postedAfterMismatch) != string(postedBeforeMismatch) {
 		t.Fatal("model mismatch posted a new review")
 	}
+
+	// A hard model-mismatch abort cannot run the child's EXIT trap. Age its real
+	// run log and prove the reconciliation sweep reaps the claim and removes the
+	// orphaned Reviewing label while respecting the wrapper's terminal status.
+	mismatchRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "eeeeeeeeeeeeeeee", RunReview)
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(filepath.Join(mismatchRun, "run.log"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "eeeeeeeeeeeeeeee", Labels: []string{LabelReviewing}}
+	cfg, err := LoadServiceConfig(configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Sweep.LivenessThreshold.Duration = time.Second
+	if err := sweepPR(t.Context(), cfg, RepoConfig{}, Adaptation{Dir: adaptationDir}, facts, logFile); err != nil {
+		_ = logFile.Close()
+		t.Fatal(err)
+	}
+	if err := logFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mismatchRun); !os.IsNotExist(err) {
+		t.Fatalf("sweep did not reap the mismatched run claim: %v", err)
+	}
+	assertContainsFile(t, filepath.Join(stateDir, "labels-removed"), "Reviewing")
+}
+
+func waitForReviewFixturePath(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
 }
 
 func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding, resolved string) {
 	t.Helper()
+	skill, err := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "agent-review", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "state")
+	if err := os.WriteFile(filepath.Join(stateDir, "head"), []byte(head+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"labels", "statuses.json"} {
+		contents := []byte(nil)
+		if name == "statuses.json" {
+			contents = []byte("[]\n")
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, name), contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	runDir := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", head, RunReview)
 	values := map[string]string{
 		"PUMP19_RUN_DIR":                 runDir,
@@ -163,7 +264,7 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding,
 		"PUMP19_WORKSPACE":               filepath.Join(root, "workspace-"+head),
 		"PUMP19_DIFF":                    filepath.Join(runDir, "diff.patch"),
 		"PUMP19_ADAPTATION":              filepath.Join(root, "adaptation"),
-		"PUMP19_SKILL":                   filepath.Join(root, "skill", "SKILL.md"),
+		"PUMP19_SKILL":                   skill,
 		"PUMP19_RUN_BODY":                filepath.Join(installRoot, "run-body", "run-body"),
 		"PUMP19_BRIEFS":                  ".review",
 		"PUMP19_CONFIG":                  configRoot,
@@ -172,9 +273,35 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding,
 		"PUMP19_STANDIN_FINDING_FILE":    finding,
 		"PUMP19_STANDIN_NEW_HANDLE":      "F-7KQ3",
 		"PUMP19_STANDIN_RESOLVED_MODELS": resolved,
+		"PUMP19_STANDIN_DISPATCH_RECORD": filepath.Join(stateDir, "dispatch.tsv"),
 	}
 	for key, value := range values {
 		t.Setenv(key, value)
+	}
+}
+
+func assertReviewDispatchRecord(t *testing.T, path, installRoot string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.Split(strings.TrimSpace(string(data)), "\n")[0]
+	fields := strings.Split(line, "\t")
+	if len(fields) != 18 {
+		t.Fatalf("dispatch record has %d fields, want 18: %q", len(fields), line)
+	}
+	wantSkill, err := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "agent-review", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields[0] != "review" || fields[3] != wantSkill || fields[4] != filepath.Join(installRoot, "run-body", "run-body") {
+		t.Fatalf("E1 dispatch identity = kind %q skill %q body %q", fields[0], fields[3], fields[4])
+	}
+	for index, field := range fields {
+		if field == "" && index != 17 {
+			t.Fatalf("dispatch field %d is empty: %q", index+1, line)
+		}
 	}
 }
 
@@ -218,13 +345,29 @@ git -C "$PUMP19_WORKSPACE" add file.txt
 git -C "$PUMP19_WORKSPACE" commit -qm head
 git -C "$PUMP19_WORKSPACE" diff origin/main...HEAD >"$PUMP19_DIFF"
 `)
-	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\ncat '"+filepath.Join(stateDir, "statuses.json")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "get-pr-facts"), `#!/usr/bin/env sh
-printf 'OCCASION=reconcile\nOWNER=%s\nREPO=%s\nPR=%s\nHEAD_SHA=%s\nBASE_REF=main\nLABELS=\n' "$1" "$2" "$3" "$PUMP19_HEAD_SHA"
+head=$(cat '`+filepath.Join(stateDir, "head")+`')
+labels=$(paste -sd, '`+filepath.Join(stateDir, "labels")+`')
+printf 'OCCASION=reconcile\nOWNER=%s\nREPO=%s\nPR=%s\nHEAD_SHA=%s\nBASE_REF=main\nLABELS=%s\n' "$1" "$2" "$3" "$head" "$labels"
 `)
-	writeScript(t, filepath.Join(adaptationDir, "add-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-added")+"'\n")
-	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-removed")+"'\n")
-	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "status.args")+"'\n")
+	writeScript(t, filepath.Join(adaptationDir, "add-label"), `#!/usr/bin/env sh
+set -eu
+printf '%s\n' "$@" >>'`+filepath.Join(stateDir, "labels-added")+`'
+if ! grep -Fxq "$4" '`+filepath.Join(stateDir, "labels")+`'; then printf '%s\n' "$4" >>'`+filepath.Join(stateDir, "labels")+`'; fi
+`)
+	writeScript(t, filepath.Join(adaptationDir, "remove-label"), `#!/usr/bin/env sh
+set -eu
+printf '%s\n' "$@" >>'`+filepath.Join(stateDir, "labels-removed")+`'
+tmp='`+filepath.Join(stateDir, "labels.tmp")+`'
+grep -Fxv "$4" '`+filepath.Join(stateDir, "labels")+`' >"$tmp" || true
+mv "$tmp" '`+filepath.Join(stateDir, "labels")+`'
+`)
+	writeScript(t, filepath.Join(adaptationDir, "set-status"), `#!/usr/bin/env sh
+set -eu
+printf '%s\n' "$@" >'`+filepath.Join(stateDir, "status.args")+`'
+jq -nc --arg context "$4" --arg state "$5" '[{id:1,context:$context,state:$state,creator:"pump19"}]' >'`+filepath.Join(stateDir, "statuses.json")+`'
+`)
 	comments := filepath.Join(stateDir, "comments.json")
 	if err := os.WriteFile(comments, []byte("[]\n"), 0o644); err != nil {
 		t.Fatal(err)

@@ -11,6 +11,16 @@ set -eu
 standin_model=${PUMP19_STANDIN_LEAD_MODEL:-claude-opus-pinned}
 printf '{"type":"system","subtype":"init","model":"%s"}\n' "$standin_model"
 cat >"$PUMP19_RUN_DIR/mission.received.md"
+if [ -n "${PUMP19_STANDIN_DISPATCH_RECORD:-}" ]; then
+  # Record what reached the real E1 engine seam, after run-wrap and run-body.
+  # This is deliberately the same 18-field contract as the Forgejo estate rig.
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$PUMP19_RUN_KIND" "$PUMP19_HEAD_SHA" "$PUMP19_OCCASION" "$PUMP19_SKILL" \
+    "$PUMP19_RUN_BODY" "$PUMP19_RUN_DIR" "$PUMP19_FORGE" "$PUMP19_REPO" \
+    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_BASE_REF" \
+    "$PUMP19_WORKSPACE" "$PUMP19_DIFF" "$PUMP19_ADAPTATION" "$PUMP19_BRIEFS" \
+    "$PUMP19_CONFIG" "$PUMP19_UNIT" >>"$PUMP19_STANDIN_DISPATCH_RECORD"
+fi
 claim=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" begin)
 case "$claim" in
   claimed) ;;
@@ -21,6 +31,14 @@ release() {
   "$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" release >/dev/null
 }
 trap release EXIT HUP INT TERM
+
+if [ -n "${PUMP19_STANDIN_MISMATCH_AFTER_CLAIM:-}" ]; then
+  # Emit the mismatch only after the forge claim exists. The capture wrapper
+  # deliberately kills this process, modelling the hard abort whose EXIT trap
+  # cannot release Reviewing.
+  printf '{"type":"assistant","message":{"model":"%s"}}\n' "$PUMP19_STANDIN_MISMATCH_AFTER_CLAIM"
+  while :; do sleep 1; done
+fi
 
 require_current() {
   current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
@@ -107,6 +125,12 @@ marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review head="$PUMP19_HEAD_SHA"
   printf '```\n\n%s\n' "$marker"
 } >"$PUMP19_RUN_DIR/review.md"
 
+if [ -n "${PUMP19_STANDIN_BEFORE_POST_READY:-}" ]; then
+  : >"$PUMP19_STANDIN_BEFORE_POST_READY"
+  while [ ! -e "$PUMP19_STANDIN_BEFORE_POST_CONTINUE" ]; do
+    sleep 0.05
+  done
+fi
 require_current
 
 "$PUMP19_BIN" adapt post-review \
