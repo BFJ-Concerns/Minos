@@ -323,7 +323,14 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
 		t.Fatal("model mismatch unexpectedly completed")
 	}
-	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nerror")
+	mismatchRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "eeeeeeeeeeeeeeee", RunReview)
+	marker, err := readTerminalMarker(mismatchRun)
+	if err != nil || marker.Reason != "body-exit-after-forge-write" {
+		t.Fatalf("review mismatch terminal marker = %#v err=%v", marker, err)
+	}
+	if status, _ := os.ReadFile(filepath.Join(stateDir, "status.args")); strings.Contains(string(status), "pump19/review\nerror") {
+		t.Fatalf("review mismatch wrote PR error status:\n%s", status)
+	}
 	assertContainsFile(t, filepath.Join(stateDir, "labels"), "Reviewing")
 	postedAfterMismatch, err := os.ReadFile(filepath.Join(stateDir, "posted-review.md"))
 	if err != nil {
@@ -338,8 +345,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 
 	// A hard model-mismatch abort cannot run the child's EXIT trap. Age its real
 	// run log and prove the reconciliation sweep reaps the claim and removes the
-	// orphaned Reviewing label while respecting the wrapper's terminal status.
-	mismatchRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "eeeeeeeeeeeeeeee", RunReview)
+	// orphaned Reviewing label while respecting the wrapper's internal latch.
 	old := time.Now().Add(-2 * time.Hour)
 	if err := os.Chtimes(filepath.Join(mismatchRun, "run.log"), old, old); err != nil {
 		t.Fatal(err)
@@ -354,6 +360,9 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Sweep.LivenessThreshold.Duration = time.Second
+	// Sweep is a separate service process in production and has no run-scoped
+	// environment. Clear this in-process fixture before exercising that seam.
+	t.Setenv("PUMP19_RUN_DIR", "")
 	if err := sweepPR(t.Context(), cfg, RepoConfig{}, Adaptation{Dir: adaptationDir, Credential: "test-token"}, facts, logFile); err != nil {
 		_ = logFile.Close()
 		t.Fatal(err)

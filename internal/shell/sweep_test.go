@@ -156,6 +156,62 @@ func TestGuardsPassUsesStateDerivedActor(t *testing.T) {
 	}
 }
 
+func TestSweepSuppressesLatchedHeadButNewHeadRuns(t *testing.T) {
+	root := t.TempDir()
+	cfg := ServiceConfig{}
+	cfg.Root = root
+	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Sweep.LivenessThreshold.Duration = time.Hour
+	adaptationDir := filepath.Join(root, "adaptation")
+	if err := os.MkdirAll(adaptationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+	cfg.Forges = map[string]ForgeConfig{"local": {Adaptation: adaptationDir}}
+	repo := RepoConfig{Forge: "local", Owner: "pump19", Repo: "subject", Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}}}}
+	latched := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "aaaaaaaaaaaaaaaa", Author: "alice"}
+	evidence := RunDir(cfg.Runs.Dir, latched.Forge, latched.Owner, latched.Repo, latched.PR, latched.HeadSHA, RunReview) + ".retry-5"
+	if err := os.MkdirAll(evidence, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTerminalMarker(evidence, RunReview, latched.HeadSHA, "retry-exhausted"); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeBin := filepath.Join(root, "bin")
+	if err := os.Mkdir(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spawned := filepath.Join(root, "spawned")
+	writeScript(t, filepath.Join(fakeBin, "systemd-run"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+spawned+"'\n")
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	if err := sweepPR(t.Context(), cfg, repo, Adaptation{Dir: adaptationDir}, latched, logFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(spawned); !os.IsNotExist(err) {
+		t.Fatalf("latched same head spawned a run: %v", err)
+	}
+
+	fresh := latched
+	fresh.HeadSHA = "bbbbbbbbbbbbbbbb"
+	if err := sweepPR(t.Context(), cfg, repo, Adaptation{Dir: adaptationDir}, fresh, logFile); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(spawned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "bbbbbbbbbbbb-review") {
+		t.Fatalf("new head did not escape old latch:\n%s", data)
+	}
+}
+
 func TestReapTargetNameDoesNotOverwriteEvidence(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "run")
@@ -296,7 +352,7 @@ func TestLabelLessClaimReapsHistoricalHeadWithoutForgeReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer logFile.Close()
-	if _, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+	if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(oldRun); !os.IsNotExist(err) {
@@ -338,7 +394,7 @@ func TestRetryableFailureReleasePreservesBoundedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer logFile.Close()
-	if _, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+	if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
@@ -355,8 +411,8 @@ func TestRetryableFailureReleasePreservesBoundedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != maxRetryableRunWrapRetries {
-		t.Fatalf("retry evidence should be bounded by retry cap, got %v", matches)
+	if len(matches) != 1 {
+		t.Fatalf("one expired attempt should leave one retry directory, got %v", matches)
 	}
 }
 
@@ -384,7 +440,7 @@ func TestConcurrentRetryReleaseIdentifiesTheLosingClaim(t *testing.T) {
 	}
 }
 
-func TestRetryableFailureExhaustionWritesErrorAndPreservesSecondAttempt(t *testing.T) {
+func TestRetryableFailureExhaustionLatchesInternallyAndPreservesFinalAttempt(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
@@ -406,22 +462,18 @@ func TestRetryableFailureExhaustionWritesErrorAndPreservesSecondAttempt(t *testi
 	if err := os.WriteFile(filepath.Join(retryDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	adaptationDir := filepath.Join(root, "adaptation")
-	if err := os.Mkdir(adaptationDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	statusFile := filepath.Join(root, "status.args")
-	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	repo := RepoConfig{}
+	repo.Retries.OperationalAttempts = 2
 	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer logFile.Close()
-	if _, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{Dir: adaptationDir}, facts, nil, logFile); err != nil {
+	if _, err := reapLabelLessClaims(t.Context(), cfg, repo, Adaptation{}, facts, nil, logFile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
-		t.Fatalf("exhausted retry claim should be discarded after error status: %v", err)
+		t.Fatalf("exhausted retry claim should release the canonical path: %v", err)
 	}
 	if _, err := os.Stat(retryDir); err != nil {
 		t.Fatalf("prior retry evidence should remain: %v", err)
@@ -434,19 +486,19 @@ func TestRetryableFailureExhaustionWritesErrorAndPreservesSecondAttempt(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != maxRetryableRunWrapRetries+1 {
+	if len(matches) != 2 {
 		t.Fatalf("exhaustion should preserve exactly two attempts, got %v", matches)
 	}
-	data, err := os.ReadFile(statusFile)
+	marker, err := readTerminalMarker(secondRetryDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(data); !strings.Contains(got, "pump19/review\nerror") {
-		t.Fatalf("set-status args did not record retry exhaustion:\n%s", got)
+	if marker.Reason != "retry-exhausted" {
+		t.Fatalf("terminal reason = %q", marker.Reason)
 	}
 }
 
-func TestSecondUnmarkedCrashWritesTerminalStatus(t *testing.T) {
+func TestCrashAfterForgeWriteLatchesInternallyWithoutPRStatus(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
@@ -458,7 +510,7 @@ func TestSecondUnmarkedCrashWritesTerminalStatus(t *testing.T) {
 	}
 	writeRunMeta(t, runDir, facts.HeadSHA, time.Now().Add(-2*time.Hour))
 	writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
-	if err := os.Mkdir(runDir+".reaped-1", 0o755); err != nil {
+	if err := writeForgeWritesAttempted(runDir, "post-review"); err != nil {
 		t.Fatal(err)
 	}
 	adaptationDir := filepath.Join(root, "adaptation")
@@ -473,20 +525,23 @@ func TestSecondUnmarkedCrashWritesTerminalStatus(t *testing.T) {
 	}
 	defer logFile.Close()
 
-	statuses, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{Dir: adaptationDir}, facts, nil, logFile)
+	statuses, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{Dir: adaptationDir}, facts, nil, logFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, ok := statusForContext(statuses, "pump19/review")
-	if !ok || status.State != "error" {
-		t.Fatalf("second unmarked crash did not become terminal: %#v", statuses)
+	if len(statuses) != 0 {
+		t.Fatalf("operational crash wrote in-memory PR status: %#v", statuses)
 	}
-	data, err := os.ReadFile(statusFile)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
+		t.Fatalf("operational crash wrote PR status: %v", err)
 	}
-	if !strings.Contains(string(data), "pump19/review\nerror") {
-		t.Fatalf("terminal status was not written:\n%s", data)
+	reaped, err := filepath.Glob(runDir + ".reaped-*")
+	if err != nil || len(reaped) != 1 {
+		t.Fatalf("reaped crash evidence = %v err=%v", reaped, err)
+	}
+	marker, err := readTerminalMarker(reaped[0])
+	if err != nil || marker.Reason != "stale-after-forge-write" {
+		t.Fatalf("terminal marker = %#v err=%v", marker, err)
 	}
 }
 
@@ -513,7 +568,7 @@ func TestUnreadableRunMetaSkipsOnlyThatClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+	if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
 		t.Fatal(err)
 	}
 	if err := logFile.Close(); err != nil {

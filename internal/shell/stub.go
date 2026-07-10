@@ -64,8 +64,8 @@ func StubRunCommand(ctx context.Context, args []string) error {
 		fmt.Println("stub slow mode heartbeat")
 	case "crash":
 		fmt.Println("stub crash mode")
-		if kind != RunFlaky {
-			_ = adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", "stub run crashed")
+		if err := writeTerminalMarker(os.Getenv("PUMP19_RUN_DIR"), kind, facts.HeadSHA, "stub-crash"); err != nil {
+			return fmt.Errorf("record stub crash: %w", err)
 		}
 		return fmt.Errorf("stub crash requested")
 	case "normal":

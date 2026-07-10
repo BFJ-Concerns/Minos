@@ -69,6 +69,17 @@ func TestLoadRepoConfigsRejectsMissingRequiredFields(t *testing.T) {
 	}
 }
 
+func TestOperationalAttemptLimitDefaultsToFiveAndAllowsRepositoryOverride(t *testing.T) {
+	if got := operationalAttemptLimit(RepoConfig{}); got != 5 {
+		t.Fatalf("default operational attempts = %d, want 5", got)
+	}
+	repo := RepoConfig{}
+	repo.Retries.OperationalAttempts = 7
+	if got := operationalAttemptLimit(repo); got != 7 {
+		t.Fatalf("configured operational attempts = %d, want 7", got)
+	}
+}
+
 func TestShippedConfigsLoadClean(t *testing.T) {
 	projectRoot := filepath.Join("..", "..")
 	for _, root := range []string{

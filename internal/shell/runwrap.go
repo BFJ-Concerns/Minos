@@ -76,14 +76,14 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 			return
 		}
 		fmt.Fprintf(logFile, "pump19 run-wrap error: %v\n", err)
-		if !bodyStarted {
-			if markerErr := writeRetryableFailure(runDir, failurePhase, err); markerErr != nil {
+		if !bodyStarted || !hasForgeWritesAttempted(runDir) {
+			if markerErr := writeRetryableFailure(runDir, failurePhase); markerErr != nil {
 				fmt.Fprintf(logFile, "pump19 run-wrap could not record retryable failure: %v\n", markerErr)
 			}
 			return
 		}
-		if statusErr := recordRunWrapFailureStatus(ctx, adaptation, facts, kind, err); statusErr != nil {
-			fmt.Fprintf(logFile, "pump19 run-wrap could not record failure status: %v\n", statusErr)
+		if markerErr := writeTerminalMarker(runDir, kind, os.Getenv("PUMP19_HEAD_SHA"), "body-exit-after-forge-write"); markerErr != nil {
+			fmt.Fprintf(logFile, "pump19 run-wrap could not record terminal failure: %v\n", markerErr)
 		}
 	}()
 	touchRunLog(logPath, logFile, "preparing workspace")
@@ -104,9 +104,11 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	// Once Start succeeds, the body may have touched forge-visible state. From
-	// this boundary onwards failure is terminal rather than safely retryable.
+	// Once Start succeeds, the body may touch forge-visible state. The shared
+	// adaptation dispatcher records that boundary precisely; an early body exit
+	// without its marker remains safe for the liveness-spaced retry budget.
 	bodyStarted = true
+	failurePhase = "run-body-exit"
 	return cmd.Wait()
 }
 
@@ -121,35 +123,13 @@ func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {
 	return exec.CommandContext(ctx, exe, "stub-run"), nil
 }
 
-func recordRunWrapFailureStatus(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind, cause error) error {
-	if kind == RunFlaky {
-		// Flaky-run failures are operator evidence, not PR outcomes. run.log
-		// already carries the cause and the standing label keeps the pause honest.
-		return nil
-	}
-	contextName, err := StatusContext(kind)
-	if err != nil {
-		return err
-	}
-	statuses, err := adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, facts.HeadSHA)
-	if err != nil {
-		return fmt.Errorf("check existing status before wrapper failure write: %w", err)
-	}
-	if _, ok := statusForContext(statuses, contextName); ok {
-		return nil
-	}
-	description := fmt.Sprintf("Pump-19 %s wrapper failed before terminal status", kind)
-	return adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", description)
-}
-
-func writeRetryableFailure(runDir, phase string, cause error) error {
+func writeRetryableFailure(runDir, phase string) error {
 	values := []string{
 		"PUMP19_RETRYABLE_FAILURE=1",
 		"PUMP19_FAILURE_PHASE=" + phase,
 		"PUMP19_FAILURE_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
-		"PUMP19_FAILURE=" + strings.NewReplacer("\n", " ", "\r", " ").Replace(cause.Error()),
 	}
-	return os.WriteFile(filepath.Join(runDir, "retry.env"), []byte(strings.Join(values, "\n")+"\n"), 0o644)
+	return atomicPublishFile(filepath.Join(runDir, "retry.env"), []byte(values[0]+"\n"+values[1]+"\n"+values[2]+"\n"), 0o644)
 }
 
 func touchRunLog(logPath string, logFile *os.File, message string) {

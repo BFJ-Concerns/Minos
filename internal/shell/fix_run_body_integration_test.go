@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -69,14 +70,23 @@ func TestFixRunBodyRecordsEachOutcomeThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(env.stateDir, "commit-push.args"), "main")
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/fix\nsuccess")
 
-	// Loud model mismatch: the served model is not the lead pin. The run fails,
-	// the wrapper records pump19/fix=error, and no fix is recorded.
+	// Loud model mismatch: the served model is not the lead pin. It occurs before
+	// the mission can attempt a forge write, so it is retryable and PR-invisible.
 	postedBefore, _ := os.ReadFile(filepath.Join(env.stateDir, "comments"))
 	env.setRunEnv(t, "dddddddddddddddd", map[string]string{"PUMP19_STANDIN_LEAD_MODEL": "floating-alias-surprise"})
 	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err == nil {
 		t.Fatal("fix model mismatch unexpectedly completed")
 	}
-	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/fix\nerror")
+	mismatch := RunDir(env.runsDir, "local", "pump19", "subject", "7", "dddddddddddddddd", RunFix)
+	if _, err := os.Stat(filepath.Join(mismatch, "retry.env")); err != nil {
+		t.Fatalf("fix mismatch did not remain retryable: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mismatch, terminalMarkerFile)); !os.IsNotExist(err) {
+		t.Fatalf("fix mismatch latched before a forge write: %v", err)
+	}
+	if status, _ := os.ReadFile(filepath.Join(env.stateDir, "status.args")); strings.Contains(string(status), "pump19/fix\nerror") {
+		t.Fatalf("fix mismatch wrote PR error status:\n%s", status)
+	}
 	postedAfter, _ := os.ReadFile(filepath.Join(env.stateDir, "comments"))
 	if string(postedAfter) != string(postedBefore) {
 		t.Fatal("fix model mismatch posted a summary comment")

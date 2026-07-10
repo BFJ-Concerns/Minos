@@ -249,7 +249,7 @@ func TestPausedFlakyReviewSuccessIsTerminalForTheHead(t *testing.T) {
 	}
 }
 
-func TestPersistentlyFailingFlakyRepairIsLivenessPacedButUnbounded(t *testing.T) {
+func TestPersistentlyFailingFlakyRepairStopsAfterFiveLivenessSpacedAttempts(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
@@ -287,38 +287,44 @@ func TestPersistentlyFailingFlakyRepairIsLivenessPacedButUnbounded(t *testing.T)
 		t.Fatalf("fresh canonical claim admitted another session: claimed=%v err=%v", claimed, err)
 	}
 
-	// Each expiry releases exactly one fresh canonical claim. Repeating the
-	// cycle proves there is no attempt ceiling; a sweep inside the liveness
-	// window still dispatches by implication, but the wrapper claim admits no
-	// second body.
+	// Each expiry releases exactly one fresh canonical claim. The fifth attempt
+	// is preserved with the internal terminal latch instead of being re-fired.
 	sessionsAdmitted := 0
-	for cycle := 1; cycle <= 3; cycle++ {
+	for attempt := 1; attempt <= defaultOperationalAttempts; attempt++ {
 		old := time.Now().Add(-2 * cfg.Sweep.LivenessThreshold.Duration)
 		if err := os.Chtimes(filepath.Join(runDir, "run.log"), old, old); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+		if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
 			t.Fatal(err)
+		}
+		if attempt == defaultOperationalAttempts {
+			break
 		}
 		assertFlakyDecision()
 		claimed, err := ClaimRunDir(runDir)
 		if err != nil || !claimed {
-			t.Fatalf("cycle %d did not admit one post-expiry session: claimed=%v err=%v", cycle, claimed, err)
+			t.Fatalf("attempt %d did not admit one post-expiry session: claimed=%v err=%v", attempt, claimed, err)
 		}
 		sessionsAdmitted++
 		writeRunMeta(t, runDir, facts.HeadSHA, time.Now())
 		writeQuietRunLog(t, runDir, time.Now())
 
-		if _, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+		if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
 			t.Fatal(err)
 		}
 		assertFlakyDecision()
 		if claimed, err := ClaimRunDir(runDir); err != nil || claimed {
-			t.Fatalf("cycle %d admitted a second session inside liveness: claimed=%v err=%v", cycle, claimed, err)
+			t.Fatalf("attempt %d admitted a second session inside liveness: claimed=%v err=%v", attempt, claimed, err)
 		}
 	}
-	if sessionsAdmitted != 3 {
-		t.Fatalf("post-expiry sessions admitted = %d, want 3", sessionsAdmitted)
+	if sessionsAdmitted != defaultOperationalAttempts-1 {
+		t.Fatalf("post-expiry sessions admitted = %d, want %d", sessionsAdmitted, defaultOperationalAttempts-1)
+	}
+	finalAttempt := runDir + ".retry-5"
+	marker, err := readTerminalMarker(finalAttempt)
+	if err != nil || marker.Reason != "retry-exhausted" {
+		t.Fatalf("final retry marker = %#v err=%v", marker, err)
 	}
 }
 
@@ -346,7 +352,6 @@ func TestFlakyCrashRecoveryKeepsErrorsOffThePR(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
-	adaptation := Adaptation{Dir: adaptationDir}
 	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "18", HeadSHA: "abcdef1234567890", Labels: []string{LabelFlakyTests, LabelRepairingFlaky}}
 
 	crashed := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunFlaky)
@@ -359,7 +364,7 @@ func TestFlakyCrashRecoveryKeepsErrorsOffThePR(t *testing.T) {
 	if err := os.Mkdir(crashed+".reaped-1", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, terminal, err := terminaliseRepeatedUnmarkedCrash(t.Context(), adaptation, facts, RunFlaky, crashed, nil); err != nil || terminal {
+	if _, terminal, err := terminaliseUnsafeCrash(facts, RunFlaky, crashed, nil); err != nil || terminal {
 		t.Fatalf("flaky repeated crash terminal=%v err=%v", terminal, err)
 	}
 	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
@@ -383,7 +388,7 @@ func TestFlakyCrashRecoveryKeepsErrorsOffThePR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, handled, released, err := handleRetryableClaim(t.Context(), adaptation, facts, RunFlaky, retry, nil, logFile)
+	_, handled, released, err := handleRetryableClaim(t.Context(), facts, RunFlaky, retry, nil, defaultOperationalAttempts, logFile)
 	if closeErr := logFile.Close(); err == nil {
 		err = closeErr
 	}
@@ -593,18 +598,18 @@ func TestLabelLessClaimIsReapedWhenStaleAndUnfinished(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer logFile.Close()
-	if _, err := reapLabelLessClaims(context.Background(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+	if _, err := reapLabelLessClaims(context.Background(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
 		t.Fatalf("label-less claim still present: %v", err)
 	}
-	matches, err := filepath.Glob(runDir + ".reaped-*")
+	matches, err := filepath.Glob(runDir + ".retry-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(matches) != 1 {
-		t.Fatalf("expected one reaped claim, got %v", matches)
+		t.Fatalf("expected one liveness-spaced retry attempt, got %v", matches)
 	}
 }
 
@@ -666,55 +671,6 @@ func TestRunWrapTreatsBodyStartFailureAsRetryable(t *testing.T) {
 	}
 	if got := values["PUMP19_FAILURE_PHASE"]; got != "run-body-start" {
 		t.Fatalf("failure phase = %q, want run-body-start", got)
-	}
-}
-
-func TestRunWrapFailureRecordsStatusWhenBodyDidNot(t *testing.T) {
-	dir := t.TempDir()
-	statusFile := filepath.Join(dir, "status.args")
-	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
-	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
-	adaptation := Adaptation{Dir: dir}
-	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
-	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(statusFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := string(data); !strings.Contains(got, "pump19/review\nerror") {
-		t.Fatalf("set-status args did not record review error:\n%s", got)
-	}
-}
-
-func TestRunWrapFailureDoesNotOverwriteBodyStatus(t *testing.T) {
-	dir := t.TempDir()
-	statusFile := filepath.Join(dir, "status.args")
-	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[{\"id\":1,\"context\":\"pump19/review\",\"state\":\"error\"}]\\n'\n")
-	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
-	adaptation := Adaptation{Dir: dir}
-	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
-	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
-		t.Fatalf("wrapper wrote status despite existing body status: %v", err)
-	}
-}
-
-func TestRunWrapFailureDoesNotWriteStatusWhenStatusReadFails(t *testing.T) {
-	dir := t.TempDir()
-	statusFile := filepath.Join(dir, "status.args")
-	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nexit 7\n")
-	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
-	adaptation := Adaptation{Dir: dir}
-	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}
-	if err := recordRunWrapFailureStatus(context.Background(), adaptation, facts, RunReview, os.ErrInvalid); err == nil {
-		t.Fatal("expected wrapper status write to fail closed on status read failure")
-	}
-	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
-		t.Fatalf("wrapper wrote status after status read failure: %v", err)
 	}
 }
 

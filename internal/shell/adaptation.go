@@ -15,6 +15,21 @@ import (
 
 var adaptationOperation = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
+// Reads are the deliberately small exception. An organisation may add a new
+// mutating adaptation without changing the service; treating unknown verbs as
+// writes keeps replay safety conservative when that happens.
+var forgeReadOperations = map[string]bool{
+	"get-pr-facts":         true,
+	"get-statuses":         true,
+	"label-actor":          true,
+	"latest-label-event":   true,
+	"list-open-prs":        true,
+	"list-review-comments": true,
+	"list-reviews":         true,
+	"normalise-event":      true,
+	"prepare-workspace":    true,
+}
+
 type Adaptation struct {
 	Dir        string
 	APIBase    string
@@ -49,6 +64,13 @@ func NewAdaptation(forge ForgeConfig) (Adaptation, error) {
 func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
 	if a.Dir == "" {
 		return nil, fmt.Errorf("adaptation directory is not configured")
+	}
+	if !forgeReadOperations[name] {
+		// This record must become durable before the adaptation can make a forge
+		// mutation. A later non-zero exit is replayable only when it is absent.
+		if err := writeForgeWritesAttempted(os.Getenv("PUMP19_RUN_DIR"), name); err != nil {
+			return nil, fmt.Errorf("record forge write attempt for %s: %w", name, err)
+		}
 	}
 	path := filepath.Join(a.Dir, name)
 	cmd := exec.CommandContext(ctx, path, args...)

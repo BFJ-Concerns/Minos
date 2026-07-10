@@ -93,7 +93,7 @@ func TestRunBodyRejectsUnknownKindAndUnconfiguredSkillRuns(t *testing.T) {
 	}
 }
 
-func TestRunWrapFailureStatusHonoursRunKindVisibility(t *testing.T) {
+func TestRunWrapEarlyBodyFailureIsRetryableAndInvisibleOnEveryRunKind(t *testing.T) {
 	for _, kind := range []string{"fix", "finish", "flaky"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
@@ -106,7 +106,6 @@ func TestRunWrapFailureStatusHonoursRunKindVisibility(t *testing.T) {
 				}
 			}
 			copyRunBodyFixture(t, installRoot)
-			statusFile := filepath.Join(root, "status.args")
 			credential := filepath.Join(root, "token")
 			webhookSecret := filepath.Join(root, "webhook-secret")
 			if err := os.WriteFile(credential, []byte("token\n"), 0o600); err != nil {
@@ -116,15 +115,12 @@ func TestRunWrapFailureStatusHonoursRunKindVisibility(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), "#!/usr/bin/env sh\nmkdir -p \"$PUMP19_WORKSPACE\"\n: >\"$PUMP19_DIFF\"\n")
-			writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
-			writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
 			service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 			if err := os.WriteFile(filepath.Join(configDir, "service.toml"), []byte(service), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			// The kind dispatches, but the engine launch fails (PUMP19_BIN is a
-			// non-executable placeholder): the wrapper must record the kind's error
-			// status once the body has started, never a false success.
+			// The kind dispatches, but the engine launch fails before the mission can
+			// attempt a forge write. This common backend-start failure is retryable.
 			if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\nPUMP19_FIX_SKILL=x\nPUMP19_FLAKY_SKILL=x\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -143,14 +139,11 @@ func TestRunWrapFailureStatusHonoursRunKindVisibility(t *testing.T) {
 			if err := RunWrapCommand(t.Context(), []string{"--config", configDir}); err == nil {
 				t.Fatalf("%s body unexpectedly completed", kind)
 			}
-			if kind == "flaky" {
-				if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
-					t.Fatalf("flaky launch failure wrote a PR status: %v", err)
-				}
-				assertContainsFile(t, filepath.Join(runDir, "run.log"), "pump19 run-wrap error")
-				return
+			assertContainsFile(t, filepath.Join(runDir, "run.log"), "pump19 run-wrap error")
+			assertContainsFile(t, filepath.Join(runDir, "retry.env"), "PUMP19_FAILURE_PHASE=run-body-exit")
+			if _, err := os.Stat(filepath.Join(runDir, terminalMarkerFile)); !os.IsNotExist(err) {
+				t.Fatalf("%s early body failure latched instead of retrying: %v", kind, err)
 			}
-			assertContainsFile(t, statusFile, "pump19/"+kind+"\nerror")
 		})
 	}
 }
