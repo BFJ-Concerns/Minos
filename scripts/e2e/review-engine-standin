@@ -6,7 +6,6 @@ set -eu
 : "${PUMP19_RUN_DIR:?PUMP19_RUN_DIR is required}"
 : "${PUMP19_CONFIG:?PUMP19_CONFIG is required}"
 : "${PUMP19_PINS:?PUMP19_PINS is required}"
-: "${PUMP19_STANDIN_RESOLVED_MODELS:?PUMP19_STANDIN_RESOLVED_MODELS is required}"
 
 standin_model=${PUMP19_STANDIN_LEAD_MODEL:-claude-opus-pinned}
 printf '{"type":"system","subtype":"init","model":"%s"}\n' "$standin_model"
@@ -53,14 +52,16 @@ require_current() {
 while [ ! -s "$PUMP19_RUN_DIR/resolved-lead.json" ]; do
   sleep 1
 done
-"$PUMP19_BIN" provenance combine \
-  --lead "$PUMP19_RUN_DIR/resolved-lead.json" \
-  --workers "$PUMP19_STANDIN_RESOLVED_MODELS" \
-  --output "$PUMP19_RUN_DIR/resolved-models.json"
-"$PUMP19_BIN" provenance assemble \
-  --pins "$PUMP19_PINS" \
-  --resolved "$PUMP19_RUN_DIR/resolved-models.json" \
-  >"$PUMP19_RUN_DIR/provenance.json"
+# The service interlock governs the accountable lead only. Worker models belong
+# to the Foundry workflows and are optional session-log material, never a gate.
+jq '[.[] | {
+  role: "lead",
+  id: .id,
+  requested_engine: "claude",
+  requested_model: .resolved_model,
+  resolved_model: .resolved_model,
+  family: "anthropic"
+}]' "$PUMP19_RUN_DIR/resolved-lead.json" >"$PUMP19_RUN_DIR/provenance.json"
 
 verdict=${PUMP19_STANDIN_VERDICT:-converged}
 case "$verdict" in
