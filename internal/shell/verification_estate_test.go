@@ -229,6 +229,99 @@ func TestUnconfiguredFlakyLabelPausesWithoutStartingRepairOrRefiringReview(t *te
 	}
 }
 
+func TestPausedFlakyReviewSuccessIsTerminalForTheHead(t *testing.T) {
+	repo := RepoConfig{Triggers: []TriggerRule{
+		{Run: "flaky", Actors: []string{"ci-bot"}},
+		{Run: "review", Authors: []string{"*"}},
+	}}
+	reviewContext, _ := StatusContext(RunReview)
+	facts := Facts{Labels: []string{LabelFlakyTests}, Author: "contributor", Actor: "ci-bot"}
+	statuses := []Status{{Context: reviewContext, State: "success", Creator: "pump19"}}
+
+	// The standing label may start its repair run, but the paused review's
+	// success status remains terminal: absence of Converged never implies review.
+	if decision, ok := reconcileDecision(repo, facts, statuses, ""); !ok || decision != RunFlaky {
+		t.Fatalf("paused head decision = %s ok=%v, want flaky repair only", decision, ok)
+	}
+	facts.Labels = nil
+	if decision, ok := reconcileDecision(repo, facts, statuses, ""); ok {
+		t.Fatalf("paused review success unexpectedly re-fired %s after pause lifted", decision)
+	}
+}
+
+func TestPersistentlyFailingFlakyRepairIsLivenessPacedButUnbounded(t *testing.T) {
+	root := t.TempDir()
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Sweep.LivenessThreshold.Duration = time.Hour
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "flaky", Actors: []string{"ci-bot"}}}}
+	facts := Facts{
+		Forge:   "local",
+		Owner:   "pump19",
+		Repo:    "subject",
+		PR:      "18",
+		HeadSHA: "abcdef1234567890",
+		Labels:  []string{LabelFlakyTests},
+		Actor:   "ci-bot",
+	}
+	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunFlaky)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRunMeta(t, runDir, facts.HeadSHA, time.Now())
+	writeQuietRunLog(t, runDir, time.Now())
+	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	assertFlakyDecision := func() {
+		t.Helper()
+		if decision, ok := reconcileDecision(repo, facts, nil, ""); !ok || decision != RunFlaky {
+			t.Fatalf("standing flaky decision = %s ok=%v, want flaky", decision, ok)
+		}
+	}
+	assertFlakyDecision()
+	if claimed, err := ClaimRunDir(runDir); err != nil || claimed {
+		t.Fatalf("fresh canonical claim admitted another session: claimed=%v err=%v", claimed, err)
+	}
+
+	// Each expiry releases exactly one fresh canonical claim. Repeating the
+	// cycle proves there is no attempt ceiling; a sweep inside the liveness
+	// window still dispatches by implication, but the wrapper claim admits no
+	// second body.
+	sessionsAdmitted := 0
+	for cycle := 1; cycle <= 3; cycle++ {
+		old := time.Now().Add(-2 * cfg.Sweep.LivenessThreshold.Duration)
+		if err := os.Chtimes(filepath.Join(runDir, "run.log"), old, old); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+			t.Fatal(err)
+		}
+		assertFlakyDecision()
+		claimed, err := ClaimRunDir(runDir)
+		if err != nil || !claimed {
+			t.Fatalf("cycle %d did not admit one post-expiry session: claimed=%v err=%v", cycle, claimed, err)
+		}
+		sessionsAdmitted++
+		writeRunMeta(t, runDir, facts.HeadSHA, time.Now())
+		writeQuietRunLog(t, runDir, time.Now())
+
+		if _, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{}, facts, nil, logFile); err != nil {
+			t.Fatal(err)
+		}
+		assertFlakyDecision()
+		if claimed, err := ClaimRunDir(runDir); err != nil || claimed {
+			t.Fatalf("cycle %d admitted a second session inside liveness: claimed=%v err=%v", cycle, claimed, err)
+		}
+	}
+	if sessionsAdmitted != 3 {
+		t.Fatalf("post-expiry sessions admitted = %d, want 3", sessionsAdmitted)
+	}
+}
+
 func TestStandingFlakyLabelUsesRecordedActorToStartRepair(t *testing.T) {
 	repo := RepoConfig{Triggers: []TriggerRule{{Run: "flaky", Actors: []string{"bob"}}}}
 	facts := Facts{Owner: "pump19", Repo: "subject", PR: "18", Labels: []string{LabelFlakyTests}}

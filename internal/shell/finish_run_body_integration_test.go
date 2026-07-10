@@ -88,6 +88,9 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 			}
 			run := RunDir(env.runsDir, "local", "pump19", "subject", "7", tc.head, RunFinish)
 			assertContainsFile(t, filepath.Join(run, "finish-summary.md"), "reason=not-eligible")
+			if tc.name == "paused-flaky" {
+				assertContainsFile(t, filepath.Join(run, "eligibility-branch"), "paused-flaky")
+			}
 			if _, err := os.Stat(filepath.Join(env.stateDir, "merge.args")); !os.IsNotExist(err) {
 				t.Fatal("an ineligible head reached the merge")
 			}
