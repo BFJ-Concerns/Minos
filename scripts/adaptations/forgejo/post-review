@@ -1,0 +1,35 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+head_sha="$4"
+state="$5"
+body_file="$6"
+comments_file="$7"
+
+case "$state" in
+  APPROVE) forge_state=APPROVED ;;
+  REQUEST_CHANGES|COMMENT) forge_state="$state" ;;
+  *) echo "unsupported review state: $state" >&2; exit 2 ;;
+esac
+
+jq -e 'type == "array" and all(.[];
+  (.path | type == "string" and length > 0) and
+  (.body | type == "string" and length > 0) and
+  (.new_position | type == "number" and . > 0) and
+  ((.old_position // 0) == 0)
+)' "$comments_file" >/dev/null
+payload=$(jq -nc \
+  --arg body "$(cat "$body_file")" \
+  --arg event "$forge_state" \
+  --arg commit_id "$head_sha" \
+  --slurpfile comments "$comments_file" \
+  '{body:$body,event:$event,commit_id:$commit_id,comments:$comments[0]}')
+
+api POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" \
+  -H "Content-Type: application/json" \
+  --data "$payload"

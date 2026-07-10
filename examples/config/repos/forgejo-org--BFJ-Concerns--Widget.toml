@@ -6,10 +6,8 @@ repo = "Widget"
 build = "cargo build --workspace"
 test = "cargo test --workspace"
 briefs = ".review"
-skill = "/opt/pump19/skills/review.md"
-# Empty in the service-shell unit: run-wrap falls back to `pump19 stub-run`.
-# Real run-skill deployments set this to the agent-session executable.
-run-body = ""
+skill = "/opt/pump19/skills/foundry/agent-review/SKILL.md"
+run-body = "/opt/pump19/run-body/run-body"
 
 [policy]
 auto-merge = false
@@ -19,13 +17,3 @@ run = "review"
 on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
 authors = ["*"]
 drafts = false
-
-[[trigger]]
-run = "fix"
-on = ["review-rejected"]
-actors = ["pump19"]
-
-[[trigger]]
-run = "finish"
-on = ["label-added:Ready"]
-actors = ["bob"]
