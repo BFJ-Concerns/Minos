@@ -19,11 +19,10 @@ type Adaptation struct {
 }
 
 type Status struct {
-	ID          int64  `json:"id"`
-	Context     string `json:"context"`
-	State       string `json:"state"`
-	Creator     string `json:"creator"`
-	CreatedUnix int64  `json:"created_unix"`
+	ID      int64  `json:"id"`
+	Context string `json:"context"`
+	State   string `json:"state"`
+	Creator string `json:"creator"`
 }
 
 type LabelEvent struct {
@@ -99,6 +98,13 @@ func (a Adaptation) GetStatuses(ctx context.Context, owner, repo, sha string) ([
 	var statuses []Status
 	if err := json.Unmarshal(out, &statuses); err != nil {
 		return nil, err
+	}
+	for _, status := range statuses {
+		// Forgejo 14 orders status writes with its monotonic status ID. Without
+		// that field there is no safe way to choose the latest write in a context.
+		if status.ID <= 0 {
+			return nil, fmt.Errorf("get-statuses returned status without a positive id")
+		}
 	}
 	return statuses, nil
 }
@@ -192,11 +198,5 @@ func statusForContext(statuses []Status, contextName string) (Status, bool) {
 }
 
 func statusNewer(left, right Status) bool {
-	if left.CreatedUnix != right.CreatedUnix {
-		return left.CreatedUnix > right.CreatedUnix
-	}
-	if left.ID != right.ID {
-		return left.ID > right.ID
-	}
-	return false
+	return left.ID > right.ID
 }

@@ -3,15 +3,21 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="${PUMP19_E2E_DIR:-$(mktemp -d)}"
-container="${PUMP19_E2E_CONTAINER:-pump19-forgejo-e2e}"
+source "$root/scripts/e2e/resources.sh"
+declare -a PUMP19_E2E_RESOURCE_LOCK_FDS=()
+pump19_e2e_allocate_resources
+container="$PUMP19_E2E_RESOLVED_CONTAINER"
 image="${PUMP19_FORGEJO_IMAGE:-codeberg.org/forgejo/forgejo:14.0.5}"
-port="${PUMP19_FORGEJO_PORT:-33080}"
-hook_port="${PUMP19_HOOK_PORT:-18919}"
-capture_port="${PUMP19_CAPTURE_PORT:-18920}"
+port="$PUMP19_E2E_RESOLVED_FORGEJO_PORT"
+hook_port="$PUMP19_E2E_RESOLVED_HOOK_PORT"
+capture_port="$PUMP19_E2E_RESOLVED_CAPTURE_PORT"
 secret="pump19-secret"
 owner="pump19"
 repo="subject"
 fixture_dir="${PUMP19_E2E_FIXTURE_DIR:-${work}/fixtures}"
+run_body_records="${work}/logs/run-body-records.tsv"
+recording_skill="${work}/skills/review.md"
+recording_body="${work}/recording-run-body"
 
 cleanup() {
   set +e
@@ -84,6 +90,65 @@ assert_no_status_after() {
   echo "ok: ${description}"
 }
 
+assert_run_body_record() {
+  local description="$1"
+  local kind="$2"
+  local sha="$3"
+  local occasion="$4"
+  local skill="$5"
+  local body="$6"
+  local pr="$7"
+  if [[ ! -f "$run_body_records" ]] || ! awk -F '\t' \
+    -v kind="$kind" -v sha="$sha" -v occasion="$occasion" -v skill="$skill" -v body="$body" -v pr="$pr" \
+    -v runs="$work/runs/" -v adaptation="$work/adaptations" -v config="$work/config" \
+    '$1 == kind && $2 == sha && $3 == occasion && $4 == skill && $5 == body &&
+     index($6, runs) == 1 && $7 == "local" && $8 == "pump19/subject" &&
+     $9 == "pump19" && $10 == "subject" && $11 == pr && $12 == "main" &&
+     $13 != "" && $14 == $6 "/diff.patch" && $15 == adaptation &&
+     $16 == ".review" && $17 == config && $18 != "" && NF == 18 { found = 1 }
+     END { exit !found }' \
+    "$run_body_records"; then
+    echo "${description}: run body did not observe the expected dispatch contract" >&2
+    [[ -f "$run_body_records" ]] && sed -n '1,40p' "$run_body_records" >&2
+    return 1
+  fi
+  echo "ok: ${description}"
+}
+
+assert_run_body_count() {
+  local description="$1"
+  local kind="$2"
+  local sha="$3"
+  local expected="$4"
+  local actual
+  actual="$(awk -F '\t' -v kind="$kind" -v sha="$sha" '$1 == kind && $2 == sha { count++ } END { print count + 0 }' "$run_body_records")"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "${description}: expected ${expected} body starts, observed ${actual}" >&2
+    sed -n '1,40p' "$run_body_records" >&2
+    return 1
+  fi
+  echo "ok: ${description}"
+}
+
+assert_run_body_order() {
+  local description="$1"
+  local first_kind="$2"
+  local first_sha="$3"
+  local second_kind="$4"
+  local second_sha="$5"
+  if ! awk -F '\t' \
+    -v first_kind="$first_kind" -v first_sha="$first_sha" \
+    -v second_kind="$second_kind" -v second_sha="$second_sha" \
+    '$1 == first_kind && $2 == first_sha && first == 0 { first = NR }
+     $1 == second_kind && $2 == second_sha && second == 0 { second = NR }
+     END { exit !(first > 0 && second > first) }' "$run_body_records"; then
+    echo "${description}: observed run-body order was wrong" >&2
+    sed -n '1,40p' "$run_body_records" >&2
+    return 1
+  fi
+  echo "ok: ${description}"
+}
+
 label_has() {
   local pr="$1"
   local label="$2"
@@ -100,7 +165,7 @@ status_state() {
   local sha="$1"
   local context="$2"
   api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
-    jq -r --arg context "$context" 'sort_by([(.created_unix // 0), (.id // 0)]) | reverse | [.[] | select(.context == $context) | (.status // .state)][0] // ""'
+    jq -r --arg context "$context" '[.[] | select(.context == $context)] | if length == 0 then "" else (max_by(.id) | (.status // .state)) end'
 }
 
 capture_timeline_fixture() {
@@ -146,7 +211,7 @@ push_update() {
 }
 
 write_repo_config() {
-  local run_body="${1:-}"
+  local run_body="${1:-$recording_body}"
   cat >"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
 forge = "local"
 owner = "${owner}"
@@ -154,6 +219,7 @@ repo = "${repo}"
 
 [adaptation]
 briefs = ".review"
+skill = "${recording_skill}"
 EOF
   if [[ -n "$run_body" ]]; then
     printf 'run-body = "%s"\n' "$run_body" >>"$work/config/repos/local--${owner}--${repo}.toml"
@@ -187,8 +253,37 @@ run_sweep() {
   PUMP19_STUB_MODE="${1:-normal}" "${root}/pump19" sweep --config "$work/config"
 }
 
-mkdir -p "$work/config/repos" "$work/runs" "$work/logs" "$work/adaptations" "$work/forgejo/gitea/conf" "$fixture_dir"
+mkdir -p "$work/config/repos" "$work/runs" "$work/logs" "$work/adaptations" "$work/forgejo/gitea/conf" "$work/skills" "$fixture_dir"
 cp -R "$root/scripts/adaptations/forgejo/." "$work/adaptations/"
+printf '%s\n' 'test-only review skill path fixture' >"$recording_skill"
+cat >"$recording_body" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+# One append records the body-start order observed beyond systemd and run-wrap.
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  "\${PUMP19_RUN_KIND}" \
+  "\${PUMP19_HEAD_SHA}" \
+  "\${PUMP19_OCCASION}" \
+  "\${PUMP19_SKILL}" \
+  "\${PUMP19_RUN_BODY}" \
+  "\${PUMP19_RUN_DIR}" \
+  "\${PUMP19_FORGE}" \
+  "\${PUMP19_REPO}" \
+  "\${PUMP19_OWNER}" \
+  "\${PUMP19_REPO_NAME}" \
+  "\${PUMP19_PR}" \
+  "\${PUMP19_BASE_REF}" \
+  "\${PUMP19_WORKSPACE}" \
+  "\${PUMP19_DIFF}" \
+  "\${PUMP19_ADAPTATION}" \
+  "\${PUMP19_BRIEFS}" \
+  "\${PUMP19_CONFIG}" \
+  "\${PUMP19_UNIT}" >>"${run_body_records}"
+
+exec "${root}/pump19" stub-run
+EOF
+chmod +x "$recording_body"
 
 cat >"$work/forgejo/gitea/conf/app.ini" <<EOF
 APP_NAME = Pump-19 E2E
@@ -296,9 +391,12 @@ pr1="$(create_branch_and_pr journey-one "journey one")"
 sha1="$(head_sha "$pr1")"
 wait_for_call "journey 1 review status" status_is "$sha1" "pump19/review" success
 wait_for_call "journey 1 label cleared" label_lacks "$pr1" Reviewing
+assert_run_body_record "journey 1 run-body dispatch recorded" review "$sha1" pr-opened "$recording_skill" "$recording_body" "$pr1"
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels" '{"labels":["Ready"]}' >/dev/null
 wait_for_call "journey 1 finish status" status_is "$sha1" "pump19/finish" success
 wait_for_call "journey 1 finishing cleared" label_lacks "$pr1" Finishing
+assert_run_body_record "journey 1 finish dispatch recorded" finish "$sha1" label-added:Ready "$recording_skill" "$recording_body" "$pr1"
+assert_run_body_order "journey 1 body order is review then finish" review "$sha1" finish "$sha1"
 run_sweep normal
 wait_for_call "authorised Ready survives sweep" label_has "$pr1" Ready
 
@@ -327,6 +425,7 @@ if [[ "$status_count" != "1" ]]; then
   exit 1
 fi
 echo "ok: journey 2 duplicate delivery idempotent"
+assert_run_body_count "journey 2 duplicate delivery never reaches run body" review "$sha1" 1
 
 kill "$receiver_pid" >/dev/null 2>&1 || true
 sleep 1
@@ -497,6 +596,13 @@ write_repo_config ""
 
 api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "pump19/review" '{context:$context,state:"success",description:"same-second success probe"}')" >/dev/null
 api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "pump19/review" '{context:$context,state:"error",description:"same-second error probe"}')" >/dev/null
+status_pair="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha4}/statuses" | jq '[.[] | select(.context == "pump19/review")][0:2]')"
+printf '%s\n' "$status_pair" >"${fixture_dir}/commit-statuses.json"
+same_second_count="$(jq '[.[].created_at] | unique | length' <<<"$status_pair")"
+if [[ "$same_second_count" != "1" ]]; then
+  echo "status ordering probe crossed a second boundary" >&2
+  exit 1
+fi
 latest_review_state="$(PUMP19_API_BASE="http://127.0.0.1:${port}" PUMP19_FORGE_TOKEN="$bot_token" "$work/adaptations/get-statuses" "$owner" "$repo" "$sha4" | jq -r '[.[] | select(.context == "pump19/review")][0].state')"
 combined_state="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha4}/status" | jq -r '.state // .status // ""')"
 case "$latest_review_state" in
@@ -507,7 +613,7 @@ if [[ "$service_combined_state" != "$combined_state" ]]; then
   echo "same-second status ordering disagrees: adaptation=${latest_review_state} combined=${combined_state}" >&2
   exit 1
 fi
-echo "ok: same-second status ordering agrees with Forgejo combined status"
+echo "ok: independently observed same-second status ordering agrees with Forgejo combined status"
 
 # Spike A capture tail: fire the extra Forgejo 14.0.5 webhook shapes the
 # normaliser needs to know about. These do not participate in the journeys.

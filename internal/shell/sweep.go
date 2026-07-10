@@ -16,6 +16,8 @@ import (
 
 const maxRetryableRunWrapRetries = 1
 
+var errRetryClaimAlreadyReleased = errors.New("retry claim already released")
+
 func SweepCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
 	configRoot := fs.String("config", DefaultConfigRoot, "configuration root")
@@ -94,8 +96,16 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 					return err
 				}
 				facts.Labels = removeFactLabel(facts.Labels, label)
+			} else {
+				// Another sweep owns this claim, or its release failed closed. Do
+				// not race it into the fixed systemd unit name.
+				return nil
 			}
 			continue
+		}
+		statuses, _, err = terminaliseRepeatedUnmarkedCrash(ctx, adaptation, facts, kind, runDir, statuses)
+		if err != nil {
+			return err
 		}
 		if err := reapRunDir(ctx, runDir); err != nil {
 			fmt.Fprintf(logw, "reap failed closed for %s: %v\n", runDir, err)
@@ -110,14 +120,15 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 	if err != nil {
 		return err
 	}
-	facts, err = clearUnauthorisedReady(ctx, repo, adaptation, facts, logw)
+	readyActor, err := resolveReadyActor(ctx, repo, adaptation, facts)
 	if err != nil {
 		return err
 	}
-	decision, ok, err := reconcileDecision(ctx, repo, adaptation, facts, statuses)
+	facts, err = clearUnauthorisedReady(ctx, repo, adaptation, facts, readyActor, logw)
 	if err != nil {
 		return err
 	}
+	decision, ok := reconcileDecision(repo, facts, statuses, readyActor)
 	if !ok {
 		return nil
 	}
@@ -140,7 +151,7 @@ func openSweepLog(cfg ServiceConfig) (*os.File, func(), error) {
 }
 
 func liveRunState(root string, facts Facts, kind RunKind, threshold time.Duration) (string, bool, error) {
-	runDir, err := newestLiveRunDir(root, facts, kind)
+	runDir, err := newestLiveRunDir(root, facts, kind, threshold)
 	if err != nil || runDir == "" {
 		return runDir, false, err
 	}
@@ -160,7 +171,7 @@ func runState(runDir string, threshold time.Duration) (string, bool, error) {
 	return runDir, time.Since(stat.ModTime()) < threshold, nil
 }
 
-func newestLiveRunDir(root string, facts Facts, kind RunKind) (string, error) {
+func newestLiveRunDir(root string, facts Facts, kind RunKind, threshold time.Duration) (string, error) {
 	dir := filepath.Join(root, facts.Forge+"--"+facts.Owner+"--"+facts.Repo, "pr"+facts.PR)
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -183,7 +194,7 @@ func newestLiveRunDir(root string, facts Facts, kind RunKind) (string, error) {
 		if claim.metaErr != nil {
 			continue
 		}
-		if newest.path == "" || runClaimAfter(claim, newest) {
+		if newest.path == "" || runClaimAfter(claim, newest, threshold) {
 			newest = claim
 		}
 	}
@@ -250,6 +261,13 @@ func readRunClaim(path string) (runClaim, error) {
 		claim.metaErr = metaErr
 		return claim, nil
 	}
+	if claim.metaMissing {
+		stat, err := os.Stat(path)
+		if err != nil {
+			return runClaim{}, err
+		}
+		claim.startedAt = stat.ModTime()
+	}
 	if claim.headSHA == "" {
 		claim.headSHA = claim.sha
 	}
@@ -264,9 +282,13 @@ func readRunClaim(path string) (runClaim, error) {
 	return claim, nil
 }
 
-func runClaimAfter(left, right runClaim) bool {
+func runClaimAfter(left, right runClaim, threshold time.Duration) bool {
 	if left.metaMissing != right.metaMissing {
-		return left.metaMissing
+		leftFresh := left.metaMissing && time.Since(left.startedAt) < threshold
+		rightFresh := right.metaMissing && time.Since(right.startedAt) < threshold
+		if leftFresh != rightFresh {
+			return leftFresh
+		}
 	}
 	if !left.startedAt.Equal(right.startedAt) {
 		return left.startedAt.After(right.startedAt)
@@ -312,6 +334,16 @@ func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, adaptation Adap
 				continue
 			}
 		}
+		if currentHead {
+			var terminalised bool
+			currentStatuses, terminalised, err = terminaliseRepeatedUnmarkedCrash(ctx, adaptation, facts, claim.kind, claim.path, currentStatuses)
+			if err != nil {
+				return currentStatuses, err
+			}
+			if terminalised {
+				fmt.Fprintf(logw, "second unmarked crash became terminal for %s on %s#%s\n", claim.kind, facts.RepoSlug(), facts.PR)
+			}
+		}
 		if err := reapRunDir(ctx, claim.path); err != nil {
 			fmt.Fprintf(logw, "label-less reap failed closed for %s: %v\n", claim.path, err)
 			continue
@@ -335,6 +367,10 @@ func handleRetryableClaim(ctx context.Context, adaptation Adaptation, facts Fact
 	}
 	if retryCount < maxRetryableRunWrapRetries {
 		if err := releaseRetryableClaim(ctx, runDir, retryCount+1); err != nil {
+			if errors.Is(err, errRetryClaimAlreadyReleased) {
+				fmt.Fprintf(logw, "retry claim already released for %s; yielding\n", runDir)
+				return currentStatuses, true, false, nil
+			}
 			fmt.Fprintf(logw, "retry release failed closed for %s: %v\n", runDir, err)
 			return currentStatuses, true, false, nil
 		}
@@ -344,13 +380,40 @@ func handleRetryableClaim(ctx context.Context, adaptation Adaptation, facts Fact
 	if err := adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", "Pump-19 wrapper failure retry exhausted"); err != nil {
 		return currentStatuses, false, false, err
 	}
-	currentStatuses = append(currentStatuses, Status{Context: contextName, State: "error", CreatedUnix: time.Now().Unix()})
-	if err := discardRunDir(ctx, runDir); err != nil {
-		fmt.Fprintf(logw, "retry exhaustion cleanup failed for %s: %v\n", runDir, err)
+	currentStatuses = append(currentStatuses, Status{Context: contextName, State: "error"})
+	if err := releaseRetryableClaim(ctx, runDir, retryCount+1); err != nil {
+		fmt.Fprintf(logw, "retry exhaustion evidence preservation failed for %s: %v\n", runDir, err)
 		return currentStatuses, true, false, nil
 	}
-	fmt.Fprintf(logw, "retry exhausted for %s; wrote %s error on %s#%s\n", runDir, contextName, facts.RepoSlug(), facts.PR)
+	fmt.Fprintf(logw, "retry exhausted for %s; preserved attempt %d and wrote %s error on %s#%s\n", runDir, retryCount+1, contextName, facts.RepoSlug(), facts.PR)
 	return currentStatuses, true, true, nil
+}
+
+func terminaliseRepeatedUnmarkedCrash(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind, runDir string, currentStatuses []Status) ([]Status, bool, error) {
+	if hasRetryableFailure(runDir) {
+		return currentStatuses, false, nil
+	}
+	claim, err := readRunClaim(runDir)
+	if err != nil {
+		return currentStatuses, false, err
+	}
+	currentHead := claim.headSHA == facts.HeadSHA || strings.HasPrefix(facts.HeadSHA, claim.sha)
+	if !currentHead {
+		return currentStatuses, false, nil
+	}
+	contextName, _ := StatusContext(kind)
+	if _, ok := statusForContext(currentStatuses, contextName); ok {
+		return currentStatuses, false, nil
+	}
+	count, err := reapEvidenceCount(runDir)
+	if err != nil || count < 1 {
+		return currentStatuses, false, err
+	}
+	description := "Pump-19 wrapper crashed twice without terminal status"
+	if err := adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", description); err != nil {
+		return currentStatuses, false, err
+	}
+	return append(currentStatuses, Status{Context: contextName, State: "error"}), true, nil
 }
 
 func reapRunDir(ctx context.Context, runDir string) error {
@@ -373,16 +436,15 @@ func releaseRetryableClaim(ctx context.Context, runDir string, attempt int) erro
 	}
 	target := fmt.Sprintf("%s.retry-%d", runDir, attempt)
 	if _, err := os.Lstat(target); err == nil {
-		return fmt.Errorf("retry evidence already exists: %s", target)
+		return fmt.Errorf("%w: %s", errRetryClaimAlreadyReleased, target)
 	}
-	return os.Rename(runDir, target)
-}
-
-func discardRunDir(ctx context.Context, runDir string) error {
-	if err := cleanupRunDirResources(ctx, runDir); err != nil {
+	if err := os.Rename(runDir, target); err != nil {
+		if _, targetErr := os.Lstat(target); targetErr == nil {
+			return fmt.Errorf("%w: %s", errRetryClaimAlreadyReleased, target)
+		}
 		return err
 	}
-	return os.RemoveAll(runDir)
+	return nil
 }
 
 func cleanupRunDirResources(ctx context.Context, runDir string) error {
@@ -411,28 +473,36 @@ func hasRetryableFailure(runDir string) bool {
 }
 
 func retryEvidenceCount(runDir string) (int, error) {
-	matches, err := filepath.Glob(runDir + ".retry-*")
+	matches, err := filepath.Glob(runDir + ".retry-1")
 	if err != nil {
 		return 0, err
 	}
 	return len(matches), nil
 }
 
-func clearUnauthorisedReady(ctx context.Context, repo RepoConfig, adaptation Adaptation, facts Facts, logw *os.File) (Facts, error) {
-	if !facts.HasLabel(LabelReady) || !hasRunTrigger(repo, RunFinish) {
-		return facts, nil
-	}
-	actor, err := adaptation.LabelActor(ctx, facts.Owner, facts.Repo, facts.PR, LabelReady)
+func reapEvidenceCount(runDir string) (int, error) {
+	matches, err := filepath.Glob(runDir + ".reaped-*")
 	if err != nil {
-		return facts, err
+		return 0, err
 	}
-	if guardsPass(repo, RunFinish, facts, actor) {
+	return len(matches), nil
+}
+
+func resolveReadyActor(ctx context.Context, repo RepoConfig, adaptation Adaptation, facts Facts) (string, error) {
+	if !facts.HasLabel(LabelReady) || !hasRunTrigger(repo, RunFinish) {
+		return "", nil
+	}
+	return adaptation.LabelActor(ctx, facts.Owner, facts.Repo, facts.PR, LabelReady)
+}
+
+func clearUnauthorisedReady(ctx context.Context, repo RepoConfig, adaptation Adaptation, facts Facts, actor string, logw *os.File) (Facts, error) {
+	if !facts.HasLabel(LabelReady) || !hasRunTrigger(repo, RunFinish) || actorGuardPass(repo, RunFinish, actor) {
 		return facts, nil
 	}
 	if err := adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, LabelReady); err != nil {
 		return facts, err
 	}
-	fmt.Fprintf(logw, "clear unauthorised %s on %s#%s actor=%s\n", LabelReady, facts.RepoSlug(), facts.PR, actor)
+	fmt.Fprintf(logw, "clear %s on %s#%s actor=%s failed finish actor guard\n", LabelReady, facts.RepoSlug(), facts.PR, actor)
 	facts.Labels = removeFactLabel(facts.Labels, LabelReady)
 	return facts, nil
 }
@@ -506,31 +576,40 @@ func readMetaFile(path string) (map[string]string, error) {
 	return values, nil
 }
 
-func reconcileDecision(ctx context.Context, repo RepoConfig, adaptation Adaptation, facts Facts, statuses []Status) (RunKind, bool, error) {
+func reconcileDecision(repo RepoConfig, facts Facts, statuses []Status, readyActor string) (RunKind, bool) {
 	reviewContext, _ := StatusContext(RunReview)
 	fixContext, _ := StatusContext(RunFix)
 	finishContext, _ := StatusContext(RunFinish)
 	if _, ok := statusForContext(statuses, reviewContext); !ok && reviewReconcileGuardsPass(repo, facts) {
-		return RunReview, true, nil
+		return RunReview, true
 	}
 	reviewStatus, reviewOK := statusForContext(statuses, reviewContext)
 	if reviewOK && reviewStatus.State == "failure" {
 		if _, fixOK := statusForContext(statuses, fixContext); !fixOK && !facts.HasLabel(LabelStandingFindings) && guardsPass(repo, RunFix, facts, reviewStatus.Creator) {
-			return RunFix, true, nil
+			return RunFix, true
 		}
 	}
 	if facts.HasLabel(LabelReady) {
 		if _, finishOK := statusForContext(statuses, finishContext); !finishOK {
-			actor, err := adaptation.LabelActor(ctx, facts.Owner, facts.Repo, facts.PR, LabelReady)
-			if err != nil {
-				return "", false, err
-			}
-			if guardsPass(repo, RunFinish, facts, actor) {
-				return RunFinish, true, nil
+			if guardsPass(repo, RunFinish, facts, readyActor) {
+				return RunFinish, true
 			}
 		}
 	}
-	return "", false, nil
+	return "", false
+}
+
+func actorGuardPass(repo RepoConfig, kind RunKind, actor string) bool {
+	for _, rule := range repo.Triggers {
+		ruleKind, err := ParseRunKind(rule.Run)
+		if err != nil || ruleKind != kind {
+			continue
+		}
+		if len(rule.Actors) == 0 || matchesGlobAny(rule.Actors, actor) {
+			return true
+		}
+	}
+	return false
 }
 
 func guardsPass(repo RepoConfig, kind RunKind, facts Facts, actor string) bool {

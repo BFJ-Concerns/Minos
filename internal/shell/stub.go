@@ -55,7 +55,7 @@ func StubRunCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer func() {
-		newer := newerLiveRunDirExists(cfg.Runs.Dir, facts, kind, os.Getenv("PUMP19_RUN_DIR"))
+		newer := newerLiveRunDirExists(cfg.Runs.Dir, facts, kind, os.Getenv("PUMP19_RUN_DIR"), cfg.Sweep.LivenessThreshold.Duration)
 		if !newer {
 			_ = adaptation.RemoveLabel(context.Background(), facts.Owner, facts.Repo, facts.PR, label)
 		}
@@ -105,12 +105,12 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	return adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, state, description)
 }
 
-func newerLiveRunDirExists(root string, facts Facts, kind RunKind, currentRunDir string) bool {
+func newerLiveRunDirExists(root string, facts Facts, kind RunKind, currentRunDir string, threshold time.Duration) bool {
 	current, err := readRunClaim(currentRunDir)
 	if err != nil {
 		return false
 	}
-	runDir, err := newestLiveRunDir(root, facts, kind)
+	runDir, err := newestLiveRunDir(root, facts, kind, threshold)
 	if err != nil || runDir == "" || runDir == currentRunDir {
 		return false
 	}
@@ -118,5 +118,5 @@ func newerLiveRunDirExists(root string, facts Facts, kind RunKind, currentRunDir
 	if err != nil {
 		return false
 	}
-	return runClaimAfter(newest, current)
+	return runClaimAfter(newest, current, threshold)
 }
