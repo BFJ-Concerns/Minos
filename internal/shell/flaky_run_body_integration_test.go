@@ -26,6 +26,7 @@ func TestFlakyRunBodyLandsRepairAndKeepsFailuresOffThePR(t *testing.T) {
 		filepath.Join("..", "..", "missions", "review.md"):                                                "apply `" + LabelFlakyTests + "`",
 		filepath.Join("..", "..", "scripts", "e2e", "flaky-engine-standin"):                               `"` + LabelFlakyTests + `"`,
 		filepath.Join("..", "..", "examples", "config", "repos", "forgejo-org--BFJ-Concerns--Widget.toml"): "label-added:" + LabelFlakyTests,
+		filepath.Join("..", "..", "deploy", "etc", "pump19", "repos", "owner--repository.toml.example"):   "label-added:" + LabelFlakyTests,
 	} {
 		data, err := os.ReadFile(path)
 		if err != nil {
