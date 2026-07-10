@@ -44,4 +44,4 @@ actors = ["REPLACE_WITH_AUTHORISED_FINISH_LOGINS"]
 [[trigger]]
 run = "flaky"
 on = ["label-added:Flaky Tests"]
-actors = ["bob", "Minos"]
+actors = ["bob", "Minos", "forgejo-actions"]
