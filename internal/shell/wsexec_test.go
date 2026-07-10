@@ -66,13 +66,7 @@ func TestWorkspaceExecCommandRefusesMissingWorkspace(t *testing.T) {
 
 func writeWorkspaceExecConfig(t *testing.T, root string) {
 	t.Helper()
-	data := `
-[forges.local]
-adaptation = "/tmp/adapt"
-api-base = "http://forgejo.local"
-webhook-secret-file = "/tmp/secret"
-credential-file = "/tmp/token"
-
+	data := validServiceConfig + `
 [scrub]
 vars = ["PUMP19_FORGE_TOKEN", "MODEL_KEY"]
 `

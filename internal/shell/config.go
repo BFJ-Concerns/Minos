@@ -1,15 +1,20 @@
 package shell
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 const DefaultConfigRoot = "/etc/pump19"
+
+var errRepoNotOptedIn = errors.New("repository is not opted in")
 
 type ServiceConfig struct {
 	Root     string `toml:"-"`
@@ -74,21 +79,13 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	}
 	var cfg ServiceConfig
 	cfg.Root = root
-	cfg.Listener.Bind = ":8919"
-	cfg.Runs.Dir = "/var/lib/pump19/runs"
-	cfg.Sweep.LivenessThreshold.Duration = time.Hour
-	if _, err := toml.DecodeFile(filepath.Join(root, "service.toml"), &cfg); err != nil {
+	path := filepath.Join(root, "service.toml")
+	if err := decodeStrictTOML(path, &cfg); err != nil {
 		return ServiceConfig{}, err
 	}
 	cfg.Root = root
-	if cfg.Listener.Bind == "" {
-		cfg.Listener.Bind = ":8919"
-	}
-	if cfg.Runs.Dir == "" {
-		cfg.Runs.Dir = "/var/lib/pump19/runs"
-	}
-	if cfg.Sweep.LivenessThreshold.Duration == 0 {
-		cfg.Sweep.LivenessThreshold.Duration = time.Hour
+	if err := validateServiceConfig(cfg); err != nil {
+		return ServiceConfig{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return cfg, nil
 }
@@ -101,13 +98,95 @@ func LoadRepoConfigs(root string) ([]RepoConfig, error) {
 	var repos []RepoConfig
 	for _, path := range paths {
 		var repo RepoConfig
-		if _, err := toml.DecodeFile(path, &repo); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+		if err := decodeStrictTOML(path, &repo); err != nil {
+			return nil, err
 		}
 		repo.Path = path
+		if err := validateRepoConfig(repo); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 		repos = append(repos, repo)
 	}
 	return repos, nil
+}
+
+// decodeStrictTOML keeps configuration typos from quietly turning into zero
+// values. BurntSushi/toml reports every key it could not map after decoding.
+func decodeStrictTOML(path string, target any) error {
+	metadata, err := toml.DecodeFile(path, target)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	undecoded := metadata.Undecoded()
+	if len(undecoded) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(undecoded))
+	for _, key := range undecoded {
+		keys = append(keys, key.String())
+	}
+	sort.Strings(keys)
+	return fmt.Errorf("%s: unknown TOML keys: %s", path, strings.Join(keys, ", "))
+}
+
+func validateServiceConfig(cfg ServiceConfig) error {
+	var missing []string
+	requireConfigValue(&missing, "listener.bind", cfg.Listener.Bind)
+	if len(cfg.Forges) == 0 {
+		missing = append(missing, "forges")
+	}
+	forgeNames := make([]string, 0, len(cfg.Forges))
+	for name := range cfg.Forges {
+		forgeNames = append(forgeNames, name)
+	}
+	sort.Strings(forgeNames)
+	for _, name := range forgeNames {
+		forge := cfg.Forges[name]
+		prefix := "forges." + name + "."
+		requireConfigValue(&missing, prefix+"adaptation", forge.Adaptation)
+		requireConfigValue(&missing, prefix+"api-base", forge.APIBase)
+		requireConfigValue(&missing, prefix+"webhook-secret-file", forge.WebhookSecretFile)
+		requireConfigValue(&missing, prefix+"credential-file", forge.CredentialFile)
+	}
+	requireConfigValue(&missing, "runs.dir", cfg.Runs.Dir)
+	if cfg.Sweep.LivenessThreshold.Duration <= 0 {
+		missing = append(missing, "sweep.liveness-threshold")
+	}
+	return missingConfigError(missing)
+}
+
+func validateRepoConfig(repo RepoConfig) error {
+	var missing []string
+	requireConfigValue(&missing, "forge", repo.Forge)
+	requireConfigValue(&missing, "owner", repo.Owner)
+	requireConfigValue(&missing, "repo", repo.Repo)
+	requireConfigValue(&missing, "adaptation.build", repo.Adaptation.Build)
+	requireConfigValue(&missing, "adaptation.test", repo.Adaptation.Test)
+	requireConfigValue(&missing, "adaptation.skill", repo.Adaptation.Skill)
+	if len(repo.Triggers) == 0 {
+		missing = append(missing, "trigger")
+	}
+	for index, trigger := range repo.Triggers {
+		prefix := fmt.Sprintf("trigger[%d].", index)
+		requireConfigValue(&missing, prefix+"run", trigger.Run)
+		if len(trigger.On) == 0 {
+			missing = append(missing, prefix+"on")
+		}
+	}
+	return missingConfigError(missing)
+}
+
+func requireConfigValue(missing *[]string, name, value string) {
+	if strings.TrimSpace(value) == "" {
+		*missing = append(*missing, name)
+	}
+}
+
+func missingConfigError(missing []string) error {
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("missing required fields: %s", strings.Join(missing, ", "))
 }
 
 func FindRepoConfig(root string, facts Facts) (RepoConfig, error) {
@@ -120,7 +199,7 @@ func FindRepoConfig(root string, facts Facts) (RepoConfig, error) {
 			return repo, nil
 		}
 	}
-	return RepoConfig{}, fmt.Errorf("repository %s/%s on %s is not opted in", facts.Owner, facts.Repo, facts.Forge)
+	return RepoConfig{}, fmt.Errorf("%w: %s/%s on %s", errRepoNotOptedIn, facts.Owner, facts.Repo, facts.Forge)
 }
 
 func ReadSecret(path string) (string, error) {

@@ -2,6 +2,8 @@ package shell
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +11,22 @@ import (
 	"testing"
 	"time"
 )
+
+func TestWebhookBodyAtExactLimitReachesAuthentication(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/hooks/local", strings.NewReader(strings.Repeat("x", int(maxWebhookBodyBytes))))
+	response := httptest.NewRecorder()
+
+	err := handleHook(t.Context(), receiverTestConfig(t, t.TempDir()), response, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("exact-limit body status = %d, want authentication rejection %d", response.Code, http.StatusUnauthorized)
+	}
+	if strings.Contains(response.Body.String(), "too large") {
+		t.Fatalf("exact-limit body was rejected by the size gate: %q", response.Body.String())
+	}
+}
 
 func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 	root := t.TempDir()
@@ -427,7 +445,12 @@ func TestRunWrapTreatsBodyStartFailureAsRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), "#!/usr/bin/env sh\nexit 0\n")
-	serviceConfig := "[forges.local]\nadaptation = \"" + adaptationDir + "\"\n"
+	serviceConfig := strings.Replace(validServiceConfig, "/tmp/adapt", adaptationDir, 1)
+	credentialFile := filepath.Join(root, "token")
+	if err := os.WriteFile(credentialFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serviceConfig = strings.Replace(serviceConfig, "/tmp/token", credentialFile, 1)
 	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(serviceConfig), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -443,12 +466,13 @@ func TestRunWrapTreatsBodyStartFailureAsRetryable(t *testing.T) {
 	t.Setenv("PUMP19_HEAD_SHA", "abcdef1234567890")
 	t.Setenv("PUMP19_RUN_BODY", filepath.Join(root, "missing-run-body"))
 
-	if err := RunWrapCommand(context.Background(), []string{"--config", root}); err == nil {
+	runErr := RunWrapCommand(context.Background(), []string{"--config", root})
+	if runErr == nil {
 		t.Fatal("expected missing run body to fail before starting")
 	}
 	values, err := readMetaFile(filepath.Join(runDir, "retry.env"))
 	if err != nil {
-		t.Fatalf("body start failure did not record retry evidence: %v", err)
+		t.Fatalf("body start failure %v did not record retry evidence: %v", runErr, err)
 	}
 	if got := values["PUMP19_FAILURE_PHASE"]; got != "run-body-start" {
 		t.Fatalf("failure phase = %q, want run-body-start", got)

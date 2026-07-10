@@ -15,6 +15,7 @@ scripts:
 		sh -n "$$script"; \
 	done
 	@bash -n scripts/e2e/forgejo-smoke.sh scripts/e2e/deployment-smoke.sh scripts/e2e/resource-isolation-test.sh scripts/e2e/resources.sh
+	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/e2e/test_capture_forward.py
 	@./scripts/e2e/resource-isolation-test.sh
 
 e2e: build
