@@ -132,7 +132,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	}
 	drafts := false
 	autoMergeRepo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"pump19"}, Drafts: &drafts}}}
-	adaptation := Adaptation{Dir: adaptationDir}
+	adaptation := Adaptation{Dir: adaptationDir, Credential: "test-token"}
 	readyActor, err := resolveReadyActor(t.Context(), autoMergeRepo, adaptation, cleanFacts)
 	if err != nil {
 		t.Fatal(err)
@@ -354,7 +354,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Sweep.LivenessThreshold.Duration = time.Second
-	if err := sweepPR(t.Context(), cfg, RepoConfig{}, Adaptation{Dir: adaptationDir}, facts, logFile); err != nil {
+	if err := sweepPR(t.Context(), cfg, RepoConfig{}, Adaptation{Dir: adaptationDir, Credential: "test-token"}, facts, logFile); err != nil {
 		_ = logFile.Close()
 		t.Fatal(err)
 	}
@@ -390,6 +390,12 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	finishRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "cccccccccccccccc", RunFinish)
 	assertContainsFile(t, filepath.Join(finishRun, "finish-summary.md"), "outcome=merged")
 	assertContainsFile(t, filepath.Join(stateDir, "merge.args"), "merge")
+	assertFileText(t, filepath.Join(stateDir, "assignees"), "Minos\n")
+	if assignments := fixtureLineCount(t, filepath.Join(stateDir, "operations"), "assign-if-missing:Minos"); assignments != 1 {
+		t.Fatalf("Minos assignment writes = %d, want 1", assignments)
+	}
+	assertContainsFile(t, filepath.Join(stateDir, "operations"), "add-reaction:eyes")
+	assertContainsFile(t, filepath.Join(stateDir, "operations"), "remove-reaction:eyes")
 }
 
 func waitForReviewFixturePath(path string, timeout time.Duration) bool {
@@ -675,6 +681,24 @@ printf '%s\n' "$@" >>'`+filepath.Join(stateDir, "labels-removed")+`'
 tmp='`+filepath.Join(stateDir, "labels.tmp")+`'
 grep -Fxv "$4" '`+filepath.Join(stateDir, "labels")+`' >"$tmp" || true
 mv "$tmp" '`+filepath.Join(stateDir, "labels")+`'
+`)
+	writeScript(t, filepath.Join(adaptationDir, "add-reaction"), `#!/usr/bin/env sh
+set -eu
+[ "$PUMP19_FORGE_TOKEN" = test-token ]
+printf 'add-reaction:%s\n' "$4" >>'`+operations+`'
+`)
+	writeScript(t, filepath.Join(adaptationDir, "remove-reaction"), `#!/usr/bin/env sh
+set -eu
+[ "$PUMP19_FORGE_TOKEN" = test-token ]
+printf 'remove-reaction:%s\n' "$4" >>'`+operations+`'
+`)
+	writeScript(t, filepath.Join(adaptationDir, "assign-if-missing"), `#!/usr/bin/env sh
+set -eu
+[ "$PUMP19_FORGE_TOKEN" = test-token ]
+assignees='`+filepath.Join(stateDir, "assignees")+`'
+if [ -f "$assignees" ] && grep -Fxiq "$4" "$assignees"; then exit 0; fi
+printf '%s\n' "$4" >>"$assignees"
+printf 'assign-if-missing:%s\n' "$4" >>'`+operations+`'
 `)
 	writeScript(t, filepath.Join(adaptationDir, "set-status"), `#!/usr/bin/env sh
 set -eu

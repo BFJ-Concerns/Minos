@@ -269,4 +269,14 @@ printf 'LABELS=%s\n' "${PUMP19_FIXTURE_LABELS:-Converged,Ready}"
 	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf 'set-status:%s:%s\\n' \"$4\" \"$5\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "status.args")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "add-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-added")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf 'remove-label:%s\\n' \"$4\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-removed")+"'\n")
+	writeScript(t, filepath.Join(adaptationDir, "add-reaction"), "#!/usr/bin/env sh\n[ \"$PUMP19_FORGE_TOKEN\" = test-token ]\nprintf 'add-reaction:%s\\n' \"$4\" >>'"+operations+"'\n")
+	writeScript(t, filepath.Join(adaptationDir, "remove-reaction"), "#!/usr/bin/env sh\n[ \"$PUMP19_FORGE_TOKEN\" = test-token ]\nprintf 'remove-reaction:%s\\n' \"$4\" >>'"+operations+"'\n")
+	writeScript(t, filepath.Join(adaptationDir, "assign-if-missing"), `#!/usr/bin/env sh
+set -eu
+[ "$PUMP19_FORGE_TOKEN" = test-token ]
+assignees='`+filepath.Join(stateDir, "assignees")+`'
+if [ -f "$assignees" ] && grep -Fxiq "$4" "$assignees"; then exit 0; fi
+printf '%s\n' "$4" >>"$assignees"
+printf 'assign-if-missing:%s\n' "$4" >>'`+operations+`'
+`)
 }

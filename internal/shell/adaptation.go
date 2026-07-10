@@ -171,6 +171,21 @@ func (a Adaptation) RemoveLabel(ctx context.Context, owner, repo, pr, label stri
 	return err
 }
 
+func (a Adaptation) AddReaction(ctx context.Context, owner, repo, pr, reaction string) error {
+	_, err := a.Run(ctx, "add-reaction", nil, nil, owner, repo, pr, reaction)
+	return err
+}
+
+func (a Adaptation) RemoveReaction(ctx context.Context, owner, repo, pr, reaction string) error {
+	_, err := a.Run(ctx, "remove-reaction", nil, nil, owner, repo, pr, reaction)
+	return err
+}
+
+func (a Adaptation) AssignIfMissing(ctx context.Context, owner, repo, pr, login string) error {
+	_, err := a.Run(ctx, "assign-if-missing", nil, nil, owner, repo, pr, login)
+	return err
+}
+
 func (a Adaptation) SetStatus(ctx context.Context, owner, repo, sha, contextName, state, description string) error {
 	_, err := a.Run(ctx, "set-status", nil, nil, owner, repo, sha, contextName, state, description)
 	return err
