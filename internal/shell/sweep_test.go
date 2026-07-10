@@ -49,6 +49,97 @@ func TestLiveRunStateUsesDirectoryMTimeWhenLogMissing(t *testing.T) {
 	}
 }
 
+func TestSweepReleasesEyesBeforeStageLabelOnEveryLabelledClaimRecovery(t *testing.T) {
+	tests := []struct {
+		name     string
+		prepare  func(t *testing.T, runDir string)
+		wantReap bool
+	}{
+		{
+			name:    "orphaned",
+			prepare: func(t *testing.T, runDir string) {},
+		},
+		{
+			name: "retryable",
+			prepare: func(t *testing.T, runDir string) {
+				if err := os.MkdirAll(runDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeRunMeta(t, runDir, "abcdef1234567890", time.Now().Add(-2*time.Hour))
+				writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
+				if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantReap: true,
+		},
+		{
+			name: "dead",
+			prepare: func(t *testing.T, runDir string) {
+				if err := os.MkdirAll(runDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeRunMeta(t, runDir, "abcdef1234567890", time.Now().Add(-2*time.Hour))
+				writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
+			},
+			wantReap: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := ServiceConfig{}
+			cfg.Runs.Dir = filepath.Join(root, "runs")
+			cfg.Sweep.LivenessThreshold.Duration = time.Hour
+			facts := Facts{
+				Forge:   "local",
+				Owner:   "pump19",
+				Repo:    "subject",
+				PR:      "42",
+				HeadSHA: "abcdef1234567890",
+				Labels:  []string{LabelReviewing},
+			}
+			runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
+			tt.prepare(t, runDir)
+
+			adaptationDir := filepath.Join(root, "adaptation")
+			if err := os.Mkdir(adaptationDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			operations := filepath.Join(root, "operations")
+			writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+			writeScript(t, filepath.Join(adaptationDir, "remove-reaction"), "#!/usr/bin/env sh\nprintf 'remove-reaction:%s\\n' \"$4\" >>'"+operations+"'\n")
+			writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf 'remove-label:%s\\n' \"$4\" >>'"+operations+"'\n")
+			logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			err = sweepPR(t.Context(), cfg, RepoConfig{}, Adaptation{Dir: adaptationDir}, facts, logFile)
+			if closeErr := logFile.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(operations)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "remove-reaction:eyes\nremove-label:Reviewing\n"
+			if string(data) != want {
+				t.Fatalf("recovery operations = %q, want %q", data, want)
+			}
+			if tt.wantReap {
+				if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+					t.Fatalf("canonical claim remains after recovery: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestGuardsPassUsesStateDerivedActor(t *testing.T) {
 	drafts := false
 	repo := RepoConfig{Triggers: []TriggerRule{{

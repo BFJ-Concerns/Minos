@@ -7,8 +7,8 @@ bind = ":8919"
 [forges.forgejo]
 adaptation = "/opt/pump19/adaptations/forgejo"
 api-base = "REPLACE_WITH_FORGEJO_BASE_URL"
-webhook-secret-file = "/etc/pump19/secrets/forgejo-webhook"
-credential-file = "/etc/pump19/secrets/forgejo-token"
+webhook-secret-file = "/etc/pump19/webhook.secret"
+credential-file = "/etc/pump19/forgejo.token"
 signature-header = "X-Forgejo-Signature"
 
 [runs]

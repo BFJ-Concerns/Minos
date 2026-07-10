@@ -31,34 +31,16 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	label, err := InFlightLabel(kind)
+	claim, err := claimRun(ctx, adaptation, facts, kind)
 	if err != nil {
 		return err
 	}
-	liveFacts, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
-	if err != nil {
-		return err
-	}
-	statuses, err := adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, facts.HeadSHA)
-	if err != nil {
-		return err
-	}
-	if _, ok := statusForContext(statuses, contextName); ok {
-		fmt.Printf("terminal status already exists for %s at %s; yielding\n", contextName, facts.HeadSHA)
+	if claim != "claimed" {
+		fmt.Println(claim)
 		return nil
-	}
-	if liveFacts.HeadSHA != facts.HeadSHA {
-		fmt.Printf("head moved before claim: served=%s live=%s; yielding\n", facts.HeadSHA, liveFacts.HeadSHA)
-		return nil
-	}
-	if err := adaptation.AddLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
-		return err
 	}
 	defer func() {
-		newer := newerLiveRunDirExists(cfg.Runs.Dir, facts, kind, os.Getenv("PUMP19_RUN_DIR"), cfg.Sweep.LivenessThreshold.Duration)
-		if !newer {
-			_ = adaptation.RemoveLabel(context.Background(), facts.Owner, facts.Repo, facts.PR, label)
-		}
+		_ = releaseRun(context.Background(), cfg, adaptation, facts, kind)
 	}()
 	mode := os.Getenv("PUMP19_STUB_MODE")
 	if mode == "" {
@@ -91,7 +73,7 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown PUMP19_STUB_MODE %q", mode)
 	}
-	liveFacts, err = adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
+	liveFacts, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
 	if err != nil {
 		return err
 	}

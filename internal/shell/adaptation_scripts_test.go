@@ -72,6 +72,33 @@ func TestForgejoUpdateCommentTargetsStableComment(t *testing.T) {
 	}
 }
 
+func TestForgejoPresenceReactionsUseAuthenticatedIssueReaction(t *testing.T) {
+	added := runForgejoWriteScript(t, "add-reaction", "{}", "owner", "repo", "7", "eyes")
+	if !strings.Contains(added, "-X\nPOST") || !strings.Contains(added, "/issues/7/reactions") || !strings.Contains(added, `{"content":"eyes"}`) {
+		t.Fatalf("add-reaction request is incomplete:\n%s", added)
+	}
+
+	removed := runForgejoWriteScript(t, "remove-reaction", "{}", "owner", "repo", "7", "eyes")
+	if !strings.Contains(removed, "-X\nDELETE") || !strings.Contains(removed, "/issues/7/reactions") || !strings.Contains(removed, `{"content":"eyes"}`) {
+		t.Fatalf("remove-reaction request is incomplete:\n%s", removed)
+	}
+}
+
+func TestForgejoAssignIfMissingWritesOnlyWhenBotIsAbsent(t *testing.T) {
+	absent := runForgejoAssignIfMissing(t, `{"assignees":[{"login":"alice"}]}`)
+	if strings.Count(absent, "-X GET") != 1 || strings.Count(absent, "-X PATCH") != 1 {
+		t.Fatalf("absent bot should produce one read and one assignment:\n%s", absent)
+	}
+	if !strings.Contains(absent, "/pulls/7") || !strings.Contains(absent, "/issues/7") || !strings.Contains(absent, `{"assignees":["Minos"]}`) {
+		t.Fatalf("assignment request is incomplete:\n%s", absent)
+	}
+
+	present := runForgejoAssignIfMissing(t, `{"assignees":[{"login":"minos"}]}`)
+	if strings.Count(present, "-X GET") != 1 || strings.Contains(present, "-X PATCH") {
+		t.Fatalf("existing bot assignment should produce one read and no write:\n%s", present)
+	}
+}
+
 func TestForgejoLabelActorUsesLatestMatchingTimelineEvent(t *testing.T) {
 	tests := []struct {
 		fixture string
@@ -242,6 +269,55 @@ func runForgejoWriteScript(t *testing.T, name, response string, args ...string) 
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s failed: %v\n%s", name, err, out)
+	}
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func runForgejoAssignIfMissing(t *testing.T, response string) string {
+	t.Helper()
+	fakeBin := t.TempDir()
+	capture := filepath.Join(fakeBin, "capture")
+	responseFile := filepath.Join(fakeBin, "response.json")
+	if err := os.WriteFile(responseFile, []byte(response+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	curl := filepath.Join(fakeBin, "curl")
+	script := `#!/usr/bin/env sh
+set -eu
+printf '%s\n' "$*" >>"$PUMP19_TEST_CAPTURE"
+method=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -X ]; then
+    method="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+if [ "$method" = GET ]; then
+  cat "$PUMP19_TEST_RESPONSE"
+else
+  printf '{}\n'
+fi
+`
+	if err := os.WriteFile(curl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "assign-if-missing")
+	cmd := exec.Command(path, "owner", "repo", "7", "Minos")
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+":"+os.Getenv("PATH"),
+		"PUMP19_API_BASE=http://forge.invalid",
+		"PUMP19_FORGE_TOKEN=token",
+		"PUMP19_TEST_CAPTURE="+capture,
+		"PUMP19_TEST_RESPONSE="+responseFile,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("assign-if-missing failed: %v\n%s", err, out)
 	}
 	data, err := os.ReadFile(capture)
 	if err != nil {

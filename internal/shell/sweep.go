@@ -76,8 +76,8 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 			return err
 		}
 		if runDir == "" {
-			fmt.Fprintf(logw, "clear orphan %s on %s#%s\n", label, facts.RepoSlug(), facts.PR)
-			if err := adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
+			fmt.Fprintf(logw, "release orphaned presence for %s on %s#%s\n", label, facts.RepoSlug(), facts.PR)
+			if err := releaseRunPresence(ctx, adaptation, facts, label); err != nil {
 				return err
 			}
 			continue
@@ -93,7 +93,7 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 		}
 		if handledRetry {
 			if releasedRetry {
-				if err := adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
+				if err := releaseRunPresence(ctx, adaptation, facts, label); err != nil {
 					return err
 				}
 				facts.Labels = removeFactLabel(facts.Labels, label)
@@ -112,8 +112,8 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 			fmt.Fprintf(logw, "reap failed closed for %s: %v\n", runDir, err)
 			return nil
 		}
-		fmt.Fprintf(logw, "reaped %s; clear %s on %s#%s\n", runDir, label, facts.RepoSlug(), facts.PR)
-		if err := adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
+		fmt.Fprintf(logw, "reaped %s; release %s presence on %s#%s\n", runDir, label, facts.RepoSlug(), facts.PR)
+		if err := releaseRunPresence(ctx, adaptation, facts, label); err != nil {
 			return err
 		}
 	}

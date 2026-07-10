@@ -31,6 +31,9 @@ shellcheck:
 			scripts/adaptations/forgejo/commit-push \
 			scripts/adaptations/forgejo/merge \
 			scripts/adaptations/forgejo/get-pr-facts \
+			scripts/adaptations/forgejo/add-reaction \
+			scripts/adaptations/forgejo/remove-reaction \
+			scripts/adaptations/forgejo/assign-if-missing \
 			scripts/e2e/review-engine-standin \
 			scripts/e2e/fix-engine-standin \
 			scripts/e2e/finish-engine-standin \

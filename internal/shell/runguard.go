@@ -7,9 +7,12 @@ import (
 	"os"
 )
 
+const runPresenceReaction = "eyes"
+const serviceBotLogin = "Minos"
+
 // RunGuardCommand exposes the run claim's forge-visible guards to an agent
-// session. Keeping these checks here prevents real and stand-in sessions from
-// developing subtly different ideas of when a run may post or clear a label.
+// session. Keeping these checks here gives real and stand-in sessions one
+// lifecycle for posting work and releasing presence.
 func RunGuardCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run-guard", flag.ContinueOnError)
 	configRoot := fs.String("config", DefaultConfigRoot, "configuration root")
@@ -58,35 +61,47 @@ func loadRunGuard(configRoot string) (ServiceConfig, Adaptation, Facts, RunKind,
 }
 
 func beginRun(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind) error {
-	contextName, err := StatusContext(kind)
+	outcome, err := claimRun(ctx, adaptation, facts, kind)
 	if err != nil {
 		return err
+	}
+	fmt.Println(outcome)
+	return nil
+}
+
+func claimRun(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind) (string, error) {
+	contextName, err := StatusContext(kind)
+	if err != nil {
+		return "", err
 	}
 	statuses, err := adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, facts.HeadSHA)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if _, exists := statusForContext(statuses, contextName); exists {
-		fmt.Println("yield-terminal")
-		return nil
+		return "yield-terminal", nil
 	}
 	current, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if current.HeadSHA != facts.HeadSHA {
-		fmt.Println("yield-head")
-		return nil
+		return "yield-head", nil
 	}
 	label, err := InFlightLabel(kind)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := adaptation.AddLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
-		return err
+		return "", err
 	}
-	fmt.Println("claimed")
-	return nil
+	if err := adaptation.AddReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
+		return "", err
+	}
+	if err := adaptation.AssignIfMissing(ctx, facts.Owner, facts.Repo, facts.PR, serviceBotLogin); err != nil {
+		return "", err
+	}
+	return "claimed", nil
 }
 
 func currentRun(ctx context.Context, adaptation Adaptation, facts Facts) error {
@@ -111,9 +126,16 @@ func releaseRun(ctx context.Context, cfg ServiceConfig, adaptation Adaptation, f
 	if err != nil {
 		return err
 	}
-	if err := adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
+	if err := releaseRunPresence(ctx, adaptation, facts, label); err != nil {
 		return err
 	}
 	fmt.Println("released")
 	return nil
+}
+
+func releaseRunPresence(ctx context.Context, adaptation Adaptation, facts Facts, label string) error {
+	if err := adaptation.RemoveReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
+		return err
+	}
+	return adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, label)
 }
