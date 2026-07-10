@@ -5,7 +5,7 @@ thin, service-owned launch instruction. The skills live here, in two halves
 split by usage breadth:
 
 - **`foundry/` — wholly sync-owned.** General skills authored in the
-  Skill-Canon (the grown `agent-review`, the general debugging skill, …)
+  Skill-Canon (the general `review-panel`, the general debugging skill, …)
   arrive here by the Foundry's sync and are consumed as plain files. Nothing
   service-authored goes inside: every file in `foundry/` is the sync's to
   place, update, and remove. (The `.gitkeep` merely holds the empty
