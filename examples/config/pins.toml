@@ -1,0 +1,25 @@
+# Model identifiers require separate operator approval before deployment.
+# The launch wrapper fails loudly while this placeholder remains.
+[roles.lead]
+id = "lead-claude"
+engine = "claude"
+model = "REPLACE_WITH_OPERATOR_CONFIRMED_CLAUDE_MODEL"
+family = "anthropic"
+
+[roles.specialist]
+id = "spec-claude"
+engine = "claude"
+model = "REPLACE_WITH_OPERATOR_CONFIRMED_CLAUDE_MODEL"
+family = "anthropic"
+
+[[roles.verifiers]]
+id = "verify-codex"
+engine = "codex"
+model = "REPLACE_WITH_OPERATOR_CONFIRMED_CODEX_MODEL"
+family = "openai"
+
+[[roles.bar-judges]]
+id = "bar-codex"
+engine = "codex"
+model = "REPLACE_WITH_OPERATOR_CONFIRMED_CODEX_MODEL"
+family = "openai"

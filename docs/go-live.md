@@ -1,9 +1,8 @@
 # Go Live with Pump-19
 
 This runbook takes a bare systemd-based deployment box to a listening Pump-19
-receiver and periodic reconciliation sweep. It is written for the dedicated
-Pump-19 account on a disposable box: the box is the container.
-Do not add a nested container runtime.
+receiver and periodic reconciliation sweep. It runs as the deployment
+account on a disposable box: the box is the container. Do not add a nested container runtime.
 
 The commands do not activate the quarantined pre-2026-07-08 deployment. They
 install the current repository contents afresh.
@@ -16,24 +15,28 @@ Prepare these before starting:
 - root access on the deployment box;
 - `go`, `git`, `curl`, and `jq`;
 - the Forgejo base URL, repository owner, and repository name;
-- a dedicated, hard-capped Forgejo service token in a local file, restricted to
-  the opted-in repository with `write:repository` and `write:issue` scopes;
+- the dedicated `pump19` Forgejo bot token in a local file, with its effective
+  access checked and limited to the opted-in repository before activation;
 - a new high-entropy webhook secret in a different local file;
 - a short-lived, dedicated repository-administration token for registering the
   hook (do not store this token in `/etc/pump19`);
-- the real run-body executable, pinned skill, and model-backend credentials from
-  their owning unit when they are ready.
+- the synced, pinned `agent-review` skill;
+- working Claude and Codex logins
+  for the deployment user. These are the service's model
+  credentials. This repository
+  supplies the run-body executable.
 
 > [!WARNING]
-> Never use the operator's personal Forgejo or model credentials. The service
-> credentials must be dedicated and hard-capped. Do not put any credential in
-> the repository, shell history, webhook URL, or PR workspace.
+> Never use the operator's personal Forgejo credential: the forge token must
+> belong to the dedicated `pump19` bot. Constrain its effective token scopes and
+> prove that access before activation. Do not put any credential in the
+> repository, shell history, webhook URL, or PR workspace.
 
 Set the deployment values. `FORGEJO_BASE` is the instance root, without
 `/api/v1`.
 
 ```sh
-export DEPLOY_USER=pump19
+export DEPLOY_USER=bob
 export PUMP19_CHECKOUT=/path/to/Pump-19
 export FORGEJO_BASE=https://forgejo.example.invalid
 export FORGEJO_OWNER=REPLACE_WITH_OWNER
@@ -49,15 +52,14 @@ Every review, fix, and finish run is a detached transient user unit. Lingering
 keeps the user's service manager alive when nobody is logged in.
 
 ```sh
-id "$DEPLOY_USER" >/dev/null 2>&1 || \
-  sudo useradd --create-home --shell /bin/bash "$DEPLOY_USER"
+id "$DEPLOY_USER" >/dev/null 2>&1
 sudo loginctl enable-linger "$DEPLOY_USER"
 loginctl show-user "$DEPLOY_USER" --property=Linger
 ```
 
 The final command must print `Linger=yes`.
 
-## 2. Build and install the binary and adaptations
+## 2. Build and install the binary, adaptations, and review run body
 
 ```sh
 cd "$PUMP19_CHECKOUT"
@@ -69,12 +71,33 @@ sudo install -d -o root -g root -m 0755 /opt/pump19/adaptations/forgejo
 sudo install -o root -g root -m 0755 scripts/adaptations/forgejo/* \
   /opt/pump19/adaptations/forgejo/
 
+sudo install -d -o root -g root -m 0755 \
+  /opt/pump19/run-body /opt/pump19/review /opt/pump19/missions
+sudo install -o root -g root -m 0755 scripts/run-body/* \
+  /opt/pump19/run-body/
+sudo install -o root -g root -m 0755 scripts/review/* \
+  /opt/pump19/review/
+sudo install -o root -g root -m 0644 missions/review.md \
+  /opt/pump19/missions/review.md
+sudo install -o root -g root -m 0644 examples/config/pins.toml \
+  /opt/pump19/pins.toml
+
 sudo install -d -o root -g root -m 0755 /opt/pump19/docs
 sudo install -o root -g root -m 0644 docs/go-live.md /opt/pump19/docs/go-live.md
 ```
 
-The adaptation scripts call `curl`, `git`, and `jq`; keep those commands on the
-deployment account's normal system path.
+The adaptation and review scripts call `curl`, `git`, and `jq`; keep those
+commands on the deployment account's normal system path. The installed pins
+file is deliberately inactive: replace every `REPLACE_WITH_…` value only after
+the operator approves the role assignments and exact model identifiers. The
+lead launcher fails before model use while a placeholder remains.
+
+After Foundry sync populates `skills/foundry/`, install that sync-owned tree:
+
+```sh
+sudo install -d -o root -g root -m 0755 /opt/pump19/skills/foundry
+sudo cp -a skills/foundry/. /opt/pump19/skills/foundry/
+```
 
 ## 3. Install configuration and credentials
 
@@ -89,6 +112,8 @@ sudo install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 \
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/pump19/service.toml /etc/pump19/service.toml
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
+  deploy/etc/pump19/run-body.env /etc/pump19/run-body.env
+sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/pump19/repos/owner--repository.toml.example \
   /etc/pump19/repos/owner--repository.toml.example
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
@@ -102,10 +127,24 @@ Edit `/etc/pump19/service.toml` and replace
 the LAN interface only; `:8919` is appropriate when the container itself has no
 non-LAN route.
 
-Do not activate a repository yet. First install the real agent-session run body,
-pinned skill, and its dedicated model credentials. Until `run-body` is filled,
-the shipped default is `pump19 stub-run`; that default is useful for mechanical
-proof but is not the review service.
+Do not activate a repository yet. First sync the grown `agent-review` skill into
+the checkout, install it under `/opt/pump19/skills/foundry/`, complete the
+mission's `verify-on-arrival` checks, obtain operator approval for every model
+pin, and verify both subscription logins as the deployment user:
+
+```sh
+sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/claude auth status
+sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/codex login status
+```
+
+The lead launcher uses the explicit `PUMP19_CLAUDE` path from `run-body.env` and
+depends on Claude JSONL exposing a served model in a model-bearing early
+`system/init` or `assistant` event. Update the deployment CLI during go-live and
+prove that event before activation. If a deployed worker engine exposes no
+served-model field in its archived output, worker provenance honestly records
+`model-unknown`; the lead has no such degradation path. The repository template
+points at the real run body, so an incomplete deployment fails loudly instead
+of falling back to `stub-run`.
 
 ## 4. Install and validate the systemd user units
 
@@ -227,9 +266,11 @@ repository-administrator permission.
 
 ## 8. Opt the repository in
 
-Copy the inactive example, replace every placeholder, and install the real run
-body and pinned skill paths supplied by their owning unit. Review the trigger
-actors particularly carefully: they are authority, not display names.
+Copy the inactive example and replace every placeholder. This unit ships only
+review triggers; add fix and finish triggers after their dispatcher handling
+lands.
+Review trigger actors particularly carefully: they are authority, not display
+names.
 
 ```sh
 sudo -u "$DEPLOY_USER" cp \
@@ -274,5 +315,6 @@ loginctl show-user "$DEPLOY_USER" --property=Linger
 ```
 
 At this point the deployment mechanics are live. A real review is ready only
-when the placeholder run-body, pinned skill, and model credentials have also
-been installed and a full run has completed against a disposable PR.
+after the synced skill has passed its interface re-check, the operator-approved
+pins and subscription logins are verified, and a full run has completed against
+a disposable PR.

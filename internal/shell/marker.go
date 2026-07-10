@@ -17,6 +17,9 @@ func ParseMarker(line string) (map[string]string, error) {
 	values := make(map[string]string, len(fields))
 	for _, field := range fields {
 		key, value, _ := strings.Cut(field, "=")
+		if _, duplicate := values[key]; duplicate {
+			return nil, fmt.Errorf("duplicate marker key %q", key)
+		}
 		values[key] = value
 	}
 	return values, nil

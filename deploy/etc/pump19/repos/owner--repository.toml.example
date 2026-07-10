@@ -8,11 +8,8 @@ repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 build = "REPLACE_WITH_BUILD_COMMAND"
 test = "REPLACE_WITH_TEST_COMMAND"
 briefs = ".review"
-# The parallel run-body unit supplies the pinned review skill at this path.
 skill = "REPLACE_WITH_PINNED_REVIEW_SKILL_PATH"
-# Empty deliberately: run-wrap uses `pump19 stub-run` until the parallel unit
-# supplies and installs the real agent-session executable.
-run-body = ""
+run-body = "/opt/pump19/run-body/run-body"
 
 [policy]
 auto-merge = false
@@ -22,13 +19,3 @@ run = "review"
 on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
 authors = ["*"]
 drafts = false
-
-[[trigger]]
-run = "fix"
-on = ["review-rejected"]
-actors = ["REPLACE_WITH_PUMP19_FORGE_ACCOUNT"]
-
-[[trigger]]
-run = "finish"
-on = ["label-added:Ready"]
-actors = ["REPLACE_WITH_AUTHORISED_FINISH_ACTOR"]

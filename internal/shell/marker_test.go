@@ -27,3 +27,9 @@ func TestMarkerRejectsSpacesInValues(t *testing.T) {
 		t.Fatal("marker with spaced value was accepted")
 	}
 }
+
+func TestMarkerRejectsDuplicateKeys(t *testing.T) {
+	if _, err := ParseMarker("Pump-19: run=review run=fix"); err == nil {
+		t.Fatal("marker with duplicate keys was accepted")
+	}
+}

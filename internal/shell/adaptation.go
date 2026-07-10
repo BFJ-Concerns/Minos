@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+var adaptationOperation = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 type Adaptation struct {
 	Dir        string
@@ -63,6 +66,34 @@ func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extra
 		return nil, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+// AdaptCommand gives the accountable session a credentialled route to the
+// configured, service-owned adaptation scripts. The operation is a basename,
+// never a caller-selected path into the host filesystem.
+func AdaptCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
+	if len(args) == 0 || !adaptationOperation.MatchString(args[0]) {
+		return fmt.Errorf("usage: pump19 adapt OPERATION [ARG...]")
+	}
+	cfg, err := LoadServiceConfig(os.Getenv("PUMP19_CONFIG"))
+	if err != nil {
+		return err
+	}
+	forgeName := os.Getenv("PUMP19_FORGE")
+	forge, ok := cfg.Forges[forgeName]
+	if !ok {
+		return fmt.Errorf("unknown forge %q", forgeName)
+	}
+	adaptation, err := NewAdaptation(forge)
+	if err != nil {
+		return err
+	}
+	out, err := adaptation.Run(ctx, args[0], stdin, nil, args[1:]...)
+	if err != nil {
+		return err
+	}
+	_, err = stdout.Write(out)
+	return err
 }
 
 func (a Adaptation) NormaliseEvent(ctx context.Context, body []byte, headers map[string]string) (Facts, error) {

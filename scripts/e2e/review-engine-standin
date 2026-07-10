@@ -1,0 +1,134 @@
+#!/usr/bin/env sh
+set -eu
+
+: "${PUMP19_BIN:=pump19}"
+: "${PUMP19_REVIEW_SCRIPTS:?PUMP19_REVIEW_SCRIPTS is required}"
+: "${PUMP19_RUN_DIR:?PUMP19_RUN_DIR is required}"
+: "${PUMP19_CONFIG:?PUMP19_CONFIG is required}"
+: "${PUMP19_PINS:?PUMP19_PINS is required}"
+: "${PUMP19_STANDIN_RESOLVED_MODELS:?PUMP19_STANDIN_RESOLVED_MODELS is required}"
+
+standin_model=${PUMP19_STANDIN_LEAD_MODEL:-claude-opus-pinned}
+printf '{"type":"system","subtype":"init","model":"%s"}\n' "$standin_model"
+cat >"$PUMP19_RUN_DIR/mission.received.md"
+claim=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" begin)
+case "$claim" in
+  claimed) ;;
+  yield-terminal|yield-head) printf '{"result":"%s"}\n' "$claim"; exit 0 ;;
+  *) echo "unexpected run claim result: $claim" >&2; exit 2 ;;
+esac
+release() {
+  "$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" release >/dev/null
+}
+trap release EXIT HUP INT TERM
+
+require_current() {
+  current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
+  case "$current" in
+    current) ;;
+    stale) exit 0 ;;
+    *) echo "unexpected current guard result: $current" >&2; exit 2 ;;
+  esac
+}
+
+"$PUMP19_REVIEW_SCRIPTS/extract-governing" >/dev/null
+while [ ! -s "$PUMP19_RUN_DIR/resolved-lead.json" ]; do
+  sleep 1
+done
+"$PUMP19_BIN" provenance combine \
+  --lead "$PUMP19_RUN_DIR/resolved-lead.json" \
+  --workers "$PUMP19_STANDIN_RESOLVED_MODELS" \
+  --output "$PUMP19_RUN_DIR/resolved-models.json"
+"$PUMP19_BIN" provenance assemble \
+  --pins "$PUMP19_PINS" \
+  --resolved "$PUMP19_RUN_DIR/resolved-models.json" \
+  >"$PUMP19_RUN_DIR/provenance.json"
+
+verdict=${PUMP19_STANDIN_VERDICT:-converged}
+case "$verdict" in
+  converged) coverage=full; bar=passed; review_state=APPROVE; outcome_label=Converged ;;
+  standing-findings) coverage=full; bar=passed; review_state=REQUEST_CHANGES; outcome_label='Standing Findings' ;;
+  partial-coverage) coverage=partial; bar=${PUMP19_STANDIN_BAR:-passed}; review_state=COMMENT; outcome_label='Partial Coverage' ;;
+  *) echo "unsupported stand-in verdict: $verdict" >&2; exit 2 ;;
+esac
+
+existing="$PUMP19_RUN_DIR/existing-comments.json"
+"$PUMP19_BIN" adapt list-review-comments "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$existing"
+printf '[]\n' >"$PUMP19_RUN_DIR/new-comments.json"
+
+if [ -n "${PUMP19_STANDIN_FINDING_FILE:-}" ]; then
+  path=$(jq -er '.path' "$PUMP19_STANDIN_FINDING_FILE")
+  line=$(jq -er '.line' "$PUMP19_STANDIN_FINDING_FILE")
+  priority=$(jq -er '.priority' "$PUMP19_STANDIN_FINDING_FILE")
+  finding=$(jq -r '.finding // ""' "$PUMP19_STANDIN_FINDING_FILE")
+  "$PUMP19_REVIEW_SCRIPTS/changed-line-gate" "$PUMP19_DIFF" "$path" "$line" >/dev/null
+  anchor=$("$PUMP19_REVIEW_SCRIPTS/anchor-resolve" "$PUMP19_DIFF" "$path" "$line")
+  jq -nc \
+    --slurpfile existing "$existing" \
+    --slurpfile candidate "$PUMP19_STANDIN_FINDING_FILE" \
+    '{existing:$existing[0],candidates:$candidate}' |
+    "$PUMP19_REVIEW_SCRIPTS/dedupe" >"$PUMP19_RUN_DIR/dedupe.json"
+
+  update_count=$(jq '.updates | length' "$PUMP19_RUN_DIR/dedupe.json")
+  if [ "$update_count" -eq 1 ]; then
+    comment_id=$(jq -er '.updates[0].comment_id' "$PUMP19_RUN_DIR/dedupe.json")
+    body=$(jq -er '.updates[0].body' "$PUMP19_RUN_DIR/dedupe.json")
+    marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review finding="$finding" head="$PUMP19_HEAD_SHA" priority="$priority")
+    printf '%s\n\n%s\n' "$body" "$marker" >"$PUMP19_RUN_DIR/finding.md"
+    require_current
+    "$PUMP19_BIN" adapt update-comment "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$comment_id" "$PUMP19_RUN_DIR/finding.md" >/dev/null
+  else
+    if [ -n "$finding" ]; then
+      echo "new stand-in finding unexpectedly carried an existing handle" >&2
+      exit 2
+    fi
+    finding=${PUMP19_STANDIN_NEW_HANDLE:-}
+    if [ -z "$finding" ]; then
+      handles=$(jq -r '.[].body | split("\n")[-1] | select(startswith("Pump-19:")) | split(" ")[] | select(startswith("finding=")) | split("=")[1]' "$existing")
+      # Shell field splitting is intentional: handles cannot contain spaces.
+      # shellcheck disable=SC2086
+      finding=$("$PUMP19_REVIEW_SCRIPTS/mint-handle" $handles)
+    fi
+    body=$(jq -er '.body' "$PUMP19_STANDIN_FINDING_FILE")
+    marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review finding="$finding" head="$PUMP19_HEAD_SHA" priority="$priority")
+    printf '%s\n\n%s\n' "$body" "$marker" >"$PUMP19_RUN_DIR/finding.md"
+    jq -nc \
+      --argjson anchor "$anchor" \
+      --arg body "$(cat "$PUMP19_RUN_DIR/finding.md")" \
+      '[$anchor + {body:$body}]' >"$PUMP19_RUN_DIR/new-comments.json"
+  fi
+fi
+
+marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review head="$PUMP19_HEAD_SHA" verdict="$verdict" coverage="$coverage" bar="$bar")
+{
+  printf 'Pump-19 stand-in seam review. Coverage: %s.\n\n' "$coverage"
+  printf 'Model provenance:\n\n```json\n'
+  cat "$PUMP19_RUN_DIR/provenance.json"
+  printf '```\n\n%s\n' "$marker"
+} >"$PUMP19_RUN_DIR/review.md"
+
+require_current
+
+"$PUMP19_BIN" adapt post-review \
+  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_HEAD_SHA" \
+  "$review_state" "$PUMP19_RUN_DIR/review.md" "$PUMP19_RUN_DIR/new-comments.json" \
+  >"$PUMP19_RUN_DIR/review-response.json"
+
+facts=$("$PUMP19_BIN" adapt get-pr-facts "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR")
+labels=$(printf '%s\n' "$facts" | sed -n 's/^LABELS=//p')
+for label in Converged 'Standing Findings' 'Partial Coverage'; do
+  case ",$labels," in
+    *",$label,"*)
+      require_current
+      "$PUMP19_BIN" adapt remove-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$label" >/dev/null
+      ;;
+  esac
+done
+require_current
+"$PUMP19_BIN" adapt add-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$outcome_label" >/dev/null
+require_current
+"$PUMP19_BIN" adapt set-status \
+  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
+  pump19/review success "Pump-19 review completed: $verdict" >/dev/null
+printf '{"type":"assistant","message":{"model":"%s"}}\n' "$standin_model"
+printf '{"type":"result","subtype":"success","modelUsage":{"%s":{}}}\n' "$standin_model"
