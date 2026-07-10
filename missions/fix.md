@@ -8,8 +8,10 @@ change. This mission supplies only Pump-19 service facts and publication
 mechanics.
 
 A fix run is a separate session from the review whose findings it fixes — a
-fact of the spawn, and the loop's independence guarantee. Do not re-judge a
-posted finding; a review already verified it.
+fact of the spawn, and the loop's independence guarantee. Treat each posted
+finding as a verified repair input: an independent review session has already
+judged and verified it, so this separate fix run focuses on answering the
+finding rather than repeating that review judgement.
 
 ## Run facts
 
@@ -90,9 +92,9 @@ never a push from inside the workspace:
   `fruitless` (nothing to commit), or `unwritable` (the remote refused the push
   — a protected head in the same repository, the second route to the unwritable
   outcome besides the fork check above). Read that token to set your outcome. A
-  **non-zero** exit is an infrastructure failure and so a run failure. (The token
-  rides stdout, not the exit code, because `pump19 adapt` collapses a non-zero
-  adaptation to a bare failure and discards its output.)
+  **non-zero** exit is an infrastructure failure and so a run failure. On that
+  non-zero path, `pump19 adapt` exposes a generic command failure rather than the
+  adaptation's stdout, so classify it from the exit status, not an outcome token.
 
 ## Model provenance
 
@@ -106,9 +108,10 @@ whole provenance.
 
 ## Output contract
 
-A fix run posts no review. It records exactly one outcome as machine state: a
-single PR comment carrying the summary and a trailing marker, a terminal
-`pump19/fix` status, and the release of its `Fixing` label. The marker is:
+A fix run publishes exactly one outcome as machine state: a single PR comment
+carrying the summary and a trailing marker, a terminal `pump19/fix` status, and
+the release of its `Fixing` label. It does not publish a review, because review
+judgement belongs to the independent review runs. The marker is:
 
 `Pump-19: head=FULL_SHA outcome=landed|fruitless|unwritable run=fix`
 
@@ -116,7 +119,7 @@ single PR comment carrying the summary and a trailing marker, a terminal
   run `commit-push`, then record the outcome: the push has moved the head, so
   the summary comment and the `pump19/fix` status are bound to
   `$PUMP19_HEAD_SHA` and are written without a further `current` check (the fix
-  did complete for that head). The pushed PR update re-fires review on its own;
+  did complete for that head). The pushed PR update re-triggers review on its own;
   you neither call nor await it.
 - **fruitless** — the findings were worked and no genuine change answers them.
   Change nothing on the branch. The standing findings remain the PR's verdict
@@ -137,8 +140,10 @@ this mission classifies its result as a successful yield. (`commit-push` reports
 its handled outcomes — including fruitless and unwritable — as a stdout token at
 exit zero, so those are not command failures; only a genuine infrastructure
 failure exits non-zero.) Exit non-zero so the wrapper writes `pump19/fix=error`
-when no terminal status exists. Do not post operational diagnostics as PR
-comments. A release failure after a terminal status is written is operational
+when no terminal status exists. Operational diagnostics belong in the run log
+under `$PUMP19_RUN_DIR`, not in PR comments: the PR carries the outcome for
+people, the run directory carries the machinery's evidence. A release failure
+after a terminal status is written is operational
 clean-up: log it and leave the label for the sweep; it does not rewrite the
 completed fix as an error.
 

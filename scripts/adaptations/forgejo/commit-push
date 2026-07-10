@@ -23,7 +23,7 @@ set -eu
 #
 # The push is fast-forward only: a fix advances the branch, never rewrites it.
 #
-# The outcome rides stdout as a first-word token, and a handled outcome exits 0:
+# The outcome is carried on stdout as a first-word token, and a handled outcome exits 0:
 #   landed <sha>   committed and pushed
 #   fruitless      nothing to commit (empty tree)
 #   unwritable     the remote refused the push (a protected branch)

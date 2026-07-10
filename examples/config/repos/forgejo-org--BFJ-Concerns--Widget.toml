@@ -18,7 +18,7 @@ on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
 authors = ["*"]
 drafts = false
 
-# A rejected review fires a fix run; the landed fix re-fires review as an
+# A rejected review triggers a fix run; the landed fix re-triggers review as an
 # ordinary PR update. A fruitless or unwritable-head fix stops the loop at the
 # standing findings — no re-review on an unchanged head.
 [[trigger]]
@@ -26,7 +26,7 @@ run = "fix"
 on = ["review-rejected"]
 authors = ["*"]
 
-# Ready fires finish (permissive); the finish run's own gate protects the tree.
+# Ready triggers finish (permissive); the finish run's own gate protects the tree.
 # auto-merge is off, so only these actors' Ready is honoured — a human merge
 # gate. Set real forge logins with merge authority before relying on it; the
 # placeholder authorises nobody, so finish stays inert until then.

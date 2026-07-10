@@ -3,7 +3,7 @@ set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
 
-# Complete the merge. Firing a finish run is permissive; merging is gated — the
+# Complete the merge. Triggering a finish run is permissive; merging is gated — the
 # finish session decides clean-or-flagged, current, and build/test before it
 # calls this. The forge applies the final gate of its own (required checks,
 # branch protection, up-to-date): a refusal here surfaces as a non-zero exit the

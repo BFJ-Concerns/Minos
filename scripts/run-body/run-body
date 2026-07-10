@@ -52,7 +52,7 @@ case "$PUMP19_RUN_KIND" in
     ;;
   fix)
     # The fix run's procedure is the one service-authored skill. It is fixed by
-    # the deployment, not selectable per repository, so it rides run-body.env —
+    # the deployment, not selectable per repository, so it is read from run-body.env —
     # unlike the review skill, which a repository points at through its config.
     : "${PUMP19_FIX_SKILL:?PUMP19_FIX_SKILL is required for fix runs}"
     PUMP19_SKILL="$PUMP19_FIX_SKILL"

@@ -648,11 +648,11 @@ git -C "$PUMP19_WORKSPACE" diff origin/main...HEAD >"$PUMP19_DIFF"
 printf 'get-pr-facts:%s\n' "$PUMP19_HEAD_SHA" >>'`+operations+`'
 if [ "${PUMP19_FIXTURE_FLAKY_AFTER_STATUS:-}" = 1 ] &&
    grep -Fxq "set-status:$PUMP19_HEAD_SHA:pump19/review:success" '`+operations+`' &&
-   ! grep -Fxq "$PUMP19_HEAD_SHA" '`+filepath.Join(stateDir, "flaky-after-status-injected")+`' 2>/dev/null; then
-  # Inject on the first facts read after success. This exercises the mission's
+   ! grep -Fxq "$PUMP19_HEAD_SHA" '`+filepath.Join(stateDir, "flaky-label-added-after-status")+`' 2>/dev/null; then
+  # Add the label on the first facts read after success. This exercises the mission's
   # explicit refresh rather than merely starting the run with a flaky label.
   printf 'Flaky Tests\n' >>'`+filepath.Join(stateDir, "labels")+`'
-  printf '%s\n' "$PUMP19_HEAD_SHA" >>'`+filepath.Join(stateDir, "flaky-after-status-injected")+`'
+  printf '%s\n' "$PUMP19_HEAD_SHA" >>'`+filepath.Join(stateDir, "flaky-label-added-after-status")+`'
 fi
 head=$(cat '`+filepath.Join(stateDir, "head")+`')
 labels=$(paste -sd, '`+filepath.Join(stateDir, "labels")+`')

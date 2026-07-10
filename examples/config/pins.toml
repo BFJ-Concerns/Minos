@@ -4,8 +4,8 @@
 # governs the LEAD role only — the accountable session's own model, enforced at
 # runtime by the launch wrapper's early-stream interlock (a served model that
 # does not match the lead pin fails the run loudly). That interlock is the pin
-# check that matters; it catches the floating-alias burn the pins exist to
-# prevent.
+# check that matters; it detects a floating alias serving a model other than the
+# pinned one — the silent substitution the pins exist to prevent.
 #
 # The specialist, verifier, and bar-judge entries are the intended worker
 # roster, kept here for reference and to satisfy the launcher's current
