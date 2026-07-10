@@ -86,15 +86,15 @@ func TestForgejoPresenceReactionsUseAuthenticatedIssueReaction(t *testing.T) {
 
 func TestForgejoAssignIfMissingWritesOnlyWhenBotIsAbsent(t *testing.T) {
 	absent := runForgejoAssignIfMissing(t, `{"assignees":[{"login":"alice"}]}`)
-	if strings.Count(absent, "-X GET") != 1 || strings.Count(absent, "-X POST") != 1 {
+	if strings.Count(absent, "-X GET") != 1 || strings.Count(absent, "-X PATCH") != 1 {
 		t.Fatalf("absent bot should produce one read and one assignment:\n%s", absent)
 	}
-	if !strings.Contains(absent, "/pulls/7") || !strings.Contains(absent, "/issues/7/assignees") || !strings.Contains(absent, `{"assignees":["Minos"]}`) {
+	if !strings.Contains(absent, "/pulls/7") || !strings.Contains(absent, "/issues/7") || !strings.Contains(absent, `{"assignees":["Minos"]}`) {
 		t.Fatalf("assignment request is incomplete:\n%s", absent)
 	}
 
 	present := runForgejoAssignIfMissing(t, `{"assignees":[{"login":"minos"}]}`)
-	if strings.Count(present, "-X GET") != 1 || strings.Contains(present, "-X POST") {
+	if strings.Count(present, "-X GET") != 1 || strings.Contains(present, "-X PATCH") {
 		t.Fatalf("existing bot assignment should produce one read and no write:\n%s", present)
 	}
 }

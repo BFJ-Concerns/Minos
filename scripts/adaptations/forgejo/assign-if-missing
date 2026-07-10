@@ -13,6 +13,6 @@ if printf '%s' "$pull_request" | jq -e --arg login "$login" \
   exit 0
 fi
 
-api POST "/api/v1/repos/${owner}/${repo}/issues/${pr}/assignees" \
+api PATCH "/api/v1/repos/${owner}/${repo}/issues/${pr}" \
   -H "Content-Type: application/json" \
   --data "$(jq -nc --arg login "$login" '{assignees: [$login]}')" >/dev/null
