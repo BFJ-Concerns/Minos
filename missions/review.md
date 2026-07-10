@@ -5,6 +5,21 @@ Own one review run from claim to final forge state. Read the general skill at
 standards, verification-before-posting, and the review-bar check. This mission
 supplies only Pump-19 service facts and publication mechanics.
 
+**Where the skill and this mission meet (composition contract).** The skill is
+a general skill; two of its surfaces are bridged here and must be followed as
+the mission says, not as the skill says:
+
+- **PR context comes from this mission, not from discovery.** You receive every
+  fact about the pull request from the run environment below. Do **not** run the
+  skill's own pull-request discovery (its `gh pr view` / `gh`-based lookup
+  sections): the session has no such role and must not reach for the forge that
+  way. The mission's run facts and the prepared workspace are the whole input.
+- **Publication rides this mission's mechanical path only.** Post findings and
+  the review exclusively through the `pump19 adapt` commands below. Do **not**
+  use the skill's own comment-posting machinery. The skill's mechanical helpers
+  that operate on the diff (planning, quote-checking) are yours to drive; only
+  its forge-writing and forge-reading surfaces are replaced by this mission's.
+
 ## Run facts
 
 - `PUMP19_FORGE`, `PUMP19_OWNER`, `PUMP19_REPO_NAME`, and `PUMP19_PR` identify
@@ -127,44 +142,41 @@ records that terminal publication did not complete.
 
 ## Model provenance
 
-Every known served model must match its explicit pin in `$PUMP19_PINS`. The
-capture wrapper validates every model-bearing Claude `system/init` or
-`assistant` event and writes the first validated engine record to
-`$PUMP19_RUN_DIR/resolved-lead.json`; the full audit stream is
-`$PUMP19_RUN_DIR/sessions/lead.jsonl`. Before any forge mutation, require that
-lead file to exist and contain the lead pin ID. Its absence is a run failure;
-`model-unknown` is not permitted for the lead.
+The service pins file governs the **lead** — the accountable session's own
+model. The capture wrapper validates every model-bearing Claude `system/init`
+or `assistant` event against the lead pin in `$PUMP19_PINS` and writes the first
+validated engine record to `$PUMP19_RUN_DIR/resolved-lead.json`; the full audit
+stream is `$PUMP19_RUN_DIR/sessions/lead.jsonl`. Before any forge mutation,
+require that lead file to exist and contain the lead pin ID. Its absence is a
+run failure; the served model differing from the lead pin is a loud run failure
+(post no verdict, exit non-zero so the wrapper records `pump19/review=error`);
+`model-unknown` is not permitted for the lead. This early-stream interlock is
+the pin check that matters — it catches the floating-alias burn the pins exist
+to prevent.
 
-The synced Ensemble workflows must extract their engine-reported worker models
-from their archive into `$PUMP19_RUN_DIR/resolved-workers.json`, shaped as
-`[{"id":"PIN_ROLE_ID","resolved_model":"ENGINE_REPORTED_MODEL"}]`. The exact
-archive fields and pin-ID mapping are a verify-on-arrival gate: do not activate
-this mission until the synced skill supplies and passes that contract. There
-must be one record for each specialist, verifier, and bar-judge pin and no lead
-record. Use `model-unknown` only for a worker engine whose archive explicitly
-does not expose the served model; never substitute the requested model.
+The Ensemble workflows' worker engines and models are the **Foundry's own**
+experiment-pinned choices; the service pins file does not govern them, and there
+is no per-worker pin check or resolved-model archive gate. Worker provenance is
+best-effort: where a workflow's engine surfaces the served worker model in the
+session log, record it as informational material — no pin mapping, no
+fail-closed gate. The pull request is the source of truth for what served
+(a landed fix carries its model in a commit trailer). In the posted review,
+render the lead provenance row from `resolved-lead.json` (role, ID, requested
+engine and model, resolved model, family), and any best-effort worker models as
+informational notes.
 
-Combine the two arrays atomically, then assemble provenance:
+## Skill composition and provenance contract (re-checked 2026-07-10)
 
-`pump19 provenance combine --lead "$PUMP19_RUN_DIR/resolved-lead.json" --workers "$PUMP19_RUN_DIR/resolved-workers.json" --output "$PUMP19_RUN_DIR/resolved-models.json"`
+The synced `agent-review` skill is **final as delivered**; the composition
+contract bends service-side, settled by operator ruling (`maestro/gaps.md`,
+2026-07-10 composition-contract entry). The following are settled, not open:
 
-`pump19 provenance assemble --pins "$PUMP19_PINS" --resolved "$PUMP19_RUN_DIR/resolved-models.json" >"$PUMP19_RUN_DIR/provenance.json"`
+<!-- settled: agent-review is a SKILL.md read by path at $PUMP19_SKILL. -->
+<!-- settled: PR context comes from this mission; the skill's gh-based discovery must not run (see the composition contract at the top). -->
+<!-- settled: publication rides this mission's `pump19 adapt` path; the skill's own comment-posting machinery is not used. -->
+<!-- settled: the skill's own mechanical scripts are the agent's to drive; they do not fail the contract. -->
+<!-- settled: the service pins file governs the lead role only; the workflows carry their own worker engine/model pins. -->
+<!-- settled: worker provenance is best-effort session-log material — no resolved-workers.json, no pin mapping, no activation gate. -->
+<!-- settled: the lead early-stream pin interlock stands unchanged. -->
 
-A known served model differing from its pin is a loud run failure: post no
-verdict and exit non-zero so the wrapper records `pump19/review=error`. A
-`model-unknown` record is degraded provenance, not a pin match. In the posted
-review, render one row per `provenance.json` record with role, ID, requested
-engine and model, resolved model, family and family source, split, and degraded
-state.
-
-## Skill-sync re-check
-
-<!-- verify-on-arrival: agent-review is a SKILL.md read by path. -->
-<!-- verify-on-arrival: bundled workflows are invoked by the lead via Ensemble. -->
-<!-- verify-on-arrival: pins roles and fields match the synced workflow contract. -->
-<!-- verify-on-arrival: run facts are accepted from the PUMP19 environment. -->
-<!-- verify-on-arrival: mechanical script names and interfaces match. -->
-<!-- verify-on-arrival: evidence discipline is folded into the reviewer method. -->
-<!-- verify-on-arrival: the skill defers Pump-19 output shaping to this mission. -->
-<!-- verify-on-arrival: Ensemble archives expose served worker model ids. -->
-<!-- verify-on-arrival: failed and degraded bar-check policy maps to service state. -->
+<!-- open, non-blocking: the skill's gh-based PR-discovery sections are wrong-surface; the operator removes them Foundry-side. The bridging text above prevents them running in the interim, so this does not block activation. -->

@@ -94,13 +94,14 @@ sudo install -o root -g root -m 0644 docs/go-live.md /opt/pump19/docs/go-live.md
 
 The adaptation and review scripts call `curl`, `git`, and `jq`; keep those
 commands on the deployment account's normal system path. The installed pins
-file carries the operator-approved role assignments and model identifiers
-(confirmed 2026-07-10: a Claude-class lead and specialist, GPT-class
-verification and bar-judging). Re-confirm at go-live that they still name
-current model generations before activation. The placeholder-rejection
-machinery remains for any role a future deployment leaves unconfigured: the
-lead launcher fails before model use while a `REPLACE_WITH_…` placeholder
-remains anywhere in the role set.
+file governs the **lead** role — the accountable session's own model,
+operator-approved 2026-07-10 (`claude-opus-4-8`) and enforced at runtime by the
+launch wrapper's early-stream interlock. Re-confirm at go-live that it still
+names a current model generation. The worker roster entries (specialist,
+verifier, bar-judge) are reference only: the Foundry review workflows carry
+their own worker engine/model pins (see the pins file header). The
+placeholder-rejection machinery remains: the launcher fails before model use
+while a `REPLACE_WITH_…` placeholder remains in the role set.
 
 After Foundry sync populates `skills/foundry/`, install that sync-owned tree:
 
