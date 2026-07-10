@@ -34,3 +34,11 @@ authors = ["*"]
 run = "finish"
 on = ["label-added:Ready"]
 actors = ["REPLACE_WITH_AUTHORISED_FINISH_LOGINS"]
+
+# CI and the Pump-19 service may apply Flaky Tests. The sweep applies this same
+# actor guard to the label already standing on Widget PR #18, so activation does
+# not depend on observing a fresh webhook.
+[[trigger]]
+run = "flaky"
+on = ["label-added:Flaky Tests"]
+actors = ["bob", "pump19"]

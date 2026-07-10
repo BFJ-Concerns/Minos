@@ -29,7 +29,8 @@ script_dir=$(unset CDPATH; cd "$(dirname "$0")" && pwd)
 
 # Every run kind launches the same way: one accountable Claude session with its
 # mission on stdin, captured for model provenance and the loud pin check. Only
-# the mission file — and, for fix, the procedure skill — differ by kind.
+# the mission file — and, for fix and flaky repair, the procedure skill —
+# differ by kind.
 launch_session() {
   mission="${script_dir%/run-body}/missions/$1"
   if [ ! -r "$mission" ]; then
@@ -62,6 +63,14 @@ case "$PUMP19_RUN_KIND" in
     # Finish composes over the session's general skills; it has no bespoke skill
     # and reads no PUMP19_SKILL.
     launch_session finish.md
+    ;;
+  flaky)
+    # Flaky repair composes over the Foundry's synced general debugging skill.
+    # The service-owned mission supplies every flaky-specific instruction.
+    : "${PUMP19_FLAKY_SKILL:?PUMP19_FLAKY_SKILL is required for flaky runs}"
+    PUMP19_SKILL="$PUMP19_FLAKY_SKILL"
+    export PUMP19_SKILL
+    launch_session flaky.md
     ;;
   *)
     echo "unknown run kind '$PUMP19_RUN_KIND'" >&2

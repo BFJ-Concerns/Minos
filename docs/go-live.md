@@ -20,7 +20,7 @@ Prepare these before starting:
 - a new high-entropy webhook secret in a different local file;
 - a short-lived, dedicated repository-administration token for registering the
   hook (do not store this token in `/etc/pump19`);
-- the synced, pinned `agent-review` skill;
+- the synced, pinned `agent-review` and `root-cause` skills;
 - working Claude and Codex logins
   for the deployment user. These are the service's model
   credentials. This repository
@@ -48,8 +48,9 @@ export FORGE_TOKEN_SOURCE=/secure/path/to/dedicated-forge-token
 
 ## 1. Create the deployment account and enable lingering
 
-Every review, fix, and finish run is a detached transient user unit. Lingering
-keeps the user's service manager alive when nobody is logged in.
+Every review, fix, finish, and flaky-test repair run is a detached transient
+user unit. Lingering keeps the user's service manager alive when nobody is
+logged in.
 
 ```sh
 id "$DEPLOY_USER" >/dev/null 2>&1
@@ -78,7 +79,7 @@ sudo install -o root -g root -m 0755 scripts/run-body/* \
 sudo install -o root -g root -m 0755 scripts/review/* \
   /opt/pump19/review/
 sudo install -o root -g root -m 0644 missions/review.md missions/fix.md \
-  missions/finish.md /opt/pump19/missions/
+  missions/finish.md missions/flaky.md /opt/pump19/missions/
 sudo install -o root -g root -m 0644 examples/config/pins.toml \
   /opt/pump19/pins.toml
 
@@ -138,10 +139,11 @@ Edit `/etc/pump19/service.toml` and replace
 the LAN interface only; `:8919` is appropriate when the container itself has no
 non-LAN route.
 
-Do not activate a repository yet. First sync the grown `agent-review` skill into
-the checkout, install it under `/opt/pump19/skills/foundry/`, complete the
-mission's `verify-on-arrival` checks, obtain operator approval for every model
-pin, and verify both subscription logins as the deployment user:
+Do not activate a repository yet. First sync the grown `agent-review` and
+general `root-cause` skills into the checkout, install them under
+`/opt/pump19/skills/foundry/`, complete the missions' verify-on-arrival checks,
+obtain operator approval for every model pin, and verify both subscription
+logins as the deployment user:
 
 ```sh
 sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/claude auth status
@@ -277,13 +279,14 @@ repository-administrator permission.
 
 ## 8. Opt the repository in
 
-Copy the inactive example and replace every placeholder. The template now
-ships review, fix, and finish triggers: a rejected review fires a fix, and the
-`Ready` label fires a finish. Review the `finish` trigger's `actors` most
-carefully — they are authority, not display names: with auto-merge off, only
-those actors' `Ready` starts a merge, and the placeholder authorises nobody
-until you set real forge logins. Leave the fix and finish triggers out only if
-you want advisory reviews with no fix or merge automation.
+Copy the inactive example and replace every placeholder. The template now ships
+review, fix, finish, and flaky-test repair triggers: a rejected review fires a
+fix, `Ready` fires a finish, and `Flaky Tests` fires a repair. Review both label
+triggers' `actors` carefully — they are authority, not display names. With
+auto-merge off, only the finish actors' `Ready` starts a merge; only the flaky
+actors' label application starts repair. The placeholders authorise nobody
+until you set real forge logins. Leaving out the flaky trigger keeps the label's
+review pause but makes repair inert.
 
 ```sh
 sudo -u "$DEPLOY_USER" cp \

@@ -122,6 +122,11 @@ func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {
 }
 
 func recordRunWrapFailureStatus(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind, cause error) error {
+	if kind == RunFlaky {
+		// Flaky-run failures are operator evidence, not PR outcomes. run.log
+		// already carries the cause and the standing label keeps the pause honest.
+		return nil
+	}
 	contextName, err := StatusContext(kind)
 	if err != nil {
 		return err

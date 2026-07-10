@@ -20,9 +20,8 @@ The rebuilt shell is deliberately small:
   log and metadata creation, workspace preparation, body execution, and
   workspace cleanup.
 - `scripts/run-body/run-body` is the deployed agent-session launcher. It serves
-  review runs and fails loudly for the recognised but not-yet-implemented fix
-  and finish kinds. An empty `PUMP19_RUN_BODY` still selects `pump19 stub-run`
-  for mechanical shell tests.
+  review, fix, finish, and flaky-test repair runs. An empty `PUMP19_RUN_BODY`
+  still selects `pump19 stub-run` for mechanical shell tests.
 - `pump19 run-guard` exposes the current-head, terminal-status, and superseding-
   run checks used by accountable sessions.
 - `pump19 adapt` invokes a configured, service-owned forge adaptation with the
@@ -42,14 +41,17 @@ future forge swap supplies a different script directory and configuration.
 
 ## Vocabulary
 
-In-flight labels are `Reviewing`, `Fixing`, and `Finishing`. Verdict/control
-labels are `Converged`, `Standing Findings`, `Partial Coverage`, and `Ready`.
+In-flight labels are `Reviewing`, `Fixing`, `Finishing`, and
+`Repairing Flaky Tests`. Verdict/control labels are `Converged`,
+`Standing Findings`, `Partial Coverage`, `Ready`, and the standing safety
+condition `Flaky Tests`.
 
 Commit status contexts are:
 
 - `pump19/review`
 - `pump19/fix`
 - `pump19/finish`
+- `pump19/flaky` (successful landed repairs only; failures stay in `run.log`)
 
 Only `success`, `failure`, and `error` are used. Forgejo's `warning` state is
 intentionally avoided so the vocabulary survives a GitHub adaptation.
@@ -68,7 +70,7 @@ Every spawned run receives:
 
 ```text
 PUMP19_RUN_DIR        run directory containing run.log, meta.env, diff.patch
-PUMP19_RUN_KIND       review | fix | finish
+PUMP19_RUN_KIND       review | fix | finish | flaky
 PUMP19_OCCASION       triggering occasion, or reconcile
 PUMP19_FORGE          configured forge name
 PUMP19_REPO           owner/name
@@ -108,12 +110,15 @@ failures, not agent verdicts. `run-wrap` records `retry.env` in the claim
 directory and writes no commit status. The sweep may release the canonical
 claim once by renaming it to `<claim>.retry-1`; that preserved directory is the
 bounded retry evidence, while the freed canonical path allows one reconcile
-retry. A second retryable failure writes an `error` status and preserves its
-claim as `<claim>.retry-2`; only `.retry-1` counts towards the retry cap. Once
-the body process starts successfully, a non-zero exit remains a loud terminal
-`error` status and is not retried. If the wrapper itself dies before it can
-record either marker or status twice at the same head, the sweep writes the
-terminal `error` while reaping the second claim, closing the reap/refire loop.
+retry. A second retryable review, fix, or finish failure writes an `error`
+status and preserves its claim as `<claim>.retry-2`; only `.retry-1` counts
+towards the retry cap. Flaky failures preserve the same evidence without an
+error status. Once the body process starts successfully, a non-zero review,
+fix, or finish exit remains a loud terminal `error` status and is not retried.
+Flaky body failures remain in `run.log` and leave the standing label in place.
+If the wrapper itself dies before it can record either marker or status twice
+at the same head, the sweep writes the terminal `error` for review, fix, and
+finish while flaky repair again stays private.
 
 Forgejo 14.0.5 commit-status writes are ordered by their monotonic `id`; its
 status payload has no `created_unix`. The combined-status endpoint renders an
@@ -158,8 +163,9 @@ capture-forward endpoint, and drives:
   `Ready` re-add -> finish runs.
 - Transient `prepare-workspace` failure -> one bounded retry -> review
   completes.
-- Persistent run-body failure -> `error` status on the served head and no
-  sweep re-fire loop.
+- Persistent review, fix, or finish run-body failure -> `error` status on the
+  served head and no sweep re-fire loop. Flaky-repair failures remain private
+  in the run log and leave `Flaky Tests` standing.
 - Same-second status writes agree with Forgejo combined-status ordering; the
   live Forgejo timeline and pulls paging assumptions are pinned.
 

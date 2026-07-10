@@ -17,6 +17,7 @@ import (
 const maxRetryableRunWrapRetries = 1
 
 var errRetryClaimAlreadyReleased = errors.New("retry claim already released")
+var runClaimNamePattern = regexp.MustCompile(`^([0-9A-Za-z]{1,12})-(review|fix|finish|flaky)$`)
 
 func SweepCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
@@ -124,6 +125,13 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 	if err != nil {
 		return err
 	}
+	flakyActor, err := resolveFlakyActor(ctx, repo, adaptation, facts)
+	if err != nil {
+		return err
+	}
+	// Open-PR facts have no event actor. Reconciliation supplies the actor that
+	// applied the standing flaky label so its configured guard remains real.
+	facts.Actor = flakyActor
 	facts, err = clearUnauthorisedReady(ctx, repo, adaptation, facts, readyActor, logw)
 	if err != nil {
 		return err
@@ -220,13 +228,12 @@ func labelLessClaims(root string, facts Facts) ([]runClaim, error) {
 	if err != nil {
 		return nil, err
 	}
-	pattern := regexp.MustCompile(`^([0-9A-Za-z]{1,12})-(review|fix|finish)$`)
 	var claims []runClaim
 	for _, entry := range entries {
 		if !entry.IsDir() || isReapedRunDir(entry.Name()) || isRetryEvidenceDir(entry.Name()) {
 			continue
 		}
-		matches := pattern.FindStringSubmatch(entry.Name())
+		matches := runClaimNamePattern.FindStringSubmatch(entry.Name())
 		if matches == nil {
 			continue
 		}
@@ -241,7 +248,7 @@ func labelLessClaims(root string, facts Facts) ([]runClaim, error) {
 
 func readRunClaim(path string) (runClaim, error) {
 	name := filepath.Base(path)
-	matches := regexp.MustCompile(`^([0-9A-Za-z]{1,12})-(review|fix|finish)$`).FindStringSubmatch(name)
+	matches := runClaimNamePattern.FindStringSubmatch(name)
 	if matches == nil {
 		return runClaim{}, fmt.Errorf("invalid run claim name: %s", name)
 	}
@@ -377,6 +384,16 @@ func handleRetryableClaim(ctx context.Context, adaptation Adaptation, facts Fact
 		fmt.Fprintf(logw, "released retryable %s attempt %d for %s#%s\n", runDir, retryCount+1, facts.RepoSlug(), facts.PR)
 		return currentStatuses, true, true, nil
 	}
+	if kind == RunFlaky {
+		// Flaky operational failures belong in the run log. Preserve this attempt
+		// and release the claim without creating forge-visible error state.
+		if err := releaseRetryableClaim(ctx, runDir, retryCount+1); err != nil {
+			fmt.Fprintf(logw, "flaky retry evidence preservation failed for %s: %v\n", runDir, err)
+			return currentStatuses, true, false, nil
+		}
+		fmt.Fprintf(logw, "flaky retry exhausted for %s; preserved attempt %d without PR status\n", runDir, retryCount+1)
+		return currentStatuses, true, true, nil
+	}
 	if err := adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", "Pump-19 wrapper failure retry exhausted"); err != nil {
 		return currentStatuses, false, false, err
 	}
@@ -408,6 +425,11 @@ func terminaliseRepeatedUnmarkedCrash(ctx context.Context, adaptation Adaptation
 	count, err := reapEvidenceCount(runDir)
 	if err != nil || count < 1 {
 		return currentStatuses, false, err
+	}
+	if kind == RunFlaky {
+		// The second crash is terminal only for this abandoned claim. The standing
+		// label remains the pause and the run log remains the operator evidence.
+		return currentStatuses, false, nil
 	}
 	description := "Pump-19 wrapper crashed twice without terminal status"
 	if err := adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, "error", description); err != nil {
@@ -495,6 +517,13 @@ func resolveReadyActor(ctx context.Context, repo RepoConfig, adaptation Adaptati
 	return adaptation.LabelActor(ctx, facts.Owner, facts.Repo, facts.PR, LabelReady)
 }
 
+func resolveFlakyActor(ctx context.Context, repo RepoConfig, adaptation Adaptation, facts Facts) (string, error) {
+	if !facts.HasLabel(LabelFlakyTests) || !hasRunTrigger(repo, RunFlaky) {
+		return "", nil
+	}
+	return adaptation.LabelActor(ctx, facts.Owner, facts.Repo, facts.PR, LabelFlakyTests)
+}
+
 func clearUnauthorisedReady(ctx context.Context, repo RepoConfig, adaptation Adaptation, facts Facts, actor string, logw *os.File) (Facts, error) {
 	if !facts.HasLabel(LabelReady) || !hasRunTrigger(repo, RunFinish) || actorGuardPass(repo, RunFinish, actor) {
 		return facts, nil
@@ -580,6 +609,12 @@ func reconcileDecision(repo RepoConfig, facts Facts, statuses []Status, readyAct
 	reviewContext, _ := StatusContext(RunReview)
 	fixContext, _ := StatusContext(RunFix)
 	finishContext, _ := StatusContext(RunFinish)
+	flakyContext, _ := StatusContext(RunFlaky)
+	if facts.HasLabel(LabelFlakyTests) {
+		if _, flakyOK := statusForContext(statuses, flakyContext); !flakyOK && guardsPass(repo, RunFlaky, facts, facts.Actor) {
+			return RunFlaky, true
+		}
+	}
 	if _, ok := statusForContext(statuses, reviewContext); !ok && reviewReconcileGuardsPass(repo, facts) {
 		return RunReview, true
 	}

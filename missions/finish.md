@@ -77,10 +77,12 @@ Stop at the first failure and record the matching refusal; do not merge.
      **clean**; eligible.
    - **`verdict=standing-findings`** — a person's finish label overrides it: the
      head is **flagged**; eligible (it ships flagged, not clean).
-   - **`verdict=partial-coverage`**, or **no service verdict for this head** —
-     not a state the finish label may override. `refused` with reason
-     `not-eligible`: unreviewed or partially-reviewed code must not ride the
-     finish label through a merge. The finish label is a standing instruction and
+   - **`verdict=partial-coverage`**, **`verdict=paused-flaky`**, or **no service
+     verdict for this head** — not a state the finish label may override.
+     `paused-flaky` is explicitly ineligible because the review withheld
+     approval while `Flaky Tests` stood. `refused` with reason `not-eligible`:
+     unreviewed, partially-reviewed, or paused code must not ride the finish
+     label through a merge. The finish label is a standing instruction and
      stays sticky; a later finish fires once the loop produces an eligible
      verdict on the current head.
 

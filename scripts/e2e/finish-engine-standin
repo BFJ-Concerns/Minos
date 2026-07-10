@@ -62,9 +62,11 @@ finish() {
 
 # The gate, in order. Stop at the first failure.
 case "$verdict" in
-  converged|standing-findings) ;;
-  *) finish refused not-eligible ;;
+  converged|standing-findings) eligibility_branch=eligible ;;
+  paused-flaky) eligibility_branch=paused-flaky; finish refused not-eligible ;;
+  *) eligibility_branch=other; finish refused not-eligible ;;
 esac
+printf '%s\n' "$eligibility_branch" >"$PUMP19_RUN_DIR/eligibility-branch"
 if [ "$outcome" != merged ]; then
   :
 elif ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"; then

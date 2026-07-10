@@ -31,3 +31,28 @@ func TestNewHeadOccasionsSkipPayloadLabelGate(t *testing.T) {
 		t.Fatal("edited PR should not skip the payload label gate")
 	}
 }
+
+func TestFlakyLabelTriggerUsesExactVocabularyAndActorGuard(t *testing.T) {
+	inFlight, err := InFlightLabel(RunFlaky)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inFlight == LabelFlakyTests {
+		t.Fatal("standing flaky label was reused as the crash-recovery claim")
+	}
+	repo := RepoConfig{Triggers: []TriggerRule{{
+		Run:    "flaky",
+		On:     []string{"label-added:" + LabelFlakyTests},
+		Actors: []string{"ci-bot", "pump19"},
+	}}}
+	facts := Facts{Occasion: "label-added:" + LabelFlakyTests, Actor: "ci-bot"}
+
+	decision, ok := EvaluateTriggers(facts, repo)
+	if !ok || decision.Kind != RunFlaky {
+		t.Fatalf("expected flaky trigger, got %#v %v", decision, ok)
+	}
+	facts.Actor = "contributor"
+	if _, ok := EvaluateTriggers(facts, repo); ok {
+		t.Fatal("unauthorised flaky-label actor matched the trigger")
+	}
+}

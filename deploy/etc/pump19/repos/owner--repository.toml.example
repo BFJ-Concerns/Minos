@@ -40,3 +40,10 @@ authors = ["*"]
 run = "finish"
 on = ["label-added:Ready"]
 actors = ["REPLACE_WITH_AUTHORISED_FINISH_LOGINS"]
+
+# Flaky Tests is inert for repair until this stanza is configured. Name the CI
+# and service accounts that are allowed to pause the loop and request repair.
+[[trigger]]
+run = "flaky"
+on = ["label-added:Flaky Tests"]
+actors = ["REPLACE_WITH_AUTHORISED_FLAKY_LABEL_ACTORS"]

@@ -8,9 +8,10 @@ const (
 	RunReview RunKind = "review"
 	RunFix    RunKind = "fix"
 	RunFinish RunKind = "finish"
+	RunFlaky  RunKind = "flaky"
 )
 
-var runKinds = []RunKind{RunReview, RunFix, RunFinish}
+var runKinds = []RunKind{RunReview, RunFix, RunFinish, RunFlaky}
 
 const (
 	LabelReviewing        = "Reviewing"
@@ -20,6 +21,8 @@ const (
 	LabelStandingFindings = "Standing Findings"
 	LabelPartialCoverage  = "Partial Coverage"
 	LabelReady            = "Ready"
+	LabelFlakyTests       = "Flaky Tests"
+	LabelRepairingFlaky   = "Repairing Flaky Tests"
 )
 
 func InFlightLabel(kind RunKind) (string, error) {
@@ -30,6 +33,10 @@ func InFlightLabel(kind RunKind) (string, error) {
 		return LabelFixing, nil
 	case RunFinish:
 		return LabelFinishing, nil
+	case RunFlaky:
+		// Flaky Tests is the standing safety condition. Keeping the run-owned
+		// claim separate prevents crash recovery from clearing the pause itself.
+		return LabelRepairingFlaky, nil
 	default:
 		return "", fmt.Errorf("unknown run kind %q", kind)
 	}
@@ -43,6 +50,8 @@ func StatusContext(kind RunKind) (string, error) {
 		return "pump19/fix", nil
 	case RunFinish:
 		return "pump19/finish", nil
+	case RunFlaky:
+		return "pump19/flaky", nil
 	default:
 		return "", fmt.Errorf("unknown run kind %q", kind)
 	}
@@ -50,7 +59,7 @@ func StatusContext(kind RunKind) (string, error) {
 
 func ParseRunKind(value string) (RunKind, error) {
 	switch RunKind(value) {
-	case RunReview, RunFix, RunFinish:
+	case RunReview, RunFix, RunFinish, RunFlaky:
 		return RunKind(value), nil
 	default:
 		return "", fmt.Errorf("unknown run kind %q", value)

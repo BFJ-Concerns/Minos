@@ -69,7 +69,7 @@ printf '[{"id":"lead","resolved_model":"fixture"}]\n' >"$resolved"
 	}
 }
 
-func TestRunBodyRejectsUnknownKindAndUnconfiguredFix(t *testing.T) {
+func TestRunBodyRejectsUnknownKindAndUnconfiguredSkillRuns(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
 	installRoot := filepath.Join(root, "install")
@@ -77,12 +77,12 @@ func TestRunBodyRejectsUnknownKindAndUnconfiguredFix(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// PUMP19_FIX_SKILL is deliberately absent: a fix run without its skill wired
-	// must fail loudly rather than launch. An unknown kind is rejected outright.
+	// The run-specific skill paths are deliberately absent: a fix or flaky run
+	// without its skill wired must fail loudly. An unknown kind is rejected.
 	if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"fix", "surprise"} {
+	for _, kind := range []string{"fix", "flaky", "surprise"} {
 		t.Run(kind, func(t *testing.T) {
 			cmd := exec.Command(filepath.Join(installRoot, "run-body", "run-body"))
 			cmd.Env = append(os.Environ(), "PUMP19_CONFIG="+configDir, "PUMP19_RUN_DIR="+filepath.Join(root, kind), "PUMP19_RUN_KIND="+kind)
@@ -93,8 +93,8 @@ func TestRunBodyRejectsUnknownKindAndUnconfiguredFix(t *testing.T) {
 	}
 }
 
-func TestRunWrapRecordsErrorWhenRunBodyLaunchFails(t *testing.T) {
-	for _, kind := range []string{"fix", "finish"} {
+func TestRunWrapFailureStatusHonoursRunKindVisibility(t *testing.T) {
+	for _, kind := range []string{"fix", "finish", "flaky"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
 			configDir := filepath.Join(root, "config")
@@ -125,7 +125,7 @@ func TestRunWrapRecordsErrorWhenRunBodyLaunchFails(t *testing.T) {
 			// The kind dispatches, but the engine launch fails (PUMP19_BIN is a
 			// non-executable placeholder): the wrapper must record the kind's error
 			// status once the body has started, never a false success.
-			if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\nPUMP19_FIX_SKILL=x\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\nPUMP19_FIX_SKILL=x\nPUMP19_FLAKY_SKILL=x\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			runDir := filepath.Join(root, "runs", kind)
@@ -142,6 +142,13 @@ func TestRunWrapRecordsErrorWhenRunBodyLaunchFails(t *testing.T) {
 			t.Setenv("PUMP19_RUN_BODY", filepath.Join(installRoot, "run-body", "run-body"))
 			if err := RunWrapCommand(t.Context(), []string{"--config", configDir}); err == nil {
 				t.Fatalf("%s body unexpectedly completed", kind)
+			}
+			if kind == "flaky" {
+				if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
+					t.Fatalf("flaky launch failure wrote a PR status: %v", err)
+				}
+				assertContainsFile(t, filepath.Join(runDir, "run.log"), "pump19 run-wrap error")
+				return
 			}
 			assertContainsFile(t, statusFile, "pump19/"+kind+"\nerror")
 		})
@@ -165,7 +172,7 @@ func copyRunBodyFixture(t *testing.T, installRoot string) {
 	if err := os.WriteFile(filepath.Join(runBodyDir, "run-body"), source, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, mission := range []string{"review", "fix", "finish"} {
+	for _, mission := range []string{"review", "fix", "finish", "flaky"} {
 		if err := os.WriteFile(filepath.Join(missionDir, mission+".md"), []byte(mission+" mission fixture\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
