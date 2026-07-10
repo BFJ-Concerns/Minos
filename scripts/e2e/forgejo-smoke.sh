@@ -218,6 +218,8 @@ owner = "${owner}"
 repo = "${repo}"
 
 [adaptation]
+build = "go build ./..."
+test = "go test ./..."
 briefs = ".review"
 skill = "${recording_skill}"
 EOF

@@ -1,10 +1,88 @@
 package shell
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestHandleHookRejectsOversizedBody(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/hooks/local", strings.NewReader(strings.Repeat("x", int(maxWebhookBodyBytes+1))))
+	response := httptest.NewRecorder()
+	cfg := ServiceConfig{Forges: map[string]ForgeConfig{"local": {}}}
+
+	err := handleHook(t.Context(), cfg, response, request)
+	if err == nil {
+		t.Fatal("oversized request unexpectedly succeeded")
+	}
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusRequestEntityTooLarge)
+	}
+	if !strings.Contains(response.Body.String(), "too large") {
+		t.Fatalf("body = %q, want explicit size rejection", response.Body.String())
+	}
+}
+
+func TestHandleHookMakesInvalidRepoConfigLoud(t *testing.T) {
+	root := writeRepoConfig(t, validRepoConfig+"\nquiet-typo = true\n")
+	response := httptest.NewRecorder()
+	err := handleHook(t.Context(), receiverTestConfig(t, root), response, signedHookRequest(t))
+	if err == nil || !strings.Contains(err.Error(), "quiet-typo") {
+		t.Fatalf("error = %v, want invalid key named", err)
+	}
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	if !strings.Contains(response.Body.String(), "configuration unavailable") {
+		t.Fatalf("body = %q, want loud configuration failure", response.Body.String())
+	}
+}
+
+func TestHandleHookKeepsGenuineNotOptedInAccepted(t *testing.T) {
+	root := t.TempDir()
+	response := httptest.NewRecorder()
+	err := handleHook(t.Context(), receiverTestConfig(t, root), response, signedHookRequest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusAccepted || response.Body.String() != "not opted in\n" {
+		t.Fatalf("response = %d %q, want 202 not opted in", response.Code, response.Body.String())
+	}
+}
+
+func receiverTestConfig(t *testing.T, root string) ServiceConfig {
+	t.Helper()
+	secretFile := filepath.Join(t.TempDir(), "webhook-secret")
+	if err := os.WriteFile(secretFile, []byte("test-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return ServiceConfig{
+		Root: root,
+		Forges: map[string]ForgeConfig{
+			"local": {
+				Adaptation:        filepath.Join("..", "..", "scripts", "adaptations", "forgejo"),
+				WebhookSecretFile: secretFile,
+			},
+		},
+	}
+}
+
+func signedHookRequest(t *testing.T) *http.Request {
+	t.Helper()
+	fixture := readFixture(t, "001-pull_request-opened.json")
+	request := httptest.NewRequest(http.MethodPost, "/hooks/local", strings.NewReader(fixture.Body))
+	request.Header.Set("X-Forgejo-Event", "pull_request")
+	mac := hmac.New(sha256.New, []byte("test-secret"))
+	_, _ = mac.Write([]byte(fixture.Body))
+	request.Header.Set("X-Forgejo-Signature", hex.EncodeToString(mac.Sum(nil)))
+	return request
+}
 
 func TestResolveReceiverFactsBindsReadyActorToLabelApplication(t *testing.T) {
 	adaptation := fixtureTimelineAdaptation(t, "timeline-ready-added.json")

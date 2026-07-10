@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +10,10 @@ import (
 	"net/http"
 	"strings"
 )
+
+// Webhooks contain event metadata, not repository contents. One MiB leaves
+// ample room for forge payloads while bounding work done before authentication.
+const maxWebhookBodyBytes int64 = 1 << 20
 
 func ReceiveCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("receive", flag.ContinueOnError)
@@ -41,8 +46,13 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		http.Error(w, "unknown forge", http.StatusNotFound)
 		return nil
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return err
+		}
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return err
 	}
@@ -83,6 +93,10 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 	facts.Forge = forgeName
 	repo, err := FindRepoConfig(cfg.Root, facts)
 	if err != nil {
+		if !errors.Is(err, errRepoNotOptedIn) {
+			http.Error(w, "repository configuration unavailable", http.StatusInternalServerError)
+			return err
+		}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("not opted in\n"))
 		return nil
