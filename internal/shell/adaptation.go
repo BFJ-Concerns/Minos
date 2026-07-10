@@ -30,6 +30,14 @@ var forgeReadOperations = map[string]bool{
 	"prepare-workspace":    true,
 }
 
+var runClaimMutationOperations = map[string]bool{
+	"add-label":         true,
+	"add-reaction":      true,
+	"assign-if-missing": true,
+	"remove-label":      true,
+	"remove-reaction":   true,
+}
+
 type Adaptation struct {
 	Dir        string
 	APIBase    string
@@ -62,10 +70,24 @@ func NewAdaptation(forge ForgeConfig) (Adaptation, error) {
 }
 
 func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
+	return a.run(ctx, name, stdin, extraEnv, true, args...)
+}
+
+// runClaimMutation is reserved for the service's idempotent claim/release
+// seam. A mission invoking the same adaptation verb through pump19 adapt still
+// takes the ordinary tracked path above.
+func (a Adaptation) runClaimMutation(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if !runClaimMutationOperations[name] {
+		return nil, fmt.Errorf("adaptation operation %q is not run-claim state", name)
+	}
+	return a.run(ctx, name, nil, nil, false, args...)
+}
+
+func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, trackMutation bool, args ...string) ([]byte, error) {
 	if a.Dir == "" {
 		return nil, fmt.Errorf("adaptation directory is not configured")
 	}
-	if !forgeReadOperations[name] {
+	if trackMutation && !forgeReadOperations[name] {
 		// This record must become durable before the adaptation can make a forge
 		// mutation. A later non-zero exit is replayable only when it is absent.
 		if err := writeForgeWritesAttempted(os.Getenv("PUMP19_RUN_DIR"), name); err != nil {
@@ -193,18 +215,28 @@ func (a Adaptation) RemoveLabel(ctx context.Context, owner, repo, pr, label stri
 	return err
 }
 
-func (a Adaptation) AddReaction(ctx context.Context, owner, repo, pr, reaction string) error {
-	_, err := a.Run(ctx, "add-reaction", nil, nil, owner, repo, pr, reaction)
+func (a Adaptation) addRunClaimLabel(ctx context.Context, owner, repo, pr, label string) error {
+	_, err := a.runClaimMutation(ctx, "add-label", owner, repo, pr, label)
 	return err
 }
 
-func (a Adaptation) RemoveReaction(ctx context.Context, owner, repo, pr, reaction string) error {
-	_, err := a.Run(ctx, "remove-reaction", nil, nil, owner, repo, pr, reaction)
+func (a Adaptation) removeRunClaimLabel(ctx context.Context, owner, repo, pr, label string) error {
+	_, err := a.runClaimMutation(ctx, "remove-label", owner, repo, pr, label)
 	return err
 }
 
-func (a Adaptation) AssignIfMissing(ctx context.Context, owner, repo, pr, login string) error {
-	_, err := a.Run(ctx, "assign-if-missing", nil, nil, owner, repo, pr, login)
+func (a Adaptation) addRunClaimReaction(ctx context.Context, owner, repo, pr, reaction string) error {
+	_, err := a.runClaimMutation(ctx, "add-reaction", owner, repo, pr, reaction)
+	return err
+}
+
+func (a Adaptation) removeRunClaimReaction(ctx context.Context, owner, repo, pr, reaction string) error {
+	_, err := a.runClaimMutation(ctx, "remove-reaction", owner, repo, pr, reaction)
+	return err
+}
+
+func (a Adaptation) assignRunClaimIfMissing(ctx context.Context, owner, repo, pr, login string) error {
+	_, err := a.runClaimMutation(ctx, "assign-if-missing", owner, repo, pr, login)
 	return err
 }
 

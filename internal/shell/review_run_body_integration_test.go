@@ -324,9 +324,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal("model mismatch unexpectedly completed")
 	}
 	mismatchRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "eeeeeeeeeeeeeeee", RunReview)
-	marker, err := readTerminalMarker(mismatchRun)
-	if err != nil || marker.Reason != "body-exit-after-forge-write" {
-		t.Fatalf("review mismatch terminal marker = %#v err=%v", marker, err)
+	if _, err := os.Stat(filepath.Join(mismatchRun, "retry.env")); err != nil {
+		t.Fatalf("mid-body mismatch after claim-only writes was not retryable: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mismatchRun, terminalMarkerFile)); !os.IsNotExist(err) {
+		t.Fatalf("mid-body mismatch latched on claim-only writes: %v", err)
 	}
 	if status, _ := os.ReadFile(filepath.Join(stateDir, "status.args")); strings.Contains(string(status), "pump19/review\nerror") {
 		t.Fatalf("review mismatch wrote PR error status:\n%s", status)
@@ -345,7 +347,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 
 	// A hard model-mismatch abort cannot run the child's EXIT trap. Age its real
 	// run log and prove the reconciliation sweep reaps the claim and removes the
-	// orphaned Reviewing label while respecting the wrapper's internal latch.
+	// orphaned Reviewing label while preserving the attempt for paced retry.
 	old := time.Now().Add(-2 * time.Hour)
 	if err := os.Chtimes(filepath.Join(mismatchRun, "run.log"), old, old); err != nil {
 		t.Fatal(err)
@@ -360,9 +362,6 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Sweep.LivenessThreshold.Duration = time.Second
-	// Sweep is a separate service process in production and has no run-scoped
-	// environment. Clear this in-process fixture before exercising that seam.
-	t.Setenv("PUMP19_RUN_DIR", "")
 	if err := sweepPR(t.Context(), cfg, RepoConfig{}, Adaptation{Dir: adaptationDir, Credential: "test-token"}, facts, logFile); err != nil {
 		_ = logFile.Close()
 		t.Fatal(err)
@@ -372,6 +371,9 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	}
 	if _, err := os.Stat(mismatchRun); !os.IsNotExist(err) {
 		t.Fatalf("sweep did not reap the mismatched run claim: %v", err)
+	}
+	if _, err := os.Stat(mismatchRun + ".retry-1"); err != nil {
+		t.Fatalf("sweep did not preserve the first retry attempt: %v", err)
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "labels-removed"), "Reviewing")
 

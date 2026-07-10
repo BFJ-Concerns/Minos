@@ -448,19 +448,57 @@ fi
 sleep 3
 sha2="$(head_sha "$pr2")"
 run_sweep normal
+wait_for_call "journey 3 refired status" status_is "$sha2" "pump19/review" success
 wait_for_call "journey 3 reviewing cleared" label_lacks "$pr2" Reviewing
-assert_no_status_after "journey 3 crash after presence stays off the PR" "$sha2" "pump19/review"
+assert_run_body_count "journey 3 presence-only crash retries once" review "$sha2" 2
+journey3_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr2}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
 journey3_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr2}" -name terminal.env | wc -l | tr -d ' ')"
-if [[ "$journey3_terminal_count" != "1" ]]; then
-  echo "journey 3 produced ${journey3_terminal_count} internal terminal markers" >&2
+if [[ "$journey3_retry_count" != "1" || "$journey3_terminal_count" != "0" ]]; then
+  echo "journey 3 left retries=${journey3_retry_count} terminals=${journey3_terminal_count}" >&2
   exit 1
 fi
-run_sweep normal
-assert_run_body_count "journey 3 latched head does not re-enter the run body" review "$sha2" 1
-echo "ok: journey 3 crash after a presence write latches internally"
+echo "ok: journey 3 claim-seam-only crash remains replayable"
 
 kill "$receiver_pid" >/dev/null 2>&1 || true
 sleep 1
+publication_hang_body="${work}/publication-hang-run-body"
+cat >"$publication_hang_body" <<EOF
+#!/usr/bin/env sh
+set -eu
+claim="\$("${root}/pump19" run-guard --config "\$PUMP19_CONFIG" begin)"
+test "\$claim" = claimed
+"${root}/pump19" adapt add-label "\$PUMP19_OWNER" "\$PUMP19_REPO_NAME" "\$PUMP19_PR" "Partial Coverage" >/dev/null
+while :; do sleep 60; done
+EOF
+chmod +x "$publication_hang_body"
+write_repo_config "$publication_hang_body"
+"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-publication-hang.log" 2>&1 &
+receiver_pid="$!"
+pr_publication="$(create_branch_and_pr publication-hang "publication hang")"
+sha_publication="$(head_sha "$pr_publication")"
+wait_for_call "publication hang reviewing label" label_has "$pr_publication" Reviewing
+wait_for_call "publication hang outcome label" label_has "$pr_publication" "Partial Coverage"
+publication_unit="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -name meta.env -print -quit | xargs -r grep -h '^PUMP19_UNIT=' | tail -n1 | cut -d= -f2-)"
+if [[ -n "$publication_unit" ]]; then
+  systemctl --user kill --signal=KILL "$publication_unit" >/dev/null 2>&1 || true
+fi
+sleep 3
+run_sweep normal
+wait_for_call "publication hang reviewing cleared" label_lacks "$pr_publication" Reviewing
+assert_no_status_after "publication hang stays off the PR status surface" "$sha_publication" "pump19/review"
+publication_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -name terminal.env | wc -l | tr -d ' ')"
+publication_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
+if [[ "$publication_terminal_count" != "1" || "$publication_retry_count" != "0" ]]; then
+  echo "publication hang left retries=${publication_retry_count} terminals=${publication_terminal_count}" >&2
+  exit 1
+fi
+run_sweep normal
+wait_for_call "publication hang latch suppresses re-entry" label_lacks "$pr_publication" Reviewing
+echo "ok: journey 3b crash after a mission publication latches internally"
+
+kill "$receiver_pid" >/dev/null 2>&1 || true
+sleep 1
+write_repo_config ""
 PUMP19_STUB_MODE=slow PUMP19_STUB_SLOW_SECONDS=6 "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-slow.log" 2>&1 &
 receiver_pid="$!"
 pr3="$(create_branch_and_pr journey-four "journey four")"

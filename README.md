@@ -106,9 +106,12 @@ visible is reaped by the same fail-closed path once its `run.log` or directory
 mtime is stale.
 
 Operational failures are run evidence, not pull-request outcomes: they write no
-comment or `error` commit status. Before every mutating adaptation verb, the
-shared dispatcher atomically records `forge-writes-attempted.env` in the run
-directory. A pre-body failure, or a body failure with no such record, writes
+comment or `error` commit status. Before every mutating adaptation outside the
+run-guard claim/release seam, the shared dispatcher atomically records
+`forge-writes-attempted.env` in the run directory. Stage-label, eyes-reaction,
+and assignment mutations made by run-guard are idempotent claim state and use an
+explicit replay-safe path; mission-driven calls to the same verbs remain
+tracked. A pre-body failure, or a body failure with no such record, writes
 `retry.env`; the sweep preserves each expired attempt as `<claim>.retry-N` and
 admits the next attempt only after the liveness interval. The default cap is
 five attempts, configurable per repository. The final attempt receives an

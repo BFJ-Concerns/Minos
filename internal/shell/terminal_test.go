@@ -66,6 +66,17 @@ func TestAdaptationReadDoesNotMarkForgeWrite(t *testing.T) {
 	}
 }
 
+func TestMissionDrivenLabelMutationStillMarksForgeWrite(t *testing.T) {
+	runDir := t.TempDir()
+	adaptationDir := t.TempDir()
+	writeScript(t, filepath.Join(adaptationDir, "add-label"), "#!/usr/bin/env sh\ntest -f \"$PUMP19_RUN_DIR/forge-writes-attempted.env\"\n")
+	t.Setenv("PUMP19_RUN_DIR", runDir)
+
+	if err := (Adaptation{Dir: adaptationDir}).AddLabel(t.Context(), "pump19", "subject", "42", LabelReady); err != nil {
+		t.Fatalf("mission-driven label mutation did not observe its marker: %v", err)
+	}
+}
+
 func TestRearmRetainsAuditCopyForExactIdentity(t *testing.T) {
 	root := t.TempDir()
 	runDir := RunDir(root, "local", "pump19", "subject", "42", "abcdef1234567890", RunReview) + ".retry-5"

@@ -150,7 +150,8 @@ exit non-zero; the wrapper records the failure internally and the sweep retries
 it only when no forge write was attempted. After `claimed`, use `pump19
 run-guard --config "$PUMP19_CONFIG" release` for the controlled exit, then run
 `pump19 run-terminal --reason controlled-failure`, then exit non-zero. If release
-itself fails, exit non-zero: the adaptation dispatcher has already recorded the
-attempted forge mutation, so the wrapper latches the run safely. Write no error
+itself fails, exit non-zero. Claim/release mutations are replay-safe and do not
+set the publication marker: the wrapper retries when no earlier substantive
+mutation was attempted and latches when one was. Write no error
 comment or commit status. A release failure after a terminal status is
 operational clean-up for the sweep, not a falsified result.
