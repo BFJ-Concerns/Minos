@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Pump-19 reconciliation sweep approximately every 10–12 minutes
+
+[Timer]
+Unit=pump19-sweep.service
+OnStartupSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=2min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

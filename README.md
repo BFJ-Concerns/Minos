@@ -149,3 +149,11 @@ capture-forward endpoint, and drives:
 Set `PUMP19_E2E_UPDATE_FIXTURES=1 make e2e` to refresh
 `internal/shell/testdata/forgejo14/` from the same run. The normalisation tests
 bind to those captured Forgejo 14.0.5 payloads, headers, and timeline fixtures.
+
+## Deployment
+
+The repository carries production-shaped configuration templates, systemd user
+units, and the ordered operator procedure in [`docs/go-live.md`](docs/go-live.md).
+`scripts/e2e/deployment-smoke.sh` rehearses the receiver, an authenticated
+synthetic delivery, the sweep, and unit-file validation without contacting a
+real forge.

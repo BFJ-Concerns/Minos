@@ -1,0 +1,23 @@
+# Production-shaped service configuration. Replace every REPLACE_WITH value
+# before go-live; the paths are the locations installed by docs/go-live.md.
+
+[listener]
+bind = ":8919"
+
+[forges.forgejo]
+adaptation = "/opt/pump19/adaptations/forgejo"
+api-base = "REPLACE_WITH_FORGEJO_BASE_URL"
+webhook-secret-file = "/etc/pump19/secrets/forgejo-webhook"
+credential-file = "/etc/pump19/secrets/forgejo-token"
+signature-header = "X-Forgejo-Signature"
+
+[runs]
+dir = "/var/lib/pump19/runs"
+
+[sweep]
+liveness-threshold = "60m"
+log = "/var/log/pump19/sweep.log"
+
+[scrub]
+# Keep every service credential out of commands run in PR-controlled workspaces.
+vars = ["FORGEJO_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PUMP19_FORGE_TOKEN"]

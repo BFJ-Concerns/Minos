@@ -1,0 +1,15 @@
+[Unit]
+Description=Pump-19 Forgejo webhook receiver
+Documentation=file:/opt/pump19/docs/go-live.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pump19 receive --config /etc/pump19
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+[Install]
+WantedBy=default.target
