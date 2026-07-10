@@ -170,7 +170,7 @@ func validateRepoConfig(repo RepoConfig) error {
 		missing = append(missing, "trigger")
 	}
 	if repo.Retries.OperationalAttempts < 0 {
-		return fmt.Errorf("retries.operational-attempts must be positive")
+		return fmt.Errorf("retries.operational-attempts must not be negative")
 	}
 	for index, trigger := range repo.Triggers {
 		prefix := fmt.Sprintf("trigger[%d].", index)
