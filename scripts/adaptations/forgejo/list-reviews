@@ -11,5 +11,7 @@ owner="$1"
 repo="$2"
 pr="$3"
 
+# commit_id pins each review to the head it judged, so a finish run can read the
+# verdict on the *current* head rather than a stale one.
 api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" |
-  jq -c '[.[] | {id, state, body, submitted_at, user: (.user.login // .user.username // "")}]'
+  jq -c '[.[] | {id, state, commit_id, body, submitted_at, user: (.user.login // .user.username // "")}]'

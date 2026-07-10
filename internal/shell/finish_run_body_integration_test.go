@@ -62,4 +62,35 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 		t.Fatal("a failing build reached the merge")
 	}
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nfailure")
+
+	// Eligibility: an authorised Ready cannot merge a head that is not in a
+	// permitted review state. Each of these refuses with reason not-eligible,
+	// never reaching the merge, and leaves Ready sticky.
+	for name, head := range map[string]string{
+		"no-review":      "1111111111111111",
+		"partial-review": "2222222222222222",
+		"errored-review": "3333333333333333",
+	} {
+		reviewState := map[string]string{
+			"no-review":      "none",
+			"partial-review": "COMMENT",
+			"errored-review": "none", // an errored review posted no forge review
+		}[name]
+		t.Run(name, func(t *testing.T) {
+			_ = os.Remove(filepath.Join(env.stateDir, "merge.args"))
+			_ = os.Remove(filepath.Join(env.stateDir, "labels-removed"))
+			env.setRunEnv(t, head, map[string]string{"PUMP19_FIXTURE_REVIEW_STATE": reviewState})
+			if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
+				t.Fatal(err)
+			}
+			run := RunDir(env.runsDir, "local", "pump19", "subject", "7", head, RunFinish)
+			assertContainsFile(t, filepath.Join(run, "finish-summary.md"), "reason=not-eligible")
+			if _, err := os.Stat(filepath.Join(env.stateDir, "merge.args")); !os.IsNotExist(err) {
+				t.Fatal("an ineligible head reached the merge")
+			}
+			if removed, _ := os.ReadFile(filepath.Join(env.stateDir, "labels-removed")); strings.Contains(string(removed), "Ready") {
+				t.Fatal("an ineligible finish consumed the Ready label")
+			}
+		})
+	}
 }

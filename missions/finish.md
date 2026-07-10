@@ -41,10 +41,9 @@ re-litigate it.
 ## Integrity and claim
 
 Run `pump19 adapt get-pr-facts "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR"`
-and read `HEAD_BRANCH`, `MERGEABLE`, and `LABELS`. The branch is **clean** when
-`Converged` is among the labels, and **flagged** otherwise — a person's finish
-label standing over unresolved findings. Both may merge; the distinction is for
-the record.
+and read `HEAD_BRANCH` and `MERGEABLE`. Eligibility to merge is read from the
+**current head's review verdict**, not from a label (a label is PR-level and can
+be stale from an older head); see the eligibility gate below.
 
 Run `pump19 run-guard --config "$PUMP19_CONFIG" begin`. Continue only on
 `claimed`, which adds `Finishing`; `yield-terminal` (a finish already ran for
@@ -58,11 +57,29 @@ head exists — a `stale` result is the `not-current` refusal below.
 
 Stop at the first failure and record the matching refusal; do not merge.
 
-1. **Build.** `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"`.
+1. **Eligibility.** The finish label fired this run, but that only proves *who*
+   asked to merge — not that the current head is in a state the commission
+   permits merging. Establish that here, from the current head's review verdict.
+   Read `pump19 adapt list-reviews "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR"`
+   and take the latest review whose `commit_id` is `$PUMP19_HEAD_SHA`:
+   - **`APPROVED`** — the service's converging review. The head is **clean**;
+     eligible.
+   - **`REQUEST_CHANGES`** — a standing-findings verdict. A person's finish label
+     overrides it: the head is **flagged**; eligible (it ships flagged, not
+     clean).
+   - **`COMMENT`** (partial coverage), **no review for this head**, or a head
+     whose review errored — none of these is a state the finish label may
+     override. `refused` with reason `not-eligible`: unreviewed or
+     partially-reviewed code must not ride the finish label through a merge. The
+     finish label is a standing instruction and stays sticky; a later finish
+     fires once the loop produces an eligible verdict on the current head.
+
+   Record clean vs flagged for the summary; both continue.
+2. **Build.** `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"`.
    A non-zero exit is `refused` with reason `build-failed`.
-2. **Test.** `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"`.
+3. **Test.** `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"`.
    A non-zero exit is `refused` with reason `test-failed`.
-3. **Maintenance.** Perform the occasion's configured maintenance (dependency
+4. **Maintenance.** Perform the occasion's configured maintenance (dependency
    bumps, documentation checks) over your general skills. If it changes the
    tree, it must be reviewed before it can merge: land it with
    `pump19 adapt commit-push …` (as the fix mission documents, attributed to
@@ -70,11 +87,11 @@ Stop at the first failure and record the matching refusal; do not merge.
    model), then record `refused` with reason `review-pending`. The landed PR
    update re-fires review; the sticky finish label carries the next finish run,
    which merges the re-cleared tree. If maintenance changes nothing, continue.
-4. **Current.** Require `pump19 run-guard … current`. `stale` is `refused` with
+5. **Current.** Require `pump19 run-guard … current`. `stale` is `refused` with
    reason `not-current`.
-5. **Forge-mergeable.** If `MERGEABLE` is not `true`, that is `refused` with
+6. **Forge-mergeable.** If `MERGEABLE` is not `true`, that is `refused` with
    reason `not-mergeable`.
-6. **Merge.** `pump19 adapt merge "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" merge`.
+7. **Merge.** `pump19 adapt merge "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" merge`.
    The forge applies its own final gate (required checks, branch protection,
    up-to-date); a non-zero exit means the forge refused — record `refused` with
    reason `not-mergeable`, never a silent stop.
@@ -95,8 +112,8 @@ trailing marker, a terminal `pump19/finish` status, and the release of
 
 `Pump-19: head=FULL_SHA outcome=merged|refused[ reason=REASON] run=finish`
 
-with `reason` one of `build-failed`, `test-failed`, `review-pending`,
-`not-current`, `not-mergeable`, present only on `refused`.
+with `reason` one of `not-eligible`, `build-failed`, `test-failed`,
+`review-pending`, `not-current`, `not-mergeable`, present only on `refused`.
 
 - **merged** — the merge completed. Remove the `Ready` label (the finish label
   is now consumed), post the summary, and set

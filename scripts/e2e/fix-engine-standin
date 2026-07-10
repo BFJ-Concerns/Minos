@@ -58,14 +58,22 @@ fi
 
 if [ "$outcome" = landed ]; then
   # Edit the prepared workspace, then land through the credentialled adaptation —
-  # never a push from inside the workspace.
+  # never a push from inside the workspace. The adaptation reports the real
+  # outcome as a stdout token: a protected head reports unwritable.
   printf 'fix applied by stand-in\n' >>"$PUMP19_WORKSPACE/file.txt"
   printf 'Answer the standing finding.\n' >"$PUMP19_RUN_DIR/fix-message.txt"
   require_current
-  "$PUMP19_BIN" adapt commit-push \
+  landed=$("$PUMP19_BIN" adapt commit-push \
     "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
     "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
-    "$model" "$PUMP19_RUN_DIR/fix-message.txt" >"$PUMP19_RUN_DIR/landed-head.txt"
+    "$model" "$PUMP19_RUN_DIR/fix-message.txt")
+  printf '%s\n' "$landed" >"$PUMP19_RUN_DIR/commit-push.out"
+  case $(printf '%s' "$landed" | awk 'NR==1{print $1}') in
+    landed) outcome=landed ;;
+    fruitless) outcome=fruitless ;;
+    unwritable) outcome=unwritable ;;
+    *) echo "unexpected commit-push token: $landed" >&2; exit 2 ;;
+  esac
 fi
 
 marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome="$outcome" run=fix)

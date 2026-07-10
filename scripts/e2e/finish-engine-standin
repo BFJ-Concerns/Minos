@@ -35,6 +35,15 @@ facts="$PUMP19_RUN_DIR/pr-facts.txt"
 head_branch=$(sed -n 's/^HEAD_BRANCH=//p' "$facts")
 mergeable=$(sed -n 's/^MERGEABLE=//p' "$facts")
 
+# Eligibility: the latest review on the *current* head. APPROVED is clean,
+# REQUEST_CHANGES is a standing-findings verdict the finish label overrides
+# (flagged); anything else — partial coverage, no review, errored — is not a
+# state the finish label may override.
+"$PUMP19_BIN" adapt list-reviews "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$PUMP19_RUN_DIR/reviews.json"
+head_state=$(jq -r --arg head "$PUMP19_HEAD_SHA" \
+  '[.[] | select(.commit_id == $head)] | last | .state // "none"' \
+  "$PUMP19_RUN_DIR/reviews.json")
+
 outcome=merged
 reason=""
 finish() {
@@ -43,7 +52,13 @@ finish() {
 }
 
 # The gate, in order. Stop at the first failure.
-if ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"; then
+case "$head_state" in
+  APPROVED|REQUEST_CHANGES) ;;
+  *) finish refused not-eligible ;;
+esac
+if [ "$outcome" != merged ]; then
+  :
+elif ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"; then
   finish refused build-failed
 elif ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"; then
   finish refused test-failed

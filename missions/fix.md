@@ -78,14 +78,21 @@ Edit the workspace to answer the findings, then land through the adaptation —
 never a push from inside the workspace:
 
 - `pump19 adapt commit-push "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" HEAD_BRANCH "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" MODEL MESSAGE_FILE`
-  stages the workspace changes, commits them attributed to the deployment's
-  service fixing identity (`PUMP19_FIX_AUTHOR_NAME` / `PUMP19_FIX_AUTHOR_EMAIL`,
-  both deployment-static) with a `Pump-19-Model: MODEL` trailer, and
-  fast-forwards the head branch. It never force-pushes; a rejected push exits
-  non-zero. Use the resolved lead model (below) for `MODEL`. It prints the
-  landed head SHA.
-- A `commit-push` exit of 3 means the tree had no changes — treat that as the
-  fruitless outcome, not a failure.
+  commits the workspace changes — attributed to the deployment's service fixing
+  identity (`PUMP19_FIX_AUTHOR_NAME` / `PUMP19_FIX_AUTHOR_EMAIL`) with a
+  `Pump-19-Model: MODEL` trailer — and fast-forwards the head branch. The commit
+  runs credential-free with hooks disabled inside the workspace; the push runs
+  from a trusted context outside it, so the credential never executes against
+  workspace-controlled git config, hooks, or filters. It never force-pushes.
+  Use the resolved lead model (below) for `MODEL`.
+- `commit-push` reports the outcome as a **first-word token on stdout**, exiting
+  zero for every handled outcome: `landed SHA` (committed and pushed),
+  `fruitless` (nothing to commit), or `unwritable` (the remote refused the push
+  — a protected head in the same repository, the second route to the unwritable
+  outcome besides the fork check above). Read that token to set your outcome. A
+  **non-zero** exit is an infrastructure failure and so a run failure. (The token
+  rides stdout, not the exit code, because `pump19 adapt` collapses a non-zero
+  adaptation to a bare failure and discards its output.)
 
 ## Model provenance
 
