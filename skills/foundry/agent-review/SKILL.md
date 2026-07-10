@@ -372,15 +372,15 @@ it silently.
 
    **Full mode, or diff mode with no PR** — chat only. Present a summary grouped
    by review title, then by priority (P0 → P3); lead with the count and any scope
-   warnings. Nothing is posted to GitHub. (In full mode every finding is just a
+   warnings. Nothing is posted to the forge. (In full mode every finding is just a
    finding — `preexisting` is a diff-mode concept and doesn't apply.)
 
    **Diff mode with a PR** — publish via the poster. Invoking this skill is the
    authorisation to publish, so do **not** pause to confirm. Assemble one document
    with **every** finding — change-introduced *and* `preexisting: true` — and hand
    it to the poster; it routes them (change-introduced → the PR, pre-existing →
-   their own GitHub issues) and de-duplicates the issues against open ones. Write
-   the document to a file under `/tmp/claude/` and pass its path — a command
+   their own issues on the forge) and de-duplicates the issues against open ones.
+   Write the document to a file under `/tmp/claude/` and pass its path — a command
    beginning with `python3`, so it posts without a permission prompt and the JSON
    never has to be shell-quoted:
 
@@ -398,13 +398,15 @@ it silently.
    groups under; `extent` lets the poster route pre-existing findings (a full
    brief's become one rollup issue, a diff brief's become individual issues).
 
-   The poster prints a JSON result — act on its `posting` field:
-   - **`"gh"`** — the poster did everything itself: one PR review (`event:
-     COMMENT`) with an inline comment per change-introduced finding (falling back
-     to body-only if a finding sits off the diff), plus issues for pre-existing
-     findings — one per incidental (diff-extent) finding, and a single rollup
-     checklist issue per full-extent brief, so a full audit can't flood the
-     tracker. Report from the result: `review`, `issues.created`,
+   The poster detects the forge from the origin remote (github.com → the `gh`
+   CLI; anything else → the Forgejo API) and prints a JSON result — act on its
+   `posting` field:
+   - **`"gh"` or `"forgejo"`** — the poster did everything itself: one PR review
+     (`event: COMMENT`) with an inline comment per change-introduced finding
+     (falling back to body-only if a finding sits off the diff), plus issues for
+     pre-existing findings — one per incidental (diff-extent) finding, and a
+     single rollup checklist issue per full-extent brief, so a full audit can't
+     flood the tracker. Report from the result: `review`, `issues.created`,
      `issues.skipped_existing`, and any `issues.dedup_note`.
    - **`"gh_unavailable"` or `"render"`** — `gh` can't write here (the Claude Code
      Web routine, where writes go through the GitHub connector). The poster wrote
@@ -418,11 +420,17 @@ it silently.
        `title` and `body` exactly as given.
      - Then report `render.stats`, the created issues, `render.issues_existing`,
        and any `render.dedup_note`.
+   - **`"forgejo_unavailable"`** — the poster could not write to the Forgejo
+     instance and there is no connector to hand the payload to. Nothing was
+     posted. Report the result's `reason` — usually a missing or unusable entry
+     in `~/.config/forgejo/instances.toml`, which the reason spells out how to
+     fix — and present the findings as the chat summary instead. Do not try to
+     publish the render payload by other means.
 
    **Never write PR or issue text yourself** — all outward-facing wording comes
    from the poster, so internal process vocabulary (the fan-out, file slices,
-   reviewer indices, kebab-case brief names) cannot leak into GitHub. Reviews and
-   issues are labelled by each brief's readable `review_title`.
+   reviewer indices, kebab-case brief names) cannot leak onto the forge. Reviews
+   and issues are labelled by each brief's readable `review_title`.
 
    **Operational detail goes to the run summary only**, never into a PR or issue:
    - **The coverage account**: state coverage from the dispatch-derived
@@ -461,9 +469,21 @@ it silently.
 - Reviewers are deliberately narrow and sceptical of their own findings — a
   brief with zero findings against a small diff is normal and correct. Do not
   pad the report to look thorough.
-- `gh` is used for reads (PR detection, the diff, issue de-duplication) and, where
-  it can write, for posting the review and creating issues — the primary path. The
-  poster detects whether `gh` can write: where it is read-only (a Claude Code Web
-  routine), the poster writes nothing and hands back ready-to-post content for the
-  GitHub connector instead, while reads still go through `gh`. With no `gh` at all,
-  diff mode still works against the default branch and reports to chat.
+- The forge is detected from the origin remote, in both the planner and the
+  poster: a github.com remote goes through the `gh` CLI, any other remote is
+  treated as a Forgejo (or Gitea) instance and goes through its API. Neither
+  path needs you to name the forge or pass credentials — the scripts resolve
+  both.
+- **GitHub**: `gh` handles reads (PR detection, issue de-duplication) and, where
+  it can write, posting. Where `gh` is read-only (a Claude Code Web routine),
+  the poster hands back ready-to-post content for the GitHub connector instead,
+  while reads still go through `gh`. With no `gh` at all, diff mode still works
+  against the default branch and reports to chat.
+- **Forgejo**: the scripts authenticate with the per-host credentials file
+  `~/.config/forgejo/instances.toml` — one section per remote host or SSH alias,
+  carrying the instance `url` and an API `token`. A token is needed for reads as
+  well as writes on instances that require sign-in, so a missing entry surfaces
+  as a plan warning ("Cannot check for a PR: …") and the run degrades to a
+  default-branch diff with chat output. When that happens, relay the warning's
+  fix — add the section it names — rather than treating the run as PR-less by
+  design.
