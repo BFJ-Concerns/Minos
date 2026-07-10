@@ -14,6 +14,8 @@ scripts:
 		[ -f "$$script" ] || continue; \
 		sh -n "$$script"; \
 	done
+	@bash -n scripts/e2e/forgejo-smoke.sh scripts/e2e/resource-isolation-test.sh scripts/e2e/resources.sh
+	@./scripts/e2e/resource-isolation-test.sh
 
 e2e: build
 	./scripts/e2e/forgejo-smoke.sh
