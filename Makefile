@@ -1,4 +1,4 @@
-.PHONY: test build check scripts e2e
+.PHONY: test build check scripts e2e deployment-smoke
 
 test:
 	go test ./...
@@ -14,8 +14,11 @@ scripts:
 		[ -f "$$script" ] || continue; \
 		sh -n "$$script"; \
 	done
-	@bash -n scripts/e2e/forgejo-smoke.sh scripts/e2e/resource-isolation-test.sh scripts/e2e/resources.sh
+	@bash -n scripts/e2e/forgejo-smoke.sh scripts/e2e/deployment-smoke.sh scripts/e2e/resource-isolation-test.sh scripts/e2e/resources.sh
 	@./scripts/e2e/resource-isolation-test.sh
 
 e2e: build
 	./scripts/e2e/forgejo-smoke.sh
+
+deployment-smoke: build
+	./scripts/e2e/deployment-smoke.sh

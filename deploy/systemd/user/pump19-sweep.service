@@ -1,0 +1,10 @@
+[Unit]
+Description=Pump-19 reconciliation sweep
+Documentation=file:/opt/pump19/docs/go-live.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pump19 sweep --config /etc/pump19
+UMask=0077

@@ -3,7 +3,8 @@
 # Allocate process-owned names and ports so concurrent estate runs cannot
 # stop each other's Forgejo or bind each other's listeners.
 pump19_e2e_allocate_resources() {
-  local lock_root="${XDG_RUNTIME_DIR:-/tmp}/pump19-e2e-resources-${UID}"
+  local lock_root
+  lock_root="$(pump19_e2e_resource_lock_root)"
   mkdir -p "$lock_root"
 
   PUMP19_E2E_RESOLVED_CONTAINER="${PUMP19_E2E_CONTAINER:-pump19-forgejo-e2e-${BASHPID}}"
@@ -19,6 +20,19 @@ pump19_e2e_allocate_resources() {
   pump19_e2e_claim_port PUMP19_E2E_RESOLVED_FORGEJO_PORT "${PUMP19_FORGEJO_PORT:-}" "$lock_root"
   pump19_e2e_claim_port PUMP19_E2E_RESOLVED_HOOK_PORT "${PUMP19_HOOK_PORT:-}" "$lock_root"
   pump19_e2e_claim_port PUMP19_E2E_RESOLVED_CAPTURE_PORT "${PUMP19_CAPTURE_PORT:-}" "$lock_root"
+}
+
+pump19_e2e_claim_single_port() {
+  local output_name="$1"
+  local requested="${2:-}"
+  local lock_root
+  lock_root="$(pump19_e2e_resource_lock_root)"
+  mkdir -p "$lock_root"
+  pump19_e2e_claim_port "$output_name" "$requested" "$lock_root"
+}
+
+pump19_e2e_resource_lock_root() {
+  printf '%s\n' "${XDG_RUNTIME_DIR:-/tmp}/pump19-e2e-resources-${UID}"
 }
 
 pump19_e2e_claim_port() {
