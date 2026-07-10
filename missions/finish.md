@@ -129,7 +129,10 @@ nothing can notify you afterwards.
 
 Record exactly one outcome as machine state — a single PR comment with a
 trailing marker, a terminal `pump19/finish` status, and the release of
-`Finishing`. The marker is:
+`Finishing`. The comment's prose is one or two plain sentences about the
+merge outcome itself; the process stays off the PR (operator ruling
+2026-07-10): no run or workflow names, no model or engine identities. The
+marker is:
 
 `Pump-19: head=FULL_SHA outcome=merged|refused[ reason=REASON] run=finish`
 
