@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
+func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	root := t.TempDir()
 	t.Cleanup(func() {
 		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -106,23 +106,148 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 
 	setReviewRunEnv(t, root, configRoot, installRoot, "cccccccccccccccc", "")
 	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
-	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
+	t.Setenv("PUMP19_AUTO_MERGE", "true")
+	afterReady := filepath.Join(root, "after-ready")
+	continueAfterReady := filepath.Join(root, "continue-after-ready")
+	t.Setenv("PUMP19_STANDIN_AFTER_READY_READY", afterReady)
+	t.Setenv("PUMP19_STANDIN_AFTER_READY_CONTINUE", continueAfterReady)
+	cleanResult := make(chan error, 1)
+	go func() {
+		cleanResult <- RunWrapCommand(t.Context(), []string{"--config", configRoot})
+	}()
+	if !waitForReviewFixturePath(afterReady, 5*time.Second) {
+		_ = os.WriteFile(continueAfterReady, nil, 0o644)
+		t.Fatal("stand-in did not reach the post-Ready, pre-release seam")
+	}
+	cleanFacts := Facts{
+		Forge:   "local",
+		Owner:   "pump19",
+		Repo:    "subject",
+		PR:      "42",
+		HeadSHA: "cccccccccccccccc",
+		Labels:  readFixtureLabels(t, filepath.Join(stateDir, "labels")),
+	}
+	if !cleanFacts.HasLabel(LabelReviewing) || !cleanFacts.HasLabel(LabelReady) {
+		t.Fatalf("Ready should overlap Reviewing before review release: %v", cleanFacts.Labels)
+	}
+	drafts := false
+	autoMergeRepo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"pump19"}, Drafts: &drafts}}}
+	adaptation := Adaptation{Dir: adaptationDir}
+	readyActor, err := resolveReadyActor(t.Context(), autoMergeRepo, adaptation, cleanFacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardLog, err := os.Create(filepath.Join(root, "ready-guard.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardedFacts, err := clearUnauthorisedReady(t.Context(), autoMergeRepo, adaptation, cleanFacts, readyActor, guardLog)
+	if closeErr := guardLog.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !guardedFacts.HasLabel(LabelReady) {
+		t.Fatal("the service bot's Ready application failed the sweep actor guard")
+	}
+	statuses, err := adaptation.GetStatuses(t.Context(), "pump19", "subject", cleanFacts.HeadSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision, ok := reconcileDecision(autoMergeRepo, guardedFacts, statuses, readyActor); !ok || decision != RunFinish {
+		t.Fatalf("Ready implication during Reviewing overlap = %s ok=%v, want finish", decision, ok)
+	}
+	if err := beginRun(t.Context(), adaptation, cleanFacts, RunFinish); err != nil {
+		t.Fatal(err)
+	}
+	assertContainsFile(t, filepath.Join(stateDir, "labels"), LabelFinishing)
+	if err := adaptation.RemoveLabel(t.Context(), "pump19", "subject", "42", LabelFinishing); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(continueAfterReady, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-cleanResult; err != nil {
 		t.Fatal(err)
 	}
 	cleanRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "cccccccccccccccc", RunReview)
 	assertContainsFile(t, filepath.Join(cleanRun, "review.md"), "coverage=full")
 	assertContainsFile(t, filepath.Join(cleanRun, "review.md"), "verdict=converged")
 	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Converged")
+	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Ready")
+	assertReviewReadyOrder(t, filepath.Join(stateDir, "operations"), "cccccccccccccccc")
+	t.Setenv("PUMP19_STANDIN_AFTER_READY_READY", "")
+	t.Setenv("PUMP19_STANDIN_AFTER_READY_CONTINUE", "")
 
-	setReviewRunEnv(t, root, configRoot, installRoot, "dddddddddddddddd", "")
-	t.Setenv("PUMP19_STANDIN_VERDICT", "partial-coverage")
-	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
-		t.Fatal(err)
+	negativeCases := []struct {
+		name             string
+		head             string
+		verdict          string
+		autoMerge        string
+		labels           []string
+		flakyAfterStatus bool
+	}{
+		{name: "standing-findings", head: "dddddddddddddddd", verdict: "standing-findings", autoMerge: "true"},
+		{name: "partial-coverage", head: "1111111111111111", verdict: "partial-coverage", autoMerge: "true"},
+		{name: "auto-merge-disabled", head: "2222222222222222", verdict: "converged", autoMerge: "false"},
+		{name: "flaky-tests", head: "3333333333333333", verdict: "converged", autoMerge: "true", labels: []string{"Flaky Tests"}},
+		{name: "flaky-arrives-on-post-status-refresh", head: "5555555555555555", verdict: "converged", autoMerge: "true", flakyAfterStatus: true},
 	}
-	partialRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "dddddddddddddddd", RunReview)
+	for _, tc := range negativeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			readyBefore := fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelReady)
+			setReviewRunEnv(t, root, configRoot, installRoot, tc.head, "")
+			t.Setenv("PUMP19_STANDIN_VERDICT", tc.verdict)
+			t.Setenv("PUMP19_AUTO_MERGE", tc.autoMerge)
+			if tc.flakyAfterStatus {
+				t.Setenv("PUMP19_FIXTURE_FLAKY_AFTER_STATUS", "1")
+			}
+			writeFixtureLabels(t, filepath.Join(stateDir, "labels"), tc.labels)
+			if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
+				t.Fatal(err)
+			}
+			if readyAfter := fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelReady); readyAfter != readyBefore {
+				t.Fatalf("Ready applications = %d, want unchanged %d", readyAfter, readyBefore)
+			}
+			if tc.flakyAfterStatus {
+				assertContainsFile(t, filepath.Join(stateDir, "labels"), "Flaky Tests")
+			}
+		})
+	}
+	partialRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "1111111111111111", RunReview)
 	assertContainsFile(t, filepath.Join(partialRun, "review.md"), "coverage=partial")
 	assertContainsFile(t, filepath.Join(partialRun, "review.md"), "verdict=partial-coverage")
 	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Partial Coverage")
+
+	// Ready is the sole mutation after the terminal review status. If it fails,
+	// the wrapper preserves that status and records the command failure in the
+	// run log; with no Ready, reconciliation has no finish implication to fire.
+	applyFailureHead := "4444444444444444"
+	setReviewRunEnv(t, root, configRoot, installRoot, applyFailureHead, "")
+	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
+	t.Setenv("PUMP19_AUTO_MERGE", "true")
+	t.Setenv("PUMP19_FIXTURE_FAIL_READY_APPLY", "1")
+	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
+		t.Fatal("failed Ready apply unexpectedly completed")
+	}
+	applyFailureRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", applyFailureHead, RunReview)
+	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+	assertContainsFile(t, filepath.Join(applyFailureRun, "run.log"), "fixture Ready apply failed")
+	assertContainsFile(t, filepath.Join(applyFailureRun, "run.log"), "pump19 run-wrap error")
+	failedApplyLabels := readFixtureLabels(t, filepath.Join(stateDir, "labels"))
+	if containsFixtureLabel(failedApplyLabels, LabelReady) || containsFixtureLabel(failedApplyLabels, LabelReviewing) {
+		t.Fatalf("failed Ready apply left active control labels: %v", failedApplyLabels)
+	}
+	failedApplyFacts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: applyFailureHead, Labels: failedApplyLabels}
+	failedApplyStatuses, err := adaptation.GetStatuses(t.Context(), "pump19", "subject", applyFailureHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision, ok := reconcileDecision(autoMergeRepo, failedApplyFacts, failedApplyStatuses, ""); ok {
+		t.Fatalf("failed Ready apply unexpectedly re-fired %s", decision)
+	}
+	t.Setenv("PUMP19_FIXTURE_FAIL_READY_APPLY", "")
 
 	// The head may move after the run claims Reviewing but before it posts. Hold
 	// the deterministic engine at that exact seam, advance the forge fixture,
@@ -169,6 +294,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	}
 	setReviewRunEnv(t, root, configRoot, installRoot, "eeeeeeeeeeeeeeee", "")
 	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
+	t.Setenv("PUMP19_AUTO_MERGE", "true")
 	t.Setenv("PUMP19_STANDIN_MISMATCH_AFTER_CLAIM", "floating-alias-surprise")
 	t.Setenv("PUMP19_UNIT", "")
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
@@ -182,6 +308,9 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	}
 	if string(postedAfterMismatch) != string(postedBeforeMismatch) {
 		t.Fatal("model mismatch posted a new review")
+	}
+	if containsFixtureLabel(readFixtureLabels(t, filepath.Join(stateDir, "labels")), LabelReady) {
+		t.Fatal("errored review applied Ready")
 	}
 
 	// A hard model-mismatch abort cannot run the child's EXIT trap. Age its real
@@ -213,6 +342,31 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 		t.Fatalf("sweep did not reap the mismatched run claim: %v", err)
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "labels-removed"), "Reviewing")
+
+	// Complete the deterministic cross-run journey: the converged review above
+	// supplied the service marker and Ready; finish claims and merges even while
+	// the review run's in-flight label is present.
+	finishStandin, err := filepath.Abs(filepath.Join("..", "..", "scripts", "e2e", "finish-engine-standin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishRunBodyEnv := "PUMP19_ENGINE_LAUNCH_LEAD='" + finishStandin + "'\n" +
+		"PUMP19_ENSEMBLE_LAUNCH='/bin/false'\n" +
+		"PUMP19_PINS='" + pins + "'\n" +
+		"PUMP19_REVIEW_SCRIPTS='" + reviewScripts + "'\n" +
+		"PUMP19_BIN='" + binary + "'\n"
+	if err := os.WriteFile(filepath.Join(configRoot, "run-body.env"), []byte(finishRunBodyEnv), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	copyRepoFile(t, filepath.Join("..", "..", "missions", "finish.md"), filepath.Join(installRoot, "missions", "finish.md"), 0o644)
+	setReadyJourneyFinishEnv(t, root, configRoot, installRoot, "cccccccccccccccc")
+	writeFixtureLabels(t, filepath.Join(stateDir, "labels"), []string{LabelReviewing, LabelReady, LabelConverged})
+	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	finishRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "cccccccccccccccc", RunFinish)
+	assertContainsFile(t, filepath.Join(finishRun, "finish-summary.md"), "outcome=merged")
+	assertContainsFile(t, filepath.Join(stateDir, "merge.args"), "merge")
 }
 
 func waitForReviewFixturePath(path string, timeout time.Duration) bool {
@@ -224,6 +378,130 @@ func waitForReviewFixturePath(path string, timeout time.Duration) bool {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return false
+}
+
+func readFixtureLabels(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
+}
+
+func writeFixtureLabels(t *testing.T, path string, labels []string) {
+	t.Helper()
+	text := ""
+	if len(labels) > 0 {
+		text = strings.Join(labels, "\n") + "\n"
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func containsFixtureLabel(labels []string, want string) bool {
+	for _, label := range labels {
+		if label == want {
+			return true
+		}
+	}
+	return false
+}
+
+func fixtureLineCount(t *testing.T, path, want string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == want {
+			count++
+		}
+	}
+	return count
+}
+
+func assertReviewReadyOrder(t *testing.T, path, head string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	post, status, ready := -1, -1, -1
+	for i, line := range lines {
+		switch line {
+		case "post-review:" + head:
+			post = i
+		case "set-status:" + head + ":pump19/review:success":
+			status = i
+		case "add-label:" + head + ":Ready":
+			ready = i
+		}
+	}
+	if post < 0 || status <= post || ready <= status {
+		t.Fatalf("review publication order for %s = post:%d status:%d Ready:%d\n%s", head, post, status, ready, data)
+	}
+	freshFacts := 0
+	for _, line := range lines[status+1 : ready] {
+		if line == "get-pr-facts:"+head {
+			freshFacts++
+		}
+	}
+	// The first read is the explicit post-status flaky-label refresh. The
+	// second is run-guard current immediately before the Ready mutation. Merely
+	// finding either read would let the currency guard mask a missing refresh.
+	if freshFacts != 2 {
+		t.Fatalf("PR-facts reads between terminal status and Ready for %s = %d, want 2\n%s", head, freshFacts, data)
+	}
+}
+
+func setReadyJourneyFinishEnv(t *testing.T, root, configRoot, installRoot, head string) {
+	t.Helper()
+	stateDir := filepath.Join(root, "state")
+	if err := os.WriteFile(filepath.Join(stateDir, "head"), []byte(head+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runDir := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", head, RunFinish)
+	values := map[string]string{
+		"PUMP19_RUN_DIR":          runDir,
+		"PUMP19_RUN_KIND":         "finish",
+		"PUMP19_OCCASION":         "label-added:Ready",
+		"PUMP19_FORGE":            "local",
+		"PUMP19_REPO":             "pump19/subject",
+		"PUMP19_OWNER":            "pump19",
+		"PUMP19_REPO_NAME":        "subject",
+		"PUMP19_PR":               "42",
+		"PUMP19_HEAD_SHA":         head,
+		"PUMP19_BASE_REF":         "main",
+		"PUMP19_WORKSPACE":        filepath.Join(root, "finish-workspace-"+head),
+		"PUMP19_DIFF":             filepath.Join(runDir, "diff.patch"),
+		"PUMP19_ADAPTATION":       filepath.Join(root, "adaptation"),
+		"PUMP19_RUN_BODY":         filepath.Join(installRoot, "run-body", "run-body"),
+		"PUMP19_CONFIG":           configRoot,
+		"PUMP19_UNIT":             "pump19-finish-test.service",
+		"PUMP19_BUILD_CMD":        "true",
+		"PUMP19_TEST_CMD":         "true",
+		"PUMP19_AUTO_MERGE":       "true",
+		"PUMP19_FIX_AUTHOR_NAME":  "Pump-19",
+		"PUMP19_FIX_AUTHOR_EMAIL": "pump19@example.invalid",
+	}
+	for key, value := range values {
+		t.Setenv(key, value)
+	}
+	for _, key := range []string{"PUMP19_STANDIN_VERDICT", "PUMP19_STANDIN_MISMATCH_AFTER_CLAIM", "PUMP19_FIXTURE_FAIL_READY_APPLY", "PUMP19_FIXTURE_FLAKY_AFTER_STATUS", "PUMP19_STANDIN_AFTER_READY_READY", "PUMP19_STANDIN_AFTER_READY_CONTINUE"} {
+		t.Setenv(key, "")
+	}
 }
 
 func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding string) {
@@ -263,6 +541,7 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding 
 		"PUMP19_SKILL":                   skill,
 		"PUMP19_RUN_BODY":                filepath.Join(installRoot, "run-body", "run-body"),
 		"PUMP19_BRIEFS":                  ".review",
+		"PUMP19_AUTO_MERGE":              "false",
 		"PUMP19_CONFIG":                  configRoot,
 		"PUMP19_UNIT":                    "pump19-test.service",
 		"PUMP19_STANDIN_VERDICT":         "standing-findings",
@@ -322,6 +601,7 @@ func installReviewRunBodyFixture(t *testing.T, installRoot string) {
 
 func writeReviewAdaptationFixture(t *testing.T, adaptationDir, stateDir string) {
 	t.Helper()
+	operations := filepath.Join(stateDir, "operations")
 	writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), `#!/usr/bin/env sh
 set -eu
 rm -rf "$PUMP19_WORKSPACE"
@@ -342,13 +622,28 @@ git -C "$PUMP19_WORKSPACE" diff origin/main...HEAD >"$PUMP19_DIFF"
 `)
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\ncat '"+filepath.Join(stateDir, "statuses.json")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "get-pr-facts"), `#!/usr/bin/env sh
+printf 'get-pr-facts:%s\n' "$PUMP19_HEAD_SHA" >>'`+operations+`'
+if [ "${PUMP19_FIXTURE_FLAKY_AFTER_STATUS:-}" = 1 ] &&
+   grep -Fxq "set-status:$PUMP19_HEAD_SHA:pump19/review:success" '`+operations+`' &&
+   ! grep -Fxq "$PUMP19_HEAD_SHA" '`+filepath.Join(stateDir, "flaky-after-status-injected")+`' 2>/dev/null; then
+  # Inject on the first facts read after success. This exercises the mission's
+  # explicit refresh rather than merely starting the run with a flaky label.
+  printf 'Flaky Tests\n' >>'`+filepath.Join(stateDir, "labels")+`'
+  printf '%s\n' "$PUMP19_HEAD_SHA" >>'`+filepath.Join(stateDir, "flaky-after-status-injected")+`'
+fi
 head=$(cat '`+filepath.Join(stateDir, "head")+`')
 labels=$(paste -sd, '`+filepath.Join(stateDir, "labels")+`')
 printf 'OCCASION=reconcile\nOWNER=%s\nREPO=%s\nPR=%s\nHEAD_SHA=%s\nBASE_REF=main\nLABELS=%s\n' "$1" "$2" "$3" "$head" "$labels"
+printf 'HEAD_BRANCH=main\nHEAD_REPO=pump19/subject\nBASE_REPO=pump19/subject\nMERGEABLE=true\n'
 `)
 	writeScript(t, filepath.Join(adaptationDir, "add-label"), `#!/usr/bin/env sh
 set -eu
 printf '%s\n' "$@" >>'`+filepath.Join(stateDir, "labels-added")+`'
+printf 'add-label:%s:%s\n' "$PUMP19_HEAD_SHA" "$4" >>'`+operations+`'
+if [ "$4" = Ready ] && [ "${PUMP19_FIXTURE_FAIL_READY_APPLY:-}" = 1 ]; then
+  echo 'fixture Ready apply failed' >&2
+  exit 88
+fi
 if ! grep -Fxq "$4" '`+filepath.Join(stateDir, "labels")+`'; then printf '%s\n' "$4" >>'`+filepath.Join(stateDir, "labels")+`'; fi
 `)
 	writeScript(t, filepath.Join(adaptationDir, "remove-label"), `#!/usr/bin/env sh
@@ -361,15 +656,24 @@ mv "$tmp" '`+filepath.Join(stateDir, "labels")+`'
 	writeScript(t, filepath.Join(adaptationDir, "set-status"), `#!/usr/bin/env sh
 set -eu
 printf '%s\n' "$@" >'`+filepath.Join(stateDir, "status.args")+`'
+printf 'set-status:%s:%s:%s\n' "$PUMP19_HEAD_SHA" "$4" "$5" >>'`+operations+`'
 jq -nc --arg context "$4" --arg state "$5" '[{id:1,context:$context,state:$state,creator:"pump19"}]' >'`+filepath.Join(stateDir, "statuses.json")+`'
 `)
 	comments := filepath.Join(stateDir, "comments.json")
+	reviews := filepath.Join(stateDir, "reviews.json")
 	if err := os.WriteFile(comments, []byte("[]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(reviews, []byte("[]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	writeScript(t, filepath.Join(adaptationDir, "list-review-comments"), "#!/usr/bin/env sh\ncat '"+comments+"'\n")
-	writeScript(t, filepath.Join(adaptationDir, "post-review"), "#!/usr/bin/env sh\nset -eu\ncp \"$6\" '"+filepath.Join(stateDir, "posted-review.md")+"'\ncp \"$7\" '"+filepath.Join(stateDir, "posted-comments.json")+"'\nif [ \"$(jq 'length' \"$7\")\" -gt 0 ]; then jq '[.[0] + {id:91}]' \"$7\" >'"+comments+"'; fi\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "post-review"), "#!/usr/bin/env sh\nset -eu\nprintf 'post-review:%s\\n' \"$PUMP19_HEAD_SHA\" >>'"+operations+"'\ncp \"$6\" '"+filepath.Join(stateDir, "posted-review.md")+"'\ncp \"$7\" '"+filepath.Join(stateDir, "posted-comments.json")+"'\njq --arg head \"$4\" --rawfile body \"$6\" '. + [{state:\"APPROVED\",commit_id:$head,body:$body}]' '"+reviews+"' >'"+reviews+".tmp'\nmv '"+reviews+".tmp' '"+reviews+"'\nif [ \"$(jq 'length' \"$7\")\" -gt 0 ]; then jq '[.[0] + {id:91}]' \"$7\" >'"+comments+"'; fi\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "update-comment"), "#!/usr/bin/env sh\ncp \"$4\" '"+filepath.Join(stateDir, "updated-body.md")+"'\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), "#!/usr/bin/env sh\ncat '"+reviews+"'\n")
+	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'pump19\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "merge"), "#!/usr/bin/env sh\nprintf 'merge:%s\\n' \"$PUMP19_HEAD_SHA\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "merge.args")+"'\nprintf '{\"merged\":true}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\ncat \"$4\" >>'"+filepath.Join(stateDir, "comments")+"'\nprintf '{}\\n'\n")
 }
 
 func assertContainsFile(t *testing.T, path, want string) {

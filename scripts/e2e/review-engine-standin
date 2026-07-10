@@ -155,5 +155,29 @@ require_current
 "$PUMP19_BIN" adapt set-status \
   "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
   pump19/review success "Pump-19 review completed: $verdict" >/dev/null
+
+if [ "$verdict" = converged ] && [ "${PUMP19_AUTO_MERGE:-false}" = true ]; then
+  # Ready fires finish immediately, so take a fresh label snapshot only after
+  # both terminal review records exist. Flaky Tests owns the pause while its
+  # label is present; convergence alone must not jump that queue.
+  ready_facts="$PUMP19_RUN_DIR/ready-pr-facts.txt"
+  "$PUMP19_BIN" adapt get-pr-facts \
+    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$ready_facts"
+  ready_labels=$(sed -n 's/^LABELS=//p' "$ready_facts")
+  case ",$ready_labels," in
+    *,"Flaky Tests",*) ;;
+    *)
+      require_current
+      "$PUMP19_BIN" adapt add-label \
+        "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" Ready >/dev/null
+      if [ -n "${PUMP19_STANDIN_AFTER_READY_READY:-}" ]; then
+        : >"$PUMP19_STANDIN_AFTER_READY_READY"
+        while [ ! -e "$PUMP19_STANDIN_AFTER_READY_CONTINUE" ]; do
+          sleep 0.05
+        done
+      fi
+      ;;
+  esac
+fi
 printf '{"type":"assistant","message":{"model":"%s"}}\n' "$standin_model"
 printf '{"type":"result","subtype":"success","modelUsage":{"%s":{}}}\n' "$standin_model"

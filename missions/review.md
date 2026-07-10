@@ -33,6 +33,8 @@ the mission says, not as the skill says:
   test artefacts in this disposable workspace are permitted.
 - `PUMP19_DIFF` is the prepared base-to-head diff.
 - `PUMP19_BRIEFS` names the subject repository's briefs path.
+- `PUMP19_AUTO_MERGE` is `true` only when repository policy authorises the
+  service to apply the `Ready` finish label after convergence.
 - `PUMP19_RUN_DIR` holds writable session evidence. The wrapper captures
   diagnostics in `run.log`; the sweep uses its activity as the liveness signal.
 - `pump19 adapt …` selects the configured forge adaptation from
@@ -128,17 +130,33 @@ Publish a successful terminal result in this order:
 4. Before each label mutation, require `current`. Remove existing `Converged`,
    `Standing Findings`, and `Partial Coverage` labels, then add the mapped
    outcome label. Leave `Ready` untouched.
-5. Require `current`, then write `pump19/review=success` last.
-6. Release `Reviewing`. A release failure after that terminal success is an
+5. Require `current`, then write the terminal `pump19/review=success` status.
+6. Only when the verdict is `converged` and `PUMP19_AUTO_MERGE=true`, re-read
+   current PR facts with `pump19 adapt get-pr-facts OWNER REPO PR` after the
+   terminal status write. If its `LABELS` contains `Flaky Tests`, do not apply
+   `Ready`; the flaky-test pause owns the next move. Otherwise require
+   `current`, then apply `Ready` with `pump19 adapt add-label OWNER REPO PR
+   Ready`. This is deliberately the sole mutation after terminal success: a
+   finish run fired by the label can now observe both the complete head-matched
+   review marker and `pump19/review=success`. For every other verdict, and when
+   auto-merge is false, make no `Ready` read or write.
+7. Release `Reviewing`. A release failure after that terminal success is an
    operational clean-up failure: log it and leave the stale label for the
    reconciliation sweep. It does not rewrite the completed review as an error.
 
 Any non-zero mechanical, provenance, or forge command is fatal unless this
 mission explicitly classifies its result as a successful yield. Exit non-zero
 so the wrapper writes `pump19/review=error` when no terminal status exists. Do
-not post operational diagnostics as PR comments. If a late mutation fails after
-the review was posted, leave the partial forge record in place; the error status
-records that terminal publication did not complete.
+not post operational diagnostics as PR comments. If a mutation before the
+terminal status fails after the review was posted, leave the partial forge
+record in place; the wrapper's error status records that terminal publication
+did not complete. If the later `Ready` apply fails, exit non-zero after
+controlled release; this remains a retryable run failure, not successful
+post-terminal cleanup. The wrapper records the command failure in `run.log` but
+preserves the already-written `pump19/review=success` status; no finish
+implication fires without the label. The current sweep cannot derive a missing
+`Ready` from that converged status, so automatic retry remains a bounded
+follow-up rather than a property this mission can provide.
 
 ## Model provenance
 
