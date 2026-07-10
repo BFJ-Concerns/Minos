@@ -2,6 +2,8 @@ package shell
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +11,22 @@ import (
 	"testing"
 	"time"
 )
+
+func TestWebhookBodyAtExactLimitReachesAuthentication(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/hooks/local", strings.NewReader(strings.Repeat("x", int(maxWebhookBodyBytes))))
+	response := httptest.NewRecorder()
+
+	err := handleHook(t.Context(), receiverTestConfig(t, t.TempDir()), response, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("exact-limit body status = %d, want authentication rejection %d", response.Code, http.StatusUnauthorized)
+	}
+	if strings.Contains(response.Body.String(), "too large") {
+		t.Fatalf("exact-limit body was rejected by the size gate: %q", response.Body.String())
+	}
+}
 
 func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 	root := t.TempDir()
