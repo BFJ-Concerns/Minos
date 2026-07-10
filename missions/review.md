@@ -15,10 +15,11 @@ the mission says, not as the skill says:
   service role — rather than running the skill's own pull-request discovery (its
   `gh pr view` / `gh`-based lookup sections). There is no second source to
   reconcile against.
-- **Publish through this mission's `pump19 adapt` path.** Post findings and the
-  review through the `pump19 adapt` commands below, because they select the
-  configured forge and apply the service's credential boundary; the skill's own
-  comment-posting machinery is not used here. The skill's mechanical helpers
+- **Publish only through this mission's `pump19 adapt` path.** Post findings and
+  the review solely through the `pump19 adapt` commands below, because they
+  select the configured forge and apply the service's credential boundary; no
+  other forge-writing route is used, and the skill's own comment-posting
+  machinery is not used here. The skill's mechanical helpers
   that operate on the diff (planning, quote-checking) are yours to drive; only
   its forge-writing and forge-reading surfaces are supplied by this mission
   instead.
