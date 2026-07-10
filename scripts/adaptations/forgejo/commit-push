@@ -1,0 +1,134 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+# Land a fix as an ordinary attributed commit on the PR's head branch. The fix
+# session edits the untrusted workspace; this script — holding the service
+# credential the session never sees — commits and pushes.
+#
+# The credential must never reach a git process that honours workspace-controlled
+# config, hooks, or filters. A repository-controlled hook (core.hooksPath, a
+# pre-commit or pre-push hook, a clean/smudge filter, core.fsmonitor) would
+# otherwise read the token from the environment or from GIT_ASKPASS. So the two
+# steps are split by trust:
+#
+#   1. Commit INSIDE the workspace with the token scrubbed from the git
+#      environment and hooks disabled — a credential-free git, so any hostile
+#      workspace hook that still ran would have nothing to steal.
+#   2. Push from a TRUSTED throwaway repo outside the workspace, into which the
+#      fix commit is fetched over a local path (also credential-free). Only this
+#      push carries the credential, and it runs with clean config and no
+#      workspace hooks in scope.
+#
+# The push is fast-forward only: a fix advances the branch, never rewrites it.
+#
+# The outcome rides stdout as a first-word token, and a handled outcome exits 0:
+#   landed <sha>   committed and pushed
+#   fruitless      nothing to commit (empty tree)
+#   unwritable     the remote refused the push (a protected branch)
+# Only a genuine infrastructure failure exits non-zero. This is deliberate: the
+# session reaches this script through `pump19 adapt`, whose Go wrapper collapses
+# any non-zero exit to 1 and discards stdout on error — so a distinct exit code
+# could not reach the session. The token on a zero exit does.
+
+owner="$1"
+repo="$2"
+# Argument 3 is the PR number, part of the mission's uniform adaptation call
+# shape; the push targets the branch, so it is not read here.
+head_branch="$4"
+author_name="$5"
+author_email="$6"
+model="$7"
+message_file="$8"
+
+: "${PUMP19_WORKSPACE:?PUMP19_WORKSPACE is required}"
+
+if [ -z "$head_branch" ]; then
+  echo "commit-push: head branch is empty (unwritable head has no fix path)" >&2
+  exit 2
+fi
+if [ ! -s "$message_file" ]; then
+  echo "commit-push: commit message file is empty: $message_file" >&2
+  exit 2
+fi
+
+# A credential-free git against the workspace: the token is removed from the
+# environment and hooks/fsmonitor are forced off, so no workspace-controlled
+# escape can reach a secret (there is none to reach) or run on our behalf.
+ws_git() {
+  env -u PUMP19_FORGE_TOKEN \
+    git -C "$PUMP19_WORKSPACE" -c core.hooksPath=/dev/null -c core.fsmonitor= "$@"
+}
+
+# The session gates fruitlessness upstream; an empty tree here is the backstop
+# for that outcome, reported as the fruitless token.
+if [ -z "$(ws_git status --porcelain)" ]; then
+  printf 'fruitless\n'
+  exit 0
+fi
+
+trusted="$(mktemp -d)"
+tmp_askpass="$(mktemp)"
+commit_message="$(mktemp)"
+push_err="$(mktemp)"
+cleanup() {
+  rm -rf "$trusted"
+  rm -f "$tmp_askpass" "$commit_message" "$push_err"
+}
+trap cleanup EXIT
+
+# 1. Commit inside the workspace, credential-free.
+{
+  cat "$message_file"
+  printf '\n'
+  printf 'Pump-19-Model: %s\n' "$model"
+} >"$commit_message"
+ws_git add -A
+env GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
+    GIT_COMMITTER_NAME="$author_name" GIT_COMMITTER_EMAIL="$author_email" \
+    PUMP19_FORGE_TOKEN= \
+  git -C "$PUMP19_WORKSPACE" -c core.hooksPath=/dev/null -c core.fsmonitor= \
+    commit -q -F "$commit_message"
+sha="$(ws_git rev-parse HEAD)"
+
+# 2. Fetch the fix commit into a trusted, clean-config repo over a local path
+#    (no credential), then push from there. The workspace's config, hooks, and
+#    filters are wholly out of scope for the credentialled push.
+env -u PUMP19_FORGE_TOKEN git -C "$trusted" init -q
+env -u PUMP19_FORGE_TOKEN git -C "$trusted" fetch --no-tags -q "$PUMP19_WORKSPACE" HEAD
+
+cat >"$tmp_askpass" <<EOF
+#!/usr/bin/env sh
+case "\$1" in
+  *Username*) printf '%s\n' x-access-token ;;
+  *Password*) printf '%s\n' "${PUMP19_FORGE_TOKEN}" ;;
+  *) printf '\n' ;;
+esac
+EOF
+chmod 700 "$tmp_askpass"
+
+repo_url="${PUMP19_API_BASE%/}/${owner}/${repo}.git"
+
+if GIT_ASKPASS="$tmp_askpass" GIT_TERMINAL_PROMPT=0 \
+     git -C "$trusted" -c core.hooksPath=/dev/null \
+       push "$repo_url" "FETCH_HEAD:refs/heads/${head_branch}" 2>"$push_err"; then
+  :
+else
+  status=$?
+  cat "$push_err" >&2
+  # A remote refusal is the unwritable head; anything else is infrastructure.
+  if grep -qiE 'remote rejected|pre-receive hook declined|hook declined|protected branch|\[rejected\]|non-fast-forward' "$push_err"; then
+    printf 'unwritable\n'
+    exit 0
+  fi
+  exit "$status"
+fi
+
+# The credential never touched the workspace; assert it anyway as a guard.
+if grep -R "${PUMP19_FORGE_TOKEN}" "$PUMP19_WORKSPACE/.git/config" >/dev/null 2>&1; then
+  echo "credential leaked into workspace .git/config" >&2
+  exit 1
+fi
+
+printf 'landed %s\n' "$sha"

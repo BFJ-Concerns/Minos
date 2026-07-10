@@ -1,35 +1,39 @@
 #!/usr/bin/env python3
-"""Publish collated agent-review findings to GitHub.
+"""Publish collated agent-review findings to the repo's forge.
 
 Reads one findings JSON document — from a file-path argument when given, else
 stdin — and routes its findings two ways:
 
   - **Change-introduced findings** (no `preexisting: true`) describe problems the
     branch caused. They go to the *pull request*: as one PR review with an inline
-    comment per finding on the `gh` path, or as one consolidated comment on the
-    connector path.
+    comment per finding, or as one consolidated comment on the connector path.
   - **Pre-existing findings** (`preexisting: true`) are violations the change did
-    not introduce. They are independent of the PR, so each becomes its own GitHub
+    not introduce. They are independent of the PR, so each becomes its own
     *issue* rather than cluttering the review. Issues are de-duplicated against
     open ones so re-running on the same PR does not pile up copies.
 
-Two write paths, chosen automatically — the skill keeps `gh` as its primary
-mechanism and only the *write* differs:
+The forge is keyed off the origin remote (see forge.py):
 
-  - **`gh` path (default).** When `gh` can write to the repo, this script posts the
-    review and creates the issues itself.
-  - **Connector path.** When `gh` cannot write — the Claude Code Web routine
-    environment, where `gh` is read-only and writes must go through the GitHub
-    connector — this script writes nothing. It instead prints a `render` payload:
-    the finished comment markdown and ready-to-create issue bodies, for the
-    calling skill to post with whatever GitHub connector tools it has. `gh` reads
-    still work there, so issue de-duplication is done here regardless of path.
+  - **GitHub remotes** post through the `gh` CLI, with two write paths chosen
+    automatically. When `gh` can write, this script posts everything itself.
+    When it cannot — the Claude Code Web routine environment, where `gh` is
+    read-only and writes go through the GitHub connector — the script writes
+    nothing and instead prints a `render` payload: the finished comment markdown
+    and ready-to-create issue bodies, for the calling skill to post with its
+    GitHub connector tools. `gh` reads still work there, so issue de-duplication
+    happens here regardless of path. Write capability is detected up front with
+    a read-only permissions probe, with a write-failure check as the backstop
+    (the precise way web blocks writes is undocumented, so the attempt is the
+    only fully reliable signal).
+  - **Every other remote is a Forgejo/Gitea instance**, reached directly over
+    its API with the per-host credentials in ~/.config/forgejo/instances.toml.
+    There is no connector environment on this path: when the credentials are
+    missing or the API refuses, the script prints the same `render` payload with
+    a reason, and the calling skill reports the failure (and the fix) instead of
+    posting.
 
-Write capability is detected up front with a read-only permissions probe, with a
-write-failure check as the backstop (the precise way web blocks writes is
-undocumented, so the attempt is the only fully reliable signal). `--render` forces
-the connector payload without attempting any write — used for tests and when the
-caller already knows it is on the connector path.
+`--render` forces the render payload on either forge without attempting any
+write — used for tests and when the caller already knows it cannot post.
 
 All outward-facing text is generated here, verbatim, from the findings — never
 by the model — so internal process vocabulary (the fan-out, file slices, reviewer
@@ -56,19 +60,33 @@ Expected document shape:
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 
+import forge as forge_mod
+
 # Lower number sorts first (most urgent). Anything unrecognised sorts last.
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
-# shields.io badge colour per priority. Used only on the gh path's inline
-# comments — one badge per anchored comment. The consolidated comment and issue
-# bodies use plain priority text instead: dozens of badge images in one body all
-# fetch through GitHub's image proxy, which is slow and flaky at that volume.
+# shields.io badge colour per priority. Used only on GitHub inline comments —
+# one badge per anchored comment. The consolidated comment and issue bodies use
+# plain priority text instead: dozens of badge images in one body all fetch
+# through GitHub's image proxy, which is slow and flaky at that volume. Forgejo
+# inline comments use plain text too — a self-hosted instance (and its readers)
+# should not depend on an external image service at all.
 PRIORITY_COLOUR = {"P0": "red", "P1": "orange", "P2": "yellow", "P3": "blue"}
+
+# The run's forge context, set at entry (run_forgejo) before any formatting
+# happens. Threading it through every formatting helper would churn eight
+# signatures for one script-lifetime constant; a single module-level record is
+# the lesser evil. "kind" picks the permalink shape and badge style; "web_base"
+# is the instance root for Forgejo permalinks (GitHub's is fixed) — None when
+# the instance is unknown (missing credentials), in which case permalinks are
+# omitted rather than fabricated.
+RUN_FORGE = {"kind": "github", "web_base": "https://github.com"}
 
 # Open issues scanned for the de-dup marker. A repo with more open issues than
 # this risks a missed duplicate; the cap is reported so a silent gap is visible.
@@ -107,15 +125,16 @@ def gh_present():
 
 
 def is_permission_failure(err):
-    """True when a gh write failed because gh cannot write here at all — a
-    read-only token or the read-only web routine — as opposed to a content
+    """True when a write failed because this identity cannot write here at all —
+    a read-only token or the read-only web routine — as opposed to a content
     rejection (e.g. an inline comment off the diff) or a transient error.
 
     Only this distinction drives control flow: a permission failure means fall
-    back to the connector path, where any other failure with inline comments is
-    retried body-only (see post_via_gh). The auth/permission family is the 4xx
-    access codes plus GitHub's stock "not accessible" / "requires authentication"
-    phrasing.
+    back to the render payload, where any other failure with inline comments is
+    retried body-only (see post_via_forge). The auth/permission family is the
+    4xx access codes plus GitHub's stock "not accessible" / "requires
+    authentication" phrasing. Shared by both forges: gh and forge.ForgejoClient
+    both put the HTTP status in their error text.
     """
     text = err or ""
     lower = text.lower()
@@ -178,6 +197,102 @@ def existing_issue_keys():
     return keys, len(items) >= ISSUE_SCAN_LIMIT, None
 
 
+# --- Forge adapters ---------------------------------------------------------
+# One object per forge with the same five operations, so the posting logic
+# (post_via_forge) is written once. The GitHub adapter wraps the gh helpers
+# above; the Forgejo adapter wraps forge.ForgejoClient. is_permission_failure
+# is shared: both surfaces put the HTTP status in their error text.
+
+class GitHubForge:
+    """Posting operations over the gh CLI."""
+
+    name = "gh"
+
+    def slug(self):
+        return repo_slug()
+
+    def can_write(self):
+        return gh_can_write()
+
+    def inline_comment(self, finding):
+        return {
+            "path": finding["file"], "line": finding["line"],
+            "side": finding.get("side", "RIGHT"),
+            "body": format_inline_comment(finding),
+        }
+
+    def post_review(self, pr, head_sha, body, comments):
+        return post_review(pr, head_sha, body, comments)
+
+    def create_issue(self, title, body):
+        ok, out, err = gh(["issue", "create", "--title", title, "--body", body])
+        return ok, out.strip(), err
+
+    def list_issue_keys(self):
+        return existing_issue_keys()
+
+
+class ForgejoForge:
+    """Posting operations over a Forgejo instance's API (forge.ForgejoClient)."""
+
+    name = "forgejo"
+
+    def __init__(self, client):
+        self.client = client
+
+    def slug(self):
+        return f"{self.client.owner}/{self.client.repo}"
+
+    def can_write(self):
+        """permissions.push for the token's identity — the same probe gh makes."""
+        ok, data, _status, _err = self.client.api("GET", "")
+        if not ok or not isinstance(data, dict):
+            return None
+        value = (data.get("permissions") or {}).get("push")
+        return value if isinstance(value, bool) else None
+
+    def inline_comment(self, finding):
+        # Forgejo anchors a review comment by file position per side:
+        # new_position for the new file (RIGHT), old_position for the old (LEFT).
+        comment = {"path": finding["file"], "body": format_inline_comment(finding)}
+        if finding.get("side", "RIGHT") == "LEFT":
+            comment["old_position"] = finding["line"]
+        else:
+            comment["new_position"] = finding["line"]
+        return comment
+
+    def post_review(self, pr, head_sha, body, comments):
+        payload = {"commit_id": head_sha, "event": "COMMENT", "body": body}
+        if comments:
+            payload["comments"] = comments
+        ok, _data, _status, err = self.client.api("POST", f"pulls/{pr}/reviews", payload)
+        return ok, err
+
+    def create_issue(self, title, body):
+        ok, data, _status, err = self.client.api(
+            "POST", "issues", {"title": title, "body": body}
+        )
+        url = (data or {}).get("html_url", "") if ok else ""
+        return ok, url, err
+
+    def list_issue_keys(self):
+        """Open issues scanned for the de-dup marker — see existing_issue_keys.
+
+        `type: issues` keeps pull requests out of the scan: Forgejo's issue
+        endpoints treat PRs as issues unless told otherwise.
+        """
+        items, capped, err = self.client.paged(
+            "issues", params={"state": "open", "type": "issues"}, cap=ISSUE_SCAN_LIMIT
+        )
+        if items is None:
+            return None, False, err
+        keys = {}
+        for item in items:
+            for match in MARKER_RE.findall(item.get("body") or ""):
+                keys[match] = {"number": item.get("number"), "title": item.get("title")}
+        return keys, capped, None
+
+
 # --- Finding helpers -------------------------------------------------------
 
 def priority_of(finding):
@@ -208,14 +323,19 @@ def location(finding):
 
 
 def permalink(slug, sha, finding):
-    """A GitHub blob permalink to the finding's file/line at the reviewed commit.
+    """A web permalink to the finding's file/line at the reviewed commit.
 
     Pinned to the head SHA, not a branch, so the link keeps pointing at the code
-    the review actually saw. None when we lack the repo slug, the SHA, or a file.
+    the review actually saw. The URL shape is the run's forge's (RUN_FORGE):
+    GitHub serves blobs at `/blob/<sha>/`, Forgejo at `/src/commit/<sha>/`.
+    None when we lack the repo slug, the SHA, or a file.
     """
-    if not slug or not sha or not finding.get("file"):
+    if not slug or not sha or not finding.get("file") or not RUN_FORGE.get("web_base"):
         return None
-    url = f"https://github.com/{slug}/blob/{sha}/{finding['file']}"
+    if RUN_FORGE["kind"] == "forgejo":
+        url = f"{RUN_FORGE['web_base']}/{slug}/src/commit/{sha}/{finding['file']}"
+    else:
+        url = f"{RUN_FORGE['web_base']}/{slug}/blob/{sha}/{finding['file']}"
     if finding.get("line"):
         url += f"#L{finding['line']}"
     return url
@@ -245,15 +365,22 @@ def html_escape(text):
 
 
 def badge(priority):
-    """Inline shields.io badge for a priority level (gh inline comments only)."""
+    """Inline priority marker for an anchored review comment.
+
+    A shields.io badge on GitHub; plain text on Forgejo, where the instance is
+    typically self-hosted and an external image dependency would break (or leak
+    the review's existence) the moment the network does not oblige.
+    """
+    if RUN_FORGE["kind"] == "forgejo":
+        return f"`{priority}`"
     colour = PRIORITY_COLOUR.get(priority, "lightgrey")
     return f"![{priority}](https://img.shields.io/badge/{priority}-{colour}?style=flat)"
 
 
-# --- Formatting: PR review (gh path) ---------------------------------------
+# --- Formatting: PR review (direct-write paths) -----------------------------
 
 def format_inline_comment(finding):
-    """Body of a single inline review comment, anchored to its line by gh."""
+    """Body of a single inline review comment, anchored to its line."""
     priority = priority_of(finding)
     title = (finding.get("title") or finding.get("brief", "review")).strip()
     # Double-subscripted so the badge sits small against the title.
@@ -449,8 +576,11 @@ def format_rollup_issue(findings, pr, slug, head_sha):
     return title, "\n".join(body), key
 
 
-def build_issue_payloads(preexisting, pr, slug, head_sha):
+def build_issue_payloads(preexisting, pr, slug, head_sha, list_keys):
     """De-dup pre-existing findings against open issues and shape them into payloads.
+
+    `list_keys` is the forge adapter's open-issue scan (list_issue_keys) — passed
+    in because de-dup must run on whichever forge the run is posting to.
 
     Two shapes, by the brief's extent — so a full audit can't flood the tracker:
       - **diff-extent** findings are incidental (noticed near the change) → one issue
@@ -467,7 +597,7 @@ def build_issue_payloads(preexisting, pr, slug, head_sha):
     if not preexisting:
         return [], [], None
 
-    known, capped, err = existing_issue_keys()
+    known, capped, err = list_keys()
     dedup_note = None
     if known is None:
         known = {}
@@ -506,10 +636,10 @@ def build_issue_payloads(preexisting, pr, slug, head_sha):
     return to_create, existing, dedup_note
 
 
-# --- Posting (gh path) -----------------------------------------------------
+# --- Posting (direct-write paths) -------------------------------------------
 
 def post_review(pr, head_sha, body, comments):
-    """Publish one PR review. Returns (ok, error_text)."""
+    """Publish one PR review via gh. Returns (ok, error_text)."""
     payload = {"commit_id": head_sha, "event": "COMMENT", "body": body}
     if comments:
         payload["comments"] = comments
@@ -521,23 +651,21 @@ def post_review(pr, head_sha, body, comments):
     return ok, err
 
 
-def create_issues(to_create):
-    """Create each issue via gh. Returns (created, failed)."""
+def create_issues(forge_impl, to_create):
+    """Create each issue on the forge. Returns (created, failed)."""
     created, failed = [], []
     for issue in to_create:
-        ok, out, err = gh([
-            "issue", "create", "--title", issue["title"], "--body", issue["body"],
-        ])
+        ok, url, err = forge_impl.create_issue(issue["title"], issue["body"])
         if ok:
-            created.append({"title": issue["title"], "url": out.strip(), "dedup_key": issue["dedup_key"]})
+            created.append({"title": issue["title"], "url": url, "dedup_key": issue["dedup_key"]})
         else:
             failed.append({"title": issue["title"], "error": err})
     return created, failed
 
 
-def post_via_gh(doc, change_findings, preexisting, slug):
-    """Post the review and create the issues with gh. Returns a result dict, or
-    None if a write was rejected for lack of permission (caller falls back)."""
+def post_via_forge(forge_impl, doc, change_findings, preexisting, slug):
+    """Post the review and create the issues on the forge. Returns a result dict,
+    or None if a write was rejected for lack of permission (caller falls back)."""
     pr = doc["pr"]
     head_sha = doc["head_sha"]
     title = doc.get("title") or "Review"
@@ -546,20 +674,16 @@ def post_via_gh(doc, change_findings, preexisting, slug):
 
     on_diff = [f for f in change_findings if f.get("file") and f.get("line")]
     off_diff = [f for f in change_findings if not (f.get("file") and f.get("line"))]
-    comments = [
-        {"path": f["file"], "line": f["line"], "side": f.get("side", "RIGHT"),
-         "body": format_inline_comment(f)}
-        for f in on_diff
-    ]
+    comments = [forge_impl.inline_comment(f) for f in on_diff]
 
     review_result = {"posted": False, "reason": "no change-introduced findings to post"}
     if change_findings:
         body = format_review_body(title, summary, head_sha, len(change_findings),
                                   review_count, off_diff, slug)
-        ok, err = post_review(pr, head_sha, body, comments)
+        ok, err = forge_impl.post_review(pr, head_sha, body, comments)
         if not ok:
             if is_permission_failure(err):
-                return None  # gh can't write here — fall back to the connector payload
+                return None  # the forge won't take writes — fall back to the render payload
             if comments:
                 # The review was rejected and we sent inline comments. The usual
                 # cause is a comment on a line outside the diff, which fails the
@@ -568,7 +692,7 @@ def post_via_gh(doc, change_findings, preexisting, slug):
                 # sinks the whole review (the long-standing fallback behaviour).
                 body = format_review_body(title, summary, head_sha, len(change_findings),
                                           review_count, change_findings, slug)
-                ok, err = post_review(pr, head_sha, body, [])
+                ok, err = forge_impl.post_review(pr, head_sha, body, [])
                 if not ok and is_permission_failure(err):
                     return None
                 review_result = {
@@ -586,19 +710,20 @@ def post_via_gh(doc, change_findings, preexisting, slug):
                 "in_body_only": len(off_diff), "fell_back_to_body_only": False,
             }
 
-    # Issues. De-dup uses a gh read (works here too); creation is a write.
+    # Issues. De-dup is a forge read (works even where writes are blocked);
+    # creation is a write.
     to_create, existing, dedup_note = build_issue_payloads(
-        preexisting, pr, slug, head_sha
+        preexisting, pr, slug, head_sha, forge_impl.list_issue_keys
     )
-    created, failed = create_issues(to_create)
-    # A creation failing for lack of permission means gh writes are blocked after
+    created, failed = create_issues(forge_impl, to_create)
+    # A creation failing for lack of permission means writes are blocked after
     # all (the review somehow went through, or there were no change findings) —
     # surface it rather than pretending the issues were raised.
     if failed and all(is_permission_failure(f["error"]) for f in failed) and not created:
         return None
 
     return {
-        "posting": "gh",
+        "posting": forge_impl.name,
         "review": review_result,
         "issues": {
             "created": created, "failed": failed,
@@ -614,21 +739,26 @@ def post_via_gh(doc, change_findings, preexisting, slug):
     }
 
 
-# --- Render payload (connector path) ---------------------------------------
+# --- Render payload (connector / no-write fallback) -------------------------
 
-def build_render(doc, change_findings, preexisting, slug, reason):
-    """The payload the calling skill posts via its GitHub connector tools.
+def build_render(doc, change_findings, preexisting, slug, reason, list_keys):
+    """The payload printed when this script cannot (or must not) write.
 
-    Carries the finished consolidated comment and the de-duplicated issue bodies,
-    so the skill only makes the connector calls — it never composes outward text
-    (which keeps process vocabulary out of GitHub).
+    On GitHub it is what the calling skill posts via its connector tools; on
+    Forgejo, where no connector exists, it documents what would have been posted
+    while the skill reports the blocking reason. Either way it carries the
+    finished consolidated comment and the de-duplicated issue bodies, so the
+    model never composes outward text (which keeps process vocabulary off the
+    forge).
     """
     pr = doc["pr"]
     head_sha = doc.get("head_sha")
     title = doc.get("title") or "Review"
     summary = doc.get("summary")
     comment = format_consolidated_comment(title, summary, head_sha, change_findings, slug)
-    to_create, existing, dedup_note = build_issue_payloads(preexisting, pr, slug, head_sha)
+    to_create, existing, dedup_note = build_issue_payloads(
+        preexisting, pr, slug, head_sha, list_keys
+    )
     return {
         "reason": reason,
         "render": {
@@ -675,12 +805,14 @@ def load_document(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Publish agent-review findings to GitHub.")
+    parser = argparse.ArgumentParser(
+        description="Publish agent-review findings to the repo's forge."
+    )
     parser.add_argument("file", nargs="?", help="Findings JSON file (else stdin).")
     parser.add_argument(
         "--render", action="store_true",
-        help="Write nothing; print the connector payload (comment + issue bodies) "
-             "for the skill to post itself. Forces the connector path.",
+        help="Write nothing; print the render payload (comment + issue bodies) "
+             "instead of posting. Forces the connector path on GitHub.",
     )
     args = parser.parse_args()
 
@@ -697,34 +829,103 @@ def main():
     preexisting = [f for f in findings if f.get("preexisting") is True]
     change_findings = [f for f in findings if f.get("preexisting") is not True]
 
+    remote = forge_mod.detect_remote(os.getcwd())
+    if remote is not None and remote.kind == "forgejo":
+        run_forgejo(args, doc, change_findings, preexisting, remote)
+    else:
+        run_github(args, doc, change_findings, preexisting)
+
+
+def run_github(args, doc, change_findings, preexisting):
+    """The GitHub flow: gh writes, with the connector render as the fallback."""
     # `gh` reads (repo slug, issue list) work even on the connector path, so
     # resolve the slug regardless — it makes permalinks possible everywhere.
     slug = repo_slug() if gh_present() else None
+    github = GitHubForge()
+    list_keys = github.list_issue_keys if gh_present() else (
+        lambda: (None, False, "gh CLI not available to list open issues")
+    )
 
     # Forced connector payload, or no gh at all to write with.
     if args.render or not gh_present():
         reason = "forced --render" if args.render else "gh CLI not available"
-        result = build_render(doc, change_findings, preexisting, slug, reason)
+        result = build_render(doc, change_findings, preexisting, slug, reason, list_keys)
         result["posting"] = "render"
         print(json.dumps(result, indent=2))
         return
 
     # Up-front read-only probe: a read-only token reports push:false, letting us
     # skip a doomed write attempt. None (inconclusive) proceeds to attempt.
-    if gh_can_write() is False:
+    if github.can_write() is False:
         result = build_render(doc, change_findings, preexisting, slug,
-                              "gh is read-only in this environment (cannot write)")
+                              "gh is read-only in this environment (cannot write)",
+                              list_keys)
         result["posting"] = "gh_unavailable"
         print(json.dumps(result, indent=2))
         return
 
-    posted = post_via_gh(doc, change_findings, preexisting, slug)
+    posted = post_via_forge(github, doc, change_findings, preexisting, slug)
     if posted is None:
         # The probe said writable (or was unsure) but a write was rejected for
         # permission — gh genuinely can't write here. Fall back.
         result = build_render(doc, change_findings, preexisting, slug,
-                              "gh write was rejected (no write access); use the connector")
+                              "gh write was rejected (no write access); use the connector",
+                              list_keys)
         result["posting"] = "gh_unavailable"
+        print(json.dumps(result, indent=2))
+        return
+
+    print(json.dumps(posted, indent=2))
+
+
+def run_forgejo(args, doc, change_findings, preexisting, remote):
+    """The Forgejo flow: API writes with per-host credentials, no connector.
+
+    A failure here (missing credentials, rejected write) still prints the render
+    payload — not for a connector to post, but so the run's report can say
+    exactly what was withheld — with posting "forgejo_unavailable" and the
+    actionable reason.
+    """
+    slug = remote.slug
+    # Formatting takes Forgejo shapes from here on — before the credential
+    # lookup, so even the failure path below never renders github.com links for
+    # a Forgejo repo. web_base stays None until the instance URL is known;
+    # permalink() omits links rather than invent them.
+    RUN_FORGE.update({"kind": "forgejo", "web_base": None})
+    instance, reason = forge_mod.load_instance(remote.host)
+
+    if instance is None:
+        no_keys = lambda: (None, False, "no Forgejo credentials to list open issues")
+        result = build_render(doc, change_findings, preexisting, slug, reason, no_keys)
+        result["posting"] = "forgejo_unavailable"
+        print(json.dumps(result, indent=2))
+        return
+
+    client = forge_mod.ForgejoClient(instance, remote.owner, remote.repo)
+    RUN_FORGE.update({"web_base": instance["url"]})
+    forgejo = ForgejoForge(client)
+
+    if args.render:
+        result = build_render(doc, change_findings, preexisting, slug,
+                              "forced --render", forgejo.list_issue_keys)
+        result["posting"] = "render"
+        print(json.dumps(result, indent=2))
+        return
+
+    if forgejo.can_write() is False:
+        result = build_render(doc, change_findings, preexisting, slug,
+                              f"the configured token cannot write to {slug}",
+                              forgejo.list_issue_keys)
+        result["posting"] = "forgejo_unavailable"
+        print(json.dumps(result, indent=2))
+        return
+
+    posted = post_via_forge(forgejo, doc, change_findings, preexisting, slug)
+    if posted is None:
+        result = build_render(doc, change_findings, preexisting, slug,
+                              "the Forgejo API rejected the write (no write access)",
+                              forgejo.list_issue_keys)
+        result["posting"] = "forgejo_unavailable"
         print(json.dumps(result, indent=2))
         return
 

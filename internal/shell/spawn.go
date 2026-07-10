@@ -53,6 +53,14 @@ func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, kind RunKind, runDi
 		briefs = ".review"
 	}
 	forge := cfg.Forges[facts.Forge]
+	// Fix and finish sessions read the repository's own build/test commands and
+	// merge policy from the environment: they are per-repository adaptation, and
+	// there is no in-session route to the repo config the receiver already holds.
+	// Harmless to a review session, which never reads them.
+	autoMerge := "false"
+	if repo.Policy.AutoMerge {
+		autoMerge = "true"
+	}
 	return []string{
 		"PUMP19_RUN_DIR=" + runDir,
 		"PUMP19_RUN_KIND=" + string(kind),
@@ -70,6 +78,9 @@ func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, kind RunKind, runDi
 		"PUMP19_SKILL=" + skill,
 		"PUMP19_RUN_BODY=" + runBody,
 		"PUMP19_BRIEFS=" + briefs,
+		"PUMP19_BUILD_CMD=" + repo.Adaptation.Build,
+		"PUMP19_TEST_CMD=" + repo.Adaptation.Test,
+		"PUMP19_AUTO_MERGE=" + autoMerge,
 		"PUMP19_CONFIG=" + cfg.Root,
 		"PUMP19_UNIT=" + unitName,
 	}

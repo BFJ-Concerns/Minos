@@ -16,7 +16,7 @@ scripts:
 	done
 	@bash -n scripts/e2e/forgejo-smoke.sh scripts/e2e/deployment-smoke.sh scripts/e2e/resource-isolation-test.sh scripts/e2e/resources.sh
 	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/e2e/test_capture_forward.py
-	@sh -n scripts/e2e/review-engine-standin
+	@sh -n scripts/e2e/review-engine-standin scripts/e2e/fix-engine-standin scripts/e2e/finish-engine-standin
 	@./scripts/e2e/resource-isolation-test.sh
 
 shellcheck:
@@ -24,9 +24,16 @@ shellcheck:
 		shellcheck -x -s sh \
 			scripts/run-body/* scripts/review/* \
 			scripts/adaptations/forgejo/list-review-comments \
+			scripts/adaptations/forgejo/list-reviews \
 			scripts/adaptations/forgejo/post-review \
+			scripts/adaptations/forgejo/post-comment \
 			scripts/adaptations/forgejo/update-comment \
-			scripts/e2e/review-engine-standin; \
+			scripts/adaptations/forgejo/commit-push \
+			scripts/adaptations/forgejo/merge \
+			scripts/adaptations/forgejo/get-pr-facts \
+			scripts/e2e/review-engine-standin \
+			scripts/e2e/fix-engine-standin \
+			scripts/e2e/finish-engine-standin; \
 	else \
 		echo "shellcheck unavailable; skipping static shell analysis"; \
 	fi

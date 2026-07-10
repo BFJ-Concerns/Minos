@@ -25,6 +25,8 @@ import os
 import subprocess
 import sys
 
+import forge
+
 
 # The shared reviewer method file lives in the skill's prompts/ directory, a
 # sibling of this scripts/ directory. Resolve it from THIS file's location so the
@@ -100,13 +102,25 @@ def repo_root():
         return None
 
 
-def detect_pr(root):
-    """Return PR metadata via gh, or None if there's no PR / gh is unavailable.
+def detect_pr(root, warnings):
+    """Return the current branch's open PR, or None if there is none / the
+    forge is unreachable.
 
-    Only the head branch's open PR is relevant; gh resolves it from the current
-    branch automatically. Any failure (gh missing, not authed, no PR) collapses
-    to None — the caller then falls back to a default-branch diff and chat output.
+    Forge-keyed on the origin remote (see forge.py): github.com goes through
+    `gh`, anything else through the Forgejo API. Any failure — tool missing,
+    not authed, no PR — collapses to None and the caller falls back to a
+    default-branch diff and chat output. The one failure that gets a warning
+    is missing Forgejo credentials: silently degrading to "no PR" there would
+    read as a clean chat-only run when the fix is a one-line config entry.
     """
+    remote = forge.detect_remote(root)
+    if remote is not None and remote.kind == "forgejo":
+        return _detect_pr_forgejo(root, remote, warnings)
+    return _detect_pr_github(root)
+
+
+def _detect_pr_github(root):
+    """PR metadata via gh, which resolves the current branch's PR itself."""
     try:
         out = subprocess.run(
             ["gh", "pr", "view", "--json", "number,baseRefName,state"],
@@ -128,6 +142,32 @@ def detect_pr(root):
         "base_ref": f"origin/{data['baseRefName']}",
         "base_branch": data["baseRefName"],
     }
+
+
+def _detect_pr_forgejo(root, remote, warnings):
+    """PR metadata via the Forgejo API: the open PR whose head is this branch."""
+    instance, reason = forge.load_instance(remote.host)
+    if instance is None:
+        warnings.append(f"Cannot check for a PR: {reason}")
+        return None
+    branch = try_git(["branch", "--show-current"], cwd=root)
+    if not branch:
+        return None  # detached HEAD — nothing to match a PR head against
+    client = forge.ForgejoClient(instance, remote.owner, remote.repo)
+    pulls, _capped, err = client.paged("pulls", params={"state": "open"})
+    if pulls is None:
+        warnings.append(f"Cannot check for a PR: {err}")
+        return None
+    for pull in pulls:
+        head = (pull.get("head") or {}).get("ref")
+        if head == branch and pull.get("number"):
+            base_branch = (pull.get("base") or {}).get("ref") or "main"
+            return {
+                "number": pull["number"],
+                "base_ref": f"origin/{base_branch}",
+                "base_branch": base_branch,
+            }
+    return None
 
 
 def default_base(root):
@@ -484,7 +524,7 @@ def main():
     # finding as change-caused (→ PR) or independent (→ chat).
     changed = None
     if args.mode == "diff":
-        pr = detect_pr(root)
+        pr = detect_pr(root, warnings)
         # Base resolution, most explicit first: an explicit --base wins outright;
         # otherwise a detected PR's base; otherwise a guess at the default branch.
         # We record which, so the skill can present a *guessed* base as provisional

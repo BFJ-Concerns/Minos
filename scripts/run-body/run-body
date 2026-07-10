@@ -25,25 +25,43 @@ set +a
 : "${PUMP19_REVIEW_SCRIPTS:?PUMP19_REVIEW_SCRIPTS is required}"
 : "${PUMP19_BIN:?PUMP19_BIN is required}"
 
+script_dir=$(unset CDPATH; cd "$(dirname "$0")" && pwd)
+
+# Every run kind launches the same way: one accountable Claude session with its
+# mission on stdin, captured for model provenance and the loud pin check. Only
+# the mission file — and, for fix, the procedure skill — differ by kind.
+launch_session() {
+  mission="${script_dir%/run-body}/missions/$1"
+  if [ ! -r "$mission" ]; then
+    echo "mission is not readable: $mission" >&2
+    exit 2
+  fi
+  mkdir -p "$PUMP19_RUN_DIR/sessions"
+  cd "$PUMP19_RUN_DIR"
+  exec "$PUMP19_BIN" capture-claude \
+    --pins "$PUMP19_PINS" \
+    --output "$PUMP19_RUN_DIR/sessions/lead.jsonl" \
+    --resolved "$PUMP19_RUN_DIR/resolved-lead.json" \
+    "$PUMP19_ENGINE_LAUNCH_LEAD" <"$mission"
+}
+
 case "$PUMP19_RUN_KIND" in
   review)
-    script_dir=$(unset CDPATH; cd "$(dirname "$0")" && pwd)
-    mission="${script_dir%/run-body}/missions/review.md"
-    if [ ! -r "$mission" ]; then
-      echo "review mission is not readable: $mission" >&2
-      exit 2
-    fi
-    mkdir -p "$PUMP19_RUN_DIR/sessions"
-    cd "$PUMP19_RUN_DIR"
-    exec "$PUMP19_BIN" capture-claude \
-      --pins "$PUMP19_PINS" \
-      --output "$PUMP19_RUN_DIR/sessions/lead.jsonl" \
-      --resolved "$PUMP19_RUN_DIR/resolved-lead.json" \
-      "$PUMP19_ENGINE_LAUNCH_LEAD" <"$mission"
+    launch_session review.md
     ;;
-  fix|finish)
-    echo "run kind '$PUMP19_RUN_KIND' is recognised but not yet implemented" >&2
-    exit 3
+  fix)
+    # The fix run's procedure is the one service-authored skill. It is fixed by
+    # the deployment, not selectable per repository, so it rides run-body.env —
+    # unlike the review skill, which a repository points at through its config.
+    : "${PUMP19_FIX_SKILL:?PUMP19_FIX_SKILL is required for fix runs}"
+    PUMP19_SKILL="$PUMP19_FIX_SKILL"
+    export PUMP19_SKILL
+    launch_session fix.md
+    ;;
+  finish)
+    # Finish composes over the session's general skills; it has no bespoke skill
+    # and reads no PUMP19_SKILL.
+    launch_session finish.md
     ;;
   *)
     echo "unknown run kind '$PUMP19_RUN_KIND'" >&2

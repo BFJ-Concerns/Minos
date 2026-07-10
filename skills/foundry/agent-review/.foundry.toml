@@ -4,4 +4,4 @@ kind = "skill"
 
 [[units]]
 name = "agent-review"
-version = "2026.7.3"
+version = "2026.7.4"

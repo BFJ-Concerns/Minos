@@ -1,0 +1,98 @@
+#!/usr/bin/env sh
+set -eu
+# Deterministic stand-in for the fix lead session. It walks the fix mission's
+# mechanical tail — claim, read facts, land or decline, record the outcome — at
+# zero model cost and authors no fix method. The scenario flag chooses landed vs
+# fruitless for a writable head; writability itself is read honestly from the
+# forge facts, so a fork fixture drives the unwritable path on its own.
+
+: "${PUMP19_BIN:=pump19}"
+: "${PUMP19_CONFIG:?PUMP19_CONFIG is required}"
+: "${PUMP19_RUN_DIR:?PUMP19_RUN_DIR is required}"
+
+standin_model=${PUMP19_STANDIN_LEAD_MODEL:-claude-opus-pinned}
+printf '{"type":"system","subtype":"init","model":"%s"}\n' "$standin_model"
+cat >"$PUMP19_RUN_DIR/mission.received.md"
+
+claim=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" begin)
+case "$claim" in
+  claimed) ;;
+  yield-terminal|yield-head) printf '{"result":"%s"}\n' "$claim"; exit 0 ;;
+  *) echo "unexpected run claim result: $claim" >&2; exit 2 ;;
+esac
+release() {
+  "$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" release >/dev/null
+}
+trap release EXIT HUP INT TERM
+
+require_current() {
+  current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
+  case "$current" in
+    current) ;;
+    stale) exit 0 ;;
+    *) echo "unexpected current guard result: $current" >&2; exit 2 ;;
+  esac
+}
+
+# The capture wrapper validates the served model against the lead pin and writes
+# this file; a fix that reaches here serves the pinned model.
+while [ ! -s "$PUMP19_RUN_DIR/resolved-lead.json" ]; do
+  sleep 1
+done
+model=$(jq -r '.[0].resolved_model' "$PUMP19_RUN_DIR/resolved-lead.json")
+
+facts="$PUMP19_RUN_DIR/pr-facts.txt"
+"$PUMP19_BIN" adapt get-pr-facts "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$facts"
+head_branch=$(sed -n 's/^HEAD_BRANCH=//p' "$facts")
+head_repo=$(sed -n 's/^HEAD_REPO=//p' "$facts")
+base_repo=$(sed -n 's/^BASE_REPO=//p' "$facts")
+
+# The fix session reads its findings from the PR record; a stand-in only proves
+# the seam, so it reads and discards them.
+"$PUMP19_BIN" adapt list-review-comments "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$PUMP19_RUN_DIR/findings.json"
+
+outcome=unwritable
+if [ -n "$head_branch" ] && [ "$head_repo" = "$base_repo" ]; then
+  outcome=${PUMP19_STANDIN_FIX_OUTCOME:-landed}
+fi
+
+if [ "$outcome" = landed ]; then
+  # Edit the prepared workspace, then land through the credentialled adaptation —
+  # never a push from inside the workspace. The adaptation reports the real
+  # outcome as a stdout token: a protected head reports unwritable.
+  printf 'fix applied by stand-in\n' >>"$PUMP19_WORKSPACE/file.txt"
+  printf 'Answer the standing finding.\n' >"$PUMP19_RUN_DIR/fix-message.txt"
+  require_current
+  landed=$("$PUMP19_BIN" adapt commit-push \
+    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
+    "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
+    "$model" "$PUMP19_RUN_DIR/fix-message.txt")
+  printf '%s\n' "$landed" >"$PUMP19_RUN_DIR/commit-push.out"
+  case $(printf '%s' "$landed" | awk 'NR==1{print $1}') in
+    landed) outcome=landed ;;
+    fruitless) outcome=fruitless ;;
+    unwritable) outcome=unwritable ;;
+    *) echo "unexpected commit-push token: $landed" >&2; exit 2 ;;
+  esac
+fi
+
+marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome="$outcome" run=fix)
+{
+  printf 'Pump-19 fix stand-in. Outcome: %s. Model: %s.\n\n' "$outcome" "$model"
+  printf '%s\n' "$marker"
+} >"$PUMP19_RUN_DIR/fix-summary.md"
+
+# A landed fix has moved the head; its record binds to the head the fix acted
+# against and needs no further current check. The other outcomes moved no head.
+case "$outcome" in
+  landed) ;;
+  *) require_current ;;
+esac
+"$PUMP19_BIN" adapt post-comment \
+  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_RUN_DIR/fix-summary.md" >/dev/null
+"$PUMP19_BIN" adapt set-status \
+  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
+  pump19/fix success "Pump-19 fix completed: $outcome" >/dev/null
+
+printf '{"type":"assistant","message":{"model":"%s"}}\n' "$standin_model"
+printf '{"type":"result","subtype":"success","modelUsage":{"%s":{}}}\n' "$standin_model"

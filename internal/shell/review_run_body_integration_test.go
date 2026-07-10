@@ -45,12 +45,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	}
 
 	pins := filepath.Join(root, "pins.toml")
-	resolved := filepath.Join(root, "resolved.json")
 	if err := os.WriteFile(pins, []byte(pinsFixture), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	resolvedJSON := `[{"id":"spec-claude","resolved_model":"claude-opus-pinned"},{"id":"verify-codex","resolved_model":"model-unknown"},{"id":"bar-codex","resolved_model":"model-unknown"}]`
-	if err := os.WriteFile(resolved, []byte(resolvedJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runBodyEnv := "PUMP19_ENGINE_LAUNCH_LEAD='" + standin + "'\n" +
@@ -79,7 +74,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	if err := os.WriteFile(finding1, []byte(`{"path":"file.txt","line":2,"priority":"P1","body":"First finding"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	setReviewRunEnv(t, root, configRoot, installRoot, "aaaaaaaaaaaaaaaa", finding1, resolved)
+	setReviewRunEnv(t, root, configRoot, installRoot, "aaaaaaaaaaaaaaaa", finding1)
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +82,12 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(firstRun, "review.md"), "verdict=standing-findings")
 	assertContainsFile(t, filepath.Join(firstRun, "new-comments.json"), "finding=F-7KQ3")
 	assertContainsFile(t, filepath.Join(firstRun, "governing", "AGENTS.md"), "base guidance")
+	assertContainsFile(t, filepath.Join(firstRun, "provenance.json"), `"role": "lead"`)
+	if data, err := os.ReadFile(filepath.Join(firstRun, "provenance.json")); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(data), "spec-claude") || strings.Contains(string(data), "verify-codex") {
+		t.Fatalf("worker provenance unexpectedly remained a review gate:\n%s", data)
+	}
 	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
 	assertReviewDispatchRecord(t, filepath.Join(stateDir, "dispatch.tsv"), installRoot)
 
@@ -94,7 +95,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	if err := os.WriteFile(finding2, []byte(`{"finding":"F-7KQ3","path":"file.txt","line":2,"priority":"P1","body":"Still present"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	setReviewRunEnv(t, root, configRoot, installRoot, "bbbbbbbbbbbbbbbb", finding2, resolved)
+	setReviewRunEnv(t, root, configRoot, installRoot, "bbbbbbbbbbbbbbbb", finding2)
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +104,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(stateDir, "updated-body.md"), "finding=F-7KQ3")
 	assertFileText(t, filepath.Join(secondRun, "new-comments.json"), "[]\n")
 
-	setReviewRunEnv(t, root, configRoot, installRoot, "cccccccccccccccc", "", resolved)
+	setReviewRunEnv(t, root, configRoot, installRoot, "cccccccccccccccc", "")
 	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
@@ -113,7 +114,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(cleanRun, "review.md"), "verdict=converged")
 	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Converged")
 
-	setReviewRunEnv(t, root, configRoot, installRoot, "dddddddddddddddd", "", resolved)
+	setReviewRunEnv(t, root, configRoot, installRoot, "dddddddddddddddd", "")
 	t.Setenv("PUMP19_STANDIN_VERDICT", "partial-coverage")
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
@@ -132,7 +133,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	}
 	staleReady := filepath.Join(root, "stale-ready")
 	staleContinue := filepath.Join(root, "stale-continue")
-	setReviewRunEnv(t, root, configRoot, installRoot, "ffffffffffffffff", "", resolved)
+	setReviewRunEnv(t, root, configRoot, installRoot, "ffffffffffffffff", "")
 	t.Setenv("PUMP19_STANDIN_BEFORE_POST_READY", staleReady)
 	t.Setenv("PUMP19_STANDIN_BEFORE_POST_CONTINUE", staleContinue)
 	staleResult := make(chan error, 1)
@@ -166,12 +167,7 @@ func TestReviewRunBodyPostsAndUpdatesFindingThroughRunWrap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mismatch := filepath.Join(root, "resolved-mismatch.json")
-	mismatchJSON := resolvedJSON
-	if err := os.WriteFile(mismatch, []byte(mismatchJSON), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	setReviewRunEnv(t, root, configRoot, installRoot, "eeeeeeeeeeeeeeee", "", mismatch)
+	setReviewRunEnv(t, root, configRoot, installRoot, "eeeeeeeeeeeeeeee", "")
 	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
 	t.Setenv("PUMP19_STANDIN_MISMATCH_AFTER_CLAIM", "floating-alias-surprise")
 	t.Setenv("PUMP19_UNIT", "")
@@ -230,7 +226,7 @@ func waitForReviewFixturePath(path string, timeout time.Duration) bool {
 	return false
 }
 
-func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding, resolved string) {
+func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding string) {
 	t.Helper()
 	skill, err := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "agent-review", "SKILL.md"))
 	if err != nil {
@@ -272,7 +268,6 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding,
 		"PUMP19_STANDIN_VERDICT":         "standing-findings",
 		"PUMP19_STANDIN_FINDING_FILE":    finding,
 		"PUMP19_STANDIN_NEW_HANDLE":      "F-7KQ3",
-		"PUMP19_STANDIN_RESOLVED_MODELS": resolved,
 		"PUMP19_STANDIN_DISPATCH_RECORD": filepath.Join(stateDir, "dispatch.tsv"),
 	}
 	for key, value := range values {
