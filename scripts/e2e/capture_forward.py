@@ -30,6 +30,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         forward = os.environ.get("PUMP19_FORWARD_URL")
         status = 202
+        response_body = b"captured\n"
         if forward:
             request = urllib.request.Request(
                 forward,
@@ -43,10 +44,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except urllib.error.HTTPError as err:
                 status = err.code
             except Exception:
-                status = 202
+                # A non-HTTP failure means the receiver did not accept the
+                # delivery. Reporting success here would make the e2e lie.
+                status = 502
+                response_body = b"forward failed\n"
         self.send_response(status)
         self.end_headers()
-        self.wfile.write(b"captured\n")
+        self.wfile.write(response_body)
 
     def log_message(self, fmt, *args):
         return
