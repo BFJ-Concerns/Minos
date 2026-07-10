@@ -168,7 +168,7 @@ func setupRunBodyHarness(t *testing.T, kind, standinName, missionName string) *r
 	if err := os.WriteFile(webhookSecret, []byte("test-webhook-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + token + "\"\n\n[runs]\ndir = \"" + h.runsDir + "\"\n\n[sweep]\nliveness-threshold = \"1h\"\n"
+	service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + token + "\"\n\n[runs]\ndir = \"" + h.runsDir + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 	if err := os.WriteFile(filepath.Join(h.configRoot, "service.toml"), []byte(service), 0o644); err != nil {
 		t.Fatal(err)
 	}

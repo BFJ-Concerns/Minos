@@ -312,6 +312,12 @@ sudo systemctl --user --machine="$DEPLOY_USER@.host" \
 Opt-in is immediate for the next webhook or sweep. There is no database or
 resident state to migrate.
 
+`runs.max-concurrent` is the host-wide run admission cap. The shipped value is
+`2`: receiver deliveries beyond it return an accepted capacity deferral, and
+the reconciliation sweep starts the eligible run after a slot clears. Keep the
+value aligned with the host's measured capacity; it counts complete run process
+trees, not the individual reviewer sessions inside each run.
+
 ## 9. Perform the live smoke check
 
 Use Forgejo's webhook test-delivery control, or open/synchronise a harmless test

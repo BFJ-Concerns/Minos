@@ -20,8 +20,9 @@ api-base = "http://forgejo.local"
 webhook-secret-file = "/tmp/secret"
 credential-file = "/tmp/token"
 
-[runs]
-dir = "/tmp/runs"
+	[runs]
+	dir = "/tmp/runs"
+	max-concurrent = 2
 
 [sweep]
 liveness-threshold = "5m"
@@ -34,6 +35,9 @@ liveness-threshold = "5m"
 	}
 	if cfg.Sweep.LivenessThreshold.Duration != 5*time.Minute {
 		t.Fatalf("unexpected threshold %s", cfg.Sweep.LivenessThreshold.Duration)
+	}
+	if cfg.Runs.MaxConcurrent != 2 {
+		t.Fatalf("max concurrent = %d, want 2", cfg.Runs.MaxConcurrent)
 	}
 }
 
@@ -50,6 +54,17 @@ func TestLoadServiceConfigRejectsMissingRequiredFields(t *testing.T) {
 	_, err := LoadServiceConfig(root)
 	if err == nil || !strings.Contains(err.Error(), "listener.bind") {
 		t.Fatalf("error = %v, want missing listener.bind", err)
+	}
+}
+
+func TestLoadServiceConfigRequiresPositiveMaxConcurrent(t *testing.T) {
+	for _, value := range []string{"", "max-concurrent = 0\n", "max-concurrent = -1\n"} {
+		config := strings.Replace(validServiceConfig, "max-concurrent = 2\n", value, 1)
+		root := writeServiceConfig(t, config)
+		_, err := LoadServiceConfig(root)
+		if err == nil || !strings.Contains(err.Error(), "runs.max-concurrent") {
+			t.Fatalf("value %q error = %v, want runs.max-concurrent", value, err)
+		}
 	}
 }
 
@@ -135,6 +150,7 @@ credential-file = "/tmp/token"
 
 [runs]
 dir = "/tmp/runs"
+max-concurrent = 2
 
 [sweep]
 liveness-threshold = "5m"

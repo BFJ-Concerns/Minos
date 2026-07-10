@@ -23,7 +23,8 @@ type ServiceConfig struct {
 	} `toml:"listener"`
 	Forges map[string]ForgeConfig `toml:"forges"`
 	Runs   struct {
-		Dir string `toml:"dir"`
+		Dir           string `toml:"dir"`
+		MaxConcurrent int    `toml:"max-concurrent"`
 	} `toml:"runs"`
 	Sweep struct {
 		LivenessThreshold Duration `toml:"liveness-threshold"`
@@ -152,6 +153,9 @@ func validateServiceConfig(cfg ServiceConfig) error {
 		requireConfigValue(&missing, prefix+"credential-file", forge.CredentialFile)
 	}
 	requireConfigValue(&missing, "runs.dir", cfg.Runs.Dir)
+	if cfg.Runs.MaxConcurrent <= 0 {
+		missing = append(missing, "runs.max-concurrent")
+	}
 	if cfg.Sweep.LivenessThreshold.Duration <= 0 {
 		missing = append(missing, "sweep.liveness-threshold")
 	}

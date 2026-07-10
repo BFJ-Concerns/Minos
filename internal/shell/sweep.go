@@ -84,6 +84,51 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 			fmt.Fprintf(logw, "alive %s for %s#%s at %s\n", kind, facts.RepoSlug(), facts.PR, runDir)
 			return nil
 		}
+		attempt, retryable, err := retryableAttempt(runDir, kind, statuses)
+		if err != nil {
+			return err
+		}
+		if retryable && attempt < operationalAttemptLimit(repo) {
+			retryFacts := facts
+			retryFacts.Labels = removeFactLabel(append([]string(nil), facts.Labels...), label)
+			readyActor, err := resolveReadyActor(ctx, repo, adaptation, retryFacts)
+			if err != nil {
+				return err
+			}
+			flakyActor, err := resolveFlakyActor(ctx, repo, adaptation, retryFacts)
+			if err != nil {
+				return err
+			}
+			retryFacts.Actor = flakyActor
+			retryDecision, retryEligible := reconcileDecision(repo, retryFacts, statuses, readyActor)
+			if retryEligible && retryDecision == kind {
+				spawned, err := spawnRunAfterAdmission(ctx, cfg, repo, facts, kind, "reconcile", func() (bool, error) {
+					var handledRetry, releasedRetry bool
+					statuses, handledRetry, releasedRetry, err = handleRetryableClaim(ctx, facts, kind, runDir, statuses, operationalAttemptLimit(repo), logw)
+					if err != nil || !handledRetry || !releasedRetry {
+						return false, err
+					}
+					if err := releaseRunPresence(ctx, adaptation, facts, label); err != nil {
+						return false, err
+					}
+					facts.Labels = removeFactLabel(facts.Labels, label)
+					return true, nil
+				})
+				if errors.Is(err, ErrRunCapacity) {
+					fmt.Fprintf(logw, "deferred %s for %s#%s capacity=%d\n", kind, facts.RepoSlug(), facts.PR, cfg.Runs.MaxConcurrent)
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				if spawned {
+					fmt.Fprintf(logw, "reconcile fires %s for %s#%s %s\n", kind, facts.RepoSlug(), facts.PR, facts.HeadSHA)
+				}
+				return nil
+			}
+			// Preserve the failed attempt even when current trigger guards no
+			// longer authorise the same run kind to start again.
+		}
 		var handledRetry, releasedRetry bool
 		statuses, handledRetry, releasedRetry, err = handleRetryableClaim(ctx, facts, kind, runDir, statuses, operationalAttemptLimit(repo), logw)
 		if err != nil {
@@ -146,8 +191,16 @@ func sweepPR(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation
 		fmt.Fprintf(logw, "terminal marker suppresses %s for %s#%s %s\n", decision, facts.RepoSlug(), facts.PR, facts.HeadSHA)
 		return nil
 	}
+	err = SpawnRun(ctx, cfg, repo, facts, decision, "reconcile")
+	if errors.Is(err, ErrRunCapacity) {
+		fmt.Fprintf(logw, "deferred %s for %s#%s capacity=%d\n", decision, facts.RepoSlug(), facts.PR, cfg.Runs.MaxConcurrent)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(logw, "reconcile fires %s for %s#%s %s\n", decision, facts.RepoSlug(), facts.PR, facts.HeadSHA)
-	return SpawnRun(ctx, cfg, repo, facts, decision, "reconcile")
+	return nil
 }
 
 func openSweepLog(cfg ServiceConfig) (*os.File, func(), error) {
@@ -367,23 +420,10 @@ func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 }
 
 func handleRetryableClaim(ctx context.Context, facts Facts, kind RunKind, runDir string, currentStatuses []Status, attemptLimit int, logw *os.File) ([]Status, bool, bool, error) {
-	if _, err := readTerminalMarker(runDir); err == nil {
-		return currentStatuses, false, false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	attempt, retryable, err := retryableAttempt(runDir, kind, currentStatuses)
+	if err != nil || !retryable {
 		return currentStatuses, false, false, err
 	}
-	if hasForgeWritesAttempted(runDir) {
-		return currentStatuses, false, false, nil
-	}
-	contextName, _ := StatusContext(kind)
-	if _, ok := statusForContext(currentStatuses, contextName); ok {
-		return currentStatuses, false, false, nil
-	}
-	retryCount, err := retryEvidenceCount(runDir)
-	if err != nil {
-		return currentStatuses, false, false, err
-	}
-	attempt := retryCount + 1
 	if attempt < attemptLimit {
 		if err := releaseRetryableClaim(ctx, runDir, attempt); err != nil {
 			if errors.Is(err, errRetryClaimAlreadyReleased) {
@@ -405,6 +445,26 @@ func handleRetryableClaim(ctx context.Context, facts Facts, kind RunKind, runDir
 	}
 	fmt.Fprintf(logw, "retry exhausted for %s; preserved attempt %d and latched %s internally on %s#%s\n", runDir, attempt, kind, facts.RepoSlug(), facts.PR)
 	return currentStatuses, true, true, nil
+}
+
+func retryableAttempt(runDir string, kind RunKind, currentStatuses []Status) (int, bool, error) {
+	if _, err := readTerminalMarker(runDir); err == nil {
+		return 0, false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, false, err
+	}
+	if hasForgeWritesAttempted(runDir) {
+		return 0, false, nil
+	}
+	contextName, _ := StatusContext(kind)
+	if _, ok := statusForContext(currentStatuses, contextName); ok {
+		return 0, false, nil
+	}
+	retryCount, err := retryEvidenceCount(runDir)
+	if err != nil {
+		return 0, false, err
+	}
+	return retryCount + 1, true, nil
 }
 
 func terminaliseUnsafeCrash(facts Facts, kind RunKind, runDir string, currentStatuses []Status) ([]Status, bool, error) {

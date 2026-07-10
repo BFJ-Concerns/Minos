@@ -13,6 +13,7 @@ signature-header = "X-Forgejo-Signature"
 
 [runs]
 dir = "/var/lib/pump19/runs"
+max-concurrent = 2
 
 [sweep]
 liveness-threshold = "60m"

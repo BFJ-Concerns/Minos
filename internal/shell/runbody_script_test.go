@@ -115,7 +115,7 @@ func TestRunWrapEarlyBodyFailureIsRetryableAndInvisibleOnEveryRunKind(t *testing
 				t.Fatal(err)
 			}
 			writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), "#!/usr/bin/env sh\nmkdir -p \"$PUMP19_WORKSPACE\"\n: >\"$PUMP19_DIFF\"\n")
-			service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\n\n[sweep]\nliveness-threshold = \"1h\"\n"
+			service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 			if err := os.WriteFile(filepath.Join(configDir, "service.toml"), []byte(service), 0o644); err != nil {
 				t.Fatal(err)
 			}

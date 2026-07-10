@@ -122,6 +122,15 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		return nil
 	}
 	if err := SpawnRun(ctx, cfg, repo, facts, decision.Kind, facts.Occasion); err != nil {
+		if errors.Is(err, ErrRunCapacity) {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("deferred: capacity\n"))
+			return nil
+		}
+		if errors.Is(err, ErrRunLedger) {
+			http.Error(w, "run ledger unavailable", http.StatusServiceUnavailable)
+			return err
+		}
 		http.Error(w, "spawn failed", http.StatusInternalServerError)
 		return err
 	}
