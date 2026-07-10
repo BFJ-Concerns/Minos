@@ -174,10 +174,10 @@ sudo journalctl --user --machine="$DEPLOY_USER@.host" \
 
 ## 7. Register the Forgejo webhook
 
-The deployed receiver consumes Forgejo pull-request and issue-comment
-deliveries. Forgejo's `pull_request` hook selector is the umbrella for opened,
-updated, label, approval, and rejection events; the receiver distinguishes the
-delivered event using its headers and payload.
+The deployed receiver consumes Forgejo pull-request, label, approval, rejection,
+and issue-comment deliveries. Register all five event selectors below: Forgejo
+uses dedicated headers for the granular review and label events, and the
+receiver relies on those headers to select the corresponding trigger.
 
 Load the same webhook secret without echoing it, and supply a short-lived
 dedicated token whose account administers this repository. Restrictive temporary
@@ -199,7 +199,10 @@ jq -n \
   '{
     type: "gitea",
     config: {url: $url, content_type: "json", secret: env.WEBHOOK_SECRET},
-    events: ["pull_request", "issue_comment"],
+    events: [
+      "pull_request", "pull_request_label", "pull_request_rejected",
+      "pull_request_approved", "issue_comment"
+    ],
     active: true
   }' >"$HOOK_BODY"
 printf 'header = "Authorization: token %s"\n' "$FORGEJO_HOOK_TOKEN" \
@@ -218,9 +221,9 @@ unset WEBHOOK_SECRET FORGEJO_HOOK_TOKEN
 
 The relative API operation is
 `POST /repos/{owner}/{repo}/hooks` beneath Forgejo's `/api/v1` base. Forgejo
-accepts both `Authorization: token …` and bearer authentication. Use the
-`write:repository` scope and an account with repository-administrator permission
-are required to create the hook.
+accepts both `Authorization: token …` and bearer authentication. Creating the
+hook requires the `write:repository` scope and an account with
+repository-administrator permission.
 
 ## 8. Opt the repository in
 
