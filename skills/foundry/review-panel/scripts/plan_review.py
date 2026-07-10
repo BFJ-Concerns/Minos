@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
-"""Plan an agent-review run: discover briefs, resolve subtree scopes, find targets.
+"""Plan a review-panel run: discover aspects and briefs, resolve scopes, find targets.
 
-This is the deterministic core of the agent-review skill. It does no reviewing
+This is the deterministic core of the review-panel skill. It does no reviewing
 itself — it works out *what* should be reviewed and *by whom*, then hands a JSON
 plan back to the skill, which dispatches clean-context review agents — one per
-shard, where a brief with a large file set is split across several reviewers.
+shard, where a concern with a large file set is split across several reviewers.
 
-Scope resolution mirrors the convention documented in SKILL.md: a brief's
-position inside `.review/` determines what it reviews.
+The panel plans two sources of concerns identically:
+
+  - **Aspects** — the standard review dimensions bundled with the skill, in the
+    aspects/ directory beside scripts/. They apply in any repository, repo-wide.
+    Each declares a `relevance:` line; the skill decides from it whether the
+    diff gives the aspect anything to do, and records a skip with
+    --skip-aspect name=reason. The default is to run: an aspect is skipped only
+    when it is clearly irrelevant, never on doubt.
+  - **Briefs** — the repository's own standing concerns under `.review/`,
+    optional. A repo without the directory still gets the full aspect panel.
+
+Scope resolution for briefs mirrors the convention documented in SKILL.md: a
+brief's position inside `.review/` determines what it reviews.
 
   .review/tone.md              -> repo-wide (file sits directly in .review/)
   .review/src/api/limits.md    -> scoped to src/api/ IF that directory exists
@@ -36,6 +47,10 @@ import forge
 # input, which is brittle for large freeform payloads.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROMPTS_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "prompts")
+# The bundled standard aspects — one file per review dimension, same format as a
+# repo brief. They live in the installed skill, so their plan entries carry
+# absolute paths (a repo brief's path is repo-relative).
+ASPECTS_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "aspects")
 TEMPLATE_PATH = os.path.join(PROMPTS_DIR, "reviewer-method.md")
 # The other two static method files the run's later stages read the same way:
 # the per-finding checker's method and the review-bar judge's method. The plan
@@ -204,18 +219,22 @@ def tracked_files(root, scope):
 
 
 def changed_files(root, base):
-    """Files added/modified/renamed/copied between base's merge-base and HEAD.
+    """Files added/modified/renamed/copied/deleted between base's merge-base and HEAD.
 
     Three-dot diff so we compare against the merge-base, not the literal base tip
-    — the same set a reviewer cares about. Deletions are excluded: they can't host
-    review comments and rarely need brief-level review.
+    — the same set a reviewer cares about. Deletions are included: removing a
+    check, a registration, a cleanup step, or a test is as reviewable as adding
+    one, and a deleted file that never enters a reviewer's set is a silent
+    coverage gap. Reviewers inspect a deleted file through the diff and cite its
+    removed lines with side: LEFT (which the quote validator checks against the
+    merge-base, since the file no longer exists in the working tree).
 
     Returns None when the diff command itself fails — the caller must treat that
     as an error, never as an empty diff: conflating a broken git invocation with
     "nothing changed" would report a failed run as EMPTY-DIFF.
     """
     out = try_git(
-        ["diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD"],
+        ["diff", "--name-only", "--diff-filter=ACMRD", f"{base}...HEAD"],
         cwd=root,
     )
     if out is None:
@@ -269,7 +288,7 @@ def derive_title(name):
     become spaces and each word is capitalised, so an acronym like `api` renders
     as "Api". A brief that wants exact casing should set `title:` in its
     frontmatter; this is only the fallback. The title is what outward-facing
-    output (PR comments, issues) shows instead of the kebab-case filename, so a
+    output (PR comments) shows instead of the kebab-case filename, so a
     reader never sees the internal brief name.
     """
     words = [w for w in name.replace("_", "-").split("-") if w]
@@ -286,7 +305,7 @@ def parse_frontmatter(brief_path):
     on its own merits, so the common case splits and scales. An undeclared
     occasion means the brief applies on every occasion.
 
-    Returns (extent, sweep, sweep_explicit, occasions, title, warnings):
+    Returns (extent, sweep, sweep_explicit, occasions, title, relevance, warnings):
       - extent: "diff" (default) or "full" — how much of the scope to read.
         `extent: full` audits the whole scope every run; `diff` (or no
         frontmatter) reviews only what the branch changed.
@@ -305,8 +324,11 @@ def parse_frontmatter(brief_path):
         the run names (`--occasion`).
       - title: the brief's declared human-readable review title, or None when it
         set none (the caller then derives one from the filename). This is the
-        name a reader sees in PR comments and issues, in place of the kebab-case
-        filename.
+        name a reader sees in PR comments, in place of the kebab-case filename.
+      - relevance: the declared `relevance:` line, or None. Aspects declare it —
+        it is the condition the skill weighs before recording a --skip-aspect —
+        and it rides into the plan so the skill can weigh it without re-reading
+        the file.
       - warnings: a present-but-unrecognised value for extent or sweep is flagged
         rather than swallowed.
     """
@@ -314,12 +336,13 @@ def parse_frontmatter(brief_path):
     sweep_explicit = False
     occasions = None
     title = None
+    relevance = None
     try:
         with open(brief_path, encoding="utf-8") as handle:
             if handle.readline().strip() != "---":
-                # No frontmatter block — return the full 6-tuple so callers that
+                # No frontmatter block — return the full 7-tuple so callers that
                 # unpack title don't crash on the common no-frontmatter brief.
-                return extent, sweep, sweep_explicit, occasions, title, warnings
+                return extent, sweep, sweep_explicit, occasions, title, relevance, warnings
             for line in handle:
                 if line.strip() == "---":
                     break
@@ -363,9 +386,14 @@ def parse_frontmatter(brief_path):
                     candidate = value.strip().strip("\"'").strip()
                     if candidate:
                         title = candidate
+                elif key == "relevance":
+                    # Freeform prose, like title: take the whole value.
+                    candidate = value.strip()
+                    if candidate:
+                        relevance = candidate
     except OSError:
         pass
-    return extent, sweep, sweep_explicit, occasions, title, warnings
+    return extent, sweep, sweep_explicit, occasions, title, relevance, warnings
 
 
 def plan_shards(file_set_size, shardable):
@@ -427,7 +455,7 @@ def build_shards(file_set_size, shardable, extent, target_files):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plan an agent-review run.")
+    parser = argparse.ArgumentParser(description="Plan a review-panel run.")
     parser.add_argument(
         "--mode",
         choices=["diff", "full"],
@@ -459,10 +487,33 @@ def main():
              "matches one of its tokens; a brief declaring none always runs.",
     )
     parser.add_argument(
+        "--skip-aspect",
+        action="append",
+        default=[],
+        metavar="NAME=REASON",
+        help="Skip a bundled aspect as not relevant to this diff, recording the "
+             "stated reason. Repeatable. The skill grants a skip only when the "
+             "diff clearly gives the aspect nothing to do; the reason is "
+             "reported with the run's other skips.",
+    )
+    parser.add_argument(
+        "--no-aspects",
+        action="store_true",
+        help="Plan only the repository's .review/ briefs, without the bundled "
+             "standard aspects.",
+    )
+    parser.add_argument(
+        "--no-briefs",
+        action="store_true",
+        help="Plan only the bundled standard aspects, without the repository's "
+             ".review/ briefs.",
+    )
+    parser.add_argument(
         "briefs",
         nargs="*",
-        help="Optional brief names (filename without .md) to restrict the run to. "
-             "Default: every brief. Used to baseline a single new brief.",
+        help="Optional aspect/brief names (filename without .md) to restrict the "
+             "run to. Default: everything. Used to baseline a single new brief "
+             "or run one aspect alone.",
     )
     args = parser.parse_args()
 
@@ -471,15 +522,45 @@ def main():
         print(json.dumps({"error": "Not inside a git repository."}))
         sys.exit(1)
 
-    review_dir = os.path.join(root, ".review")
-    if not os.path.isdir(review_dir):
-        print(json.dumps({"error": f"No .review/ directory found at repo root ({root})."}))
+    # Two sources: the bundled aspects ship with the skill (a missing directory
+    # is a broken install), while a repo's .review/ is optional — a repo with no
+    # briefs still gets the standard panel.
+    aspect_paths = [] if args.no_aspects else (
+        discover_briefs(ASPECTS_DIR) if os.path.isdir(ASPECTS_DIR) else None
+    )
+    if aspect_paths is None:
+        print(json.dumps({"error": f"Bundled aspects directory not found at {ASPECTS_DIR} — broken skill install."}))
         sys.exit(1)
 
-    brief_paths = discover_briefs(review_dir)
-    if not brief_paths:
-        print(json.dumps({"error": "No .md briefs found under .review/."}))
+    review_dir = os.path.join(root, ".review")
+    brief_paths = [] if args.no_briefs else (
+        discover_briefs(review_dir) if os.path.isdir(review_dir) else []
+    )
+    if not aspect_paths and not brief_paths:
+        print(json.dumps({"error": "Nothing to plan: the flags exclude the bundled aspects and this repo has no .review/ briefs."}))
         sys.exit(1)
+
+    # --skip-aspect name=reason — parsed up front so a malformed value fails the
+    # run before anything is planned. A reasonless skip is refused: the reason is
+    # what the run reports in place of the unchecked concern.
+    skip_aspects = {}
+    if args.skip_aspect and args.mode == "full":
+        # Relevance is a property of a diff; a full audit has no diff to be
+        # irrelevant to, so every selected aspect runs.
+        print(json.dumps({"error": "--skip-aspect is a diff-mode flag; a full audit runs every selected aspect."}))
+        sys.exit(1)
+    for raw in args.skip_aspect:
+        name, sep, reason = raw.partition("=")
+        if not sep or not name.strip() or not reason.strip():
+            print(json.dumps({"error": f"--skip-aspect expects NAME=REASON, got '{raw}'."}))
+            sys.exit(1)
+        key = name.strip().lower()
+        # The correctness invariant is enforced here, in code, not left to the
+        # orchestrator's judgement: correctness runs on every diff.
+        if key == "correctness":
+            print(json.dumps({"error": "The correctness aspect always runs; --skip-aspect cannot skip it."}))
+            sys.exit(1)
+        skip_aspects[key] = reason.strip()
 
     # The three static method files must exist — reviewers, checkers, and the
     # bar judge each read theirs. A missing file is a broken skill install, not
@@ -514,10 +595,18 @@ def main():
         "briefs": [],
     }
 
-    # Optional brief selection: restrict the run to named briefs (by filename
-    # stem). Used to baseline a single new brief without re-auditing the rest.
+    # Optional selection: restrict the run to named aspects/briefs. Used to
+    # baseline a single new brief or run one aspect alone. Explicit selection is
+    # authoritative — an aspect the user asked for by name is never
+    # relevance-skipped.
     selected = {name.lower() for name in args.briefs}
     matched = set()
+    named_and_skipped = sorted(selected & set(skip_aspects))
+    if named_and_skipped:
+        print(json.dumps({"error":
+            "Explicitly selected aspect(s) cannot be relevance-skipped: "
+            + ", ".join(named_and_skipped)}))
+        sys.exit(1)
 
     # A diff run needs the changed-file set and base ref. They feed diff-extent
     # briefs directly, and full-extent briefs use the base ref to classify each
@@ -586,17 +675,50 @@ def main():
             warnings.append(f"No changed files between {base} and HEAD{hint}.")
             plan["outcome"] = "empty-diff"
 
-    for brief_path in brief_paths:
-        name = os.path.splitext(os.path.basename(brief_path))[0]
+    # Aspects plan first, then briefs, through the same pipeline. Entries carry
+    # `kind` so downstream stages can tell them apart; an aspect's `path` is
+    # absolute (it lives in the installed skill), a brief's is repo-relative.
+    # Names are assigned for every source up front, before selection, so a
+    # concern's identity is stable whatever is selected or excluded. The
+    # collision namespace is the full bundled-aspect set even under
+    # --no-aspects, so the same brief never changes name across flags. A
+    # colliding brief takes a name derived from its .review/ path (unique by
+    # construction — two briefs cannot share a path), with a plain '-brief'
+    # suffix for the root-level case.
+    aspect_stems = {
+        os.path.splitext(os.path.basename(path))[0].lower()
+        for path in (discover_briefs(ASPECTS_DIR) if os.path.isdir(ASPECTS_DIR) else [])
+    }
+    sources = [("aspect", path, os.path.splitext(os.path.basename(path))[0])
+               for path in aspect_paths]
+    taken = set(aspect_stems)
+    for path in brief_paths:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        name = stem
+        if name.lower() in taken:
+            rel = os.path.splitext(os.path.relpath(path, review_dir))[0]
+            slug = "-".join(part for part in rel.replace(os.sep, "/").split("/") if part)
+            name = slug if slug.lower() not in taken and slug != stem else f"{slug}-brief"
+            warnings.append(
+                f"Brief '{stem}' ({os.path.relpath(path, root)}) collides with another "
+                f"concern's name; planned as '{name}'. Rename the brief to avoid this."
+            )
+        taken.add(name.lower())
+        sources.append(("brief", path, name))
+
+    for kind, brief_path, name in sources:
         if selected and name.lower() not in selected:
             continue
         matched.add(name.lower())
 
-        scope, scope_warning = resolve_scope(brief_path, review_dir, root)
-        if scope_warning:
-            warnings.append(scope_warning)
+        if kind == "aspect":
+            scope = None  # aspects always review repo-wide within the diff
+        else:
+            scope, scope_warning = resolve_scope(brief_path, review_dir, root)
+            if scope_warning:
+                warnings.append(scope_warning)
 
-        extent, sweep, sweep_explicit, occasions, brief_title, fm_warnings = parse_frontmatter(brief_path)
+        extent, sweep, sweep_explicit, occasions, brief_title, relevance, fm_warnings = parse_frontmatter(brief_path)
         warnings.extend(fm_warnings)
         # The human-readable review title shown in PR comments and issues. Prefer
         # the brief's declared `title`; fall back to one derived from the
@@ -606,18 +728,31 @@ def main():
         # the brief's own declared extent. sweep (shardability) still applies.
         effective_extent = "full" if args.mode == "full" else extent
 
-        rel_brief = os.path.relpath(brief_path, root)
         entry = {
-            "path": rel_brief,
+            # A brief's path is repo-relative; an aspect's is absolute, because
+            # it lives in the installed skill, not the reviewed repository.
+            "path": brief_path if kind == "aspect" else os.path.relpath(brief_path, root),
+            "kind": kind,                # "aspect" (bundled) or "brief" (.review/)
             "name": name,
             "title": title,              # human-readable, for outward-facing output
             "scope": scope,              # None == repo-wide
             "extent": effective_extent,  # "diff" or "full"
             "sweep": sweep,              # "per-file" or "whole-tree"
             "occasions": occasions,      # None == applies on every occasion
+            "relevance": relevance,      # aspects: the declared relevance condition
             "skip_reason": None,
-            "skip_kind": None,           # "occasion" | "empty" | "capacity" when skipped
+            "skip_kind": None,           # "relevance" | "occasion" | "empty" | "capacity"
         }
+
+        # A granted relevance skip: the skill judged the diff clearly gives this
+        # aspect nothing to do, and said why. Recorded like every other skip —
+        # an unchecked concern, never a silent absence.
+        if kind == "aspect" and name.lower() in skip_aspects:
+            entry["skip_reason"] = f"Skipped as not relevant to this diff: {skip_aspects.pop(name.lower())}"
+            entry["skip_kind"] = "relevance"
+            entry["file_set_size"] = None
+            plan["briefs"].append(entry)
+            continue
 
         # Occasion selection: a brief that declares occasions runs only when the
         # run names one of them. A skipped brief is an unchecked concern, so it
@@ -686,14 +821,21 @@ def main():
 
         plan["briefs"].append(entry)
 
-    # Surface requested briefs that matched nothing; error only if none matched
-    # at all, so a single typo in a multi-brief request doesn't run the wrong set.
+    # A --skip-aspect that matched no planned aspect: the skip did NOT happen, so
+    # say so — the conservative direction is that the aspect runs.
+    for name in sorted(skip_aspects):
+        warnings.append(
+            f"--skip-aspect '{name}' matched no bundled aspect; nothing was skipped."
+        )
+
+    # Surface requested names that matched nothing; error only if none matched
+    # at all, so a single typo in a multi-name request doesn't run the wrong set.
     if selected:
         for name in sorted(selected - matched):
-            warnings.append(f"Requested brief '{name}' matched no .md file under .review/.")
+            warnings.append(f"Requested name '{name}' matched no bundled aspect or .review/ brief.")
         if not matched:
             print(json.dumps({
-                "error": "None of the requested briefs matched a .md file under .review/: "
+                "error": "None of the requested names matched a bundled aspect or a .md brief under .review/: "
                          + ", ".join(sorted(selected))
             }))
             sys.exit(1)

@@ -1,6 +1,6 @@
 # Reviewer method
 
-This is the shared working method and findings format for the agent-review panel.
+This is the shared working method and findings format for the review panel.
 Every reviewer follows it, whatever their brief; it is also the bar an
 independent judge may later hold the assembled review to. Your specific brief,
 scope, and review target are in the task prompt that dispatched you — this file
