@@ -24,7 +24,11 @@ Prepare these before starting:
 - working Claude and Codex logins
   for the deployment user. These are the service's model
   credentials. This repository
-  supplies the run-body executable.
+  supplies the run-body executable;
+- the `claude`, `codex`, and `ensemble` executables available on the deployment
+  user's systemd-manager `PATH`. Interactive shell startup files do not set the
+  environment of detached user units, so user-local installations need stable
+  entry points such as `/usr/local/bin/{claude,codex,ensemble}`.
 
 > [!WARNING]
 > Never use the operator's personal Forgejo credential: the forge token must
@@ -111,6 +115,14 @@ sudo install -d -o root -g root -m 0755 /opt/pump19/skills/foundry
 sudo cp -a skills/foundry/. /opt/pump19/skills/foundry/
 ```
 
+Confirm the detached-unit environment can resolve every engine-side executable:
+
+```sh
+sudo -u "$DEPLOY_USER" env \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin \
+  sh -c 'command -v claude && command -v codex && command -v ensemble'
+```
+
 ## 3. Install configuration and credentials
 
 Create the production paths and install the inactive templates. The repository
@@ -119,7 +131,7 @@ repository in.
 
 ```sh
 sudo install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 \
-  /etc/pump19 /etc/pump19/repos /etc/pump19/secrets \
+  /etc/pump19 /etc/pump19/repos \
   /var/lib/pump19/runs /var/log/pump19
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/pump19/service.toml /etc/pump19/service.toml
@@ -129,9 +141,9 @@ sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/pump19/repos/owner--repository.toml.example \
   /etc/pump19/repos/owner--repository.toml.example
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
-  "$WEBHOOK_SECRET_SOURCE" /etc/pump19/secrets/forgejo-webhook
+  "$WEBHOOK_SECRET_SOURCE" /etc/pump19/webhook.secret
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
-  "$FORGE_TOKEN_SOURCE" /etc/pump19/secrets/forgejo-token
+  "$FORGE_TOKEN_SOURCE" /etc/pump19/forgejo.token
 ```
 
 Edit `/etc/pump19/service.toml` and replace
@@ -239,7 +251,7 @@ files keep both credentials out of process arguments:
 printf 'Forgejo hook token: ' >&2
 read -rs FORGEJO_HOOK_TOKEN
 printf '\n'
-WEBHOOK_SECRET="$(sudo cat /etc/pump19/secrets/forgejo-webhook)"
+WEBHOOK_SECRET="$(sudo cat /etc/pump19/webhook.secret)"
 export WEBHOOK_SECRET
 umask 077
 HOOK_BODY="$(mktemp)"

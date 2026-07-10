@@ -30,15 +30,14 @@ mkdir -p \
   "$work/prefix/bin" \
   "$work/prefix/adaptations/forgejo" \
   "$work/config/repos" \
-  "$work/config/secrets" \
   "$work/logs" \
   "$work/runs" \
   "$work/units"
 
 go build -o "$work/prefix/bin/pump19" ./cmd/pump19
 cp -R "$root/scripts/adaptations/forgejo/." "$work/prefix/adaptations/forgejo/"
-printf '%s\n' 'pump19-secret' >"$work/config/secrets/forgejo-webhook"
-printf '%s\n' 'dummy-token' >"$work/config/secrets/forgejo-token"
+printf '%s\n' 'pump19-secret' >"$work/config/webhook.secret"
+printf '%s\n' 'dummy-token' >"$work/config/forgejo.token"
 
 # Exercise the shipped skeleton itself, with only paths and the offline endpoint
 # replaced. No active repo TOML is installed, so the smoke never calls a forge.
@@ -46,8 +45,8 @@ sed \
   -e "s|bind = \":8919\"|bind = \"127.0.0.1:${port}\"|" \
   -e "s|/opt/pump19/adaptations/forgejo|$work/prefix/adaptations/forgejo|" \
   -e 's|REPLACE_WITH_FORGEJO_BASE_URL|https://forgejo.invalid|' \
-  -e "s|/etc/pump19/secrets/forgejo-webhook|$work/config/secrets/forgejo-webhook|" \
-  -e "s|/etc/pump19/secrets/forgejo-token|$work/config/secrets/forgejo-token|" \
+  -e "s|/etc/pump19/webhook.secret|$work/config/webhook.secret|" \
+  -e "s|/etc/pump19/forgejo.token|$work/config/forgejo.token|" \
   -e "s|/var/lib/pump19/runs|$work/runs|" \
   -e "s|/var/log/pump19/sweep.log|$work/logs/sweep.log|" \
   "$root/deploy/etc/pump19/service.toml" >"$work/config/service.toml"
