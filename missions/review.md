@@ -16,8 +16,8 @@ the mission says, not as the skill says:
   `$PUMP19_BRIEFS` as the briefs path read from the trusted base as the
   Integrity section directs, and `$PUMP19_OCCASION` as the occasion. Keep the
   skill's standard aspects on and never skip its verification: a pull request
-  with no `.review/` briefs still gets an ordinary full review carried by the
-  standard aspects, and every finding still clears the skill's independent
+  with no `.review/` briefs still gets an ordinary full review — the standard
+  aspects provide it — and every finding still clears the skill's independent
   verification before it may post. Entering the skill deliberately this way
   replaces its own default discovery.
 - **Take PR context from this mission's run environment.** Every fact about the
@@ -40,8 +40,8 @@ the mission says, not as the skill says:
   annexe. A service run has no annexe: write every `preexisting: true` finding
   to the run evidence sink under `$PUMP19_RUN_DIR` — never dropped silently,
   never posted to the forge, and never passed to the changed-line gate. The
-  posted review stays scoped to the change-introduced findings, carrying no
-  pre-existing count or summary, so a fix run addresses only what this change
+  posted review stays scoped to the change-introduced findings and contains
+  no pre-existing count or summary, so a fix run addresses only what this change
   raised and never chases a legacy backlog. Where a service run's pre-existing
   findings finally belong is an open commission question (filed in the annexe
   gaps queue): adopting the skill's native annexe-routing service-side would
@@ -255,7 +255,7 @@ contract bends service-side, settled by operator ruling (`maestro/gaps.md`,
 2026-07-10 composition-contract entry). The following are settled, not open:
 
 <!-- settled: review-panel is a SKILL.md read by path at $PUMP19_SKILL. -->
-<!-- settled: a service review run is review-panel's diff mode against $PUMP19_BASE_REF, with briefs from $PUMP19_BRIEFS and occasion from $PUMP19_OCCASION; the standard aspects stay on and verification is never skipped, so a PR with no .review/ briefs is an ordinary full review carried by the standard aspects. -->
+<!-- settled: a service review run is review-panel's diff mode against $PUMP19_BASE_REF, with briefs from $PUMP19_BRIEFS and occasion from $PUMP19_OCCASION; the standard aspects stay on and verification is never skipped, so a PR with no .review/ briefs is an ordinary full review; the standard aspects provide it. -->
 <!-- settled: PR context comes from this mission; the skill's gh-based discovery must not run (see the composition contract at the top). -->
 <!-- settled: review-panel legitimately retains gh-based PR discovery (its allowed-tools list gh pr view) for its general callers; a service run does not use it — the mission supplies PR context from the run environment, the permanent suppression, not a stopgap awaiting a Foundry change. -->
 <!-- settled: publication goes through this mission's `pump19 adapt` path; the skill's own comment-posting machinery is not used. -->
