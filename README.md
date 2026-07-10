@@ -93,14 +93,22 @@ evidence and never live claims. A claim that dies before an in-flight label is
 visible is reaped by the same fail-closed path once its `run.log` or directory
 mtime is stale.
 
-Failures before the run body starts are treated as retryable infrastructure
+Failures before the run body process starts are treated as retryable infrastructure
 failures, not agent verdicts. `run-wrap` records `retry.env` in the claim
 directory and writes no commit status. The sweep may release the canonical
 claim once by renaming it to `<claim>.retry-1`; that preserved directory is the
 bounded retry evidence, while the freed canonical path allows one reconcile
-retry. A second retryable failure writes an `error` status and discards the
-current failed claim without creating more retry evidence. Once the body starts,
-a non-zero body exit remains a loud terminal `error` status and is not retried.
+retry. A second retryable failure writes an `error` status and preserves its
+claim as `<claim>.retry-2`; only `.retry-1` counts towards the retry cap. Once
+the body process starts successfully, a non-zero exit remains a loud terminal
+`error` status and is not retried. If the wrapper itself dies before it can
+record either marker or status twice at the same head, the sweep writes the
+terminal `error` while reaping the second claim, closing the reap/refire loop.
+
+Forgejo 14.0.5 commit-status writes are ordered by their monotonic `id`; its
+status payload has no `created_unix`. The combined-status endpoint renders an
+individual `error` as `failure`, so the shell reads per-status state whenever
+the `error`/`failure` distinction matters.
 
 The receiver resolves Forgejo `label_updated` deliveries through the issue
 timeline before trigger evaluation. Forgejo 14.0.5 records label additions and

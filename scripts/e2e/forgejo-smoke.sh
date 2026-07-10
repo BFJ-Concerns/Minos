@@ -100,7 +100,7 @@ status_state() {
   local sha="$1"
   local context="$2"
   api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
-    jq -r --arg context "$context" 'sort_by([(.created_unix // 0), (.id // 0)]) | reverse | [.[] | select(.context == $context) | (.status // .state)][0] // ""'
+    jq -r --arg context "$context" '[.[] | select(.context == $context)] | if length == 0 then "" else (max_by(.id) | (.status // .state)) end'
 }
 
 capture_timeline_fixture() {
@@ -497,6 +497,13 @@ write_repo_config ""
 
 api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "pump19/review" '{context:$context,state:"success",description:"same-second success probe"}')" >/dev/null
 api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "pump19/review" '{context:$context,state:"error",description:"same-second error probe"}')" >/dev/null
+status_pair="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha4}/statuses" | jq '[.[] | select(.context == "pump19/review")][0:2]')"
+printf '%s\n' "$status_pair" >"${fixture_dir}/commit-statuses.json"
+same_second_count="$(jq '[.[].created_at] | unique | length' <<<"$status_pair")"
+if [[ "$same_second_count" != "1" ]]; then
+  echo "status ordering probe crossed a second boundary" >&2
+  exit 1
+fi
 latest_review_state="$(PUMP19_API_BASE="http://127.0.0.1:${port}" PUMP19_FORGE_TOKEN="$bot_token" "$work/adaptations/get-statuses" "$owner" "$repo" "$sha4" | jq -r '[.[] | select(.context == "pump19/review")][0].state')"
 combined_state="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha4}/status" | jq -r '.state // .status // ""')"
 case "$latest_review_state" in
@@ -507,7 +514,7 @@ if [[ "$service_combined_state" != "$combined_state" ]]; then
   echo "same-second status ordering disagrees: adaptation=${latest_review_state} combined=${combined_state}" >&2
   exit 1
 fi
-echo "ok: same-second status ordering agrees with Forgejo combined status"
+echo "ok: independently observed same-second status ordering agrees with Forgejo combined status"
 
 # Spike A capture tail: fire the extra Forgejo 14.0.5 webhook shapes the
 # normaliser needs to know about. These do not participate in the journeys.

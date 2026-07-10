@@ -7,4 +7,4 @@ repo="$2"
 sha="$3"
 
 api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses" |
-  jq 'sort_by([(.created_unix // 0), (.id // 0)]) | reverse | [.[] | {id: (.id // 0), context: .context, state: (.status // .state), creator: (.creator.login // .creator.username // ""), created_unix: (.created_unix // 0)}]'
+  jq 'map(if (.id | type) == "number" and .id > 0 then {id: .id, context: .context, state: (.status // .state), creator: (.creator.login // .creator.username // "")} else error("Forgejo status is missing a positive id") end) | sort_by(.id) | reverse'

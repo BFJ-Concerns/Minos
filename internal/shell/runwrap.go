@@ -97,12 +97,17 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	bodyStarted = true
 	cmd.Stdout = multiOut
 	cmd.Stderr = multiErr
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "PUMP19_RUN_KIND="+string(kind))
-	return cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Once Start succeeds, the body may have touched forge-visible state. From
+	// this boundary onwards failure is terminal rather than safely retryable.
+	bodyStarted = true
+	return cmd.Wait()
 }
 
 func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {

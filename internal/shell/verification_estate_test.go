@@ -83,53 +83,45 @@ func TestPartialCoverageNeverReconcilesAsConverged(t *testing.T) {
 	}
 	reviewContext, _ := StatusContext(RunReview)
 
-	decision, ok, err := reconcileDecision(context.Background(), repo, Adaptation{}, facts, []Status{{
+	decision, ok := reconcileDecision(repo, facts, []Status{{
 		Context: reviewContext,
 		State:   "failure",
 		Creator: "pump19",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	}}, "")
 	if !ok || decision != RunFix {
 		t.Fatalf("partial coverage with findings should still drive fix, got ok=%v decision=%s", ok, decision)
 	}
 
-	decision, ok, err = reconcileDecision(context.Background(), repo, Adaptation{}, facts, []Status{{
+	decision, ok = reconcileDecision(repo, facts, []Status{{
 		Context: reviewContext,
 		State:   "error",
 		Creator: "pump19",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	}}, "")
 	if ok {
 		t.Fatalf("partial coverage without findings must not auto-fire, got decision=%s", decision)
 	}
 }
 
-func TestStatusForContextMatchesForgejoCombinedOrdering(t *testing.T) {
+func TestStatusForContextUsesForgejoStatusIDs(t *testing.T) {
 	status, ok := statusForContext([]Status{
-		{ID: 11, Context: "pump19/review", State: "success", CreatedUnix: 1234},
-		{ID: 12, Context: "pump19/review", State: "error", CreatedUnix: 1234},
-		{ID: 13, Context: "other", State: "success", CreatedUnix: 1235},
+		{ID: 11, Context: "pump19/review", State: "success"},
+		{ID: 12, Context: "pump19/review", State: "error"},
+		{ID: 13, Context: "other", State: "success"},
 	}, "pump19/review")
 	if !ok {
 		t.Fatal("expected review status")
 	}
 	if status.State != "error" {
-		t.Fatalf("same-second status tie should choose higher id, got %s", status.State)
+		t.Fatalf("higher Forgejo status id should win, got %s", status.State)
 	}
+}
 
-	status, ok = statusForContext([]Status{
-		{ID: 14, Context: "pump19/review", State: "success", CreatedUnix: 1235},
-		{ID: 15, Context: "pump19/review", State: "error", CreatedUnix: 1234},
-	}, "pump19/review")
-	if !ok {
-		t.Fatal("expected review status")
-	}
-	if status.State != "success" {
-		t.Fatalf("newer created_unix should win before id, got %s", status.State)
+func TestGetStatusesRejectsMissingForgejoStatusID(t *testing.T) {
+	dir := t.TempDir()
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[{\"context\":\"pump19/review\",\"state\":\"error\"}]\\n'\n")
+	_, err := (Adaptation{Dir: dir}).GetStatuses(context.Background(), "pump19", "subject", "abcdef")
+	if err == nil || !strings.Contains(err.Error(), "positive id") {
+		t.Fatalf("missing status id error = %v", err)
 	}
 }
 
@@ -152,8 +144,6 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 	reviewContext, _ := StatusContext(RunReview)
 	fixContext, _ := StatusContext(RunFix)
 	finishContext, _ := StatusContext(RunFinish)
-	adaptation := testAdaptationWithLabelActor(t, "bob")
-
 	tests := []struct {
 		name     string
 		labels   []string
@@ -189,10 +179,7 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := facts
 			f.Labels = tt.labels
-			got, ok, err := reconcileDecision(context.Background(), repo, adaptation, f, tt.statuses)
-			if err != nil {
-				t.Fatal(err)
-			}
+			got, ok := reconcileDecision(repo, f, tt.statuses, "bob")
 			if ok != tt.wantOK || got != tt.want {
 				t.Fatalf("decision = %s ok=%v, want %s ok=%v", got, ok, tt.want, tt.wantOK)
 			}
@@ -214,7 +201,7 @@ func TestUnauthorisedReadyIsClearedBeforeReconcile(t *testing.T) {
 	}
 	defer logFile.Close()
 
-	got, err := clearUnauthorisedReady(context.Background(), repo, Adaptation{Dir: adaptationDir}, facts, logFile)
+	got, err := clearUnauthorisedReady(context.Background(), repo, Adaptation{Dir: adaptationDir}, facts, "mallory", logFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,8 +219,10 @@ func TestUnauthorisedReadyIsClearedBeforeReconcile(t *testing.T) {
 
 func TestAuthorisedReadyIsNotCleared(t *testing.T) {
 	drafts := false
-	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Drafts: &drafts}}}
-	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Labels: []string{LabelReady}, Draft: false}
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Authors: []string{"alice"}, Drafts: &drafts}}}
+	// Clearance is solely an actor-authorisation repair. Draft and author guards
+	// still decide whether finish fires, but must not relabel an authorised act.
+	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Author: "mallory", Labels: []string{LabelReady}, Draft: true}
 	adaptationDir := t.TempDir()
 	removeFile := filepath.Join(adaptationDir, "removed.args")
 	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'bob\\n'\n")
@@ -244,7 +233,7 @@ func TestAuthorisedReadyIsNotCleared(t *testing.T) {
 	}
 	defer logFile.Close()
 
-	got, err := clearUnauthorisedReady(context.Background(), repo, Adaptation{Dir: adaptationDir}, facts, logFile)
+	got, err := clearUnauthorisedReady(context.Background(), repo, Adaptation{Dir: adaptationDir}, facts, "bob", logFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,14 +245,44 @@ func TestAuthorisedReadyIsNotCleared(t *testing.T) {
 	}
 }
 
+func TestReadyActorIsReadOnceAcrossClearanceAndReconcile(t *testing.T) {
+	drafts := false
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Drafts: &drafts}}}
+	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Labels: []string{LabelReady}}
+	dir := t.TempDir()
+	countFile := filepath.Join(dir, "label-actor.count")
+	writeScript(t, filepath.Join(dir, "label-actor"), "#!/usr/bin/env sh\nprintf x >>'"+countFile+"'\nprintf 'bob\\n'\n")
+	writeScript(t, filepath.Join(dir, "remove-label"), "#!/usr/bin/env sh\nexit 0\n")
+	adaptation := Adaptation{Dir: dir}
+	logFile, err := os.Create(filepath.Join(t.TempDir(), "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	readyActor, err := resolveReadyActor(context.Background(), repo, adaptation, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, err = clearUnauthorisedReady(context.Background(), repo, adaptation, facts, readyActor, logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcileDecision(repo, facts, nil, readyActor)
+	count, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(count); got != 1 {
+		t.Fatalf("label actor reads = %d, want 1", got)
+	}
+}
+
 func TestReconcileReviewActorGuardIsReceiverPathOnly(t *testing.T) {
 	drafts := false
 	repo := RepoConfig{Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}, Actors: []string{"bob"}, Drafts: &drafts}}}
 	facts := Facts{Author: "contributor"}
-	decision, ok, err := reconcileDecision(context.Background(), repo, Adaptation{}, facts, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	decision, ok := reconcileDecision(repo, facts, nil, "")
 	if !ok || decision != RunReview {
 		t.Fatalf("review actor guard should be receiver-path-only on reconcile: decision=%s ok=%v", decision, ok)
 	}
@@ -401,6 +420,41 @@ func TestRunBodyCommandUsesRunBodyNotSkill(t *testing.T) {
 	}
 }
 
+func TestRunWrapTreatsBodyStartFailureAsRetryable(t *testing.T) {
+	root := t.TempDir()
+	adaptationDir := filepath.Join(root, "adaptation")
+	if err := os.Mkdir(adaptationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), "#!/usr/bin/env sh\nexit 0\n")
+	serviceConfig := "[forges.local]\nadaptation = \"" + adaptationDir + "\"\n"
+	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(serviceConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(root, "runs", "local--pump19--subject", "pr42", "abcdef123456-review")
+	workspace := filepath.Join(root, "workspace")
+	t.Setenv("PUMP19_RUN_DIR", runDir)
+	t.Setenv("PUMP19_WORKSPACE", workspace)
+	t.Setenv("PUMP19_RUN_KIND", "review")
+	t.Setenv("PUMP19_FORGE", "local")
+	t.Setenv("PUMP19_OWNER", "pump19")
+	t.Setenv("PUMP19_REPO_NAME", "subject")
+	t.Setenv("PUMP19_PR", "42")
+	t.Setenv("PUMP19_HEAD_SHA", "abcdef1234567890")
+	t.Setenv("PUMP19_RUN_BODY", filepath.Join(root, "missing-run-body"))
+
+	if err := RunWrapCommand(context.Background(), []string{"--config", root}); err == nil {
+		t.Fatal("expected missing run body to fail before starting")
+	}
+	values, err := readMetaFile(filepath.Join(runDir, "retry.env"))
+	if err != nil {
+		t.Fatalf("body start failure did not record retry evidence: %v", err)
+	}
+	if got := values["PUMP19_FAILURE_PHASE"]; got != "run-body-start" {
+		t.Fatalf("failure phase = %q, want run-body-start", got)
+	}
+}
+
 func TestRunWrapFailureRecordsStatusWhenBodyDidNot(t *testing.T) {
 	dir := t.TempDir()
 	statusFile := filepath.Join(dir, "status.args")
@@ -423,7 +477,7 @@ func TestRunWrapFailureRecordsStatusWhenBodyDidNot(t *testing.T) {
 func TestRunWrapFailureDoesNotOverwriteBodyStatus(t *testing.T) {
 	dir := t.TempDir()
 	statusFile := filepath.Join(dir, "status.args")
-	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[{\"context\":\"pump19/review\",\"state\":\"error\"}]\\n'\n")
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[{\"id\":1,\"context\":\"pump19/review\",\"state\":\"error\"}]\\n'\n")
 	writeScript(t, filepath.Join(dir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
 	adaptation := Adaptation{Dir: dir}
 	facts := Facts{Owner: "pump19", Repo: "subject", HeadSHA: "abcdef1234567890"}

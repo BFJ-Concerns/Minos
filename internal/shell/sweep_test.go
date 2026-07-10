@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func TestNewestLiveRunDirExcludesReapedEvidence(t *testing.T) {
 	if err := os.MkdirAll(reaped, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := newestLiveRunDir(root, facts, RunReview)
+	got, err := newestLiveRunDir(root, facts, RunReview, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +107,10 @@ func TestNewerLiveRunDirExistsMeansNewer(t *testing.T) {
 	if err := os.Chtimes(oldRun, now.Add(time.Hour), now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if !newerLiveRunDirExists(root, facts, RunReview, currentRun) {
+	if !newerLiveRunDirExists(root, facts, RunReview, currentRun, time.Hour) {
 		t.Fatal("expected a later live run to count as newer")
 	}
-	if newerLiveRunDirExists(root, facts, RunReview, newRun) {
+	if newerLiveRunDirExists(root, facts, RunReview, newRun, time.Hour) {
 		t.Fatal("older live runs must not count as newer")
 	}
 }
@@ -128,7 +129,7 @@ func TestNewestLiveRunDirUsesSubsecondStartedAt(t *testing.T) {
 	writeRunMeta(t, lexicallyLaterOldRun, "ffffffffffffaaaa", startedAt)
 	writeRunMeta(t, lexicallyEarlierNewRun, "111111111111bbbb", startedAt.Add(time.Nanosecond))
 
-	got, err := newestLiveRunDir(root, facts, RunReview)
+	got, err := newestLiveRunDir(root, facts, RunReview, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,12 +150,37 @@ func TestNewestLiveRunDirTreatsMissingMetadataAsNewest(t *testing.T) {
 	}
 	writeRunMeta(t, metadatedRun, "111111111111aaaa", time.Now())
 
-	got, err := newestLiveRunDir(root, facts, RunReview)
+	got, err := newestLiveRunDir(root, facts, RunReview, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != missingMetaRun {
 		t.Fatalf("claim without meta.env should be treated as the live/newest claim, got %s", got)
+	}
+}
+
+func TestNewestLiveRunDirDoesNotPreferStaleMissingMetadata(t *testing.T) {
+	root := t.TempDir()
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7"}
+	metadatedRun := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, "111111111111", RunReview)
+	missingMetaRun := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, "222222222222", RunReview)
+	for _, dir := range []string{metadatedRun, missingMetaRun} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRunMeta(t, metadatedRun, "111111111111aaaa", time.Now())
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(missingMetaRun, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := liveRunState(root, facts, RunReview, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != metadatedRun {
+		t.Fatalf("stale claim without meta.env outranked live metadata claim: %s", got)
 	}
 }
 
@@ -243,7 +269,31 @@ func TestRetryableFailureReleasePreservesBoundedEvidence(t *testing.T) {
 	}
 }
 
-func TestRetryableFailureExhaustionWritesErrorWithoutGrowingEvidence(t *testing.T) {
+func TestConcurrentRetryReleaseIdentifiesTheLosingClaim(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			results <- releaseRetryableClaim(t.Context(), runDir, 1)
+		}()
+	}
+	first, second := <-results, <-results
+	if first != nil && second != nil {
+		t.Fatalf("both retry releases failed: %v; %v", first, second)
+	}
+	loser := first
+	if loser == nil {
+		loser = second
+	}
+	if !errors.Is(loser, errRetryClaimAlreadyReleased) {
+		t.Fatalf("losing release = %v, want retry-claim sentinel", loser)
+	}
+}
+
+func TestRetryableFailureExhaustionWritesErrorAndPreservesSecondAttempt(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
@@ -285,12 +335,16 @@ func TestRetryableFailureExhaustionWritesErrorWithoutGrowingEvidence(t *testing.
 	if _, err := os.Stat(retryDir); err != nil {
 		t.Fatalf("prior retry evidence should remain: %v", err)
 	}
+	secondRetryDir := runDir + ".retry-2"
+	if _, err := os.Stat(filepath.Join(secondRetryDir, "retry.env")); err != nil {
+		t.Fatalf("second attempt evidence should be preserved: %v", err)
+	}
 	matches, err := filepath.Glob(runDir + ".retry-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != maxRetryableRunWrapRetries {
-		t.Fatalf("exhaustion should not grow retry evidence, got %v", matches)
+	if len(matches) != maxRetryableRunWrapRetries+1 {
+		t.Fatalf("exhaustion should preserve exactly two attempts, got %v", matches)
 	}
 	data, err := os.ReadFile(statusFile)
 	if err != nil {
@@ -298,6 +352,50 @@ func TestRetryableFailureExhaustionWritesErrorWithoutGrowingEvidence(t *testing.
 	}
 	if got := string(data); !strings.Contains(got, "pump19/review\nerror") {
 		t.Fatalf("set-status args did not record retry exhaustion:\n%s", got)
+	}
+}
+
+func TestSecondUnmarkedCrashWritesTerminalStatus(t *testing.T) {
+	root := t.TempDir()
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Sweep.LivenessThreshold.Duration = time.Hour
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "222222222222bbbb"}
+	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRunMeta(t, runDir, facts.HeadSHA, time.Now().Add(-2*time.Hour))
+	writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
+	if err := os.Mkdir(runDir+".reaped-1", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adaptationDir := filepath.Join(root, "adaptation")
+	if err := os.Mkdir(adaptationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statusFile := filepath.Join(root, "status.args")
+	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	statuses, err := reapLabelLessClaims(t.Context(), cfg, Adaptation{Dir: adaptationDir}, facts, nil, logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := statusForContext(statuses, "pump19/review")
+	if !ok || status.State != "error" {
+		t.Fatalf("second unmarked crash did not become terminal: %#v", statuses)
+	}
+	data, err := os.ReadFile(statusFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "pump19/review\nerror") {
+		t.Fatalf("terminal status was not written:\n%s", data)
 	}
 }
 

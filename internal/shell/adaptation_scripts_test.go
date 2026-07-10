@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,6 +82,20 @@ esac
 	text := string(out)
 	if !strings.Contains(text, "PR=1") || !strings.Contains(text, "PR=2") || !strings.Contains(text, "LABELS=Ready") {
 		t.Fatalf("paginated facts missing from output:\n%s", text)
+	}
+}
+
+func TestForgejoGetStatusesMatchesCapturedForgejo14Shape(t *testing.T) {
+	out := runForgejoScriptWithFixture(t, "get-statuses", "commit-statuses.json", "owner", "repo", "abcdef")
+	if strings.Contains(out, "created_unix") {
+		t.Fatalf("normalised statuses invented created_unix:\n%s", out)
+	}
+	var statuses []Status
+	if err := json.Unmarshal([]byte(out), &statuses); err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) < 2 || statuses[0].ID <= statuses[1].ID || statuses[1].ID <= 0 {
+		t.Fatalf("normalised statuses did not preserve descending positive ids: %#v", statuses)
 	}
 }
 
