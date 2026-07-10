@@ -120,6 +120,11 @@ loudly. A finish run is a single accountable session with no Ensemble workers �
 the lead record is the whole provenance. Use the resolved lead model for any
 maintenance commit's `Pump-19-Model:` trailer.
 
+Run every long command — the merge gate's builds and test suites included —
+in the foreground and stay with it. This session ends the moment you stop
+with no tool call in flight, so a backgrounded task ends the run unfinished;
+nothing can notify you afterwards.
+
 ## Output contract
 
 Record exactly one outcome as machine state — a single PR comment with a
