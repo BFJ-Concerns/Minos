@@ -66,3 +66,26 @@ func TestCaptureClaudeFailsLoudlyOnEarlyModelMismatch(t *testing.T) {
 		t.Fatalf("mismatch wrote a resolved record: %v", err)
 	}
 }
+
+func TestCaptureClaudeFailsWhenStreamHasNoResolvedModel(t *testing.T) {
+	dir := t.TempDir()
+	pins := filepath.Join(dir, "pins.toml")
+	launcher := filepath.Join(dir, "claude-fixture")
+	resolved := filepath.Join(dir, "resolved-lead.json")
+	if err := os.WriteFile(pins, []byte(pinsFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, launcher, "#!/usr/bin/env sh\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\"}'\n")
+	err := CaptureClaudeCommand(t.Context(), []string{
+		"--pins", pins,
+		"--output", filepath.Join(dir, "lead.jsonl"),
+		"--resolved", resolved,
+		launcher,
+	}, strings.NewReader("mission"), &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "without a resolved lead model") {
+		t.Fatalf("missing-model error = %v", err)
+	}
+	if _, err := os.Stat(resolved); !os.IsNotExist(err) {
+		t.Fatalf("missing-model stream wrote a resolved record: %v", err)
+	}
+}

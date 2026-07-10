@@ -77,6 +77,45 @@ func TestExtractGoverningRejectsParentBriefPath(t *testing.T) {
 	}
 }
 
+func TestReviewEngineStandInPropagatesGoverningExtractionFailure(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "run")
+	reviewScripts := filepath.Join(root, "review-scripts")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(reviewScripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(reviewScripts, "extract-governing"), "#!/usr/bin/env sh\nexit 17\n")
+	pump19 := filepath.Join(root, "pump19-fixture")
+	writeScript(t, pump19, `#!/usr/bin/env sh
+case "$1:$4" in
+  run-guard:begin) printf 'claimed\n' ;;
+  run-guard:release) ;;
+  *) printf '%s\n' "$*" >"$PUMP19_UNEXPECTED_CALL"; exit 99 ;;
+esac
+`)
+	standin := filepath.Join("..", "..", "scripts", "e2e", "review-engine-standin")
+	cmd := exec.Command(standin)
+	cmd.Stdin = strings.NewReader("mission")
+	cmd.Env = append(os.Environ(),
+		"PUMP19_BIN="+pump19,
+		"PUMP19_REVIEW_SCRIPTS="+reviewScripts,
+		"PUMP19_RUN_DIR="+runDir,
+		"PUMP19_CONFIG="+root,
+		"PUMP19_PINS="+filepath.Join(root, "pins.toml"),
+		"PUMP19_STANDIN_RESOLVED_MODELS="+filepath.Join(root, "workers.json"),
+		"PUMP19_UNEXPECTED_CALL="+filepath.Join(root, "unexpected-call"),
+	)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("stand-in ignored governing extraction failure:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "unexpected-call")); !os.IsNotExist(err) {
+		t.Fatalf("stand-in continued after governing extraction failure: %v", err)
+	}
+}
+
 func writeRepoFile(t *testing.T, root, name, body string) {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(name))
