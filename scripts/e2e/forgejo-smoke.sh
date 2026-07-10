@@ -329,6 +329,8 @@ docker exec -u git "$container" forgejo admin user create \
 docker exec -u git "$container" forgejo admin user create \
   --username "$owner" --password password --email pump19@example.invalid --must-change-password=false >/dev/null
 docker exec -u git "$container" forgejo admin user create \
+  --username Minos --password password --email minos@example.invalid --must-change-password=false >/dev/null
+docker exec -u git "$container" forgejo admin user create \
   --username mallory --password password --email mallory@example.invalid --admin --must-change-password=false >/dev/null
 bot_token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
   --username "$owner" --token-name pump19-e2e --scopes 'write:repository,write:issue,write:user' --raw)"
