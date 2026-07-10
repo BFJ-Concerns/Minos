@@ -4,10 +4,10 @@ Agent-native code verification. The first deliverable is an automated,
 independent PR review-and-fix service — see `AGENTS.md` for the corrected
 architecture stance.
 
-This repository is between builds: the previous implementation was removed
-under a containment episode (see `CONTAINMENT.md`), and the rebuild works from
-the corrected commission in the sibling annexe. It remains readable in git
-history as evidence, not as a base.
+The previous implementation was removed under a containment episode (see
+`CONTAINMENT.md`), and this rebuild works from the corrected commission in the
+sibling annexe. Quarantined code remains readable in git history as evidence,
+not as a base.
 
 ## Service Shell
 
@@ -19,10 +19,19 @@ The rebuilt shell is deliberately small:
 - `pump19 run-wrap --config /etc/pump19` owns run mechanics: atomic run claim,
   log and metadata creation, workspace preparation, body execution, and
   workspace cleanup.
-- `pump19 stub-run` is this unit's stand-in body. If `PUMP19_RUN_BODY` is set,
-  `run-wrap` executes that path instead; an empty `PUMP19_RUN_BODY` keeps the
-  shipped stub default. `PUMP19_SKILL` remains the skill/prompt file the body
-  reads.
+- `scripts/run-body/run-body` is the deployed agent-session launcher. It serves
+  review runs and fails loudly for the recognised but not-yet-implemented fix
+  and finish kinds. An empty `PUMP19_RUN_BODY` still selects `pump19 stub-run`
+  for mechanical shell tests.
+- `pump19 run-guard` exposes the current-head, terminal-status, and superseding-
+  run checks used by accountable sessions.
+- `pump19 adapt` invokes a configured, service-owned forge adaptation with the
+  dedicated forge credential.
+- `pump19 review`, `pump19 marker`, `pump19 handle`, and `pump19 provenance`
+  expose changed-line and anchor checks, stable finding identities, marker
+  formatting, and resolved-model pin verification to the session.
+- `pump19 capture-claude` records Claude's JSONL audit stream and validates the
+  engine-reported lead model before the session may publish.
 - `pump19 ws-exec --config /etc/pump19 -- command ...` runs PR-controlled build
   or test commands inside `PUMP19_WORKSPACE` with configured service credentials
   scrubbed from the environment.
@@ -84,8 +93,9 @@ creates it with atomic `mkdir`; a loser exits cleanly and touches nothing.
 `run-wrap` removes it on normal exit. The run body owns forge-visible state: it
 re-reads PR facts, applies and removes its in-flight label, guards against head
 changes before posting, writes the terminal status for the served head, and
-keeps `run.log` warm. The sweep reads only labels, statuses, and run-log mtimes;
-it never reads prose or log content as loop state.
+emits diagnostics captured in `run.log`. The sweep reads labels, statuses,
+run-log mtimes, and the mechanical `meta.env` and `retry.env` files. It never
+reads prose or log content as loop state.
 
 Reaping is fail-closed. A stale run directory is renamed aside only after the
 transient unit has been stopped and verified gone; `.reaped-*` directories are
@@ -125,6 +135,13 @@ come from `label-actor(Ready)`. Review actor guards are receiver-path-only
 because the open-PR state read has no delivery actor to recover.
 
 ## End-To-End Harness
+
+`go test ./internal/shell` includes a hermetic review-run-body journey through
+the real `run-wrap` path. Its deterministic engine stand-in proves a new finding
+post, stable-handle comment update, clean convergence, partial coverage,
+outcome labels/statuses, and a loud resolved-model mismatch without model cost.
+Focused tests separately prove base-ref governing extraction and degraded
+`model-unknown` provenance.
 
 `make e2e` is the stable disposable-Forgejo journey gate. It builds `pump19`,
 starts Forgejo 14.0.5 in Docker, installs a local webhook through a
