@@ -3,7 +3,9 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="${PUMP19_DEPLOYMENT_SMOKE_DIR:-$(mktemp -d)}"
-port="${PUMP19_DEPLOYMENT_SMOKE_PORT:-$((20000 + RANDOM % 20000))}"
+source "$root/scripts/e2e/resources.sh"
+declare -a PUMP19_E2E_RESOURCE_LOCK_FDS=()
+pump19_e2e_claim_single_port port "${PUMP19_DEPLOYMENT_SMOKE_PORT:-}"
 receiver_pid=""
 
 cleanup() {
