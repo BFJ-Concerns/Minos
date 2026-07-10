@@ -57,6 +57,9 @@ type RepoConfig struct {
 	Policy struct {
 		AutoMerge bool `toml:"auto-merge"`
 	} `toml:"policy"`
+	Retries struct {
+		OperationalAttempts int `toml:"operational-attempts"`
+	} `toml:"retries"`
 	Triggers []TriggerRule `toml:"trigger"`
 }
 
@@ -166,6 +169,9 @@ func validateRepoConfig(repo RepoConfig) error {
 	if len(repo.Triggers) == 0 {
 		missing = append(missing, "trigger")
 	}
+	if repo.Retries.OperationalAttempts < 0 {
+		return fmt.Errorf("retries.operational-attempts must not be negative")
+	}
 	for index, trigger := range repo.Triggers {
 		prefix := fmt.Sprintf("trigger[%d].", index)
 		requireConfigValue(&missing, prefix+"run", trigger.Run)
@@ -174,6 +180,15 @@ func validateRepoConfig(repo RepoConfig) error {
 		}
 	}
 	return missingConfigError(missing)
+}
+
+const defaultOperationalAttempts = 5
+
+func operationalAttemptLimit(repo RepoConfig) int {
+	if repo.Retries.OperationalAttempts > 0 {
+		return repo.Retries.OperationalAttempts
+	}
+	return defaultOperationalAttempts
 }
 
 func requireConfigValue(missing *[]string, name, value string) {

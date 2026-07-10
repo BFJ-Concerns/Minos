@@ -207,17 +207,23 @@ Publish a successful terminal result in this order:
    reconciliation sweep. It does not rewrite the completed review as an error.
 
 Any non-zero mechanical, provenance, or forge command is fatal unless this
-mission explicitly classifies its result as a successful yield. Exit non-zero
-so the wrapper writes `pump19/review=error` when no terminal status exists.
+mission explicitly classifies its result as a successful yield. Before the run
+claim exists, exit non-zero; the wrapper records the failure internally and the
+sweep retries it only when no forge write was attempted. After `claimed`, use
+`pump19 run-guard --config "$PUMP19_CONFIG" release` for the controlled exit,
+then run `pump19 run-terminal --reason controlled-failure`, then exit non-zero.
+If release itself fails, exit non-zero. Claim/release mutations are replay-safe
+and do not set the publication marker: the wrapper retries when no earlier
+substantive mutation was attempted and latches when one was.
 Operational diagnostics belong in the run log under `$PUMP19_RUN_DIR`, not in
-PR comments: the PR carries the outcome for people, the run directory carries
-the machinery's evidence. If a mutation before the
-terminal status fails after the review was posted, leave the partial forge
-record in place; the wrapper's error status records that terminal publication
-did not complete. If the later `Ready` apply fails, exit non-zero after
-controlled release; this remains a retryable run failure, not successful
-post-terminal cleanup. The wrapper records the command failure in `run.log` but
-preserves the already-written `pump19/review=success` status; no finish
+PR comments or error statuses: the PR carries the outcome for people, the run
+directory carries the machinery's evidence. If a mutation before the terminal
+status fails after the review was posted, leave the partial forge record in
+place; the internal marker records that terminal publication did not complete.
+If the later `Ready` apply fails, exit non-zero after controlled release; this
+is an operational failure, not successful post-terminal cleanup. The wrapper
+records the command failure in `run.log` but preserves the already-written
+`pump19/review=success` status; no finish
 implication is triggered without the label. The current sweep cannot derive a missing
 `Ready` from that converged status, so automatic retry remains a bounded
 follow-up rather than a property this mission can provide.
@@ -231,7 +237,8 @@ validated engine record to `$PUMP19_RUN_DIR/resolved-lead.json`; the full audit
 stream is `$PUMP19_RUN_DIR/sessions/lead.jsonl`. Before any forge mutation,
 require that lead file to exist and contain the lead pin ID. Its absence is a
 run failure; the served model differing from the lead pin is a loud run failure
-(post no verdict, exit non-zero so the wrapper records `pump19/review=error`);
+(post no verdict, use the controlled failure path when the claim exists, and
+exit non-zero so the wrapper records the internal disposition);
 `model-unknown` is not permitted for the lead. This early-stream interlock is
 the pin check that matters — it detects a floating alias serving a model other
 than the lead pin, the silent substitution the pins exist to prevent.

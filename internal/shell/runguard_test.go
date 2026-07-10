@@ -10,6 +10,8 @@ import (
 
 func TestBeginRunClaimsOnlyCurrentUnfinishedHead(t *testing.T) {
 	dir := t.TempDir()
+	runDir := t.TempDir()
+	t.Setenv("PUMP19_RUN_DIR", runDir)
 	operations := filepath.Join(dir, "operations")
 	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
 	writeScript(t, filepath.Join(dir, "get-pr-facts"), "#!/usr/bin/env sh\nprintf 'OCCASION=reconcile\\nOWNER=pump19\\nREPO=subject\\nPR=42\\nHEAD_SHA=abcdef\\nBASE_REF=main\\n'\n")
@@ -27,6 +29,9 @@ func TestBeginRunClaimsOnlyCurrentUnfinishedHead(t *testing.T) {
 	want := "add-label:Reviewing\nadd-reaction:eyes\nassign-if-missing:Minos\n"
 	if string(data) != want {
 		t.Fatalf("claim presence operations = %q, want %q", data, want)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, forgeWritesAttemptedFile)); !os.IsNotExist(err) {
+		t.Fatalf("replay-safe claim marked a publication write: %v", err)
 	}
 }
 
@@ -105,6 +110,9 @@ func TestReleaseRunRemovesEyesBeforeStageLabel(t *testing.T) {
 	want := "remove-reaction:eyes\nremove-label:Reviewing\n"
 	if string(data) != want {
 		t.Fatalf("release operations = %q, want %q", data, want)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, forgeWritesAttemptedFile)); !os.IsNotExist(err) {
+		t.Fatalf("replay-safe release marked a publication write: %v", err)
 	}
 }
 

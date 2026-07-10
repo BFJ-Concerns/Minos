@@ -105,20 +105,29 @@ evidence and never live claims. A claim that dies before an in-flight label is
 visible is reaped by the same fail-closed path once its `run.log` or directory
 mtime is stale.
 
-Failures before the run body process starts are treated as retryable infrastructure
-failures, not agent verdicts. `run-wrap` records `retry.env` in the claim
-directory and writes no commit status. The sweep may release the canonical
-claim once by renaming it to `<claim>.retry-1`; that preserved directory is the
-bounded retry evidence, while the freed canonical path allows one reconcile
-retry. A second retryable review, fix, or finish failure writes an `error`
-status and preserves its claim as `<claim>.retry-2`; only `.retry-1` counts
-towards the retry cap. Flaky failures preserve the same evidence without an
-error status. Once the body process starts successfully, a non-zero review,
-fix, or finish exit remains a loud terminal `error` status and is not retried.
-Flaky body failures remain in `run.log` and leave the standing label in place.
-If the wrapper itself dies before it can record either marker or status twice
-at the same head, the sweep writes the terminal `error` for review, fix, and
-finish while flaky repair again stays private.
+Operational failures are run evidence, not pull-request outcomes: they write no
+comment or `error` commit status. Before every mutating adaptation outside the
+run-guard claim/release seam, the shared dispatcher atomically records
+`forge-writes-attempted.env` in the run directory. Stage-label, eyes-reaction,
+and assignment mutations made by run-guard are idempotent claim state and use an
+explicit replay-safe path; mission-driven calls to the same verbs remain
+tracked. A pre-body failure, or a body failure with no such record, writes
+`retry.env`; the sweep preserves each expired attempt as `<claim>.retry-N` and
+admits the next attempt only after the liveness interval. The default cap is
+five attempts, configurable per repository. The final attempt receives an
+atomic `terminal.env` marker and no longer reconciles for that head and run
+kind. A body failure after a forge write was attempted latches immediately,
+because publication may be partial. Controlled mission failures, stub crashes,
+and stale crashes after an attempted write use the same marker. A new head has
+a distinct identity and runs normally; `pump19 re-arm` explicitly removes a
+same-head latch while retaining its marker as an audit copy.
+
+Re-arm only the exact identity the operator has inspected:
+
+```sh
+pump19 re-arm --config /etc/pump19 --forge FORGE --owner OWNER --repo REPO \
+  --pr PR --head FULL_SHA --run review|fix|finish|flaky
+```
 
 Forgejo 14.0.5 commit-status writes are ordered by their monotonic `id`; its
 status payload has no `created_unix`. The combined-status endpoint renders an

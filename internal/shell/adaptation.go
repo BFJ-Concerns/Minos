@@ -15,6 +15,29 @@ import (
 
 var adaptationOperation = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
+// Reads are the deliberately small exception. An organisation may add a new
+// mutating adaptation without changing the service; treating unknown verbs as
+// writes keeps replay safety conservative when that happens.
+var forgeReadOperations = map[string]bool{
+	"get-pr-facts":         true,
+	"get-statuses":         true,
+	"label-actor":          true,
+	"latest-label-event":   true,
+	"list-open-prs":        true,
+	"list-review-comments": true,
+	"list-reviews":         true,
+	"normalise-event":      true,
+	"prepare-workspace":    true,
+}
+
+var runClaimMutationOperations = map[string]bool{
+	"add-label":         true,
+	"add-reaction":      true,
+	"assign-if-missing": true,
+	"remove-label":      true,
+	"remove-reaction":   true,
+}
+
 type Adaptation struct {
 	Dir        string
 	APIBase    string
@@ -47,8 +70,29 @@ func NewAdaptation(forge ForgeConfig) (Adaptation, error) {
 }
 
 func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
+	return a.run(ctx, name, stdin, extraEnv, true, args...)
+}
+
+// runClaimMutation is reserved for the service's idempotent claim/release
+// seam. A mission invoking the same adaptation verb through pump19 adapt still
+// takes the ordinary tracked path above.
+func (a Adaptation) runClaimMutation(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if !runClaimMutationOperations[name] {
+		return nil, fmt.Errorf("adaptation operation %q is not run-claim state", name)
+	}
+	return a.run(ctx, name, nil, nil, false, args...)
+}
+
+func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, trackMutation bool, args ...string) ([]byte, error) {
 	if a.Dir == "" {
 		return nil, fmt.Errorf("adaptation directory is not configured")
+	}
+	if trackMutation && !forgeReadOperations[name] {
+		// This record must become durable before the adaptation can make a forge
+		// mutation. A later non-zero exit is replayable only when it is absent.
+		if err := writeForgeWritesAttempted(os.Getenv("PUMP19_RUN_DIR"), name); err != nil {
+			return nil, fmt.Errorf("record forge write attempt for %s: %w", name, err)
+		}
 	}
 	path := filepath.Join(a.Dir, name)
 	cmd := exec.CommandContext(ctx, path, args...)
@@ -171,18 +215,28 @@ func (a Adaptation) RemoveLabel(ctx context.Context, owner, repo, pr, label stri
 	return err
 }
 
-func (a Adaptation) AddReaction(ctx context.Context, owner, repo, pr, reaction string) error {
-	_, err := a.Run(ctx, "add-reaction", nil, nil, owner, repo, pr, reaction)
+func (a Adaptation) addRunClaimLabel(ctx context.Context, owner, repo, pr, label string) error {
+	_, err := a.runClaimMutation(ctx, "add-label", owner, repo, pr, label)
 	return err
 }
 
-func (a Adaptation) RemoveReaction(ctx context.Context, owner, repo, pr, reaction string) error {
-	_, err := a.Run(ctx, "remove-reaction", nil, nil, owner, repo, pr, reaction)
+func (a Adaptation) removeRunClaimLabel(ctx context.Context, owner, repo, pr, label string) error {
+	_, err := a.runClaimMutation(ctx, "remove-label", owner, repo, pr, label)
 	return err
 }
 
-func (a Adaptation) AssignIfMissing(ctx context.Context, owner, repo, pr, login string) error {
-	_, err := a.Run(ctx, "assign-if-missing", nil, nil, owner, repo, pr, login)
+func (a Adaptation) addRunClaimReaction(ctx context.Context, owner, repo, pr, reaction string) error {
+	_, err := a.runClaimMutation(ctx, "add-reaction", owner, repo, pr, reaction)
+	return err
+}
+
+func (a Adaptation) removeRunClaimReaction(ctx context.Context, owner, repo, pr, reaction string) error {
+	_, err := a.runClaimMutation(ctx, "remove-reaction", owner, repo, pr, reaction)
+	return err
+}
+
+func (a Adaptation) assignRunClaimIfMissing(ctx context.Context, owner, repo, pr, login string) error {
+	_, err := a.runClaimMutation(ctx, "assign-if-missing", owner, repo, pr, login)
 	return err
 }
 

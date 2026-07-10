@@ -92,13 +92,13 @@ func claimRun(ctx context.Context, adaptation Adaptation, facts Facts, kind RunK
 	if err != nil {
 		return "", err
 	}
-	if err := adaptation.AddLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
+	if err := adaptation.addRunClaimLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
 		return "", err
 	}
-	if err := adaptation.AddReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
+	if err := adaptation.addRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
 		return "", err
 	}
-	if err := adaptation.AssignIfMissing(ctx, facts.Owner, facts.Repo, facts.PR, serviceBotLogin); err != nil {
+	if err := adaptation.assignRunClaimIfMissing(ctx, facts.Owner, facts.Repo, facts.PR, serviceBotLogin); err != nil {
 		return "", err
 	}
 	return "claimed", nil
@@ -134,8 +134,8 @@ func releaseRun(ctx context.Context, cfg ServiceConfig, adaptation Adaptation, f
 }
 
 func releaseRunPresence(ctx context.Context, adaptation Adaptation, facts Facts, label string) error {
-	if err := adaptation.RemoveReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
+	if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
 		return err
 	}
-	return adaptation.RemoveLabel(ctx, facts.Owner, facts.Repo, facts.PR, label)
+	return adaptation.removeRunClaimLabel(ctx, facts.Owner, facts.Repo, facts.PR, label)
 }

@@ -145,6 +145,13 @@ with `reason` one of `not-eligible`, `build-failed`, `test-failed`,
 Format the marker with `pump19 marker format …` and post with
 `pump19 adapt post-comment …`, the body ending in exactly that one marker line.
 Any non-zero mechanical or forge command that this mission does not classify as
-a refusal or a successful yield is a run failure: exit non-zero so the wrapper
-writes `pump19/finish=error`. A release failure after a terminal status is
+a refusal or a successful yield is a run failure. Before the run claim exists,
+exit non-zero; the wrapper records the failure internally and the sweep retries
+it only when no forge write was attempted. After `claimed`, use `pump19
+run-guard --config "$PUMP19_CONFIG" release` for the controlled exit, then run
+`pump19 run-terminal --reason controlled-failure`, then exit non-zero. If release
+itself fails, exit non-zero. Claim/release mutations are replay-safe and do not
+set the publication marker: the wrapper retries when no earlier substantive
+mutation was attempted and latches when one was. Write no error
+comment or commit status. A release failure after a terminal status is
 operational clean-up for the sweep, not a falsified result.

@@ -323,7 +323,16 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
 		t.Fatal("model mismatch unexpectedly completed")
 	}
-	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nerror")
+	mismatchRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "eeeeeeeeeeeeeeee", RunReview)
+	if _, err := os.Stat(filepath.Join(mismatchRun, "retry.env")); err != nil {
+		t.Fatalf("mid-body mismatch after claim-only writes was not retryable: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mismatchRun, terminalMarkerFile)); !os.IsNotExist(err) {
+		t.Fatalf("mid-body mismatch latched on claim-only writes: %v", err)
+	}
+	if status, _ := os.ReadFile(filepath.Join(stateDir, "status.args")); strings.Contains(string(status), "pump19/review\nerror") {
+		t.Fatalf("review mismatch wrote PR error status:\n%s", status)
+	}
 	assertContainsFile(t, filepath.Join(stateDir, "labels"), "Reviewing")
 	postedAfterMismatch, err := os.ReadFile(filepath.Join(stateDir, "posted-review.md"))
 	if err != nil {
@@ -338,8 +347,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 
 	// A hard model-mismatch abort cannot run the child's EXIT trap. Age its real
 	// run log and prove the reconciliation sweep reaps the claim and removes the
-	// orphaned Reviewing label while respecting the wrapper's terminal status.
-	mismatchRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "eeeeeeeeeeeeeeee", RunReview)
+	// orphaned Reviewing label while preserving the attempt for paced retry.
 	old := time.Now().Add(-2 * time.Hour)
 	if err := os.Chtimes(filepath.Join(mismatchRun, "run.log"), old, old); err != nil {
 		t.Fatal(err)
@@ -363,6 +371,9 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	}
 	if _, err := os.Stat(mismatchRun); !os.IsNotExist(err) {
 		t.Fatalf("sweep did not reap the mismatched run claim: %v", err)
+	}
+	if _, err := os.Stat(mismatchRun + ".retry-1"); err != nil {
+		t.Fatalf("sweep did not preserve the first retry attempt: %v", err)
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "labels-removed"), "Reviewing")
 

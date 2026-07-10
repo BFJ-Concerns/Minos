@@ -139,11 +139,17 @@ Any non-zero mechanical, provenance, or forge command is a run failure unless
 this mission classifies its result as a successful yield. (`commit-push` reports
 its handled outcomes — including fruitless and unwritable — as a stdout token at
 exit zero, so those are not command failures; only a genuine infrastructure
-failure exits non-zero.) Exit non-zero so the wrapper writes `pump19/fix=error`
-when no terminal status exists. Operational diagnostics belong in the run log
-under `$PUMP19_RUN_DIR`, not in PR comments: the PR carries the outcome for
-people, the run directory carries the machinery's evidence. A release failure
-after a terminal status is written is operational
+failure exits non-zero.) Before the run claim exists, exit non-zero; the wrapper
+records the failure internally and the sweep retries it only when no forge write
+was attempted. After `claimed`, use `pump19 run-guard --config
+"$PUMP19_CONFIG" release` for the controlled exit, then run `pump19
+run-terminal --reason controlled-failure`, then exit non-zero. If release itself
+fails, exit non-zero. Claim/release mutations are replay-safe and do not set the
+publication marker: the wrapper retries when no earlier substantive mutation
+was attempted and latches when one was. Operational
+diagnostics belong in the run log under `$PUMP19_RUN_DIR`, not in PR comments or
+error statuses: the PR carries the outcome for people, the run directory carries
+the machinery's evidence. A release failure after a terminal status is written is operational
 clean-up: log it and leave the label for the sweep; it does not rewrite the
 completed fix as an error.
 

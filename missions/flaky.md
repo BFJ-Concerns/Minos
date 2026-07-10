@@ -95,7 +95,11 @@ Read the first stdout token:
   run directory, release the claim, leave `Flaky Tests` standing, and write no
   comment or commit status.
 - A non-zero command is an operational failure. Its evidence belongs in
-  `run.log`; exit non-zero without a PR comment or error status.
+  `run.log`. Release the claim, run `pump19 run-terminal --reason
+  controlled-failure`, and exit non-zero without a PR comment or error status.
+  If release itself fails, exit non-zero. Claim/release mutations are replay-safe
+  and do not set the publication marker: the wrapper retries when no earlier
+  substantive mutation was attempted and latches when one was.
 
 ## Successful publication and terminal act
 

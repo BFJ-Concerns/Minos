@@ -228,6 +228,9 @@ EOF
   fi
   cat >>"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
 
+[retries]
+operational-attempts = 5
+
 [[trigger]]
 run = "review"
 on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
@@ -447,9 +450,55 @@ sha2="$(head_sha "$pr2")"
 run_sweep normal
 wait_for_call "journey 3 refired status" status_is "$sha2" "pump19/review" success
 wait_for_call "journey 3 reviewing cleared" label_lacks "$pr2" Reviewing
+assert_run_body_count "journey 3 presence-only crash retries once" review "$sha2" 2
+journey3_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr2}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
+journey3_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr2}" -name terminal.env | wc -l | tr -d ' ')"
+if [[ "$journey3_retry_count" != "1" || "$journey3_terminal_count" != "0" ]]; then
+  echo "journey 3 left retries=${journey3_retry_count} terminals=${journey3_terminal_count}" >&2
+  exit 1
+fi
+echo "ok: journey 3 claim-seam-only crash remains replayable"
 
 kill "$receiver_pid" >/dev/null 2>&1 || true
 sleep 1
+publication_hang_body="${work}/publication-hang-run-body"
+cat >"$publication_hang_body" <<EOF
+#!/usr/bin/env sh
+set -eu
+claim="\$("${root}/pump19" run-guard --config "\$PUMP19_CONFIG" begin)"
+test "\$claim" = claimed
+"${root}/pump19" adapt add-label "\$PUMP19_OWNER" "\$PUMP19_REPO_NAME" "\$PUMP19_PR" "Partial Coverage" >/dev/null
+while :; do sleep 60; done
+EOF
+chmod +x "$publication_hang_body"
+write_repo_config "$publication_hang_body"
+"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-publication-hang.log" 2>&1 &
+receiver_pid="$!"
+pr_publication="$(create_branch_and_pr publication-hang "publication hang")"
+sha_publication="$(head_sha "$pr_publication")"
+wait_for_call "publication hang reviewing label" label_has "$pr_publication" Reviewing
+wait_for_call "publication hang outcome label" label_has "$pr_publication" "Partial Coverage"
+publication_unit="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -name meta.env -print -quit | xargs -r grep -h '^PUMP19_UNIT=' | tail -n1 | cut -d= -f2-)"
+if [[ -n "$publication_unit" ]]; then
+  systemctl --user kill --signal=KILL "$publication_unit" >/dev/null 2>&1 || true
+fi
+sleep 3
+run_sweep normal
+wait_for_call "publication hang reviewing cleared" label_lacks "$pr_publication" Reviewing
+assert_no_status_after "publication hang stays off the PR status surface" "$sha_publication" "pump19/review"
+publication_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -name terminal.env | wc -l | tr -d ' ')"
+publication_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
+if [[ "$publication_terminal_count" != "1" || "$publication_retry_count" != "0" ]]; then
+  echo "publication hang left retries=${publication_retry_count} terminals=${publication_terminal_count}" >&2
+  exit 1
+fi
+run_sweep normal
+wait_for_call "publication hang latch suppresses re-entry" label_lacks "$pr_publication" Reviewing
+echo "ok: journey 3b crash after a mission publication latches internally"
+
+kill "$receiver_pid" >/dev/null 2>&1 || true
+sleep 1
+write_repo_config ""
 PUMP19_STUB_MODE=slow PUMP19_STUB_SLOW_SECONDS=6 "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-slow.log" 2>&1 &
 receiver_pid="$!"
 pr3="$(create_branch_and_pr journey-four "journey four")"
@@ -579,21 +628,32 @@ write_repo_config "$failing_body"
 receiver_pid="$!"
 pr_fail="$(create_branch_and_pr persistent-failure "persistent failure")"
 sha_fail="$(head_sha "$pr_fail")"
-wait_for_call "persistent failure records review error" status_is "$sha_fail" "pump19/review" error
-sleep 3
-run_sweep normal
-run_sweep normal
-failure_status_count="$(status_count "$sha_fail" "pump19/review")"
-if [[ "$failure_status_count" != "1" ]]; then
-  echo "persistent failure produced ${failure_status_count} review statuses" >&2
+assert_no_status_after "persistent failure stays off the PR" "$sha_fail" "pump19/review"
+failure_run="$work/runs/local--${owner}--${repo}/pr${pr_fail}/$(cut -c1-12 <<<"$sha_fail")-review"
+for attempt in {1..5}; do
+  sleep 3
+  run_sweep normal
+  if [[ "$attempt" != "5" ]]; then
+    for _ in {1..60}; do
+      [[ -f "$failure_run/retry.env" ]] && break
+      sleep 1
+    done
+    if [[ ! -f "$failure_run/retry.env" ]]; then
+      echo "persistent failure attempt $((attempt + 1)) did not start" >&2
+      exit 1
+    fi
+  fi
+done
+assert_no_status_after "retry exhaustion stays off the PR" "$sha_fail" "pump19/review"
+failure_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
+failure_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -name terminal.env | wc -l | tr -d ' ')"
+if [[ "$failure_retry_count" != "5" || "$failure_terminal_count" != "1" ]]; then
+  echo "persistent failure left retries=${failure_retry_count} terminals=${failure_terminal_count}" >&2
   exit 1
 fi
-reaped_failure_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -name '*.reaped-*' | wc -l | tr -d ' ')"
-if [[ "$reaped_failure_count" != "0" ]]; then
-  echo "persistent failure accumulated ${reaped_failure_count} reaped directories" >&2
-  exit 1
-fi
-echo "ok: persistent failure is loud and not re-triggered"
+run_sweep normal
+assert_no_status_after "latched failure remains off the PR" "$sha_fail" "pump19/review"
+echo "ok: persistent failure retries five times, latches internally, and stays off the PR"
 kill "$receiver_pid" >/dev/null 2>&1 || true
 receiver_pid=""
 write_repo_config ""
