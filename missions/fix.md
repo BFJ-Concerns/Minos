@@ -133,8 +133,10 @@ All three outcomes are honest completions and take `success`; the substance
 lives in the marker. Finally release `Fixing`.
 
 Any non-zero mechanical, provenance, or forge command is a run failure unless
-this mission classifies its result as a successful yield or the fruitless
-`commit-push` exit 3. Exit non-zero so the wrapper writes `pump19/fix=error`
+this mission classifies its result as a successful yield. (`commit-push` reports
+its handled outcomes — including fruitless and unwritable — as a stdout token at
+exit zero, so those are not command failures; only a genuine infrastructure
+failure exits non-zero.) Exit non-zero so the wrapper writes `pump19/fix=error`
 when no terminal status exists. Do not post operational diagnostics as PR
 comments. A release failure after a terminal status is written is operational
 clean-up: log it and leave the label for the sweep; it does not rewrite the

@@ -63,27 +63,29 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 	}
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nfailure")
 
-	// Eligibility: an authorised Ready cannot merge a head that is not in a
-	// permitted review state. Each of these refuses with reason not-eligible,
-	// never reaching the merge, and leaves Ready sticky.
-	for name, head := range map[string]string{
-		"no-review":      "1111111111111111",
-		"partial-review": "2222222222222222",
-		"errored-review": "3333333333333333",
-	} {
-		reviewState := map[string]string{
-			"no-review":      "none",
-			"partial-review": "COMMENT",
-			"errored-review": "none", // an errored review posted no forge review
-		}[name]
-		t.Run(name, func(t *testing.T) {
+	// Eligibility: merge only on the SERVICE'S OWN verdict for the current head,
+	// read from its posted review marker. Each of these refuses not-eligible,
+	// never reaching merge, and leaves Ready sticky. The last case is the R1
+	// regression: an unrelated human APPROVE must not stand in for the service's
+	// verdict when the service review is partial.
+	cases := []struct {
+		name string
+		head string
+		env  map[string]string
+	}{
+		{"no-service-review", "1111111111111111", map[string]string{"PUMP19_FIXTURE_VERDICT": "none"}},
+		{"partial-coverage", "2222222222222222", map[string]string{"PUMP19_FIXTURE_VERDICT": "partial-coverage"}},
+		{"unrelated-human-approve", "3333333333333333", map[string]string{"PUMP19_FIXTURE_VERDICT": "partial-coverage", "PUMP19_FIXTURE_HUMAN_APPROVE": "1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			_ = os.Remove(filepath.Join(env.stateDir, "merge.args"))
 			_ = os.Remove(filepath.Join(env.stateDir, "labels-removed"))
-			env.setRunEnv(t, head, map[string]string{"PUMP19_FIXTURE_REVIEW_STATE": reviewState})
+			env.setRunEnv(t, tc.head, tc.env)
 			if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
 				t.Fatal(err)
 			}
-			run := RunDir(env.runsDir, "local", "pump19", "subject", "7", head, RunFinish)
+			run := RunDir(env.runsDir, "local", "pump19", "subject", "7", tc.head, RunFinish)
 			assertContainsFile(t, filepath.Join(run, "finish-summary.md"), "reason=not-eligible")
 			if _, err := os.Stat(filepath.Join(env.stateDir, "merge.args")); !os.IsNotExist(err) {
 				t.Fatal("an ineligible head reached the merge")

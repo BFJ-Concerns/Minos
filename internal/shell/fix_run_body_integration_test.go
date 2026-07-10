@@ -198,7 +198,7 @@ func (h *runBodyHarness) setRunEnv(t *testing.T, head string, extra map[string]s
 		t.Setenv(key, value)
 	}
 	// Reset scenario knobs so a prior case does not leak into the next.
-	for _, key := range []string{"PUMP19_STANDIN_FIX_OUTCOME", "PUMP19_STANDIN_LEAD_MODEL", "PUMP19_STANDIN_MAINTENANCE", "PUMP19_FIXTURE_MERGEABLE", "PUMP19_FIXTURE_BUILD", "PUMP19_FIXTURE_TEST", "PUMP19_FIXTURE_PROTECTED", "PUMP19_FIXTURE_REVIEW_STATE"} {
+	for _, key := range []string{"PUMP19_STANDIN_FIX_OUTCOME", "PUMP19_STANDIN_LEAD_MODEL", "PUMP19_STANDIN_MAINTENANCE", "PUMP19_FIXTURE_MERGEABLE", "PUMP19_FIXTURE_BUILD", "PUMP19_FIXTURE_TEST", "PUMP19_FIXTURE_PROTECTED", "PUMP19_FIXTURE_VERDICT", "PUMP19_FIXTURE_HUMAN_APPROVE"} {
 		t.Setenv(key, "")
 	}
 	for key, value := range extra {
@@ -243,9 +243,23 @@ printf 'MERGEABLE=%s\n' "${PUMP19_FIXTURE_MERGEABLE:-true}"
 printf 'LABELS=%s\n' "${PUMP19_FIXTURE_LABELS:-Converged,Ready}"
 `)
 	writeScript(t, filepath.Join(adaptationDir, "list-review-comments"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
-	// The current-head review verdict drives finish eligibility. Default APPROVED
-	// (clean); `none` means no review for the head; other states set the verdict.
-	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), "#!/usr/bin/env sh\nstate=\"${PUMP19_FIXTURE_REVIEW_STATE:-APPROVED}\"\nif [ \"$state\" = none ]; then printf '[]\\n'; else printf '[{\"state\":\"%s\",\"commit_id\":\"%s\"}]\\n' \"$state\" \"$PUMP19_HEAD_SHA\"; fi\n")
+	// Finish eligibility reads the service's OWN verdict from the trailing marker
+	// of its posted reviews. PUMP19_FIXTURE_VERDICT sets that verdict (default
+	// converged; `none` means the service posted no verdict for this head).
+	// PUMP19_FIXTURE_HUMAN_APPROVE=1 adds an unrelated human APPROVE with no
+	// service marker — which must never satisfy eligibility.
+	listReviews := "#!/usr/bin/env sh\n" +
+		"reviews='[]'\n" +
+		"if [ \"${PUMP19_FIXTURE_HUMAN_APPROVE:-}\" = 1 ]; then\n" +
+		"  reviews=$(printf '%s' \"$reviews\" | jq --arg h \"$PUMP19_HEAD_SHA\" '. + [{state:\"APPROVED\",commit_id:$h,body:\"Looks good to me\"}]')\n" +
+		"fi\n" +
+		"verdict=\"${PUMP19_FIXTURE_VERDICT:-converged}\"\n" +
+		"if [ \"$verdict\" != none ]; then\n" +
+		"  marker=\"Pump-19: bar=passed coverage=full head=$PUMP19_HEAD_SHA run=review verdict=$verdict\"\n" +
+		"  reviews=$(printf '%s' \"$reviews\" | jq --arg h \"$PUMP19_HEAD_SHA\" --arg m \"$marker\" '. + [{state:\"COMMENT\",commit_id:$h,body:(\"service review\\n\\n\" + $m)}]')\n" +
+		"fi\n" +
+		"printf '%s\\n' \"$reviews\"\n"
+	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), listReviews)
 	writeScript(t, filepath.Join(adaptationDir, "commit-push"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "commit-push.args")+"'\nif [ \"${PUMP19_FIXTURE_PROTECTED:-}\" = 1 ]; then printf 'unwritable\\n'; else printf 'landed landedsha\\n'; fi\n")
 	writeScript(t, filepath.Join(adaptationDir, "merge"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "merge.args")+"'\nprintf '{\"merged\":true}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\ncat \"$4\" >>'"+filepath.Join(stateDir, "comments")+"'\nprintf '{}\\n'\n")

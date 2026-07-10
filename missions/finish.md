@@ -59,20 +59,30 @@ Stop at the first failure and record the matching refusal; do not merge.
 
 1. **Eligibility.** The finish label fired this run, but that only proves *who*
    asked to merge — not that the current head is in a state the commission
-   permits merging. Establish that here, from the current head's review verdict.
-   Read `pump19 adapt list-reviews "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR"`
-   and take the latest review whose `commit_id` is `$PUMP19_HEAD_SHA`:
-   - **`APPROVED`** — the service's converging review. The head is **clean**;
-     eligible.
-   - **`REQUEST_CHANGES`** — a standing-findings verdict. A person's finish label
-     overrides it: the head is **flagged**; eligible (it ships flagged, not
-     clean).
-   - **`COMMENT`** (partial coverage), **no review for this head**, or a head
-     whose review errored — none of these is a state the finish label may
-     override. `refused` with reason `not-eligible`: unreviewed or
-     partially-reviewed code must not ride the finish label through a merge. The
-     finish label is a standing instruction and stays sticky; a later finish
-     fires once the loop produces an eligible verdict on the current head.
+   permits merging. Establish that here, from **the service's own recorded
+   verdict** for the current head. The robust key is the machine channel the
+   service owns: its posted review ends with a trailing marker line carrying the
+   head and verdict. A forge review's `state`, or its author's name, is not
+   enough — an unrelated human's `APPROVE` must never satisfy eligibility, and a
+   bot account can be renamed.
+
+   Read `pump19 adapt list-reviews "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR"`.
+   For each review, take the last `Pump-19:`-prefixed line of its body and parse
+   it with `pump19 marker parse`. Consider only reviews whose marker parses with
+   `run=review` and `head=$PUMP19_HEAD_SHA` — these are the service's own
+   verdicts for this head; every other review (no service marker, or an older
+   head) is human commentary and does not count, whatever its `state`. Take the
+   latest such verdict:
+   - **`verdict=converged`** — the service's converging review. The head is
+     **clean**; eligible.
+   - **`verdict=standing-findings`** — a person's finish label overrides it: the
+     head is **flagged**; eligible (it ships flagged, not clean).
+   - **`verdict=partial-coverage`**, or **no service verdict for this head** —
+     not a state the finish label may override. `refused` with reason
+     `not-eligible`: unreviewed or partially-reviewed code must not ride the
+     finish label through a merge. The finish label is a standing instruction and
+     stays sticky; a later finish fires once the loop produces an eligible
+     verdict on the current head.
 
    Record clean vs flagged for the summary; both continue.
 2. **Build.** `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"`.

@@ -35,14 +35,23 @@ facts="$PUMP19_RUN_DIR/pr-facts.txt"
 head_branch=$(sed -n 's/^HEAD_BRANCH=//p' "$facts")
 mergeable=$(sed -n 's/^MERGEABLE=//p' "$facts")
 
-# Eligibility: the latest review on the *current* head. APPROVED is clean,
-# REQUEST_CHANGES is a standing-findings verdict the finish label overrides
-# (flagged); anything else — partial coverage, no review, errored — is not a
-# state the finish label may override.
+# Eligibility: the service's OWN verdict for the current head, read from the
+# trailing marker of its posted reviews — not a forge review's state or author.
+# A review without the service marker (human commentary) never counts.
 "$PUMP19_BIN" adapt list-reviews "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$PUMP19_RUN_DIR/reviews.json"
-head_state=$(jq -r --arg head "$PUMP19_HEAD_SHA" \
-  '[.[] | select(.commit_id == $head)] | last | .state // "none"' \
-  "$PUMP19_RUN_DIR/reviews.json")
+verdict=none
+count=$(jq 'length' "$PUMP19_RUN_DIR/reviews.json")
+i=0
+while [ "$i" -lt "$count" ]; do
+  body=$(jq -r ".[$i].body // \"\"" "$PUMP19_RUN_DIR/reviews.json")
+  i=$((i + 1))
+  line=$(printf '%s\n' "$body" | grep '^Pump-19:' | tail -n1)
+  [ -n "$line" ] || continue
+  parsed=$("$PUMP19_BIN" marker parse "$line" 2>/dev/null) || continue
+  [ "$(printf '%s' "$parsed" | jq -r '.run // ""')" = review ] || continue
+  [ "$(printf '%s' "$parsed" | jq -r '.head // ""')" = "$PUMP19_HEAD_SHA" ] || continue
+  verdict=$(printf '%s' "$parsed" | jq -r '.verdict // "none"')
+done
 
 outcome=merged
 reason=""
@@ -52,8 +61,8 @@ finish() {
 }
 
 # The gate, in order. Stop at the first failure.
-case "$head_state" in
-  APPROVED|REQUEST_CHANGES) ;;
+case "$verdict" in
+  converged|standing-findings) ;;
   *) finish refused not-eligible ;;
 esac
 if [ "$outcome" != merged ]; then
