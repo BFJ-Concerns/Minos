@@ -24,7 +24,8 @@ Planning, intent, design, and the find/issue logs live in the sibling annexe
 `../Pump-19-Annexe`; its `README.md` is the **commission** — the single source of
 truth for what Pump-19 must do and guarantee, with the full constraints,
 decisions, and glossary. Read it before writing code here. It was corrected
-2026-07-08 after a containment episode; while a root `CONTAINMENT.md` is present
+2026-07-08 and again 2026-07-10 within one containment episode; while a root
+`CONTAINMENT.md` is present
 in this repo it governs what may be touched — read it first. The pre-containment
 codebase is quarantined evidence, not a base to extend: nothing is carried
 forward by default, and a component earns salvage only by written justification
@@ -52,11 +53,16 @@ The load-bearing design decision, operator-dictated after the first build failed
 - **Prose for humans, markers for machines.** Reviews post as ordinary review
   comments; where a machine needs a decision it reads a label, a commit status,
   or a single trailing marker line — never a schema-validated document.
-- **Everything an organisation varies is an external adaptation**: agent logic
-  as Foundry-synced skills and prompts (consumed as plain files at runtime),
-  mechanical steps as scripts, trigger rules as receiver configuration. The
-  guarantee-carrying gates ride the shipped baseline skills and scripts, which
-  organisations extend rather than replace.
+- **Agent logic composes from the Foundry's *general* skill library** — an
+  ordinary agent session equipped with general skills plus a thin,
+  service-owned launch instruction; Pump-19-specific text is thin
+  service-side adaptation, never Foundry canon. (The second break, corrected
+  2026-07-10, misread this as authoring a bespoke Pump-19 skill stack in the
+  Foundry.) Everything an organisation varies is an external adaptation:
+  run instructions and prompt text, mechanical steps as scripts, trigger
+  rules as receiver configuration. The guarantee-carrying judgement gates
+  ride the pinned general `agent-review` skill; the mechanical gates ride
+  service-owned scripts — organisations extend either, replace neither.
 
 Resist the failure the last build died of: re-implementing what the forge
 already provides (state stores, event streams, resident watchers), and caging
