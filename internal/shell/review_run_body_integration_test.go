@@ -191,12 +191,13 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		{name: "standing-findings", head: "dddddddddddddddd", verdict: "standing-findings", autoMerge: "true"},
 		{name: "partial-coverage", head: "1111111111111111", verdict: "partial-coverage", autoMerge: "true"},
 		{name: "auto-merge-disabled", head: "2222222222222222", verdict: "converged", autoMerge: "false"},
-		{name: "flaky-tests", head: "3333333333333333", verdict: "converged", autoMerge: "true", labels: []string{"Flaky Tests"}},
+		{name: "flaky-tests", head: "3333333333333333", verdict: "converged", autoMerge: "true", labels: []string{LabelFlakyTests, LabelConverged}},
 		{name: "flaky-arrives-on-post-status-refresh", head: "5555555555555555", verdict: "converged", autoMerge: "true", flakyAfterStatus: true},
 	}
 	for _, tc := range negativeCases {
 		t.Run(tc.name, func(t *testing.T) {
 			readyBefore := fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelReady)
+			convergedBefore := fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelConverged)
 			setReviewRunEnv(t, root, configRoot, installRoot, tc.head, "")
 			t.Setenv("PUMP19_STANDIN_VERDICT", tc.verdict)
 			t.Setenv("PUMP19_AUTO_MERGE", tc.autoMerge)
@@ -212,6 +213,28 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 			}
 			if tc.flakyAfterStatus {
 				assertContainsFile(t, filepath.Join(stateDir, "labels"), "Flaky Tests")
+			}
+			if tc.name == "flaky-tests" {
+				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				assertContainsFile(t, filepath.Join(run, "review.md"), "bar=passed coverage=full")
+				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=paused-flaky")
+				assertContainsFile(t, filepath.Join(run, "review.md"), "no approval was given")
+				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+				reviews, err := os.ReadFile(filepath.Join(stateDir, "reviews.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(reviews), `"state": "COMMENT"`) || !strings.Contains(string(reviews), tc.head) {
+					t.Fatalf("paused review was not recorded as COMMENT for %s:\n%s", tc.head, reviews)
+				}
+				if fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelConverged) != convergedBefore {
+					t.Fatal("paused review added a Converged outcome label")
+				}
+				for _, label := range []string{LabelConverged, LabelStandingFindings, LabelPartialCoverage, LabelReady} {
+					if containsFixtureLabel(readFixtureLabels(t, filepath.Join(stateDir, "labels")), label) {
+						t.Fatalf("paused review retained outcome/control label %q", label)
+					}
+				}
 			}
 		})
 	}
@@ -668,7 +691,7 @@ jq -nc --arg context "$4" --arg state "$5" '[{id:1,context:$context,state:$state
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "list-review-comments"), "#!/usr/bin/env sh\ncat '"+comments+"'\n")
-	writeScript(t, filepath.Join(adaptationDir, "post-review"), "#!/usr/bin/env sh\nset -eu\nprintf 'post-review:%s\\n' \"$PUMP19_HEAD_SHA\" >>'"+operations+"'\ncp \"$6\" '"+filepath.Join(stateDir, "posted-review.md")+"'\ncp \"$7\" '"+filepath.Join(stateDir, "posted-comments.json")+"'\njq --arg head \"$4\" --rawfile body \"$6\" '. + [{state:\"APPROVED\",commit_id:$head,body:$body}]' '"+reviews+"' >'"+reviews+".tmp'\nmv '"+reviews+".tmp' '"+reviews+"'\nif [ \"$(jq 'length' \"$7\")\" -gt 0 ]; then jq '[.[0] + {id:91}]' \"$7\" >'"+comments+"'; fi\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "post-review"), "#!/usr/bin/env sh\nset -eu\nprintf 'post-review:%s\\n' \"$PUMP19_HEAD_SHA\" >>'"+operations+"'\ncp \"$6\" '"+filepath.Join(stateDir, "posted-review.md")+"'\ncp \"$7\" '"+filepath.Join(stateDir, "posted-comments.json")+"'\njq --arg head \"$4\" --arg state \"$5\" --rawfile body \"$6\" '. + [{state:$state,commit_id:$head,body:$body}]' '"+reviews+"' >'"+reviews+".tmp'\nmv '"+reviews+".tmp' '"+reviews+"'\nif [ \"$(jq 'length' \"$7\")\" -gt 0 ]; then jq '[.[0] + {id:91}]' \"$7\" >'"+comments+"'; fi\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "update-comment"), "#!/usr/bin/env sh\ncp \"$4\" '"+filepath.Join(stateDir, "updated-body.md")+"'\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), "#!/usr/bin/env sh\ncat '"+reviews+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'pump19\\n'\n")

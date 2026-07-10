@@ -64,10 +64,20 @@ jq '[.[] | {
 }]' "$PUMP19_RUN_DIR/resolved-lead.json" >"$PUMP19_RUN_DIR/provenance.json"
 
 verdict=${PUMP19_STANDIN_VERDICT:-converged}
+if [ "$verdict" = converged ]; then
+  verdict_facts="$PUMP19_RUN_DIR/verdict-pr-facts.txt"
+  "$PUMP19_BIN" adapt get-pr-facts \
+    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$verdict_facts"
+  verdict_labels=$(sed -n 's/^LABELS=//p' "$verdict_facts")
+  case ",$verdict_labels," in
+    *,"Flaky Tests",*) verdict=paused-flaky ;;
+  esac
+fi
 case "$verdict" in
   converged) coverage=full; bar=passed; review_state=APPROVE; outcome_label=Converged ;;
   standing-findings) coverage=full; bar=passed; review_state=REQUEST_CHANGES; outcome_label='Standing Findings' ;;
   partial-coverage) coverage=partial; bar=${PUMP19_STANDIN_BAR:-passed}; review_state=COMMENT; outcome_label='Partial Coverage' ;;
+  paused-flaky) coverage=full; bar=passed; review_state=COMMENT; outcome_label='' ;;
   *) echo "unsupported stand-in verdict: $verdict" >&2; exit 2 ;;
 esac
 
@@ -120,7 +130,11 @@ fi
 
 marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review head="$PUMP19_HEAD_SHA" verdict="$verdict" coverage="$coverage" bar="$bar")
 {
-  printf 'Pump-19 stand-in seam review. Coverage: %s.\n\n' "$coverage"
+  if [ "$verdict" = paused-flaky ]; then
+    printf 'Review complete with full coverage. Convergence is paused while Flaky Tests stands; no approval was given.\n\n'
+  else
+    printf 'Pump-19 stand-in seam review. Coverage: %s.\n\n' "$coverage"
+  fi
   printf 'Model provenance:\n\n```json\n'
   cat "$PUMP19_RUN_DIR/provenance.json"
   printf '```\n\n%s\n' "$marker"
@@ -150,7 +164,9 @@ for label in Converged 'Standing Findings' 'Partial Coverage'; do
   esac
 done
 require_current
-"$PUMP19_BIN" adapt add-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$outcome_label" >/dev/null
+if [ -n "$outcome_label" ]; then
+  "$PUMP19_BIN" adapt add-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$outcome_label" >/dev/null
+fi
 require_current
 "$PUMP19_BIN" adapt set-status \
   "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \

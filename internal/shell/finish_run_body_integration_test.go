@@ -75,6 +75,7 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 	}{
 		{"no-service-review", "1111111111111111", map[string]string{"PUMP19_FIXTURE_VERDICT": "none"}},
 		{"partial-coverage", "2222222222222222", map[string]string{"PUMP19_FIXTURE_VERDICT": "partial-coverage"}},
+		{"paused-flaky", "4444444444444444", map[string]string{"PUMP19_FIXTURE_VERDICT": "paused-flaky"}},
 		{"unrelated-human-approve", "3333333333333333", map[string]string{"PUMP19_FIXTURE_VERDICT": "partial-coverage", "PUMP19_FIXTURE_HUMAN_APPROVE": "1"}},
 	}
 	for _, tc := range cases {

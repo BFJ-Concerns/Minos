@@ -146,6 +146,7 @@ func TestGetStatusesRejectsMissingForgejoStatusID(t *testing.T) {
 func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 	drafts := false
 	repo := RepoConfig{Triggers: []TriggerRule{
+		{Run: "flaky", On: []string{"label-added:Flaky Tests"}, Actors: []string{"ci-bot"}},
 		{Run: "review", Authors: []string{"*"}, Drafts: &drafts},
 		{Run: "fix", Actors: []string{"pump19"}},
 		{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}},
@@ -162,6 +163,7 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 	reviewContext, _ := StatusContext(RunReview)
 	fixContext, _ := StatusContext(RunFix)
 	finishContext, _ := StatusContext(RunFinish)
+	flakyContext, _ := StatusContext(RunFlaky)
 	tests := []struct {
 		name     string
 		labels   []string
@@ -170,6 +172,17 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 		wantOK   bool
 	}{
 		{name: "missing review fires review", want: RunReview, wantOK: true},
+		{
+			name:   "standing flaky label fires repair before review",
+			labels: []string{LabelFlakyTests},
+			want:   RunFlaky,
+			wantOK: true,
+		},
+		{
+			name:     "completed flaky head does not refire",
+			labels:   []string{LabelFlakyTests},
+			statuses: []Status{{Context: flakyContext, State: "success", Creator: "pump19"}, {Context: reviewContext, State: "success", Creator: "pump19"}},
+		},
 		{
 			name:     "failed review fires fix from status creator",
 			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "pump19"}},
@@ -197,11 +210,95 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := facts
 			f.Labels = tt.labels
+			f.Actor = "ci-bot"
 			got, ok := reconcileDecision(repo, f, tt.statuses, "bob")
 			if ok != tt.wantOK || got != tt.want {
 				t.Fatalf("decision = %s ok=%v, want %s ok=%v", got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+func TestUnconfiguredFlakyLabelPausesWithoutStartingRepairOrRefiringReview(t *testing.T) {
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}}}}
+	reviewContext, _ := StatusContext(RunReview)
+	facts := Facts{Labels: []string{LabelFlakyTests}, Author: "contributor"}
+
+	if decision, ok := reconcileDecision(repo, facts, []Status{{Context: reviewContext, State: "success"}}, ""); ok {
+		t.Fatalf("unconfigured flaky label unexpectedly fired %s", decision)
+	}
+}
+
+func TestStandingFlakyLabelUsesRecordedActorToStartRepair(t *testing.T) {
+	repo := RepoConfig{Triggers: []TriggerRule{{Run: "flaky", Actors: []string{"bob"}}}}
+	facts := Facts{Owner: "pump19", Repo: "subject", PR: "18", Labels: []string{LabelFlakyTests}}
+	dir := t.TempDir()
+	writeScript(t, filepath.Join(dir, "label-actor"), "#!/usr/bin/env sh\nprintf 'bob\\n'\n")
+
+	actor, err := resolveFlakyActor(t.Context(), repo, Adaptation{Dir: dir}, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts.Actor = actor
+	if decision, ok := reconcileDecision(repo, facts, nil, ""); !ok || decision != RunFlaky {
+		t.Fatalf("standing label implication = %s ok=%v, want flaky", decision, ok)
+	}
+}
+
+func TestFlakyCrashRecoveryKeepsErrorsOffThePR(t *testing.T) {
+	root := t.TempDir()
+	statusFile := filepath.Join(root, "status.args")
+	adaptationDir := filepath.Join(root, "adaptation")
+	if err := os.Mkdir(adaptationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
+	adaptation := Adaptation{Dir: adaptationDir}
+	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "18", HeadSHA: "abcdef1234567890", Labels: []string{LabelFlakyTests, LabelRepairingFlaky}}
+
+	crashed := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunFlaky)
+	if err := os.MkdirAll(crashed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(crashed, "meta.env"), []byte("PUMP19_HEAD_SHA="+facts.HeadSHA+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(crashed+".reaped-1", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, terminal, err := terminaliseRepeatedUnmarkedCrash(t.Context(), adaptation, facts, RunFlaky, crashed, nil); err != nil || terminal {
+		t.Fatalf("flaky repeated crash terminal=%v err=%v", terminal, err)
+	}
+	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
+		t.Fatalf("flaky repeated crash wrote PR status: %v", err)
+	}
+
+	retry := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, "fedcba9876543210", RunFlaky)
+	if err := os.MkdirAll(retry, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(retry, "meta.env"), []byte("PUMP19_HEAD_SHA=fedcba9876543210\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(retry, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(retry+".retry-1", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, handled, released, err := handleRetryableClaim(t.Context(), adaptation, facts, RunFlaky, retry, nil, logFile)
+	if closeErr := logFile.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil || !handled || !released {
+		t.Fatalf("flaky retry handled=%v released=%v err=%v", handled, released, err)
+	}
+	if _, err := os.Stat(statusFile); !os.IsNotExist(err) {
+		t.Fatalf("flaky retry exhaustion wrote PR status: %v", err)
 	}
 }
 

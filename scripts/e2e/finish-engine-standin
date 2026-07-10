@@ -63,6 +63,7 @@ finish() {
 # The gate, in order. Stop at the first failure.
 case "$verdict" in
   converged|standing-findings) ;;
+  paused-flaky) finish refused not-eligible ;;
   *) finish refused not-eligible ;;
 esac
 if [ "$outcome" != merged ]; then

@@ -133,6 +133,7 @@ func setupRunBodyHarness(t *testing.T, kind, standinName, missionName string) *r
 	reviewScripts, _ := filepath.Abs(filepath.Join("..", "..", "scripts", "review"))
 	standin, _ := filepath.Abs(filepath.Join("..", "..", "scripts", "e2e", standinName))
 	fixSkill, _ := filepath.Abs(filepath.Join("..", "..", "skills", "service", "fix", "SKILL.md"))
+	flakySkill, _ := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "root-cause", "SKILL.md"))
 	pins := filepath.Join(root, "pins.toml")
 	if err := os.WriteFile(pins, []byte(pinsFixture), 0o644); err != nil {
 		t.Fatal(err)
@@ -143,6 +144,7 @@ func setupRunBodyHarness(t *testing.T, kind, standinName, missionName string) *r
 		"PUMP19_REVIEW_SCRIPTS='" + reviewScripts + "'\n" +
 		"PUMP19_BIN='" + h.binary + "'\n" +
 		"PUMP19_FIX_SKILL='" + fixSkill + "'\n" +
+		"PUMP19_FLAKY_SKILL='" + flakySkill + "'\n" +
 		"PUMP19_FIX_AUTHOR_NAME='Pump-19'\n" +
 		"PUMP19_FIX_AUTHOR_EMAIL='pump19@bfj.invalid'\n"
 	if err := os.WriteFile(filepath.Join(h.configRoot, "run-body.env"), []byte(runBodyEnv), 0o644); err != nil {
@@ -198,7 +200,7 @@ func (h *runBodyHarness) setRunEnv(t *testing.T, head string, extra map[string]s
 		t.Setenv(key, value)
 	}
 	// Reset scenario knobs so a prior case does not leak into the next.
-	for _, key := range []string{"PUMP19_STANDIN_FIX_OUTCOME", "PUMP19_STANDIN_LEAD_MODEL", "PUMP19_STANDIN_MAINTENANCE", "PUMP19_FIXTURE_MERGEABLE", "PUMP19_FIXTURE_BUILD", "PUMP19_FIXTURE_TEST", "PUMP19_FIXTURE_PROTECTED", "PUMP19_FIXTURE_VERDICT", "PUMP19_FIXTURE_HUMAN_APPROVE"} {
+	for _, key := range []string{"PUMP19_STANDIN_FIX_OUTCOME", "PUMP19_STANDIN_FLAKY_OUTCOME", "PUMP19_STANDIN_LEAD_MODEL", "PUMP19_STANDIN_MAINTENANCE", "PUMP19_FIXTURE_MERGEABLE", "PUMP19_FIXTURE_BUILD", "PUMP19_FIXTURE_TEST", "PUMP19_FIXTURE_PROTECTED", "PUMP19_FIXTURE_COMMIT_OUTCOME", "PUMP19_FIXTURE_LABELS", "PUMP19_FIXTURE_VERDICT", "PUMP19_FIXTURE_HUMAN_APPROVE"} {
 		t.Setenv(key, "")
 	}
 	for key, value := range extra {
@@ -224,6 +226,7 @@ func copyRepoFile(t *testing.T, source, target string, mode os.FileMode) {
 // test, the curl wrappers by make e2e).
 func writeRunBodyAdaptationFixture(t *testing.T, adaptationDir, stateDir string) {
 	t.Helper()
+	operations := filepath.Join(stateDir, "operations")
 	writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), `#!/usr/bin/env sh
 set -eu
 rm -rf "$PUMP19_WORKSPACE"
@@ -260,10 +263,10 @@ printf 'LABELS=%s\n' "${PUMP19_FIXTURE_LABELS:-Converged,Ready}"
 		"fi\n" +
 		"printf '%s\\n' \"$reviews\"\n"
 	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), listReviews)
-	writeScript(t, filepath.Join(adaptationDir, "commit-push"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "commit-push.args")+"'\nif [ \"${PUMP19_FIXTURE_PROTECTED:-}\" = 1 ]; then printf 'unwritable\\n'; else printf 'landed landedsha\\n'; fi\n")
+	writeScript(t, filepath.Join(adaptationDir, "commit-push"), "#!/usr/bin/env sh\nprintf 'commit-push\\n' >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "commit-push.args")+"'\nif [ \"${PUMP19_FIXTURE_PROTECTED:-}\" = 1 ]; then printf 'unwritable\\n'; else printf '%s\\n' \"${PUMP19_FIXTURE_COMMIT_OUTCOME:-landed landedsha}\"; fi\n")
 	writeScript(t, filepath.Join(adaptationDir, "merge"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "merge.args")+"'\nprintf '{\"merged\":true}\\n'\n")
-	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\ncat \"$4\" >>'"+filepath.Join(stateDir, "comments")+"'\nprintf '{}\\n'\n")
-	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "status.args")+"'\n")
+	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\nprintf 'post-comment\\n' >>'"+operations+"'\ncat \"$4\" >>'"+filepath.Join(stateDir, "comments")+"'\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf 'set-status:%s:%s\\n' \"$4\" \"$5\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "status.args")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "add-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-added")+"'\n")
-	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-removed")+"'\n")
+	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf 'remove-label:%s\\n' \"$4\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-removed")+"'\n")
 }
