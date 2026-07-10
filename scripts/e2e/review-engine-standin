@@ -173,7 +173,7 @@ require_current
   pump19/review success "Pump-19 review completed: $verdict" >/dev/null
 
 if [ "$verdict" = converged ] && [ "${PUMP19_AUTO_MERGE:-false}" = true ]; then
-  # Ready fires finish immediately, so take a fresh label snapshot only after
+  # Ready triggers finish immediately, so take a fresh label snapshot only after
   # both terminal review records exist. Flaky Tests owns the pause while its
   # label is present; convergence alone must not jump that queue.
   ready_facts="$PUMP19_RUN_DIR/ready-pr-facts.txt"

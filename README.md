@@ -134,7 +134,7 @@ actor guards use the actor returned by `label-actor`, binding merge permission
 to the act of applying the label. The receiver reads the latest timeline label
 event, so a later label write may mask the delivered event; the safe polarity is
 delay only, because the sweep's state-derived finish implication recovers a
-missed `Ready`, while a masked event must not wrongly fire a run. On the
+missed `Ready`, while a masked event must not wrongly trigger a run. On the
 reconcile path, fix actors come from the review status creator and finish actors
 come from `label-actor(Ready)`. Review actor guards are receiver-path-only
 because the open-PR state read has no delivery actor to recover.
@@ -154,17 +154,17 @@ capture-forward endpoint, and drives:
 
 - PR opened -> receiver -> `Reviewing` -> stub review status/log -> label clear.
 - Duplicate delivery replay -> no duplicate review status.
-- Hung stub killed mid-flight -> sweep reap -> label clear -> re-fire.
+- Hung stub killed mid-flight -> sweep reap -> label clear -> re-trigger.
 - Head updated mid-run -> stale output discarded -> new head completes.
 - Superseded-head hang -> new head completes -> sweep reaps the abandoned old
   head without reading forge status for the old SHA.
 - Listener down during delivery -> sweep reconciles the missed review.
-- Unauthorised `Ready` add -> sweep clears it without firing finish; authorised
+- Unauthorised `Ready` add -> sweep clears it without triggering finish; authorised
   `Ready` re-add -> finish runs.
 - Transient `prepare-workspace` failure -> one bounded retry -> review
   completes.
 - Persistent review, fix, or finish run-body failure -> `error` status on the
-  served head and no sweep re-fire loop. Flaky-repair failures remain private
+  served head and no sweep re-trigger loop. Flaky-repair failures remain private
   in the run log and leave `Flaky Tests` standing.
 - Same-second status writes agree with Forgejo combined-status ordering; the
   live Forgejo timeline and pulls paging assumptions are pinned.

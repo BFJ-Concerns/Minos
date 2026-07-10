@@ -406,12 +406,12 @@ pr_ready="$(create_branch_and_pr ready-removal "ready removal")"
 sha_ready="$(head_sha "$pr_ready")"
 wait_for_call "ready-removal review status" status_is "$sha_ready" "pump19/review" success
 api_with_token "$mallory_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels" '{"labels":["Ready"]}' >/dev/null
-assert_no_status_after "unauthorised Ready add does not fire finish" "$sha_ready" "pump19/finish"
+assert_no_status_after "unauthorised Ready add does not trigger finish" "$sha_ready" "pump19/finish"
 run_sweep normal
 wait_for_call "unauthorised Ready cleared by sweep" label_lacks "$pr_ready" Ready
-assert_no_status_after "unauthorised Ready clearance does not fire finish" "$sha_ready" "pump19/finish"
+assert_no_status_after "unauthorised Ready clearance does not trigger finish" "$sha_ready" "pump19/finish"
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels" '{"labels":["Ready"]}' >/dev/null
-wait_for_call "authorised Ready re-add fires finish" status_is "$sha_ready" "pump19/finish" success
+wait_for_call "authorised Ready re-add triggers finish" status_is "$sha_ready" "pump19/finish" success
 wait_for_call "ready-removal finishing cleared" label_lacks "$pr_ready" Finishing
 
 first_fixture="$(ls "$fixture_dir"/*pull_request-opened.json | head -n1)"
@@ -521,7 +521,7 @@ pr4="$(create_branch_and_pr journey-five "journey five")"
 sha4="$(head_sha "$pr4")"
 sleep 1
 run_sweep normal
-wait_for_call "journey 5 sweep-fired status" status_is "$sha4" "pump19/review" success
+wait_for_call "journey 5 sweep-triggered status" status_is "$sha4" "pump19/review" success
 
 prepare_workspace="${work}/adaptations/prepare-workspace"
 real_prepare_workspace="${prepare_workspace}.real"
@@ -591,7 +591,7 @@ if [[ "$reaped_failure_count" != "0" ]]; then
   echo "persistent failure accumulated ${reaped_failure_count} reaped directories" >&2
   exit 1
 fi
-echo "ok: persistent failure is loud and not re-fired"
+echo "ok: persistent failure is loud and not re-triggered"
 kill "$receiver_pid" >/dev/null 2>&1 || true
 receiver_pid=""
 write_repo_config ""
@@ -617,7 +617,7 @@ if [[ "$service_combined_state" != "$combined_state" ]]; then
 fi
 echo "ok: independently observed same-second status ordering agrees with Forgejo combined status"
 
-# Spike A capture tail: fire the extra Forgejo 14.0.5 webhook shapes the
+# Spike A capture tail: send the extra Forgejo 14.0.5 webhook shapes the
 # normaliser needs to know about. These do not participate in the journeys.
 timeline_pr="$(create_branch_and_pr fixture-timeline "fixture timeline")"
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${timeline_pr}/comments" '{"body":"fixture issue comment"}' >/dev/null

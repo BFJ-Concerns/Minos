@@ -280,8 +280,8 @@ repository-administrator permission.
 ## 8. Opt the repository in
 
 Copy the inactive example and replace every placeholder. The template now ships
-review, fix, finish, and flaky-test repair triggers: a rejected review fires a
-fix, `Ready` fires a finish, and `Flaky Tests` fires a repair. Review both label
+review, fix, finish, and flaky-test repair triggers: a rejected review triggers a
+fix, `Ready` triggers a finish, and `Flaky Tests` triggers a repair. Review both label
 triggers' `actors` carefully — they are authority, not display names. With
 auto-merge off, only the finish actors' `Ready` starts a merge; only the flaky
 actors' label application starts repair. The placeholders authorise nobody

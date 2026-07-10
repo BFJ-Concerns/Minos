@@ -5,14 +5,15 @@ skill: compose the build, test, and maintenance work over your general skills.
 This mission supplies the Pump-19 service facts, the merge gate, and the
 publication mechanics.
 
-**Firing is permissive; merging is gated.** The finish label fired this run
-whatever the head's review status reads — an errored or failed review on the
+**Triggering is permissive; merging is gated.** The finish label triggered this
+run whatever the head's review status reads — an errored or failed review on the
 current head is part of your work, not a reason not to run. What protects the
 tree is the gate below: the merge completes only when the branch is clean or
 flagged, current, forge-mergeable, and passing the workspace build and test.
-Whether the person or the service applied the label, and whether they were
-authorised to, was settled by the receiver before you were spawned; do not
-re-litigate it.
+The receiver has already validated who applied the finish label and whether
+repository policy authorises that actor. Treat that validated result as this
+run's authority input, then apply the independent merge gate below rather than
+repeating the receiver's actor-authorisation check.
 
 ## Run facts
 
@@ -57,14 +58,15 @@ head exists — a `stale` result is the `not-current` refusal below.
 
 Stop at the first failure and record the matching refusal; do not merge.
 
-1. **Eligibility.** The finish label fired this run, but that only proves *who*
-   asked to merge — not that the current head is in a state the commission
-   permits merging. Establish that here, from **the service's own recorded
-   verdict** for the current head. The robust key is the machine channel the
-   service owns: its posted review ends with a trailing marker line carrying the
-   head and verdict. A forge review's `state`, or its author's name, is not
-   enough — an unrelated human's `APPROVE` must never satisfy eligibility, and a
-   bot account can be renamed.
+1. **Eligibility.** The finish label triggered this run, but that only proves
+   *who* asked to merge — not that the current head is in a state the commission
+   permits merging. Eligibility rests only on **the service's own recorded
+   verdict** for the current head: the trailing marker line the service wrote on
+   its own review, keyed to this head. That machine channel is the authority
+   precisely because only the service can produce it; a forge review's `state`
+   or its author's name is deliberately not enough, since a display name is not
+   proof of authorship and an approving review may come from someone outside the
+   loop.
 
    Read `pump19 adapt list-reviews "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR"`.
    For each review, take the last `Pump-19:`-prefixed line of its body and parse
@@ -75,16 +77,18 @@ Stop at the first failure and record the matching refusal; do not merge.
    latest such verdict:
    - **`verdict=converged`** — the service's converging review. The head is
      **clean**; eligible.
-   - **`verdict=standing-findings`** — a person's finish label overrides it: the
-     head is **flagged**; eligible (it ships flagged, not clean).
+   - **`verdict=standing-findings`** — an authorised person's finish label is the
+     explicit decision to proceed despite the verified standing findings. Record
+     the head as **flagged** and eligible; if it merges, the summary must state
+     that it merged with standing findings rather than describe it as clean.
    - **`verdict=partial-coverage`**, **`verdict=paused-flaky`**, or **no service
-     verdict for this head** — not a state the finish label may override.
-     `paused-flaky` is explicitly ineligible because the review withheld
-     approval while `Flaky Tests` stood. `refused` with reason `not-eligible`:
-     unreviewed, partially-reviewed, or paused code must not ride the finish
-     label through a merge. The finish label is a standing instruction and
-     stays sticky; a later finish fires once the loop produces an eligible
-     verdict on the current head.
+     verdict for this head** — a finish label cannot substitute for a complete
+     service review of the current head. `paused-flaky` is explicitly ineligible
+     because the review withheld approval while `Flaky Tests` stood. Record
+     `refused` with reason `not-eligible`: unreviewed, partially-reviewed, or
+     paused code cannot be merged on the strength of the finish label alone. The
+     finish label is a standing instruction and stays sticky; a later finish
+     runs once the loop produces an eligible verdict on the current head.
 
    Record clean vs flagged for the summary; both continue.
 2. **Build.** `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"`.
@@ -97,7 +101,7 @@ Stop at the first failure and record the matching refusal; do not merge.
    `pump19 adapt commit-push …` (as the fix mission documents, attributed to
    `PUMP19_FIX_AUTHOR_NAME`/`PUMP19_FIX_AUTHOR_EMAIL` with the resolved lead
    model), then record `refused` with reason `review-pending`. The landed PR
-   update re-fires review; the sticky finish label carries the next finish run,
+   update re-triggers review; the sticky finish label carries the next finish run,
    which merges the re-cleared tree. If maintenance changes nothing, continue.
 5. **Current.** Require `pump19 run-guard … current`. `stale` is `refused` with
    reason `not-current`.

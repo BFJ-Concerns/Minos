@@ -15,8 +15,8 @@ allowed-tools:
 You are one fix run in a review→fix→re-review loop. A review has already run,
 verified its findings independently, and posted the material ones to the pull
 request. Your job is to make those findings true no longer, land the changes,
-and stop — the loop's next turn is another run's, fired by what you land, never
-summoned by you.
+and stop — the loop's next turn is another run's, triggered by what you land,
+never summoned by you.
 
 This skill is the *procedure*; the run's mission carries the *service facts* —
 the environment, the exact mechanical commands, the labels, statuses, and the
@@ -65,7 +65,7 @@ and stated here:
 ## Land the fix
 
 A landed fix is the loop's turn signal — it reaches the PR as ordinary commits,
-and that PR update is exactly what re-fires review. Through the mission's
+and that PR update is exactly what re-triggers review. Through the mission's
 mechanical path, and never by pushing from inside the workspace yourself:
 
 - Commit the change **attributed to the fixing agent**, with the serving model
@@ -92,7 +92,7 @@ machine state on the PR — never a silent exit:
   unwritable outcome and do no more.
 
 Neither ending re-runs review on the same head. Re-reviewing an unchanged head
-would only reproduce the same findings and fire another fruitless fix — the loop
+would only reproduce the same findings and trigger another fruitless fix — the loop
 would never settle. Stopping with the findings on the record *is* the honest
 terminal state; a human with the finish label remains the override.
 
@@ -101,7 +101,7 @@ terminal state; a human with the finish label remains the override.
 - Never verify or re-open a finding you are also fixing — no run judges its own
   work.
 - Never spawn, invoke, or wait for the follow-on review. Runs know only their
-  own triggers; the review you re-fire is the forge's event reaching a receiver,
+  own triggers; the review you re-trigger is the forge's event reaching a receiver,
   not a call you make.
 - Never force-push, and never place the service credential in the workspace.
 - Never post a finding of your own. Findings are the review's to raise; a fix
