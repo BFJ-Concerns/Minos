@@ -32,6 +32,7 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{Root: filepath.Join(root, "config")}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Forges = map[string]ForgeConfig{
 		"local": {Adaptation: filepath.Join(root, "adaptations")},
 	}
@@ -253,6 +254,7 @@ func TestPersistentlyFailingFlakyRepairStopsAfterFiveLivenessSpacedAttempts(t *t
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
 	repo := RepoConfig{Triggers: []TriggerRule{{Run: "flaky", Actors: []string{"ci-bot"}}}}
 	facts := Facts{
@@ -583,6 +585,7 @@ func TestLabelLessClaimIsReapedWhenStaleAndUnfinished(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
 	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "abcdef1234567890"}
 	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)

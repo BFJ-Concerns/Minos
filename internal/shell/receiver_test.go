@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -56,13 +57,76 @@ func TestHandleHookKeepsGenuineNotOptedInAccepted(t *testing.T) {
 	}
 }
 
+func TestHandleHookDefersAtCapacity(t *testing.T) {
+	root := writeRepoConfig(t, validRepoConfig)
+	spawned := filepath.Join(root, "spawned")
+	installAdmissionCommands(t, root,
+		"printf 'pump19-run-one.service loaded active running one\\npump19-run-two.service loaded active running two\\n'\n",
+		"exit 99\n")
+	response := httptest.NewRecorder()
+	cfg := receiverTestConfig(t, root)
+
+	err := handleHook(t.Context(), cfg, response, signedHookRequest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusAccepted || response.Body.String() != "deferred: capacity\n" {
+		t.Fatalf("response = %d %q, want 202 capacity deferral", response.Code, response.Body.String())
+	}
+
+	bin := filepath.Join(root, "bin")
+	writeScript(t, filepath.Join(bin, "systemctl"), "#!/usr/bin/env sh\nexit 0\n")
+	writeScript(t, filepath.Join(bin, "systemd-run"), "#!/usr/bin/env sh\n: >'"+spawned+"'\n")
+	adaptationDir := filepath.Join(root, "sweep-adaptation")
+	if err := os.MkdirAll(adaptationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+	repos, err := LoadRepoConfigs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := Facts{
+		Forge: "local", Owner: "pump19", Repo: "subject", PR: "1",
+		HeadSHA: "2ff55f9248630929f5dbef0f99d713743d5f0a33", BaseRef: "main",
+		Author: "pump19", Draft: false,
+	}
+	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sweepPR(t.Context(), cfg, repos[0], Adaptation{Dir: adaptationDir}, facts, logFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := logFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(spawned); err != nil {
+		t.Fatalf("later sweep did not recover the capacity-deferred delivery: %v", err)
+	}
+}
+
+func TestHandleHookReturnsUnavailableWhenRunLedgerFails(t *testing.T) {
+	root := writeRepoConfig(t, validRepoConfig)
+	installAdmissionCommands(t, root, "exit 31\n", "exit 99\n")
+	response := httptest.NewRecorder()
+
+	err := handleHook(t.Context(), receiverTestConfig(t, root), response, signedHookRequest(t))
+	if !errors.Is(err, ErrRunLedger) {
+		t.Fatalf("error = %v, want run ledger failure", err)
+	}
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+}
+
 func receiverTestConfig(t *testing.T, root string) ServiceConfig {
 	t.Helper()
 	secretFile := filepath.Join(t.TempDir(), "webhook-secret")
 	if err := os.WriteFile(secretFile, []byte("test-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return ServiceConfig{
+	cfg := ServiceConfig{
 		Root: root,
 		Forges: map[string]ForgeConfig{
 			"local": {
@@ -71,6 +135,9 @@ func receiverTestConfig(t *testing.T, root string) ServiceConfig {
 			},
 		},
 	}
+	cfg.Runs.Dir = filepath.Join(t.TempDir(), "runs")
+	cfg.Runs.MaxConcurrent = 2
+	return cfg
 }
 
 func signedHookRequest(t *testing.T) *http.Request {

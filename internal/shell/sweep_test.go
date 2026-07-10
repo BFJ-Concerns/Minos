@@ -91,6 +91,7 @@ func TestSweepReleasesEyesBeforeStageLabelOnEveryLabelledClaimRecovery(t *testin
 			root := t.TempDir()
 			cfg := ServiceConfig{}
 			cfg.Runs.Dir = filepath.Join(root, "runs")
+			cfg.Runs.MaxConcurrent = 2
 			cfg.Sweep.LivenessThreshold.Duration = time.Hour
 			facts := Facts{
 				Forge:   "local",
@@ -161,6 +162,7 @@ func TestSweepSuppressesLatchedHeadButNewHeadRuns(t *testing.T) {
 	cfg := ServiceConfig{}
 	cfg.Root = root
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
 	adaptationDir := filepath.Join(root, "adaptation")
 	if err := os.MkdirAll(adaptationDir, 0o755); err != nil {
@@ -209,6 +211,119 @@ func TestSweepSuppressesLatchedHeadButNewHeadRuns(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "bbbbbbbbbbbb-review") {
 		t.Fatalf("new head did not escape old latch:\n%s", data)
+	}
+}
+
+func TestRetryWaveHonoursCapacityWithoutBurningDeferredAttempt(t *testing.T) {
+	root := t.TempDir()
+	activeCount := filepath.Join(root, "active-count")
+	spawned := filepath.Join(root, "spawned")
+	if err := os.WriteFile(activeCount, []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installAdmissionCommands(t, root, `
+count=$(cat "$PUMP19_TEST_ACTIVE_COUNT")
+i=0
+while [ "$i" -lt "$count" ]; do
+  printf 'pump19-run-%s.service loaded active running live\n' "$i"
+  i=$((i + 1))
+done
+`, `
+count=$(cat "$PUMP19_TEST_ACTIVE_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" >"$PUMP19_TEST_ACTIVE_COUNT"
+printf 'spawned\n' >>"$PUMP19_TEST_SPAWNED"
+`)
+	t.Setenv("PUMP19_TEST_ACTIVE_COUNT", activeCount)
+	t.Setenv("PUMP19_TEST_SPAWNED", spawned)
+
+	cfg := ServiceConfig{Root: root}
+	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
+	cfg.Sweep.LivenessThreshold.Duration = time.Hour
+	adaptationDir := filepath.Join(root, "adaptation")
+	if err := os.MkdirAll(adaptationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "remove-reaction"), "#!/usr/bin/env sh\nexit 0\n")
+	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nexit 0\n")
+	cfg.Forges = map[string]ForgeConfig{"local": {Adaptation: adaptationDir}}
+	repo := RepoConfig{Forge: "local", Owner: "pump19", Repo: "subject", Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}}}}
+	logPath := filepath.Join(root, "sweep.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var runDirs []string
+	var factsByRun []Facts
+	for index, sha := range []string{"aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "cccccccccccccccc"} {
+		facts := Facts{
+			Forge: "local", Owner: "pump19", Repo: "subject", PR: string(rune('1' + index)),
+			HeadSHA: sha, Author: "alice", Labels: []string{LabelReviewing},
+		}
+		factsByRun = append(factsByRun, facts)
+		runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
+		runDirs = append(runDirs, runDir)
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeRunMeta(t, runDir, sha, time.Now().Add(-2*time.Hour))
+		writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
+		if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := sweepPR(t.Context(), cfg, repo, Adaptation{Dir: adaptationDir}, facts, logFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := logFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(spawned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "spawned\n"); got != 2 {
+		t.Fatalf("retry wave spawned %d runs, want 2", got)
+	}
+	for _, runDir := range runDirs[:2] {
+		if _, err := os.Stat(runDir + ".retry-1"); err != nil {
+			t.Fatalf("admitted retry was not archived at %s: %v", runDir, err)
+		}
+	}
+	deferred := runDirs[2]
+	if _, err := os.Stat(deferred); err != nil {
+		t.Fatalf("deferred retry lost its canonical claim: %v", err)
+	}
+	if matches, err := filepath.Glob(deferred + ".retry-*"); err != nil || len(matches) != 0 {
+		t.Fatalf("deferred retry burned attempt evidence: matches=%v err=%v", matches, err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "deferred review for pump19/subject#3 capacity=2") {
+		t.Fatalf("sweep log lacks capacity deferral:\n%s", logData)
+	}
+
+	if err := os.WriteFile(activeCount, []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logFile, err = os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sweepPR(t.Context(), cfg, repo, Adaptation{Dir: adaptationDir}, factsByRun[2], logFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := logFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(deferred + ".retry-1"); err != nil {
+		t.Fatalf("later sweep did not admit the deferred retry: %v", err)
 	}
 }
 
@@ -335,6 +450,7 @@ func TestLabelLessClaimReapsHistoricalHeadWithoutForgeReads(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "222222222222bbbb"}
 	oldRun := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, "111111111111aaaa", RunReview)
@@ -374,6 +490,7 @@ func TestRetryableFailureReleasePreservesBoundedEvidence(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "222222222222bbbb"}
 	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
@@ -444,6 +561,7 @@ func TestRetryableFailureExhaustionLatchesInternallyAndPreservesFinalAttempt(t *
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "222222222222bbbb"}
 	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
@@ -502,6 +620,7 @@ func TestCrashAfterForgeWriteLatchesInternallyWithoutPRStatus(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "222222222222bbbb"}
 	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
@@ -549,6 +668,7 @@ func TestUnreadableRunMetaSkipsOnlyThatClaim(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
+	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "222222222222bbbb"}
 	badRun := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, "111111111111aaaa", RunReview)

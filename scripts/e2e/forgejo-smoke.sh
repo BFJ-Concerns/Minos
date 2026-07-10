@@ -362,6 +362,7 @@ signature-header = "X-Forgejo-Signature"
 
 [runs]
 dir = "${work}/runs"
+max-concurrent = 2
 
 [sweep]
 liveness-threshold = "2s"
