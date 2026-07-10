@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+# The PR's own review history — the record a fix session reads to see prior
+# verdicts and how many passes a finding has already survived. Prose bodies
+# carry the reviews' trailing markers; state carries the machine verdict.
+
+owner="$1"
+repo="$2"
+pr="$3"
+
+api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" |
+  jq -c '[.[] | {id, state, body, submitted_at, user: (.user.login // .user.username // "")}]'

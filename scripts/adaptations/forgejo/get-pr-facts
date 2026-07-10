@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -eu
+# shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
 
 owner="$1"
@@ -18,3 +19,10 @@ printf 'AUTHOR=%s\n' "$(printf '%s' "$json" | jq -r '.user.login // .user.userna
 printf 'ACTOR=%s\n' ""
 printf 'DRAFT=%s\n' "$(printf '%s' "$json" | jq -r '.draft // false')"
 printf 'LABELS=%s\n' "$(printf '%s' "$json" | jq -r '[.labels[]?.name] | join(",")')"
+# Fix and finish read these. HEAD_BRANCH is the ref to push a fix to; comparing
+# HEAD_REPO with BASE_REPO detects a fork (an unwritable head — no fix path).
+# MERGEABLE is the forge's own conflict-free verdict, one input to the merge gate.
+printf 'HEAD_BRANCH=%s\n' "$(printf '%s' "$json" | jq -r '.head.ref // ""')"
+printf 'HEAD_REPO=%s\n' "$(printf '%s' "$json" | jq -r '.head.repo.full_name // ""')"
+printf 'BASE_REPO=%s\n' "$(printf '%s' "$json" | jq -r '.base.repo.full_name // ""')"
+printf 'MERGEABLE=%s\n' "$(printf '%s' "$json" | jq -r '.mergeable // false')"

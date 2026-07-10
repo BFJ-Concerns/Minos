@@ -77,10 +77,16 @@ sudo install -o root -g root -m 0755 scripts/run-body/* \
   /opt/pump19/run-body/
 sudo install -o root -g root -m 0755 scripts/review/* \
   /opt/pump19/review/
-sudo install -o root -g root -m 0644 missions/review.md \
-  /opt/pump19/missions/review.md
+sudo install -o root -g root -m 0644 missions/review.md missions/fix.md \
+  missions/finish.md /opt/pump19/missions/
 sudo install -o root -g root -m 0644 examples/config/pins.toml \
   /opt/pump19/pins.toml
+
+# The fix run's skill is the one service-authored skill, shipped with this
+# repository (unlike the sync-owned skills/foundry tree installed below).
+sudo install -d -o root -g root -m 0755 /opt/pump19/skills/service/fix
+sudo install -o root -g root -m 0644 skills/service/fix/SKILL.md \
+  /opt/pump19/skills/service/fix/SKILL.md
 
 sudo install -d -o root -g root -m 0755 /opt/pump19/docs
 sudo install -o root -g root -m 0644 docs/go-live.md /opt/pump19/docs/go-live.md
@@ -88,9 +94,13 @@ sudo install -o root -g root -m 0644 docs/go-live.md /opt/pump19/docs/go-live.md
 
 The adaptation and review scripts call `curl`, `git`, and `jq`; keep those
 commands on the deployment account's normal system path. The installed pins
-file is deliberately inactive: replace every `REPLACE_WITH_…` value only after
-the operator approves the role assignments and exact model identifiers. The
-lead launcher fails before model use while a placeholder remains.
+file carries the operator-approved role assignments and model identifiers
+(confirmed 2026-07-10: a Claude-class lead and specialist, GPT-class
+verification and bar-judging). Re-confirm at go-live that they still name
+current model generations before activation. The placeholder-rejection
+machinery remains for any role a future deployment leaves unconfigured: the
+lead launcher fails before model use while a `REPLACE_WITH_…` placeholder
+remains anywhere in the role set.
 
 After Foundry sync populates `skills/foundry/`, install that sync-owned tree:
 
@@ -266,11 +276,13 @@ repository-administrator permission.
 
 ## 8. Opt the repository in
 
-Copy the inactive example and replace every placeholder. This unit ships only
-review triggers; add fix and finish triggers after their dispatcher handling
-lands.
-Review trigger actors particularly carefully: they are authority, not display
-names.
+Copy the inactive example and replace every placeholder. The template now
+ships review, fix, and finish triggers: a rejected review fires a fix, and the
+`Ready` label fires a finish. Review the `finish` trigger's `actors` most
+carefully — they are authority, not display names: with auto-merge off, only
+those actors' `Ready` starts a merge, and the placeholder authorises nobody
+until you set real forge logins. Leave the fix and finish triggers out only if
+you want advisory reviews with no fix or merge automation.
 
 ```sh
 sudo -u "$DEPLOY_USER" cp \

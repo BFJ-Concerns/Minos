@@ -1,25 +1,38 @@
-# Model identifiers require separate operator approval before deployment.
-# The launch wrapper fails loudly while this placeholder remains.
+# Model pins — operator-approved 2026-07-10.
+#
+# The role assignments and exact model identifiers below were confirmed by the
+# operator on 2026-07-10: a Claude-class lead and specialist, GPT-class
+# verification and bar-judging (cross-family from the lead, where independence
+# pays), strongest model to the highest-judgement role.
+#
+# The REPLACE_WITH_ placeholder machinery is retained deliberately: a deployment
+# that has not confirmed its own pins keeps the placeholders, and the launch
+# wrapper fails loudly rather than serving an unapproved model. This shipped
+# example simply now carries the approved real values.
 [roles.lead]
 id = "lead-claude"
 engine = "claude"
-model = "REPLACE_WITH_OPERATOR_CONFIRMED_CLAUDE_MODEL"
+model = "claude-opus-4-8"
 family = "anthropic"
+effort = "high"
 
 [roles.specialist]
 id = "spec-claude"
 engine = "claude"
-model = "REPLACE_WITH_OPERATOR_CONFIRMED_CLAUDE_MODEL"
+model = "claude-opus-4-8"
 family = "anthropic"
+effort = "high"
 
 [[roles.verifiers]]
 id = "verify-codex"
 engine = "codex"
-model = "REPLACE_WITH_OPERATOR_CONFIRMED_CODEX_MODEL"
+model = "gpt-5.6-sol"
 family = "openai"
+effort = "high"
 
 [[roles.bar-judges]]
 id = "bar-codex"
 engine = "codex"
-model = "REPLACE_WITH_OPERATOR_CONFIRMED_CODEX_MODEL"
+model = "gpt-5.6-sol"
 family = "openai"
+effort = "high"

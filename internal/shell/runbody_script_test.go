@@ -69,7 +69,7 @@ printf '[{"id":"lead","resolved_model":"fixture"}]\n' >"$resolved"
 	}
 }
 
-func TestRunBodyRejectsUnimplementedAndUnknownKinds(t *testing.T) {
+func TestRunBodyRejectsUnknownKindAndUnconfiguredFix(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
 	installRoot := filepath.Join(root, "install")
@@ -77,10 +77,12 @@ func TestRunBodyRejectsUnimplementedAndUnknownKinds(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// PUMP19_FIX_SKILL is deliberately absent: a fix run without its skill wired
+	// must fail loudly rather than launch. An unknown kind is rejected outright.
 	if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"fix", "finish", "surprise"} {
+	for _, kind := range []string{"fix", "surprise"} {
 		t.Run(kind, func(t *testing.T) {
 			cmd := exec.Command(filepath.Join(installRoot, "run-body", "run-body"))
 			cmd.Env = append(os.Environ(), "PUMP19_CONFIG="+configDir, "PUMP19_RUN_DIR="+filepath.Join(root, kind), "PUMP19_RUN_KIND="+kind)
@@ -91,7 +93,7 @@ func TestRunBodyRejectsUnimplementedAndUnknownKinds(t *testing.T) {
 	}
 }
 
-func TestRunWrapRecordsErrorForRecognisedUnimplementedKinds(t *testing.T) {
+func TestRunWrapRecordsErrorWhenRunBodyLaunchFails(t *testing.T) {
 	for _, kind := range []string{"fix", "finish"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
@@ -120,7 +122,10 @@ func TestRunWrapRecordsErrorForRecognisedUnimplementedKinds(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(configDir, "service.toml"), []byte(service), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\n"), 0o644); err != nil {
+			// The kind dispatches, but the engine launch fails (PUMP19_BIN is a
+			// non-executable placeholder): the wrapper must record the kind's error
+			// status once the body has started, never a false success.
+			if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\nPUMP19_FIX_SKILL=x\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			runDir := filepath.Join(root, "runs", kind)
@@ -160,7 +165,9 @@ func copyRunBodyFixture(t *testing.T, installRoot string) {
 	if err := os.WriteFile(filepath.Join(runBodyDir, "run-body"), source, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(missionDir, "review.md"), []byte("review mission fixture\n"), 0o644); err != nil {
-		t.Fatal(err)
+	for _, mission := range []string{"review", "fix", "finish"} {
+		if err := os.WriteFile(filepath.Join(missionDir, mission+".md"), []byte(mission+" mission fixture\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
