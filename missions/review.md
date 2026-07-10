@@ -150,12 +150,12 @@ so the wrapper writes `pump19/review=error` when no terminal status exists. Do
 not post operational diagnostics as PR comments. If a mutation before the
 terminal status fails after the review was posted, leave the partial forge
 record in place; the wrapper's error status records that terminal publication
-did not complete. `Ready` is later than that boundary: if its apply fails, exit
-non-zero after controlled release. This remains a retryable run failure, not
-successful post-terminal cleanup. The wrapper records the command failure in
-`run.log` but preserves the already-written `pump19/review=success` status; no
-finish implication fires without the label. The current sweep cannot derive a
-missing `Ready` from that converged status, so automatic retry remains a bounded
+did not complete. If the later `Ready` apply fails, exit non-zero after
+controlled release; this remains a retryable run failure, not successful
+post-terminal cleanup. The wrapper records the command failure in `run.log` but
+preserves the already-written `pump19/review=success` status; no finish
+implication fires without the label. The current sweep cannot derive a missing
+`Ready` from that converged status, so automatic retry remains a bounded
 follow-up rather than a property this mission can provide.
 
 ## Model provenance
