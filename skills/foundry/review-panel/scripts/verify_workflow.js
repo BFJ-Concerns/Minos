@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'agent-review-verify',
+  name: 'review-panel-verify',
   description: 'Verify each finding with an independent checker, then judge the assembled review against the bar',
   phases: [
     { title: 'Check', detail: 'one independent checker per finding, cross-family where live' },
@@ -48,18 +48,18 @@ let input
 try {
   input = typeof args === 'string' ? JSON.parse(args) : args
 } catch (err) {
-  throw new Error('agent-review-verify: args was a string but not valid JSON; nothing ran.')
+  throw new Error('review-panel-verify: args was a string but not valid JSON; nothing ran.')
 }
 const plan = input && input.plan
 if (!plan) {
   throw new Error(
-    'agent-review-verify: args did not contain a "plan". Expected the discovery plan; got keys: ' +
+    'review-panel-verify: args did not contain a "plan". Expected the discovery plan; got keys: ' +
       (input ? Object.keys(input).join(', ') || '(none)' : String(input)),
   )
 }
 if (!plan.checker_method_path || !plan.bar_method_path || !plan.template_path) {
   throw new Error(
-    'agent-review-verify: plan is missing method-file paths — re-run plan_review.py ' +
+    'review-panel-verify: plan is missing method-file paths — re-run plan_review.py ' +
       '(the planner and this workflow must be the same version).',
   )
 }
@@ -74,7 +74,7 @@ const quoteValidation = input.quote_validation || null
 const verify = input.verify !== false
 const barMode = input.bar_mode || 'off'
 if (!['off', 'on', 'auto'].includes(barMode)) {
-  throw new Error(`agent-review-verify: bar_mode must be "off", "on", or "auto", got "${barMode}".`)
+  throw new Error(`review-panel-verify: bar_mode must be "off", "on", or "auto", got "${barMode}".`)
 }
 
 const briefByName = new Map(plan.briefs.map((b) => [b.name, b]))
@@ -149,8 +149,10 @@ const BAR_SCHEMA = {
 
 function checkerPrompt(finding) {
   const brief = briefByName.get(finding.brief)
+  // An aspect's path is absolute (it ships with the skill); a repo brief's is
+  // relative to the reviewed repository.
   const briefLine = brief
-    ? `The brief it was judged against is \`${root}/${brief.path}\` — read it.`
+    ? `The brief it was judged against is \`${brief.path.startsWith('/') ? brief.path : `${root}/${brief.path}`}\` — read it.`
     : `Its brief ("${finding.brief}") is not in the plan; judge the finding on its own terms.`
   const attributionLine =
     plan.mode === 'full' || !plan.base_ref

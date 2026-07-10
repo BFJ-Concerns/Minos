@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'agent-review',
-  description: 'Fan out one review agent per .review/ brief and collate their findings',
+  name: 'review-panel',
+  description: 'Fan out one review agent per panel concern — bundled aspects and .review/ briefs — and collate their findings',
   phases: [
     { title: 'Review', detail: 'one clean-context agent per shard (large briefs split across several)' },
   ],
@@ -41,7 +41,7 @@ try {
 } catch (err) {
   const text = String(args)
   throw new Error(
-    `agent-review: args was a string but not valid JSON (length ${text.length}), ` +
+    `review-panel: args was a string but not valid JSON (length ${text.length}), ` +
       `so the plan could not be read and no reviewers ran. First 200 chars: ` +
       text.slice(0, 200),
   )
@@ -49,7 +49,7 @@ try {
 const plan = input && input.plan
 if (!plan) {
   throw new Error(
-    `agent-review: args did not contain a "plan". Expected { plan }, got keys: ` +
+    `review-panel: args did not contain a "plan". Expected { plan }, got keys: ` +
       (input ? Object.keys(input).join(', ') || '(none)' : String(input)),
   )
 }
@@ -61,7 +61,7 @@ const mode = plan.mode
 const templatePath = plan.template_path
 if (!templatePath) {
   throw new Error(
-    'agent-review: plan is missing "template_path". Re-run plan_review.py so it ' +
+    'review-panel: plan is missing "template_path". Re-run plan_review.py so it ' +
       'can supply the reviewer method file path.',
   )
 }
@@ -139,7 +139,7 @@ function lsFilesSlice(brief, shard) {
 
 function diffNameSlice(brief, shard) {
   const scoped = brief.scope ? ` -- ${shellQuote(brief.scope)}` : ''
-  return `git diff --name-only --diff-filter=ACMR ${shellQuote(`${plan.base_ref}...HEAD`)}${scoped} | grep -v '^\\.review/' | LC_ALL=C sort | sed -n '${shard.start},${shard.end}p'`
+  return `git diff --name-only --diff-filter=ACMRD ${shellQuote(`${plan.base_ref}...HEAD`)}${scoped} | grep -v '^\\.review/' | LC_ALL=C sort | sed -n '${shard.start},${shard.end}p'`
 }
 
 // The "which files is THIS reviewer responsible for" clause for a sharded brief:
@@ -149,7 +149,7 @@ function shardedSliceClause(shard, command) {
   return [
     `This review is split across ${shard.total} reviewers to keep each one's load manageable; you are reviewer ${shard.index} of ${shard.total}. The files you are responsible for are exactly those produced by:`,
     `    ${command}`,
-    `Run that command and handle only the files it lists — the other reviewers cover the rest of the scope, so do not widen beyond your slice, and do not narrow within it.`,
+    `Run that command and raise findings only on the files it lists — the other reviewers cover the rest of the scope, so do not report on files outside your slice, and do not narrow within it. The slice bounds what you report on, not what you may read: read callers, tests, definitions, and other context anywhere in the repository where your judgement needs it.`,
   ].join('\n\n')
 }
 
@@ -217,7 +217,8 @@ function targetDescription(brief, shard) {
   return [
     `Review the changes introduced on the current branch against your brief. They are being compared against the base \`${base}\`.`,
     `Inspect the actual diff for each changed file in your scope — for example \`git diff ${base}...HEAD -- <file>\` — and judge the violations the branch introduces or touches. Set \`preexisting: false\` (or omit it) on these.`,
-    `Do not go hunting for pre-existing problems. But if, while reading the diff and its surrounding context, you happen to notice an existing violation of your brief on lines the branch did not change, include it as a finding with \`preexisting: true\`. These are surfaced to the user separately and never posted to the PR, so flag them rather than staying silent.`,
+    `A file in your set that no longer exists on disk was deleted by the branch. The deletion is itself reviewable: read the removed content in the diff, judge what its removal breaks, silences, or leaves unregistered, and cite removed lines with \`side: LEFT\`.`,
+    `Do not seek out pre-existing problems. But if, while reading the diff and its surrounding context, you happen to notice an existing violation of your brief on lines the branch did not change, include it as a finding with \`preexisting: true\`. These are surfaced to the user separately and never posted to the PR, so flag them rather than staying silent.`,
     coverage,
   ].join('\n\n')
 }
@@ -228,10 +229,13 @@ function targetDescription(brief, shard) {
 // findings format. That file is static and identical for every reviewer, so the
 // agent reads it directly rather than having it relayed through args (see top).
 function buildPrompt(brief, shard) {
+  // An aspect's path is absolute (it ships with the skill); a repo brief's is
+  // relative to the reviewed repository.
+  const briefFile = brief.path.startsWith('/') ? brief.path : `${root}/${brief.path}`
   return [
     `You are a code reviewer with a single, narrow mandate. Review the code described below **only** against the brief given to you. Ignore everything outside the brief — other reviewers cover other concerns, and findings outside your mandate are noise.`,
     `## Your brief: ${brief.name}`,
-    `Read the brief file at \`${root}/${brief.path}\` (the repo root is \`${root}\`). It is plain prose describing a concern and what good looks like. The brief defines the *concern* you judge — review for that and nothing else. It does **not** decide *which* code or *how much* of it you cover: the "Scope" and "What to review" sections below govern that, and they take precedence over any incidental framing in the brief. For instance, a brief phrased around what "changed on the branch" still gets a whole-scope audit when this run is a full sweep — follow the instructions below, not the brief's wording, on extent.`,
+    `Read the brief file at \`${briefFile}\` (the repo root is \`${root}\`). It is plain prose describing a concern and what good looks like. The brief defines the *concern* you judge — review for that and nothing else. It does **not** decide *which* code or *how much* of it you cover: the "Scope" and "What to review" sections below govern that, and they take precedence over any incidental framing in the brief. For instance, a brief phrased around what "changed on the branch" still gets a whole-scope audit when this run is a full sweep — follow the instructions below, not the brief's wording, on extent.`,
     `## Scope\n\n${scopeDescription(brief)}`,
     `## What to review\n\n${targetDescription(brief, shard)}`,
     `## How to work and report\n\nRead and follow \`${templatePath}\` — the working method every reviewer on this panel uses and the exact structure for the findings you return. Set \`brief\` to "${brief.name}" in your structured output.`,
@@ -253,7 +257,7 @@ const tasks = []
 for (const brief of active) {
   if (!brief.shards || !brief.shards.length) {
     throw new Error(
-      `agent-review: brief "${brief.name}" has no shards in the plan — re-run ` +
+      `review-panel: concern "${brief.name}" has no shards in the plan — re-run ` +
         `plan_review.py (the planner and this workflow must be the same version).`,
     )
   }
@@ -345,9 +349,9 @@ results.forEach((result, i) => {
       brief: brief.name,
       review_title: brief.title ?? null,
       scope: brief.scope ?? null,
-      // The brief's extent rides along so the poster can route pre-existing
-      // findings: incidental (diff) ones become individual issues, a full audit's
-      // backlog collapses into one rollup issue per brief.
+      // The brief's extent rides along so the report step can group a
+      // full-extent concern's pre-existing backlog when routing it to the
+      // annexe, instead of listing every finding individually.
       extent: brief.extent,
       // Who produced this finding. The verification stage pairs each finding
       // with a checker that is never its producer; recording the producer is

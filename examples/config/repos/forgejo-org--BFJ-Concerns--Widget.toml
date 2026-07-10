@@ -6,7 +6,7 @@ repo = "Widget"
 build = "cargo build --workspace"
 test = "cargo test --workspace"
 briefs = ".review"
-skill = "/opt/pump19/skills/foundry/agent-review/SKILL.md"
+skill = "/opt/pump19/skills/foundry/review-panel/SKILL.md"
 run-body = "/opt/pump19/run-body/run-body"
 
 [policy]

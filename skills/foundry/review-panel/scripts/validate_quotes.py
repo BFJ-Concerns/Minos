@@ -143,7 +143,12 @@ def check_finding(finding, root, tracked, merge_base):
     path = finding.get("file")
     if not path:
         return "suppressed", "finding names no file"
-    reason = confine_path(path, root, tracked)
+    side = (finding.get("side") or "RIGHT").upper()
+    # A LEFT-side quote cites the pre-change version — the file may legitimately
+    # have been deleted by the branch, so the tracked-in-working-tree requirement
+    # does not apply. Path confinement (relative, inside the repo) still does;
+    # readability at the merge-base is checked below by read_file_lines.
+    reason = confine_path(path, root, None if side == "LEFT" else tracked)
     if reason:
         return "suppressed", reason
     if not in_scope(path, finding.get("scope")):
@@ -151,7 +156,6 @@ def check_finding(finding, root, tracked, merge_base):
             f"file is outside the brief's scope ({finding.get('scope')}/)"
         )
 
-    side = (finding.get("side") or "RIGHT").upper()
     if side == "LEFT" and not merge_base:
         return "suppressed", (
             "side is LEFT but no merge-base is available to check the pre-change version"

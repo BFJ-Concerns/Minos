@@ -529,7 +529,7 @@ func setReadyJourneyFinishEnv(t *testing.T, root, configRoot, installRoot, head 
 
 func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding string) {
 	t.Helper()
-	skill, err := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "agent-review", "SKILL.md"))
+	skill, err := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "review-panel", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +588,7 @@ func assertReviewDispatchRecord(t *testing.T, path, installRoot string) {
 	if len(fields) != 18 {
 		t.Fatalf("dispatch record has %d fields, want 18: %q", len(fields), line)
 	}
-	wantSkill, err := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "agent-review", "SKILL.md"))
+	wantSkill, err := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "review-panel", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

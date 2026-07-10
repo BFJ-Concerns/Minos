@@ -20,7 +20,7 @@ Prepare these before starting:
 - a new high-entropy webhook secret in a different local file;
 - a short-lived, dedicated repository-administration token for registering the
   hook (do not store this token in `/etc/pump19`);
-- the synced, pinned `agent-review` and `root-cause` skills;
+- the synced, pinned `review-panel` and `root-cause` skills;
 - working Claude and Codex logins
   for the deployment user. These are the service's model
   credentials. This repository
@@ -139,7 +139,7 @@ Edit `/etc/pump19/service.toml` and replace
 the LAN interface only; `:8919` is appropriate when the container itself has no
 non-LAN route.
 
-Do not activate a repository yet. First sync the grown `agent-review` and
+Do not activate a repository yet. First sync the grown `review-panel` and
 general `root-cause` skills into the checkout, install them under
 `/opt/pump19/skills/foundry/`, complete the missions' verify-on-arrival checks,
 obtain operator approval for every model pin, and verify both subscription
