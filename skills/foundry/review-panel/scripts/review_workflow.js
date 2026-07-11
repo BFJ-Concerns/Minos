@@ -74,10 +74,20 @@ const FINDINGS_SCHEMA = {
   additionalProperties: false,
   // notes is required: with zero findings it is the reviewer's entire
   // evidential product (the clean-review standard in the method file), so a
-  // response without it is an invalid review, not a lean one.
-  required: ['brief', 'findings', 'notes'],
+  // response without it is an invalid review, not a lean one. coverage is
+  // required for the same honesty reason: the run's coverage account folds in
+  // these declarations (downgrade-only — see the account below), so a review
+  // that does not say whether its slice was fully read is incomplete, not
+  // merely terse.
+  required: ['brief', 'findings', 'notes', 'coverage'],
   properties: {
     brief: { type: 'string' },
+    // The reviewer's own coverage declaration: 'full' when every relevant
+    // file in its slice was read, 'partial' when anything relevant went
+    // unread. not_reviewed names what went unread (the method file requires
+    // it with 'partial'); the account carries it as the declared gap.
+    coverage: { type: 'string', enum: ['full', 'partial'] },
+    not_reviewed: { type: 'string' },
     findings: {
       type: 'array',
       items: {
@@ -232,14 +242,31 @@ function buildPrompt(brief, shard) {
   // An aspect's path is absolute (it ships with the skill); a repo brief's is
   // relative to the reviewed repository.
   const briefFile = brief.path.startsWith('/') ? brief.path : `${root}/${brief.path}`
-  return [
+  const sections = [
     `You are a code reviewer with a single, narrow mandate. Review the code described below **only** against the brief given to you. Ignore everything outside the brief — other reviewers cover other concerns, and findings outside your mandate are noise.`,
     `## Your brief: ${brief.name}`,
     `Read the brief file at \`${briefFile}\` (the repo root is \`${root}\`). It is plain prose describing a concern and what good looks like. The brief defines the *concern* you judge — review for that and nothing else. It does **not** decide *which* code or *how much* of it you cover: the "Scope" and "What to review" sections below govern that, and they take precedence over any incidental framing in the brief. For instance, a brief phrased around what "changed on the branch" still gets a whole-scope audit when this run is a full sweep — follow the instructions below, not the brief's wording, on extent.`,
     `## Scope\n\n${scopeDescription(brief)}`,
     `## What to review\n\n${targetDescription(brief, shard)}`,
+  ]
+  // A remediation dispatch re-runs a brief whose earlier review failed the
+  // run's independent bar check (plan_remediation.py attaches the complaints).
+  // The complaints say how the earlier attempt fell short of the method; the
+  // re-reviewer must not treat them as conclusions to reproduce or avoid.
+  if (brief.remediation && (brief.remediation.reasons || []).length) {
+    sections.push(
+      [
+        `## Remediation context`,
+        `This dispatch re-runs a review whose earlier output failed the panel's independent bar check. The bar's complaints about the earlier review:`,
+        brief.remediation.reasons.map((r) => `- ${r}`).join('\n'),
+        `The complaints describe how the earlier review fell short of the working method — they are not findings to reproduce, conclusions to reach, or topics to avoid. Review your scope afresh under the full method discipline, and report whatever an honest review of the code produces.`,
+      ].join('\n\n'),
+    )
+  }
+  sections.push(
     `## How to work and report\n\nRead and follow \`${templatePath}\` — the working method every reviewer on this panel uses and the exact structure for the findings you return. Set \`brief\` to "${brief.name}" in your structured output.`,
-  ].join('\n\n')
+  )
+  return sections.join('\n\n')
 }
 
 // Briefs with a skip_reason (in diff mode: no changed files in scope) don't run.
@@ -297,9 +324,9 @@ const results = await parallel(
     agent(buildPrompt(brief, shard), {
       engine: 'claude',
       label:
-        shard.total > 1
+        (shard.total > 1
           ? `review:${brief.name} [${shard.index}/${shard.total}]`
-          : `review:${brief.name}`,
+          : `review:${brief.name}`) + (brief.remediation ? ' (remediation)' : ''),
       phase: 'Review',
       schema: FINDINGS_SCHEMA,
     }),
@@ -338,6 +365,8 @@ results.forEach((result, i) => {
     brief: brief.name,
     shard: `${shard.index}/${shard.total}`,
     notes: result.notes ?? null,
+    coverage: result.coverage,
+    not_reviewed: result.not_reviewed ?? null,
     findings: (result.findings || []).length,
   })
   for (const finding of result.findings || []) {
@@ -361,13 +390,34 @@ results.forEach((result, i) => {
   }
 })
 
-// The coverage account, derived from the dispatch record — the plan's
-// assignments plus which reviewers actually returned. This is the run's
-// coverage claim; a reviewer's own notes are evidence, never the account.
+// The coverage account: the dispatch record — the plan's assignments plus
+// which reviewers actually returned — combined with each reviewer's own
+// coverage declaration, downgrade-only. A declaration can mark a brief
+// partial (the reviewer read less than its slice, and says so); nothing a
+// reviewer returns can claim more than the dispatch shows. Prose notes are
+// evidence for the bar, never the account — the structured declaration is
+// what the account folds in.
 const returnedByBrief = new Map()
+const declaredGapsByBrief = new Map()
 results.forEach((result, i) => {
-  const { brief } = tasks[i]
+  const { brief, shard } = tasks[i]
   returnedByBrief.set(brief.name, (returnedByBrief.get(brief.name) || 0) + (result ? 1 : 0))
+  // The schema cannot express the conditional half of the declaration
+  // contract (a gap named with 'partial', none with 'full'), so it is
+  // enforced here, in the downgrade direction: a named gap is believed as a
+  // gap whatever the label says, so 'full' plus a non-blank not_reviewed
+  // still downgrades the account. The reviews record keeps the raw
+  // declaration — a contradictory return is evidence for the bar, and
+  // normalising it there would erase the very dishonesty the bar fails.
+  const namedGap = result && typeof result.not_reviewed === 'string' && result.not_reviewed.trim()
+  if (result && (result.coverage === 'partial' || namedGap)) {
+    const gaps = declaredGapsByBrief.get(brief.name) || []
+    gaps.push({
+      shard: `${shard.index}/${shard.total}`,
+      not_reviewed: namedGap ? result.not_reviewed : null,
+    })
+    declaredGapsByBrief.set(brief.name, gaps)
+  }
 })
 const coverage = plan.briefs.map((brief) => {
   if (brief.skip_reason) {
@@ -382,7 +432,8 @@ const coverage = plan.briefs.map((brief) => {
   }
   const total = brief.shards.length
   const returned = returnedByBrief.get(brief.name) || 0
-  return {
+  const declaredGaps = declaredGapsByBrief.get(brief.name) || []
+  const entry = {
     brief: brief.name,
     title: brief.title ?? null,
     scope: brief.scope ?? null,
@@ -391,8 +442,15 @@ const coverage = plan.briefs.map((brief) => {
     file_set_size: brief.file_set_size,
     shards_dispatched: total,
     shards_returned: returned,
-    status: returned === total ? 'full' : returned === 0 ? 'none' : 'partial',
+    status:
+      returned === 0
+        ? 'none'
+        : returned < total || declaredGaps.length
+          ? 'partial'
+          : 'full',
   }
+  if (declaredGaps.length) entry.declared_gaps = declaredGaps
+  return entry
 })
 
 return {
