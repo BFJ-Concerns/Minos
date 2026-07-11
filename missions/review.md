@@ -34,19 +34,18 @@ the mission says, not as the skill says:
   that operate on the diff (planning, quote-checking) are yours to drive; only
   its forge-writing and forge-reading surfaces are supplied by this mission
   instead.
-- **Record the skill's pre-existing findings under `$PUMP19_RUN_DIR`, not on the
-  forge.** The skill's diff mode marks findings the change did not introduce as
-  `preexisting: true` and, for a general caller, routes them to the project's
-  annexe. A service run has no annexe: write every `preexisting: true` finding
-  to the run evidence sink under `$PUMP19_RUN_DIR` — never dropped silently,
-  never posted to the forge, and never passed to the changed-line gate. The
-  posted review stays scoped to the change-introduced findings and contains
-  no pre-existing count or summary, so a fix run addresses only what this change
-  raised and never chases a legacy backlog. Where a service run's pre-existing
-  findings finally belong is an open commission question (filed in the annexe
-  gaps queue): adopting the skill's native annexe-routing service-side would
-  widen the service's forge-write surface, which is the operator's call, not
-  this bridge's.
+- **Route the skill's pre-existing findings through the configured ingest
+  adaptation, never to the PR.** The skill's diff mode marks findings the change
+  did not introduce as `preexisting: true`. Write those findings as a JSON array
+  to `$PUMP19_RUN_DIR/preexisting-findings.json`, then run
+  `pump19 adapt append-findings "$PUMP19_REPO" "$PUMP19_PR" "$PUMP19_RUN_DIR/preexisting-findings.json"`.
+  The adaptation appends them to the repository's configured find-ingest log;
+  when no destination is configured it reports `unconfigured` and the run-dir
+  file is the final sink. Ingest is best-effort: if the command fails, record
+  that failure loudly in the run log and continue the review. Never post these
+  findings to the forge or pass them to the changed-line gate. The posted review
+  contains no pre-existing count or summary, so a fix run addresses only what
+  this change raised and never chases a legacy backlog.
 
 ## Run facts
 

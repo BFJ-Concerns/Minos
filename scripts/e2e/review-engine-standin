@@ -86,6 +86,16 @@ existing="$PUMP19_RUN_DIR/existing-comments.json"
 "$PUMP19_BIN" adapt list-review-comments "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$existing"
 printf '[]\n' >"$PUMP19_RUN_DIR/new-comments.json"
 
+if [ -n "${PUMP19_STANDIN_PREEXISTING_FILE:-}" ]; then
+  cp "$PUMP19_STANDIN_PREEXISTING_FILE" "$PUMP19_RUN_DIR/preexisting-findings.json"
+  # Find ingest is deliberately best-effort. The evidence remains in the run
+  # directory whether the destination is absent, succeeds, or rejects the push.
+  if ! "$PUMP19_BIN" adapt append-findings \
+      "$PUMP19_REPO" "$PUMP19_PR" "$PUMP19_RUN_DIR/preexisting-findings.json" >/dev/null; then
+    echo "find-ingest failed; pre-existing findings remain in run evidence" >&2
+  fi
+fi
+
 if [ -n "${PUMP19_STANDIN_FINDING_FILE:-}" ]; then
   path=$(jq -er '.path' "$PUMP19_STANDIN_FINDING_FILE")
   line=$(jq -er '.line' "$PUMP19_STANDIN_FINDING_FILE")

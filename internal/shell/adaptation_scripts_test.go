@@ -44,6 +44,69 @@ func TestAdaptCommandLoadsCredentialAndRejectsPaths(t *testing.T) {
 	}
 }
 
+func TestForgejoAppendFindingsCommitsConventionEntryAsServiceIdentity(t *testing.T) {
+	forgeRoot := t.TempDir()
+	repository := filepath.Join(forgeRoot, "annexes", "subject.git")
+	if err := os.MkdirAll(filepath.Dir(repository), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, "init", "--bare", "--initial-branch=main", repository)
+	seed := t.TempDir()
+	gitCommand(t, "-C", seed, "init", "--initial-branch=main")
+	gitCommand(t, "-C", seed, "config", "user.name", "Seeder")
+	gitCommand(t, "-C", seed, "config", "user.email", "seed@example.invalid")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("annexe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, "-C", seed, "add", "README.md")
+	gitCommand(t, "-C", seed, "commit", "-m", "seed")
+	gitCommand(t, "-C", seed, "push", repository, "main")
+
+	findings := filepath.Join(t.TempDir(), "preexisting.json")
+	if err := os.WriteFile(findings, []byte(`[{"title":"Name the hidden failure","message":"The error is swallowed beside the changed code."}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "append-findings")
+	cmd := exec.Command(path, "BFJ-Concerns/Subject", "17", findings)
+	cmd.Env = append(os.Environ(),
+		"PUMP19_API_BASE=file://"+forgeRoot,
+		"PUMP19_FORGE_TOKEN=test-token",
+		"PUMP19_FIND_INGEST_REPOSITORY=annexes/subject",
+		"PUMP19_FIND_INGEST_PATH=ISSUES.md",
+		"PUMP19_FIX_AUTHOR_NAME=Minos",
+		"PUMP19_FIX_AUTHOR_EMAIL=minos@example.invalid",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("append findings: %v\n%s", err, out)
+	}
+
+	checkout := t.TempDir()
+	gitCommand(t, "clone", "-q", repository, checkout)
+	data, err := os.ReadFile(filepath.Join(checkout, "ISSUES.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := string(data)
+	if !strings.Contains(entry, "- **Name the hidden failure** — The error is swallowed beside the changed code.") ||
+		!strings.Contains(entry, "Source: Pump-19 review of BFJ-Concerns/Subject#17,") {
+		t.Fatalf("find-ingest entry does not follow convention:\n%s", entry)
+	}
+	author := strings.TrimSpace(gitCommand(t, "-C", checkout, "show", "-s", "--format=%an <%ae>", "HEAD"))
+	if author != "Minos <minos@example.invalid>" {
+		t.Fatalf("ingest commit author = %q", author)
+	}
+}
+
+func gitCommand(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
 func TestForgejoPostReviewMapsServiceStateAndPreservesAnchors(t *testing.T) {
 	dir := t.TempDir()
 	body := filepath.Join(dir, "body.md")
