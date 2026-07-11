@@ -95,6 +95,10 @@ if [ -n "${PUMP19_STANDIN_PREEXISTING_FILE:-}" ]; then
     echo "find-ingest failed; pre-existing findings remain in run evidence" >&2
   fi
 fi
+if [ "${PUMP19_STANDIN_FAIL_AFTER_INGEST:-}" = 1 ]; then
+  echo "fixture transient failure after find ingest" >&2
+  exit 75
+fi
 
 if [ -n "${PUMP19_STANDIN_FINDING_FILE:-}" ]; then
   path=$(jq -er '.path' "$PUMP19_STANDIN_FINDING_FILE")
@@ -148,9 +152,7 @@ marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review head="$PUMP19_HEAD_SHA"
   else
     printf 'Pump-19 stand-in seam review. Coverage: %s.\n\n' "$coverage"
   fi
-  printf 'Model provenance:\n\n```json\n'
-  cat "$PUMP19_RUN_DIR/provenance.json"
-  printf '```\n\n%s\n' "$marker"
+  printf '%s\n' "$marker"
 } >"$PUMP19_RUN_DIR/review.md"
 
 if [ -n "${PUMP19_STANDIN_BEFORE_POST_READY:-}" ]; then

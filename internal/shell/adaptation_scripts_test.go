@@ -26,7 +26,7 @@ func TestAdaptCommandLoadsCredentialAndRejectsPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "inspect"), "#!/usr/bin/env sh\nprintf '%s:%s' \"$PUMP19_FORGE_TOKEN\" \"$1\"\n")
-	service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
+	service := "[service]\nbot-login = \"Minos\"\n\n[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(service), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +94,30 @@ func TestForgejoAppendFindingsCommitsConventionEntryAsServiceIdentity(t *testing
 	author := strings.TrimSpace(gitCommand(t, "-C", checkout, "show", "-s", "--format=%an <%ae>", "HEAD"))
 	if author != "Minos <minos@example.invalid>" {
 		t.Fatalf("ingest commit author = %q", author)
+	}
+}
+
+func TestForgejoAppendFindingsTreatsEmptyArrayAsNoOp(t *testing.T) {
+	findings := filepath.Join(t.TempDir(), "preexisting.json")
+	if err := os.WriteFile(findings, []byte("[]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "append-findings")
+	cmd := exec.Command(path, "BFJ-Concerns/Subject", "17", findings)
+	cmd.Env = append(os.Environ(),
+		"PUMP19_API_BASE=http://unreachable.invalid",
+		"PUMP19_FORGE_TOKEN=test-token",
+		"PUMP19_FIND_INGEST_REPOSITORY=annexes/unreachable",
+		"PUMP19_FIND_INGEST_PATH=ISSUES.md",
+		"PUMP19_FIX_AUTHOR_NAME=Minos",
+		"PUMP19_FIX_AUTHOR_EMAIL=minos@example.invalid",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("empty find ingest: %v\n%s", err, out)
+	}
+	if string(out) != "nothing to append\n" {
+		t.Fatalf("empty find ingest output = %q", out)
 	}
 }
 

@@ -78,7 +78,7 @@ fi
 
 marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome="$outcome" run=fix)
 {
-  printf 'Pump-19 fix stand-in. Outcome: %s. Model: %s.\n\n' "$outcome" "$model"
+  printf 'Pump-19 fix stand-in. Outcome: %s.\n\n' "$outcome"
   printf '%s\n' "$marker"
 } >"$PUMP19_RUN_DIR/fix-summary.md"
 

@@ -7,6 +7,17 @@ import (
 	"testing"
 )
 
+func assertPostedSummaryOmitsModelIdentity(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "Model:") || strings.Contains(string(data), "claude-opus") || strings.Contains(string(data), "provenance") {
+		t.Fatalf("posted summary exposed model provenance:\n%s", data)
+	}
+}
+
 // TestFinishRunBodyGatesTheMergeThroughRunWrap drives the finish kind end to end
 // through the real wrapper with a deterministic stand-in. It proves firing is
 // permissive but merging is gated: a passing gate merges and consumes the Ready
@@ -27,6 +38,16 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(env.stateDir, "merge.args"), "merge")
 	assertContainsFile(t, filepath.Join(env.stateDir, "labels-removed"), "Ready")
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nsuccess")
+	assertPostedSummaryOmitsModelIdentity(t, filepath.Join(merged, "finish-summary.md"))
+
+	// Required CI may carry the build-and-test gate. Unset commands are skipped
+	// rather than replaced with a sentinel command that pretends to verify work.
+	env.setRunEnv(t, "dddddddddddddddd", map[string]string{"PUMP19_BUILD_CMD": "", "PUMP19_TEST_CMD": ""})
+	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	ciCarried := RunDir(env.runsDir, "local", "pump19", "subject", "7", "dddddddddddddddd", RunFinish)
+	assertContainsFile(t, filepath.Join(ciCarried, "finish-summary.md"), "outcome=merged")
 
 	// Refused, not mergeable: the forge reports the branch not mergeable. The
 	// merge is never attempted, the finish label stays sticky, and the refusal

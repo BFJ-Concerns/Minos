@@ -45,7 +45,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	}
 
 	pins := filepath.Join(root, "pins.toml")
-	if err := os.WriteFile(pins, []byte(pinsFixture), 0o644); err != nil {
+	if err := os.WriteFile(pins, []byte(leadPinsFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runBodyEnv := "PUMP19_ENGINE_LAUNCH_LEAD='" + standin + "'\n" +
@@ -64,7 +64,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := os.WriteFile(webhookSecret, []byte("test-webhook-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + token + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
+	service := "[service]\nbot-login = \"Minos\"\n\n[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + token + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 	if err := os.WriteFile(filepath.Join(configRoot, "service.toml"), []byte(service), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +88,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal(err)
 	} else if strings.Contains(string(data), "spec-claude") || strings.Contains(string(data), "verify-codex") {
 		t.Fatalf("worker provenance unexpectedly remained a review gate:\n%s", data)
+	}
+	if data, err := os.ReadFile(filepath.Join(firstRun, "review.md")); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(data), "provenance") || strings.Contains(string(data), "claude-opus") || strings.Contains(string(data), `"engine"`) {
+		t.Fatalf("posted review exposed model provenance:\n%s", data)
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
 	assertReviewDispatchRecord(t, filepath.Join(stateDir, "dispatch.tsv"), installRoot)
@@ -127,6 +132,22 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	assertContainsFile(t, filepath.Join(configuredRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=success")
 	assertContainsFile(t, filepath.Join(configuredRun, "review.md"), "verdict=standing-findings")
 	assertFindIngestCommit(t, annexeRemote)
+
+	setReviewRunEnv(t, root, configRoot, installRoot, "aeaeaeaeaeaeaeae", "")
+	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
+	t.Setenv("PUMP19_STANDIN_FAIL_AFTER_INGEST", "1")
+	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
+		t.Fatal("transient failure after find ingest unexpectedly completed")
+	}
+	retryableRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "aeaeaeaeaeaeaeae", RunReview)
+	assertContainsFile(t, filepath.Join(retryableRun, "retry.env"), "PUMP19_RETRYABLE_FAILURE=1")
+	if _, err := os.Stat(filepath.Join(retryableRun, terminalMarkerFile)); !os.IsNotExist(err) {
+		t.Fatalf("transient failure after find ingest created a terminal latch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(retryableRun, forgeWritesAttemptedFile)); !os.IsNotExist(err) {
+		t.Fatalf("find ingest crossed the tracked PR-write boundary: %v", err)
+	}
+	assertContainsFile(t, filepath.Join(retryableRun, "run.log"), "fixture transient failure after find ingest")
 
 	writeReviewRepoConfig(t, configRoot, "\n[find-ingest]\nrepository = \"annexes/unreachable\"\npath = \"ISSUES.md\"\n")
 	setReviewRunEnv(t, root, configRoot, installRoot, "adadadadadadadad", "")
@@ -181,7 +202,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatalf("Ready should overlap Reviewing before review release: %v", cleanFacts.Labels)
 	}
 	drafts := false
-	autoMergeRepo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"pump19"}, Drafts: &drafts}}}
+	autoMergeRepo := RepoConfig{serviceBotLogin: "Minos", Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"pump19"}, Drafts: &drafts}}}
 	autoMergeRepo.Policy.AutoMerge = true
 	adaptation := Adaptation{Dir: adaptationDir, Credential: "test-token"}
 	readyActor, err := resolveReadyActor(t.Context(), autoMergeRepo, adaptation, cleanFacts)
@@ -209,7 +230,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if decision, ok := reconcileDecision(autoMergeRepo, guardedFacts, statuses, readyActor); !ok || decision != RunFinish {
 		t.Fatalf("Ready implication during Reviewing overlap = %s ok=%v, want finish", decision, ok)
 	}
-	if err := beginRun(t.Context(), adaptation, cleanFacts, RunFinish); err != nil {
+	if err := beginRun(t.Context(), "Minos", adaptation, cleanFacts, RunFinish); err != nil {
 		t.Fatal(err)
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "labels"), LabelFinishing)
@@ -751,6 +772,7 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding 
 		t.Setenv(key, value)
 	}
 	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", "")
+	t.Setenv("PUMP19_STANDIN_FAIL_AFTER_INGEST", "")
 }
 
 func writeReviewRepoConfig(t *testing.T, configRoot, findIngest string) {
