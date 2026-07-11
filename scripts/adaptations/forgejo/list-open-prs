@@ -7,12 +7,15 @@ repo="$2"
 
 page=1
 limit=50
+previous_json='[]'
 while :; do
   json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls?state=open&limit=${limit}&page=${page}")"
   count="$(printf '%s' "$json" | jq 'length')"
   if [ "$count" -eq 0 ]; then
     break
   fi
+  repeats_previous_page "$json" "$previous_json" && break
+  previous_json="$json"
   printf '%s' "$json" |
     jq -r '.[] | [
       "OCCASION=reconcile",

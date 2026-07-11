@@ -11,10 +11,13 @@ trap 'rm -f "$existing"' EXIT
 # Fetch the whole vocabulary: established repositories can readily exceed one
 # API page, and idempotency should not depend on a label happening to be early.
 page=1
+previous_labels='[]'
 while :; do
   labels="$(api GET "/api/v1/repos/${owner}/${repo}/labels?limit=50&page=${page}")"
   count="$(printf '%s\n' "$labels" | jq 'length')"
   [ "$count" -gt 0 ] || break
+  repeats_previous_page "$labels" "$previous_labels" && break
+  previous_labels="$labels"
   printf '%s\n' "$labels" | jq -r '.[].name' >>"$existing"
   page=$((page + 1))
 done

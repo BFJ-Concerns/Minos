@@ -372,6 +372,42 @@ esac
 	}
 }
 
+func TestForgejoListReviewCommentsStopsWhenForgeRepeatsCommentPage(t *testing.T) {
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "list-review-comments")
+	fakeBin := t.TempDir()
+	commentCalls := filepath.Join(fakeBin, "comment-calls")
+	curl := filepath.Join(fakeBin, "curl")
+	script := `#!/usr/bin/env sh
+for arg do url="$arg"; done
+case "$url" in
+  *reviews/17/comments*)
+    printf '.\n' >>"$PUMP19_TEST_COMMENT_CALLS"
+    [ "$(wc -l <"$PUMP19_TEST_COMMENT_CALLS")" -le 3 ] || exit 88
+    printf '%s\n' '[{"id":91,"body":"finding","path":"main.go","position":12,"original_position":0,"pull_request_review_id":17}]'
+    ;;
+  *reviews*page=1*) printf '%s\n' '[{"id":17}]' ;;
+  *) printf '%s\n' '[]' ;;
+esac
+`
+	if err := os.WriteFile(curl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(path, "owner", "repo", "7")
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+":"+os.Getenv("PATH"),
+		"PUMP19_API_BASE=http://forge.invalid",
+		"PUMP19_FORGE_TOKEN=token",
+		"PUMP19_TEST_COMMENT_CALLS="+commentCalls,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list-review-comments failed: %v\n%s", err, out)
+	}
+	if strings.Count(string(out), `"id": 91`) != 1 {
+		t.Fatalf("repeated comment page was not returned exactly once:\n%s", out)
+	}
+}
+
 func TestForgejoGetStatusesMatchesCapturedForgejo14Shape(t *testing.T) {
 	out := runForgejoScriptWithFixture(t, "get-statuses", "commit-statuses.json", "owner", "repo", "abcdef")
 	if strings.Contains(out, "created_unix") {
