@@ -115,6 +115,27 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 		t.Fatalf("synchronisation commit has %d parents, want 2: %v", len(parents), parents)
 	}
 
+	// The sync runs before eligibility (operator ruling 2026-07-11): a
+	// Ready-carrying head that is behind its base gets its sync landed even
+	// when its verdict is not eligible to merge, so the branch never rots
+	// staleness-blocked while it waits.
+	_ = os.Remove(filepath.Join(env.stateDir, "merge.args"))
+	_ = os.Remove(filepath.Join(env.stateDir, "sync-parents"))
+	env.setRunEnv(t, "ffffffffffffffff", map[string]string{"PUMP19_FIXTURE_BEHIND_BASE": "1", "PUMP19_FIXTURE_VERDICT": "bar-dissent"})
+	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	behindIneligible := RunDir(env.runsDir, "local", "pump19", "subject", "7", "ffffffffffffffff", RunFinish)
+	assertContainsFile(t, filepath.Join(behindIneligible, "finish-summary.md"), "reason=review-pending")
+	if _, err := os.Stat(filepath.Join(env.stateDir, "merge.args")); !os.IsNotExist(err) {
+		t.Fatal("an ineligible behind-base head reached the forge merge")
+	}
+	if syncParents, err := os.ReadFile(filepath.Join(env.stateDir, "sync-parents")); err != nil {
+		t.Fatal("an ineligible behind-base head was not synchronised:", err)
+	} else if len(strings.Fields(string(syncParents))) != 2 {
+		t.Fatalf("ineligible-head synchronisation commit parents: %q", syncParents)
+	}
+
 	// Eligibility: merge only on the SERVICE'S OWN verdict for the current head,
 	// read from its posted review marker. Each of these refuses not-eligible,
 	// never reaching merge, and leaves Ready sticky. The last case is the R1

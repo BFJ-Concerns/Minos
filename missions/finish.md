@@ -60,7 +60,29 @@ head exists — a `stale` result is the `not-current` refusal below.
 
 Stop at the first failure and record the matching refusal; do not merge.
 
-1. **Eligibility.** The finish label triggered this run, but that only proves
+1. **Current and base sync.** Require `pump19 run-guard … current`. `stale`
+   means a newer PR head exists that this run is not serving; record `refused`
+   with reason `not-current`.
+
+   A `current` result establishes that this run still serves the PR head. If
+   `origin/$PUMP19_BASE_REF` is not already an ancestor of that head, merge the
+   base into the head in `$PUMP19_WORKSPACE` with an ordinary merge commit:
+   never rebase or force-push. Merge conflicts are this run's work — resolve
+   them, then exercise the applicable build and test gates against the merged
+   tree. Land the sync through `pump19 adapt commit-push …`, attributed
+   exactly like a maintenance change (step 5), and record `refused` with
+   reason `review-pending` without attempting the forge merge. The PR update
+   re-fires review; the sticky finish label carries the next finish run, which
+   may merge only after the combined tree is re-cleared.
+
+   The sync runs first, before eligibility, deliberately (operator ruling
+   2026-07-11): the finish label is a standing instruction to get this PR
+   merged, so a labelled head must never rot behind its base while it waits —
+   an ineligible head still gets its sync, giving the loop a fresh combined
+   tree to review and leaving nothing staleness-blocked for a human who
+   decides to merge by hand.
+
+2. **Eligibility.** The finish label triggered this run, but that only proves
    *who* asked to merge — not that the current head is in a state the commission
    permits merging. Eligibility rests only on **the service's own recorded
    verdict** for the current head: the trailing marker line the service wrote on
@@ -97,15 +119,15 @@ Stop at the first failure and record the matching refusal; do not merge.
      runs once the loop produces an eligible verdict on the current head.
 
    Record clean vs flagged for the summary; both continue.
-2. **Build.** When `PUMP19_BUILD_CMD` is non-empty, run
+3. **Build.** When `PUMP19_BUILD_CMD` is non-empty, run
    `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"`.
    A non-zero exit is `refused` with reason `build-failed`. When it is empty,
    the configured required CI checks carry this gate; skip the workspace step.
-3. **Test.** When `PUMP19_TEST_CMD` is non-empty, run
+4. **Test.** When `PUMP19_TEST_CMD` is non-empty, run
    `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"`.
    A non-zero exit is `refused` with reason `test-failed`. When it is empty,
    the configured required CI checks carry this gate; skip the workspace step.
-4. **Maintenance.** Perform the occasion's configured maintenance (dependency
+5. **Maintenance.** Perform the occasion's configured maintenance (dependency
    bumps, documentation checks) over your general skills. If it changes the
    tree, it must be reviewed before it can merge: land it with
    `pump19 adapt commit-push …` (as the fix mission documents, attributed to
@@ -113,20 +135,6 @@ Stop at the first failure and record the matching refusal; do not merge.
    model), then record `refused` with reason `review-pending`. The landed PR
    update re-triggers review; the sticky finish label carries the next finish run,
    which merges the re-cleared tree. If maintenance changes nothing, continue.
-5. **Current and base sync.** Require `pump19 run-guard … current`. `stale`
-   means a newer PR head exists that this run is not serving; record `refused`
-   with reason `not-current`.
-
-   A `current` result establishes that this run still serves the PR head. If
-   `origin/$PUMP19_BASE_REF` is not already an ancestor of that head, merge the
-   base into the head in `$PUMP19_WORKSPACE` with an ordinary merge commit:
-   never rebase or force-push. Merge conflicts are this run's work — resolve
-   them, then exercise the resulting tree through the applicable build and test
-   gates again. Land the sync through `pump19 adapt commit-push …`, attributed
-   exactly like a step 4 maintenance change, and record `refused` with reason
-   `review-pending` without attempting the forge merge. The PR update re-fires
-   review; the sticky finish label carries the next finish run, which may merge
-   only after the combined tree is re-cleared.
 6. **Forge-mergeable.** If `MERGEABLE` is not `true`, that is `refused` with
    reason `not-mergeable`.
 7. **Merge.** `pump19 adapt merge "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" merge`.
