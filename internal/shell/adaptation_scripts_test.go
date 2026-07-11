@@ -220,6 +220,30 @@ func TestForgejoGetStatusesMatchesCapturedForgejo14Shape(t *testing.T) {
 	}
 }
 
+func TestForgejoGetCombinedStatusPreservesForgeState(t *testing.T) {
+	out := runForgejoScript(t, "get-combined-status", `{"state":"failure","statuses":[{"status":"error"}]}`, "owner", "repo", "abcdef")
+	var status CombinedStatus
+	if err := json.Unmarshal([]byte(out), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "failure" {
+		t.Fatalf("combined state = %q, want Forgejo-rendered failure", status.State)
+	}
+}
+
+func TestSweepForgeReadsRejectIncompleteMachineState(t *testing.T) {
+	dir := t.TempDir()
+	writeScript(t, filepath.Join(dir, "get-combined-status"), "#!/usr/bin/env sh\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(dir, "list-reviews"), "#!/usr/bin/env sh\nprintf '[{\"id\":1,\"state\":\"APPROVED\"}]\\n'\n")
+	adaptation := Adaptation{Dir: dir}
+	if _, err := adaptation.GetCombinedStatus(t.Context(), "owner", "repo", "abcdef"); err == nil {
+		t.Fatal("combined status without state was accepted")
+	}
+	if _, err := adaptation.ListReviews(t.Context(), "owner", "repo", "1"); err == nil {
+		t.Fatal("review without head and actor identity was accepted")
+	}
+}
+
 func runForgejoScript(t *testing.T, name, curlOutput string, args ...string) string {
 	t.Helper()
 	fakeBin := t.TempDir()

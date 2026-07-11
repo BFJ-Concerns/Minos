@@ -228,9 +228,6 @@ EOF
   fi
   cat >>"$work/config/repos/local--${owner}--${repo}.toml" <<EOF
 
-[retries]
-operational-attempts = 5
-
 [[trigger]]
 run = "review"
 on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
@@ -605,6 +602,9 @@ if [[ -z "$transient_retry_marker" ]]; then
 fi
 assert_no_status_after "transient prepare failure does not poison head" "$sha_transient" "pump19/review"
 mv "$real_prepare_workspace" "$prepare_workspace"
+# The production cadence is deliberately longer than this estate run. Age the
+# machine marker rather than sleeping through a quarter-hour integration test.
+sed -i 's/^PUMP19_FAILURE_AT=.*/PUMP19_FAILURE_AT=2020-01-01T00:00:00Z/' "$transient_retry_marker"
 run_sweep normal
 wait_for_call "transient prepare recovers review status" status_is "$sha_transient" "pump19/review" success
 wait_for_call "transient prepare reviewing absent after recovery" label_lacks "$pr_transient" Reviewing
@@ -631,30 +631,34 @@ pr_fail="$(create_branch_and_pr persistent-failure "persistent failure")"
 sha_fail="$(head_sha "$pr_fail")"
 assert_no_status_after "persistent failure stays off the PR" "$sha_fail" "pump19/review"
 failure_run="$work/runs/local--${owner}--${repo}/pr${pr_fail}/$(cut -c1-12 <<<"$sha_fail")-review"
-for attempt in {1..5}; do
-  sleep 3
-  run_sweep normal
-  if [[ "$attempt" != "5" ]]; then
-    for _ in {1..60}; do
-      [[ -f "$failure_run/retry.env" ]] && break
-      sleep 1
-    done
-    if [[ ! -f "$failure_run/retry.env" ]]; then
-      echo "persistent failure attempt $((attempt + 1)) did not start" >&2
-      exit 1
-    fi
-  fi
+for _ in {1..60}; do
+  [[ -f "$failure_run/retry.env" ]] && break
+  sleep 1
 done
-assert_no_status_after "retry exhaustion stays off the PR" "$sha_fail" "pump19/review"
-failure_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
-failure_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -name terminal.env | wc -l | tr -d ' ')"
-if [[ "$failure_retry_count" != "5" || "$failure_terminal_count" != "1" ]]; then
-  echo "persistent failure left retries=${failure_retry_count} terminals=${failure_terminal_count}" >&2
+if [[ ! -f "$failure_run/retry.env" ]]; then
+  echo "persistent failure did not record its first attempt marker" >&2
   exit 1
 fi
 run_sweep normal
-assert_no_status_after "latched failure remains off the PR" "$sha_fail" "pump19/review"
-echo "ok: persistent failure retries five times, latches internally, and stays off the PR"
+failure_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
+if [[ "$failure_retry_count" != "0" ]]; then
+  echo "persistent failure retried before its backoff elapsed" >&2
+  exit 1
+fi
+sed -i 's/^PUMP19_FAILURE_AT=.*/PUMP19_FAILURE_AT=2020-01-01T00:00:00Z/' "$failure_run/retry.env"
+run_sweep normal
+for _ in {1..60}; do
+  [[ -f "$failure_run/retry.env" ]] && break
+  sleep 1
+done
+assert_no_status_after "backed-off retry stays off the PR" "$sha_fail" "pump19/review"
+failure_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
+failure_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -name terminal.env | wc -l | tr -d ' ')"
+if [[ "$failure_retry_count" != "1" || "$failure_terminal_count" != "0" ]]; then
+  echo "persistent failure left retries=${failure_retry_count} terminals=${failure_terminal_count}" >&2
+  exit 1
+fi
+echo "ok: persistent failure honours backoff, retries without a terminal cap, and stays off the PR"
 kill "$receiver_pid" >/dev/null 2>&1 || true
 receiver_pid=""
 write_repo_config ""

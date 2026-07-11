@@ -61,15 +61,22 @@ The head is writable only when `HEAD_BRANCH` is non-empty and `HEAD_REPO` equals
 The run's first move after the claim and writability checks is to bring the
 pull request current with its base branch in the workspace:
 
-`pump19 ws-exec --config "$PUMP19_CONFIG" -- git merge --no-commit "origin/$PUMP19_BASE_REF"`
+`pump19 ws-exec --config "$PUMP19_CONFIG" -- git merge --no-ff --no-commit "origin/$PUMP19_BASE_REF"`
 
 Resolving what conflicts arise is part of the job. Leave the merge in
 progress rather than committing it yourself — commits belong to
 `commit-push`, which completes the in-progress merge as an ordinary merge
 commit at landing (never a rebase; the no-force-push rule holds), pushed once
-with whatever repair the run adds in the same tree. If the merge reports the
-head already up to date, there is no sync to land; proceed on the tree as
-prepared.
+with whatever repair the run adds in the same tree. `--no-ff` is
+load-bearing: without it a head that has fallen strictly behind the base
+fast-forwards — Git moves the checkout with no in-progress merge and nothing
+staged, so `commit-push` would find a clean tree and land nothing. With both
+flags the sync always stops as an in-progress merge for `commit-push` to
+complete. The one genuine no-op is the merge reporting the head already up
+to date — the base is already contained in the head, so there is no sync to
+land: proceed on the tree as prepared, and let the investigation's ordinary
+paths carry the outcome (a repair lands as usual; no provable repair is the
+suspected/stopped exit).
 
 Diagnose on the merged tree, so a flake already fixed and merged through
 another pull request is adopted rather than solved a second time in a second

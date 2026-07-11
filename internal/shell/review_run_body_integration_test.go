@@ -132,6 +132,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	}
 	drafts := false
 	autoMergeRepo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"pump19"}, Drafts: &drafts}}}
+	autoMergeRepo.Policy.AutoMerge = true
 	adaptation := Adaptation{Dir: adaptationDir, Credential: "test-token"}
 	readyActor, err := resolveReadyActor(t.Context(), autoMergeRepo, adaptation, cleanFacts)
 	if err != nil {
@@ -172,6 +173,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "cccccccccccccccc", RunReview)
+	assertContainsFile(t, filepath.Join(cleanRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=success")
 	assertContainsFile(t, filepath.Join(cleanRun, "review.md"), "coverage=full")
 	assertContainsFile(t, filepath.Join(cleanRun, "review.md"), "verdict=converged")
 	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Converged")
@@ -245,6 +247,12 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 					}
 				}
 			}
+			if tc.name == "partial-coverage" {
+				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				assertContainsFile(t, filepath.Join(run, "review.md"), "coverage=partial")
+				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=partial-coverage")
+				assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Partial Coverage")
+			}
 			if tc.name == "bar-dissent" {
 				// The bar gates convergence, never publication: the verified review
 				// posts with the dissent on the marker, no approval, no outcome
@@ -281,7 +289,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !strings.Contains(string(reviews), `"state": "APPROVE"`) || !strings.Contains(string(reviews), tc.head) {
+				if !strings.Contains(string(reviews), `"state": "APPROVED"`) || !strings.Contains(string(reviews), tc.head) {
 					t.Fatalf("red-head convergence did not post its approving review for %s:\n%s", tc.head, reviews)
 				}
 				if fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelConverged) != convergedBefore+1 {
@@ -290,11 +298,6 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 			}
 		})
 	}
-	partialRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "1111111111111111", RunReview)
-	assertContainsFile(t, filepath.Join(partialRun, "review.md"), "coverage=partial")
-	assertContainsFile(t, filepath.Join(partialRun, "review.md"), "verdict=partial-coverage")
-	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Partial Coverage")
-
 	// Ready is the sole mutation after the terminal review status. If it fails,
 	// the wrapper preserves that status and records the command failure in the
 	// run log; with no Ready, reconciliation has no finish implication to fire.
@@ -307,6 +310,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal("failed Ready apply unexpectedly completed")
 	}
 	applyFailureRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", applyFailureHead, RunReview)
+	assertContainsFile(t, filepath.Join(applyFailureRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=error")
 	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
 	assertContainsFile(t, filepath.Join(applyFailureRun, "run.log"), "fixture Ready apply failed")
 	assertContainsFile(t, filepath.Join(applyFailureRun, "run.log"), "pump19 run-wrap error")
@@ -319,10 +323,52 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision, ok := reconcileDecision(autoMergeRepo, failedApplyFacts, failedApplyStatuses, ""); ok {
-		t.Fatalf("failed Ready apply unexpectedly re-fired %s", decision)
+	failedApplyReviews, err := adaptation.ListReviews(t.Context(), "pump19", "subject", "42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action, ok := decideSweepAction(autoMergeRepo, failedApplyFacts, failedApplyStatuses, failedApplyReviews, "success", ""); !ok || !action.ApplyReady {
+		t.Fatalf("failed Ready apply sweep action = %#v ok=%v reviews=%#v statuses=%#v labels=%v", action, ok, failedApplyReviews, failedApplyStatuses, failedApplyFacts.Labels)
 	}
 	t.Setenv("PUMP19_FIXTURE_FAIL_READY_APPLY", "")
+	retryLog, err := os.Create(filepath.Join(root, "ready-retry.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryCfg, err := LoadServiceConfig(configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adaptation.AddLabel(t.Context(), "pump19", "subject", "42", LabelFlakyTests); err != nil {
+		t.Fatal(err)
+	}
+	err = sweepPRSnapshot(t.Context(), retryCfg, autoMergeRepo, adaptation, sweepSnapshot{
+		facts: failedApplyFacts, statuses: failedApplyStatuses, reviews: failedApplyReviews, combinedStatus: "success",
+	}, retryLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsFixtureLabel(readFixtureLabels(t, filepath.Join(stateDir, "labels")), LabelReady) {
+		t.Fatal("sweep repaired Ready after Flaky Tests arrived behind its snapshot")
+	}
+	if err := adaptation.RemoveLabel(t.Context(), "pump19", "subject", "42", LabelFlakyTests); err != nil {
+		t.Fatal(err)
+	}
+	err = sweepPRSnapshot(t.Context(), retryCfg, autoMergeRepo, adaptation, sweepSnapshot{
+		facts: failedApplyFacts, statuses: failedApplyStatuses, reviews: failedApplyReviews, combinedStatus: "success",
+	}, retryLog)
+	if closeErr := retryLog.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsFixtureLabel(readFixtureLabels(t, filepath.Join(stateDir, "labels")), LabelReady) {
+		t.Fatal("sweep did not repair Ready after the terminal review records survived its failed apply")
+	}
+	if err := adaptation.RemoveLabel(t.Context(), "pump19", "subject", "42", LabelReady); err != nil {
+		t.Fatal(err)
+	}
 
 	// The head may move after the run claims Reviewing but before it posts. Hold
 	// the deterministic engine at that exact seam, advance the forge fixture,
@@ -402,6 +448,14 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	// orphaned Reviewing label while preserving the attempt for paced retry.
 	old := time.Now().Add(-2 * time.Hour)
 	if err := os.Chtimes(filepath.Join(mismatchRun, "run.log"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	finishedEvidence := "PUMP19_FINISHED_VERSION=1\nPUMP19_FINISHED_AT=" + old.UTC().Format(time.RFC3339Nano) + "\nPUMP19_FINISHED_OUTCOME=error\n"
+	if err := os.WriteFile(filepath.Join(mismatchRun, finishedMarkerFile), []byte(finishedEvidence), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	retryEvidence := "PUMP19_RETRYABLE_FAILURE=1\nPUMP19_FAILURE_PHASE=run-body-exit\nPUMP19_FAILURE_AT=" + old.UTC().Format(time.RFC3339Nano) + "\n"
+	if err := os.WriteFile(filepath.Join(mismatchRun, "retry.env"), []byte(retryEvidence), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
@@ -713,6 +767,7 @@ git -C "$PUMP19_WORKSPACE" commit -qm head
 git -C "$PUMP19_WORKSPACE" diff origin/main...HEAD >"$PUMP19_DIFF"
 `)
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\ncat '"+filepath.Join(stateDir, "statuses.json")+"'\n")
+	writeScript(t, filepath.Join(adaptationDir, "get-combined-status"), "#!/usr/bin/env sh\nstate=$(jq -r '.[0].state // \"\"' '"+filepath.Join(stateDir, "statuses.json")+"')\nprintf '{\"state\":\"%s\"}\\n' \"$state\"\n")
 	writeScript(t, filepath.Join(adaptationDir, "get-pr-facts"), `#!/usr/bin/env sh
 printf 'get-pr-facts:%s\n' "$PUMP19_HEAD_SHA" >>'`+operations+`'
 if [ "${PUMP19_FIXTURE_FLAKY_AFTER_STATUS:-}" = 1 ] &&
@@ -781,7 +836,7 @@ mv "$statuses.tmp" "$statuses"
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "list-review-comments"), "#!/usr/bin/env sh\ncat '"+comments+"'\n")
-	writeScript(t, filepath.Join(adaptationDir, "post-review"), "#!/usr/bin/env sh\nset -eu\nprintf 'post-review:%s\\n' \"$PUMP19_HEAD_SHA\" >>'"+operations+"'\ncp \"$6\" '"+filepath.Join(stateDir, "posted-review.md")+"'\ncp \"$7\" '"+filepath.Join(stateDir, "posted-comments.json")+"'\njq --arg head \"$4\" --arg state \"$5\" --rawfile body \"$6\" '. + [{state:$state,commit_id:$head,body:$body}]' '"+reviews+"' >'"+reviews+".tmp'\nmv '"+reviews+".tmp' '"+reviews+"'\nif [ \"$(jq 'length' \"$7\")\" -gt 0 ]; then jq '[.[0] + {id:91}]' \"$7\" >'"+comments+"'; fi\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "post-review"), "#!/usr/bin/env sh\nset -eu\nprintf 'post-review:%s\\n' \"$PUMP19_HEAD_SHA\" >>'"+operations+"'\ncp \"$6\" '"+filepath.Join(stateDir, "posted-review.md")+"'\ncp \"$7\" '"+filepath.Join(stateDir, "posted-comments.json")+"'\nstate=$5\n[ \"$state\" != APPROVE ] || state=APPROVED\njq --arg head \"$4\" --arg state \"$state\" --rawfile body \"$6\" '. + [{id:(length + 1),state:$state,commit_id:$head,body:$body,user:\"Minos\"}]' '"+reviews+"' >'"+reviews+".tmp'\nmv '"+reviews+".tmp' '"+reviews+"'\nif [ \"$(jq 'length' \"$7\")\" -gt 0 ]; then jq '[.[0] + {id:91}]' \"$7\" >'"+comments+"'; fi\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "update-comment"), "#!/usr/bin/env sh\ncp \"$4\" '"+filepath.Join(stateDir, "updated-body.md")+"'\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), "#!/usr/bin/env sh\ncat '"+reviews+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'pump19\\n'\n")

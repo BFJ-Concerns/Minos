@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -53,7 +55,20 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	}
 	defer func() {
 		_ = os.RemoveAll(workspace)
-		fmt.Fprintf(logFile, "pump19 run-wrap finished at %s\n", time.Now().UTC().Format(time.RFC3339))
+		finishedAt := time.Now().UTC()
+		fmt.Fprintf(logFile, "pump19 run-wrap finished at %s\n", finishedAt.Format(time.RFC3339))
+		_ = logFile.Sync()
+		outcome := "success"
+		if err != nil {
+			outcome = "error"
+		}
+		if markerErr := writeFinishedMarker(runDir, finishedAt, outcome); markerErr != nil {
+			if err == nil {
+				err = fmt.Errorf("record run completion: %w", markerErr)
+			} else {
+				fmt.Fprintf(logFile, "pump19 run-wrap could not record completion: %v\n", markerErr)
+			}
+		}
 	}()
 	kind, err := ParseRunKind(os.Getenv("PUMP19_RUN_KIND"))
 	if err != nil {
@@ -101,6 +116,7 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	cmd.Stderr = multiErr
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "PUMP19_RUN_KIND="+string(kind))
+	configureRunProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -109,7 +125,26 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	// without its marker remains safe for the liveness-spaced retry budget.
 	bodyStarted = true
 	failurePhase = "run-body-exit"
-	return cmd.Wait()
+	waitErr := cmd.Wait()
+	cleanupErr := cleanupRunProcessGroup(cmd.Process.Pid)
+	return errors.Join(waitErr, cleanupErr)
+}
+
+func configureRunProcessGroup(cmd *exec.Cmd) {
+	// The body may leave adaptation pipeline children behind. Giving the body
+	// its own process group lets run-wrap remove those descendants without
+	// signalling itself or relying on an arbitrary runtime timeout.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+func cleanupRunProcessGroup(leaderPID int) error {
+	if leaderPID <= 0 {
+		return nil
+	}
+	if err := syscall.Kill(-leaderPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill run process group %d: %w", leaderPID, err)
+	}
+	return nil
 }
 
 func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {

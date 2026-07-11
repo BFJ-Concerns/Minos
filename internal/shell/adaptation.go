@@ -20,6 +20,7 @@ var adaptationOperation = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 // writes keeps replay safety conservative when that happens.
 var forgeReadOperations = map[string]bool{
 	"get-pr-facts":         true,
+	"get-combined-status":  true,
 	"get-statuses":         true,
 	"label-actor":          true,
 	"latest-label-event":   true,
@@ -49,6 +50,19 @@ type Status struct {
 	Context string `json:"context"`
 	State   string `json:"state"`
 	Creator string `json:"creator"`
+}
+
+// Review is the machine-checkable part of a forge review. The sweep deliberately
+// ignores Body: prose is review substance, never reconciliation state.
+type Review struct {
+	ID       int64  `json:"id"`
+	State    string `json:"state"`
+	CommitID string `json:"commit_id"`
+	User     string `json:"user"`
+}
+
+type CombinedStatus struct {
+	State string `json:"state"`
 }
 
 type LabelEvent struct {
@@ -182,6 +196,38 @@ func (a Adaptation) GetStatuses(ctx context.Context, owner, repo, sha string) ([
 		}
 	}
 	return statuses, nil
+}
+
+func (a Adaptation) GetCombinedStatus(ctx context.Context, owner, repo, sha string) (string, error) {
+	out, err := a.Run(ctx, "get-combined-status", nil, nil, owner, repo, sha)
+	if err != nil {
+		return "", err
+	}
+	var status CombinedStatus
+	if err := json.Unmarshal(out, &status); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(status.State) == "" {
+		return "", fmt.Errorf("get-combined-status returned no state")
+	}
+	return status.State, nil
+}
+
+func (a Adaptation) ListReviews(ctx context.Context, owner, repo, pr string) ([]Review, error) {
+	out, err := a.Run(ctx, "list-reviews", nil, nil, owner, repo, pr)
+	if err != nil {
+		return nil, err
+	}
+	var reviews []Review
+	if err := json.Unmarshal(out, &reviews); err != nil {
+		return nil, err
+	}
+	for _, review := range reviews {
+		if review.ID <= 0 || review.State == "" || review.CommitID == "" || review.User == "" {
+			return nil, fmt.Errorf("list-reviews returned incomplete machine review")
+		}
+	}
+	return reviews, nil
 }
 
 func (a Adaptation) ListOpenPRs(ctx context.Context, forge, owner, repo string) ([]Facts, error) {

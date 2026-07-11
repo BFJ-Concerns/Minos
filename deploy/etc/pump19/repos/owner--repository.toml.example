@@ -14,10 +14,6 @@ run-body = "/opt/pump19/run-body/run-body"
 [policy]
 auto-merge = false
 
-[retries]
-# Includes the first attempt. Retries are spaced by the sweep's liveness interval.
-operational-attempts = 5
-
 [[trigger]]
 run = "review"
 on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]

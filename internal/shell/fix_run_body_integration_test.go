@@ -267,8 +267,10 @@ printf 'LABELS=%s\n' "${PUMP19_FIXTURE_LABELS:-Converged,Ready}"
 		"  reviews=$(printf '%s' \"$reviews\" | jq --arg h \"$PUMP19_HEAD_SHA\" '. + [{state:\"APPROVED\",commit_id:$h,body:\"Looks good to me\"}]')\n" +
 		"fi\n" +
 		"verdict=\"${PUMP19_FIXTURE_VERDICT:-converged}\"\n" +
+		"bar=passed\n" +
+		"if [ \"$verdict\" = bar-dissent ]; then bar=failed; fi\n" +
 		"if [ \"$verdict\" != none ]; then\n" +
-		"  marker=\"Pump-19: bar=passed coverage=full head=$PUMP19_HEAD_SHA run=review verdict=$verdict\"\n" +
+		"  marker=\"Pump-19: bar=$bar coverage=full head=$PUMP19_HEAD_SHA run=review verdict=$verdict\"\n" +
 		"  reviews=$(printf '%s' \"$reviews\" | jq --arg h \"$PUMP19_HEAD_SHA\" --arg m \"$marker\" '. + [{state:\"COMMENT\",commit_id:$h,body:(\"service review\\n\\n\" + $m)}]')\n" +
 		"fi\n" +
 		"printf '%s\\n' \"$reviews\"\n"
