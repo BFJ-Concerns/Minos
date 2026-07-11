@@ -83,9 +83,10 @@ const FINDINGS_SCHEMA = {
   properties: {
     brief: { type: 'string' },
     // The reviewer's own coverage declaration: 'full' when every relevant
-    // file in its slice was read, 'partial' when anything relevant went
-    // unread. not_reviewed names what went unread (the method file requires
-    // it with 'partial'); the account carries it as the declared gap.
+    // file in its slice was read at judging depth, 'partial' when anything
+    // relevant went unread or was only skimmed. not_reviewed names the gap
+    // (the method file requires it with 'partial'); the account carries it
+    // as the declared gap.
     coverage: { type: 'string', enum: ['full', 'partial'] },
     not_reviewed: { type: 'string' },
     findings: {
