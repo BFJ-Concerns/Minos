@@ -163,13 +163,14 @@ Each finding comment ends with exactly one marker:
 
 The consolidated review ends with exactly one marker:
 
-`Pump-19: bar=passed|failed|degraded|not-run coverage=full|partial head=FULL_SHA run=review verdict=converged|standing-findings|partial-coverage|paused-flaky|bar-dissent`
+`Pump-19: bar=passed|failed|degraded|not-run coverage=full|partial head=FULL_SHA run=review verdict=converged|standing-findings|partial-coverage|paused-flaky`
 
 Markers are machine state; the preceding review is ordinary prose for people.
 Record honest coverage in that prose. The converged tuples are
-`bar=passed coverage=full verdict=converged` and, on the degraded path below,
-`bar=degraded coverage=full verdict=converged`. Partial coverage uses
-`coverage=partial verdict=partial-coverage`.
+`bar=passed coverage=full verdict=converged`, `bar=failed coverage=full
+verdict=converged` (an unresolved dissent, on the record), and, on the
+degraded path below, `bar=degraded coverage=full verdict=converged`. Partial
+coverage uses `coverage=partial verdict=partial-coverage`.
 
 ### The bar check gates convergence, never publication
 
@@ -187,12 +188,16 @@ resubmission is worth it after the skill's round is your own judgement at
 your own pacing; there is no fixed resubmission count and no clock.
 
 A disagreement the run cannot resolve still publishes the verified review,
-recorded as bar-dissent: `bar=failed` on the trailing marker, no approving
-review, no `Ready`, no convergence. A review that would otherwise have
-converged — zero verified material findings, full coverage — publishes
-`verdict=bar-dissent` in place of `converged`; every other verdict stands as
-reached and simply carries `bar=failed`. What fires next is trigger-rule
-configuration, like any failure.
+with the dissent on the record: `bar=failed` on the trailing marker, and the
+verdict standing as reached (operator ruling 2026-07-11). A review that would
+otherwise have converged — zero verified material findings, full coverage —
+still publishes `verdict=converged` and takes the converged outcome path,
+carrying `bar=failed` honestly. The bar's convictions keep their force
+through the remediation round — prune what it proves wrong, deepen what it
+names shallow — but an exhausted disagreement does not withhold convergence
+from a review with nothing blocking in it: findings gate merges; the bar
+critiques reviews. `verdict=bar-dissent` is retired (historical markers
+still parse); nothing emits it.
 
 The bar failing the review is distinct from the bar check itself failing: a
 checker that cannot run or returns unusable output is retried up to two
@@ -219,11 +224,10 @@ Map successful verdicts as follows:
 | `standing-findings` | `REQUEST_CHANGES` | `Standing Findings` | `success` |
 | `partial-coverage` | `COMMENT` | `Partial Coverage` | `success` |
 | `paused-flaky` | `COMMENT` | none | `success` |
-| `bar-dissent` | `COMMENT` | none | `success` |
 
-`bar-dissent` is an honest completion, not a failure: the review published,
-the bar's dissent is on the marker, and deliberately no outcome label and no
-approval were given.
+(`bar-dissent` is retired: an unresolved bar disagreement no longer changes
+the verdict — it rides as `bar=failed` on whichever verdict the review
+reached.)
 
 Publish a successful terminal result in this order:
 

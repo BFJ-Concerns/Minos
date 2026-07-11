@@ -105,15 +105,18 @@ Stop at the first failure and record the matching refusal; do not merge.
      explicit decision to proceed despite the verified standing findings. Record
      the head as **flagged** and eligible; if it merges, the summary must state
      that it merged with standing findings rather than describe it as clean.
-   - **`verdict=partial-coverage`**, **`verdict=paused-flaky`**,
-     **`verdict=bar-dissent`**, or **no service verdict for this head** — a
+   - **`verdict=bar-dissent`** (historical; the review vocabulary no longer
+     emits it) — a review that published zero blocking findings at full
+     coverage with the review-bar's dissent recorded. Eligible as **clean**
+     (operator ruling 2026-07-11: findings gate merges; the bar critiques
+     reviews); the summary notes the recorded dissent.
+   - **`verdict=partial-coverage`**, **`verdict=paused-flaky`**, or **no
+     service verdict for this head** — a
      finish label cannot substitute for a complete service review of the
      current head. `paused-flaky` is explicitly ineligible because the review
-     withheld approval while `Flaky Tests` stood; `bar-dissent` because the
-     review-bar check dissented from the published review, so convergence was
-     withheld. Record
-     `refused` with reason `not-eligible`: unreviewed, partially-reviewed,
-     paused, or bar-disputed code cannot be merged on the strength of the
+     withheld approval while `Flaky Tests` stood. Record
+     `refused` with reason `not-eligible`: unreviewed, partially-reviewed, or
+     paused code cannot be merged on the strength of the
      finish label alone. The
      finish label is a standing instruction and stays sticky; a later finish
      runs once the loop produces an eligible verdict on the current head.
