@@ -17,7 +17,12 @@ func TestSweepDerivesFixFromCurrentHeadBotReview(t *testing.T) {
 
 	action, ok := decideSweepAction(repo, facts, nil, reviews, "", "")
 	if !ok || action.Run != RunFix {
-		t.Fatalf("standing-findings action = %#v ok=%v, want fix", action, ok)
+		t.Fatalf("review-record action = %#v ok=%v, want fix", action, ok)
+	}
+	standingFacts := facts
+	standingFacts.Labels = []string{LabelStandingFindings}
+	if action, ok := decideSweepAction(repo, standingFacts, nil, reviews, "", ""); ok {
+		t.Fatalf("Standing Findings unexpectedly re-fired action %#v", action)
 	}
 
 	fixContext, _ := StatusContext(RunFix)
