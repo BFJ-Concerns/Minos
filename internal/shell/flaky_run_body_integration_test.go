@@ -46,6 +46,7 @@ func TestFlakyRunBodyLandsRepairAndKeepsFailuresOffThePR(t *testing.T) {
 	landed := RunDir(env.runsDir, "local", "pump19", "subject", "7", "aaaaaaaaaaaaaaaa", RunFlaky)
 	assertContainsFile(t, filepath.Join(landed, "flaky-summary.md"), "outcome=landed")
 	assertContainsFile(t, filepath.Join(landed, "flaky-summary.md"), "run=flaky")
+	assertPostedSummaryOmitsModelIdentity(t, filepath.Join(landed, "flaky-summary.md"))
 	wantSkill, err := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "root-cause", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)

@@ -11,6 +11,9 @@ import (
 func TestLoadServiceConfigDuration(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(`
+[service]
+bot-login = "Minos"
+
 [listener]
 bind = ":8919"
 
@@ -54,6 +57,14 @@ func TestLoadServiceConfigRejectsMissingRequiredFields(t *testing.T) {
 	_, err := LoadServiceConfig(root)
 	if err == nil || !strings.Contains(err.Error(), "listener.bind") {
 		t.Fatalf("error = %v, want missing listener.bind", err)
+	}
+}
+
+func TestLoadServiceConfigRequiresBotLogin(t *testing.T) {
+	root := writeServiceConfig(t, strings.Replace(validServiceConfig, "[service]\nbot-login = \"Minos\"\n\n", "", 1))
+	_, err := LoadServiceConfig(root)
+	if err == nil || !strings.Contains(err.Error(), "service.bot-login") {
+		t.Fatalf("error = %v, want missing service.bot-login", err)
 	}
 }
 
@@ -133,6 +144,30 @@ path = "logs/finds.md"
 	}
 }
 
+func TestRepoConfigAllowsCIToCarryBuildAndTestGate(t *testing.T) {
+	config := strings.Replace(validRepoConfig, "build = \"go build ./...\"\ntest = \"go test ./...\"\n", "", 1)
+	config += "\n[ci]\nrequired-checks = [\"ci/build-and-test\"]\n"
+	if _, err := LoadRepoConfigs(writeRepoConfig(t, config)); err != nil {
+		t.Fatalf("CI-carried repository config was rejected: %v", err)
+	}
+}
+
+func TestRepoConfigWithoutRequiredCIMustSupplyBuildAndTest(t *testing.T) {
+	config := strings.Replace(validRepoConfig, "build = \"go build ./...\"\ntest = \"go test ./...\"\n", "", 1)
+	_, err := LoadRepoConfigs(writeRepoConfig(t, config))
+	if err == nil || !strings.Contains(err.Error(), "adaptation.build, adaptation.test") {
+		t.Fatalf("error = %v, want missing build and test commands", err)
+	}
+}
+
+func TestRepoConfigRejectsBlankRequiredCheck(t *testing.T) {
+	config := validRepoConfig + "\n[ci]\nrequired-checks = [\"\"]\n"
+	_, err := LoadRepoConfigs(writeRepoConfig(t, config))
+	if err == nil || !strings.Contains(err.Error(), "ci.required-checks[0]") {
+		t.Fatalf("error = %v, want blank required check named", err)
+	}
+}
+
 func TestShippedConfigsLoadClean(t *testing.T) {
 	projectRoot := filepath.Join("..", "..")
 	for _, root := range []string{
@@ -177,7 +212,10 @@ func writeRepoConfig(t *testing.T, contents string) string {
 	return root
 }
 
-const validServiceConfig = `[listener]
+const validServiceConfig = `[service]
+bot-login = "Minos"
+
+[listener]
 bind = ":8919"
 
 [forges.local]

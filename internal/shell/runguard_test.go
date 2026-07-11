@@ -19,14 +19,14 @@ func TestBeginRunClaimsOnlyCurrentUnfinishedHead(t *testing.T) {
 	writeScript(t, filepath.Join(dir, "add-reaction"), "#!/usr/bin/env sh\nprintf 'add-reaction:%s\\n' \"$4\" >>'"+operations+"'\n")
 	writeScript(t, filepath.Join(dir, "assign-if-missing"), "#!/usr/bin/env sh\nprintf 'assign-if-missing:%s\\n' \"$4\" >>'"+operations+"'\n")
 
-	if err := beginRun(context.Background(), Adaptation{Dir: dir}, Facts{Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "abcdef"}, RunReview); err != nil {
+	if err := beginRun(context.Background(), "TestBot", Adaptation{Dir: dir}, Facts{Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "abcdef"}, RunReview); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(operations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "add-label:Reviewing\nadd-reaction:eyes\nassign-if-missing:Minos\n"
+	want := "add-label:Reviewing\nadd-reaction:eyes\nassign-if-missing:TestBot\n"
 	if string(data) != want {
 		t.Fatalf("claim presence operations = %q, want %q", data, want)
 	}
@@ -44,7 +44,7 @@ func TestBeginRunYieldsBeforeLabelWhenHeadMoved(t *testing.T) {
 	writeScript(t, filepath.Join(dir, "add-reaction"), "#!/usr/bin/env sh\nprintf called >'"+added+"'\n")
 	writeScript(t, filepath.Join(dir, "assign-if-missing"), "#!/usr/bin/env sh\nprintf called >'"+added+"'\n")
 
-	if err := beginRun(context.Background(), Adaptation{Dir: dir}, Facts{Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "old-head"}, RunReview); err != nil {
+	if err := beginRun(context.Background(), "TestBot", Adaptation{Dir: dir}, Facts{Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "old-head"}, RunReview); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(added); !os.IsNotExist(err) {

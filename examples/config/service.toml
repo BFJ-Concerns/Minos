@@ -1,3 +1,6 @@
+[service]
+bot-login = "Minos"
+
 [listener]
 bind = ":8919"
 

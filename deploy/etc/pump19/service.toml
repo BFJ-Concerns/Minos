@@ -1,6 +1,9 @@
 # Production-shaped service configuration. Replace every REPLACE_WITH value
 # before go-live; the paths are the locations installed by docs/go-live.md.
 
+[service]
+bot-login = "REPLACE_WITH_FORGEJO_BOT_LOGIN"
+
 [listener]
 bind = ":8919"
 

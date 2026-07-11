@@ -77,7 +77,7 @@ fi
 
 marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome="$outcome" run=flaky)
 {
-  printf 'Pump-19 flaky stand-in. Test: fixture::intermittent. Outcome: %s. Model: %s.\n\n' "$outcome" "$model"
+  printf 'Pump-19 flaky stand-in. Test: fixture::intermittent. Outcome: %s.\n\n' "$outcome"
   printf '%s\n' "$marker"
 } >"$PUMP19_RUN_DIR/flaky-summary.md"
 printf 'Pump-19 flaky outcome: %s; evidence recorded in %s\n' "$outcome" "$PUMP19_RUN_DIR/flaky-summary.md" >>"$PUMP19_RUN_DIR/run.log"
