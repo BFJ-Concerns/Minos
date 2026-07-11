@@ -39,6 +39,9 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(env.stateDir, "labels-removed"), "Ready")
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nsuccess")
 	assertPostedSummaryOmitsModelIdentity(t, filepath.Join(merged, "finish-summary.md"))
+	// Only a completed merge earns a PR comment; prove the channel works here so
+	// the refusal subcases' no-comment assertions below are not vacuous.
+	assertContainsFile(t, filepath.Join(env.stateDir, "comments"), "outcome=merged")
 
 	// Required CI may carry the build-and-test gate. Unset commands are skipped
 	// rather than replaced with a sentinel command that pretends to verify work.
@@ -69,6 +72,11 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 		t.Fatal("a refused finish consumed the Ready label")
 	}
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nfailure")
+	// A refusal is service process: it must not post a PR comment (operator
+	// ruling 2026-07-11). The run-dir summary above still carries the account.
+	if posted, _ := os.ReadFile(filepath.Join(env.stateDir, "comments")); strings.Contains(string(posted), "outcome=refused") {
+		t.Fatalf("a refused finish posted a PR comment:\n%s", posted)
+	}
 
 	// Refused, build failed: the workspace build gate stops the run before any
 	// merge consideration.
@@ -83,6 +91,50 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 		t.Fatal("a failing build reached the merge")
 	}
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nfailure")
+
+	// A current head which is behind its base is synchronised as an ordinary
+	// merge commit and sent back through review. It is not merged into the base
+	// during the same finish run.
+	_ = os.Remove(filepath.Join(env.stateDir, "merge.args"))
+	env.setRunEnv(t, "eeeeeeeeeeeeeeee", map[string]string{"PUMP19_FIXTURE_BEHIND_BASE": "1"})
+	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	behindBase := RunDir(env.runsDir, "local", "pump19", "subject", "7", "eeeeeeeeeeeeeeee", RunFinish)
+	assertContainsFile(t, filepath.Join(behindBase, "finish-summary.md"), "reason=review-pending")
+	assertContainsFile(t, filepath.Join(env.stateDir, "commit-push.args"), "main")
+	if _, err := os.Stat(filepath.Join(env.stateDir, "merge.args")); !os.IsNotExist(err) {
+		t.Fatal("a behind-base head reached the forge merge")
+	}
+	parentData, err := os.ReadFile(filepath.Join(env.stateDir, "sync-parents"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents := strings.Fields(string(parentData))
+	if len(parents) != 2 {
+		t.Fatalf("synchronisation commit has %d parents, want 2: %v", len(parents), parents)
+	}
+
+	// The sync runs before eligibility (operator ruling 2026-07-11): a
+	// Ready-carrying head that is behind its base gets its sync landed even
+	// when its verdict is not eligible to merge, so the branch never rots
+	// staleness-blocked while it waits.
+	_ = os.Remove(filepath.Join(env.stateDir, "merge.args"))
+	_ = os.Remove(filepath.Join(env.stateDir, "sync-parents"))
+	env.setRunEnv(t, "ffffffffffffffff", map[string]string{"PUMP19_FIXTURE_BEHIND_BASE": "1", "PUMP19_FIXTURE_VERDICT": "bar-dissent"})
+	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	behindIneligible := RunDir(env.runsDir, "local", "pump19", "subject", "7", "ffffffffffffffff", RunFinish)
+	assertContainsFile(t, filepath.Join(behindIneligible, "finish-summary.md"), "reason=review-pending")
+	if _, err := os.Stat(filepath.Join(env.stateDir, "merge.args")); !os.IsNotExist(err) {
+		t.Fatal("an ineligible behind-base head reached the forge merge")
+	}
+	if syncParents, err := os.ReadFile(filepath.Join(env.stateDir, "sync-parents")); err != nil {
+		t.Fatal("an ineligible behind-base head was not synchronised:", err)
+	} else if len(strings.Fields(string(syncParents))) != 2 {
+		t.Fatalf("ineligible-head synchronisation commit parents: %q", syncParents)
+	}
 
 	// Eligibility: merge only on the SERVICE'S OWN verdict for the current head,
 	// read from its posted review marker. Each of these refuses not-eligible,

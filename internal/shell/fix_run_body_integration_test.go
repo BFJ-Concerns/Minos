@@ -241,7 +241,7 @@ func (h *runBodyHarness) setRunEnv(t *testing.T, head string, extra map[string]s
 		t.Setenv(key, value)
 	}
 	// Reset scenario knobs so a prior case does not leak into the next.
-	for _, key := range []string{"PUMP19_STANDIN_FIX_OUTCOME", "PUMP19_STANDIN_FLAKY_OUTCOME", "PUMP19_STANDIN_LEAD_MODEL", "PUMP19_STANDIN_MAINTENANCE", "PUMP19_FIXTURE_MERGEABLE", "PUMP19_FIXTURE_BUILD", "PUMP19_FIXTURE_TEST", "PUMP19_FIXTURE_PROTECTED", "PUMP19_FIXTURE_COMMIT_OUTCOME", "PUMP19_FIXTURE_LABELS", "PUMP19_FIXTURE_VERDICT", "PUMP19_FIXTURE_HUMAN_APPROVE", "PUMP19_FIXTURE_ACK_FAILURE"} {
+	for _, key := range []string{"PUMP19_STANDIN_FIX_OUTCOME", "PUMP19_STANDIN_FLAKY_OUTCOME", "PUMP19_STANDIN_LEAD_MODEL", "PUMP19_STANDIN_MAINTENANCE", "PUMP19_FIXTURE_MERGEABLE", "PUMP19_FIXTURE_BUILD", "PUMP19_FIXTURE_TEST", "PUMP19_FIXTURE_PROTECTED", "PUMP19_FIXTURE_COMMIT_OUTCOME", "PUMP19_FIXTURE_LABELS", "PUMP19_FIXTURE_VERDICT", "PUMP19_FIXTURE_HUMAN_APPROVE", "PUMP19_FIXTURE_ACK_FAILURE", "PUMP19_FIXTURE_BEHIND_BASE"} {
 		t.Setenv(key, "")
 	}
 	for key, value := range extra {
@@ -274,6 +274,24 @@ rm -rf "$PUMP19_WORKSPACE"
 mkdir -p "$PUMP19_WORKSPACE"
 printf 'head\n' >"$PUMP19_WORKSPACE/file.txt"
 : >"$PUMP19_DIFF"
+git -C "$PUMP19_WORKSPACE" init -q
+git -C "$PUMP19_WORKSPACE" config user.name "Pump-19 Test"
+git -C "$PUMP19_WORKSPACE" config user.email "pump19@example.invalid"
+git -C "$PUMP19_WORKSPACE" add file.txt
+git -C "$PUMP19_WORKSPACE" commit -qm base
+base=$(git -C "$PUMP19_WORKSPACE" rev-parse HEAD)
+git -C "$PUMP19_WORKSPACE" update-ref refs/remotes/origin/main "$base"
+if [ "${PUMP19_FIXTURE_BEHIND_BASE:-}" = 1 ]; then
+  printf 'feature\n' >>"$PUMP19_WORKSPACE/file.txt"
+  git -C "$PUMP19_WORKSPACE" commit -qam feature
+  feature=$(git -C "$PUMP19_WORKSPACE" rev-parse HEAD)
+  git -C "$PUMP19_WORKSPACE" checkout -q --detach "$base"
+  printf 'base advance\n' >"$PUMP19_WORKSPACE/base.txt"
+  git -C "$PUMP19_WORKSPACE" add base.txt
+  git -C "$PUMP19_WORKSPACE" commit -qm "advance base"
+  git -C "$PUMP19_WORKSPACE" update-ref refs/remotes/origin/main HEAD
+  git -C "$PUMP19_WORKSPACE" checkout -q --detach "$feature"
+fi
 `)
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
 	// A fork fixture reports a head repo distinct from the base — an unwritable
@@ -308,7 +326,7 @@ printf '%s\n' '[{"id":91,"body":"First finding\n\nPump-19: finding=F-FIXED head=
 		"fi\n" +
 		"printf '%s\\n' \"$reviews\"\n"
 	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), listReviews)
-	writeScript(t, filepath.Join(adaptationDir, "commit-push"), "#!/usr/bin/env sh\nprintf 'commit-push\\n' >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "commit-push.args")+"'\nif [ \"${PUMP19_FIXTURE_PROTECTED:-}\" = 1 ]; then printf 'unwritable\\n'; else printf '%s\\n' \"${PUMP19_FIXTURE_COMMIT_OUTCOME:-landed landedsha}\"; fi\n")
+	writeScript(t, filepath.Join(adaptationDir, "commit-push"), "#!/usr/bin/env sh\nprintf 'commit-push\\n' >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "commit-push.args")+"'\nif [ \"${PUMP19_FIXTURE_BEHIND_BASE:-}\" = 1 ]; then git -C \"$PUMP19_WORKSPACE\" commit -qm 'sync base'; git -C \"$PUMP19_WORKSPACE\" show -s --format=%P HEAD >'"+filepath.Join(stateDir, "sync-parents")+"'; printf 'landed %s\\n' \"$(git -C \"$PUMP19_WORKSPACE\" rev-parse HEAD)\"; elif [ \"${PUMP19_FIXTURE_PROTECTED:-}\" = 1 ]; then printf 'unwritable\\n'; else printf '%s\\n' \"${PUMP19_FIXTURE_COMMIT_OUTCOME:-landed landedsha}\"; fi\n")
 	writeScript(t, filepath.Join(adaptationDir, "merge"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "merge.args")+"'\nprintf '{\"merged\":true}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\nprintf 'post-comment\\n' >>'"+operations+"'\ncat \"$4\" >>'"+filepath.Join(stateDir, "comments")+"'\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "post-review-comment"), "#!/usr/bin/env sh\nprintf 'post-review-comment\\n' >>'"+operations+"'\nprintf '%s:' \"$4\" >>'"+filepath.Join(stateDir, "review-comments")+"'\ncat \"$8\" >>'"+filepath.Join(stateDir, "review-comments")+"'\n[ \"${PUMP19_FIXTURE_ACK_FAILURE:-}\" != 1 ] || exit 1\nprintf '{}\\n'\n")

@@ -191,6 +191,16 @@ func TestShippedConfigsLoadClean(t *testing.T) {
 	}
 }
 
+func TestForgejoSmokeCarriesRequiredServiceBotLogin(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "e2e", "forgejo-smoke.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "[service]\nbot-login = \"Minos\"") {
+		t.Fatal("Forgejo e2e service.toml omits required service.bot-login")
+	}
+}
+
 func writeServiceConfig(t *testing.T, contents string) string {
 	t.Helper()
 	root := t.TempDir()

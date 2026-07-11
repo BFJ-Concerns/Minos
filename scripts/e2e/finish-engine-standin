@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 # Deterministic stand-in for the finish lead session. It walks the finish
-# mission's gate in order — build, test, maintenance, current, forge-mergeable,
-# merge — and records merged or the first refusal as machine state. It authors
+# mission's gate in order — current and base sync, eligibility, build, test,
+# maintenance, forge-mergeable, merge — and records merged or the first
+# refusal as machine state. It authors
 # no finish method; the gate is honest to the fixture's build/test commands and
 # the forge's mergeable fact, so a scenario is chosen by the fixture, not faked.
 
@@ -60,17 +61,38 @@ finish() {
   reason="${2:-}"
 }
 
-# The gate, in order. Stop at the first failure.
+# The gate, in order. Stop at the first failure. Current and base sync run
+# FIRST, before eligibility (operator ruling 2026-07-11): a Ready-carrying
+# head must never rot behind its base while it waits on a verdict.
 case "$verdict" in
   converged|standing-findings) eligibility_branch=eligible ;;
-  paused-flaky) eligibility_branch=paused-flaky; finish refused not-eligible ;;
-  *) eligibility_branch=other; finish refused not-eligible ;;
+  paused-flaky) eligibility_branch=paused-flaky ;;
+  *) eligibility_branch=other ;;
 esac
 printf '%s\n' "$eligibility_branch" >"$PUMP19_RUN_DIR/eligibility-branch"
-if [ "$outcome" != merged ]; then
-  :
+current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
+if [ "$current" != current ]; then
+  finish refused not-current
+elif ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- \
+    git merge-base --is-ancestor "origin/$PUMP19_BASE_REF" HEAD; then
+  # This run still serves the current PR head, but main has moved. Land the
+  # ordinary merge as a PR update and let the loop review the combined tree —
+  # whatever the head's verdict.
+  "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- \
+    git merge --no-ff --no-commit "origin/$PUMP19_BASE_REF"
+  printf 'Sync %s into the finish head.\n' "$PUMP19_BASE_REF" >"$PUMP19_RUN_DIR/sync-message.txt"
+  sync_result=$("$PUMP19_BIN" adapt commit-push \
+    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
+    "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
+    "$model" "$PUMP19_RUN_DIR/sync-message.txt")
+  case "$sync_result" in
+    landed\ *) finish refused review-pending ;;
+    *) echo "unexpected base-sync commit-push token: $sync_result" >&2; exit 2 ;;
+  esac
+elif [ "$eligibility_branch" != eligible ]; then
+  finish refused not-eligible
 elif [ -n "${PUMP19_BUILD_CMD:-}" ] && ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"; then
-	finish refused build-failed
+  finish refused build-failed
 elif [ -n "${PUMP19_TEST_CMD:-}" ] && ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"; then
   finish refused test-failed
 elif [ "${PUMP19_STANDIN_MAINTENANCE:-0}" = 1 ]; then
@@ -82,15 +104,10 @@ elif [ "${PUMP19_STANDIN_MAINTENANCE:-0}" = 1 ]; then
     "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
     "$model" "$PUMP19_RUN_DIR/maint-message.txt" >/dev/null
   finish refused review-pending
-else
-  current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
-  if [ "$current" != current ]; then
-    finish refused not-current
-  elif [ "$mergeable" != true ]; then
-    finish refused not-mergeable
-  elif ! "$PUMP19_BIN" adapt merge "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" merge >/dev/null 2>&1; then
-    finish refused not-mergeable
-  fi
+elif [ "$mergeable" != true ]; then
+  finish refused not-mergeable
+elif ! "$PUMP19_BIN" adapt merge "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" merge >/dev/null 2>&1; then
+  finish refused not-mergeable
 fi
 
 if [ "$outcome" = merged ]; then
@@ -110,9 +127,11 @@ if [ "$outcome" = merged ]; then
   # The finish label is consumed by the merge; a refused finish leaves it sticky
   # for the next attempt.
   "$PUMP19_BIN" adapt remove-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" Ready >/dev/null
+  # A refusal is service process and posts nothing to the PR (operator ruling
+  # 2026-07-11); only a completed merge earns the summary comment.
+  "$PUMP19_BIN" adapt post-comment \
+    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_RUN_DIR/finish-summary.md" >/dev/null
 fi
-"$PUMP19_BIN" adapt post-comment \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_RUN_DIR/finish-summary.md" >/dev/null
 "$PUMP19_BIN" adapt set-status \
   "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
   pump19/finish "$status_state" "Pump-19 finish: $outcome" >/dev/null

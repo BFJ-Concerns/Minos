@@ -17,9 +17,10 @@ findings passes only when its reviewer notes meet the bar's clean-review
 standard — the notes are the review, and they must carry the evidence a finding
 would: files read, commands run and what they reported, absences stated
 plainly. An honestly declared partial gap — a reviewer's `partial` declaration
-whose notes name what went unread and why — is the expected outcome of a
-constrained slice, not a coverage failure: judge coverage on whether the
-claims match the record, never on the existence of a declared, named gap.
+whose notes name what went unread or was read below judging depth, and why —
+is the expected outcome of a constrained slice, not a coverage failure: judge
+coverage on whether the claims match the record, never on the existence of a
+declared, named gap.
 
 ## What fails
 
@@ -29,7 +30,8 @@ Fail the review when you find:
   or checks performed that the record does not show; any of the bar's banned
   overclaim phrases without evidence beside them; partial coverage presented as
   full — including a reviewer whose declared `coverage: full` its own notes
-  contradict.
+  contradict, whether the notes record relevant files skipped or relevant code
+  read only below judging depth (skimmed, sampled, or read structurally).
 - **Speculative or unverified findings** — claims not grounded in cited code,
   or hedged guesses dressed as findings.
 - **Linter-catchable findings padding the review** — mechanical style points a

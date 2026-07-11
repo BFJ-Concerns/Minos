@@ -26,9 +26,11 @@ repeating the receiver's actor-authorisation check.
   test, and maintenance commands only through
   `pump19 ws-exec --config "$PUMP19_CONFIG" …`, which scrubs the service
   credential from the environment PR-controlled code sees.
-- `PUMP19_BUILD_CMD` and `PUMP19_TEST_CMD` are the repository's own build and
-  test commands. A repository that leans entirely on its forge's required
-  checks sets these to a no-op (`true`); otherwise they are the workspace gate.
+- `PUMP19_BUILD_CMD` and `PUMP19_TEST_CMD` are the repository's own optional
+  workspace build and test commands. A non-empty command is part of this run's
+  gate. An empty command means the repository's non-empty
+  `[ci].required-checks` declaration names the forge-required checks that run
+  that gate; skip the corresponding workspace step.
 - `PUMP19_AUTO_MERGE` records whether the service's own convergence applies the
   finish label (auto-merge). It does not change your gate: you merge a validly
   labelled, gate-passing PR either way.
@@ -58,7 +60,29 @@ head exists — a `stale` result is the `not-current` refusal below.
 
 Stop at the first failure and record the matching refusal; do not merge.
 
-1. **Eligibility.** The finish label triggered this run, but that only proves
+1. **Current and base sync.** Require `pump19 run-guard … current`. `stale`
+   means a newer PR head exists that this run is not serving; record `refused`
+   with reason `not-current`.
+
+   A `current` result establishes that this run still serves the PR head. If
+   `origin/$PUMP19_BASE_REF` is not already an ancestor of that head, merge the
+   base into the head in `$PUMP19_WORKSPACE` with an ordinary merge commit:
+   never rebase or force-push. Merge conflicts are this run's work — resolve
+   them, then exercise the applicable build and test gates against the merged
+   tree. Land the sync through `pump19 adapt commit-push …`, attributed
+   exactly like a maintenance change (step 5), and record `refused` with
+   reason `review-pending` without attempting the forge merge. The PR update
+   re-fires review; the sticky finish label carries the next finish run, which
+   may merge only after the combined tree is re-cleared.
+
+   The sync runs first, before eligibility, deliberately (operator ruling
+   2026-07-11): the finish label is a standing instruction to get this PR
+   merged, so a labelled head must never rot behind its base while it waits —
+   an ineligible head still gets its sync, giving the loop a fresh combined
+   tree to review and leaving nothing staleness-blocked for a human who
+   decides to merge by hand.
+
+2. **Eligibility.** The finish label triggered this run, but that only proves
    *who* asked to merge — not that the current head is in a state the commission
    permits merging. Eligibility rests only on **the service's own recorded
    verdict** for the current head: the trailing marker line the service wrote on
@@ -95,11 +119,15 @@ Stop at the first failure and record the matching refusal; do not merge.
      runs once the loop produces an eligible verdict on the current head.
 
    Record clean vs flagged for the summary; both continue.
-2. **Build.** `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"`.
-   A non-zero exit is `refused` with reason `build-failed`.
-3. **Test.** `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"`.
-   A non-zero exit is `refused` with reason `test-failed`.
-4. **Maintenance.** Perform the occasion's configured maintenance (dependency
+3. **Build.** When `PUMP19_BUILD_CMD` is non-empty, run
+   `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"`.
+   A non-zero exit is `refused` with reason `build-failed`. When it is empty,
+   the configured required CI checks carry this gate; skip the workspace step.
+4. **Test.** When `PUMP19_TEST_CMD` is non-empty, run
+   `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"`.
+   A non-zero exit is `refused` with reason `test-failed`. When it is empty,
+   the configured required CI checks carry this gate; skip the workspace step.
+5. **Maintenance.** Perform the occasion's configured maintenance (dependency
    bumps, documentation checks) over your general skills. If it changes the
    tree, it must be reviewed before it can merge: land it with
    `pump19 adapt commit-push …` (as the fix mission documents, attributed to
@@ -107,8 +135,6 @@ Stop at the first failure and record the matching refusal; do not merge.
    model), then record `refused` with reason `review-pending`. The landed PR
    update re-triggers review; the sticky finish label carries the next finish run,
    which merges the re-cleared tree. If maintenance changes nothing, continue.
-5. **Current.** Require `pump19 run-guard … current`. `stale` is `refused` with
-   reason `not-current`.
 6. **Forge-mergeable.** If `MERGEABLE` is not `true`, that is `refused` with
    reason `not-mergeable`.
 7. **Merge.** `pump19 adapt merge "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" merge`.
@@ -131,12 +157,15 @@ nothing can notify you afterwards.
 
 ## Output contract
 
-Record exactly one outcome as machine state — a single PR comment with a
-trailing marker, a terminal `pump19/finish` status, and the release of
-`Finishing`. The comment's prose is one or two plain sentences about the
-merge outcome itself; the process stays off the PR (operator ruling
-2026-07-10): no run or workflow names, no model or engine identities. The
-marker is:
+Record exactly one outcome as machine state — a terminal `pump19/finish`
+status and the release of `Finishing`, plus a single PR comment with a
+trailing marker **when the merge completed**. A refusal posts no PR comment
+(operator ruling 2026-07-11): a refusal is service process, and process stays
+off the PR — the status, whose description names the refusal reason plainly,
+carries the machine outcome, and the run directory carries the account. The
+merged comment's prose is one or two plain sentences about the merge outcome
+itself; the process stays off the PR (operator ruling 2026-07-10): no run or
+workflow names, no model or engine identities. The marker is:
 
 `Pump-19: head=FULL_SHA outcome=merged|refused[ reason=REASON] run=finish`
 
@@ -151,11 +180,14 @@ with `reason` one of `not-eligible`, `build-failed`, `test-failed`,
   (tag, forge release), perform them here; they are commit-free.
 - **refused** — the gate stopped. Leave `Ready` in place: it is sticky until a
   merge consumes it, so a later finish retries when the blocking condition
-  clears. Post the summary and set `pump19/finish failure` on
-  `$PUMP19_HEAD_SHA`.
+  clears. Write the summary (prose plus marker) to
+  `$PUMP19_RUN_DIR/finish-summary.md` only, and set `pump19/finish failure` on
+  `$PUMP19_HEAD_SHA` with a description naming the reason. Post nothing to
+  the PR.
 
-Format the marker with `pump19 marker format …` and post with
-`pump19 adapt post-comment …`, the body ending in exactly that one marker line.
+Format the marker with `pump19 marker format …`; on `merged`, post the summary
+with `pump19 adapt post-comment …`, the body ending in exactly that one marker
+line.
 Any non-zero mechanical or forge command that this mission does not classify as
 a refusal or a successful yield is a run failure. Classify the cause before
 choosing the controlled exit, because the two failure paths lead somewhere
