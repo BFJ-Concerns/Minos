@@ -35,6 +35,48 @@ func TestBeginRunClaimsOnlyCurrentUnfinishedHead(t *testing.T) {
 	}
 }
 
+func TestBeginRunYieldsOnTerminalStatusButClaimsThroughPending(t *testing.T) {
+	// A terminal pump19/<kind> status on the head yields; a newest state of
+	// "pending" is the operator's supersede marker and must admit a fresh claim
+	// (a forge status cannot be deleted, only written over).
+	cases := []struct {
+		name   string
+		states string // JSON array the fixture returns, newest by id
+		want   string // "claimed" expects presence ops; "yield-terminal" expects none
+	}{
+		{"terminal-failure-yields", `[{"id":1,"context":"pump19/review","state":"failure"}]`, "yield-terminal"},
+		{"pending-supersede-claims", `[{"id":1,"context":"pump19/review","state":"failure"},{"id":2,"context":"pump19/review","state":"pending"}]`, "claimed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			runDir := t.TempDir()
+			t.Setenv("PUMP19_RUN_DIR", runDir)
+			operations := filepath.Join(dir, "operations")
+			writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '%s\\n' '"+tc.states+"'\n")
+			writeScript(t, filepath.Join(dir, "get-pr-facts"), "#!/usr/bin/env sh\nprintf 'OCCASION=reconcile\\nOWNER=pump19\\nREPO=subject\\nPR=42\\nHEAD_SHA=abcdef\\nBASE_REF=main\\n'\n")
+			writeScript(t, filepath.Join(dir, "add-label"), "#!/usr/bin/env sh\nprintf 'add-label:%s\\n' \"$4\" >>'"+operations+"'\n")
+			writeScript(t, filepath.Join(dir, "add-reaction"), "#!/usr/bin/env sh\nprintf 'add-reaction:%s\\n' \"$4\" >>'"+operations+"'\n")
+			writeScript(t, filepath.Join(dir, "assign-if-missing"), "#!/usr/bin/env sh\nprintf 'assign-if-missing:%s\\n' \"$4\" >>'"+operations+"'\n")
+
+			outcome, err := claimRun(context.Background(), "TestBot", Adaptation{Dir: dir}, Facts{Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "abcdef"}, RunReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome != tc.want {
+				t.Fatalf("claim outcome = %q, want %q", outcome, tc.want)
+			}
+			_, opsErr := os.Stat(operations)
+			if tc.want == "claimed" && opsErr != nil {
+				t.Fatalf("a pending-superseded head did not claim presence: %v", opsErr)
+			}
+			if tc.want == "yield-terminal" && !os.IsNotExist(opsErr) {
+				t.Fatalf("a terminal head claimed presence: %v", opsErr)
+			}
+		})
+	}
+}
+
 func TestBeginRunYieldsBeforeLabelWhenHeadMoved(t *testing.T) {
 	dir := t.TempDir()
 	added := filepath.Join(dir, "added")

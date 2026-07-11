@@ -77,7 +77,11 @@ func claimRun(ctx context.Context, botLogin string, adaptation Adaptation, facts
 	if err != nil {
 		return "", err
 	}
-	if _, exists := statusForContext(statuses, contextName); exists {
+	// Only a status in a terminal state records a completed run for this head.
+	// A newest state of "pending" is the deliberate exception: it is how an
+	// operator supersedes a stale terminal outcome to authorise a re-run on the
+	// same head (a forge status cannot be deleted, only written over).
+	if status, exists := statusForContext(statuses, contextName); exists && status.State != "pending" {
 		return "yield-terminal", nil
 	}
 	current, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
