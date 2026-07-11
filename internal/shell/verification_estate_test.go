@@ -2,6 +2,8 @@ package shell
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -250,13 +252,8 @@ func TestPausedFlakyReviewSuccessIsTerminalForTheHead(t *testing.T) {
 	}
 }
 
-func TestPersistentlyFailingFlakyRepairStopsAfterFiveLivenessSpacedAttempts(t *testing.T) {
+func TestPersistentlyFailingFlakyRepairContinuesPastFormerAttemptLimit(t *testing.T) {
 	root := t.TempDir()
-	cfg := ServiceConfig{}
-	cfg.Runs.Dir = filepath.Join(root, "runs")
-	cfg.Runs.MaxConcurrent = 2
-	cfg.Sweep.LivenessThreshold.Duration = time.Hour
-	repo := RepoConfig{Triggers: []TriggerRule{{Run: "flaky", Actors: []string{"ci-bot"}}}}
 	facts := Facts{
 		Forge:   "local",
 		Owner:   "pump19",
@@ -266,67 +263,33 @@ func TestPersistentlyFailingFlakyRepairStopsAfterFiveLivenessSpacedAttempts(t *t
 		Labels:  []string{LabelFlakyTests},
 		Actor:   "ci-bot",
 	}
-	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunFlaky)
+	runDir := RunDir(filepath.Join(root, "runs"), facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunFlaky)
+	for attempt := 1; attempt <= 5; attempt++ {
+		if err := os.MkdirAll(runDir+fmt.Sprintf(".retry-%d", attempt), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeRunMeta(t, runDir, facts.HeadSHA, time.Now())
-	writeQuietRunLog(t, runDir, time.Now())
+	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\nPUMP19_FAILURE_AT=2026-07-11T09:00:00Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer logFile.Close()
 
-	assertFlakyDecision := func() {
-		t.Helper()
-		if decision, ok := reconcileDecision(repo, facts, nil, ""); !ok || decision != RunFlaky {
-			t.Fatalf("standing flaky decision = %s ok=%v, want flaky", decision, ok)
-		}
+	_, handled, released, err := handleRetryableClaim(t.Context(), facts, RunFlaky, runDir, nil, logFile)
+	if err != nil || !handled || !released {
+		t.Fatalf("sixth attempt handled=%v released=%v err=%v", handled, released, err)
 	}
-	assertFlakyDecision()
-	if claimed, err := ClaimRunDir(runDir); err != nil || claimed {
-		t.Fatalf("fresh canonical claim admitted another session: claimed=%v err=%v", claimed, err)
+	if _, err := os.Stat(runDir + ".retry-6"); err != nil {
+		t.Fatalf("sixth attempt evidence was not preserved: %v", err)
 	}
-
-	// Each expiry releases exactly one fresh canonical claim. The fifth attempt
-	// is preserved with the internal terminal latch instead of being re-fired.
-	sessionsAdmitted := 0
-	for attempt := 1; attempt <= defaultOperationalAttempts; attempt++ {
-		old := time.Now().Add(-2 * cfg.Sweep.LivenessThreshold.Duration)
-		if err := os.Chtimes(filepath.Join(runDir, "run.log"), old, old); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
-			t.Fatal(err)
-		}
-		if attempt == defaultOperationalAttempts {
-			break
-		}
-		assertFlakyDecision()
-		claimed, err := ClaimRunDir(runDir)
-		if err != nil || !claimed {
-			t.Fatalf("attempt %d did not admit one post-expiry session: claimed=%v err=%v", attempt, claimed, err)
-		}
-		sessionsAdmitted++
-		writeRunMeta(t, runDir, facts.HeadSHA, time.Now())
-		writeQuietRunLog(t, runDir, time.Now())
-
-		if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
-			t.Fatal(err)
-		}
-		assertFlakyDecision()
-		if claimed, err := ClaimRunDir(runDir); err != nil || claimed {
-			t.Fatalf("attempt %d admitted a second session inside liveness: claimed=%v err=%v", attempt, claimed, err)
-		}
-	}
-	if sessionsAdmitted != defaultOperationalAttempts-1 {
-		t.Fatalf("post-expiry sessions admitted = %d, want %d", sessionsAdmitted, defaultOperationalAttempts-1)
-	}
-	finalAttempt := runDir + ".retry-5"
-	marker, err := readTerminalMarker(finalAttempt)
-	if err != nil || marker.Reason != "retry-exhausted" {
-		t.Fatalf("final retry marker = %#v err=%v", marker, err)
+	if _, err := readTerminalMarker(runDir + ".retry-6"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("persistent retry acquired a terminal latch: %v", err)
 	}
 }
 
@@ -390,7 +353,7 @@ func TestFlakyCrashRecoveryKeepsErrorsOffThePR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, handled, released, err := handleRetryableClaim(t.Context(), facts, RunFlaky, retry, nil, defaultOperationalAttempts, logFile)
+	_, handled, released, err := handleRetryableClaim(t.Context(), facts, RunFlaky, retry, nil, logFile)
 	if closeErr := logFile.Close(); err == nil {
 		err = closeErr
 	}

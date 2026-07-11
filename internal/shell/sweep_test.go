@@ -557,7 +557,7 @@ func TestConcurrentRetryReleaseIdentifiesTheLosingClaim(t *testing.T) {
 	}
 }
 
-func TestRetryableFailureExhaustionLatchesInternallyAndPreservesFinalAttempt(t *testing.T) {
+func TestRetryableFailurePreservesEveryAttemptWithoutExhaustionLatch(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
@@ -570,7 +570,7 @@ func TestRetryableFailureExhaustionLatchesInternallyAndPreservesFinalAttempt(t *
 	}
 	writeRunMeta(t, runDir, facts.HeadSHA, time.Now().Add(-2*time.Hour))
 	writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
-	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\nPUMP19_FAILURE_AT=2026-07-11T09:00:00Z\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	retryDir := runDir + ".retry-1"
@@ -580,18 +580,16 @@ func TestRetryableFailureExhaustionLatchesInternallyAndPreservesFinalAttempt(t *
 	if err := os.WriteFile(filepath.Join(retryDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	repo := RepoConfig{}
-	repo.Retries.OperationalAttempts = 2
 	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer logFile.Close()
-	if _, err := reapLabelLessClaims(t.Context(), cfg, repo, Adaptation{}, facts, nil, logFile); err != nil {
+	if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{}, facts, nil, logFile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
-		t.Fatalf("exhausted retry claim should release the canonical path: %v", err)
+		t.Fatalf("due retry claim should release the canonical path: %v", err)
 	}
 	if _, err := os.Stat(retryDir); err != nil {
 		t.Fatalf("prior retry evidence should remain: %v", err)
@@ -605,14 +603,10 @@ func TestRetryableFailureExhaustionLatchesInternallyAndPreservesFinalAttempt(t *
 		t.Fatal(err)
 	}
 	if len(matches) != 2 {
-		t.Fatalf("exhaustion should preserve exactly two attempts, got %v", matches)
+		t.Fatalf("retry evidence count = %d, want 2: %v", len(matches), matches)
 	}
-	marker, err := readTerminalMarker(secondRetryDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if marker.Reason != "retry-exhausted" {
-		t.Fatalf("terminal reason = %q", marker.Reason)
+	if _, err := readTerminalMarker(secondRetryDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry evidence acquired a terminal latch: %v", err)
 	}
 }
 
