@@ -37,6 +37,30 @@ func TestFixRunBodyRecordsEachOutcomeThroughRunWrap(t *testing.T) {
 		t.Fatalf("unfixed finding received a fix comment:\n%s", data)
 	}
 
+	// Acknowledgements are supplementary prose. Once the fix outcome is
+	// recorded and presence released, an unavailable review-comment endpoint
+	// must leave the successfully landed run complete.
+	if err := os.Remove(filepath.Join(env.stateDir, "operations")); err != nil {
+		t.Fatal(err)
+	}
+	env.setRunEnv(t, "ffffffffffffffff", map[string]string{
+		"PUMP19_STANDIN_FIX_OUTCOME": "landed",
+		"PUMP19_FIXTURE_ACK_FAILURE": "1",
+	})
+	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
+		t.Fatalf("landed fix failed because its acknowledgement failed: %v", err)
+	}
+	operations, err := os.ReadFile(filepath.Join(env.stateDir, "operations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOrder := "add-reaction:eyes\ncommit-push\npost-comment\nset-status:pump19/fix:success\nremove-reaction:eyes\nremove-label:Fixing\npost-review-comment\n"
+	if string(operations) != wantOrder {
+		t.Fatalf("landed publication order =\n%s\nwant:\n%s", operations, wantOrder)
+	}
+	failedAck := RunDir(env.runsDir, "local", "pump19", "subject", "7", "ffffffffffffffff", RunFix)
+	assertContainsFile(t, filepath.Join(failedAck, "run.log"), "per-finding acknowledgement failed for review 41")
+
 	// Fruitless: a writable head, but the pass lands nothing — no push, and the
 	// standing findings remain the verdict.
 	_ = os.Remove(filepath.Join(env.stateDir, "commit-push.args"))
@@ -216,7 +240,7 @@ func (h *runBodyHarness) setRunEnv(t *testing.T, head string, extra map[string]s
 		t.Setenv(key, value)
 	}
 	// Reset scenario knobs so a prior case does not leak into the next.
-	for _, key := range []string{"PUMP19_STANDIN_FIX_OUTCOME", "PUMP19_STANDIN_FLAKY_OUTCOME", "PUMP19_STANDIN_LEAD_MODEL", "PUMP19_STANDIN_MAINTENANCE", "PUMP19_FIXTURE_MERGEABLE", "PUMP19_FIXTURE_BUILD", "PUMP19_FIXTURE_TEST", "PUMP19_FIXTURE_PROTECTED", "PUMP19_FIXTURE_COMMIT_OUTCOME", "PUMP19_FIXTURE_LABELS", "PUMP19_FIXTURE_VERDICT", "PUMP19_FIXTURE_HUMAN_APPROVE"} {
+	for _, key := range []string{"PUMP19_STANDIN_FIX_OUTCOME", "PUMP19_STANDIN_FLAKY_OUTCOME", "PUMP19_STANDIN_LEAD_MODEL", "PUMP19_STANDIN_MAINTENANCE", "PUMP19_FIXTURE_MERGEABLE", "PUMP19_FIXTURE_BUILD", "PUMP19_FIXTURE_TEST", "PUMP19_FIXTURE_PROTECTED", "PUMP19_FIXTURE_COMMIT_OUTCOME", "PUMP19_FIXTURE_LABELS", "PUMP19_FIXTURE_VERDICT", "PUMP19_FIXTURE_HUMAN_APPROVE", "PUMP19_FIXTURE_ACK_FAILURE"} {
 		t.Setenv(key, "")
 	}
 	for key, value := range extra {
@@ -286,7 +310,7 @@ printf '%s\n' '[{"id":91,"body":"First finding\n\nPump-19: finding=F-FIXED head=
 	writeScript(t, filepath.Join(adaptationDir, "commit-push"), "#!/usr/bin/env sh\nprintf 'commit-push\\n' >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "commit-push.args")+"'\nif [ \"${PUMP19_FIXTURE_PROTECTED:-}\" = 1 ]; then printf 'unwritable\\n'; else printf '%s\\n' \"${PUMP19_FIXTURE_COMMIT_OUTCOME:-landed landedsha}\"; fi\n")
 	writeScript(t, filepath.Join(adaptationDir, "merge"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "merge.args")+"'\nprintf '{\"merged\":true}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\nprintf 'post-comment\\n' >>'"+operations+"'\ncat \"$4\" >>'"+filepath.Join(stateDir, "comments")+"'\nprintf '{}\\n'\n")
-	writeScript(t, filepath.Join(adaptationDir, "post-review-comment"), "#!/usr/bin/env sh\nprintf '%s:' \"$4\" >>'"+filepath.Join(stateDir, "review-comments")+"'\ncat \"$8\" >>'"+filepath.Join(stateDir, "review-comments")+"'\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "post-review-comment"), "#!/usr/bin/env sh\nprintf 'post-review-comment\\n' >>'"+operations+"'\nprintf '%s:' \"$4\" >>'"+filepath.Join(stateDir, "review-comments")+"'\ncat \"$8\" >>'"+filepath.Join(stateDir, "review-comments")+"'\n[ \"${PUMP19_FIXTURE_ACK_FAILURE:-}\" != 1 ] || exit 1\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf 'set-status:%s:%s\\n' \"$4\" \"$5\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "status.args")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "add-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-added")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf 'remove-label:%s\\n' \"$4\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-removed")+"'\n")
