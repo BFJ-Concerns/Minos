@@ -247,6 +247,12 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 					}
 				}
 			}
+			if tc.name == "partial-coverage" {
+				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				assertContainsFile(t, filepath.Join(run, "review.md"), "coverage=partial")
+				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=partial-coverage")
+				assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Partial Coverage")
+			}
 			if tc.name == "bar-dissent" {
 				// The bar gates convergence, never publication: the verified review
 				// posts with the dissent on the marker, no approval, no outcome
@@ -292,11 +298,6 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 			}
 		})
 	}
-	partialRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "1111111111111111", RunReview)
-	assertContainsFile(t, filepath.Join(partialRun, "review.md"), "coverage=partial")
-	assertContainsFile(t, filepath.Join(partialRun, "review.md"), "verdict=partial-coverage")
-	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Partial Coverage")
-
 	// Ready is the sole mutation after the terminal review status. If it fails,
 	// the wrapper preserves that status and records the command failure in the
 	// run log; with no Ready, reconciliation has no finish implication to fire.
