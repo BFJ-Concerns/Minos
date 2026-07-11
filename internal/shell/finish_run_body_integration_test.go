@@ -39,6 +39,9 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(env.stateDir, "labels-removed"), "Ready")
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nsuccess")
 	assertPostedSummaryOmitsModelIdentity(t, filepath.Join(merged, "finish-summary.md"))
+	// Only a completed merge earns a PR comment; prove the channel works here so
+	// the refusal subcases' no-comment assertions below are not vacuous.
+	assertContainsFile(t, filepath.Join(env.stateDir, "comments"), "outcome=merged")
 
 	// Required CI may carry the build-and-test gate. Unset commands are skipped
 	// rather than replaced with a sentinel command that pretends to verify work.
@@ -69,6 +72,11 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 		t.Fatal("a refused finish consumed the Ready label")
 	}
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nfailure")
+	// A refusal is service process: it must not post a PR comment (operator
+	// ruling 2026-07-11). The run-dir summary above still carries the account.
+	if posted, _ := os.ReadFile(filepath.Join(env.stateDir, "comments")); strings.Contains(string(posted), "outcome=refused") {
+		t.Fatalf("a refused finish posted a PR comment:\n%s", posted)
+	}
 
 	// Refused, build failed: the workspace build gate stops the run before any
 	// merge consideration.

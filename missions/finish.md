@@ -149,12 +149,15 @@ nothing can notify you afterwards.
 
 ## Output contract
 
-Record exactly one outcome as machine state — a single PR comment with a
-trailing marker, a terminal `pump19/finish` status, and the release of
-`Finishing`. The comment's prose is one or two plain sentences about the
-merge outcome itself; the process stays off the PR (operator ruling
-2026-07-10): no run or workflow names, no model or engine identities. The
-marker is:
+Record exactly one outcome as machine state — a terminal `pump19/finish`
+status and the release of `Finishing`, plus a single PR comment with a
+trailing marker **when the merge completed**. A refusal posts no PR comment
+(operator ruling 2026-07-11): a refusal is service process, and process stays
+off the PR — the status, whose description names the refusal reason plainly,
+carries the machine outcome, and the run directory carries the account. The
+merged comment's prose is one or two plain sentences about the merge outcome
+itself; the process stays off the PR (operator ruling 2026-07-10): no run or
+workflow names, no model or engine identities. The marker is:
 
 `Pump-19: head=FULL_SHA outcome=merged|refused[ reason=REASON] run=finish`
 
@@ -169,11 +172,14 @@ with `reason` one of `not-eligible`, `build-failed`, `test-failed`,
   (tag, forge release), perform them here; they are commit-free.
 - **refused** — the gate stopped. Leave `Ready` in place: it is sticky until a
   merge consumes it, so a later finish retries when the blocking condition
-  clears. Post the summary and set `pump19/finish failure` on
-  `$PUMP19_HEAD_SHA`.
+  clears. Write the summary (prose plus marker) to
+  `$PUMP19_RUN_DIR/finish-summary.md` only, and set `pump19/finish failure` on
+  `$PUMP19_HEAD_SHA` with a description naming the reason. Post nothing to
+  the PR.
 
-Format the marker with `pump19 marker format …` and post with
-`pump19 adapt post-comment …`, the body ending in exactly that one marker line.
+Format the marker with `pump19 marker format …`; on `merged`, post the summary
+with `pump19 adapt post-comment …`, the body ending in exactly that one marker
+line.
 Any non-zero mechanical or forge command that this mission does not classify as
 a refusal or a successful yield is a run failure. Classify the cause before
 choosing the controlled exit, because the two failure paths lead somewhere

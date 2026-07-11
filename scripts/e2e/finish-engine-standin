@@ -125,9 +125,11 @@ if [ "$outcome" = merged ]; then
   # The finish label is consumed by the merge; a refused finish leaves it sticky
   # for the next attempt.
   "$PUMP19_BIN" adapt remove-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" Ready >/dev/null
+  # A refusal is service process and posts nothing to the PR (operator ruling
+  # 2026-07-11); only a completed merge earns the summary comment.
+  "$PUMP19_BIN" adapt post-comment \
+    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_RUN_DIR/finish-summary.md" >/dev/null
 fi
-"$PUMP19_BIN" adapt post-comment \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_RUN_DIR/finish-summary.md" >/dev/null
 "$PUMP19_BIN" adapt set-status \
   "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
   pump19/finish "$status_state" "Pump-19 finish: $outcome" >/dev/null
