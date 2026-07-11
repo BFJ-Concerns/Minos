@@ -243,6 +243,24 @@ and issue-comment deliveries. Register all five event selectors below: Forgejo
 uses dedicated headers for the granular review and label events, and the
 receiver relies on those headers to select the corresponding trigger.
 
+**First, allow Forgejo to dial the receiver.** Forgejo's SSRF guard
+(`[webhook] ALLOWED_HOST_LIST` in `app.ini`, default `external`) silently
+refuses webhook targets on loopback and private addresses — and a LAN
+receiver is exactly that. The failure is invisible from the receiver's side:
+every delivery is recorded as failed in Forgejo's own delivery history
+("webhook can only call allowed HTTP servers") while the hook itself saves
+and tests without complaint. Add the receiver's address before registering
+the hook:
+
+```ini
+[webhook]
+ALLOWED_HOST_LIST = 192.0.2.41
+```
+
+Restart Forgejo, then confirm end-to-end with the test-delivery step in
+section 9 — a delivery must show as succeeded in Forgejo's delivery
+history, not merely accepted at creation.
+
 Load the same webhook secret without echoing it, and supply a short-lived
 dedicated token whose account administers this repository. Restrictive temporary
 files keep both credentials out of process arguments:
@@ -336,7 +354,12 @@ sudo tail -n 50 /var/log/pump19/sweep.log
 
 The delivery must receive HTTP `202`. With the repository active and a matching
 trigger, the body is `spawned review`; duplicate or non-triggering deliveries
-have other explicit `202` bodies. The sweep service must finish successfully and
+have other explicit `202` bodies. The response is visible only in Forgejo's
+delivery history for the hook (the receiver logs nothing on an accepted
+delivery), so read the delivery record itself: a red/failed delivery whose
+response says "webhook can only call allowed HTTP servers" means the
+`ALLOWED_HOST_LIST` step in section 7 was missed, and every event will fail
+silently until it is fixed. The sweep service must finish successfully and
 its journal must show a completed invocation. The application sweep log records
 work it finds; an empty file is valid when there are no open in-scope PRs.
 

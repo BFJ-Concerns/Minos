@@ -10,7 +10,7 @@ skill = "/opt/pump19/skills/foundry/review-panel/SKILL.md"
 run-body = "/opt/pump19/run-body/run-body"
 
 [policy]
-auto-merge = false
+auto-merge = true
 
 [retries]
 operational-attempts = 5
@@ -29,14 +29,13 @@ run = "fix"
 on = ["review-rejected"]
 authors = ["*"]
 
-# Ready triggers finish (permissive); the finish run's own gate protects the tree.
-# auto-merge is off, so only these actors' Ready is honoured — a human merge
-# gate. Set real forge logins with merge authority before relying on it; the
-# placeholder authorises nobody, so finish stays inert until then.
+# Ready triggers finish; the finish run's own gate protects the tree. With
+# auto-merge on, the review run applies Ready on convergence as Minos, and the
+# operator may apply Ready by hand — both actors are honoured here.
 [[trigger]]
 run = "finish"
 on = ["label-added:Ready"]
-actors = ["REPLACE_WITH_AUTHORISED_FINISH_LOGINS"]
+actors = ["bob", "Minos"]
 
 # CI and the Pump-19 service may apply Flaky Tests. The sweep applies this same
 # actor guard to the label already standing on Widget PR #18, so activation does
