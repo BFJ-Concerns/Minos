@@ -84,6 +84,55 @@ func TestLoadRepoConfigsRejectsMissingRequiredFields(t *testing.T) {
 	}
 }
 
+func TestLoadRepoConfigsAcceptsAbsentFindIngest(t *testing.T) {
+	root := writeRepoConfig(t, validRepoConfig)
+	repos, err := LoadRepoConfigs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repos[0].FindIngest != nil {
+		t.Fatalf("find ingest = %#v, want unconfigured", repos[0].FindIngest)
+	}
+}
+
+func TestLoadRepoConfigsRequiresCompleteSafeFindIngest(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+		want   string
+	}{
+		{name: "missing repository", config: "\n[find-ingest]\npath = \"ISSUES.md\"\n", want: "find-ingest.repository"},
+		{name: "missing path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Pump-19-Annexe\"\n", want: "find-ingest.path"},
+		{name: "malformed repository", config: "\n[find-ingest]\nrepository = \"Pump-19-Annexe\"\npath = \"ISSUES.md\"\n", want: "find-ingest.repository"},
+		{name: "absolute path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Pump-19-Annexe\"\npath = \"/tmp/ISSUES.md\"\n", want: "find-ingest.path"},
+		{name: "escaping path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Pump-19-Annexe\"\npath = \"../ISSUES.md\"\n", want: "find-ingest.path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeRepoConfig(t, validRepoConfig+tt.config)
+			_, err := LoadRepoConfigs(root)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %s", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRepoConfigsAcceptsConfiguredFindIngest(t *testing.T) {
+	root := writeRepoConfig(t, validRepoConfig+`
+[find-ingest]
+repository = "BFJ-Concerns/Pump-19-Annexe"
+path = "logs/finds.md"
+`)
+	repos, err := LoadRepoConfigs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repos[0].FindIngest == nil || repos[0].FindIngest.Repository != "BFJ-Concerns/Pump-19-Annexe" || repos[0].FindIngest.Path != "logs/finds.md" {
+		t.Fatalf("find ingest = %#v", repos[0].FindIngest)
+	}
+}
+
 func TestShippedConfigsLoadClean(t *testing.T) {
 	projectRoot := filepath.Join("..", "..")
 	for _, root := range []string{

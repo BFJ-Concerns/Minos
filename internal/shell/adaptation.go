@@ -146,7 +146,22 @@ func AdaptCommand(ctx context.Context, args []string, stdin io.Reader, stdout io
 	if err != nil {
 		return err
 	}
-	out, err := adaptation.Run(ctx, args[0], stdin, nil, args[1:]...)
+	extraEnv := map[string]string(nil)
+	if args[0] == "append-findings" {
+		repo, err := FindRepoConfig(cfg.Root, envFacts(forgeName))
+		if err != nil {
+			return err
+		}
+		if repo.FindIngest == nil {
+			_, err = io.WriteString(stdout, "unconfigured\n")
+			return err
+		}
+		extraEnv = map[string]string{
+			"PUMP19_FIND_INGEST_REPOSITORY": repo.FindIngest.Repository,
+			"PUMP19_FIND_INGEST_PATH":       repo.FindIngest.Path,
+		}
+	}
+	out, err := adaptation.Run(ctx, args[0], stdin, extraEnv, args[1:]...)
 	if err != nil {
 		return err
 	}

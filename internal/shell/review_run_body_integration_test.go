@@ -69,6 +69,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeReviewAdaptationFixture(t, adaptationDir, stateDir)
+	writeReviewRepoConfig(t, configRoot, "")
 
 	finding1 := filepath.Join(root, "finding-1.json")
 	if err := os.WriteFile(finding1, []byte(`{"path":"file.txt","line":2,"priority":"P1","body":"First finding"}`), 0o644); err != nil {
@@ -90,6 +91,55 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
 	assertReviewDispatchRecord(t, filepath.Join(stateDir, "dispatch.tsv"), installRoot)
+
+	preexisting := filepath.Join(root, "preexisting.json")
+	if err := os.WriteFile(preexisting, []byte(`[{"title":"Keep errors visible","message":"A neighbouring branch discards its error."}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setReviewRunEnv(t, root, configRoot, installRoot, "abababababababab", "")
+	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
+	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	unconfiguredRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "abababababababab", RunReview)
+	assertContainsFile(t, filepath.Join(unconfiguredRun, "preexisting-findings.json"), "Keep errors visible")
+
+	forgeRoot := filepath.Join(root, "find-ingest-forge")
+	annexeRemote := filepath.Join(forgeRoot, "annexes", "subject.git")
+	if err := os.MkdirAll(filepath.Dir(annexeRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, "init", "--bare", "--initial-branch=main", annexeRemote)
+	seedFindIngestRepo(t, annexeRemote)
+	copyFileForTest(t, filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "common.sh"), filepath.Join(adaptationDir, "common.sh"), 0o755)
+	copyFileForTest(t, filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "append-findings"), filepath.Join(adaptationDir, "append-findings"), 0o755)
+	service = strings.Replace(service, "http://forge.invalid", "file://"+forgeRoot, 1)
+	if err := os.WriteFile(filepath.Join(configRoot, "service.toml"), []byte(service), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeReviewRepoConfig(t, configRoot, "\n[find-ingest]\nrepository = \"annexes/subject\"\npath = \"ISSUES.md\"\n")
+	setReviewRunEnv(t, root, configRoot, installRoot, "acacacacacacacac", "")
+	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
+	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	configuredRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "acacacacacacacac", RunReview)
+	assertContainsFile(t, filepath.Join(configuredRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=success")
+	assertContainsFile(t, filepath.Join(configuredRun, "review.md"), "verdict=standing-findings")
+	assertFindIngestCommit(t, annexeRemote)
+
+	writeReviewRepoConfig(t, configRoot, "\n[find-ingest]\nrepository = \"annexes/unreachable\"\npath = \"ISSUES.md\"\n")
+	setReviewRunEnv(t, root, configRoot, installRoot, "adadadadadadadad", "")
+	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
+	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	failureRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "adadadadadadadad", RunReview)
+	assertContainsFile(t, filepath.Join(failureRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=success")
+	assertContainsFile(t, filepath.Join(failureRun, "review.md"), "verdict=standing-findings")
+	assertContainsFile(t, filepath.Join(failureRun, "run.log"), "find-ingest failed")
+	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+	writeReviewRepoConfig(t, configRoot, "")
 
 	finding2 := filepath.Join(root, "finding-2.json")
 	if err := os.WriteFile(finding2, []byte(`{"finding":"F-7KQ3","path":"file.txt","line":2,"priority":"P1","body":"Still present"}`), 0o644); err != nil {
@@ -688,6 +738,8 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding 
 		"PUMP19_RUN_BODY":                filepath.Join(installRoot, "run-body", "run-body"),
 		"PUMP19_BRIEFS":                  ".review",
 		"PUMP19_AUTO_MERGE":              "false",
+		"PUMP19_FIX_AUTHOR_NAME":         "Pump-19",
+		"PUMP19_FIX_AUTHOR_EMAIL":        "pump19@example.invalid",
 		"PUMP19_CONFIG":                  configRoot,
 		"PUMP19_UNIT":                    "pump19-test.service",
 		"PUMP19_STANDIN_VERDICT":         "standing-findings",
@@ -697,6 +749,63 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding 
 	}
 	for key, value := range values {
 		t.Setenv(key, value)
+	}
+	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", "")
+}
+
+func writeReviewRepoConfig(t *testing.T, configRoot, findIngest string) {
+	t.Helper()
+	config := `forge = "local"
+owner = "pump19"
+repo = "subject"
+
+[adaptation]
+build = "true"
+test = "true"
+skill = "/tmp/review-skill"
+
+[[trigger]]
+run = "review"
+on = ["pr-opened"]
+` + findIngest
+	if err := os.WriteFile(filepath.Join(configRoot, "repos", "subject.toml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedFindIngestRepo(t *testing.T, remote string) {
+	t.Helper()
+	seed := t.TempDir()
+	gitCommand(t, "-C", seed, "init", "--initial-branch=main")
+	gitCommand(t, "-C", seed, "config", "user.name", "Seeder")
+	gitCommand(t, "-C", seed, "config", "user.email", "seed@example.invalid")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("fixture annexe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, "-C", seed, "add", "README.md")
+	gitCommand(t, "-C", seed, "commit", "-m", "seed")
+	gitCommand(t, "-C", seed, "push", remote, "main")
+}
+
+func assertFindIngestCommit(t *testing.T, remote string) {
+	t.Helper()
+	checkout := t.TempDir()
+	gitCommand(t, "clone", "-q", remote, checkout)
+	assertContainsFile(t, filepath.Join(checkout, "ISSUES.md"), "Source: Pump-19 review of pump19/subject#42,")
+	author := strings.TrimSpace(gitCommand(t, "-C", checkout, "show", "-s", "--format=%an <%ae>", "HEAD"))
+	if author != "Pump-19 <pump19@example.invalid>" {
+		t.Fatalf("find-ingest journey commit author = %q", author)
+	}
+}
+
+func copyFileForTest(t *testing.T, source, target string, mode os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, mode); err != nil {
+		t.Fatal(err)
 	}
 }
 
