@@ -37,7 +37,8 @@ the mission says, not as the skill says:
 - **Route the skill's pre-existing findings through the configured ingest
   adaptation, never to the PR.** The skill's diff mode marks findings the change
   did not introduce as `preexisting: true`. Write those findings as a JSON array
-  to `$PUMP19_RUN_DIR/preexisting-findings.json`, then run
+  to `$PUMP19_RUN_DIR/preexisting-findings.json`; when the array is non-empty,
+  run
   `pump19 adapt append-findings "$PUMP19_REPO" "$PUMP19_PR" "$PUMP19_RUN_DIR/preexisting-findings.json"`.
   The adaptation appends them to the repository's configured find-ingest log;
   when no destination is configured it reports `unconfigured` and the run-dir
@@ -45,7 +46,9 @@ the mission says, not as the skill says:
   that failure loudly in the run log and continue the review. Never post these
   findings to the forge or pass them to the changed-line gate. The posted review
   contains no pre-existing count or summary, so a fix run addresses only what
-  this change raised and never chases a legacy backlog.
+  this change raised and never chases a legacy backlog. This write is untracked:
+  a retry may append a duplicate advisory entry, accepted bounded noise in
+  exchange for preserving the review run's transient-retry path.
 
 ## Run facts
 
@@ -115,9 +118,10 @@ posted remains bound to its old head.
   only a changed head-side line. This gate validates publication eligibility;
   it does not judge whether a finding is substantively valid. A verified
   change-introduced finding that the gate rejects is a run failure, never
-  silently suppressed. Pre-existing findings never reach this gate — they route
-  to the run evidence sink under `$PUMP19_RUN_DIR` (see the composition
-  contract), so the gate judges only findings the change introduced.
+  silently suppressed. Pre-existing findings never reach this gate — they stay
+  in the run evidence sink and route to the configured find-ingest log where
+  present (see the composition contract), so the gate judges only findings the
+  change introduced.
 - `$PUMP19_REVIEW_SCRIPTS/anchor-resolve "$PUMP19_DIFF" PATH LINE` writes
   `{"path":"…","old_position":0,"new_position":LINE}`.
 - `pump19 adapt list-review-comments OWNER REPO PR` writes a JSON array of
@@ -356,7 +360,7 @@ contract bends service-side, settled by operator ruling (`maestro/gaps.md`,
 <!-- settled: review-panel legitimately retains gh-based PR discovery (its allowed-tools list gh pr view) for its general callers; a service run does not use it — the mission supplies PR context from the run environment, the permanent suppression, not a stopgap awaiting a Foundry change. -->
 <!-- settled: publication goes through this mission's `pump19 adapt` path; the skill's own comment-posting machinery is not used. -->
 <!-- settled: the skill's own mechanical scripts are the agent's to drive; they do not fail the contract. -->
-<!-- settled (interim): review-panel's preexisting:true findings record under $PUMP19_RUN_DIR — never posted, never through the changed-line gate — and the posted review stays change-scoped; their final service destination is an open commission question (annexe gaps queue), since adopting the skill's annexe-routing would widen the forge-write surface (operator's call). -->
+<!-- settled 2026-07-11: review-panel's preexisting:true findings record under $PUMP19_RUN_DIR and append to the repository's configured find-ingest log — never posted, never through the changed-line gate — while unconfigured repositories retain run-dir-only evidence and the posted review stays change-scoped. -->
 <!-- settled: the service pins file governs the lead role only; the workflows carry their own worker engine/model pins. -->
 <!-- settled: worker provenance is best-effort session-log material — no resolved-workers.json, no pin mapping, no activation gate. -->
 <!-- settled: the lead early-stream pin interlock stands unchanged. -->

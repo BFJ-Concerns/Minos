@@ -12,10 +12,11 @@ type sweepAction struct {
 }
 
 type sweepSnapshot struct {
-	facts          Facts
-	statuses       []Status
-	reviews        []Review
-	combinedStatus string
+	facts           Facts
+	statuses        []Status
+	reviews         []Review
+	combinedStatus  string
+	serviceBotLogin string
 }
 
 type sweepPriority int
@@ -40,11 +41,11 @@ func decideSweepAction(repo RepoConfig, facts Facts, statuses []Status, reviews 
 		}
 	}
 
-	if review, ok := currentHeadBotReview(reviews, facts.HeadSHA); ok {
+	if review, ok := currentHeadBotReview(reviews, facts.HeadSHA, repo.serviceBotLogin); ok {
 		switch strings.ToUpper(review.State) {
 		case "REQUEST_CHANGES":
 			fixContext, _ := StatusContext(RunFix)
-			if _, exists := statusForContext(statuses, fixContext); !exists && !facts.HasLabel(LabelStandingFindings) && guardsPass(repo, RunFix, facts, review.User) {
+			if _, exists := statusForContext(statuses, fixContext); !exists && guardsPass(repo, RunFix, facts, review.User) {
 				return sweepAction{Run: RunFix}, true
 			}
 		case "APPROVED":
@@ -60,11 +61,11 @@ func decideSweepAction(repo RepoConfig, facts Facts, statuses []Status, reviews 
 	return sweepAction{}, false
 }
 
-func currentHeadBotReview(reviews []Review, headSHA string) (Review, bool) {
+func currentHeadBotReview(reviews []Review, headSHA, botLogin string) (Review, bool) {
 	var newest Review
 	found := false
 	for _, review := range reviews {
-		if review.CommitID != headSHA || review.User != serviceBotLogin {
+		if review.CommitID != headSHA || review.User != botLogin {
 			continue
 		}
 		if !found || review.ID > newest.ID {
@@ -93,7 +94,7 @@ func classifySweepPriority(snapshot sweepSnapshot) sweepPriority {
 			return sweepDrain
 		}
 	}
-	if _, ok := currentHeadBotReview(snapshot.reviews, snapshot.facts.HeadSHA); ok {
+	if _, ok := currentHeadBotReview(snapshot.reviews, snapshot.facts.HeadSHA, snapshot.serviceBotLogin); ok {
 		return sweepDrain
 	}
 	return sweepWiden

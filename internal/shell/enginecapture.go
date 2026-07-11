@@ -33,6 +33,13 @@ type claudeStreamEvent struct {
 	} `json:"message"`
 }
 
+// resolvedModel is the small run-evidence record written by the lead capture
+// interlock. It is not combined with worker data or posted to the pull request.
+type resolvedModel struct {
+	ID            string `json:"id"`
+	ResolvedModel string `json:"resolved_model"`
+}
+
 // CaptureClaudeCommand records Claude's JSONL audit stream and establishes the
 // served lead model from the engine's init event before the session can publish.
 // It observes event envelopes only; review prose remains opaque to machinery.
@@ -54,7 +61,7 @@ func CaptureClaudeCommand(ctx context.Context, args []string, stdin io.Reader, s
 	if err != nil {
 		return err
 	}
-	if _, err := validatedRolePins(pins); err != nil {
+	if err := validateLeadPin(pins.Roles.Lead); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(*outputPath), 0o755); err != nil {

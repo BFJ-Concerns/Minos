@@ -26,7 +26,7 @@ func TestAdaptCommandLoadsCredentialAndRejectsPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "inspect"), "#!/usr/bin/env sh\nprintf '%s:%s' \"$PUMP19_FORGE_TOKEN\" \"$1\"\n")
-	service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
+	service := "[service]\nbot-login = \"Minos\"\n\n[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(service), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +94,30 @@ func TestForgejoAppendFindingsCommitsConventionEntryAsServiceIdentity(t *testing
 	author := strings.TrimSpace(gitCommand(t, "-C", checkout, "show", "-s", "--format=%an <%ae>", "HEAD"))
 	if author != "Minos <minos@example.invalid>" {
 		t.Fatalf("ingest commit author = %q", author)
+	}
+}
+
+func TestForgejoAppendFindingsTreatsEmptyArrayAsNoOp(t *testing.T) {
+	findings := filepath.Join(t.TempDir(), "preexisting.json")
+	if err := os.WriteFile(findings, []byte("[]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "append-findings")
+	cmd := exec.Command(path, "BFJ-Concerns/Subject", "17", findings)
+	cmd.Env = append(os.Environ(),
+		"PUMP19_API_BASE=http://unreachable.invalid",
+		"PUMP19_FORGE_TOKEN=test-token",
+		"PUMP19_FIND_INGEST_REPOSITORY=annexes/unreachable",
+		"PUMP19_FIND_INGEST_PATH=ISSUES.md",
+		"PUMP19_FIX_AUTHOR_NAME=Minos",
+		"PUMP19_FIX_AUTHOR_EMAIL=minos@example.invalid",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("empty find ingest: %v\n%s", err, out)
+	}
+	if string(out) != "nothing to append\n" {
+		t.Fatalf("empty find ingest output = %q", out)
 	}
 }
 
@@ -369,6 +393,42 @@ esac
 	}
 	if !strings.Contains(string(out), `"id": 91`) || !strings.Contains(string(out), `"new_position": 12`) || !strings.Contains(string(out), `"review_id": 17`) {
 		t.Fatalf("normalised review comment missing identity or anchor:\n%s", out)
+	}
+}
+
+func TestForgejoListReviewCommentsStopsWhenForgeRepeatsCommentPage(t *testing.T) {
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "list-review-comments")
+	fakeBin := t.TempDir()
+	commentCalls := filepath.Join(fakeBin, "comment-calls")
+	curl := filepath.Join(fakeBin, "curl")
+	script := `#!/usr/bin/env sh
+for arg do url="$arg"; done
+case "$url" in
+  *reviews/17/comments*)
+    printf '.\n' >>"$PUMP19_TEST_COMMENT_CALLS"
+    [ "$(wc -l <"$PUMP19_TEST_COMMENT_CALLS")" -le 3 ] || exit 88
+    printf '%s\n' '[{"id":91,"body":"finding","path":"main.go","position":12,"original_position":0,"pull_request_review_id":17}]'
+    ;;
+  *reviews*page=1*) printf '%s\n' '[{"id":17}]' ;;
+  *) printf '%s\n' '[]' ;;
+esac
+`
+	if err := os.WriteFile(curl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(path, "owner", "repo", "7")
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+":"+os.Getenv("PATH"),
+		"PUMP19_API_BASE=http://forge.invalid",
+		"PUMP19_FORGE_TOKEN=token",
+		"PUMP19_TEST_COMMENT_CALLS="+commentCalls,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list-review-comments failed: %v\n%s", err, out)
+	}
+	if strings.Count(string(out), `"id": 91`) != 1 {
+		t.Fatalf("repeated comment page was not returned exactly once:\n%s", out)
 	}
 }
 

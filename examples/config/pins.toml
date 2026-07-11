@@ -7,13 +7,8 @@
 # check that matters; it detects a floating alias serving a model other than the
 # pinned one — the silent substitution the pins exist to prevent.
 #
-# The specialist, verifier, and bar-judge entries are the intended worker
-# roster, kept here for reference and to satisfy the launcher's current
-# role-set validation. They are NOT the enforcement surface: the Foundry review
-# workflows carry their own experiment-pinned worker engine/model selections,
-# and the service does not feed these entries into them. (Follow-up owned by the
-# review backbone: narrow the launcher's role-set validation and this file to
-# the lead once the workflows own worker pinning outright.)
+# Worker selections belong to the Foundry workflows. Adding worker roles here
+# is rejected so a retired service-side pin gate cannot quietly return.
 #
 # The lead value below is operator-approved (2026-07-10). The REPLACE_WITH_
 # placeholder machinery and its rejection remain: a deployment that has not set
@@ -23,26 +18,4 @@ id = "lead-claude"
 engine = "claude"
 model = "claude-opus-4-8"
 family = "anthropic"
-effort = "high"
-
-# Reference roster only — not the service's enforcement surface (see header).
-[roles.specialist]
-id = "spec-claude"
-engine = "claude"
-model = "claude-opus-4-8"
-family = "anthropic"
-effort = "high"
-
-[[roles.verifiers]]
-id = "verify-codex"
-engine = "codex"
-model = "gpt-5.6-sol"
-family = "openai"
-effort = "high"
-
-[[roles.bar-judges]]
-id = "bar-codex"
-engine = "codex"
-model = "gpt-5.6-sol"
-family = "openai"
 effort = "high"

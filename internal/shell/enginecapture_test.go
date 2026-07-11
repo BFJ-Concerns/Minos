@@ -15,7 +15,7 @@ func TestCaptureClaudeRecordsAndChecksEarlyServedModel(t *testing.T) {
 	stream := filepath.Join(dir, "lead.jsonl")
 	resolved := filepath.Join(dir, "resolved-lead.json")
 	launcher := filepath.Join(dir, "claude-fixture")
-	if err := os.WriteFile(pins, []byte(pinsFixture), 0o644); err != nil {
+	if err := os.WriteFile(pins, []byte(leadPinsFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeScript(t, launcher, `#!/usr/bin/env sh
@@ -49,7 +49,7 @@ func TestCaptureClaudeFailsLoudlyOnEarlyModelMismatch(t *testing.T) {
 	dir := t.TempDir()
 	pins := filepath.Join(dir, "pins.toml")
 	launcher := filepath.Join(dir, "claude-fixture")
-	if err := os.WriteFile(pins, []byte(pinsFixture), 0o644); err != nil {
+	if err := os.WriteFile(pins, []byte(leadPinsFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeScript(t, launcher, "#!/usr/bin/env sh\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"floating-alias-surprise\"}'\n")
@@ -72,7 +72,7 @@ func TestCaptureClaudeFailsWhenStreamHasNoResolvedModel(t *testing.T) {
 	pins := filepath.Join(dir, "pins.toml")
 	launcher := filepath.Join(dir, "claude-fixture")
 	resolved := filepath.Join(dir, "resolved-lead.json")
-	if err := os.WriteFile(pins, []byte(pinsFixture), 0o644); err != nil {
+	if err := os.WriteFile(pins, []byte(leadPinsFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeScript(t, launcher, "#!/usr/bin/env sh\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\"}'\n")

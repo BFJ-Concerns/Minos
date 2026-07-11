@@ -69,9 +69,9 @@ esac
 printf '%s\n' "$eligibility_branch" >"$PUMP19_RUN_DIR/eligibility-branch"
 if [ "$outcome" != merged ]; then
   :
-elif ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"; then
-  finish refused build-failed
-elif ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"; then
+elif [ -n "${PUMP19_BUILD_CMD:-}" ] && ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"; then
+	finish refused build-failed
+elif [ -n "${PUMP19_TEST_CMD:-}" ] && ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"; then
   finish refused test-failed
 elif [ "${PUMP19_STANDIN_MAINTENANCE:-0}" = 1 ]; then
   # Maintenance changed the tree; it must be reviewed before it can merge.
@@ -101,8 +101,8 @@ else
   status_state=failure
 fi
 {
-  printf 'Pump-19 finish stand-in. Outcome: %s%s. Model: %s.\n\n' \
-    "$outcome" "${reason:+ ($reason)}" "$model"
+  printf 'Pump-19 finish stand-in. Outcome: %s%s.\n\n' \
+	"$outcome" "${reason:+ ($reason)}"
   printf '%s\n' "$marker"
 } >"$PUMP19_RUN_DIR/finish-summary.md"
 

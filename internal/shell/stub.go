@@ -31,7 +31,7 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	claim, err := claimRun(ctx, adaptation, facts, kind)
+	claim, err := claimRun(ctx, cfg.Service.BotLogin, adaptation, facts, kind)
 	if err != nil {
 		return err
 	}

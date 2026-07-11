@@ -11,9 +11,9 @@ import (
 )
 
 func TestSweepDerivesFixFromCurrentHeadBotReview(t *testing.T) {
-	repo := RepoConfig{Triggers: []TriggerRule{{Run: "fix", Actors: []string{serviceBotLogin}}}}
+	repo := RepoConfig{serviceBotLogin: "Minos", Triggers: []TriggerRule{{Run: "fix", Actors: []string{"Minos"}}}}
 	facts := Facts{HeadSHA: "abcdef1234567890"}
-	reviews := []Review{{ID: 17, State: "REQUEST_CHANGES", CommitID: facts.HeadSHA, User: serviceBotLogin}}
+	reviews := []Review{{ID: 17, State: "REQUEST_CHANGES", CommitID: facts.HeadSHA, User: "Minos"}}
 
 	action, ok := decideSweepAction(repo, facts, nil, reviews, "", "")
 	if !ok || action.Run != RunFix {
@@ -21,12 +21,12 @@ func TestSweepDerivesFixFromCurrentHeadBotReview(t *testing.T) {
 	}
 	standingFacts := facts
 	standingFacts.Labels = []string{LabelStandingFindings}
-	if action, ok := decideSweepAction(repo, standingFacts, nil, reviews, "", ""); ok {
-		t.Fatalf("Standing Findings unexpectedly re-fired action %#v", action)
+	if action, ok := decideSweepAction(repo, standingFacts, nil, reviews, "", ""); !ok || action.Run != RunFix {
+		t.Fatalf("labelled blocking review action = %#v ok=%v, want fix", action, ok)
 	}
 
 	fixContext, _ := StatusContext(RunFix)
-	action, ok = decideSweepAction(repo, facts, []Status{{ID: 19, Context: fixContext, State: "success"}}, reviews, "", "")
+	action, ok = decideSweepAction(repo, standingFacts, []Status{{ID: 19, Context: fixContext, State: "success"}}, reviews, "", "")
 	if ok {
 		t.Fatalf("existing fix status did not suppress action: %#v", action)
 	}
@@ -47,7 +47,7 @@ func TestConvergenceFirstDispatchAtCapAndBlockedDrainFallback(t *testing.T) {
 	}
 	runs := filepath.Join(root, "runs")
 	sweepLog := filepath.Join(root, "sweep.log")
-	service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + secret + "\"\ncredential-file = \"" + secret + "\"\n\n[runs]\ndir = \"" + runs + "\"\nmax-concurrent = 1\n\n[sweep]\nliveness-threshold = \"1h\"\nlog = \"" + sweepLog + "\"\n"
+	service := "[service]\nbot-login = \"Minos\"\n\n[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + secret + "\"\ncredential-file = \"" + secret + "\"\n\n[runs]\ndir = \"" + runs + "\"\nmax-concurrent = 1\n\n[sweep]\nliveness-threshold = \"1h\"\nlog = \"" + sweepLog + "\"\n"
 	if err := os.WriteFile(filepath.Join(configRoot, "service.toml"), []byte(service), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,8 @@ func TestSweepRetriesDeferredReadyOnlyWhenEveryGuardPasses(t *testing.T) {
 		AutoMerge bool `toml:"auto-merge"`
 	}{AutoMerge: true}}
 	facts := Facts{HeadSHA: "abcdef1234567890"}
-	reviews := []Review{{ID: 21, State: "APPROVED", CommitID: facts.HeadSHA, User: serviceBotLogin}}
+	repo.serviceBotLogin = "Minos"
+	reviews := []Review{{ID: 21, State: "APPROVED", CommitID: facts.HeadSHA, User: "Minos"}}
 
 	for _, combined := range []string{"", "success"} {
 		action, ok := decideSweepAction(repo, facts, nil, reviews, combined, "")

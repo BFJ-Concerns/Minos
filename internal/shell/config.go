@@ -17,7 +17,10 @@ const DefaultConfigRoot = "/etc/pump19"
 var errRepoNotOptedIn = errors.New("repository is not opted in")
 
 type ServiceConfig struct {
-	Root     string `toml:"-"`
+	Root    string `toml:"-"`
+	Service struct {
+		BotLogin string `toml:"bot-login"`
+	} `toml:"service"`
 	Listener struct {
 		Bind string `toml:"bind"`
 	} `toml:"listener"`
@@ -44,11 +47,12 @@ type ForgeConfig struct {
 }
 
 type RepoConfig struct {
-	Path       string `toml:"-"`
-	Forge      string `toml:"forge"`
-	Owner      string `toml:"owner"`
-	Repo       string `toml:"repo"`
-	Adaptation struct {
+	Path            string `toml:"-"`
+	serviceBotLogin string
+	Forge           string `toml:"forge"`
+	Owner           string `toml:"owner"`
+	Repo            string `toml:"repo"`
+	Adaptation      struct {
 		Build   string `toml:"build"`
 		Test    string `toml:"test"`
 		Briefs  string `toml:"briefs"`
@@ -58,6 +62,9 @@ type RepoConfig struct {
 	Policy struct {
 		AutoMerge bool `toml:"auto-merge"`
 	} `toml:"policy"`
+	CI struct {
+		RequiredChecks []string `toml:"required-checks"`
+	} `toml:"ci"`
 	FindIngest *FindIngestConfig `toml:"find-ingest"`
 	Triggers   []TriggerRule     `toml:"trigger"`
 }
@@ -138,6 +145,7 @@ func decodeStrictTOML(path string, target any) error {
 
 func validateServiceConfig(cfg ServiceConfig) error {
 	var missing []string
+	requireConfigValue(&missing, "service.bot-login", cfg.Service.BotLogin)
 	requireConfigValue(&missing, "listener.bind", cfg.Listener.Bind)
 	if len(cfg.Forges) == 0 {
 		missing = append(missing, "forges")
@@ -170,8 +178,14 @@ func validateRepoConfig(repo RepoConfig) error {
 	requireConfigValue(&missing, "forge", repo.Forge)
 	requireConfigValue(&missing, "owner", repo.Owner)
 	requireConfigValue(&missing, "repo", repo.Repo)
-	requireConfigValue(&missing, "adaptation.build", repo.Adaptation.Build)
-	requireConfigValue(&missing, "adaptation.test", repo.Adaptation.Test)
+	if len(repo.CI.RequiredChecks) == 0 {
+		requireConfigValue(&missing, "adaptation.build", repo.Adaptation.Build)
+		requireConfigValue(&missing, "adaptation.test", repo.Adaptation.Test)
+	} else {
+		for index, check := range repo.CI.RequiredChecks {
+			requireConfigValue(&missing, fmt.Sprintf("ci.required-checks[%d]", index), check)
+		}
+	}
 	requireConfigValue(&missing, "adaptation.skill", repo.Adaptation.Skill)
 	if len(repo.Triggers) == 0 {
 		missing = append(missing, "trigger")

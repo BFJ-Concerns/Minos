@@ -11,6 +11,12 @@ briefs = ".review"
 skill = "REPLACE_WITH_PINNED_REVIEW_SKILL_PATH"
 run-body = "/opt/pump19/run-body/run-body"
 
+# If the forge enforces the repository's build and full test suite as required
+# checks, name those contexts here and omit build/test above. An absent or empty
+# list means the workspace carries the gate, so both commands remain required.
+# [ci]
+# required-checks = ["REPLACE_WITH_REQUIRED_CHECK_CONTEXT"]
+
 [policy]
 auto-merge = false
 

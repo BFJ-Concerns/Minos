@@ -19,3 +19,11 @@ api() {
 json_string_array() {
   jq -r '[.[]] | @json'
 }
+
+# Some Forgejo collection endpoints accept a page parameter but return the
+# complete collection for every value. Stop when the forge repeats the prior
+# non-empty response so those endpoints terminate without duplicating records,
+# while genuinely paginated endpoints continue until their empty page.
+repeats_previous_page() {
+  [ "$1" = "$2" ]
+}

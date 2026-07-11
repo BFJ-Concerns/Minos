@@ -187,13 +187,15 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 			statuses: []Status{{Context: flakyContext, State: "success", Creator: "pump19"}, {Context: reviewContext, State: "success", Creator: "pump19"}},
 		},
 		{
-			name:     "failed review fires fix from status creator",
+			name:     "labelled failed review fires fix from status creator",
+			labels:   []string{LabelStandingFindings},
 			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "pump19"}},
 			want:     RunFix,
 			wantOK:   true,
 		},
 		{
 			name:     "existing fix status blocks duplicate fix",
+			labels:   []string{LabelStandingFindings},
 			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "pump19"}, {Context: fixContext, State: "success", Creator: "pump19"}},
 		},
 		{

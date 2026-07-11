@@ -15,17 +15,23 @@ trap cleanup EXIT HUP INT TERM
 printf '[]\n' >"$tmp/all.json"
 
 review_page=1
+previous_reviews='[]'
 while :; do
   reviews=$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=${limit}&page=${review_page}")
   count=$(printf '%s' "$reviews" | jq 'length')
   [ "$count" -gt 0 ] || break
+  repeats_previous_page "$reviews" "$previous_reviews" && break
+  previous_reviews="$reviews"
   printf '%s' "$reviews" | jq -r '.[].id' |
     while IFS= read -r review_id; do
       comment_page=1
+      previous_comments='[]'
       while :; do
         comments=$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${review_id}/comments?limit=${limit}&page=${comment_page}")
         comment_count=$(printf '%s' "$comments" | jq 'length')
         [ "$comment_count" -gt 0 ] || break
+        repeats_previous_page "$comments" "$previous_comments" && break
+        previous_comments="$comments"
         printf '%s' "$comments" >"$tmp/page.json"
         jq -s '.[0] + .[1]' "$tmp/all.json" "$tmp/page.json" >"$tmp/next.json"
         mv "$tmp/next.json" "$tmp/all.json"

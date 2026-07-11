@@ -37,6 +37,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	}
 	defer closeLog()
 	for _, repo := range repos {
+		repo.serviceBotLogin = cfg.Service.BotLogin
 		forge, ok := cfg.Forges[repo.Forge]
 		if !ok {
 			fmt.Fprintf(sweepLog, "repo %s: unknown forge %s\n", repo.Path, repo.Forge)
@@ -91,14 +92,14 @@ func loadSweepSnapshot(ctx context.Context, repo RepoConfig, adaptation Adaptati
 	}
 	combinedStatus := ""
 	if repo.Policy.AutoMerge && len(statuses) > 0 && !facts.HasLabel(LabelFlakyTests) {
-		if review, ok := currentHeadBotReview(reviews, facts.HeadSHA); ok && strings.EqualFold(review.State, "APPROVED") && !facts.HasLabel(LabelReady) {
+		if review, ok := currentHeadBotReview(reviews, facts.HeadSHA, repo.serviceBotLogin); ok && strings.EqualFold(review.State, "APPROVED") && !facts.HasLabel(LabelReady) {
 			combinedStatus, err = adaptation.GetCombinedStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA)
 			if err != nil {
 				return sweepSnapshot{}, err
 			}
 		}
 	}
-	return sweepSnapshot{facts: facts, statuses: statuses, reviews: reviews, combinedStatus: combinedStatus}, nil
+	return sweepSnapshot{facts: facts, statuses: statuses, reviews: reviews, combinedStatus: combinedStatus, serviceBotLogin: repo.serviceBotLogin}, nil
 }
 
 func sweepPRSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation Adaptation, snapshot sweepSnapshot, logw *os.File) error {
@@ -873,7 +874,7 @@ func reconcileDecision(repo RepoConfig, facts Facts, statuses []Status, readyAct
 	}
 	reviewStatus, reviewOK := statusForContext(statuses, reviewContext)
 	if reviewOK && reviewStatus.State == "failure" {
-		if _, fixOK := statusForContext(statuses, fixContext); !fixOK && !facts.HasLabel(LabelStandingFindings) && guardsPass(repo, RunFix, facts, reviewStatus.Creator) {
+		if _, fixOK := statusForContext(statuses, fixContext); !fixOK && guardsPass(repo, RunFix, facts, reviewStatus.Creator) {
 			return RunFix, true
 		}
 	}

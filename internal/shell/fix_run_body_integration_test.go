@@ -26,6 +26,7 @@ func TestFixRunBodyRecordsEachOutcomeThroughRunWrap(t *testing.T) {
 	landed := RunDir(env.runsDir, "local", "pump19", "subject", "7", "aaaaaaaaaaaaaaaa", RunFix)
 	assertContainsFile(t, filepath.Join(landed, "fix-summary.md"), "outcome=landed")
 	assertContainsFile(t, filepath.Join(landed, "fix-summary.md"), "run=fix")
+	assertPostedSummaryOmitsModelIdentity(t, filepath.Join(landed, "fix-summary.md"))
 	assertContainsFile(t, filepath.Join(env.stateDir, "commit-push.args"), "main")
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/fix\nsuccess")
 	assertContainsFile(t, filepath.Join(env.stateDir, "labels-added"), "Fixing")
@@ -175,7 +176,7 @@ func setupRunBodyHarness(t *testing.T, kind, standinName, missionName string) *r
 	fixSkill, _ := filepath.Abs(filepath.Join("..", "..", "skills", "service", "fix", "SKILL.md"))
 	flakySkill, _ := filepath.Abs(filepath.Join("..", "..", "skills", "foundry", "root-cause", "SKILL.md"))
 	pins := filepath.Join(root, "pins.toml")
-	if err := os.WriteFile(pins, []byte(pinsFixture), 0o644); err != nil {
+	if err := os.WriteFile(pins, []byte(leadPinsFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runBodyEnv := "PUMP19_ENGINE_LAUNCH_LEAD='" + standin + "'\n" +
@@ -198,7 +199,7 @@ func setupRunBodyHarness(t *testing.T, kind, standinName, missionName string) *r
 	if err := os.WriteFile(webhookSecret, []byte("test-webhook-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service := "[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + token + "\"\n\n[runs]\ndir = \"" + h.runsDir + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
+	service := "[service]\nbot-login = \"Minos\"\n\n[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + token + "\"\n\n[runs]\ndir = \"" + h.runsDir + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 	if err := os.WriteFile(filepath.Join(h.configRoot, "service.toml"), []byte(service), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,6 @@ import (
 )
 
 const runPresenceReaction = "eyes"
-const serviceBotLogin = "Minos"
 
 // RunGuardCommand exposes the run claim's forge-visible guards to an agent
 // session. Keeping these checks here gives real and stand-in sessions one
@@ -29,7 +28,7 @@ func RunGuardCommand(ctx context.Context, args []string) error {
 	}
 	switch fs.Arg(0) {
 	case "begin":
-		return beginRun(ctx, adaptation, facts, kind)
+		return beginRun(ctx, cfg.Service.BotLogin, adaptation, facts, kind)
 	case "current":
 		return currentRun(ctx, adaptation, facts)
 	case "release":
@@ -60,8 +59,8 @@ func loadRunGuard(configRoot string) (ServiceConfig, Adaptation, Facts, RunKind,
 	return cfg, adaptation, envFacts(forgeName), kind, nil
 }
 
-func beginRun(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind) error {
-	outcome, err := claimRun(ctx, adaptation, facts, kind)
+func beginRun(ctx context.Context, botLogin string, adaptation Adaptation, facts Facts, kind RunKind) error {
+	outcome, err := claimRun(ctx, botLogin, adaptation, facts, kind)
 	if err != nil {
 		return err
 	}
@@ -69,7 +68,7 @@ func beginRun(ctx context.Context, adaptation Adaptation, facts Facts, kind RunK
 	return nil
 }
 
-func claimRun(ctx context.Context, adaptation Adaptation, facts Facts, kind RunKind) (string, error) {
+func claimRun(ctx context.Context, botLogin string, adaptation Adaptation, facts Facts, kind RunKind) (string, error) {
 	contextName, err := StatusContext(kind)
 	if err != nil {
 		return "", err
@@ -98,7 +97,7 @@ func claimRun(ctx context.Context, adaptation Adaptation, facts Facts, kind RunK
 	if err := adaptation.addRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
 		return "", err
 	}
-	if err := adaptation.assignRunClaimIfMissing(ctx, facts.Owner, facts.Repo, facts.PR, serviceBotLogin); err != nil {
+	if err := adaptation.assignRunClaimIfMissing(ctx, facts.Owner, facts.Repo, facts.PR, botLogin); err != nil {
 		return "", err
 	}
 	return "claimed", nil
