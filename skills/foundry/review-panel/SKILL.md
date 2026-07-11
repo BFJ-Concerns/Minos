@@ -1,6 +1,6 @@
 ---
 name: review-panel
-description: The standard code review — use this whenever the user asks for a code review, a security review, a review of their code, changes, branch, or PR, or a check before merging; those requests are this skill's job, not something to answer inline. Convenes a panel of clean-context reviewers over bundled aspects (correctness bugs, error handling, comment accuracy, behavioural test coverage, type design, behaviour-preserving simplification, and security — each dispatched only when the diff makes it relevant) together with the repo's own `.review/` briefs where they exist, plus the Codex CLI's built-in diff review as an extra panel member on diff runs; every finding is quote-checked in code and, by default, verified by an independent checker before it posts, and a review-bar judge can assess the assembled review. Also use to review against the project's review briefs, audit the codebase against `.review/`, baseline a new brief, or run an occasion-specific (release, nightly) review. Diff mode (default) posts review comments on the PR and routes pre-existing findings to the project's annexe; full mode audits all in-scope code and reports to chat. Review only — it never applies the fixes it suggests; for authoring and refining the briefs themselves use review-brief.
+description: The standard code review — use this whenever the user asks for a code review, a security review of the code, a review of their code, changes, branch, or the current branch's PR, or a check before merging; those requests are this skill's job, not something to answer inline. Convenes a panel of clean-context reviewers over bundled aspects (correctness bugs, error handling, comment accuracy, behavioural test coverage, type design, behaviour-preserving simplification, and security — each dispatched only when the diff makes it relevant) together with the repo's own `.review/` briefs where they exist, plus the Codex CLI's built-in diff review as an extra panel member on diff runs; every finding is quote-checked in code and, by default, verified by an independent checker before it posts, and a review-bar judge can assess the assembled review. Also use to review against the project's review briefs, audit the codebase against `.review/`, baseline a new brief, or run an occasion-specific (release, nightly) review. Diff mode (default) posts review comments on the PR and routes pre-existing findings to the project's annexe; full mode audits all in-scope code and reports to chat. Reviews the current branch or its PR only — reviewing an arbitrary PR by number is /review's job. Not for reading, summarising, or addressing existing PR review comments (that is babysit-pr), and not for non-code security work such as threat modelling, architecture, or deployment-posture reviews. Review only — it never applies the fixes it suggests; for authoring and refining the briefs themselves use review-brief.
 argument-hint: '[--full] [--base <ref>] [--occasion <name>] [--no-aspects] [--no-briefs] [--no-codex] [--no-verify] [--bar] [name …]'
 allowed-tools:
 - Bash(git rev-parse:*)
@@ -11,6 +11,8 @@ allowed-tools:
 - Bash(python3 *merge_codex_review.py*)
 - Bash(python3 *validate_quotes.py*)
 - Bash(python3 *assemble_verify_input.py*)
+- Bash(python3 *plan_remediation.py*)
+- Bash(python3 *merge_remediation.py*)
 - Bash(python3 *post_pr_comments.py*)
 - Bash(node:*)
 - Read
@@ -192,7 +194,9 @@ quote validator always runs — it is near-free and catches the fabrications).
 **`--bar`** opts in to the bar check interactively. A headless caller wanting
 the bar fired by its computed trigger instead — the review would otherwise
 converge clean, or a criterion was skipped, failed, or partially covered —
-passes `bar_mode: "auto"` at step 4 rather than `--bar`.
+passes `bar_mode: "auto"` at step 4 rather than `--bar`. A bar that runs and
+**fails** triggers one remediation round (step 5): the implicated reviews are
+re-run fresh and re-verified rather than the run's work being discarded.
 
 **Base resolution** (diff mode only) decides what the branch is compared against,
 most explicit first: a PR's base when there's a PR, otherwise an auto-detected
@@ -415,11 +419,15 @@ blocked it rather than engineering around it silently.
    `{ findings, reviews, coverage, skipped, failures, sweep_advisories, mode, pr }`:
    every finding is already tagged with its `brief`, `review_title`, `scope`, and
    `producer` and conforms to the structured schema (no parsing needed);
-   `reviews` carries each returning reviewer's notes (its evidence trail);
-   `coverage` is the dispatch-derived coverage account — per concern, the shards
-   dispatched against the shards that returned, with `status` `full`, `partial`,
-   `none`, or `not-run`. That account is the run's coverage claim; a reviewer's
-   own notes never override it. `skipped` lists concerns that did not run (not
+   `reviews` carries each returning reviewer's notes (its evidence trail) and
+   its declared coverage; `coverage` is the run's coverage account — per
+   concern, the shards dispatched against the shards that returned, combined
+   with each reviewer's own coverage declaration, with `status` `full`,
+   `partial`, `none`, or `not-run`. The combination is downgrade-only: a
+   reviewer declaring `partial` marks its concern partial (the declared gaps
+   ride in `declared_gaps`), while nothing a reviewer returns can claim more
+   than the dispatch record shows, and prose notes never adjust the account
+   in either direction. `skipped` lists concerns that did not run (not
    relevant to the diff, no files, wrong occasion, or refused at capacity),
    `failures` lists any reviewer that returned nothing (a coverage gap — see
    Report), and `sweep_advisories` lists full-extent briefs that were split
@@ -478,14 +486,89 @@ blocked it rather than engineering around it silently.
    call marks the finding indeterminate and routes it to the PR (the
    conservative direction). A finding no checker reaches on either engine is
    withheld from posting and recorded as **check-failed** — an infrastructure
-   outcome, distinct from rejection; offer to re-run those. The workflow's
+   outcome, distinct from rejection; the remediation round re-offers those to
+   the checkers when it runs (step 5), and on a run without one, offer to
+   re-run them. The workflow's
    output is the run's single, complete report: the surviving `findings` plus
    every record the report step needs (`suppressed_by_checkers`,
    `suppressed_by_validator`, `quote_validation`, `reclassified`,
    `attribution_indeterminate`, `verification`, `bar`, `coverage`, `skipped`,
    `failures`, `reviews`, `sweep_advisories`, `mode`, `pr`).
 
-5. **Report.** Everything below reads from step 4's output file. The findings
+5. **Remediate — once, when the bar fails.** When step 4's `bar.outcome` is
+   `"fail"`, run one remediation round so the run's work is repaired rather
+   than discarded: fresh clean-context reviewers re-review what the judge
+   implicated — each handed only the complaints the verdict attached to its
+   brief — and the whole result is re-verified, ending in a fresh bar
+   judgement that is not handed the first verdict. The round replaces an
+   implicated brief's *account* — its reviewer notes and coverage entry,
+   which are what the judge condemned — while its round-one findings that
+   already passed the independent checkers are kept alongside the round's
+   new ones: a brief-level complaint about a review's honesty is not
+   finding-level evidence against independently confirmed work, and a
+   re-discovery at the same site collapses at the poster. The round also
+   folds in the run's other recoverable waste:
+   reviewer shards that returned nothing are retried, and findings recorded
+   as check-failed are re-offered to the checkers. An implicated **Codex
+   leg** is the one exception: its external reviewer takes no re-briefing,
+   so its round-one result carries forward and the complaint is reported
+   rather than remediated (the plan emits the warning); the leg re-runs only
+   when it *failed*, which may be transient. On any other bar outcome
+   (`pass`, `check-failed`, or the bar not running), skip this step.
+
+   Derive the round's plan mechanically — never hand-pick what to re-run:
+
+   ```bash
+   python3 ~/.claude/skills/review-panel/scripts/plan_remediation.py \
+     /tmp/claude/review-panel-plan.json /tmp/claude/review-panel-verify.json \
+     > /tmp/claude/review-panel-remediation-plan.json
+   ```
+
+   If it exits with an `error` — the judge implicated nothing that maps to a
+   dispatched brief and no shard failed — there is nothing to mechanically
+   re-run: skip to the report and present the bar verdict as it stands.
+   Otherwise repeat steps 2–4 on the remediation plan, with these
+   differences:
+
+   - **Fan-out**: same ensemble command as step 2, with the remediation plan
+     as input (write its result to a distinct file, e.g.
+     `review-panel-remediation-result.json`). Run the Codex leg script only
+     if the remediation plan's `codex_review` is planned rather than skipped
+     — the plan carries the leg forward as skipped when its round-one result
+     stands — and merge it exactly as in step 2 when it ran.
+   - **Validate**: run the quote validator over the round's result as in
+     step 3, to its own output file.
+   - **Merge**: fold the round back into the round-one record before
+     re-verifying:
+
+     ```bash
+     python3 ~/.claude/skills/review-panel/scripts/merge_remediation.py \
+       /tmp/claude/review-panel-verify.json /tmp/claude/review-panel-remediation-validated.json \
+       > /tmp/claude/review-panel-merged.json
+     ```
+
+   - **Re-verify**: assemble and run the verification workflow as in step 4,
+     on the original plan and the merged file, passing `--bar on` — the
+     round exists because the bar failed, so the merged review is always
+     re-judged — and carrying the run's own `--no-verify` election through
+     unchanged, so the round never re-enables checkers the caller disabled.
+     Round-one survivors carry their recorded checker verdicts through
+     without a fresh check (`verification.carried_forward`); only the
+     round's new findings spend checkers.
+
+   One round, then stop. If the second bar verdict is also `fail`, do not
+   loop again: report both verdicts honestly and let the user decide — a
+   review ground through repeated re-judging until a judge relents is worth
+   less than an honestly failed one.
+
+6. **Report.** Everything below reads from the final verification output —
+   step 4's file, or the re-verify's when step 5 ran. On a remediated run,
+   also read the round-one verification file for the gate story: report both
+   bar verdicts (the failed first, with its reasons and implicated briefs,
+   then the second), and fold both rounds' `suppressed_by_checkers`,
+   `reclassified`, and `attribution_indeterminate` records into the
+   verification summary — the merged file carries the surviving findings,
+   but the first round's gate records live only in its own file. The findings
    that surface are its `findings`. Under `--no-verify`, first apply the manual
    spot check the checkers would otherwise subsume: read each surviving finding
    against its `code_quote` and drop any where the quote does not actually
@@ -569,11 +652,13 @@ blocked it rather than engineering around it silently.
    why they were not routed. Never silently drop them.
 
    **Operational detail goes to the run summary only**, never into the PR:
-   - **The coverage account**: state coverage from the dispatch-derived
-     `coverage` record — which concerns were fully covered, which partially, and
-     which not run — never from a reviewer's own description of what it did. Any
-     coverage claim in the summary names its source: the account, or a command
-     and its output.
+   - **The coverage account**: state coverage from the `coverage` record —
+     which concerns were fully covered, which partially, and which not run —
+     never from prose in a reviewer's notes. The record already folds in each
+     reviewer's structured coverage declaration, downgrade-only; when an entry
+     carries `declared_gaps`, report what went unreviewed in the reviewers'
+     own words. Any coverage claim in the summary names its source: the
+     account, or a command and its output.
    - **Skipped concerns**: report the `skipped` list (name and reason) so the
      user knows which concerns were *not* checked this round — an aspect the
      diff made irrelevant, a subtree with no changes, an occasion that didn't

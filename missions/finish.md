@@ -81,12 +81,16 @@ Stop at the first failure and record the matching refusal; do not merge.
      explicit decision to proceed despite the verified standing findings. Record
      the head as **flagged** and eligible; if it merges, the summary must state
      that it merged with standing findings rather than describe it as clean.
-   - **`verdict=partial-coverage`**, **`verdict=paused-flaky`**, or **no service
-     verdict for this head** — a finish label cannot substitute for a complete
-     service review of the current head. `paused-flaky` is explicitly ineligible
-     because the review withheld approval while `Flaky Tests` stood. Record
-     `refused` with reason `not-eligible`: unreviewed, partially-reviewed, or
-     paused code cannot be merged on the strength of the finish label alone. The
+   - **`verdict=partial-coverage`**, **`verdict=paused-flaky`**,
+     **`verdict=bar-dissent`**, or **no service verdict for this head** — a
+     finish label cannot substitute for a complete service review of the
+     current head. `paused-flaky` is explicitly ineligible because the review
+     withheld approval while `Flaky Tests` stood; `bar-dissent` because the
+     review-bar check dissented from the published review, so convergence was
+     withheld. Record
+     `refused` with reason `not-eligible`: unreviewed, partially-reviewed,
+     paused, or bar-disputed code cannot be merged on the strength of the
+     finish label alone. The
      finish label is a standing instruction and stays sticky; a later finish
      runs once the loop produces an eligible verdict on the current head.
 
@@ -153,13 +157,30 @@ with `reason` one of `not-eligible`, `build-failed`, `test-failed`,
 Format the marker with `pump19 marker format …` and post with
 `pump19 adapt post-comment …`, the body ending in exactly that one marker line.
 Any non-zero mechanical or forge command that this mission does not classify as
-a refusal or a successful yield is a run failure. Before the run claim exists,
-exit non-zero; the wrapper records the failure internally and the sweep retries
-it only when no forge write was attempted. After `claimed`, use `pump19
-run-guard --config "$PUMP19_CONFIG" release` for the controlled exit, then run
-`pump19 run-terminal --reason controlled-failure`, then exit non-zero. If release
-itself fails, exit non-zero. Claim/release mutations are replay-safe and do not
-set the publication marker: the wrapper retries when no earlier substantive
-mutation was attempted and latches when one was. Write no error
+a refusal or a successful yield is a run failure. Classify the cause before
+choosing the controlled exit, because the two failure paths lead somewhere
+different:
+
+- **Transient causes** — host capacity or saturation, engine or model-backend
+  availability, anything a later attempt could genuinely find changed — take
+  the retry path: release the claim when one exists, then exit non-zero
+  *without* writing the terminal marker. The wrapper records a retryable
+  failure and the sweep re-fires the run on its liveness pacing, up to its
+  capped attempts; exhaustion latches on its own.
+- **Deterministic causes** — missing wiring or configuration (an unset
+  required variable, a missing skill or script), invalid inputs, anything a
+  retry cannot change — latch: release the claim when one exists, run
+  `pump19 run-terminal --reason REASON` (a short lowercase code naming the
+  cause, such as `config-error`; `controlled-failure` when nothing more
+  precise fits), then exit non-zero. The terminal marker holds the run until
+  an operator `pump19 re-arm`.
+
+The split is what keeps failure loud: retries burned on a deterministic error
+are hours of silence, and a latch on a transient one is a stall nobody
+re-fires. The classification applies before the claim exists too — there is
+simply no claim to release. If release itself fails, exit non-zero.
+Claim/release mutations are replay-safe and do not set the publication
+marker: whichever exit you chose, the wrapper retries only when no earlier
+substantive mutation was attempted and latches when one was. Write no error
 comment or commit status. A release failure after a terminal status is
 operational clean-up for the sweep, not a falsified result.

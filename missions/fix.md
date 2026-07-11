@@ -26,6 +26,9 @@ finding rather than repeating that review judgement.
   `pump19 ws-exec --config "$PUMP19_CONFIG" …`. You never push from inside it;
   landing is a service-credentialled adaptation (below).
 - `PUMP19_DIFF` is the prepared base-to-head diff.
+- `PUMP19_BUILD_CMD` and `PUMP19_TEST_CMD` are the repository's own build and
+  test commands — the pre-landing gate below. A repository that leans entirely
+  on its forge's required checks sets them to a no-op (`true`).
 - `PUMP19_RUN_DIR` holds writable session evidence. The wrapper captures
   diagnostics in `run.log`; the sweep uses its activity as the liveness signal.
 - `pump19 adapt …` selects the configured forge adaptation from `PUMP19_FORGE`
@@ -59,8 +62,14 @@ Release keeps `Fixing` when a newer live fix owns it.
 `pump19 run-guard --config "$PUMP19_CONFIG" current` prints `current` while this
 run still owns the live head and `stale` once a newer head exists. Because a
 landed fix deliberately moves the head, use `current` differently from a review:
-require it *immediately before you push*, and if it prints `stale`, discard the
-fix and exit successfully without pushing — a newer head has superseded you.
+require it *immediately before your first push*, and if it prints `stale`,
+discard the fix and exit successfully without pushing — a newer head has
+superseded you. After your own landing, `current` reports `stale` by design
+(your push moved the head), so for any follow-up push — fixing a red the fix
+caused — the currency check is instead that the PR's current head
+(`get-pr-facts` `HEAD_SHA`) still equals the SHA you last landed; if it has
+moved past your landing, a newer push has superseded you: stop landing and
+publish honestly. `commit-push`'s fast-forward-only push is the backstop.
 For the fruitless and unwritable outcomes, which move no head, require `current`
 before each forge write as a review would.
 
@@ -75,6 +84,27 @@ before each forge write as a review would.
   skill to weigh how many times a finding has already survived a fix.
 
 ## Landing a fix
+
+A fix run is accountable for the head it lands, so verification brackets the
+landing on both sides:
+
+- **Before landing**, exercise the repository's configured build and test
+  commands against the changed tree —
+  `pump19 ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"` and
+  the same for `$PUMP19_TEST_CMD`. A failure they reveal is the fix's own
+  work to resolve before `commit-push`; never land a tree the configured
+  commands reject. No-op commands (`true`) mean the repository leans on its
+  forge CI — the after-landing side below carries the gate.
+- **After landing**, where the repository runs CI, stay with the landed head
+  until CI reports: poll `pump19 adapt get-statuses` on the landed SHA in the
+  foreground at your own pacing (ignore the service's own `pump19/…`
+  contexts) — waiting on CI is live work, and the run log is its heartbeat.
+  Whether the repository runs CI is readable from the record: the served
+  head's non-service commit statuses, or configured required checks. A red
+  the fix caused is this run's own work to fix before the run ends, at your
+  own pacing — land the follow-up through `commit-push` like any other
+  change. A red that predates the fix, or one that routes through the
+  `Flaky Tests` label, is not this run's to chase.
 
 Edit the workspace to answer the findings, then land through the adaptation —
 never a push from inside the workspace:
@@ -126,11 +156,14 @@ in the commit trailer and the run evidence. The marker is:
 `Pump-19: head=FULL_SHA outcome=landed|fruitless|unwritable run=fix`
 
 - **landed** — one or more fixes were committed and pushed. Require `current`,
-  run `commit-push`, then record the outcome: the push has moved the head, so
-  the summary comment and the `pump19/fix` status are bound to
-  `$PUMP19_HEAD_SHA` and are written without a further `current` check (the fix
-  did complete for that head). The pushed PR update re-triggers review on its own;
-  you neither call nor await it.
+  run `commit-push`, stay with the landed head through CI as the landing
+  section directs (further commits the CI wait obliges are part of this same
+  outcome), then record it: the push has moved the head, so the summary
+  comment and the `pump19/fix` status are bound to `$PUMP19_HEAD_SHA` and are
+  written without a further `current` check (the fix did complete for that
+  head). The summary covers everything landed and states plainly any CI state
+  the run could not clear. The pushed PR update re-triggers review on its own;
+  you neither call nor await the review.
 - **fruitless** — the findings were worked and no genuine change answers them.
   Change nothing on the branch. The standing findings remain the PR's verdict
   and the loop stops here.
@@ -149,14 +182,30 @@ Any non-zero mechanical, provenance, or forge command is a run failure unless
 this mission classifies its result as a successful yield. (`commit-push` reports
 its handled outcomes — including fruitless and unwritable — as a stdout token at
 exit zero, so those are not command failures; only a genuine infrastructure
-failure exits non-zero.) Before the run claim exists, exit non-zero; the wrapper
-records the failure internally and the sweep retries it only when no forge write
-was attempted. After `claimed`, use `pump19 run-guard --config
-"$PUMP19_CONFIG" release` for the controlled exit, then run `pump19
-run-terminal --reason controlled-failure`, then exit non-zero. If release itself
-fails, exit non-zero. Claim/release mutations are replay-safe and do not set the
-publication marker: the wrapper retries when no earlier substantive mutation
-was attempted and latches when one was. Operational
+failure exits non-zero.) Classify the cause before choosing the controlled
+exit, because the two failure paths lead somewhere different:
+
+- **Transient causes** — host capacity or saturation, engine or model-backend
+  availability, anything a later attempt could genuinely find changed — take
+  the retry path: release the claim when one exists, then exit non-zero
+  *without* writing the terminal marker. The wrapper records a retryable
+  failure and the sweep re-fires the run on its liveness pacing, up to its
+  capped attempts; exhaustion latches on its own.
+- **Deterministic causes** — missing wiring or configuration (an unset
+  required variable, a missing skill or script), invalid inputs, anything a
+  retry cannot change — latch: release the claim when one exists, run
+  `pump19 run-terminal --reason REASON` (a short lowercase code naming the
+  cause, such as `config-error`; `controlled-failure` when nothing more
+  precise fits), then exit non-zero. The terminal marker holds the run until
+  an operator `pump19 re-arm`.
+
+The split is what keeps failure loud: retries burned on a deterministic error
+are hours of silence, and a latch on a transient one is a stall nobody
+re-fires. The classification applies before the claim exists too — there is
+simply no claim to release. If release itself fails, exit non-zero.
+Claim/release mutations are replay-safe and do not set the publication
+marker: whichever exit you chose, the wrapper retries only when no earlier
+substantive mutation was attempted and latches when one was. Operational
 diagnostics belong in the run log under `$PUMP19_RUN_DIR`, not in PR comments or
 error statuses: the PR carries the outcome for people, the run directory carries
 the machinery's evidence. A release failure after a terminal status is written is operational

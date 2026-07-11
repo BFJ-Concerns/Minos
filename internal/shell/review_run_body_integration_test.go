@@ -187,12 +187,16 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		autoMerge        string
 		labels           []string
 		flakyAfterStatus bool
+		seedStatuses     string
 	}{
 		{name: "standing-findings", head: "dddddddddddddddd", verdict: "standing-findings", autoMerge: "true"},
 		{name: "partial-coverage", head: "1111111111111111", verdict: "partial-coverage", autoMerge: "true"},
 		{name: "auto-merge-disabled", head: "2222222222222222", verdict: "converged", autoMerge: "false"},
 		{name: "flaky-tests", head: "3333333333333333", verdict: "converged", autoMerge: "true", labels: []string{LabelFlakyTests, LabelConverged}},
 		{name: "flaky-arrives-on-post-status-refresh", head: "5555555555555555", verdict: "converged", autoMerge: "true", flakyAfterStatus: true},
+		{name: "bar-dissent", head: "6666666666666666", verdict: "bar-dissent", autoMerge: "true"},
+		{name: "ci-red-defers-ready", head: "7777777777777777", verdict: "converged", autoMerge: "true",
+			seedStatuses: `[{"id":1,"context":"ci/build","state":"failure","creator":"ci"}]`},
 	}
 	for _, tc := range negativeCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -205,6 +209,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 				t.Setenv("PUMP19_FIXTURE_FLAKY_AFTER_STATUS", "1")
 			}
 			writeFixtureLabels(t, filepath.Join(stateDir, "labels"), tc.labels)
+			if tc.seedStatuses != "" {
+				if err := os.WriteFile(filepath.Join(stateDir, "statuses.json"), []byte(tc.seedStatuses+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 				t.Fatal(err)
 			}
@@ -234,6 +243,49 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 					if containsFixtureLabel(readFixtureLabels(t, filepath.Join(stateDir, "labels")), label) {
 						t.Fatalf("paused review retained outcome/control label %q", label)
 					}
+				}
+			}
+			if tc.name == "bar-dissent" {
+				// The bar gates convergence, never publication: the verified review
+				// posts with the dissent on the marker, no approval, no outcome
+				// label, no Ready — and the run is still a terminal success.
+				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				assertContainsFile(t, filepath.Join(run, "review.md"), "bar=failed coverage=full")
+				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=bar-dissent")
+				assertContainsFile(t, filepath.Join(run, "review.md"), "no approval was given")
+				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+				reviews, err := os.ReadFile(filepath.Join(stateDir, "reviews.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(reviews), `"state": "COMMENT"`) || !strings.Contains(string(reviews), tc.head) {
+					t.Fatalf("bar-dissent review was not recorded as COMMENT for %s:\n%s", tc.head, reviews)
+				}
+				if fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelConverged) != convergedBefore {
+					t.Fatal("bar-dissent review added a Converged outcome label")
+				}
+				for _, label := range []string{LabelConverged, LabelStandingFindings, LabelPartialCoverage, LabelReady} {
+					if containsFixtureLabel(readFixtureLabels(t, filepath.Join(stateDir, "labels")), label) {
+						t.Fatalf("bar-dissent review retained outcome/control label %q", label)
+					}
+				}
+			}
+			if tc.name == "ci-red-defers-ready" {
+				// A red non-flaky head defers Ready only: the approving review and
+				// Converged still record convergence — they judge the change, not
+				// the pipeline — and auto-merge waits for green.
+				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=converged")
+				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+				reviews, err := os.ReadFile(filepath.Join(stateDir, "reviews.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(reviews), `"state": "APPROVE"`) || !strings.Contains(string(reviews), tc.head) {
+					t.Fatalf("red-head convergence did not post its approving review for %s:\n%s", tc.head, reviews)
+				}
+				if fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelConverged) != convergedBefore+1 {
+					t.Fatal("red-head convergence did not add the Converged outcome label")
 				}
 			}
 		})
@@ -715,7 +767,10 @@ printf 'assign-if-missing:%s\n' "$4" >>'`+operations+`'
 set -eu
 printf '%s\n' "$@" >'`+filepath.Join(stateDir, "status.args")+`'
 printf 'set-status:%s:%s:%s\n' "$PUMP19_HEAD_SHA" "$4" "$5" >>'`+operations+`'
-jq -nc --arg context "$4" --arg state "$5" '[{id:1,context:$context,state:$state,creator:"pump19"}]' >'`+filepath.Join(stateDir, "statuses.json")+`'
+statuses='`+filepath.Join(stateDir, "statuses.json")+`'
+# Append like a real forge: the newest status per context wins by id.
+jq -c --arg context "$4" --arg state "$5" '. + [{id:((map(.id)|max // 0)+1),context:$context,state:$state,creator:"pump19"}]' "$statuses" >"$statuses.tmp"
+mv "$statuses.tmp" "$statuses"
 `)
 	comments := filepath.Join(stateDir, "comments.json")
 	reviews := filepath.Join(stateDir, "reviews.json")

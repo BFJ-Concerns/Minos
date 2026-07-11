@@ -160,20 +160,49 @@ Each finding comment ends with exactly one marker:
 
 The consolidated review ends with exactly one marker:
 
-`Pump-19: bar=passed|failed|degraded|not-run coverage=full|partial head=FULL_SHA run=review verdict=converged|standing-findings|partial-coverage|paused-flaky`
+`Pump-19: bar=passed|failed|degraded|not-run coverage=full|partial head=FULL_SHA run=review verdict=converged|standing-findings|partial-coverage|paused-flaky|bar-dissent`
 
 Markers are machine state; the preceding review is ordinary prose for people.
-Record honest coverage in that prose. The only converged tuple is
-`bar=passed coverage=full verdict=converged`. Partial coverage uses
-`coverage=partial verdict=partial-coverage`. A failed, degraded, or unavailable
-bar check cannot converge; until the synced skill's policy passes the
-verify-on-arrival re-check, treat that condition as a loud run failure rather
-than inventing a verdict.
+Record honest coverage in that prose. The converged tuples are
+`bar=passed coverage=full verdict=converged` and, on the degraded path below,
+`bar=degraded coverage=full verdict=converged`. Partial coverage uses
+`coverage=partial verdict=partial-coverage`.
+
+### The bar check gates convergence, never publication
+
+A failed bar check is a critique of the assembled review, never a run
+failure — a completed review's verified findings always publish, and no bar
+verdict may discard them. The skill natively answers a failed bar with one
+remediation round: the failed verdict names the briefs it implicates, and the
+skill's remediation scripts re-dispatch fresh reviewers for exactly those
+briefs and re-judge the merged result. Drive that mechanism first rather than
+improvising an address-and-resubmit procedure of your own. Where the critique
+names something the round cannot reach, address it directly — deepen the
+coverage it names, prune the findings it convicts, or re-verdict honestly
+(partial coverage is a posting verdict, not a failure). Whether any further
+resubmission is worth it after the skill's round is your own judgement at
+your own pacing; there is no fixed resubmission count and no clock.
+
+A disagreement the run cannot resolve still publishes the verified review,
+recorded as bar-dissent: `bar=failed` on the trailing marker, no approving
+review, no `Ready`, no convergence. A review that would otherwise have
+converged — zero verified material findings, full coverage — publishes
+`verdict=bar-dissent` in place of `converged`; every other verdict stands as
+reached and simply carries `bar=failed`. What fires next is trigger-rule
+configuration, like any failure.
+
+The bar failing the review is distinct from the bar check itself failing: a
+checker that cannot run or returns unusable output is retried up to two
+further times (three attempts in all — this mission's retry policy), and when
+the retries exhaust, record `bar=degraded` and continue. A degraded bar may
+converge, with the degradation on the record — the same loudly-degraded path
+single-family verification walks, never an indefinite stall.
 
 Immediately before choosing a successful verdict, read current PR facts with
-`pump19 adapt get-pr-facts OWNER REPO PR`. If the review would otherwise be the
-only converged tuple and `LABELS` contains `Flaky Tests`, publish
-`verdict=paused-flaky` instead: `bar=passed coverage=full`, forge review state
+`pump19 adapt get-pr-facts OWNER REPO PR`. If the review would otherwise
+publish a converged tuple and `LABELS` contains `Flaky Tests`, publish
+`verdict=paused-flaky` instead: the tuple's `bar` value and `coverage=full`
+unchanged, forge review state
 `COMMENT`, and honest prose stating that the review is complete, convergence is
 paused while `Flaky Tests` stands, and no approval was given. A flaky label does
 not hide standing findings or partial coverage; it only withholds the clean
@@ -187,6 +216,11 @@ Map successful verdicts as follows:
 | `standing-findings` | `REQUEST_CHANGES` | `Standing Findings` | `success` |
 | `partial-coverage` | `COMMENT` | `Partial Coverage` | `success` |
 | `paused-flaky` | `COMMENT` | none | `success` |
+| `bar-dissent` | `COMMENT` | none | `success` |
+
+`bar-dissent` is an honest completion, not a failure: the review published,
+the bar's dissent is on the marker, and deliberately no outcome label and no
+approval were given.
 
 Publish a successful terminal result in this order:
 
@@ -197,14 +231,23 @@ Publish a successful terminal result in this order:
 3. Require `current`, then post the consolidated review and new inline comments.
 4. Before each label mutation, require `current`. Remove existing `Converged`,
    `Standing Findings`, and `Partial Coverage` labels. Add the mapped outcome
-   label when there is one; `paused-flaky` deliberately adds none. Leave
-   `Ready` untouched.
+   label when there is one; `paused-flaky` and `bar-dissent` deliberately add
+   none. Leave `Ready` untouched.
 5. Require `current`, then write the terminal `pump19/review=success` status.
 6. Only when the verdict is `converged` and `PUMP19_AUTO_MERGE=true`, re-read
    current PR facts with `pump19 adapt get-pr-facts OWNER REPO PR` after the
    terminal status write. If its `LABELS` contains `Flaky Tests`, do not apply
-   `Ready`; the flaky-test pause owns the next move. Otherwise require
-   `current`, then apply `Ready` with `pump19 adapt add-label OWNER REPO PR
+   `Ready`; the flaky-test pause owns the next move. Otherwise read the head's
+   combined CI state with `pump19 adapt get-statuses OWNER REPO HEAD_SHA`,
+   taking the newest status per context and ignoring the service's own
+   `pump19/…` contexts. If any remaining context is not `success`, defer
+   `Ready`: record the deferral in the run log and make no `Ready` write —
+   the approving review and `Converged` stand, because they judge the change,
+   not the pipeline, and the deferred label is applied when the head later
+   reports green, by the status event or the sweep, never by this run. A
+   deferral is still a successful terminal completion. When every remaining
+   context is `success`, or none exist, require `current`, then apply `Ready`
+   with `pump19 adapt add-label OWNER REPO PR
    Ready`. This is deliberately the sole mutation after terminal success: a
    finish run triggered by the label can now observe both the complete head-matched
    review marker and `pump19/review=success`. For every other verdict, and when
@@ -214,13 +257,30 @@ Publish a successful terminal result in this order:
    reconciliation sweep. It does not rewrite the completed review as an error.
 
 Any non-zero mechanical, provenance, or forge command is fatal unless this
-mission explicitly classifies its result as a successful yield. Before the run
-claim exists, exit non-zero; the wrapper records the failure internally and the
-sweep retries it only when no forge write was attempted. After `claimed`, use
-`pump19 run-guard --config "$PUMP19_CONFIG" release` for the controlled exit,
-then run `pump19 run-terminal --reason controlled-failure`, then exit non-zero.
-If release itself fails, exit non-zero. Claim/release mutations are replay-safe
-and do not set the publication marker: the wrapper retries when no earlier
+mission explicitly classifies its result as a successful yield. Classify the
+cause before choosing the controlled exit, because the two failure paths lead
+somewhere different:
+
+- **Transient causes** — host capacity or saturation, engine or model-backend
+  availability, anything a later attempt could genuinely find changed — take
+  the retry path: release the claim when one exists, then exit non-zero
+  *without* writing the terminal marker. The wrapper records a retryable
+  failure and the sweep re-fires the run on its liveness pacing, up to its
+  capped attempts; exhaustion latches on its own.
+- **Deterministic causes** — missing wiring or configuration (an unset
+  required variable, a missing skill or script), invalid inputs, anything a
+  retry cannot change — latch: release the claim when one exists, run
+  `pump19 run-terminal --reason REASON` (a short lowercase code naming the
+  cause, such as `config-error`; `controlled-failure` when nothing more
+  precise fits), then exit non-zero. The terminal marker holds the run until
+  an operator `pump19 re-arm`.
+
+The split is what keeps failure loud: retries burned on a deterministic error
+are hours of silence, and a latch on a transient one is a stall nobody
+re-fires. The classification applies before the claim exists too — there is
+simply no claim to release. If release itself fails, exit non-zero.
+Claim/release mutations are replay-safe and do not set the publication
+marker: whichever exit you chose, the wrapper retries only when no earlier
 substantive mutation was attempted and latches when one was.
 Operational diagnostics belong in the run log under `$PUMP19_RUN_DIR`, not in
 PR comments or error statuses: the PR carries the outcome for people, the run
@@ -244,8 +304,9 @@ validated engine record to `$PUMP19_RUN_DIR/resolved-lead.json`; the full audit
 stream is `$PUMP19_RUN_DIR/sessions/lead.jsonl`. Before any forge mutation,
 require that lead file to exist and contain the lead pin ID. Its absence is a
 run failure; the served model differing from the lead pin is a loud run failure
-(post no verdict, use the controlled failure path when the claim exists, and
-exit non-zero so the wrapper records the internal disposition);
+(post no verdict, release the claim when one exists, and exit non-zero so the
+wrapper records the internal disposition — a floating alias can re-resolve, so
+the wrapper treats a mismatch as retryable rather than latched);
 `model-unknown` is not permitted for the lead. This early-stream interlock is
 the pin check that matters — it detects a floating alias serving a model other
 than the lead pin, the silent substitution the pins exist to prevent.

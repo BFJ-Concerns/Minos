@@ -98,3 +98,30 @@ Set `brief` to the name of the brief you were given. Use `notes` for what you
 actually checked — files read, commands run and what they reported. With
 findings, a couple of lines suffice; with none, the clean-review standard above
 applies and `notes` carries the whole evidence trail.
+
+## Declare your coverage
+
+Alongside the findings, declare how much of your assignment you actually
+covered:
+
+- `coverage` — `full` when you read every file you were responsible for that
+  is relevant to your brief; `partial` when anything relevant went unread,
+  whatever the reason. Files plainly unrelated to your concern (assets, fonts,
+  lockfiles, generated output) need no review, and leaving them unread does
+  not make your coverage partial; leaving unread anything that could bear on
+  the brief does.
+- `not_reviewed` — required with `partial`: name the files or file classes
+  that went unread and why. Omit it with `full`.
+
+The run's coverage account is assembled from these declarations, so declaring
+`partial` is what makes the assembled review report your slice honestly — it
+is the correct, expected outcome whenever scale or budget forced a skip, and
+it reflects on the run's sizing, not on you. Declaring first does not license
+skipping: read everything relevant when you can, and reach for `partial` only
+when you genuinely could not.
+
+Your declaration and your notes must tell the same story. Notes that record
+skipping relevant files belong to a `partial` declaration with those files
+named in `not_reviewed`; pairing them with `full` is the one combination that
+is dishonest rather than merely incomplete, and it is what the review's
+independent judge fails whole reviews for.

@@ -140,10 +140,28 @@ const CHECK_SCHEMA = {
 const BAR_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['verdict', 'reasons'],
+  required: ['verdict', 'reasons', 'implicated_briefs'],
   properties: {
     verdict: { type: 'string', enum: ['pass', 'fail'] },
     reasons: { type: 'array', items: { type: 'string' } },
+    // Which briefs the failure reasons concern, each with its own subset of
+    // the reasons — the remediation round re-dispatches exactly these briefs
+    // and hands each only its own complaints (plan_remediation.py consumes
+    // the list). Required on every verdict so an omission cannot masquerade
+    // as a systemic failure: an empty array is the explicit statement that
+    // the verdict is a pass, or that a fail traces to no brief's output.
+    implicated_briefs: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['brief', 'reasons'],
+        properties: {
+          brief: { type: 'string' },
+          reasons: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
     notes: { type: 'string' },
   },
 }
@@ -187,12 +205,23 @@ phase('Check')
 const otherEngine = (engine) => (engine === 'codex' ? 'claude' : 'codex')
 const preferredEngine = (finding) =>
   String(finding.producer || '').endsWith('@codex-cli') ? 'claude' : 'codex'
+// A finding that already carries a checker's verdict was confirmed in an
+// earlier round of this run (a remediation re-verify merges round-one
+// survivors back in). Its check stands — a fresh checker would re-spend a
+// call to re-derive a recorded verdict — so it rides straight through,
+// counted separately as carried_forward.
+const isCarried = (f) => f.checked_by === 'codex' || f.checked_by === 'claude'
+const carried = verify ? findings.filter(isCarried) : []
+const toCheck = verify ? findings.filter((f) => !isCarried(f)) : findings
 let checked = []
-if (verify && findings.length) {
-  log(`Checking ${findings.length} finding(s) — each on the family opposite its producer, the other on degradation.`)
-  const preferred = findings.map(preferredEngine)
+if (verify && toCheck.length) {
+  log(
+    `Checking ${toCheck.length} finding(s) — each on the family opposite its producer, the other on degradation.` +
+      (carried.length ? ` ${carried.length} carried forward already checked.` : ''),
+  )
+  const preferred = toCheck.map(preferredEngine)
   const firstResults = await parallel(
-    findings.map((finding, i) => () =>
+    toCheck.map((finding, i) => () =>
       agent(checkerPrompt(finding), {
         engine: preferred[i],
         label: `check:${finding.brief}:${finding.file ?? '?'}`,
@@ -210,16 +239,16 @@ if (verify && findings.length) {
     log(`${retryIdx.length} checker(s) did not return on their preferred family — retrying on the other (recorded as degraded pairing).`)
     retryResults = await parallel(
       retryIdx.map((i) => () =>
-        agent(checkerPrompt(findings[i]), {
+        agent(checkerPrompt(toCheck[i]), {
           engine: otherEngine(preferred[i]),
-          label: `check:${findings[i].brief}:${findings[i].file ?? '?'} (degraded)`,
+          label: `check:${toCheck[i].brief}:${toCheck[i].file ?? '?'} (degraded)`,
           phase: 'Check',
           schema: CHECK_SCHEMA,
         }),
       ),
     )
   }
-  checked = findings.map((finding, i) => {
+  checked = toCheck.map((finding, i) => {
     if (firstResults[i]) {
       return { finding, verdicts: firstResults[i], checked_by: preferred[i], degraded_pairing: false }
     }
@@ -230,7 +259,7 @@ if (verify && findings.length) {
     return { finding, verdicts: null, checked_by: null }
   })
 } else {
-  checked = findings.map((finding) => ({ finding, verdicts: null, checked_by: 'skipped' }))
+  checked = toCheck.map((finding) => ({ finding, verdicts: null, checked_by: 'skipped' }))
 }
 
 // The downgrade table, applied in code so no verdict is reinterpreted:
@@ -245,6 +274,9 @@ const survivors = []
 const suppressed = []
 const reclassified = []
 const attributionIndeterminate = []
+// Carried-forward findings survived an earlier round's checkers with any
+// reclassification or attribution marking already applied — pass them through.
+for (const finding of carried) survivors.push(finding)
 for (const { finding, verdicts, checked_by } of checked) {
   if (checked_by === 'skipped') {
     survivors.push(finding)
@@ -301,7 +333,10 @@ for (const { checked_by, degraded_pairing } of checked) {
 const checkFailed = suppressed.filter((s) => s.kind === 'check-failed').length
 const verification = {
   performed: verify && findings.length > 0,
-  checked: verify ? findings.length : 0,
+  checked: verify ? toCheck.length : 0,
+  // Findings whose verdict was recorded in an earlier round of this run and
+  // rode through without a fresh checker (remediation re-verify only).
+  carried_forward: carried.length,
   rejected: suppressed.length - checkFailed,
   check_failed: checkFailed,
   reclassified: reclassified.length,
@@ -338,6 +373,9 @@ const bar = {
   ran: false,
   outcome: null, // 'pass' | 'fail' | 'check-failed' when ran
   reasons: [],
+  // On a fail, the brief names the judge holds responsible — what the
+  // remediation round re-dispatches. Empty on a pass or a systemic fail.
+  implicated_briefs: [],
   checked_by: null,
 }
 
@@ -389,6 +427,7 @@ if (barMode === 'on' || (barMode === 'auto' && triggerFired)) {
   if (verdict) {
     bar.outcome = verdict.verdict
     bar.reasons = verdict.reasons
+    bar.implicated_briefs = verdict.implicated_briefs || []
     if (verdict.notes) bar.notes = verdict.notes
   } else {
     bar.outcome = 'check-failed'

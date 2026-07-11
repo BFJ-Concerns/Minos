@@ -20,6 +20,8 @@ green run.
   the pull request.
 - `PUMP19_HEAD_SHA` is the head this repair run serves. A landed repair moves
   the head past it; markers and statuses remain bound to the served head.
+- `PUMP19_BASE_REF` is the base ref, fetched into the workspace as
+  `origin/$PUMP19_BASE_REF` — the sync-first step below merges it.
 - `PUMP19_WORKSPACE` is the prepared head checkout. Run repository-controlled
   commands only through `pump19 ws-exec --config "$PUMP19_CONFIG" …` so service
   credentials stay outside the disposable workspace.
@@ -53,6 +55,29 @@ directory is not authority to outlive it.
 The head is writable only when `HEAD_BRANCH` is non-empty and `HEAD_REPO` equals
 `BASE_REPO`. An unwritable head is a private operational outcome: record it in
 `$PUMP19_RUN_DIR`, release the run claim, and leave `Flaky Tests` standing.
+
+## Sync with the base first
+
+The run's first move after the claim and writability checks is to bring the
+pull request current with its base branch in the workspace:
+
+`pump19 ws-exec --config "$PUMP19_CONFIG" -- git merge --no-commit "origin/$PUMP19_BASE_REF"`
+
+Resolving what conflicts arise is part of the job. Leave the merge in
+progress rather than committing it yourself — commits belong to
+`commit-push`, which completes the in-progress merge as an ordinary merge
+commit at landing (never a rebase; the no-force-push rule holds), pushed once
+with whatever repair the run adds in the same tree. If the merge reports the
+head already up to date, there is no sync to land; proceed on the tree as
+prepared.
+
+Diagnose on the merged tree, so a flake already fixed and merged through
+another pull request is adopted rather than solved a second time in a second
+place. When the merged tree no longer exhibits the flake, confirming the
+upstream fix — by the skill's evidence discipline, never one lucky green
+run — is itself the repair: the sync merge is the change to land, and it
+takes the ordinary landed publication path below, label removal as the
+terminal act included.
 
 ## Diagnose, repair, and prove
 
@@ -100,11 +125,24 @@ Read the first stdout token:
   run directory, release the claim, leave `Flaky Tests` standing, and write no
   comment or commit status.
 - A non-zero command is an operational failure. Its evidence belongs in
-  `run.log`. Release the claim, run `pump19 run-terminal --reason
-  controlled-failure`, and exit non-zero without a PR comment or error status.
-  If release itself fails, exit non-zero. Claim/release mutations are replay-safe
-  and do not set the publication marker: the wrapper retries when no earlier
-  substantive mutation was attempted and latches when one was.
+  `run.log`, and its exit path depends on the cause. A **transient** cause —
+  host capacity or saturation, engine or model-backend availability, anything
+  a later attempt could genuinely find changed — takes the retry path:
+  release the claim and exit non-zero *without* writing the terminal marker;
+  the wrapper records a retryable failure and the sweep re-fires the run on
+  its liveness pacing, up to its capped attempts. A **deterministic** cause —
+  missing wiring or configuration (an unset required variable, a missing
+  skill or script), invalid inputs, anything a retry cannot change — latches:
+  release the claim, run `pump19 run-terminal --reason REASON` (a short
+  lowercase code naming the cause, such as `config-error`;
+  `controlled-failure` when nothing more precise fits), and exit non-zero,
+  holding the run until an operator `pump19 re-arm`. Either way, write no PR
+  comment or error status; the split — retries burned on a deterministic
+  error are silence, a latch on a transient one is a stall nobody re-fires —
+  applies before the claim exists too. If release itself fails, exit
+  non-zero. Claim/release mutations are replay-safe and do not set the
+  publication marker: whichever exit you chose, the wrapper retries only when
+  no earlier substantive mutation was attempted and latches when one was.
 
 ## Successful publication and terminal act
 
