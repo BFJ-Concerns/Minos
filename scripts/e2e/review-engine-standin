@@ -78,6 +78,7 @@ case "$verdict" in
   standing-findings) coverage=full; bar=passed; review_state=REQUEST_CHANGES; outcome_label='Standing Findings' ;;
   partial-coverage) coverage=partial; bar=${PUMP19_STANDIN_BAR:-passed}; review_state=COMMENT; outcome_label='Partial Coverage' ;;
   paused-flaky) coverage=full; bar=passed; review_state=COMMENT; outcome_label='' ;;
+  bar-dissent) coverage=full; bar=failed; review_state=COMMENT; outcome_label='' ;;
   *) echo "unsupported stand-in verdict: $verdict" >&2; exit 2 ;;
 esac
 
@@ -132,6 +133,8 @@ marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review head="$PUMP19_HEAD_SHA"
 {
   if [ "$verdict" = paused-flaky ]; then
     printf 'Review complete with full coverage. Convergence is paused while Flaky Tests stands; no approval was given.\n\n'
+  elif [ "$verdict" = bar-dissent ]; then
+    printf 'Review complete with full coverage. The review-bar check dissents; the verified review publishes and no approval was given.\n\n'
   else
     printf 'Pump-19 stand-in seam review. Coverage: %s.\n\n' "$coverage"
   fi
@@ -180,17 +183,31 @@ if [ "$verdict" = converged ] && [ "${PUMP19_AUTO_MERGE:-false}" = true ]; then
   "$PUMP19_BIN" adapt get-pr-facts \
     "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$ready_facts"
   ready_labels=$(sed -n 's/^LABELS=//p' "$ready_facts")
+  # Mirror the mission's deferred-Ready rule: the newest status per context,
+  # service (pump19/…) contexts ignored, must be all-success or absent. A red
+  # or pending head defers the label; the approving review stands either way.
+  ci_state=$("$PUMP19_BIN" adapt get-statuses \
+    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" |
+    jq -r '[group_by(.context)[] | max_by(.id)
+            | select(.context | startswith("pump19/") | not)]
+           | if length == 0 then "absent"
+             elif all(.state == "success") then "green"
+             else "deferred" end')
   case ",$ready_labels," in
     *,"Flaky Tests",*) ;;
     *)
-      require_current
-      "$PUMP19_BIN" adapt add-label \
-        "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" Ready >/dev/null
-      if [ -n "${PUMP19_STANDIN_AFTER_READY_READY:-}" ]; then
-        : >"$PUMP19_STANDIN_AFTER_READY_READY"
-        while [ ! -e "$PUMP19_STANDIN_AFTER_READY_CONTINUE" ]; do
-          sleep 0.05
-        done
+      if [ "$ci_state" = deferred ]; then
+        echo "Ready deferred: head combined status not green" >&2
+      else
+        require_current
+        "$PUMP19_BIN" adapt add-label \
+          "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" Ready >/dev/null
+        if [ -n "${PUMP19_STANDIN_AFTER_READY_READY:-}" ]; then
+          : >"$PUMP19_STANDIN_AFTER_READY_READY"
+          while [ ! -e "$PUMP19_STANDIN_AFTER_READY_CONTINUE" ]; do
+            sleep 0.05
+          done
+        fi
       fi
       ;;
   esac
