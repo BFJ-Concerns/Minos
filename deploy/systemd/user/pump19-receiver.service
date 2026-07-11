@@ -10,10 +10,6 @@ ExecStart=/usr/local/bin/pump19 receive --config /etc/pump19
 Restart=on-failure
 RestartSec=5s
 UMask=0077
-# Run sessions and the deterministic build/test gates inherit this PATH.
-# The user manager's default omits rustup and per-user bins, which 127s
-# every cargo gate (%h expands to the service user's home).
-Environment=PATH=%h/.cargo/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 
 [Install]
 WantedBy=default.target
