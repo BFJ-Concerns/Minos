@@ -115,8 +115,12 @@ comment whose final line is:
 `Pump-19: head=FULL_SHA outcome=landed run=flaky`
 
 Format it with `pump19 marker format …`, post it with `pump19 adapt post-comment
-…`, and set `pump19/flaky success` on the served head. The prose names the test,
-the proven cause, the repair, the verification, and the resolved lead model.
+…`, and set `pump19/flaky success` on the served head. The prose names the
+test, the proven cause, the repair, and how the repair was verified — written
+for the repository's people, short, about their test. The process stays off
+the PR (operator ruling 2026-07-10): no run or workflow names, no model or
+engine identities — the resolved lead model belongs to the commit trailer and
+the run evidence, not the comment.
 
 Then release `Repairing Flaky Tests`. Only after every other forge write has
 succeeded, remove `Flaky Tests`. **Removing `Flaky Tests` is the repair run's

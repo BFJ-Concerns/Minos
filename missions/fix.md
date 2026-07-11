@@ -116,7 +116,12 @@ afterwards.
 A fix run publishes exactly one outcome as machine state: a single PR comment
 carrying the summary and a trailing marker, a terminal `pump19/fix` status, and
 the release of its `Fixing` label. It does not publish a review, because review
-judgement belongs to the independent review runs. The marker is:
+judgement belongs to the independent review runs. The summary is written for
+the repository's people and is about their change: what was fixed and why,
+short, each point anchored to the finding it answers. The process stays off
+the PR (operator ruling 2026-07-10): no run or workflow names, no model or
+engine identities, no account of how the fix run operated — provenance lives
+in the commit trailer and the run evidence. The marker is:
 
 `Pump-19: head=FULL_SHA outcome=landed|fruitless|unwritable run=fix`
 

@@ -257,10 +257,32 @@ activation gate. Worker provenance is best-effort: where a workflow's engine
 exposes the served worker model in the session log, record it as informational
 material. The lead remains subject to the service's fail-closed early-stream
 interlock. The pull request is the source of truth for what served
-(a landed fix carries its model in a commit trailer). In the posted review,
-render the lead provenance row from `resolved-lead.json` (role, ID, requested
-engine and model, resolved model, family), and any best-effort worker models as
-informational notes.
+(a landed fix carries its model in a commit trailer). Record the lead
+provenance row from `resolved-lead.json` (role, ID, requested engine and
+model, resolved model, family) and any best-effort worker models in the run
+evidence under `$PUMP19_RUN_DIR` — provenance belongs to the audit trail,
+never to the posted review (operator ruling 2026-07-10; see the presentation
+rule below).
+
+## The posted review reads like a colleague's review
+
+The review a person sees is about their change, never about this service
+(operator ruling 2026-07-10, the same principle that keeps errors off the
+PR: the process does not surface on the pull request — no run names, no
+workflow descriptions, no model or engine identities, no stage narration).
+Concretely:
+
+- **No title or heading naming the service, harness, workflow, or
+  occasion.** Open with the substance — a one- or two-sentence overall
+  assessment in plain words, then the findings.
+- **Short.** Findings carry the review: what is wrong, where, why it
+  matters, each anchored to its line. No methodology section, no
+  step-by-step account of how the review was produced, no list of checks
+  that passed, no panel or verification vocabulary.
+- **The one process artefact that stays is the single trailing marker
+  line** (`Pump-19: bar=… coverage=… head=… run=… verdict=…`) — machines
+  read it; keep it exactly as specified in the output contract, as the last
+  line, with nothing after it.
 
 ## Skill composition and provenance contract (re-checked against the delivered review-panel, 2026-07-10)
 
