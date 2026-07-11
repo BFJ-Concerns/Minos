@@ -84,6 +84,29 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 	}
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/finish\nfailure")
 
+	// A current head which is behind its base is synchronised as an ordinary
+	// merge commit and sent back through review. It is not merged into the base
+	// during the same finish run.
+	_ = os.Remove(filepath.Join(env.stateDir, "merge.args"))
+	env.setRunEnv(t, "eeeeeeeeeeeeeeee", map[string]string{"PUMP19_FIXTURE_BEHIND_BASE": "1"})
+	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	behindBase := RunDir(env.runsDir, "local", "pump19", "subject", "7", "eeeeeeeeeeeeeeee", RunFinish)
+	assertContainsFile(t, filepath.Join(behindBase, "finish-summary.md"), "reason=review-pending")
+	assertContainsFile(t, filepath.Join(env.stateDir, "commit-push.args"), "main")
+	if _, err := os.Stat(filepath.Join(env.stateDir, "merge.args")); !os.IsNotExist(err) {
+		t.Fatal("a behind-base head reached the forge merge")
+	}
+	parentData, err := os.ReadFile(filepath.Join(env.stateDir, "sync-parents"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents := strings.Fields(string(parentData))
+	if len(parents) != 2 {
+		t.Fatalf("synchronisation commit has %d parents, want 2: %v", len(parents), parents)
+	}
+
 	// Eligibility: merge only on the SERVICE'S OWN verdict for the current head,
 	// read from its posted review marker. Each of these refuses not-eligible,
 	// never reaching merge, and leaves Ready sticky. The last case is the R1

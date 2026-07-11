@@ -347,6 +347,9 @@ for label in Reviewing Fixing Finishing Converged "Standing Findings" "Partial C
 done
 
 cat >"$work/config/service.toml" <<EOF
+[service]
+bot-login = "Minos"
+
 [listener]
 bind = "127.0.0.1:${hook_port}"
 

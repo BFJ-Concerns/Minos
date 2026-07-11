@@ -86,6 +86,21 @@ else
   current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
   if [ "$current" != current ]; then
     finish refused not-current
+  elif ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- \
+      git merge-base --is-ancestor "origin/$PUMP19_BASE_REF" HEAD; then
+    # This run still serves the current PR head, but main has moved. Land the
+    # ordinary merge as a PR update and let the loop review the combined tree.
+    "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- \
+      git merge --no-ff --no-commit "origin/$PUMP19_BASE_REF"
+    printf 'Sync %s into the finish head.\n' "$PUMP19_BASE_REF" >"$PUMP19_RUN_DIR/sync-message.txt"
+    sync_result=$("$PUMP19_BIN" adapt commit-push \
+      "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
+      "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
+      "$model" "$PUMP19_RUN_DIR/sync-message.txt")
+    case "$sync_result" in
+      landed\ *) finish refused review-pending ;;
+      *) echo "unexpected base-sync commit-push token: $sync_result" >&2; exit 2 ;;
+    esac
   elif [ "$mergeable" != true ]; then
     finish refused not-mergeable
   elif ! "$PUMP19_BIN" adapt merge "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" merge >/dev/null 2>&1; then
