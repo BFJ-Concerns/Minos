@@ -76,6 +76,22 @@ if [ "$outcome" = landed ]; then
   esac
 fi
 
+if [ "$outcome" = landed ]; then
+  landed_sha=$(printf '%s' "$landed" | awk 'NR==1{print $2}')
+  jq -c '.[] | select(.body | contains("finding=F-FIXED"))' "$PUMP19_RUN_DIR/findings.json" |
+    while IFS= read -r finding; do
+      review_id=$(printf '%s' "$finding" | jq -r '.review_id')
+      path=$(printf '%s' "$finding" | jq -r '.path')
+      new_position=$(printf '%s' "$finding" | jq -r '.new_position')
+      old_position=$(printf '%s' "$finding" | jq -r '.old_position')
+      body="$PUMP19_RUN_DIR/fixed-$review_id.md"
+      printf 'fixed in `%s`\n' "$landed_sha" >"$body"
+      "$PUMP19_BIN" adapt post-review-comment \
+        "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
+        "$review_id" "$path" "$new_position" "$old_position" "$body" >/dev/null
+    done
+fi
+
 marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome="$outcome" run=fix)
 {
   printf 'Pump-19 fix stand-in. Outcome: %s. Model: %s.\n\n' "$outcome" "$model"

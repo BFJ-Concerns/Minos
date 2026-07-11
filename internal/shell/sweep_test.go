@@ -486,6 +486,58 @@ func TestLabelLessClaimReapsHistoricalHeadWithoutForgeReads(t *testing.T) {
 	}
 }
 
+func TestLabelLessClaimReapReleasesPresenceBestEffort(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		t.Run(map[bool]string{false: "removed", true: "failure logged"}[failure], func(t *testing.T) {
+			root := t.TempDir()
+			cfg := ServiceConfig{}
+			cfg.Runs.Dir = filepath.Join(root, "runs")
+			cfg.Sweep.LivenessThreshold.Duration = time.Hour
+			facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "222222222222bbbb"}
+			runHead := "111111111111aaaa"
+			runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, runHead, RunFix)
+			if err := os.MkdirAll(runDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeRunMeta(t, runDir, runHead, time.Now().Add(-2*time.Hour))
+			writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
+
+			adaptationDir := filepath.Join(root, "adaptation")
+			if err := os.Mkdir(adaptationDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			removed := filepath.Join(root, "removed")
+			script := "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'" + removed + "'\n"
+			if failure {
+				script += "exit 1\n"
+			}
+			writeScript(t, filepath.Join(adaptationDir, "remove-reaction"), script)
+			logPath := filepath.Join(root, "sweep.log")
+			logFile, err := os.Create(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reapLabelLessClaims(t.Context(), cfg, RepoConfig{}, Adaptation{Dir: adaptationDir}, facts, nil, logFile); err != nil {
+				t.Fatalf("reaction removal must not make reap fatal: %v", err)
+			}
+			if err := logFile.Close(); err != nil {
+				t.Fatal(err)
+			}
+			assertContainsFile(t, removed, "owner\nrepo\n7\neyes")
+			if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+				t.Fatalf("claim was not reaped: %v", err)
+			}
+			logData, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failure && !strings.Contains(string(logData), "presence release failed") {
+				t.Fatalf("reaction failure was not logged:\n%s", logData)
+			}
+		})
+	}
+}
+
 func TestRetryableFailureReleasePreservesBoundedEvidence(t *testing.T) {
 	root := t.TempDir()
 	cfg := ServiceConfig{}

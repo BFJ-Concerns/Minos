@@ -30,6 +30,12 @@ func TestFixRunBodyRecordsEachOutcomeThroughRunWrap(t *testing.T) {
 	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/fix\nsuccess")
 	assertContainsFile(t, filepath.Join(env.stateDir, "labels-added"), "Fixing")
 	assertContainsFile(t, filepath.Join(env.stateDir, "labels-removed"), "Fixing")
+	assertContainsFile(t, filepath.Join(env.stateDir, "review-comments"), "41:fixed in `landedsha`")
+	if data, err := os.ReadFile(filepath.Join(env.stateDir, "review-comments")); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(data), "42:") {
+		t.Fatalf("unfixed finding received a fix comment:\n%s", data)
+	}
 
 	// Fruitless: a writable head, but the pass lands nothing — no push, and the
 	// standing findings remain the verdict.
@@ -255,7 +261,9 @@ printf 'HEAD_BRANCH=main\nHEAD_REPO=%s\nBASE_REPO=pump19/subject\n' "$head_repo"
 printf 'MERGEABLE=%s\n' "${PUMP19_FIXTURE_MERGEABLE:-true}"
 printf 'LABELS=%s\n' "${PUMP19_FIXTURE_LABELS:-Converged,Ready}"
 `)
-	writeScript(t, filepath.Join(adaptationDir, "list-review-comments"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "list-review-comments"), `#!/usr/bin/env sh
+printf '%s\n' '[{"id":91,"body":"First finding\n\nPump-19: finding=F-FIXED head='"$PUMP19_HEAD_SHA"' priority=P1 run=review","path":"main.go","new_position":12,"old_position":0,"review_id":41},{"id":92,"body":"Second finding\n\nPump-19: finding=F-STANDS head='"$PUMP19_HEAD_SHA"' priority=P1 run=review","path":"other.go","new_position":8,"old_position":0,"review_id":42}]'
+`)
 	// Finish eligibility reads the service's OWN verdict from the trailing marker
 	// of its posted reviews. PUMP19_FIXTURE_VERDICT sets that verdict (default
 	// converged; `none` means the service posted no verdict for this head).
@@ -278,6 +286,7 @@ printf 'LABELS=%s\n' "${PUMP19_FIXTURE_LABELS:-Converged,Ready}"
 	writeScript(t, filepath.Join(adaptationDir, "commit-push"), "#!/usr/bin/env sh\nprintf 'commit-push\\n' >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "commit-push.args")+"'\nif [ \"${PUMP19_FIXTURE_PROTECTED:-}\" = 1 ]; then printf 'unwritable\\n'; else printf '%s\\n' \"${PUMP19_FIXTURE_COMMIT_OUTCOME:-landed landedsha}\"; fi\n")
 	writeScript(t, filepath.Join(adaptationDir, "merge"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "merge.args")+"'\nprintf '{\"merged\":true}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\nprintf 'post-comment\\n' >>'"+operations+"'\ncat \"$4\" >>'"+filepath.Join(stateDir, "comments")+"'\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "post-review-comment"), "#!/usr/bin/env sh\nprintf '%s:' \"$4\" >>'"+filepath.Join(stateDir, "review-comments")+"'\ncat \"$8\" >>'"+filepath.Join(stateDir, "review-comments")+"'\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf 'set-status:%s:%s\\n' \"$4\" \"$5\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "status.args")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "add-label"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-added")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nprintf 'remove-label:%s\\n' \"$4\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >>'"+filepath.Join(stateDir, "labels-removed")+"'\n")

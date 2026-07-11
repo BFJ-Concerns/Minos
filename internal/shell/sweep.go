@@ -600,6 +600,13 @@ func reapLabelLessClaims(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 			fmt.Fprintf(logw, "label-less reap failed closed for %s: %v\n", claim.path, err)
 			continue
 		}
+		// The stage label and eyes reaction are one presence signal. A human can
+		// remove the label while the run is alive; once its abandoned claim is
+		// reaped, leaving the reaction behind would advertise work that no longer
+		// exists. Presence clean-up is deliberately best-effort.
+		if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
+			fmt.Fprintf(logw, "label-less presence release failed for %s: %v\n", claim.path, err)
+		}
 		fmt.Fprintf(logw, "reaped label-less %s for %s#%s\n", claim.path, facts.RepoSlug(), facts.PR)
 	}
 	return currentStatuses, nil

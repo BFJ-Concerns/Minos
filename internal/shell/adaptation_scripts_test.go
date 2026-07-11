@@ -135,6 +135,22 @@ func TestForgejoUpdateCommentTargetsStableComment(t *testing.T) {
 	}
 }
 
+func TestForgejoPostReviewCommentAppendsAtFindingAnchor(t *testing.T) {
+	dir := t.TempDir()
+	body := filepath.Join(dir, "body.md")
+	if err := os.WriteFile(body, []byte("fixed in `abc1234`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	captured := runForgejoWriteScript(t, "post-review-comment", "{}", "owner", "repo", "7", "41", "main.go", "12", "0", body)
+	if !strings.Contains(captured, "POST") ||
+		!strings.Contains(captured, "/pulls/7/reviews/41/comments") ||
+		!strings.Contains(captured, `"path":"main.go"`) ||
+		!strings.Contains(captured, `"new_position":12`) ||
+		!strings.Contains(captured, "fixed in `abc1234`") {
+		t.Fatalf("post-review-comment request lost review, anchor, or body:\n%s", captured)
+	}
+}
+
 func TestForgejoPresenceReactionsUseAuthenticatedIssueReaction(t *testing.T) {
 	added := runForgejoWriteScript(t, "add-reaction", "{}", "owner", "repo", "7", "eyes")
 	if !strings.Contains(added, "-X\nPOST") || !strings.Contains(added, "/issues/7/reactions") || !strings.Contains(added, `{"content":"eyes"}`) {

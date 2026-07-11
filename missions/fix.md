@@ -79,6 +79,14 @@ before each forge write as a review would.
   writes a JSON array of the posted inline comments. The verified material
   findings you answer are those whose trailing marker binds them to
   `head=$PUMP19_HEAD_SHA`, each carrying a stable `finding=F-XXXX` handle.
+  Keep the `review_id`, `path`, `new_position`, and `old_position` fields for
+  every finding you fix: after landing, append `fixed in \`SHA\`` at that
+  finding's review anchor with
+  `pump19 adapt post-review-comment "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" REVIEW_ID PATH NEW_POSITION OLD_POSITION BODY_FILE`.
+  Comment only on findings the landed change actually fixes. These short
+  acknowledgements are additional to the summary comment below; they let the
+  repository's readers follow each review conversation without pretending an
+  unfixed finding is resolved.
 - `pump19 adapt list-reviews "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR"`
   writes the PR's review history — prior verdicts and pass count — for the
   skill to weigh how many times a finding has already survived a fix.
@@ -147,18 +155,21 @@ A fix run publishes exactly one outcome as machine state: a single PR comment
 carrying the summary and a trailing marker, a terminal `pump19/fix` status, and
 the release of its `Fixing` label. It does not publish a review, because review
 judgement belongs to the independent review runs. The summary is written for
-the repository's people and is about their change: what was fixed and why,
-short, each point anchored to the finding it answers. The process stays off
-the PR (operator ruling 2026-07-10): no run or workflow names, no model or
-engine identities, no account of how the fix run operated — provenance lives
-in the commit trailer and the run evidence. The marker is:
+the repository's people and is about their change: its heading names what
+changed in the subject codebase's own vocabulary, followed by a short account
+of what was fixed and why, each point anchored to the finding it answers. The
+process stays off the PR (operator ruling 2026-07-10): no run or workflow names,
+no model or engine identities, no account of how the fix run operated —
+provenance lives in the commit trailer and the run evidence. The marker is:
 
 `Pump-19: head=FULL_SHA outcome=landed|fruitless|unwritable run=fix`
 
 - **landed** — one or more fixes were committed and pushed. Require `current`,
   run `commit-push`, stay with the landed head through CI as the landing
   section directs (further commits the CI wait obliges are part of this same
-  outcome), then record it: the push has moved the head, so the summary
+  outcome), append the per-finding comments described under Reading the loop
+  for every finding the final landed change fixes, then record it: the push has
+  moved the head, so the summary
   comment and the `pump19/fix` status are bound to `$PUMP19_HEAD_SHA` and are
   written without a further `current` check (the fix did complete for that
   head). The summary covers everything landed and states plainly any CI state
