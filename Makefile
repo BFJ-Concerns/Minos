@@ -33,6 +33,8 @@ shellcheck:
 			scripts/adaptations/forgejo/get-pr-facts \
 			scripts/adaptations/forgejo/get-combined-status \
 			scripts/adaptations/forgejo/add-reaction \
+			scripts/adaptations/forgejo/add-label \
+			scripts/adaptations/forgejo/ensure-label-vocabulary \
 			scripts/adaptations/forgejo/remove-reaction \
 			scripts/adaptations/forgejo/assign-if-missing \
 			scripts/e2e/review-engine-standin \

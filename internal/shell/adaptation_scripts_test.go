@@ -84,6 +84,93 @@ func TestForgejoPresenceReactionsUseAuthenticatedIssueReaction(t *testing.T) {
 	}
 }
 
+func TestForgejoAddLabelFailsWhenForgeSilentlySkipsIt(t *testing.T) {
+	fakeBin := t.TempDir()
+	curl := filepath.Join(fakeBin, "curl")
+	script := `#!/usr/bin/env sh
+case " $* " in
+  *" -X POST "*) printf '{}\n' ;;
+  *" -X GET "*) printf '{"labels":[]}\n' ;;
+  *) exit 97 ;;
+esac
+`
+	if err := os.WriteFile(curl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "add-label")
+	cmd := exec.Command(path, "owner", "repo", "7", LabelReviewing)
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+":"+os.Getenv("PATH"),
+		"PUMP19_API_BASE=http://forge.invalid",
+		"PUMP19_FORGE_TOKEN=token",
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("silently skipped label was accepted:\n%s", out)
+	}
+	if !strings.Contains(string(out), `label "Reviewing" is absent after Forgejo accepted the write`) {
+		t.Fatalf("label skip was not loud and specific:\n%s", out)
+	}
+}
+
+func TestForgejoEnsureLabelVocabularyCreatesEveryMissingLabel(t *testing.T) {
+	fakeBin := t.TempDir()
+	capture := filepath.Join(fakeBin, "created")
+	curl := filepath.Join(fakeBin, "curl")
+	script := `#!/usr/bin/env sh
+set -eu
+case " $* " in
+  *" -X GET "*"page=1"*) printf '[{"name":"Reviewing"}]\n' ;;
+  *" -X GET "*) printf '[]\n' ;;
+  *" -X POST "*)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--data" ]; then
+        printf '%s\n' "$2" >>"$PUMP19_TEST_CAPTURE"
+        break
+      fi
+      shift
+    done
+    printf '{}\n'
+    ;;
+  *) exit 97 ;;
+esac
+`
+	if err := os.WriteFile(curl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "ensure-label-vocabulary")
+	cmd := exec.Command(path, "owner", "repo")
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+":"+os.Getenv("PATH"),
+		"PUMP19_API_BASE=http://forge.invalid",
+		"PUMP19_FORGE_TOKEN=token",
+		"PUMP19_TEST_CAPTURE="+capture,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ensure-label-vocabulary failed: %v\n%s", err, out)
+	}
+	created, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(created)
+	if strings.Contains(text, `"name":"Reviewing"`) {
+		t.Fatalf("existing label was recreated:\n%s", text)
+	}
+	for _, label := range []string{
+		LabelFixing, LabelFinishing, LabelRepairingFlaky, LabelConverged,
+		LabelStandingFindings, LabelPartialCoverage, LabelFlakyTests, LabelReady,
+	} {
+		if !strings.Contains(text, `"name":"`+label+`"`) {
+			t.Errorf("missing vocabulary label %q in:\n%s", label, text)
+		}
+	}
+	if lines := strings.Count(strings.TrimSpace(text), "\n") + 1; lines != 8 {
+		t.Fatalf("created labels = %d, want 8 missing entries:\n%s", lines, text)
+	}
+}
+
 func TestForgejoAssignIfMissingWritesOnlyWhenBotIsAbsent(t *testing.T) {
 	absent := runForgejoAssignIfMissing(t, `{"assignees":[{"login":"alice"}]}`)
 	if strings.Count(absent, "-X GET") != 1 || strings.Count(absent, "-X PATCH") != 1 {
