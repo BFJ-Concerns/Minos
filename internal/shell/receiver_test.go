@@ -1,10 +1,12 @@
 package shell
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,75 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestHandleHookLogsRejectedAndAcceptedDeliveries(t *testing.T) {
+	root := writeRepoConfig(t, validRepoConfig)
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+
+	rejected := signedHookRequest(t)
+	rejected.Header.Set("X-Forgejo-Signature", "invalid")
+	rejectedResponse := httptest.NewRecorder()
+	if err := handleHook(t.Context(), receiverTestConfig(t, root), rejectedResponse, rejected); err != nil {
+		t.Fatal(err)
+	}
+	if rejectedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("rejected status = %d, want 401", rejectedResponse.Code)
+	}
+	if !strings.Contains(logs.String(), "hook delivery rejected: bad signature") {
+		t.Fatalf("bad-signature delivery was quiet:\n%s", logs.String())
+	}
+
+	logs.Reset()
+	installAdmissionCommands(t, root, "exit 0\n", "exit 0\n")
+	accepted := signedHookRequest(t)
+	accepted.Header.Set("X-Forgejo-Delivery", "delivery-17")
+	acceptedResponse := httptest.NewRecorder()
+	if err := handleHook(t.Context(), receiverTestConfig(t, root), acceptedResponse, accepted); err != nil {
+		t.Fatal(err)
+	}
+	if acceptedResponse.Code != http.StatusAccepted {
+		t.Fatalf("accepted status = %d, want 202", acceptedResponse.Code)
+	}
+	if !strings.Contains(logs.String(), "hook delivery accepted") || !strings.Contains(logs.String(), "delivery-17") {
+		t.Fatalf("accepted delivery was quiet or unidentifiable:\n%s", logs.String())
+	}
+}
+
+func TestHandleHookDoesNotSpawnTerminallyLatchedHead(t *testing.T) {
+	root := writeRepoConfig(t, validRepoConfig)
+	spawned := filepath.Join(root, "spawned")
+	installAdmissionCommands(t, root, "exit 0\n", ": >'"+spawned+"'\n")
+	cfg := receiverTestConfig(t, root)
+	fixture := readFixture(t, "001-pull_request-opened.json")
+	facts := runNormaliseEvent(t, fixture)
+	facts.Forge = "local"
+	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTerminalMarker(runDir, RunReview, facts.HeadSHA, "controlled-failure"); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	if err := handleHook(t.Context(), cfg, response, signedHookRequest(t)); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusAccepted || response.Body.String() != "terminal latch\n" {
+		t.Fatalf("response = %d %q, want terminal-latch acceptance", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(spawned); !os.IsNotExist(err) {
+		t.Fatalf("terminally latched head spawned: %v", err)
+	}
+}
 
 func TestHandleHookRejectsOversizedBody(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/hooks/local", strings.NewReader(strings.Repeat("x", int(maxWebhookBodyBytes+1))))

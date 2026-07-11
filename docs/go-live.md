@@ -318,6 +318,25 @@ actors' label application starts repair. The placeholders authorise nobody
 until you set real forge logins. Leaving out the flaky trigger keeps the label's
 review pause but makes repair inert.
 
+First create Pump-19's complete label vocabulary. The operation is idempotent:
+it leaves existing labels unchanged and creates only missing names. Run it
+before activating the repository configuration; Forgejo otherwise accepts an
+add-label request while silently skipping an undefined name.
+
+```sh
+DEPLOY_UID="$(id -u "$DEPLOY_USER")"
+sudo -u "$DEPLOY_USER" env XDG_RUNTIME_DIR="/run/user/$DEPLOY_UID" \
+  PUMP19_CONFIG=/etc/pump19 PUMP19_FORGE=forgejo \
+  /usr/local/bin/pump19 adapt ensure-label-vocabulary \
+  "$FORGEJO_OWNER" "$FORGEJO_REPO"
+```
+
+This creates the four in-flight labels (`Reviewing`, `Fixing`, `Finishing`,
+and `Repairing Flaky Tests`), the three review-outcome labels (`Converged`,
+`Standing Findings`, and `Partial Coverage`), and the `Flaky Tests` and `Ready`
+control labels. Ordinary add-label operations also read the PR back and fail
+loudly if Forgejo claims success without applying the requested label.
+
 ```sh
 sudo -u "$DEPLOY_USER" cp \
   /etc/pump19/repos/owner--repository.toml.example \
@@ -354,9 +373,10 @@ sudo tail -n 50 /var/log/pump19/sweep.log
 
 The delivery must receive HTTP `202`. With the repository active and a matching
 trigger, the body is `spawned review`; duplicate or non-triggering deliveries
-have other explicit `202` bodies. The response is visible only in Forgejo's
-delivery history for the hook (the receiver logs nothing on an accepted
-delivery), so read the delivery record itself: a red/failed delivery whose
+have other explicit `202` bodies. The receiver journal records one line when a
+delivery passes signature authentication and one line when a bad signature is
+rejected, including the forge event and delivery identifiers. Also read the
+Forgejo delivery record itself: a red/failed delivery whose
 response says "webhook can only call allowed HTTP servers" means the
 `ALLOWED_HOST_LIST` step in section 7 was missed, and every event will fail
 silently until it is fixed. The sweep service must finish successfully and
@@ -375,3 +395,28 @@ At this point the deployment mechanics are live. A real review is ready only
 after the synced skill has passed its interface re-check, the operator-approved
 pins and subscription logins are verified, and a full run has completed against
 a disposable PR.
+
+## 10. Upgrade an existing deployment
+
+Before installing an updated checkout, compare every shipped configuration
+file with the deployed tree. This deliberately reports local repository files
+and configured values as differences: review them, preserve intentional local
+settings, and carry across every newly shipped key. In particular, do not copy
+a template wholesale over credentials or deployment-specific values.
+
+```sh
+cd "$PUMP19_CHECKOUT"
+sudo diff -ru \
+  --exclude=webhook.secret --exclude=forgejo.token \
+  deploy/etc/pump19/ /etc/pump19/ || {
+    status=$?
+    [ "$status" -eq 1 ] || exit "$status"
+  }
+```
+
+Only after resolving the displayed drift should you repeat the binary, script,
+mission, skill, configuration, and systemd-unit installation steps above. Run
+`make check` and the offline deployment smoke before restarting either service,
+then repeat the live smoke check in section 9. This makes newly required values
+such as additions to `run-body.env` visible before a live run spends its retry
+budget discovering them.

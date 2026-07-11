@@ -66,9 +66,13 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		signatureHeader = "X-Forgejo-Signature"
 	}
 	if !VerifyHexHMACSHA256(body, secret, r.Header.Get(signatureHeader)) {
+		log.Printf("hook delivery rejected: bad signature forge=%s event=%q delivery=%q", forgeName, r.Header.Get("X-Forgejo-Event"), r.Header.Get("X-Forgejo-Delivery"))
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return nil
 	}
+	// Authentication is the network seam: logging it here distinguishes a quiet
+	// receiver from a forge that reached the box, without waiting on adaptation.
+	log.Printf("hook delivery accepted: forge=%s event=%q delivery=%q", forgeName, r.Header.Get("X-Forgejo-Event"), r.Header.Get("X-Forgejo-Delivery"))
 	adaptation, err := NewAdaptation(forge)
 	if err != nil {
 		http.Error(w, "adaptation unavailable", http.StatusInternalServerError)
@@ -119,6 +123,16 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 	if facts.HasLabel(label) && !NewHeadOccasion(facts.Occasion) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("already in flight\n"))
+		return nil
+	}
+	latched, err := hasTerminalMarker(cfg.Runs.Dir, facts, decision.Kind)
+	if err != nil {
+		http.Error(w, "terminal evidence unavailable", http.StatusInternalServerError)
+		return err
+	}
+	if latched {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("terminal latch\n"))
 		return nil
 	}
 	if err := SpawnRun(ctx, cfg, repo, facts, decision.Kind, facts.Occasion); err != nil {
