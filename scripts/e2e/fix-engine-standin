@@ -93,6 +93,29 @@ esac
 "$PUMP19_BIN" adapt set-status \
   "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
   pump19/fix success "Pump-19 fix completed: $outcome" >/dev/null
+release
+trap - EXIT HUP INT TERM
+
+# Per-finding acknowledgements are reader-facing follow-up, not outcome state.
+# Stale anchors or transient forge failures are retained in run.log without
+# turning an already-landed and recorded fix into a failed run.
+if [ "$outcome" = landed ]; then
+  landed_sha=$(printf '%s' "$landed" | awk 'NR==1{print $2}')
+  jq -c '.[] | select(.body | contains("finding=F-FIXED"))' "$PUMP19_RUN_DIR/findings.json" |
+    while IFS= read -r finding; do
+      review_id=$(printf '%s' "$finding" | jq -r '.review_id')
+      path=$(printf '%s' "$finding" | jq -r '.path')
+      new_position=$(printf '%s' "$finding" | jq -r '.new_position')
+      old_position=$(printf '%s' "$finding" | jq -r '.old_position')
+      body="$PUMP19_RUN_DIR/fixed-$review_id.md"
+      printf 'fixed in `%s`\n' "$landed_sha" >"$body"
+      if ! "$PUMP19_BIN" adapt post-review-comment \
+        "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
+        "$review_id" "$path" "$new_position" "$old_position" "$body" >/dev/null; then
+        printf 'per-finding acknowledgement failed for review %s\n' "$review_id" >>"$PUMP19_RUN_DIR/run.log"
+      fi
+    done
+fi
 
 printf '{"type":"assistant","message":{"model":"%s"}}\n' "$standin_model"
 printf '{"type":"result","subtype":"success","modelUsage":{"%s":{}}}\n' "$standin_model"

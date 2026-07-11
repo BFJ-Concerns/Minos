@@ -27,6 +27,7 @@ shellcheck:
 			scripts/adaptations/forgejo/list-reviews \
 			scripts/adaptations/forgejo/post-review \
 			scripts/adaptations/forgejo/post-comment \
+			scripts/adaptations/forgejo/post-review-comment \
 			scripts/adaptations/forgejo/update-comment \
 			scripts/adaptations/forgejo/commit-push \
 			scripts/adaptations/forgejo/merge \

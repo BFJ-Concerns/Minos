@@ -1,0 +1,26 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+review_id="$4"
+path="$5"
+new_position="$6"
+old_position="$7"
+body_file="$8"
+
+payload=$(jq -nc \
+  --arg body "$(cat "$body_file")" \
+  --arg path "$path" \
+  --argjson new_position "$new_position" \
+  --argjson old_position "$old_position" \
+  '{body:$body,path:$path,new_position:$new_position,old_position:$old_position}')
+
+# Forgejo groups comments appended to the same review and source anchor as one
+# conversation, even though its REST API does not expose conversation resolve.
+api POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${review_id}/comments" \
+  -H "Content-Type: application/json" \
+  --data "$payload"
