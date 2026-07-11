@@ -128,6 +128,22 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	assertContainsFile(t, filepath.Join(configuredRun, "review.md"), "verdict=standing-findings")
 	assertFindIngestCommit(t, annexeRemote)
 
+	setReviewRunEnv(t, root, configRoot, installRoot, "aeaeaeaeaeaeaeae", "")
+	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
+	t.Setenv("PUMP19_STANDIN_FAIL_AFTER_INGEST", "1")
+	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
+		t.Fatal("transient failure after find ingest unexpectedly completed")
+	}
+	retryableRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "aeaeaeaeaeaeaeae", RunReview)
+	assertContainsFile(t, filepath.Join(retryableRun, "retry.env"), "PUMP19_RETRYABLE_FAILURE=1")
+	if _, err := os.Stat(filepath.Join(retryableRun, terminalMarkerFile)); !os.IsNotExist(err) {
+		t.Fatalf("transient failure after find ingest created a terminal latch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(retryableRun, forgeWritesAttemptedFile)); !os.IsNotExist(err) {
+		t.Fatalf("find ingest crossed the tracked PR-write boundary: %v", err)
+	}
+	assertContainsFile(t, filepath.Join(retryableRun, "run.log"), "fixture transient failure after find ingest")
+
 	writeReviewRepoConfig(t, configRoot, "\n[find-ingest]\nrepository = \"annexes/unreachable\"\npath = \"ISSUES.md\"\n")
 	setReviewRunEnv(t, root, configRoot, installRoot, "adadadadadadadad", "")
 	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
@@ -751,6 +767,7 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding 
 		t.Setenv(key, value)
 	}
 	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", "")
+	t.Setenv("PUMP19_STANDIN_FAIL_AFTER_INGEST", "")
 }
 
 func writeReviewRepoConfig(t *testing.T, configRoot, findIngest string) {

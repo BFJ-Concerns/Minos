@@ -39,6 +39,13 @@ var runClaimMutationOperations = map[string]bool{
 	"remove-reaction":   true,
 }
 
+// Find ingest is deliberately outside the PR publication boundary. A retry may
+// append the same advisory entry twice, but it must not turn a later transient
+// review failure into a terminal body-exit-after-forge-write latch.
+var untrackedMutationOperations = map[string]bool{
+	"append-findings": true,
+}
+
 type Adaptation struct {
 	Dir        string
 	APIBase    string
@@ -95,6 +102,13 @@ func (a Adaptation) runClaimMutation(ctx context.Context, name string, args ...s
 		return nil, fmt.Errorf("adaptation operation %q is not run-claim state", name)
 	}
 	return a.run(ctx, name, nil, nil, false, args...)
+}
+
+func (a Adaptation) runUntrackedMutation(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
+	if !untrackedMutationOperations[name] {
+		return nil, fmt.Errorf("adaptation operation %q is not an untracked mutation", name)
+	}
+	return a.run(ctx, name, stdin, extraEnv, false, args...)
 }
 
 func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, trackMutation bool, args ...string) ([]byte, error) {
@@ -161,7 +175,12 @@ func AdaptCommand(ctx context.Context, args []string, stdin io.Reader, stdout io
 			"PUMP19_FIND_INGEST_PATH":       repo.FindIngest.Path,
 		}
 	}
-	out, err := adaptation.Run(ctx, args[0], stdin, extraEnv, args[1:]...)
+	var out []byte
+	if untrackedMutationOperations[args[0]] {
+		out, err = adaptation.runUntrackedMutation(ctx, args[0], stdin, extraEnv, args[1:]...)
+	} else {
+		out, err = adaptation.Run(ctx, args[0], stdin, extraEnv, args[1:]...)
+	}
 	if err != nil {
 		return err
 	}

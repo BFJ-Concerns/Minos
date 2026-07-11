@@ -97,6 +97,30 @@ func TestForgejoAppendFindingsCommitsConventionEntryAsServiceIdentity(t *testing
 	}
 }
 
+func TestForgejoAppendFindingsTreatsEmptyArrayAsNoOp(t *testing.T) {
+	findings := filepath.Join(t.TempDir(), "preexisting.json")
+	if err := os.WriteFile(findings, []byte("[]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "append-findings")
+	cmd := exec.Command(path, "BFJ-Concerns/Subject", "17", findings)
+	cmd.Env = append(os.Environ(),
+		"PUMP19_API_BASE=http://unreachable.invalid",
+		"PUMP19_FORGE_TOKEN=test-token",
+		"PUMP19_FIND_INGEST_REPOSITORY=annexes/unreachable",
+		"PUMP19_FIND_INGEST_PATH=ISSUES.md",
+		"PUMP19_FIX_AUTHOR_NAME=Minos",
+		"PUMP19_FIX_AUTHOR_EMAIL=minos@example.invalid",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("empty find ingest: %v\n%s", err, out)
+	}
+	if string(out) != "nothing to append\n" {
+		t.Fatalf("empty find ingest output = %q", out)
+	}
+}
+
 func gitCommand(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
