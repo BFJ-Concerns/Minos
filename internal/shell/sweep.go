@@ -874,7 +874,7 @@ func reconcileDecision(repo RepoConfig, facts Facts, statuses []Status, readyAct
 	}
 	reviewStatus, reviewOK := statusForContext(statuses, reviewContext)
 	if reviewOK && reviewStatus.State == "failure" {
-		if _, fixOK := statusForContext(statuses, fixContext); !fixOK && !facts.HasLabel(LabelStandingFindings) && guardsPass(repo, RunFix, facts, reviewStatus.Creator) {
+		if _, fixOK := statusForContext(statuses, fixContext); !fixOK && guardsPass(repo, RunFix, facts, reviewStatus.Creator) {
 			return RunFix, true
 		}
 	}

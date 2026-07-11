@@ -21,12 +21,12 @@ func TestSweepDerivesFixFromCurrentHeadBotReview(t *testing.T) {
 	}
 	standingFacts := facts
 	standingFacts.Labels = []string{LabelStandingFindings}
-	if action, ok := decideSweepAction(repo, standingFacts, nil, reviews, "", ""); ok {
-		t.Fatalf("Standing Findings unexpectedly re-fired action %#v", action)
+	if action, ok := decideSweepAction(repo, standingFacts, nil, reviews, "", ""); !ok || action.Run != RunFix {
+		t.Fatalf("labelled blocking review action = %#v ok=%v, want fix", action, ok)
 	}
 
 	fixContext, _ := StatusContext(RunFix)
-	action, ok = decideSweepAction(repo, facts, []Status{{ID: 19, Context: fixContext, State: "success"}}, reviews, "", "")
+	action, ok = decideSweepAction(repo, standingFacts, []Status{{ID: 19, Context: fixContext, State: "success"}}, reviews, "", "")
 	if ok {
 		t.Fatalf("existing fix status did not suppress action: %#v", action)
 	}

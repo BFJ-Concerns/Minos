@@ -45,7 +45,7 @@ func decideSweepAction(repo RepoConfig, facts Facts, statuses []Status, reviews 
 		switch strings.ToUpper(review.State) {
 		case "REQUEST_CHANGES":
 			fixContext, _ := StatusContext(RunFix)
-			if _, exists := statusForContext(statuses, fixContext); !exists && !facts.HasLabel(LabelStandingFindings) && guardsPass(repo, RunFix, facts, review.User) {
+			if _, exists := statusForContext(statuses, fixContext); !exists && guardsPass(repo, RunFix, facts, review.User) {
 				return sweepAction{Run: RunFix}, true
 			}
 		case "APPROVED":
