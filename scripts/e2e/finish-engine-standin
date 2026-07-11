@@ -65,7 +65,10 @@ finish() {
 # FIRST, before eligibility (operator ruling 2026-07-11): a Ready-carrying
 # head must never rot behind its base while it waits on a verdict.
 case "$verdict" in
-  converged|standing-findings) eligibility_branch=eligible ;;
+  # bar-dissent is historical vocabulary: zero blocking findings at full
+  # coverage with the bar's dissent recorded — eligible as clean (operator
+  # ruling 2026-07-11).
+  converged|standing-findings|bar-dissent) eligibility_branch=eligible ;;
   paused-flaky) eligibility_branch=paused-flaky ;;
   *) eligibility_branch=other ;;
 esac

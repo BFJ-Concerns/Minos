@@ -136,6 +136,18 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 		t.Fatalf("ineligible-head synchronisation commit parents: %q", syncParents)
 	}
 
+	// A historical bar-dissent verdict merges as clean (operator ruling
+	// 2026-07-11): zero blocking findings at full coverage, the bar's dissent
+	// on the record — findings gate merges, the bar critiques reviews.
+	_ = os.Remove(filepath.Join(env.stateDir, "merge.args"))
+	env.setRunEnv(t, "5555555555555555", map[string]string{"PUMP19_FIXTURE_VERDICT": "bar-dissent"})
+	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
+		t.Fatal(err)
+	}
+	dissent := RunDir(env.runsDir, "local", "pump19", "subject", "7", "5555555555555555", RunFinish)
+	assertContainsFile(t, filepath.Join(dissent, "finish-summary.md"), "outcome=merged")
+	assertContainsFile(t, filepath.Join(env.stateDir, "merge.args"), "merge")
+
 	// Eligibility: merge only on the SERVICE'S OWN verdict for the current head,
 	// read from its posted review marker. Each of these refuses not-eligible,
 	// never reaching merge, and leaves Ready sticky. The last case is the R1
@@ -149,7 +161,6 @@ func TestFinishRunBodyGatesTheMergeThroughRunWrap(t *testing.T) {
 		{"no-service-review", "1111111111111111", map[string]string{"PUMP19_FIXTURE_VERDICT": "none"}},
 		{"partial-coverage", "2222222222222222", map[string]string{"PUMP19_FIXTURE_VERDICT": "partial-coverage"}},
 		{"paused-flaky", "4444444444444444", map[string]string{"PUMP19_FIXTURE_VERDICT": "paused-flaky"}},
-		{"bar-dissent", "5555555555555555", map[string]string{"PUMP19_FIXTURE_VERDICT": "bar-dissent"}},
 		{"unrelated-human-approve", "3333333333333333", map[string]string{"PUMP19_FIXTURE_VERDICT": "partial-coverage", "PUMP19_FIXTURE_HUMAN_APPROVE": "1"}},
 	}
 	for _, tc := range cases {
