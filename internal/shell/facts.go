@@ -8,17 +8,22 @@ import (
 )
 
 type Facts struct {
-	Occasion string
-	Forge    string
-	Owner    string
-	Repo     string
-	PR       string
-	HeadSHA  string
-	BaseRef  string
-	Author   string
-	Actor    string
-	Draft    bool
-	Labels   []string
+	Occasion  string
+	Forge     string
+	Owner     string
+	Repo      string
+	PR        string
+	HeadSHA   string
+	BaseRef   string
+	BaseSHA   string
+	HeadRef   string
+	Author    string
+	Actor     string
+	Draft     bool
+	Open      bool
+	Merged    bool
+	Mergeable bool
+	Labels    []string
 }
 
 func (f Facts) RepoSlug() string {
@@ -26,15 +31,6 @@ func (f Facts) RepoSlug() string {
 		return ""
 	}
 	return f.Owner + "/" + f.Repo
-}
-
-func (f Facts) HasLabel(label string) bool {
-	for _, existing := range f.Labels {
-		if existing == label {
-			return true
-		}
-	}
-	return false
 }
 
 func ParseFacts(r io.Reader) (Facts, error) {
@@ -58,9 +54,17 @@ func parseFacts(r io.Reader, allowEmptyOccasion bool) (Facts, error) {
 	facts.PR = values["PR"]
 	facts.HeadSHA = values["HEAD_SHA"]
 	facts.BaseRef = values["BASE_REF"]
+	facts.BaseSHA = values["BASE_SHA"]
+	facts.HeadRef = values["HEAD_BRANCH"]
 	facts.Author = values["AUTHOR"]
 	facts.Actor = values["ACTOR"]
 	facts.Draft = strings.EqualFold(values["DRAFT"], "true")
+	// Existing adapters predate explicit state fields and enumerate only open
+	// PRs. Treat an absent OPEN as open while the wave-two adapter grows the
+	// authoritative open/merged facts.
+	facts.Open = values["OPEN"] == "" || strings.EqualFold(values["OPEN"], "true")
+	facts.Merged = strings.EqualFold(values["MERGED"], "true")
+	facts.Mergeable = strings.EqualFold(values["MERGEABLE"], "true")
 	if raw := values["LABELS"]; raw != "" {
 		for _, label := range strings.Split(raw, ",") {
 			label = strings.TrimSpace(label)

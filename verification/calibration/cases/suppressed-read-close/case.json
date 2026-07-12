@@ -1,0 +1,19 @@
+{
+  "id": "suppressed-read-close",
+  "summary": "A small read-only helper defers closing its one local file descriptor.",
+  "tags": ["clean", "suppression"],
+  "expected_review": "approve",
+  "expected_product_state": "clean",
+  "coverage": "complete",
+  "omitted_paths": [],
+  "findings": [],
+  "suppressed_concerns": [
+    {
+      "id": "ignored-read-close-error",
+      "path": "config.go",
+      "line": 13,
+      "anchor": "defer file.Close()",
+      "reason": "The descriptor is read-only, exactly one is opened per invocation, and a close error cannot invalidate bytes already returned by io.ReadAll."
+    }
+  ]
+}

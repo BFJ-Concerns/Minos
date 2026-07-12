@@ -3,7 +3,6 @@ set -eu
 
 : "${MINOS_CONFIG:?MINOS_CONFIG is required}"
 : "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
-: "${MINOS_RUN_KIND:?MINOS_RUN_KIND is required}"
 
 config_file="${MINOS_CONFIG%/}/run-body.env"
 if [ ! -r "$config_file" ]; then
@@ -24,56 +23,20 @@ set +a
 : "${MINOS_PINS:?MINOS_PINS is required}"
 : "${MINOS_REVIEW_SCRIPTS:?MINOS_REVIEW_SCRIPTS is required}"
 : "${MINOS_BIN:?MINOS_BIN is required}"
+: "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
 
-script_dir=$(unset CDPATH; cd "$(dirname "$0")" && pwd)
+if [ ! -r "$MINOS_LIFECYCLE_INSTRUCTION" ]; then
+  echo "lifecycle instruction is not readable: $MINOS_LIFECYCLE_INSTRUCTION" >&2
+  exit 2
+fi
 
-# Every run kind launches the same way: one accountable Claude session with its
-# mission on stdin, captured for model provenance and the loud pin check. Only
-# the mission file — and, for fix and flaky repair, the procedure skill —
-# differ by kind.
-launch_session() {
-  mission="${script_dir%/run-body}/missions/$1"
-  if [ ! -r "$mission" ]; then
-    echo "mission is not readable: $mission" >&2
-    exit 2
-  fi
-  mkdir -p "$MINOS_RUN_DIR/sessions"
-  cd "$MINOS_RUN_DIR"
-  exec "$MINOS_BIN" capture-claude \
-    --pins "$MINOS_PINS" \
-    --output "$MINOS_RUN_DIR/sessions/lead.jsonl" \
-    --resolved "$MINOS_RUN_DIR/resolved-lead.json" \
-    "$MINOS_ENGINE_LAUNCH_LEAD" <"$mission"
-}
-
-case "$MINOS_RUN_KIND" in
-  review)
-    launch_session review.md
-    ;;
-  fix)
-    # The fix run's procedure is the one service-authored skill. It is fixed by
-    # the deployment, not selectable per repository, so it is read from run-body.env —
-    # unlike the review skill, which a repository points at through its config.
-    : "${MINOS_FIX_SKILL:?MINOS_FIX_SKILL is required for fix runs}"
-    MINOS_SKILL="$MINOS_FIX_SKILL"
-    export MINOS_SKILL
-    launch_session fix.md
-    ;;
-  finish)
-    # Finish composes over the session's general skills; it has no bespoke skill
-    # and reads no MINOS_SKILL.
-    launch_session finish.md
-    ;;
-  flaky)
-    # Flaky repair composes over the Foundry's synced general debugging skill.
-    # The service-owned mission supplies every flaky-specific instruction.
-    : "${MINOS_FLAKY_SKILL:?MINOS_FLAKY_SKILL is required for flaky runs}"
-    MINOS_SKILL="$MINOS_FLAKY_SKILL"
-    export MINOS_SKILL
-    launch_session flaky.md
-    ;;
-  *)
-    echo "unknown run kind '$MINOS_RUN_KIND'" >&2
-    exit 2
-    ;;
-esac
+# One fresh accountable lead owns the entire PR journey. Review, repair,
+# re-review, waiting, clearance, and optional merge are decisions inside that
+# session; infrastructure never selects a stage mission.
+mkdir -p "$MINOS_RUN_DIR/sessions"
+cd "$MINOS_RUN_DIR"
+exec "$MINOS_BIN" capture-claude \
+  --pins "$MINOS_PINS" \
+  --output "$MINOS_RUN_DIR/sessions/lead.jsonl" \
+  --resolved "$MINOS_RUN_DIR/resolved-lead.json" \
+  "$MINOS_ENGINE_LAUNCH_LEAD" <"$MINOS_LIFECYCLE_INSTRUCTION"

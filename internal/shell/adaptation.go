@@ -10,7 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"bfj/minos/internal/ledger"
 )
 
 var adaptationOperation = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
@@ -22,8 +25,6 @@ var forgeReadOperations = map[string]bool{
 	"get-pr-facts":         true,
 	"get-combined-status":  true,
 	"get-statuses":         true,
-	"label-actor":          true,
-	"latest-label-event":   true,
 	"list-open-prs":        true,
 	"list-review-comments": true,
 	"list-reviews":         true,
@@ -32,11 +33,8 @@ var forgeReadOperations = map[string]bool{
 }
 
 var runClaimMutationOperations = map[string]bool{
-	"add-label":         true,
-	"add-reaction":      true,
-	"assign-if-missing": true,
-	"remove-label":      true,
-	"remove-reaction":   true,
+	"add-reaction":    true,
+	"remove-reaction": true,
 }
 
 // Find ingest is deliberately outside the PR publication boundary. A retry may
@@ -53,10 +51,11 @@ type Adaptation struct {
 }
 
 type Status struct {
-	ID      int64  `json:"id"`
-	Context string `json:"context"`
-	State   string `json:"state"`
-	Creator string `json:"creator"`
+	ID          int64  `json:"id"`
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	Description string `json:"description"`
+	Creator     string `json:"creator"`
 }
 
 // Review is the machine-checkable part of a forge review. The sweep deliberately
@@ -72,12 +71,6 @@ type CombinedStatus struct {
 	State string `json:"state"`
 }
 
-type LabelEvent struct {
-	Action string
-	Label  string
-	Actor  string
-}
-
 func NewAdaptation(forge ForgeConfig) (Adaptation, error) {
 	credential := ""
 	if forge.CredentialFile != "" {
@@ -91,7 +84,7 @@ func NewAdaptation(forge ForgeConfig) (Adaptation, error) {
 }
 
 func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
-	return a.run(ctx, name, stdin, extraEnv, true, args...)
+	return a.run(ctx, name, stdin, extraEnv, args...)
 }
 
 // runClaimMutation is reserved for the service's idempotent claim/release
@@ -101,25 +94,25 @@ func (a Adaptation) runClaimMutation(ctx context.Context, name string, args ...s
 	if !runClaimMutationOperations[name] {
 		return nil, fmt.Errorf("adaptation operation %q is not run-claim state", name)
 	}
-	return a.run(ctx, name, nil, nil, false, args...)
+	return a.run(ctx, name, nil, nil, args...)
 }
 
 func (a Adaptation) runUntrackedMutation(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
 	if !untrackedMutationOperations[name] {
 		return nil, fmt.Errorf("adaptation operation %q is not an untracked mutation", name)
 	}
-	return a.run(ctx, name, stdin, extraEnv, false, args...)
+	return a.run(ctx, name, stdin, extraEnv, args...)
 }
 
-func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, trackMutation bool, args ...string) ([]byte, error) {
+func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
 	if a.Dir == "" {
 		return nil, fmt.Errorf("adaptation directory is not configured")
 	}
-	if trackMutation && !forgeReadOperations[name] {
-		// This record must become durable before the adaptation can make a forge
-		// mutation. A later non-zero exit is replayable only when it is absent.
-		if err := writeForgeWritesAttempted(os.Getenv("MINOS_RUN_DIR"), name); err != nil {
-			return nil, fmt.Errorf("record forge write attempt for %s: %w", name, err)
+	if !forgeReadOperations[name] {
+		// Agent-owned mutations are fenced at the common adaptation dispatch, so
+		// adding a new script cannot accidentally bypass stale-attempt rejection.
+		if err := guardAdaptationMutation(ctx); err != nil {
+			return nil, fmt.Errorf("fence forge mutation %s: %w", name, err)
 		}
 	}
 	path := filepath.Join(a.Dir, name)
@@ -138,6 +131,37 @@ func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extra
 		return nil, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+func guardAdaptationMutation(ctx context.Context) error {
+	value := os.Getenv("MINOS_ATTEMPT_TOKEN")
+	if value == "" {
+		// Receiver/sweep-owned guarded operations do not belong to a lifecycle
+		// token. Their operation-specific expected-head guard is the authority.
+		return nil
+	}
+	token, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || token <= 0 {
+		return fmt.Errorf("invalid attempt token %q", value)
+	}
+	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
+	if err != nil {
+		return err
+	}
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	facts := envFacts(os.Getenv("MINOS_FORGE"))
+	lease, found, err := store.Lease(ctx, coordinationKey(facts))
+	if err != nil {
+		return err
+	}
+	if !found || lease.Token != token || lease.ObservedHead != facts.HeadSHA || lease.ObservedTarget != os.Getenv("MINOS_TARGET_SHA") {
+		return ledger.ErrNotOwner
+	}
+	return nil
 }
 
 // AdaptCommand gives the accountable session a credentialled route to the
@@ -285,26 +309,6 @@ func (a Adaptation) ListOpenPRs(ctx context.Context, forge, owner, repo string) 
 	return facts, nil
 }
 
-func (a Adaptation) AddLabel(ctx context.Context, owner, repo, pr, label string) error {
-	_, err := a.Run(ctx, "add-label", nil, nil, owner, repo, pr, label)
-	return err
-}
-
-func (a Adaptation) RemoveLabel(ctx context.Context, owner, repo, pr, label string) error {
-	_, err := a.Run(ctx, "remove-label", nil, nil, owner, repo, pr, label)
-	return err
-}
-
-func (a Adaptation) addRunClaimLabel(ctx context.Context, owner, repo, pr, label string) error {
-	_, err := a.runClaimMutation(ctx, "add-label", owner, repo, pr, label)
-	return err
-}
-
-func (a Adaptation) removeRunClaimLabel(ctx context.Context, owner, repo, pr, label string) error {
-	_, err := a.runClaimMutation(ctx, "remove-label", owner, repo, pr, label)
-	return err
-}
-
 func (a Adaptation) addRunClaimReaction(ctx context.Context, owner, repo, pr, reaction string) error {
 	_, err := a.runClaimMutation(ctx, "add-reaction", owner, repo, pr, reaction)
 	return err
@@ -315,38 +319,9 @@ func (a Adaptation) removeRunClaimReaction(ctx context.Context, owner, repo, pr,
 	return err
 }
 
-func (a Adaptation) assignRunClaimIfMissing(ctx context.Context, owner, repo, pr, login string) error {
-	_, err := a.runClaimMutation(ctx, "assign-if-missing", owner, repo, pr, login)
-	return err
-}
-
 func (a Adaptation) SetStatus(ctx context.Context, owner, repo, sha, contextName, state, description string) error {
 	_, err := a.Run(ctx, "set-status", nil, nil, owner, repo, sha, contextName, state, description)
 	return err
-}
-
-func (a Adaptation) LabelActor(ctx context.Context, owner, repo, pr, label string) (string, error) {
-	out, err := a.Run(ctx, "label-actor", nil, nil, owner, repo, pr, label)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func (a Adaptation) LatestLabelEvent(ctx context.Context, owner, repo, pr string) (LabelEvent, error) {
-	out, err := a.Run(ctx, "latest-label-event", nil, nil, owner, repo, pr)
-	if err != nil {
-		return LabelEvent{}, err
-	}
-	values, err := parseKeyValues(bytes.NewReader(out))
-	if err != nil {
-		return LabelEvent{}, err
-	}
-	return LabelEvent{
-		Action: values["ACTION"],
-		Label:  values["LABEL"],
-		Actor:  values["ACTOR"],
-	}, nil
 }
 
 func (a Adaptation) PrepareWorkspace(ctx context.Context, facts Facts, workspace, diffPath string) error {

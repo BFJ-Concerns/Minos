@@ -20,36 +20,5 @@ run-body = "/opt/minos/run-body/run-body"
 [policy]
 auto-merge = false
 
-[[trigger]]
-run = "review"
-on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
+[[eligibility]]
 authors = ["*"]
-drafts = false
-
-# A rejected review (verified material findings) triggers a fix run. The fix lands
-# commits and pushes them; that PR update re-triggers review on its own, so no
-# review-after-fix trigger is needed. A fruitless or unwritable-head fix lands
-# nothing and the loop stops at the standing findings — deliberately not
-# re-reviewed on an unchanged head, which would only loop.
-[[trigger]]
-run = "fix"
-on = ["review-rejected"]
-authors = ["*"]
-
-# The Ready label triggers a finish run. Triggering is permissive; the finish run's own
-# gate (clean-or-flagged, current, forge-mergeable, build/test) protects the
-# tree. WHO may apply Ready is the whole merge policy: with auto-merge off, only
-# these actors' Ready is honoured. Set them to real forge logins with merge
-# authority — authority, not display names. An unreplaced value authorises
-# nobody, so finish never runs until you set it.
-[[trigger]]
-run = "finish"
-on = ["label-added:Ready"]
-actors = ["REPLACE_WITH_AUTHORISED_FINISH_LOGINS"]
-
-# Flaky Tests is inert for repair until this stanza is configured. Name the CI
-# and service accounts that are allowed to pause the loop and request repair.
-[[trigger]]
-run = "flaky"
-on = ["label-added:Flaky Tests"]
-actors = ["REPLACE_WITH_AUTHORISED_FLAKY_LABEL_ACTORS"]
