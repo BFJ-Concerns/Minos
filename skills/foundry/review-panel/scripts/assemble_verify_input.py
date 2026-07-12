@@ -10,18 +10,28 @@ one valid JSON document out.
 
     python3 assemble_verify_input.py <plan.json> <validated.json> \
         [--no-verify] [--bar off|on|auto] \
-        [--coverage-record <coverage-check.json>] > verify-input.json
+        [--coverage-result <coverage-check.json>] \
+        [--inspection-record <inspection.json>] > verify-input.json
 
 <validated.json> is validate_quotes.py's output — the review workflow result
 with findings reduced to quote-checked survivors and the suppression record
 attached. Every field the final report needs rides through.
 
---coverage-record is optional and additive: a caller that produces an external,
-immutable coverage-accounting result (a mechanical account of the changed files
-and hunks against the diff's own blobs, carrying a `status` and an `omissions`
-list) passes it here so it reaches the verify workflow — where the bar judges it
-and a non-`complete` status hard-gates convergence. An ordinary caller with no
-such record omits the flag and nothing changes.
+Two optional, additive coverage inputs travel to the verify workflow as
+separate, unconflated artefacts — the distinction the bar's depth judgement
+turns on:
+
+--coverage-result forwards the mechanical coverage-accounting *result* (a
+`status` plus `omissions`, e.g. account-coverage's output over the diff's own
+blobs). The workflow's convergence gate keys off this: a non-`complete` status
+hard-gates convergence deterministically.
+
+--inspection-record forwards the lead-owned *inspection record* the accounting
+consumed — the changed files with their per-hunk read/omitted accounts and the
+named definitions and call-sites inspected. This is the evidence the bar judges
+coverage *depth* from; the accounting result only proves each item was labelled,
+not that it was read deeply. A caller with neither omits both flags and nothing
+changes.
 """
 
 import argparse
@@ -53,17 +63,25 @@ def main():
         help="Bar-check mode: off (default), on (forced), auto (run when the trigger fires).",
     )
     parser.add_argument(
-        "--coverage-record", default=None,
-        help="Optional path to an external immutable coverage-accounting result "
-             "(status + omissions); rides through to the bar and the convergence gate.",
+        "--coverage-result", default=None,
+        help="Optional path to the mechanical coverage-accounting result "
+             "(status + omissions); the workflow's convergence gate keys off it.",
+    )
+    parser.add_argument(
+        "--inspection-record", default=None,
+        help="Optional path to the lead-owned inspection record (changed files, "
+             "per-hunk read/omitted accounts, named definition/call-site references); "
+             "the bar judges coverage depth from it.",
     )
     args = parser.parse_args()
 
     plan = load(args.plan)
     validated = load(args.validated)
-    # The immutable coverage record is optional: absent, the key is null and the
-    # verify workflow's coverage gate stays inactive for this run.
-    coverage_record = load(args.coverage_record) if args.coverage_record else None
+    # Both coverage artefacts are optional and kept distinct: the accounting
+    # result the gate trusts, and the inspection record the bar judges depth
+    # from. Absent, each key is null and its downstream use stays inactive.
+    coverage_result = load(args.coverage_result) if args.coverage_result else None
+    inspection_record = load(args.inspection_record) if args.inspection_record else None
 
     print(json.dumps({
         "plan": plan,
@@ -79,7 +97,8 @@ def main():
         "quote_validation": validated.get("quote_validation"),
         "verify": not args.no_verify,
         "bar_mode": args.bar,
-        "coverage_record": coverage_record,
+        "coverage_result": coverage_result,
+        "inspection_record": inspection_record,
     }, indent=2))
 
 
