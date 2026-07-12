@@ -4,11 +4,34 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type recordingOwnership struct {
 	err   error
 	calls int
+}
+
+func TestDefaultMergeRetryBudgetIsSecondsScaleAndBounded(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := NewAdapter(&recordingRunner{}, &recordingOwnership{}, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.mergeRetryDelays) != 7 {
+		t.Fatalf("merge retry delays = %d, want 7", len(adapter.mergeRetryDelays))
+	}
+	var budget time.Duration
+	for index, delay := range adapter.mergeRetryDelays {
+		budget += delay
+		if index > 0 && delay <= adapter.mergeRetryDelays[index-1] {
+			t.Fatalf("merge retry delay %d = %s, want increasing backoff", index, delay)
+		}
+	}
+	if budget != 29*time.Second+750*time.Millisecond {
+		t.Fatalf("merge retry budget = %s, want 29.75s", budget)
+	}
 }
 
 func (o *recordingOwnership) Check(context.Context, Ownership) error {

@@ -11,12 +11,23 @@ import (
 )
 
 type Adapter struct {
-	runner       Runner
-	ownership    OwnershipChecker
-	serviceLogin string
+	runner           Runner
+	ownership        OwnershipChecker
+	serviceLogin     string
+	mergeRetryDelays []time.Duration
 }
 
 const writeRetryable WriteOutcome = "retryable"
+
+var defaultMergeRetryDelays = []time.Duration{
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+	14 * time.Second,
+}
 
 func NewAdapter(runner Runner, ownership OwnershipChecker, serviceLogin string) (*Adapter, error) {
 	if runner == nil {
@@ -28,7 +39,12 @@ func NewAdapter(runner Runner, ownership OwnershipChecker, serviceLogin string) 
 	if strings.TrimSpace(serviceLogin) == "" {
 		return nil, fmt.Errorf("service login is required")
 	}
-	return &Adapter{runner: runner, ownership: ownership, serviceLogin: serviceLogin}, nil
+	return &Adapter{
+		runner:           runner,
+		ownership:        ownership,
+		serviceLogin:     serviceLogin,
+		mergeRetryDelays: append([]time.Duration(nil), defaultMergeRetryDelays...),
+	}, nil
 }
 
 func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullRequest int64) (Snapshot, error) {
@@ -97,8 +113,7 @@ func (a *Adapter) Push(ctx context.Context, guard Guard, request PushRequest) Wr
 }
 
 func (a *Adapter) Merge(ctx context.Context, guard Guard, method MergeMethod) WriteResult {
-	delays := [...]time.Duration{50 * time.Millisecond, 100 * time.Millisecond}
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; ; attempt++ {
 		// A confirmed transient Forgejo refusal made no mutation. Re-check the
 		// fenced owner before every fresh attempt; uncertain writes are never
 		// retried because their effect is not known.
@@ -113,14 +128,13 @@ func (a *Adapter) Merge(ctx context.Context, guard Guard, method MergeMethod) Wr
 		if !retryable {
 			return result
 		}
-		if attempt == len(delays) {
+		if attempt == len(a.mergeRetryDelays) {
 			return WriteResult{Outcome: WriteUncertain, Reason: "Forgejo merge remained temporarily unavailable after bounded retries"}
 		}
-		if err := waitForRetry(ctx, delays[attempt]); err != nil {
+		if err := waitForRetry(ctx, a.mergeRetryDelays[attempt]); err != nil {
 			return WriteResult{Outcome: WriteUncertain, Reason: "merge retry interrupted: " + err.Error()}
 		}
 	}
-	return WriteResult{Outcome: WriteUncertain, Reason: "Forgejo merge retry exhausted"}
 }
 
 func (a *Adapter) DeleteMergedBranch(ctx context.Context, guard Guard) WriteResult {

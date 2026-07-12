@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGuardedMergeRetriesOutcomeDiscoveryWithoutInventingSuccess(t *testing.T) {
@@ -100,6 +101,9 @@ esac
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The production budget is tested separately. These script cases bind
+			// retry semantics without making the unit suite wait for wall time.
+			adapter.mergeRetryDelays = []time.Duration{0, 0}
 			result := adapter.Merge(t.Context(), Guard{
 				Ownership: Ownership{Attempt: "attempt"}, Repository: Repository{Owner: "acme", Name: "widget"},
 				PullRequest: 4, HeadSHA: "expected-head", TargetSHA: "expected-target",

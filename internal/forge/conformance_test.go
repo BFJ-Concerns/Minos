@@ -139,7 +139,7 @@ func TestForgejoConformance(t *testing.T) {
 		if len(snapshot.AllowedMergeMethods) != 1 || snapshot.AllowedMergeMethods[0] != MergeMethodSquash {
 			t.Fatalf("allowed merge methods = %#v, want squash only", snapshot.AllowedMergeMethods)
 		}
-		h.satisfyChecks(adapter, pr, snapshot)
+		snapshot = h.satisfyChecks(adapter, pr, snapshot)
 		if result := adapter.Merge(t.Context(), h.guard(pr, snapshot), MergeMethodSquash); result.Outcome != WriteApplied {
 			t.Fatalf("Merge() = %#v, want applied", result)
 		}
@@ -161,7 +161,7 @@ func TestForgejoConformance(t *testing.T) {
 	t.Run("advanced and protected branches are preserved", func(t *testing.T) {
 		advancedPR := h.createPullRequest("advanced-branch")
 		advanced := h.waitForMergeable(adapter, advancedPR)
-		h.satisfyChecks(adapter, advancedPR, advanced)
+		advanced = h.satisfyChecks(adapter, advancedPR, advanced)
 		if result := adapter.Merge(t.Context(), h.guard(advancedPR, advanced), MergeMethodSquash); result.Outcome != WriteApplied {
 			t.Fatalf("advanced branch Merge() = %#v", result)
 		}
@@ -175,7 +175,7 @@ func TestForgejoConformance(t *testing.T) {
 
 		protectedPR := h.createPullRequest("protected-branch")
 		protected := h.waitForMergeable(adapter, protectedPR)
-		h.satisfyChecks(adapter, protectedPR, protected)
+		protected = h.satisfyChecks(adapter, protectedPR, protected)
 		if result := adapter.Merge(t.Context(), h.guard(protectedPR, protected), MergeMethodSquash); result.Outcome != WriteApplied {
 			t.Fatalf("protected branch Merge() = %#v", result)
 		}
@@ -185,7 +185,7 @@ func TestForgejoConformance(t *testing.T) {
 		}
 
 		defaultPR := h.createDefaultSourcePullRequest()
-		defaultSource := h.waitForMergeable(adapter, defaultPR)
+		defaultSource := h.waitForClearance(adapter, defaultPR)
 		if result := adapter.Merge(t.Context(), h.guard(defaultPR, defaultSource), MergeMethodSquash); result.Outcome != WriteApplied {
 			t.Fatalf("default-source Merge() = %#v", result)
 		}
@@ -198,7 +198,7 @@ func TestForgejoConformance(t *testing.T) {
 
 		forkPR := h.createForkPullRequest()
 		fork := h.waitForMergeable(adapter, forkPR)
-		h.satisfyChecks(adapter, forkPR, fork)
+		fork = h.satisfyChecks(adapter, forkPR, fork)
 		if result := adapter.Merge(t.Context(), h.guard(forkPR, fork), MergeMethodSquash); result.Outcome != WriteApplied {
 			t.Fatalf("fork Merge() = %#v", result)
 		}
@@ -380,12 +380,41 @@ func (h *conformanceHarness) configureSquashOnly() {
 	}, nil)
 }
 
-func (h *conformanceHarness) satisfyChecks(adapter *Adapter, pr int64, snapshot Snapshot) {
+func (h *conformanceHarness) satisfyChecks(adapter *Adapter, pr int64, snapshot Snapshot) Snapshot {
 	h.t.Helper()
 	h.postStatus(snapshot.HeadSHA, "build", "success", "Conformance build")
 	if result := adapter.SetStatus(h.t.Context(), h.guard(pr, snapshot), StatusSuccess, "Changes approved"); result.Outcome != WriteApplied {
 		h.t.Fatalf("satisfy Minos check = %#v", result)
 	}
+	// Final clearance is a fresh forge decision after the status writes, not the
+	// pre-status mergeability snapshot. Require three stable reads of the same
+	// head/target pair to model the agent-paced lifecycle and let Forgejo finish
+	// its asynchronous mergeability recomputation.
+	return h.waitForClearance(adapter, pr)
+}
+
+func (h *conformanceHarness) waitForClearance(adapter *Adapter, pr int64) Snapshot {
+	h.t.Helper()
+	var previous Snapshot
+	stable := 0
+	for range 120 {
+		snapshot := h.snapshot(adapter, pr)
+		if snapshot.Mergeable && snapshot.CheckDecision == ChecksPass &&
+			snapshot.HeadSHA == previous.HeadSHA && snapshot.TargetSHA == previous.TargetSHA {
+			stable++
+		} else if snapshot.Mergeable && snapshot.CheckDecision == ChecksPass {
+			stable = 1
+		} else {
+			stable = 0
+		}
+		if stable >= 3 {
+			return snapshot
+		}
+		previous = snapshot
+		time.Sleep(100 * time.Millisecond)
+	}
+	h.t.Fatalf("pull request %d did not reach stable final clearance", pr)
+	return Snapshot{}
 }
 
 func (h *conformanceHarness) advanceMain(message string) {
