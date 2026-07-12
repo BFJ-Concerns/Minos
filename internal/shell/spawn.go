@@ -79,26 +79,35 @@ func ensureLaunchReady(ctx context.Context, cfg ServiceConfig, facts Facts, targ
 	if err == nil && report.Passed {
 		return nil
 	}
-	_, incidentErr := store.UpsertIncident(ctx, ledger.Incident{
+	logPath := incidentLogPath(cfg, "preflight.log")
+	incidentErr := recordOperationalIncident(ctx, cfg, store, ledger.Incident{
 		Key: coordinationKey(facts), Category: "readiness-preflight", ObservedHead: facts.HeadSHA,
-		ObservedTarget: targetSHA, LogLocation: cfg.Sweep.Log,
+		ObservedTarget: targetSHA, LogLocation: logPath,
+	}, incidents.Event{
+		Key:        incidents.Key{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PullRequest: facts.PR, Category: "readiness-preflight"},
+		Diagnostic: "lifecycle readiness preflight failed", LogPath: logPath,
+		ObservedHead: facts.HeadSHA, ObservedTarget: targetSHA,
 	})
-	var alertErr error
-	if preflightConfig, configErr := preflight.LoadConfig(filepath.Join(cfg.Root, "preflight.toml")); configErr == nil {
-		logPath := cfg.Sweep.Log
-		if strings.TrimSpace(logPath) == "" {
-			logPath = filepath.Join(cfg.Runs.Dir, "preflight.log")
-		}
-		_, alertErr = incidents.NewFileStore(preflightConfig.Alert.Directory).Raise(ctx, incidents.Event{
-			Key:        incidents.Key{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PullRequest: facts.PR, Category: "readiness-preflight"},
-			Diagnostic: "lifecycle readiness preflight failed", LogPath: logPath,
-			ObservedHead: facts.HeadSHA, ObservedTarget: targetSHA,
-		})
-	}
 	if err != nil {
-		return errors.Join(ErrLaunchPreflight, err, incidentErr, alertErr)
+		return errors.Join(ErrLaunchPreflight, err, incidentErr)
 	}
-	return errors.Join(ErrLaunchPreflight, incidentErr, alertErr)
+	return errors.Join(ErrLaunchPreflight, incidentErr)
+}
+
+func incidentLogPath(cfg ServiceConfig, fallback string) string {
+	if strings.TrimSpace(cfg.Sweep.Log) != "" {
+		return cfg.Sweep.Log
+	}
+	return filepath.Join(cfg.Runs.Dir, fallback)
+}
+
+func recordOperationalIncident(ctx context.Context, cfg ServiceConfig, store *ledger.Store, ledgerIncident ledger.Incident, event incidents.Event) error {
+	_, ledgerErr := store.UpsertIncident(ctx, ledgerIncident)
+	var streamErr error
+	if preflightConfig, configErr := preflight.LoadConfig(filepath.Join(cfg.Root, "preflight.toml")); configErr == nil {
+		_, streamErr = incidents.NewFileStore(preflightConfig.Alert.Directory).Raise(ctx, event)
+	}
+	return errors.Join(ledgerErr, streamErr)
 }
 
 func spawnRunUnit(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, lease ledger.Lease, occasion string) error {

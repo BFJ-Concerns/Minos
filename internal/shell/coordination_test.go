@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"bfj/minos/internal/forge"
+	"bfj/minos/internal/incidents"
 	"bfj/minos/internal/ledger"
 	"bfj/minos/internal/preflight"
 	"bfj/minos/internal/product"
@@ -363,6 +364,69 @@ func TestReplacementEmptiesUnitBeforeAllocatingToken(t *testing.T) {
 		t.Fatalf("replacement=%#v found=%v err=%v", replacement, found, err)
 	}
 	assertPresenceClosed(t, reaction, removals)
+}
+
+func TestReplacementRaisesDeduplicatedHardKillIncident(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	lease, err := store.AcquireLease(t.Context(), ledger.Lease{
+		Key: coordinationKey(facts), ObservedHead: facts.HeadSHA, ObservedTarget: "target-1",
+		Unit: "dead-unit", Workspace: t.TempDir(),
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalSystemctl := systemctlCommand
+	originalRun := systemdRunCommand
+	defer func() { systemctlCommand = originalSystemctl; systemdRunCommand = originalRun }()
+	systemctlCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if args[1] == "show" {
+			return exec.CommandContext(ctx, "sh", "-c", "printf inactive")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+	systemdRunCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+
+	snapshot := reconcile.ForgeSnapshot{
+		Key: lease.Key, HeadSHA: "head-2", TargetSHA: "target-2", Open: true, AuthorInScope: true,
+	}
+	removeReaction := filepath.Join(cfg.Forges["local"].Adaptation, "remove-reaction")
+	writeScript(t, removeReaction, "#!/bin/sh\nexit 1\n")
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, reconcile.Decision{Kind: reconcile.Replace}, store, os.Stderr); err == nil {
+		t.Fatal("replacement succeeded despite failed presence removal")
+	}
+	if current, found, err := store.Lease(t.Context(), lease.Key); err != nil || !found || current.Token != lease.Token {
+		t.Fatalf("dead lease changed after failed replacement: lease=%#v found=%v err=%v", current, found, err)
+	}
+	writeScript(t, removeReaction, "#!/bin/sh\nexit 0\n")
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, reconcile.Decision{Kind: reconcile.Replace}, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerIncidents, err := store.ListIncidents(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledgerIncidents) != 1 || ledgerIncidents[0].Category != "lifecycle-hard-kill" || ledgerIncidents[0].RetryCount != 2 {
+		t.Fatalf("ledger incidents=%#v, want one hard-kill incident updated twice", ledgerIncidents)
+	}
+	operatorIncidents, err := incidents.NewFileStore(cfg.Root).List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operatorIncidents) != 1 || operatorIncidents[0].Key.Category != "lifecycle-hard-kill" || operatorIncidents[0].Updates != 2 {
+		t.Fatalf("operator incidents=%#v, want one hard-kill incident updated twice", operatorIncidents)
+	}
+	if operatorIncidents[0].Attempt != int(lease.Token) || operatorIncidents[0].ObservedHead != facts.HeadSHA || operatorIncidents[0].ObservedTarget != "target-1" {
+		t.Fatalf("operator incident evidence=%#v", operatorIncidents[0])
+	}
 }
 
 func TestIneligibleReapClosesPresenceAndLeaseTogether(t *testing.T) {

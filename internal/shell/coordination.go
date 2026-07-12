@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"bfj/minos/internal/forge"
+	"bfj/minos/internal/incidents"
 	"bfj/minos/internal/ledger"
 	"bfj/minos/internal/product"
 	"bfj/minos/internal/reconcile"
@@ -202,6 +203,23 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 			return err
 		}
 		if err := ensureLaunchReady(ctx, cfg, facts, snapshot.TargetSHA, store); err != nil {
+			return err
+		}
+		// A hard-killed lifecycle cannot report its own failure. Record the
+		// replacement before changing ownership so a failed reap is retried
+		// against the same deduplicated operational incident.
+		logPath := incidentLogPath(cfg, "sweep.log")
+		if err := recordOperationalIncident(ctx, cfg, store, ledger.Incident{
+			Key: snapshot.Key, Category: "lifecycle-hard-kill", ObservedHead: lease.ObservedHead,
+			ObservedTarget: lease.ObservedTarget, LogLocation: logPath,
+		}, incidents.Event{
+			Key: incidents.Key{
+				Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo,
+				PullRequest: facts.PR, Category: "lifecycle-hard-kill",
+			},
+			Diagnostic: "stale lifecycle replaced from current forge state", LogPath: logPath,
+			Attempt: int(lease.Token), ObservedHead: lease.ObservedHead, ObservedTarget: lease.ObservedTarget,
+		}); err != nil {
 			return err
 		}
 		// Remove the old owner's presence before atomically replacing its token.
