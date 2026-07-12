@@ -15,12 +15,24 @@ case "$state" in
   *) write_result rejected "unsupported Forgejo status state: $state"; exit 0 ;;
 esac
 
-if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
-  :
+if [ "$state" = "success" ] && [ "$description" = "Merged" ]; then
+  user_json="$(api GET "/api/v1/user")" || { write_result uncertain "forge identity could not be read"; exit 0; }
+  actual_login="$(printf '%s' "$user_json" | jq -r '.login // .username // ""')"
+  pr_json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}")" || { write_result uncertain "merged pull request could not be read"; exit 0; }
+  if [ "$actual_login" != "$login" ] ||
+     ! printf '%s' "$pr_json" | jq -e --arg repository "${owner}/${repo}" --arg head "$head" --argjson pr "$pr" \
+       '.number == $pr and .base.repo.full_name == $repository and .head.sha == $head and (.merged // false)' >/dev/null; then
+    write_result rejected "merged status identity no longer matches"
+    exit 0
+  fi
 else
-  status=$?
-  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
-  exit 0
+  if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+    :
+  else
+    status=$?
+    if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+    exit 0
+  fi
 fi
 
 payload="$(jq -nc --arg state "$state" --arg context "$context" --arg description "$description" '{state:$state,context:$context,description:$description}')"

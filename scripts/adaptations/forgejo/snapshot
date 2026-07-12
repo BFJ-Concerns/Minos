@@ -65,6 +65,7 @@ jq -nc \
     state: (if ($pr.merged // false) then "merged" else $pr.state end),
     merged: ($pr.merged // false),
     draft: ($pr.draft // false),
+    author: ($pr.user.login // $pr.user.username // ""),
     mergeable: ($pr.mergeable // false),
     head_sha: $pr.head.sha,
     head_branch: ($pr.head.ref // ""),

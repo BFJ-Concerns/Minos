@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"bfj/minos/internal/forge"
 	"bfj/minos/internal/ledger"
+	"bfj/minos/internal/preflight"
+	"bfj/minos/internal/product"
 	"bfj/minos/internal/reconcile"
 )
 
@@ -44,11 +48,81 @@ func coordinationConfig(t *testing.T) (ServiceConfig, RepoConfig, Facts) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(runs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	preflightConfig := `[forge]
+api-base = "http://forge.invalid/api/v1"
+credential-file = "` + secret + `"
+expected-login = "Minos"
+permission-repository = "owner/subject"
+required-permissions = ["pull"]
+[[engine]]
+name = "test"
+command = "true"
+args = ["{model}"]
+models = ["pinned"]
+[registry]
+enabled = false
+[alert]
+directory = "` + root + `"
+[toolchain]
+binaries = ["sh"]
+`
+	preflightPath := filepath.Join(root, "preflight.toml")
+	if err := os.WriteFile(preflightPath, []byte(preflightConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gate := preflight.CachedGate{
+		ConfigPath: preflightPath, CachePath: filepath.Join(runs, "preflight-cache.json"), TTL: launchPreflightTTL,
+		Run: func(context.Context, preflight.Config) preflight.Report { return preflight.Report{Passed: true} },
+	}
+	if _, _, err := gate.Check(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	repo := RepoConfig{Forge: "local", Owner: "owner", Repo: "subject"}
 	repo.Adaptation.Skill = "skill"
 	repo.Eligibility = []EligibilityRule{{Authors: []string{"*"}}}
 	facts := Facts{Forge: "local", Owner: "owner", Repo: "subject", PR: "7", HeadSHA: "head-1", BaseRef: "main", Author: "alice", Open: true}
 	return cfg, repo, facts
+}
+
+func TestBuildSnapshotUsesBehaviouralForgeAndAuthenticatedProductRecord(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	repo.Path = filepath.Join(cfg.Root, "repos", "local--owner--subject.toml")
+	governing := governingIdentity(repo)
+	record, err := product.FormatRecord(map[string]string{
+		"governing": governing,
+		"head":      "head-1",
+		"target":    "target-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgeSnapshot := forge.Snapshot{
+		AuthenticatedUser: "Minos", Repository: "owner/subject", PullRequest: 7,
+		State: "open", Author: "alice", HeadSHA: "head-1", HeadBranch: "change",
+		HeadRepository: "owner/subject", TargetSHA: "target-1", TargetBranch: "main",
+		TargetRepository: "owner/subject", DefaultBranch: "main",
+		Statuses: []forge.Status{{ID: 9, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext, State: forge.StatusSuccess, Creator: "Minos", Description: product.Clean().Description()}},
+		Reviews:  []forge.Review{{ID: 3, State: "APPROVED", CommitID: "head-1", Body: "Approved.\n\n" + record, User: "Minos"}},
+	}
+	data, err := json.Marshal(forgeSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(cfg.Forges["local"].Adaptation, "snapshot"), "#!/bin/sh\nprintf '%s\\n' "+strconv.Quote(string(data))+"\n")
+
+	snapshot, err := buildSnapshot(t.Context(), cfg, repo, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.TargetSHA != "target-1" || !snapshot.TargetKnown || snapshot.Product != product.Clean() {
+		t.Fatalf("snapshot identity/product = %#v", snapshot)
+	}
+	if snapshot.ProductHead != "head-1" || snapshot.ProductTarget != "target-1" || !snapshot.ProductGoverningKnown || snapshot.ProductGoverning != governing {
+		t.Fatalf("snapshot product provenance = %#v", snapshot)
+	}
 }
 
 func presenceProbe(t *testing.T, cfg ServiceConfig) (reaction, removals string) {
@@ -150,6 +224,98 @@ func TestFailedDetachedLaunchReleasesCapacity(t *testing.T) {
 		t.Fatalf("leases=%v err=%v", leases, err)
 	}
 	assertPresenceClosed(t, reaction, removals)
+}
+
+func TestFailedPreflightRefusesLaunchAndRaisesLedgerIncident(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	originalPreflight := checkLaunchPreflight
+	originalRun := systemdRunCommand
+	defer func() { checkLaunchPreflight = originalPreflight; systemdRunCommand = originalRun }()
+	checkLaunchPreflight = func(context.Context, ServiceConfig) (preflight.Report, bool, error) {
+		return preflight.Report{Passed: false, Results: []preflight.Result{{Name: "engine", Diagnostic: "unavailable"}}}, false, nil
+	}
+	var launches atomic.Int32
+	systemdRunCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		launches.Add(1)
+		return exec.CommandContext(ctx, "true")
+	}
+	if err := SpawnRun(t.Context(), cfg, repo, facts, "target-1", "reconcile"); !errors.Is(err, ErrLaunchPreflight) {
+		t.Fatalf("SpawnRun() error=%v, want preflight refusal", err)
+	}
+	if launches.Load() != 0 {
+		t.Fatalf("expensive launches=%d", launches.Load())
+	}
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	incidents, err := store.ListIncidents(t.Context())
+	if err != nil || len(incidents) != 1 || incidents[0].Category != "readiness-preflight" {
+		t.Fatalf("incidents=%#v err=%v", incidents, err)
+	}
+}
+
+func TestAdmitRepairsStaleWorkingStatusBeforeLaunch(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	captured := filepath.Join(t.TempDir(), "status-args")
+	writeScript(t, filepath.Join(cfg.Forges["local"].Adaptation, "guarded-set-status"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >"+strconv.Quote(captured)+"\nprintf '{\"outcome\":\"applied\"}\\n'\n")
+	original := systemdRunCommand
+	defer func() { systemdRunCommand = original }()
+	systemdRunCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	snapshot := reconcile.ForgeSnapshot{
+		Key: coordinationKey(facts), HeadSHA: facts.HeadSHA, TargetSHA: "target-1",
+		Open: true, AuthorInScope: true, Product: product.Working(),
+	}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, reconcile.Decision{Kind: reconcile.Admit}, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(arguments), "Minos pending Waiting for review") {
+		t.Fatalf("queued status arguments = %q", arguments)
+	}
+}
+
+func TestCleanupDecisionRetainsUncertainObligationAndRemovesApplied(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	obligation := ledger.Cleanup{Key: coordinationKey(facts), MergedHead: facts.HeadSHA, Branch: "change"}
+	if err := store.AddCleanup(t.Context(), obligation); err != nil {
+		t.Fatal(err)
+	}
+	deleteScript := filepath.Join(cfg.Forges["local"].Adaptation, "delete-branch")
+	writeScript(t, deleteScript, "#!/bin/sh\nprintf '{\"outcome\":\"uncertain\",\"reason\":\"temporary\"}\\n'\n")
+	snapshot := reconcile.ForgeSnapshot{Key: obligation.Key, HeadSHA: facts.HeadSHA, TargetSHA: "target-1", Merged: true}
+	decision := reconcile.Decision{Kind: reconcile.CleanUp}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, decision, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+	values, err := store.ListCleanup(t.Context())
+	if err != nil || len(values) != 1 || values[0].Attempts != 1 {
+		t.Fatalf("uncertain cleanup = %#v err=%v", values, err)
+	}
+	writeScript(t, deleteScript, "#!/bin/sh\nprintf '{\"outcome\":\"applied\"}\\n'\n")
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, decision, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+	values, err = store.ListCleanup(t.Context())
+	if err != nil || len(values) != 0 {
+		t.Fatalf("applied cleanup remains = %#v err=%v", values, err)
+	}
 }
 
 func TestReplacementEmptiesUnitBeforeAllocatingToken(t *testing.T) {
@@ -312,7 +478,8 @@ func TestRunWrapReleasesLeaseOnEveryExit(t *testing.T) {
 			t.Setenv("MINOS_TARGET_SHA", "target-1")
 			t.Setenv("MINOS_BASE_REF", facts.BaseRef)
 			t.Setenv("MINOS_ATTEMPT_TOKEN", fmtInt(lease.Token))
-			t.Setenv("MINOS_RUN_DIR", RunDir(cfg.Runs.Dir, facts, lease.Token))
+			runDir := RunDir(cfg.Runs.Dir, facts, lease.Token)
+			t.Setenv("MINOS_RUN_DIR", runDir)
 			t.Setenv("MINOS_WORKSPACE", workspace)
 			t.Setenv("MINOS_DIFF", filepath.Join(t.TempDir(), "diff"))
 			t.Setenv("MINOS_UNIT", "unit")
@@ -327,6 +494,11 @@ func TestRunWrapReleasesLeaseOnEveryExit(t *testing.T) {
 			defer verify.Close()
 			if _, found, err := verify.Lease(t.Context(), lease.Key); err != nil || found {
 				t.Fatalf("lease remains found=%v err=%v", found, err)
+			}
+			var instrumentation attemptInstrumentation
+			data, err := os.ReadFile(filepath.Join(runDir, "instrumentation.json"))
+			if err != nil || json.Unmarshal(data, &instrumentation) != nil || instrumentation.ArtefactFiles == 0 || instrumentation.ArtefactBytes == 0 {
+				t.Fatalf("attempt instrumentation=%#v data=%q err=%v", instrumentation, data, err)
 			}
 			assertPresenceClosed(t, reaction, removals)
 		})
@@ -364,8 +536,9 @@ func TestReceiverReconcileLaunchExitReleaseJourney(t *testing.T) {
 	cfg, _, _ := coordinationConfig(t)
 	adapt := cfg.Forges["local"].Adaptation
 	writeScript(t, filepath.Join(adapt, "normalise-event"), "#!/bin/sh\nprintf 'OCCASION=pr-opened\\nOWNER=owner\\nREPO=subject\\nPR=7\\nHEAD_SHA=head-1\\nBASE_REF=main\\nAUTHOR=alice\\nDRAFT=false\\n'\n")
-	writeScript(t, filepath.Join(adapt, "get-pr-facts"), "#!/bin/sh\nprintf 'OCCASION=reconcile\\nOWNER=owner\\nREPO=subject\\nPR=7\\nHEAD_SHA=head-1\\nBASE_REF=main\\nAUTHOR=alice\\nDRAFT=false\\n'\n")
-	writeScript(t, filepath.Join(adapt, "get-statuses"), "#!/bin/sh\nprintf '[]\\n'\n")
+	writeScript(t, filepath.Join(adapt, "snapshot"), `#!/bin/sh
+printf '%s\n' '{"authenticated_user":"Minos","repository":"owner/subject","pull_request":7,"state":"open","merged":false,"draft":false,"author":"alice","mergeable":true,"head_sha":"head-1","head_branch":"change","head_repository":"owner/subject","target_sha":"target-1","target_branch":"main","target_repository":"owner/subject","default_branch":"main","required_checks":[],"statuses":[],"reviews":[],"allowed_merge_methods":["squash"]}'
+`)
 	if err := os.MkdirAll(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
 		t.Fatal(err)
 	}

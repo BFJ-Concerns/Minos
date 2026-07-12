@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"bfj/minos/internal/product"
 )
 
 type Adapter struct {
@@ -66,13 +68,19 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	return snapshot, nil
 }
 
-func (a *Adapter) SetStatus(ctx context.Context, guard Guard, state StatusState, description string) WriteResult {
+// SetProductStatus is the only route to the service-owned status context. Its
+// product value is validated before either ownership or forge I/O, so Go's
+// constructible zero value cannot render an empty or improvised status.
+func (a *Adapter) SetProductStatus(ctx context.Context, guard Guard, state product.State) WriteResult {
+	if !state.Valid() {
+		return WriteResult{Outcome: WriteRejected, Reason: "invalid product state"}
+	}
 	if rejected := a.checkOwnership(ctx, guard.Ownership); rejected != nil {
 		return *rejected
 	}
 	out, err := a.runner.Run(ctx, RunRequest{
 		Operation: "guarded-set-status",
-		Arguments: append(a.guardArguments(guard), OwnedStatusContext, string(state), description),
+		Arguments: append(a.guardArguments(guard), OwnedStatusContext, state.ForgeState(), state.Description()),
 	})
 	return decodeWriteResult(out, err)
 }
@@ -101,7 +109,6 @@ func (a *Adapter) Push(ctx context.Context, guard Guard, request PushRequest) Wr
 		request.Branch,
 		request.AuthorName,
 		request.AuthorEmail,
-		request.Model,
 		request.MessageFile,
 	)
 	out, err := a.runner.Run(ctx, RunRequest{
@@ -215,7 +222,7 @@ func validateSnapshot(snapshot Snapshot, repository Repository, pullRequest int6
 	if snapshot.PullRequest != pullRequest {
 		return fmt.Errorf("snapshot pull request is %d, want %d", snapshot.PullRequest, pullRequest)
 	}
-	if snapshot.AuthenticatedUser == "" || snapshot.HeadSHA == "" || snapshot.TargetSHA == "" || snapshot.TargetBranch == "" {
+	if snapshot.AuthenticatedUser == "" || snapshot.Author == "" || snapshot.HeadSHA == "" || snapshot.TargetSHA == "" || snapshot.TargetBranch == "" {
 		return fmt.Errorf("snapshot omitted a mandatory identity")
 	}
 	for _, status := range snapshot.Statuses {

@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
+
+	"bfj/minos/internal/product"
 )
 
 type reviewDedupeInput struct {
@@ -44,12 +45,12 @@ func dedupeReview(stdin io.Reader, stdout io.Writer) error {
 	}
 	existing := make(map[string]int64)
 	for _, comment := range input.Existing {
-		marker, ok := trailingMarker(comment.Body)
-		if !ok || marker["run"] != "review" || marker["finding"] == "" {
+		marker, ok := product.TrailingRecord(comment.Body)
+		if !ok || marker["finding"] == "" {
 			continue
 		}
 		handle := marker["finding"]
-		if !ValidFindingHandle(handle) {
+		if _, err := product.ParseFindingID(handle); err != nil {
 			return fmt.Errorf("existing comment %d has invalid finding handle %q", comment.ID, handle)
 		}
 		if _, duplicate := existing[handle]; duplicate {
@@ -73,7 +74,7 @@ func dedupeReview(stdin io.Reader, stdout io.Writer) error {
 			output.New = append(output.New, candidate)
 			continue
 		}
-		if !ValidFindingHandle(candidate.Finding) {
+		if _, err := product.ParseFindingID(candidate.Finding); err != nil {
 			return fmt.Errorf("candidate has invalid finding handle %q", candidate.Finding)
 		}
 		if seen[candidate.Finding] {
@@ -97,13 +98,4 @@ func validPriority(priority string) bool {
 	default:
 		return false
 	}
-}
-
-func trailingMarker(body string) (map[string]string, bool) {
-	lines := strings.Split(strings.TrimRight(body, "\r\n"), "\n")
-	if len(lines) == 0 {
-		return nil, false
-	}
-	values, err := ParseMarker(strings.TrimSuffix(lines[len(lines)-1], "\r"))
-	return values, err == nil
 }

@@ -95,55 +95,6 @@ func TestLoadRepoConfigsRejectsMissingRequiredFields(t *testing.T) {
 	}
 }
 
-func TestLoadRepoConfigsAcceptsAbsentFindIngest(t *testing.T) {
-	root := writeRepoConfig(t, validRepoConfig)
-	repos, err := LoadRepoConfigs(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repos[0].FindIngest != nil {
-		t.Fatalf("find ingest = %#v, want unconfigured", repos[0].FindIngest)
-	}
-}
-
-func TestLoadRepoConfigsRequiresCompleteSafeFindIngest(t *testing.T) {
-	tests := []struct {
-		name   string
-		config string
-		want   string
-	}{
-		{name: "missing repository", config: "\n[find-ingest]\npath = \"ISSUES.md\"\n", want: "find-ingest.repository"},
-		{name: "missing path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Minos-Annexe\"\n", want: "find-ingest.path"},
-		{name: "malformed repository", config: "\n[find-ingest]\nrepository = \"Minos-Annexe\"\npath = \"ISSUES.md\"\n", want: "find-ingest.repository"},
-		{name: "absolute path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Minos-Annexe\"\npath = \"/tmp/ISSUES.md\"\n", want: "find-ingest.path"},
-		{name: "escaping path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Minos-Annexe\"\npath = \"../ISSUES.md\"\n", want: "find-ingest.path"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := writeRepoConfig(t, validRepoConfig+tt.config)
-			_, err := LoadRepoConfigs(root)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("error = %v, want %s", err, tt.want)
-			}
-		})
-	}
-}
-
-func TestLoadRepoConfigsAcceptsConfiguredFindIngest(t *testing.T) {
-	root := writeRepoConfig(t, validRepoConfig+`
-[find-ingest]
-repository = "BFJ-Concerns/Minos-Annexe"
-path = "logs/finds.md"
-`)
-	repos, err := LoadRepoConfigs(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repos[0].FindIngest == nil || repos[0].FindIngest.Repository != "BFJ-Concerns/Minos-Annexe" || repos[0].FindIngest.Path != "logs/finds.md" {
-		t.Fatalf("find ingest = %#v", repos[0].FindIngest)
-	}
-}
-
 func TestRepoConfigAllowsCIToCarryBuildAndTestGate(t *testing.T) {
 	config := strings.Replace(validRepoConfig, "build = \"go build ./...\"\ntest = \"go test ./...\"\n", "", 1)
 	config += "\n[ci]\nrequired-checks = [\"ci/build-and-test\"]\n"
@@ -191,8 +142,8 @@ func TestShippedConfigsLoadClean(t *testing.T) {
 	}
 }
 
-func TestForgejoSmokeCarriesRequiredServiceBotLogin(t *testing.T) {
-	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "e2e", "forgejo-smoke.sh"))
+func TestLifecycleSmokeCarriesRequiredServiceBotLogin(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "e2e", "lifecycle-smoke.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}

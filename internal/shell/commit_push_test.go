@@ -71,7 +71,7 @@ func (r commitPushRepo) run(t *testing.T, token string, extraEnv ...string) (str
 		t.Fatal(err)
 	}
 	cmd := exec.Command(script, "minos", "subject", "7", "feature",
-		"Minos", "minos@bfj.invalid", "test-model", message)
+		"Minos", "minos@bfj.invalid", message)
 	cmd.Env = append(os.Environ(),
 		"MINOS_API_BASE=file://"+r.root,
 		"MINOS_FORGE_TOKEN="+token,
@@ -138,8 +138,8 @@ func TestCommitPushLandsAttributedFastForward(t *testing.T) {
 	if author := gitAt(t, repo.remote, "log", "-1", "--format=%an <%ae>", "feature"); author != "Minos <minos@bfj.invalid>" {
 		t.Fatalf("fix commit misattributed: %q", author)
 	}
-	if body := gitAt(t, repo.remote, "log", "-1", "--format=%B", "feature"); !strings.Contains(body, "Minos-Model: test-model") {
-		t.Fatalf("fix commit missing model trailer:\n%s", body)
+	if body := gitAt(t, repo.remote, "log", "-1", "--format=%B", "feature"); strings.Contains(body, "Minos-Model:") {
+		t.Fatalf("fix commit exposed deployment model provenance:\n%s", body)
 	}
 }
 

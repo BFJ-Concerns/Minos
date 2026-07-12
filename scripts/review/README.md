@@ -67,7 +67,7 @@ used:
 scripts/review/admit-worker-model \
   --policy worker-models.json --role verifier \
   --record /run/agents/000007/agent.json \
-  --counterpart-family claude
+  --counterpart-family anthropic
 ```
 
 The policy names exact pins and which roles carry a guarantee:
@@ -81,17 +81,17 @@ The policy names exact pins and which roles carry a guarantee:
       "guarantee": true,
       "engine": "codex",
       "model": "gpt-5.6-sol",
-      "family": "gpt",
+      "family": "openai",
       "request_models": ["gpt-5.6-sol"],
-      "label_prefixes": ["verify:"]
+      "label_prefixes": ["check:"]
     },
     "claude-verifier": {
       "guarantee": true,
       "engine": "claude",
       "model": "claude-opus-4-8",
-      "family": "claude",
+      "family": "anthropic",
       "request_models": ["opus", "claude-opus-4-8"],
-      "label_prefixes": ["verify:"]
+      "label_prefixes": ["check:"]
     },
     "inventory": {
       "guarantee": false,
@@ -114,3 +114,19 @@ inadmissible. An exact resolved pin is `full` only when
 counterpart family is honestly `limited`. Mechanical roles still bind their
 record label, then return `mechanical` without treating model fields as
 guarantee evidence.
+
+The lifecycle normally admits a complete workflow stage at once. Ensemble's
+attempt-local archive is scanned recursively and every `review:`, `check:`,
+`bar-check`, or `repair:` record is passed through the single-record gate above:
+
+```sh
+scripts/review/admit-workflow-models \
+  --policy worker-models.json --records /run/attempt/ensemble --stage review
+scripts/review/admit-workflow-models \
+  --policy worker-models.json --records /run/attempt/ensemble --stage verify
+scripts/review/admit-workflow-models \
+  --policy worker-models.json --records /run/attempt/ensemble --stage repair
+```
+
+An empty stage is not proof and exits non-zero. The JSON result carries every
+per-agent admission decision for deployment evidence.

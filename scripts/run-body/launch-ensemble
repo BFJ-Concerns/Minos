@@ -1,3 +1,12 @@
 #!/usr/bin/env sh
 set -eu
-exec ensemble "$@"
+: "${MINOS_ENSEMBLE:=ensemble}"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+
+# Pin-admission evidence must stay with the attempt that consumed it. Ensemble
+# records each workflow and every agent by default; relocate that archive from
+# the account-wide data directory into attempt-local scratch.
+ENSEMBLE_RUN_RECORD_DIR="${MINOS_RUN_DIR%/}/ensemble"
+export ENSEMBLE_RUN_RECORD_DIR
+mkdir -p "$ENSEMBLE_RUN_RECORD_DIR"
+exec "$MINOS_ENSEMBLE" "$@"

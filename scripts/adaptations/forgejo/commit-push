@@ -39,8 +39,7 @@ repo="$2"
 head_branch="$4"
 author_name="$5"
 author_email="$6"
-model="$7"
-message_file="$8"
+message_file="$7"
 
 : "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
 
@@ -79,11 +78,7 @@ cleanup() {
 trap cleanup EXIT
 
 # 1. Commit inside the workspace, credential-free.
-{
-  cat "$message_file"
-  printf '\n'
-  printf 'Minos-Model: %s\n' "$model"
-} >"$commit_message"
+cat "$message_file" >"$commit_message"
 ws_git add -A
 env GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
     GIT_COMMITTER_NAME="$author_name" GIT_COMMITTER_EMAIL="$author_email" \

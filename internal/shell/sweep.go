@@ -60,7 +60,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 		var candidates []sweepCandidate
 		for _, facts := range factsList {
 			facts.Occasion = "reconcile"
-			snapshot, err := buildSnapshot(ctx, cfg, repo, adaptation, facts)
+			snapshot, err := buildSnapshot(ctx, cfg, repo, facts)
 			if err != nil {
 				fmt.Fprintf(logw, "snapshot %s#%s: %v\n", facts.RepoSlug(), facts.PR, err)
 				continue
@@ -84,17 +84,38 @@ func SweepCommand(ctx context.Context, args []string) error {
 			}
 		}
 	}
-	// Cleanup obligations are enumerated even when their PR is no longer open.
-	// The current adapter lacks an expected-head delete, so retaining them is the
-	// only safe action until the parallel adapter unit lands.
+	// Cleanup obligations are enumerated independently because their PR is no
+	// longer part of the open-PR sweep once the merge which created them lands.
 	cleanups, err := store.ListCleanup(ctx)
 	if err != nil {
 		return err
 	}
 	for _, cleanup := range cleanups {
-		fmt.Fprintf(logw, "cleanup pending %s/%s#%s branch=%s head=%s: guarded delete unavailable\n", cleanup.Owner, cleanup.Repo, cleanup.PR, cleanup.Branch, cleanup.MergedHead)
+		repo, found := configuredRepo(repos, cleanup.Key)
+		if !found {
+			fmt.Fprintf(logw, "cleanup %s/%s#%s: repository is no longer configured\n", cleanup.Owner, cleanup.Repo, cleanup.PR)
+			continue
+		}
+		facts := Facts{Forge: cleanup.Forge, Owner: cleanup.Owner, Repo: cleanup.Repo, PR: cleanup.PR, HeadSHA: cleanup.MergedHead, Occasion: "cleanup"}
+		snapshot, err := buildSnapshot(ctx, cfg, repo, facts)
+		if err != nil {
+			fmt.Fprintf(logw, "cleanup snapshot %s/%s#%s: %v\n", cleanup.Owner, cleanup.Repo, cleanup.PR, err)
+			continue
+		}
+		if err := executeDecision(ctx, cfg, repo, facts, snapshot, reconcile.Decision{Kind: reconcile.CleanUp}, store, logw); err != nil {
+			fmt.Fprintf(logw, "cleanup %s/%s#%s: %v\n", cleanup.Owner, cleanup.Repo, cleanup.PR, err)
+		}
 	}
 	return nil
+}
+
+func configuredRepo(repos []RepoConfig, key ledger.Key) (RepoConfig, bool) {
+	for _, repo := range repos {
+		if repo.Forge == key.Forge && repo.Owner == key.Owner && repo.Repo == key.Repo {
+			return repo, true
+		}
+	}
+	return RepoConfig{}, false
 }
 
 type sweepCandidate struct {

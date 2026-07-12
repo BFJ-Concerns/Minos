@@ -77,7 +77,7 @@ esac
 				t.Fatal(err)
 			}
 			result := adapter.DeleteMergedBranch(t.Context(), Guard{
-				Ownership: Ownership{Attempt: "attempt"}, Repository: Repository{Owner: "acme", Name: "widget"},
+				Ownership: LifecycleOwnership(1), Repository: Repository{Owner: "acme", Name: "widget"},
 				PullRequest: 4, HeadSHA: "expected-head", TargetSHA: "expected-target",
 			})
 			if result.Outcome != test.want {

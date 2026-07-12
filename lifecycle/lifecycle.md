@@ -23,6 +23,115 @@ first need them:
   instrumentation you keep. Your context is a scarce lifecycle resource; these
   conventions are how one session stays lean enough to finish.
 
+The lifecycle index has one required location:
+`$MINOS_RUN_DIR/lifecycle-index.md`. Create it during orientation, before
+`run-guard begin`, and refresh it after every head, target, or consequential
+forge movement. A controlled close is incomplete while that file is absent or
+empty: refresh it with the final product state and artefact references before
+`run-guard release`. The launch wrapper measures it as part of the attempt
+evidence, so keeping the plan only in your conversation does not satisfy this
+contract.
+
+## Bound command surface
+
+Use these service-owned commands for lifecycle facts and mutations. They are
+the executable seams; do not call the adaptation scripts directly.
+
+- `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" begin` confirms the launcher's
+  fenced lease, clears any prior wait, adds eyes, and publishes `working`. Run
+  it once before substantive work.
+- `"$MINOS_BIN" forge snapshot` returns the authenticated current PR, head, target,
+  checks, reviews, mergeability, permissions, and product facts.
+- `"$MINOS_BIN" forge status STATE` publishes one named product state. Valid names are
+  exactly `queued`, `working`, `waiting`, `blocked`, `partial`, `stopped`,
+  `clean`, `clean, limited`, and `merged`; quote `"clean, limited"` in a shell.
+- `"$MINOS_BIN" forge review RESULT BODY_FILE COMMENTS_JSON` publishes the current
+  head's consolidated review. `RESULT` is `converged`, `material`, or
+  `incomplete`; append `permission-policy` only for an outside
+  permission/policy block. The command maps the verdict and adds the hidden,
+  authenticated product record. Supply comments as a JSON array of anchored
+  review comments.
+- `"$MINOS_BIN" forge push BRANCH AUTHOR_NAME AUTHOR_EMAIL MESSAGE_FILE` performs the
+  guarded non-force push and advances the owned ledger pair on success. Read
+  the returned JSON `sha`, set `MINOS_HEAD_SHA` to it for later commands, and
+  refresh the lifecycle index and diff before continuing.
+- `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" clearance HEAD TARGET` records
+  attempt-local integration clearance for the current pair.
+- `"$MINOS_BIN" forge merge METHOD` performs the guarded merge and, only after a fresh
+  snapshot confirms merged truth, creates the cleanup obligation. Then publish
+  `merged` and run `"$MINOS_BIN" forge cleanup`; an uncertain cleanup remains in the
+  ledger for the sweep, while unsafe advance is preserved and incidented.
+- `"$MINOS_BIN" forge wait-fingerprint` prints the canonical current wait identity.
+  Store it with `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" wait FINGERPRINT
+  [FAILSAFE_RFC3339]` before publishing `waiting`.
+- `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" current` checks that this attempt
+  still owns the observed head and target. After an engine compaction, reload
+  the lifecycle index and run `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG"
+  revalidate INDEX_PATH` before any consequential action; failure means exit
+  without the mutation.
+- `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" release` removes eyes on the
+  controlled close. Exit immediately afterwards; the launch wrapper releases
+  the lease strictly last and records attempt instrumentation.
+
+Run repository commands only through `"$MINOS_BIN" ws-exec --config "$MINOS_CONFIG"
+-- ...`. Invoke Ensemble through `$MINOS_ENSEMBLE_LAUNCH`; use
+`$MINOS_REVIEW_SCRIPTS/account-coverage` and
+`$MINOS_REVIEW_SCRIPTS/admit-worker-model` at their guarantee-bearing gates,
+following the schemas in `$MINOS_REVIEW_SCRIPTS/README.md`.
+
+The pinned review skill entrypoint is already resolved as `$MINOS_SKILL`; do
+not search the installation or inspect launcher/configuration files to
+rediscover it. Read that file, set `REVIEW_SKILL_DIR="$(dirname
+"$MINOS_SKILL")"`, then create its diff plan directly from the prepared
+workspace with the observed target forced as base:
+
+```sh
+"$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
+  "$REVIEW_SKILL_DIR/scripts/plan_review.py" --mode diff \
+  --base "$MINOS_TARGET_SHA" --occasion "$MINOS_OCCASION" --no-codex \
+  >"$MINOS_RUN_DIR/review-plan.json"
+```
+
+The service passes `--no-codex` because the review skill's native Codex CLI leg
+does not emit an Ensemble `agent.json` with resolved-model evidence. Its output
+is therefore inadmissible under Minos's exact-pin contract. This does not remove
+cross-family verification: the verification workflow assigns Claude-produced
+findings to pinned Codex checkers whose records are admitted below.
+
+Keep the plan, workflow arguments/results/logs, quote validation, verification,
+coverage, and engine records beneath `$MINOS_RUN_DIR`. Follow the skill's
+bundled `review_workflow.js` and `verify_workflow.js` recipes from there. The
+launch preflight has already proved the configured binaries and engines; do not
+probe them again inside the lifecycle unless an actual invocation fails.
+
+`$MINOS_ENSEMBLE_LAUNCH` automatically archives each workflow and its
+`agent.json` records under `$MINOS_RUN_DIR/ensemble`. After the review workflow
+returns, and again after verification or bar work returns, admit the stage's
+records before using any judgement:
+
+```sh
+"$MINOS_REVIEW_SCRIPTS/admit-workflow-models" \
+  --policy "$MINOS_WORKER_MODEL_POLICY" \
+  --records "$MINOS_RUN_DIR/ensemble" --stage review \
+  >"$MINOS_RUN_DIR/review-model-admission.json"
+
+"$MINOS_REVIEW_SCRIPTS/admit-workflow-models" \
+  --policy "$MINOS_WORKER_MODEL_POLICY" \
+  --records "$MINOS_RUN_DIR/ensemble" --stage verify \
+  >"$MINOS_RUN_DIR/verify-model-admission.json"
+
+"$MINOS_REVIEW_SCRIPTS/admit-workflow-models" \
+  --policy "$MINOS_WORKER_MODEL_POLICY" \
+  --records "$MINOS_RUN_DIR/ensemble" --stage repair \
+  >"$MINOS_RUN_DIR/repair-model-admission.json"
+```
+
+A non-zero exit or `.admitted != true` means those worker results do not count:
+do not publish their findings or use their verdict to converge or stop. Preserve
+the record and take the pin-failure lane from the taxonomy. The repair command
+is required only after a repair workflow has run. Repeat the relevant admission
+after remediation, repair, or fresh whole-head workflows add records.
+
 ## The PR is the state — re-derive it, never resume it
 
 There is no product database and no saved stage. The durable record is the pull
@@ -63,9 +172,10 @@ At most one live session owns a PR at a time. Ownership is the coordination
 ledger's atomic lease, carrying a monotonically fenced attempt token and the
 head and target you observed.
 
-- **Acquire** the lease before any substantive work. If you cannot — another
-  live session already owns it — exit successfully without touching the forge;
-  the current owner is doing the work.
+- **Confirm** the lease before any substantive work. The launcher has already
+  acquired it atomically; `run-guard begin` proves this session owns that token.
+  If it reports stale, exit successfully without touching the forge because a
+  current owner or successor is doing the work.
 - On acquisition, add the **eyes presence reaction** to the PR: it is the one
   process-presence gesture Minos shows people, and it means a live lifecycle
   owns this PR right now. Remove it on **every** exit path you control — normal
@@ -121,17 +231,18 @@ send you back to an earlier step, and that is correct.
 ### 1. Orient
 
 Read the current situation from the forge facts and the ledger listed above.
-Build your lifecycle index (see `context-hygiene.md`): the compact record of
-what the current head and target are, what the service has already published,
-what remains to do, and where each artefact lives. Decide, from that, what
-journey remains — a first review, a re-review after a repair landed, a resumed
-wait, a final clearance and merge — and proceed.
+Build `$MINOS_RUN_DIR/lifecycle-index.md` (see `context-hygiene.md`): the compact
+record of what the current head and target are, what the service has already
+published, what remains to do, and where each artefact lives. Do this before
+`run-guard begin`. Decide, from that, what journey remains — a first review, a
+re-review after a repair landed, a resumed wait, a final clearance and merge —
+and proceed.
 
-### 2. Take ownership
+### 2. Confirm ownership
 
-Acquire the lease and add the eyes reaction (see Ownership above). If the lease
-is already held live, exit successfully without touching the forge. On a
-successful acquisition, publish the **`working`** product state — write the
+Confirm the launcher's already-acquired lease and add the eyes reaction (see
+Ownership above). If the claim is stale, exit successfully without touching the
+forge. On successful confirmation, publish the **`working`** product state — write the
 single `Minos` status to `working` on the observed head through the
 product-surface status operation — so the PR shows a live owner is attempting the
 lifecycle. Do this before substantive work: an older or absent status on the head
@@ -316,6 +427,12 @@ finding's producer and its checker are disjoint, but it knows nothing of who
 authored the repair, so the repair-author exclusion across the repaired head's
 review *and* verification is yours to hold.
 
+The service repair procedure is `$MINOS_FIX_SKILL` and the general diagnostic
+procedure is `$MINOS_ROOT_CAUSE_SKILL`. Read both before convening the first
+repair worker; do not search for substitutes or improvise their contracts. Run
+repairs through Ensemble with `repair:` labels, then admit the new records with
+`admit-workflow-models --stage repair` before using or pushing their output.
+
 - The workspace merge/repair is committed as an ordinary attributed,
   non-force-pushed commit parented by the observed head; forge and model-backend
   credentials never enter the workspace where PR code runs.
@@ -357,6 +474,14 @@ does not reset the chase merely because no numeric counter survives it. The
 head-scoped hidden finding identity handles publication idempotency, so an
 uncertain or retried publication discovers the already-posted finding rather
 than stacking a duplicate.
+
+“Unchanged head” means the exact same head SHA. A cosmetic, ineffective, or
+fruitless-looking commit still creates a new head and therefore still requires
+the fresh whole-PR review and current-head consolidated verdict from steps 4–5
+before it may settle `stopped`. Recurrence can justify skipping another repair;
+it never licenses carrying an older head's review forward as the current head's
+substantive record. Only a repair worker that produces no commit and leaves the
+head SHA literally unchanged takes the no-re-review shortcut above.
 
 ### 8. Final integration clearance
 

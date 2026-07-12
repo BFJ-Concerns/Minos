@@ -14,6 +14,7 @@ func TestCaptureClaudeRecordsAndChecksEarlyServedModel(t *testing.T) {
 	pins := filepath.Join(dir, "pins.toml")
 	stream := filepath.Join(dir, "lead.jsonl")
 	resolved := filepath.Join(dir, "resolved-lead.json")
+	metrics := filepath.Join(dir, "lead-metrics.json")
 	launcher := filepath.Join(dir, "claude-fixture")
 	if err := os.WriteFile(pins, []byte(leadPinsFixture), 0o644); err != nil {
 		t.Fatal(err)
@@ -21,11 +22,13 @@ func TestCaptureClaudeRecordsAndChecksEarlyServedModel(t *testing.T) {
 	writeScript(t, launcher, `#!/usr/bin/env sh
 cat >/dev/null
 printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-pinned"}'
-printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-pinned"}}'
-printf '%s\n' '{"type":"result","subtype":"success","modelUsage":{"claude-opus-pinned":{}}}'
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-pinned","usage":{"input_tokens":10,"cache_creation_input_tokens":90,"cache_read_input_tokens":100,"output_tokens":12}}}'
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-pinned","usage":{"input_tokens":5,"cache_creation_input_tokens":25,"cache_read_input_tokens":230,"output_tokens":18}}}'
+printf '%s\n' '{"type":"system","subtype":"compact_boundary"}'
+printf '%s\n' '{"type":"result","subtype":"success","usage":{"input_tokens":12,"cache_creation_input_tokens":115,"cache_read_input_tokens":330,"output_tokens":30},"modelUsage":{"claude-opus-pinned":{}}}'
 `)
 	var diagnostics bytes.Buffer
-	if err := CaptureClaudeCommand(t.Context(), []string{"--pins", pins, "--output", stream, "--resolved", resolved, launcher}, strings.NewReader("mission"), &diagnostics); err != nil {
+	if err := CaptureClaudeCommand(t.Context(), []string{"--pins", pins, "--output", stream, "--resolved", resolved, "--metrics", metrics, launcher}, strings.NewReader("mission"), &diagnostics); err != nil {
 		t.Fatal(err)
 	}
 	assertContainsFile(t, stream, `"subtype":"init"`)
@@ -43,6 +46,17 @@ printf '%s\n' '{"type":"result","subtype":"success","modelUsage":{"claude-opus-p
 	if !strings.Contains(diagnostics.String(), "type=system subtype=init") {
 		t.Fatalf("missing stream diagnostic: %q", diagnostics.String())
 	}
+	var measured leadMetrics
+	data, err = os.ReadFile(metrics)
+	if err != nil || json.Unmarshal(data, &measured) != nil {
+		t.Fatalf("read metrics: %v data=%q", err, data)
+	}
+	if measured.InputTokens != 457 || measured.DirectInputTokens != 12 || measured.CacheCreationInputTokens != 115 || measured.CacheReadInputTokens != 330 || measured.OutputTokens != 30 {
+		t.Fatalf("lead token metrics=%#v", measured)
+	}
+	if measured.PromptStart != 200 || measured.PromptPeak != 260 || measured.PromptGrowth != 60 || measured.CompactionEvents != 1 || measured.StreamBytes == 0 {
+		t.Fatalf("lead metrics=%#v", measured)
+	}
 }
 
 func TestCaptureClaudeFailsLoudlyOnEarlyModelMismatch(t *testing.T) {
@@ -57,6 +71,7 @@ func TestCaptureClaudeFailsLoudlyOnEarlyModelMismatch(t *testing.T) {
 		"--pins", pins,
 		"--output", filepath.Join(dir, "lead.jsonl"),
 		"--resolved", filepath.Join(dir, "resolved-lead.json"),
+		"--metrics", filepath.Join(dir, "lead-metrics.json"),
 		launcher,
 	}, strings.NewReader("mission"), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "model pin mismatch") {
@@ -80,6 +95,7 @@ func TestCaptureClaudeFailsWhenStreamHasNoResolvedModel(t *testing.T) {
 		"--pins", pins,
 		"--output", filepath.Join(dir, "lead.jsonl"),
 		"--resolved", resolved,
+		"--metrics", filepath.Join(dir, "lead-metrics.json"),
 		launcher,
 	}, strings.NewReader("mission"), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "without a resolved lead model") {

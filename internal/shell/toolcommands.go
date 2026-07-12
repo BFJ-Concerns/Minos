@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"bfj/minos/internal/product"
 )
 
 func MarkerCommand(args []string, stdout io.Writer) error {
@@ -24,7 +26,7 @@ func MarkerCommand(args []string, stdout io.Writer) error {
 			}
 			values[key] = value
 		}
-		line, err := FormatMarker(values)
+		line, err := product.FormatRecord(values)
 		if err != nil {
 			return err
 		}
@@ -34,7 +36,7 @@ func MarkerCommand(args []string, stdout io.Writer) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: minos marker parse LINE")
 		}
-		values, err := ParseMarker(args[1])
+		values, err := product.ParseRecord(args[1])
 		if err != nil {
 			return err
 		}
@@ -48,17 +50,18 @@ func HandleCommand(args []string, stdout io.Writer) error {
 	if len(args) == 0 || args[0] != "mint" {
 		return fmt.Errorf("usage: minos handle mint [EXISTING...]")
 	}
-	existing := make(map[string]bool, len(args)-1)
+	existing := make(map[product.FindingID]struct{}, len(args)-1)
 	for _, handle := range args[1:] {
-		if !ValidFindingHandle(handle) {
+		id, err := product.ParseFindingID(handle)
+		if err != nil {
 			return fmt.Errorf("invalid existing finding handle %q", handle)
 		}
-		existing[handle] = true
+		existing[id] = struct{}{}
 	}
-	handle, err := MintFindingHandle(existing)
+	handle, err := product.MintFindingID(existing)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, handle)
+	fmt.Fprintln(stdout, handle.String())
 	return nil
 }

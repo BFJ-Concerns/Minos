@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bfj/minos/internal/product"
 )
 
 type conformanceOwnership struct{}
@@ -44,7 +46,7 @@ func TestForgejoConformance(t *testing.T) {
 	t.Run("authoritative snapshot and owned writes", func(t *testing.T) {
 		pr := h.createPullRequest("snapshot")
 		snapshot := h.snapshot(adapter, pr)
-		if snapshot.AuthenticatedUser != "Minos" || snapshot.Repository != h.owner+"/"+h.repo || snapshot.State != "open" {
+		if snapshot.AuthenticatedUser != "Minos" || snapshot.Author != h.owner || snapshot.Repository != h.owner+"/"+h.repo || snapshot.State != "open" {
 			t.Fatalf("snapshot identity/state = %#v", snapshot)
 		}
 		if snapshot.HeadSHA == "" || snapshot.TargetSHA == "" || snapshot.HeadBranch == "" || snapshot.TargetBranch != "main" {
@@ -52,7 +54,7 @@ func TestForgejoConformance(t *testing.T) {
 		}
 
 		guard := h.guard(pr, snapshot)
-		if result := adapter.SetStatus(t.Context(), guard, StatusPending, "Reviewing changes"); result.Outcome != WriteApplied {
+		if result := adapter.SetProductStatus(t.Context(), guard, product.Working()); result.Outcome != WriteApplied {
 			t.Fatalf("SetStatus() = %#v, want applied", result)
 		}
 		if result := adapter.PostReview(t.Context(), guard, ReviewVerdictComment, "Conformance review", nil); result.Outcome != WriteApplied {
@@ -67,13 +69,45 @@ func TestForgejoConformance(t *testing.T) {
 		}
 	})
 
+	t.Run("eyes removal is idempotent", func(t *testing.T) {
+		pr := h.createPullRequest("eyes-removal")
+		runner := ScriptRunner{Directory: h.adaptation, APIBase: h.apiBase, Credential: h.token}
+		arguments := []string{h.owner, h.repo, fmt.Sprint(pr), "eyes"}
+		if _, err := runner.Run(t.Context(), RunRequest{Operation: "add-reaction", Arguments: arguments}); err != nil {
+			t.Fatalf("add eyes reaction: %v", err)
+		}
+		for attempt := 1; attempt <= 2; attempt++ {
+			if _, err := runner.Run(t.Context(), RunRequest{Operation: "remove-reaction", Arguments: arguments}); err != nil {
+				t.Fatalf("remove eyes reaction attempt %d: %v", attempt, err)
+			}
+		}
+	})
+
+	t.Run("complete open product vocabulary", func(t *testing.T) {
+		pr := h.createPullRequest("product-vocabulary")
+		snapshot := h.snapshot(adapter, pr)
+		guard := h.guard(pr, snapshot)
+		for _, state := range []product.State{
+			product.Queued(), product.Working(), product.Waiting(), product.Blocked(),
+			product.Partial(), product.Stopped(), product.Clean(), product.CleanLimited(),
+		} {
+			if result := adapter.SetProductStatus(t.Context(), guard, state); result.Outcome != WriteApplied {
+				t.Fatalf("SetProductStatus(%s) = %#v", state.Name(), result)
+			}
+			observed := h.snapshot(adapter, pr)
+			if !hasOwnedStatus(observed.Statuses, StatusState(state.ForgeState()), state.Description()) {
+				t.Fatalf("product state %s was not observable: %#v", state.Name(), observed.Statuses)
+			}
+		}
+	})
+
 	t.Run("required check reduction and self exclusion", func(t *testing.T) {
 		h.createMainProtection([]string{OwnedStatusContext, "build"}, true)
 		pr := h.createPullRequest("required-checks")
 		snapshot := h.snapshot(adapter, pr)
 		h.postStatus(snapshot.HeadSHA, "build", "failure", "first attempt")
 		h.postStatus(snapshot.HeadSHA, "build", "success", "newest attempt")
-		if result := adapter.SetStatus(t.Context(), h.guard(pr, snapshot), StatusFailure, "Owned context is excluded"); result.Outcome != WriteApplied {
+		if result := adapter.SetProductStatus(t.Context(), h.guard(pr, snapshot), product.Blocked()); result.Outcome != WriteApplied {
 			t.Fatalf("SetStatus() = %#v, want applied", result)
 		}
 		observed := h.snapshot(adapter, pr)
@@ -88,12 +122,12 @@ func TestForgejoConformance(t *testing.T) {
 		guard := h.guard(pr, snapshot)
 
 		h.withFaultingCurl(t, "after-write", func() {
-			if result := adapter.SetStatus(t.Context(), guard, StatusPending, "Response deliberately lost"); result.Outcome != WriteApplied {
+			if result := adapter.SetProductStatus(t.Context(), guard, product.Working()); result.Outcome != WriteApplied {
 				t.Fatalf("discover completed status = %#v, want applied", result)
 			}
 		})
 		h.withFaultingCurl(t, "before-write", func() {
-			if result := adapter.SetStatus(t.Context(), guard, StatusPending, "Write deliberately dropped"); result.Outcome != WriteUncertain {
+			if result := adapter.SetProductStatus(t.Context(), guard, product.Waiting()); result.Outcome != WriteUncertain {
 				t.Fatalf("undiscoverable status = %#v, want uncertain", result)
 			}
 		})
@@ -113,12 +147,12 @@ func TestForgejoConformance(t *testing.T) {
 		}
 		result := adapter.Push(t.Context(), h.guard(pr, snapshot), PushRequest{
 			Branch: snapshot.HeadBranch, AuthorName: "Minos", AuthorEmail: "minos@example.invalid",
-			Model: "conformance", MessageFile: message, Workspace: h.clone,
+			MessageFile: message, Workspace: h.clone,
 		})
 		if result.Outcome != WriteApplied || result.SHA == "" || result.SHA == snapshot.HeadSHA {
 			t.Fatalf("Push() = %#v, want a new applied SHA", result)
 		}
-		if stale := adapter.SetStatus(t.Context(), h.guard(pr, snapshot), StatusPending, "stale"); stale.Outcome != WriteRejected || !strings.Contains(stale.Reason, "head moved") {
+		if stale := adapter.SetProductStatus(t.Context(), h.guard(pr, snapshot), product.Working()); stale.Outcome != WriteRejected || !strings.Contains(stale.Reason, "head moved") {
 			t.Fatalf("stale SetStatus() = %#v, want head-moved rejection", stale)
 		}
 	})
@@ -146,6 +180,12 @@ func TestForgejoConformance(t *testing.T) {
 		merged := h.snapshot(adapter, pr)
 		if !merged.Merged || merged.State != "merged" {
 			t.Fatalf("merged snapshot = %#v", merged)
+		}
+		if result := adapter.SetProductStatus(t.Context(), h.guard(pr, snapshot), product.Merged()); result.Outcome != WriteApplied {
+			t.Fatalf("SetProductStatus(merged) = %#v, want applied", result)
+		}
+		if observed := h.snapshot(adapter, pr); !hasOwnedStatus(observed.Statuses, StatusSuccess, product.Merged().Description()) {
+			t.Fatalf("merged product status was not observable: %#v", observed.Statuses)
 		}
 		if result := adapter.DeleteMergedBranch(t.Context(), h.guard(pr, snapshot)); result.Outcome != WriteApplied {
 			t.Fatalf("DeleteMergedBranch() = %#v, want applied", result)
@@ -353,7 +393,7 @@ func (h *conformanceHarness) waitForMergeable(adapter *Adapter, pr int64) Snapsh
 }
 
 func (h *conformanceHarness) guard(pr int64, snapshot Snapshot) Guard {
-	return Guard{Ownership: Ownership{Attempt: "conformance"}, Repository: Repository{Owner: h.owner, Name: h.repo}, PullRequest: pr, HeadSHA: snapshot.HeadSHA, TargetSHA: snapshot.TargetSHA}
+	return Guard{Ownership: LifecycleOwnership(1), Repository: Repository{Owner: h.owner, Name: h.repo}, PullRequest: pr, HeadSHA: snapshot.HeadSHA, TargetSHA: snapshot.TargetSHA}
 }
 
 func (h *conformanceHarness) postStatus(sha, context, state, description string) {
@@ -383,7 +423,7 @@ func (h *conformanceHarness) configureSquashOnly() {
 func (h *conformanceHarness) satisfyChecks(adapter *Adapter, pr int64, snapshot Snapshot) Snapshot {
 	h.t.Helper()
 	h.postStatus(snapshot.HeadSHA, "build", "success", "Conformance build")
-	if result := adapter.SetStatus(h.t.Context(), h.guard(pr, snapshot), StatusSuccess, "Changes approved"); result.Outcome != WriteApplied {
+	if result := adapter.SetProductStatus(h.t.Context(), h.guard(pr, snapshot), product.Clean()); result.Outcome != WriteApplied {
 		h.t.Fatalf("satisfy Minos check = %#v", result)
 	}
 	// Final clearance is a fresh forge decision after the status writes, not the
