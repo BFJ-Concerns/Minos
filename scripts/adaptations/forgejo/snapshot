@@ -1,0 +1,91 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+
+user_json="$(api GET "/api/v1/user")"
+repository_json="$(api GET "/api/v1/repos/${owner}/${repo}")"
+pr_json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}")"
+base_ref="$(printf '%s' "$pr_json" | jq -r '.base.ref')"
+base_json="$(api GET "/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$base_ref")")"
+
+statuses='[]'
+previous=''
+page=1
+while :; do
+  current="$(api GET "/api/v1/repos/${owner}/${repo}/commits/$(printf '%s' "$pr_json" | jq -r '.head.sha')/statuses?limit=50&page=${page}")"
+  [ "$current" != "$previous" ] || break
+  [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
+  statuses="$(jq -cn --argjson all "$statuses" --argjson page "$current" '$all + $page')"
+  previous="$current"
+  page=$((page + 1))
+done
+
+reviews='[]'
+previous=''
+page=1
+while :; do
+  current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=50&page=${page}")"
+  [ "$current" != "$previous" ] || break
+  [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
+  reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')"
+  previous="$current"
+  page=$((page + 1))
+done
+
+head_repo="$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name // ""')"
+head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
+source_protected=false
+if [ "$head_repo" = "${owner}/${repo}" ] && [ -n "$head_branch" ]; then
+  if source_json="$(api GET "/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$head_branch")" 2>/dev/null)"; then
+    source_protected="$(printf '%s' "$source_json" | jq '.protected // false')"
+  elif [ "$(printf '%s' "$pr_json" | jq -r '.merged // false')" != "true" ]; then
+    echo "snapshot: current same-repository source branch could not be read" >&2
+    exit 1
+  fi
+fi
+
+jq -nc \
+  --argjson user "$user_json" \
+  --argjson repository "$repository_json" \
+  --argjson pr "$pr_json" \
+  --argjson base "$base_json" \
+  --argjson statuses "$statuses" \
+  --argjson reviews "$reviews" \
+  --arg provider "forgejo" \
+  --argjson source_protected "$source_protected" '
+  {
+    authenticated_user: ($user.login // $user.username // ""),
+    repository: $repository.full_name,
+    pull_request: $pr.number,
+    state: (if ($pr.merged // false) then "merged" else $pr.state end),
+    merged: ($pr.merged // false),
+    draft: ($pr.draft // false),
+    mergeable: ($pr.mergeable // false),
+    head_sha: $pr.head.sha,
+    head_branch: ($pr.head.ref // ""),
+    head_repository: ($pr.head.repo.full_name // ""),
+    target_sha: ($base.commit.id // $base.commit.sha // ""),
+    target_branch: $pr.base.ref,
+    target_repository: $pr.base.repo.full_name,
+    default_branch: $repository.default_branch,
+    source_protected: $source_protected,
+    can_merge: ($base.user_can_merge // false),
+    required_checks: [($base.status_check_contexts // [])[] | {provider:$provider, context:.}],
+    statuses: [$statuses[] |
+      if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
+        {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), protection_satisfied:false}
+      end] | sort_by(.id) | reverse,
+    reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // "")}],
+    allowed_merge_methods: ([
+      if ($repository.allow_merge_commits // false) then "merge" else empty end,
+      if ($repository.allow_rebase // false) then "rebase" else empty end,
+      if ($repository.allow_rebase_explicit // false) then "rebase-merge" else empty end,
+      if ($repository.allow_squash_merge // false) then "squash" else empty end,
+      if ($repository.allow_fast_forward_only_merge // false) then "fast-forward-only" else empty end
+    ])
+  }'

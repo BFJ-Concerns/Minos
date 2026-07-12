@@ -1,0 +1,36 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
+context="$7"; state="$8"; description="$9"
+
+if [ "$context" != "Minos" ]; then
+  write_result rejected "owned status context must be exactly Minos"
+  exit 0
+fi
+case "$state" in
+  pending|success|failure|error|warning) ;;
+  *) write_result rejected "unsupported Forgejo status state: $state"; exit 0 ;;
+esac
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+payload="$(jq -nc --arg state "$state" --arg context "$context" --arg description "$description" '{state:$state,context:$context,description:$description}')"
+api POST "/api/v1/repos/${owner}/${repo}/statuses/${head}" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+
+if statuses="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${head}/statuses" 2>/dev/null)" &&
+  printf '%s' "$statuses" | jq -e --arg context "$context" --arg state "$state" --arg description "$description" --arg login "$login" '
+    [.[] | select(.context == $context)] | max_by(.id) |
+    (.status // .state) == $state and (.description // "") == $description and (.creator.login // .creator.username // "") == $login' >/dev/null; then
+  write_result applied
+else
+  write_result uncertain "status write could not be discovered"
+fi
