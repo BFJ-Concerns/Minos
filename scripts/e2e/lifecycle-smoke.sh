@@ -4,11 +4,20 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="${MINOS_E2E_DIR:-$(mktemp -d)}"
 live="${MINOS_E2E_LIVE:-0}"
+liveness_threshold="${MINOS_E2E_LIVENESS_THRESHOLD:-10m}"
+journeys="${MINOS_E2E_JOURNEYS:-}"
+if [[ (",${journeys}," == *",hard-kill,"* || ",${journeys}," == *",restart,"*) &&
+  -z "${MINOS_E2E_LIVENESS_THRESHOLD:-}" ]]; then
+  liveness_threshold="6s"
+fi
 wait_attempts=300
 [[ "$live" = 0 ]] || wait_attempts=900
 source "$root/scripts/e2e/resources.sh"
+# shellcheck source=scripts/e2e/lifecycle-recovery.sh
+source "$root/scripts/e2e/lifecycle-recovery.sh"
 declare -a MINOS_E2E_RESOURCE_LOCK_FDS=()
 declare -a journey_units=()
+evidence_sequence=0
 minos_e2e_allocate_resources
 container="$MINOS_E2E_RESOLVED_CONTAINER"
 port="$MINOS_E2E_RESOLVED_FORGEJO_PORT"
@@ -58,6 +67,36 @@ wait_until() {
   done
   printf 'timed out: %s\n' "$description" >&2
   return 1
+}
+
+require() {
+  local description="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    printf 'ok: %s\n' "$description"
+    return 0
+  fi
+  printf 'failed: %s\n' "$description" >&2
+  return 1
+}
+
+journey_enabled() {
+  [[ ",${journeys}," == *",$1,"* ]]
+}
+
+record_evidence() {
+  local source="$1" operation="$2" lineage="$3" outcome="$4" detail="${5:-}"
+  evidence_sequence=$((evidence_sequence + 1))
+  jq -nc \
+    --argjson sequence "$evidence_sequence" \
+    --arg monotonic "$(cut -d ' ' -f 1 /proc/uptime)" \
+    --arg source "$source" \
+    --arg operation "$operation" \
+    --arg lineage "$lineage" \
+    --arg outcome "$outcome" \
+    --arg detail "$detail" \
+    '{sequence:$sequence,monotonic_seconds:$monotonic,source:$source,operation:$operation,attempt_lineage:$lineage,outcome:$outcome,detail:$detail}' \
+    >>"$work/evidence.jsonl"
 }
 
 status_description() {
@@ -139,7 +178,8 @@ create_pr() {
     cd "$work/subject"
     git checkout -q main
     git checkout -q -b "$branch"
-    if [[ "$branch" == stopped-* ]]; then
+    if [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
+      "$branch" == restart-* || "$branch" == uncertain-* ]]; then
       sed -i 's/return true/return false/' ready.go
     else
       printf '\n// Clean lifecycle fixture.\n' >>ready.go
@@ -188,6 +228,51 @@ seed_stopped_history() {
 
 mkdir -p "$work"/{adaptations,bin,config/repos,forgejo/gitea/conf,incidents,logs,runs}
 cp -R "$root/scripts/adaptations/forgejo/." "$work/adaptations/"
+cat >"$work/adaptations/fault-common.sh" <<'EOF'
+#!/usr/bin/env sh
+# shellcheck source=common.sh
+. "$(dirname "$0")/common.sh"
+
+# The disposable rig can apply one guarded write and then make its response
+# unavailable. The unchanged guarded verb must discover the forge effect.
+api() {
+  method="$1"
+  path="$2"
+  shift 2
+  fault_root="$(dirname "$MINOS_CONFIG")/faults"
+  drop_response=false
+  case "${method}:${path}" in
+    POST:*/reviews)
+      if [ -e "$fault_root/drop-review-response" ]; then
+        rm -f "$fault_root/drop-review-response"
+        drop_response=true
+      fi
+      ;;
+    POST:*/statuses/*)
+      if [ -e "$fault_root/drop-status-response" ]; then
+        rm -f "$fault_root/drop-status-response"
+        drop_response=true
+      fi
+      ;;
+  esac
+  if ! command curl -fsS \
+    -X "$method" \
+    -H "Authorization: token ${MINOS_FORGE_TOKEN}" \
+    -H "Accept: application/json" \
+    "$@" \
+    "${MINOS_API_BASE%/}${path}"; then
+    return 1
+  fi
+  if $drop_response; then
+    printf '%s %s\n' "$method" "$path" >>"$(dirname "$MINOS_CONFIG")/logs/forge-faults.log"
+    return 1
+  fi
+  return 0
+}
+EOF
+sed -i 's#/common.sh"#/fault-common.sh"#' \
+  "$work/adaptations/guarded-post-review" \
+  "$work/adaptations/guarded-set-status"
 
 cat >"$work/forgejo/gitea/conf/app.ini" <<EOF
 APP_NAME = Minos lifecycle E2E
@@ -278,7 +363,7 @@ signature-header = "X-Forgejo-Signature"
 dir = "${work}/runs"
 max-concurrent = 1
 [sweep]
-liveness-threshold = "10m"
+liveness-threshold = "${liveness_threshold}"
 log = "${work}/logs/sweep.log"
 [scrub]
 vars = ["MINOS_FORGE_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
@@ -369,13 +454,48 @@ set -a
 . "$MINOS_CONFIG/run-body.env"
 set +a
 minos="${MINOS_BIN}"
+control_root="$(dirname "$MINOS_CONFIG")/control"
+mkdir -p "$control_root"
+if [[ -e "$control_root/hard-kill-predecessor-token" && ! -e "$control_root/hard-kill-successor-allow-begin" ]]; then
+  printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-successor-before-begin"
+  while [[ ! -e "$control_root/hard-kill-successor-allow-begin" ]]; do sleep 1; done
+fi
 "$minos" run-guard --config "$MINOS_CONFIG" begin
 snapshot="$($minos forge snapshot)"
 branch="$(jq -r .head_branch <<<"$snapshot")"
 body="$MINOS_RUN_DIR/review.md"
 comments="$MINOS_RUN_DIR/comments.json"
 printf '[]\n' >"$comments"
-if [[ "$branch" == stopped-* ]]; then
+if [[ "$branch" == hard-kill-* && ! -e "$control_root/hard-kill-predecessor-token" ]]; then
+  printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-predecessor-token"
+  printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-predecessor-ready"
+  while :; do sleep 1; done
+elif [[ "$branch" == restart-* ]]; then
+  : >"$control_root/restart-ready"
+  while [[ ! -e "$control_root/restart-release" ]]; do sleep 1; done
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  "$minos" forge status stopped
+elif [[ "$branch" == uncertain-review-* ]]; then
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  : >"$control_root/uncertain-review-applied"
+  while [[ ! -e "$control_root/uncertain-review-release" ]]; do sleep 1; done
+  "$minos" forge status stopped
+elif [[ "$branch" == uncertain-status-* ]]; then
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  "$minos" forge status stopped
+  : >"$control_root/uncertain-status-applied"
+  while [[ ! -e "$control_root/uncertain-status-release" ]]; do sleep 1; done
+elif [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ]]; then
+  if [[ "$branch" == missed-webhook-* ]]; then
+    : >"$control_root/missed-webhook-ready"
+    while [[ ! -e "$control_root/missed-webhook-release" ]]; do sleep 1; done
+  elif [[ "$branch" == hard-kill-* ]]; then
+    printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-successor-ready"
+    while [[ ! -e "$control_root/hard-kill-successor-release" ]]; do sleep 1; done
+  fi
   printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
   "$minos" forge review material "$body" "$comments"
   "$minos" forge status stopped
@@ -406,12 +526,13 @@ chmod +x "$work/run-body"
 receiver_pid="$!"
 wait_until 'receiver ready' grep -q 'receiver listening' "$work/logs/receiver.log"
 
-run_clean=true
-run_stopped=true
-[[ "$live" != clean ]] || run_stopped=false
-[[ "$live" != stopped ]] || run_clean=false
+if [[ -z "$journeys" ]]; then
+  journeys="clean,stopped"
+  [[ "$live" != clean ]] || journeys="clean"
+  [[ "$live" != stopped ]] || journeys="stopped"
+fi
 
-if $run_clean; then
+if journey_enabled clean; then
   clean_pr="$(create_pr clean-lifecycle)"
   clean_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${clean_pr}" | jq -r '.head.sha')"
   journey_units+=("minos-run-${owner}-${repo}-pr${clean_pr}-${clean_sha:0:12}.service")
@@ -424,7 +545,7 @@ if $run_clean; then
   one_session "$clean_pr"
 fi
 
-if $run_stopped; then
+if journey_enabled stopped; then
   stopped_pr="$(create_pr stopped-lifecycle)"
   [[ "$live" != stopped ]] || seed_stopped_history "$stopped_pr"
   stopped_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${stopped_pr}" | jq -r '.head.sha')"
@@ -439,6 +560,22 @@ if $run_stopped; then
   wait_until 'findings eyes removed' eyes_absent "$stopped_pr"
   wait_until 'findings instrumentation written' instrumented "$stopped_pr"
   one_session "$stopped_pr"
+fi
+
+if journey_enabled missed-webhook; then
+  run_missed_webhook_journey
+fi
+
+if journey_enabled hard-kill; then
+  run_hard_kill_journey
+fi
+
+if journey_enabled restart; then
+  run_restart_journey
+fi
+
+if journey_enabled uncertain-write; then
+  run_uncertain_write_journeys
 fi
 
 printf 'Minos lifecycle E2E passed. Evidence: %s\n' "$work"
