@@ -1,5 +1,12 @@
 # Minos flaky-test repair mission
 
+> **RETIRED — superseded by `../lifecycle/lifecycle.md`.** PR-unrelated flakiness
+> is now surfaced as the lifecycle's `waiting` product state after a disjoint
+> verifier attributes the failure outside the PR — not a `Flaky Tests` label and
+> not a separate repair run (Minos reads no labels). This file is kept only until
+> integration rewires the launcher off the per-stage missions and removes it; do
+> not extend it.
+
 Own one flaky-test repair run from claim to final forge state. Read the general
 skill at `$MINOS_SKILL` in full and follow it. The skill owns evidence-led
 diagnosis: reproduction, rival hypotheses, discriminating experiments, honest

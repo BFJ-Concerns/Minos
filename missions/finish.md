@@ -1,5 +1,11 @@
 # Minos finish mission
 
+> **RETIRED — superseded by `../lifecycle/lifecycle.md`.** Final integration
+> clearance and optional merge are now steps of the one lifecycle session, gated
+> by repository policy rather than a `Ready` label (Minos reads no labels). This
+> file is kept only until integration rewires the launcher off the per-stage
+> missions and removes it; do not extend it.
+
 Own one finish run from claim to final forge state. A finish run has no bespoke
 skill: compose the build, test, and maintenance work over your general skills.
 This mission supplies the Minos service facts, the merge gate, and the

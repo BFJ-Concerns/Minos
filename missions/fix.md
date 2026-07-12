@@ -1,5 +1,12 @@
 # Minos fix mission
 
+> **RETIRED — superseded by `../lifecycle/lifecycle.md`.** Repair is now a phase
+> of the one lifecycle session, worked by fresh workers the lead convenes, not a
+> separately-triggered fix run. This file is kept only until integration rewires
+> the launcher off the per-stage missions and removes it; do not extend it. (The
+> repair *craft* in `../skills/service/fix/` is still composed by those workers;
+> only its separate-run framing needs realigning — see the unit report.)
+
 Own one fix run from claim to final forge state. Read the general skill at
 `$MINOS_SKILL` in full and follow it — for a fix run the launcher points that
 at the service's fix skill, and it, composed over the general debugging skill,
