@@ -94,6 +94,7 @@ class CoverageAccountingTest(unittest.TestCase):
                 "blob": self.blob,
                 "line": 1,
                 "name": "alpha",
+                "line_text": "def alpha():",
             }, {
                 "kind": "call_site",
                 "path": "service.py",
@@ -101,6 +102,7 @@ class CoverageAccountingTest(unittest.TestCase):
                 "blob": self.blob,
                 "line": 6,
                 "name": "alpha",
+                "line_text": "    value = alpha()",
             }],
         }
         path = self.repo / "record.json"
@@ -138,6 +140,7 @@ class CoverageAccountingTest(unittest.TestCase):
         references = [{
             "kind": "definition", "path": "service.py", "blob": self.blob,
             "commit": self.head, "line": 1, "name": "phantom",
+            "line_text": "def alpha():",
         }]
         result = self.account(self.write_record(references=references), expected_code=1)
         self.assertTrue(any(item["kind"] == "reference_not_found" for item in result["omissions"]))
@@ -146,9 +149,19 @@ class CoverageAccountingTest(unittest.TestCase):
         references = [{
             "kind": "definition", "path": "library.py", "commit": self.head,
             "blob": self.library_blob, "line": 1, "name": "shared",
+            "line_text": "def shared():",
         }]
         result = self.account(self.write_record(references=references))
         self.assertEqual(result["status"], "complete")
+
+    def test_reference_name_must_be_a_complete_identifier(self):
+        references = [{
+            "kind": "definition", "path": "library.py", "commit": self.head,
+            "blob": self.library_blob, "line": 1, "name": "share",
+            "line_text": "def shared():",
+        }]
+        result = self.account(self.write_record(references=references), expected_code=1)
+        self.assertTrue(any(item["kind"] == "reference_not_found" for item in result["omissions"]))
 
 
 class ModelAdmissionTest(unittest.TestCase):
@@ -164,8 +177,13 @@ class ModelAdmissionTest(unittest.TestCase):
                     "engine": "codex",
                     "model": "gpt-5.6-sol",
                     "family": "gpt",
+                    "request_models": ["gpt-5.6-sol"],
+                    "label_prefixes": ["verify:"],
                 },
-                "inventory": {"guarantee": False},
+                "inventory": {
+                    "guarantee": False,
+                    "label_prefixes": ["inventory:"],
+                },
             },
         }
 
@@ -192,6 +210,7 @@ class ModelAdmissionTest(unittest.TestCase):
             "schema_version": 2,
             "kind": "agent_record",
             "id": 7,
+            "label": "verify:codex:0",
             "engine": "codex",
             "model": "gpt-5.6-sol",
             "resolved_model": resolved,
@@ -209,6 +228,46 @@ class ModelAdmissionTest(unittest.TestCase):
         result = self.admit(self.record("gpt-5.6-other"), expected_code=1)
         self.assertEqual((result["admitted"], result["reason"]), (False, "pin_mismatch"))
 
+    def test_alias_requested_worker_with_exact_resolved_pin_is_admitted(self):
+        self.policy["roles"]["verifier"] = {
+            "guarantee": True,
+            "engine": "claude",
+            "model": "claude-opus-4-8",
+            "family": "claude",
+            "request_models": ["opus", "claude-opus-4-8"],
+            "label_prefixes": ["verify:"],
+        }
+        record = {
+            "schema_version": 2, "kind": "agent_record", "id": 8,
+            "label": "verify:claude:0", "engine": "claude", "model": "opus",
+            "resolved_model": "claude-opus-4-8",
+        }
+        result = self.admit(record, counterpart="gpt")
+        self.assertEqual((result["admitted"], result["level"]), (True, "full"))
+
+    def test_alias_requested_worker_with_wrong_resolved_model_is_rejected(self):
+        self.policy["roles"]["verifier"] = {
+            "guarantee": True,
+            "engine": "claude",
+            "model": "claude-opus-4-8",
+            "family": "claude",
+            "request_models": ["opus"],
+            "label_prefixes": ["verify:"],
+        }
+        record = {
+            "schema_version": 2, "kind": "agent_record", "id": 8,
+            "label": "verify:claude:0", "engine": "claude", "model": "opus",
+            "resolved_model": "claude-fable-5",
+        }
+        result = self.admit(record, counterpart="gpt", expected_code=1)
+        self.assertEqual((result["admitted"], result["reason"]), (False, "pin_mismatch"))
+
+    def test_record_label_must_match_asserted_role(self):
+        record = self.record()
+        record["label"] = "propose:codex:0"
+        result = self.admit(record, expected_code=1)
+        self.assertEqual((result["admitted"], result["reason"]), (False, "role_label_mismatch"))
+
     def test_unresolved_model_stops_by_default(self):
         result = self.admit(self.record(None), expected_code=1)
         self.assertEqual((result["admitted"], result["reason"]), (False, "resolved_model_unavailable"))
@@ -218,7 +277,11 @@ class ModelAdmissionTest(unittest.TestCase):
         self.assertEqual((result["admitted"], result["level"]), (True, "limited"))
 
     def test_mechanical_role_is_outside_guarantee(self):
-        result = self.admit({}, role="inventory", counterpart=None)
+        record = {
+            "schema_version": 2, "kind": "agent_record", "id": 9,
+            "label": "inventory:codex:0",
+        }
+        result = self.admit(record, role="inventory", counterpart=None)
         self.assertEqual((result["admitted"], result["level"]), (True, "mechanical"))
 
 
