@@ -76,6 +76,43 @@ func TestStoppedAndCleanServedness(t *testing.T) {
 	}
 }
 
+func TestStaleLeaseReapsServedTerminalStateWithoutReplacement(t *testing.T) {
+	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
+	deadLease := &ledger.Lease{HeartbeatAt: now.Add(-2 * time.Hour)}
+	view := View{Lease: deadLease, LivenessWindow: time.Hour}
+	for _, state := range []product.State{product.Stopped(), product.Partial(), product.Clean(), product.CleanLimited()} {
+		t.Run(state.Name(), func(t *testing.T) {
+			s := snapshot()
+			s.Product = state
+			s.ProductHead = s.HeadSHA
+			s.ProductTarget = s.TargetSHA
+			s.ProductGoverning = s.GoverningIdentity
+			s.ProductGoverningKnown = true
+			if got := Decide(s, view, now).Kind; got != Reap {
+				t.Fatalf("stale lease over served terminal state = %s, want reap", got)
+			}
+			s.TargetSHA = "target-2"
+			if got := Decide(s, view, now).Kind; got != Replace {
+				t.Fatalf("stale lease over moved terminal state = %s, want replace", got)
+			}
+		})
+	}
+}
+
+func TestStaleLeaseReplacesCleanStateWhenGoverningInputsMoved(t *testing.T) {
+	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
+	s := snapshot()
+	s.Product = product.Clean()
+	s.ProductHead = s.HeadSHA
+	s.ProductTarget = s.TargetSHA
+	s.ProductGoverning = "policy-0"
+	s.ProductGoverningKnown = true
+	view := View{Lease: &ledger.Lease{HeartbeatAt: now.Add(-2 * time.Hour)}, LivenessWindow: time.Hour}
+	if got := Decide(s, view, now).Kind; got != Replace {
+		t.Fatalf("stale lease over superseded clean governance = %s, want replace", got)
+	}
+}
+
 func TestCleanReAdmitsWhenProductGoverningIdentityIsUnknown(t *testing.T) {
 	s := snapshot()
 	s.Product = product.Clean()
