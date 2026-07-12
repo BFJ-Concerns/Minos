@@ -5,19 +5,19 @@ import (
 	"fmt"
 	"os"
 
-	"bfj/pump19/internal/shell"
+	"bfj/minos/internal/shell"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "pump19: %v\n", err)
+		fmt.Fprintf(os.Stderr, "minos: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pump19 receive|sweep|run-wrap|run-guard|run-terminal|re-arm|adapt|capture-claude|review|marker|handle|provenance|stub-run|ws-exec")
+		return fmt.Errorf("usage: minos receive|sweep|run-wrap|run-guard|run-terminal|re-arm|adapt|capture-claude|review|marker|handle|provenance|stub-run|ws-exec")
 	}
 	ctx := context.Background()
 	switch args[0] {

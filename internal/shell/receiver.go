@@ -31,7 +31,7 @@ func ReceiveCommand(ctx context.Context, args []string) error {
 			log.Printf("hook failed: %v", err)
 		}
 	})
-	log.Printf("pump19 receiver listening on %s", cfg.Listener.Bind)
+	log.Printf("minos receiver listening on %s", cfg.Listener.Bind)
 	return http.ListenAndServe(cfg.Listener.Bind, mux)
 }
 

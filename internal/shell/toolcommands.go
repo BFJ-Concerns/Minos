@@ -9,7 +9,7 @@ import (
 
 func MarkerCommand(args []string, stdout io.Writer) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: pump19 marker format KEY=VALUE... | parse LINE")
+		return fmt.Errorf("usage: minos marker format KEY=VALUE... | parse LINE")
 	}
 	switch args[0] {
 	case "format":
@@ -32,7 +32,7 @@ func MarkerCommand(args []string, stdout io.Writer) error {
 		return nil
 	case "parse":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: pump19 marker parse LINE")
+			return fmt.Errorf("usage: minos marker parse LINE")
 		}
 		values, err := ParseMarker(args[1])
 		if err != nil {
@@ -46,7 +46,7 @@ func MarkerCommand(args []string, stdout io.Writer) error {
 
 func HandleCommand(args []string, stdout io.Writer) error {
 	if len(args) == 0 || args[0] != "mint" {
-		return fmt.Errorf("usage: pump19 handle mint [EXISTING...]")
+		return fmt.Errorf("usage: minos handle mint [EXISTING...]")
 	}
 	existing := make(map[string]bool, len(args)-1)
 	for _, handle := range args[1:] {

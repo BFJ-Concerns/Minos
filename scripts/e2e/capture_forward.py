@@ -20,7 +20,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             action = json.loads(body.decode("utf-8")).get("action") or "none"
         except Exception:
             pass
-        fixture_dir = pathlib.Path(os.environ["PUMP19_FIXTURE_DIR"])
+        fixture_dir = pathlib.Path(os.environ["MINOS_FIXTURE_DIR"])
         fixture_dir.mkdir(parents=True, exist_ok=True)
         name = f"{Handler.counter:03d}-{event}-{action}.json"
         (fixture_dir / name).write_text(json.dumps({
@@ -28,7 +28,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "body": body.decode("utf-8"),
         }, indent=2, sort_keys=True) + "\n")
 
-        forward = os.environ.get("PUMP19_FORWARD_URL")
+        forward = os.environ.get("MINOS_FORWARD_URL")
         status = 202
         response_body = b"captured\n"
         if forward:
@@ -57,5 +57,5 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    port = int(os.environ["PUMP19_CAPTURE_PORT"])
+    port = int(os.environ["MINOS_CAPTURE_PORT"])
     http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

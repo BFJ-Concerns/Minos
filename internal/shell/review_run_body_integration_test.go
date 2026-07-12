@@ -29,10 +29,10 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		}
 	}
 
-	binary := filepath.Join(root, "pump19")
-	build := exec.Command("go", "build", "-o", binary, "../../cmd/pump19")
+	binary := filepath.Join(root, "minos")
+	build := exec.Command("go", "build", "-o", binary, "../../cmd/minos")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build pump19 fixture: %v\n%s", err, out)
+		t.Fatalf("build minos fixture: %v\n%s", err, out)
 	}
 	installReviewRunBodyFixture(t, installRoot)
 	reviewScripts, err := filepath.Abs(filepath.Join("..", "..", "scripts", "review"))
@@ -48,11 +48,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := os.WriteFile(pins, []byte(leadPinsFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runBodyEnv := "PUMP19_ENGINE_LAUNCH_LEAD='" + standin + "'\n" +
-		"PUMP19_ENSEMBLE_LAUNCH='/bin/false'\n" +
-		"PUMP19_PINS='" + pins + "'\n" +
-		"PUMP19_REVIEW_SCRIPTS='" + reviewScripts + "'\n" +
-		"PUMP19_BIN='" + binary + "'\n"
+	runBodyEnv := "MINOS_ENGINE_LAUNCH_LEAD='" + standin + "'\n" +
+		"MINOS_ENSEMBLE_LAUNCH='/bin/false'\n" +
+		"MINOS_PINS='" + pins + "'\n" +
+		"MINOS_REVIEW_SCRIPTS='" + reviewScripts + "'\n" +
+		"MINOS_BIN='" + binary + "'\n"
 	if err := os.WriteFile(filepath.Join(configRoot, "run-body.env"), []byte(runBodyEnv), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
 	}
-	firstRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "aaaaaaaaaaaaaaaa", RunReview)
+	firstRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "aaaaaaaaaaaaaaaa", RunReview)
 	assertContainsFile(t, filepath.Join(firstRun, "review.md"), "verdict=standing-findings")
 	assertContainsFile(t, filepath.Join(firstRun, "new-comments.json"), "finding=F-7KQ3")
 	assertContainsFile(t, filepath.Join(firstRun, "governing", "AGENTS.md"), "base guidance")
@@ -94,7 +94,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	} else if strings.Contains(string(data), "provenance") || strings.Contains(string(data), "claude-opus") || strings.Contains(string(data), `"engine"`) {
 		t.Fatalf("posted review exposed model provenance:\n%s", data)
 	}
-	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "minos/review\nsuccess")
 	assertReviewDispatchRecord(t, filepath.Join(stateDir, "dispatch.tsv"), installRoot)
 
 	preexisting := filepath.Join(root, "preexisting.json")
@@ -102,11 +102,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	setReviewRunEnv(t, root, configRoot, installRoot, "abababababababab", "")
-	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
+	t.Setenv("MINOS_STANDIN_PREEXISTING_FILE", preexisting)
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
 	}
-	unconfiguredRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "abababababababab", RunReview)
+	unconfiguredRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "abababababababab", RunReview)
 	assertContainsFile(t, filepath.Join(unconfiguredRun, "preexisting-findings.json"), "Keep errors visible")
 
 	forgeRoot := filepath.Join(root, "find-ingest-forge")
@@ -124,23 +124,23 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	}
 	writeReviewRepoConfig(t, configRoot, "\n[find-ingest]\nrepository = \"annexes/subject\"\npath = \"ISSUES.md\"\n")
 	setReviewRunEnv(t, root, configRoot, installRoot, "acacacacacacacac", "")
-	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
+	t.Setenv("MINOS_STANDIN_PREEXISTING_FILE", preexisting)
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
 	}
-	configuredRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "acacacacacacacac", RunReview)
-	assertContainsFile(t, filepath.Join(configuredRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=success")
+	configuredRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "acacacacacacacac", RunReview)
+	assertContainsFile(t, filepath.Join(configuredRun, finishedMarkerFile), "MINOS_FINISHED_OUTCOME=success")
 	assertContainsFile(t, filepath.Join(configuredRun, "review.md"), "verdict=standing-findings")
 	assertFindIngestCommit(t, annexeRemote)
 
 	setReviewRunEnv(t, root, configRoot, installRoot, "aeaeaeaeaeaeaeae", "")
-	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
-	t.Setenv("PUMP19_STANDIN_FAIL_AFTER_INGEST", "1")
+	t.Setenv("MINOS_STANDIN_PREEXISTING_FILE", preexisting)
+	t.Setenv("MINOS_STANDIN_FAIL_AFTER_INGEST", "1")
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
 		t.Fatal("transient failure after find ingest unexpectedly completed")
 	}
-	retryableRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "aeaeaeaeaeaeaeae", RunReview)
-	assertContainsFile(t, filepath.Join(retryableRun, "retry.env"), "PUMP19_RETRYABLE_FAILURE=1")
+	retryableRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "aeaeaeaeaeaeaeae", RunReview)
+	assertContainsFile(t, filepath.Join(retryableRun, "retry.env"), "MINOS_RETRYABLE_FAILURE=1")
 	if _, err := os.Stat(filepath.Join(retryableRun, terminalMarkerFile)); !os.IsNotExist(err) {
 		t.Fatalf("transient failure after find ingest created a terminal latch: %v", err)
 	}
@@ -151,15 +151,15 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 
 	writeReviewRepoConfig(t, configRoot, "\n[find-ingest]\nrepository = \"annexes/unreachable\"\npath = \"ISSUES.md\"\n")
 	setReviewRunEnv(t, root, configRoot, installRoot, "adadadadadadadad", "")
-	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", preexisting)
+	t.Setenv("MINOS_STANDIN_PREEXISTING_FILE", preexisting)
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
 	}
-	failureRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "adadadadadadadad", RunReview)
-	assertContainsFile(t, filepath.Join(failureRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=success")
+	failureRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "adadadadadadadad", RunReview)
+	assertContainsFile(t, filepath.Join(failureRun, finishedMarkerFile), "MINOS_FINISHED_OUTCOME=success")
 	assertContainsFile(t, filepath.Join(failureRun, "review.md"), "verdict=standing-findings")
 	assertContainsFile(t, filepath.Join(failureRun, "run.log"), "find-ingest failed")
-	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "minos/review\nsuccess")
 	writeReviewRepoConfig(t, configRoot, "")
 
 	finding2 := filepath.Join(root, "finding-2.json")
@@ -170,18 +170,18 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
 	}
-	secondRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "bbbbbbbbbbbbbbbb", RunReview)
+	secondRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "bbbbbbbbbbbbbbbb", RunReview)
 	assertContainsFile(t, filepath.Join(stateDir, "updated-body.md"), "Still present")
 	assertContainsFile(t, filepath.Join(stateDir, "updated-body.md"), "finding=F-7KQ3")
 	assertFileText(t, filepath.Join(secondRun, "new-comments.json"), "[]\n")
 
 	setReviewRunEnv(t, root, configRoot, installRoot, "cccccccccccccccc", "")
-	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
-	t.Setenv("PUMP19_AUTO_MERGE", "true")
+	t.Setenv("MINOS_STANDIN_VERDICT", "converged")
+	t.Setenv("MINOS_AUTO_MERGE", "true")
 	afterReady := filepath.Join(root, "after-ready")
 	continueAfterReady := filepath.Join(root, "continue-after-ready")
-	t.Setenv("PUMP19_STANDIN_AFTER_READY_READY", afterReady)
-	t.Setenv("PUMP19_STANDIN_AFTER_READY_CONTINUE", continueAfterReady)
+	t.Setenv("MINOS_STANDIN_AFTER_READY_READY", afterReady)
+	t.Setenv("MINOS_STANDIN_AFTER_READY_CONTINUE", continueAfterReady)
 	cleanResult := make(chan error, 1)
 	go func() {
 		cleanResult <- RunWrapCommand(t.Context(), []string{"--config", configRoot})
@@ -192,7 +192,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	}
 	cleanFacts := Facts{
 		Forge:   "local",
-		Owner:   "pump19",
+		Owner:   "minos",
 		Repo:    "subject",
 		PR:      "42",
 		HeadSHA: "cccccccccccccccc",
@@ -202,7 +202,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatalf("Ready should overlap Reviewing before review release: %v", cleanFacts.Labels)
 	}
 	drafts := false
-	autoMergeRepo := RepoConfig{serviceBotLogin: "Minos", Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"pump19"}, Drafts: &drafts}}}
+	autoMergeRepo := RepoConfig{serviceBotLogin: "Minos", Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"minos"}, Drafts: &drafts}}}
 	autoMergeRepo.Policy.AutoMerge = true
 	adaptation := Adaptation{Dir: adaptationDir, Credential: "test-token"}
 	readyActor, err := resolveReadyActor(t.Context(), autoMergeRepo, adaptation, cleanFacts)
@@ -223,7 +223,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if !guardedFacts.HasLabel(LabelReady) {
 		t.Fatal("the service bot's Ready application failed the sweep actor guard")
 	}
-	statuses, err := adaptation.GetStatuses(t.Context(), "pump19", "subject", cleanFacts.HeadSHA)
+	statuses, err := adaptation.GetStatuses(t.Context(), "minos", "subject", cleanFacts.HeadSHA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "labels"), LabelFinishing)
-	if err := adaptation.RemoveLabel(t.Context(), "pump19", "subject", "42", LabelFinishing); err != nil {
+	if err := adaptation.RemoveLabel(t.Context(), "minos", "subject", "42", LabelFinishing); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(continueAfterReady, nil, 0o644); err != nil {
@@ -243,15 +243,15 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := <-cleanResult; err != nil {
 		t.Fatal(err)
 	}
-	cleanRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "cccccccccccccccc", RunReview)
-	assertContainsFile(t, filepath.Join(cleanRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=success")
+	cleanRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "cccccccccccccccc", RunReview)
+	assertContainsFile(t, filepath.Join(cleanRun, finishedMarkerFile), "MINOS_FINISHED_OUTCOME=success")
 	assertContainsFile(t, filepath.Join(cleanRun, "review.md"), "coverage=full")
 	assertContainsFile(t, filepath.Join(cleanRun, "review.md"), "verdict=converged")
 	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Converged")
 	assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Ready")
 	assertReviewReadyOrder(t, filepath.Join(stateDir, "operations"), "cccccccccccccccc")
-	t.Setenv("PUMP19_STANDIN_AFTER_READY_READY", "")
-	t.Setenv("PUMP19_STANDIN_AFTER_READY_CONTINUE", "")
+	t.Setenv("MINOS_STANDIN_AFTER_READY_READY", "")
+	t.Setenv("MINOS_STANDIN_AFTER_READY_CONTINUE", "")
 
 	negativeCases := []struct {
 		name             string
@@ -276,10 +276,10 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 			readyBefore := fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelReady)
 			convergedBefore := fixtureLineCount(t, filepath.Join(stateDir, "labels-added"), LabelConverged)
 			setReviewRunEnv(t, root, configRoot, installRoot, tc.head, "")
-			t.Setenv("PUMP19_STANDIN_VERDICT", tc.verdict)
-			t.Setenv("PUMP19_AUTO_MERGE", tc.autoMerge)
+			t.Setenv("MINOS_STANDIN_VERDICT", tc.verdict)
+			t.Setenv("MINOS_AUTO_MERGE", tc.autoMerge)
 			if tc.flakyAfterStatus {
-				t.Setenv("PUMP19_FIXTURE_FLAKY_AFTER_STATUS", "1")
+				t.Setenv("MINOS_FIXTURE_FLAKY_AFTER_STATUS", "1")
 			}
 			writeFixtureLabels(t, filepath.Join(stateDir, "labels"), tc.labels)
 			if tc.seedStatuses != "" {
@@ -297,11 +297,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 				assertContainsFile(t, filepath.Join(stateDir, "labels"), "Flaky Tests")
 			}
 			if tc.name == "flaky-tests" {
-				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				run := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", tc.head, RunReview)
 				assertContainsFile(t, filepath.Join(run, "review.md"), "bar=passed coverage=full")
 				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=paused-flaky")
 				assertContainsFile(t, filepath.Join(run, "review.md"), "no approval was given")
-				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "minos/review\nsuccess")
 				reviews, err := os.ReadFile(filepath.Join(stateDir, "reviews.json"))
 				if err != nil {
 					t.Fatal(err)
@@ -319,7 +319,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 				}
 			}
 			if tc.name == "partial-coverage" {
-				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				run := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", tc.head, RunReview)
 				assertContainsFile(t, filepath.Join(run, "review.md"), "coverage=partial")
 				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=partial-coverage")
 				assertContainsFile(t, filepath.Join(stateDir, "labels-added"), "Partial Coverage")
@@ -328,11 +328,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 				// The bar gates convergence, never publication: the verified review
 				// posts with the dissent on the marker, no approval, no outcome
 				// label, no Ready — and the run is still a terminal success.
-				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				run := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", tc.head, RunReview)
 				assertContainsFile(t, filepath.Join(run, "review.md"), "bar=failed coverage=full")
 				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=bar-dissent")
 				assertContainsFile(t, filepath.Join(run, "review.md"), "no approval was given")
-				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "minos/review\nsuccess")
 				reviews, err := os.ReadFile(filepath.Join(stateDir, "reviews.json"))
 				if err != nil {
 					t.Fatal(err)
@@ -353,9 +353,9 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 				// A red non-flaky head defers Ready only: the approving review and
 				// Converged still record convergence — they judge the change, not
 				// the pipeline — and auto-merge waits for green.
-				run := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", tc.head, RunReview)
+				run := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", tc.head, RunReview)
 				assertContainsFile(t, filepath.Join(run, "review.md"), "verdict=converged")
-				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+				assertContainsFile(t, filepath.Join(stateDir, "status.args"), "minos/review\nsuccess")
 				reviews, err := os.ReadFile(filepath.Join(stateDir, "reviews.json"))
 				if err != nil {
 					t.Fatal(err)
@@ -374,34 +374,34 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	// run log; with no Ready, reconciliation has no finish implication to fire.
 	applyFailureHead := "4444444444444444"
 	setReviewRunEnv(t, root, configRoot, installRoot, applyFailureHead, "")
-	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
-	t.Setenv("PUMP19_AUTO_MERGE", "true")
-	t.Setenv("PUMP19_FIXTURE_FAIL_READY_APPLY", "1")
+	t.Setenv("MINOS_STANDIN_VERDICT", "converged")
+	t.Setenv("MINOS_AUTO_MERGE", "true")
+	t.Setenv("MINOS_FIXTURE_FAIL_READY_APPLY", "1")
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
 		t.Fatal("failed Ready apply unexpectedly completed")
 	}
-	applyFailureRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", applyFailureHead, RunReview)
-	assertContainsFile(t, filepath.Join(applyFailureRun, finishedMarkerFile), "PUMP19_FINISHED_OUTCOME=error")
-	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "pump19/review\nsuccess")
+	applyFailureRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", applyFailureHead, RunReview)
+	assertContainsFile(t, filepath.Join(applyFailureRun, finishedMarkerFile), "MINOS_FINISHED_OUTCOME=error")
+	assertContainsFile(t, filepath.Join(stateDir, "status.args"), "minos/review\nsuccess")
 	assertContainsFile(t, filepath.Join(applyFailureRun, "run.log"), "fixture Ready apply failed")
-	assertContainsFile(t, filepath.Join(applyFailureRun, "run.log"), "pump19 run-wrap error")
+	assertContainsFile(t, filepath.Join(applyFailureRun, "run.log"), "minos run-wrap error")
 	failedApplyLabels := readFixtureLabels(t, filepath.Join(stateDir, "labels"))
 	if containsFixtureLabel(failedApplyLabels, LabelReady) || containsFixtureLabel(failedApplyLabels, LabelReviewing) {
 		t.Fatalf("failed Ready apply left active control labels: %v", failedApplyLabels)
 	}
-	failedApplyFacts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: applyFailureHead, Labels: failedApplyLabels}
-	failedApplyStatuses, err := adaptation.GetStatuses(t.Context(), "pump19", "subject", applyFailureHead)
+	failedApplyFacts := Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "42", HeadSHA: applyFailureHead, Labels: failedApplyLabels}
+	failedApplyStatuses, err := adaptation.GetStatuses(t.Context(), "minos", "subject", applyFailureHead)
 	if err != nil {
 		t.Fatal(err)
 	}
-	failedApplyReviews, err := adaptation.ListReviews(t.Context(), "pump19", "subject", "42")
+	failedApplyReviews, err := adaptation.ListReviews(t.Context(), "minos", "subject", "42")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if action, ok := decideSweepAction(autoMergeRepo, failedApplyFacts, failedApplyStatuses, failedApplyReviews, "success", ""); !ok || !action.ApplyReady {
 		t.Fatalf("failed Ready apply sweep action = %#v ok=%v reviews=%#v statuses=%#v labels=%v", action, ok, failedApplyReviews, failedApplyStatuses, failedApplyFacts.Labels)
 	}
-	t.Setenv("PUMP19_FIXTURE_FAIL_READY_APPLY", "")
+	t.Setenv("MINOS_FIXTURE_FAIL_READY_APPLY", "")
 	retryLog, err := os.Create(filepath.Join(root, "ready-retry.log"))
 	if err != nil {
 		t.Fatal(err)
@@ -410,7 +410,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adaptation.AddLabel(t.Context(), "pump19", "subject", "42", LabelFlakyTests); err != nil {
+	if err := adaptation.AddLabel(t.Context(), "minos", "subject", "42", LabelFlakyTests); err != nil {
 		t.Fatal(err)
 	}
 	err = sweepPRSnapshot(t.Context(), retryCfg, autoMergeRepo, adaptation, sweepSnapshot{
@@ -422,7 +422,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if containsFixtureLabel(readFixtureLabels(t, filepath.Join(stateDir, "labels")), LabelReady) {
 		t.Fatal("sweep repaired Ready after Flaky Tests arrived behind its snapshot")
 	}
-	if err := adaptation.RemoveLabel(t.Context(), "pump19", "subject", "42", LabelFlakyTests); err != nil {
+	if err := adaptation.RemoveLabel(t.Context(), "minos", "subject", "42", LabelFlakyTests); err != nil {
 		t.Fatal(err)
 	}
 	err = sweepPRSnapshot(t.Context(), retryCfg, autoMergeRepo, adaptation, sweepSnapshot{
@@ -437,7 +437,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if !containsFixtureLabel(readFixtureLabels(t, filepath.Join(stateDir, "labels")), LabelReady) {
 		t.Fatal("sweep did not repair Ready after the terminal review records survived its failed apply")
 	}
-	if err := adaptation.RemoveLabel(t.Context(), "pump19", "subject", "42", LabelReady); err != nil {
+	if err := adaptation.RemoveLabel(t.Context(), "minos", "subject", "42", LabelReady); err != nil {
 		t.Fatal(err)
 	}
 
@@ -451,8 +451,8 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	staleReady := filepath.Join(root, "stale-ready")
 	staleContinue := filepath.Join(root, "stale-continue")
 	setReviewRunEnv(t, root, configRoot, installRoot, "ffffffffffffffff", "")
-	t.Setenv("PUMP19_STANDIN_BEFORE_POST_READY", staleReady)
-	t.Setenv("PUMP19_STANDIN_BEFORE_POST_CONTINUE", staleContinue)
+	t.Setenv("MINOS_STANDIN_BEFORE_POST_READY", staleReady)
+	t.Setenv("MINOS_STANDIN_BEFORE_POST_CONTINUE", staleContinue)
 	staleResult := make(chan error, 1)
 	go func() {
 		staleResult <- RunWrapCommand(t.Context(), []string{"--config", configRoot})
@@ -477,29 +477,29 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if string(postedAfterStale) != string(postedBeforeStale) {
 		t.Fatal("stale run posted a review after the head moved")
 	}
-	t.Setenv("PUMP19_STANDIN_BEFORE_POST_READY", "")
-	t.Setenv("PUMP19_STANDIN_BEFORE_POST_CONTINUE", "")
+	t.Setenv("MINOS_STANDIN_BEFORE_POST_READY", "")
+	t.Setenv("MINOS_STANDIN_BEFORE_POST_CONTINUE", "")
 
 	postedBeforeMismatch, err := os.ReadFile(filepath.Join(stateDir, "posted-review.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	setReviewRunEnv(t, root, configRoot, installRoot, "eeeeeeeeeeeeeeee", "")
-	t.Setenv("PUMP19_STANDIN_VERDICT", "converged")
-	t.Setenv("PUMP19_AUTO_MERGE", "true")
-	t.Setenv("PUMP19_STANDIN_MISMATCH_AFTER_CLAIM", "floating-alias-surprise")
-	t.Setenv("PUMP19_UNIT", "")
+	t.Setenv("MINOS_STANDIN_VERDICT", "converged")
+	t.Setenv("MINOS_AUTO_MERGE", "true")
+	t.Setenv("MINOS_STANDIN_MISMATCH_AFTER_CLAIM", "floating-alias-surprise")
+	t.Setenv("MINOS_UNIT", "")
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err == nil {
 		t.Fatal("model mismatch unexpectedly completed")
 	}
-	mismatchRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "eeeeeeeeeeeeeeee", RunReview)
+	mismatchRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "eeeeeeeeeeeeeeee", RunReview)
 	if _, err := os.Stat(filepath.Join(mismatchRun, "retry.env")); err != nil {
 		t.Fatalf("mid-body mismatch after claim-only writes was not retryable: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(mismatchRun, terminalMarkerFile)); !os.IsNotExist(err) {
 		t.Fatalf("mid-body mismatch latched on claim-only writes: %v", err)
 	}
-	if status, _ := os.ReadFile(filepath.Join(stateDir, "status.args")); strings.Contains(string(status), "pump19/review\nerror") {
+	if status, _ := os.ReadFile(filepath.Join(stateDir, "status.args")); strings.Contains(string(status), "minos/review\nerror") {
 		t.Fatalf("review mismatch wrote PR error status:\n%s", status)
 	}
 	assertContainsFile(t, filepath.Join(stateDir, "labels"), "Reviewing")
@@ -521,11 +521,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(mismatchRun, "run.log"), old, old); err != nil {
 		t.Fatal(err)
 	}
-	finishedEvidence := "PUMP19_FINISHED_VERSION=1\nPUMP19_FINISHED_AT=" + old.UTC().Format(time.RFC3339Nano) + "\nPUMP19_FINISHED_OUTCOME=error\n"
+	finishedEvidence := "MINOS_FINISHED_VERSION=1\nMINOS_FINISHED_AT=" + old.UTC().Format(time.RFC3339Nano) + "\nMINOS_FINISHED_OUTCOME=error\n"
 	if err := os.WriteFile(filepath.Join(mismatchRun, finishedMarkerFile), []byte(finishedEvidence), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	retryEvidence := "PUMP19_RETRYABLE_FAILURE=1\nPUMP19_FAILURE_PHASE=run-body-exit\nPUMP19_FAILURE_AT=" + old.UTC().Format(time.RFC3339Nano) + "\n"
+	retryEvidence := "MINOS_RETRYABLE_FAILURE=1\nMINOS_FAILURE_PHASE=run-body-exit\nMINOS_FAILURE_AT=" + old.UTC().Format(time.RFC3339Nano) + "\n"
 	if err := os.WriteFile(filepath.Join(mismatchRun, "retry.env"), []byte(retryEvidence), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "eeeeeeeeeeeeeeee", Labels: []string{LabelReviewing}}
+	facts := Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "42", HeadSHA: "eeeeeeeeeeeeeeee", Labels: []string{LabelReviewing}}
 	cfg, err := LoadServiceConfig(configRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -561,11 +561,11 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finishRunBodyEnv := "PUMP19_ENGINE_LAUNCH_LEAD='" + finishStandin + "'\n" +
-		"PUMP19_ENSEMBLE_LAUNCH='/bin/false'\n" +
-		"PUMP19_PINS='" + pins + "'\n" +
-		"PUMP19_REVIEW_SCRIPTS='" + reviewScripts + "'\n" +
-		"PUMP19_BIN='" + binary + "'\n"
+	finishRunBodyEnv := "MINOS_ENGINE_LAUNCH_LEAD='" + finishStandin + "'\n" +
+		"MINOS_ENSEMBLE_LAUNCH='/bin/false'\n" +
+		"MINOS_PINS='" + pins + "'\n" +
+		"MINOS_REVIEW_SCRIPTS='" + reviewScripts + "'\n" +
+		"MINOS_BIN='" + binary + "'\n"
 	if err := os.WriteFile(filepath.Join(configRoot, "run-body.env"), []byte(finishRunBodyEnv), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestReviewRunBodyPublishesOutcomesAndAutoMergeJourney(t *testing.T) {
 	if err := RunWrapCommand(t.Context(), []string{"--config", configRoot}); err != nil {
 		t.Fatal(err)
 	}
-	finishRun := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", "cccccccccccccccc", RunFinish)
+	finishRun := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", "cccccccccccccccc", RunFinish)
 	assertContainsFile(t, filepath.Join(finishRun, "finish-summary.md"), "outcome=merged")
 	assertContainsFile(t, filepath.Join(stateDir, "merge.args"), "merge")
 	assertFileText(t, filepath.Join(stateDir, "assignees"), "Minos\n")
@@ -660,7 +660,7 @@ func assertReviewReadyOrder(t *testing.T, path, head string) {
 		switch line {
 		case "post-review:" + head:
 			post = i
-		case "set-status:" + head + ":pump19/review:success":
+		case "set-status:" + head + ":minos/review:success":
 			status = i
 		case "add-label:" + head + ":Ready":
 			ready = i
@@ -689,34 +689,34 @@ func setReadyJourneyFinishEnv(t *testing.T, root, configRoot, installRoot, head 
 	if err := os.WriteFile(filepath.Join(stateDir, "head"), []byte(head+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runDir := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", head, RunFinish)
+	runDir := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", head, RunFinish)
 	values := map[string]string{
-		"PUMP19_RUN_DIR":          runDir,
-		"PUMP19_RUN_KIND":         "finish",
-		"PUMP19_OCCASION":         "label-added:Ready",
-		"PUMP19_FORGE":            "local",
-		"PUMP19_REPO":             "pump19/subject",
-		"PUMP19_OWNER":            "pump19",
-		"PUMP19_REPO_NAME":        "subject",
-		"PUMP19_PR":               "42",
-		"PUMP19_HEAD_SHA":         head,
-		"PUMP19_BASE_REF":         "main",
-		"PUMP19_WORKSPACE":        filepath.Join(root, "finish-workspace-"+head),
-		"PUMP19_DIFF":             filepath.Join(runDir, "diff.patch"),
-		"PUMP19_ADAPTATION":       filepath.Join(root, "adaptation"),
-		"PUMP19_RUN_BODY":         filepath.Join(installRoot, "run-body", "run-body"),
-		"PUMP19_CONFIG":           configRoot,
-		"PUMP19_UNIT":             "pump19-finish-test.service",
-		"PUMP19_BUILD_CMD":        "true",
-		"PUMP19_TEST_CMD":         "true",
-		"PUMP19_AUTO_MERGE":       "true",
-		"PUMP19_FIX_AUTHOR_NAME":  "Pump-19",
-		"PUMP19_FIX_AUTHOR_EMAIL": "pump19@example.invalid",
+		"MINOS_RUN_DIR":          runDir,
+		"MINOS_RUN_KIND":         "finish",
+		"MINOS_OCCASION":         "label-added:Ready",
+		"MINOS_FORGE":            "local",
+		"MINOS_REPO":             "minos/subject",
+		"MINOS_OWNER":            "minos",
+		"MINOS_REPO_NAME":        "subject",
+		"MINOS_PR":               "42",
+		"MINOS_HEAD_SHA":         head,
+		"MINOS_BASE_REF":         "main",
+		"MINOS_WORKSPACE":        filepath.Join(root, "finish-workspace-"+head),
+		"MINOS_DIFF":             filepath.Join(runDir, "diff.patch"),
+		"MINOS_ADAPTATION":       filepath.Join(root, "adaptation"),
+		"MINOS_RUN_BODY":         filepath.Join(installRoot, "run-body", "run-body"),
+		"MINOS_CONFIG":           configRoot,
+		"MINOS_UNIT":             "minos-finish-test.service",
+		"MINOS_BUILD_CMD":        "true",
+		"MINOS_TEST_CMD":         "true",
+		"MINOS_AUTO_MERGE":       "true",
+		"MINOS_FIX_AUTHOR_NAME":  "Minos",
+		"MINOS_FIX_AUTHOR_EMAIL": "minos@example.invalid",
 	}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
-	for _, key := range []string{"PUMP19_STANDIN_VERDICT", "PUMP19_STANDIN_MISMATCH_AFTER_CLAIM", "PUMP19_FIXTURE_FAIL_READY_APPLY", "PUMP19_FIXTURE_FLAKY_AFTER_STATUS", "PUMP19_STANDIN_AFTER_READY_READY", "PUMP19_STANDIN_AFTER_READY_CONTINUE"} {
+	for _, key := range []string{"MINOS_STANDIN_VERDICT", "MINOS_STANDIN_MISMATCH_AFTER_CLAIM", "MINOS_FIXTURE_FAIL_READY_APPLY", "MINOS_FIXTURE_FLAKY_AFTER_STATUS", "MINOS_STANDIN_AFTER_READY_READY", "MINOS_STANDIN_AFTER_READY_CONTINUE"} {
 		t.Setenv(key, "")
 	}
 }
@@ -740,45 +740,45 @@ func setReviewRunEnv(t *testing.T, root, configRoot, installRoot, head, finding 
 			t.Fatal(err)
 		}
 	}
-	runDir := RunDir(filepath.Join(root, "runs"), "local", "pump19", "subject", "42", head, RunReview)
+	runDir := RunDir(filepath.Join(root, "runs"), "local", "minos", "subject", "42", head, RunReview)
 	values := map[string]string{
-		"PUMP19_RUN_DIR":                 runDir,
-		"PUMP19_RUN_KIND":                "review",
-		"PUMP19_OCCASION":                "pr-opened",
-		"PUMP19_FORGE":                   "local",
-		"PUMP19_REPO":                    "pump19/subject",
-		"PUMP19_OWNER":                   "pump19",
-		"PUMP19_REPO_NAME":               "subject",
-		"PUMP19_PR":                      "42",
-		"PUMP19_HEAD_SHA":                head,
-		"PUMP19_BASE_REF":                "main",
-		"PUMP19_WORKSPACE":               filepath.Join(root, "workspace-"+head),
-		"PUMP19_DIFF":                    filepath.Join(runDir, "diff.patch"),
-		"PUMP19_ADAPTATION":              filepath.Join(root, "adaptation"),
-		"PUMP19_SKILL":                   skill,
-		"PUMP19_RUN_BODY":                filepath.Join(installRoot, "run-body", "run-body"),
-		"PUMP19_BRIEFS":                  ".review",
-		"PUMP19_AUTO_MERGE":              "false",
-		"PUMP19_FIX_AUTHOR_NAME":         "Pump-19",
-		"PUMP19_FIX_AUTHOR_EMAIL":        "pump19@example.invalid",
-		"PUMP19_CONFIG":                  configRoot,
-		"PUMP19_UNIT":                    "pump19-test.service",
-		"PUMP19_STANDIN_VERDICT":         "standing-findings",
-		"PUMP19_STANDIN_FINDING_FILE":    finding,
-		"PUMP19_STANDIN_NEW_HANDLE":      "F-7KQ3",
-		"PUMP19_STANDIN_DISPATCH_RECORD": filepath.Join(stateDir, "dispatch.tsv"),
+		"MINOS_RUN_DIR":                 runDir,
+		"MINOS_RUN_KIND":                "review",
+		"MINOS_OCCASION":                "pr-opened",
+		"MINOS_FORGE":                   "local",
+		"MINOS_REPO":                    "minos/subject",
+		"MINOS_OWNER":                   "minos",
+		"MINOS_REPO_NAME":               "subject",
+		"MINOS_PR":                      "42",
+		"MINOS_HEAD_SHA":                head,
+		"MINOS_BASE_REF":                "main",
+		"MINOS_WORKSPACE":               filepath.Join(root, "workspace-"+head),
+		"MINOS_DIFF":                    filepath.Join(runDir, "diff.patch"),
+		"MINOS_ADAPTATION":              filepath.Join(root, "adaptation"),
+		"MINOS_SKILL":                   skill,
+		"MINOS_RUN_BODY":                filepath.Join(installRoot, "run-body", "run-body"),
+		"MINOS_BRIEFS":                  ".review",
+		"MINOS_AUTO_MERGE":              "false",
+		"MINOS_FIX_AUTHOR_NAME":         "Minos",
+		"MINOS_FIX_AUTHOR_EMAIL":        "minos@example.invalid",
+		"MINOS_CONFIG":                  configRoot,
+		"MINOS_UNIT":                    "minos-test.service",
+		"MINOS_STANDIN_VERDICT":         "standing-findings",
+		"MINOS_STANDIN_FINDING_FILE":    finding,
+		"MINOS_STANDIN_NEW_HANDLE":      "F-7KQ3",
+		"MINOS_STANDIN_DISPATCH_RECORD": filepath.Join(stateDir, "dispatch.tsv"),
 	}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
-	t.Setenv("PUMP19_STANDIN_PREEXISTING_FILE", "")
-	t.Setenv("PUMP19_STANDIN_FAIL_AFTER_INGEST", "")
+	t.Setenv("MINOS_STANDIN_PREEXISTING_FILE", "")
+	t.Setenv("MINOS_STANDIN_FAIL_AFTER_INGEST", "")
 }
 
 func writeReviewRepoConfig(t *testing.T, configRoot, findIngest string) {
 	t.Helper()
 	config := `forge = "local"
-owner = "pump19"
+owner = "minos"
 repo = "subject"
 
 [adaptation]
@@ -813,9 +813,9 @@ func assertFindIngestCommit(t *testing.T, remote string) {
 	t.Helper()
 	checkout := t.TempDir()
 	gitCommand(t, "clone", "-q", remote, checkout)
-	assertContainsFile(t, filepath.Join(checkout, "ISSUES.md"), "Source: Pump-19 review of pump19/subject#42,")
+	assertContainsFile(t, filepath.Join(checkout, "ISSUES.md"), "Source: Minos review of minos/subject#42,")
 	author := strings.TrimSpace(gitCommand(t, "-C", checkout, "show", "-s", "--format=%an <%ae>", "HEAD"))
-	if author != "Pump-19 <pump19@example.invalid>" {
+	if author != "Minos <minos@example.invalid>" {
 		t.Fatalf("find-ingest journey commit author = %q", author)
 	}
 }
@@ -881,44 +881,44 @@ func writeReviewAdaptationFixture(t *testing.T, adaptationDir, stateDir string) 
 	operations := filepath.Join(stateDir, "operations")
 	writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), `#!/usr/bin/env sh
 set -eu
-rm -rf "$PUMP19_WORKSPACE"
-mkdir -p "$PUMP19_WORKSPACE/.review"
-git -C "$PUMP19_WORKSPACE" init -q
-git -C "$PUMP19_WORKSPACE" config user.name Test
-git -C "$PUMP19_WORKSPACE" config user.email test@example.invalid
-printf 'base guidance\n' >"$PUMP19_WORKSPACE/AGENTS.md"
-printf 'base brief\n' >"$PUMP19_WORKSPACE/.review/correctness.md"
-printf 'base\n' >"$PUMP19_WORKSPACE/file.txt"
-git -C "$PUMP19_WORKSPACE" add .
-git -C "$PUMP19_WORKSPACE" commit -qm base
-git -C "$PUMP19_WORKSPACE" update-ref refs/remotes/origin/main HEAD
-printf 'changed\n' >>"$PUMP19_WORKSPACE/file.txt"
-git -C "$PUMP19_WORKSPACE" add file.txt
-git -C "$PUMP19_WORKSPACE" commit -qm head
-git -C "$PUMP19_WORKSPACE" diff origin/main...HEAD >"$PUMP19_DIFF"
+rm -rf "$MINOS_WORKSPACE"
+mkdir -p "$MINOS_WORKSPACE/.review"
+git -C "$MINOS_WORKSPACE" init -q
+git -C "$MINOS_WORKSPACE" config user.name Test
+git -C "$MINOS_WORKSPACE" config user.email test@example.invalid
+printf 'base guidance\n' >"$MINOS_WORKSPACE/AGENTS.md"
+printf 'base brief\n' >"$MINOS_WORKSPACE/.review/correctness.md"
+printf 'base\n' >"$MINOS_WORKSPACE/file.txt"
+git -C "$MINOS_WORKSPACE" add .
+git -C "$MINOS_WORKSPACE" commit -qm base
+git -C "$MINOS_WORKSPACE" update-ref refs/remotes/origin/main HEAD
+printf 'changed\n' >>"$MINOS_WORKSPACE/file.txt"
+git -C "$MINOS_WORKSPACE" add file.txt
+git -C "$MINOS_WORKSPACE" commit -qm head
+git -C "$MINOS_WORKSPACE" diff origin/main...HEAD >"$MINOS_DIFF"
 `)
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\ncat '"+filepath.Join(stateDir, "statuses.json")+"'\n")
 	writeScript(t, filepath.Join(adaptationDir, "get-combined-status"), "#!/usr/bin/env sh\nstate=$(jq -r '.[0].state // \"\"' '"+filepath.Join(stateDir, "statuses.json")+"')\nprintf '{\"state\":\"%s\"}\\n' \"$state\"\n")
 	writeScript(t, filepath.Join(adaptationDir, "get-pr-facts"), `#!/usr/bin/env sh
-printf 'get-pr-facts:%s\n' "$PUMP19_HEAD_SHA" >>'`+operations+`'
-if [ "${PUMP19_FIXTURE_FLAKY_AFTER_STATUS:-}" = 1 ] &&
-   grep -Fxq "set-status:$PUMP19_HEAD_SHA:pump19/review:success" '`+operations+`' &&
-   ! grep -Fxq "$PUMP19_HEAD_SHA" '`+filepath.Join(stateDir, "flaky-label-added-after-status")+`' 2>/dev/null; then
+printf 'get-pr-facts:%s\n' "$MINOS_HEAD_SHA" >>'`+operations+`'
+if [ "${MINOS_FIXTURE_FLAKY_AFTER_STATUS:-}" = 1 ] &&
+   grep -Fxq "set-status:$MINOS_HEAD_SHA:minos/review:success" '`+operations+`' &&
+   ! grep -Fxq "$MINOS_HEAD_SHA" '`+filepath.Join(stateDir, "flaky-label-added-after-status")+`' 2>/dev/null; then
   # Add the label on the first facts read after success. This exercises the mission's
   # explicit refresh rather than merely starting the run with a flaky label.
   printf 'Flaky Tests\n' >>'`+filepath.Join(stateDir, "labels")+`'
-  printf '%s\n' "$PUMP19_HEAD_SHA" >>'`+filepath.Join(stateDir, "flaky-label-added-after-status")+`'
+  printf '%s\n' "$MINOS_HEAD_SHA" >>'`+filepath.Join(stateDir, "flaky-label-added-after-status")+`'
 fi
 head=$(cat '`+filepath.Join(stateDir, "head")+`')
 labels=$(paste -sd, '`+filepath.Join(stateDir, "labels")+`')
 printf 'OCCASION=reconcile\nOWNER=%s\nREPO=%s\nPR=%s\nHEAD_SHA=%s\nBASE_REF=main\nLABELS=%s\n' "$1" "$2" "$3" "$head" "$labels"
-printf 'HEAD_BRANCH=main\nHEAD_REPO=pump19/subject\nBASE_REPO=pump19/subject\nMERGEABLE=true\n'
+printf 'HEAD_BRANCH=main\nHEAD_REPO=minos/subject\nBASE_REPO=minos/subject\nMERGEABLE=true\n'
 `)
 	writeScript(t, filepath.Join(adaptationDir, "add-label"), `#!/usr/bin/env sh
 set -eu
 printf '%s\n' "$@" >>'`+filepath.Join(stateDir, "labels-added")+`'
-printf 'add-label:%s:%s\n' "$PUMP19_HEAD_SHA" "$4" >>'`+operations+`'
-if [ "$4" = Ready ] && [ "${PUMP19_FIXTURE_FAIL_READY_APPLY:-}" = 1 ]; then
+printf 'add-label:%s:%s\n' "$MINOS_HEAD_SHA" "$4" >>'`+operations+`'
+if [ "$4" = Ready ] && [ "${MINOS_FIXTURE_FAIL_READY_APPLY:-}" = 1 ]; then
   echo 'fixture Ready apply failed' >&2
   exit 88
 fi
@@ -933,17 +933,17 @@ mv "$tmp" '`+filepath.Join(stateDir, "labels")+`'
 `)
 	writeScript(t, filepath.Join(adaptationDir, "add-reaction"), `#!/usr/bin/env sh
 set -eu
-[ "$PUMP19_FORGE_TOKEN" = test-token ]
+[ "$MINOS_FORGE_TOKEN" = test-token ]
 printf 'add-reaction:%s\n' "$4" >>'`+operations+`'
 `)
 	writeScript(t, filepath.Join(adaptationDir, "remove-reaction"), `#!/usr/bin/env sh
 set -eu
-[ "$PUMP19_FORGE_TOKEN" = test-token ]
+[ "$MINOS_FORGE_TOKEN" = test-token ]
 printf 'remove-reaction:%s\n' "$4" >>'`+operations+`'
 `)
 	writeScript(t, filepath.Join(adaptationDir, "assign-if-missing"), `#!/usr/bin/env sh
 set -eu
-[ "$PUMP19_FORGE_TOKEN" = test-token ]
+[ "$MINOS_FORGE_TOKEN" = test-token ]
 assignees='`+filepath.Join(stateDir, "assignees")+`'
 if [ -f "$assignees" ] && grep -Fxiq "$4" "$assignees"; then exit 0; fi
 printf '%s\n' "$4" >>"$assignees"
@@ -952,10 +952,10 @@ printf 'assign-if-missing:%s\n' "$4" >>'`+operations+`'
 	writeScript(t, filepath.Join(adaptationDir, "set-status"), `#!/usr/bin/env sh
 set -eu
 printf '%s\n' "$@" >'`+filepath.Join(stateDir, "status.args")+`'
-printf 'set-status:%s:%s:%s\n' "$PUMP19_HEAD_SHA" "$4" "$5" >>'`+operations+`'
+printf 'set-status:%s:%s:%s\n' "$MINOS_HEAD_SHA" "$4" "$5" >>'`+operations+`'
 statuses='`+filepath.Join(stateDir, "statuses.json")+`'
 # Append like a real forge: the newest status per context wins by id.
-jq -c --arg context "$4" --arg state "$5" '. + [{id:((map(.id)|max // 0)+1),context:$context,state:$state,creator:"pump19"}]' "$statuses" >"$statuses.tmp"
+jq -c --arg context "$4" --arg state "$5" '. + [{id:((map(.id)|max // 0)+1),context:$context,state:$state,creator:"minos"}]' "$statuses" >"$statuses.tmp"
 mv "$statuses.tmp" "$statuses"
 `)
 	comments := filepath.Join(stateDir, "comments.json")
@@ -967,11 +967,11 @@ mv "$statuses.tmp" "$statuses"
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "list-review-comments"), "#!/usr/bin/env sh\ncat '"+comments+"'\n")
-	writeScript(t, filepath.Join(adaptationDir, "post-review"), "#!/usr/bin/env sh\nset -eu\nprintf 'post-review:%s\\n' \"$PUMP19_HEAD_SHA\" >>'"+operations+"'\ncp \"$6\" '"+filepath.Join(stateDir, "posted-review.md")+"'\ncp \"$7\" '"+filepath.Join(stateDir, "posted-comments.json")+"'\nstate=$5\n[ \"$state\" != APPROVE ] || state=APPROVED\njq --arg head \"$4\" --arg state \"$state\" --rawfile body \"$6\" '. + [{id:(length + 1),state:$state,commit_id:$head,body:$body,user:\"Minos\"}]' '"+reviews+"' >'"+reviews+".tmp'\nmv '"+reviews+".tmp' '"+reviews+"'\nif [ \"$(jq 'length' \"$7\")\" -gt 0 ]; then jq '[.[0] + {id:91}]' \"$7\" >'"+comments+"'; fi\nprintf '{}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "post-review"), "#!/usr/bin/env sh\nset -eu\nprintf 'post-review:%s\\n' \"$MINOS_HEAD_SHA\" >>'"+operations+"'\ncp \"$6\" '"+filepath.Join(stateDir, "posted-review.md")+"'\ncp \"$7\" '"+filepath.Join(stateDir, "posted-comments.json")+"'\nstate=$5\n[ \"$state\" != APPROVE ] || state=APPROVED\njq --arg head \"$4\" --arg state \"$state\" --rawfile body \"$6\" '. + [{id:(length + 1),state:$state,commit_id:$head,body:$body,user:\"Minos\"}]' '"+reviews+"' >'"+reviews+".tmp'\nmv '"+reviews+".tmp' '"+reviews+"'\nif [ \"$(jq 'length' \"$7\")\" -gt 0 ]; then jq '[.[0] + {id:91}]' \"$7\" >'"+comments+"'; fi\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "update-comment"), "#!/usr/bin/env sh\ncp \"$4\" '"+filepath.Join(stateDir, "updated-body.md")+"'\nprintf '{}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), "#!/usr/bin/env sh\ncat '"+reviews+"'\n")
-	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'pump19\\n'\n")
-	writeScript(t, filepath.Join(adaptationDir, "merge"), "#!/usr/bin/env sh\nprintf 'merge:%s\\n' \"$PUMP19_HEAD_SHA\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "merge.args")+"'\nprintf '{\"merged\":true}\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'minos\\n'\n")
+	writeScript(t, filepath.Join(adaptationDir, "merge"), "#!/usr/bin/env sh\nprintf 'merge:%s\\n' \"$MINOS_HEAD_SHA\" >>'"+operations+"'\nprintf '%s\\n' \"$@\" >'"+filepath.Join(stateDir, "merge.args")+"'\nprintf '{\"merged\":true}\\n'\n")
 	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\ncat \"$4\" >>'"+filepath.Join(stateDir, "comments")+"'\nprintf '{}\\n'\n")
 }
 

@@ -12,7 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-const DefaultConfigRoot = "/etc/pump19"
+const DefaultConfigRoot = "/etc/minos"
 
 var errRepoNotOptedIn = errors.New("repository is not opted in")
 

@@ -1,10 +1,10 @@
-# Pump-19 flaky-test repair mission
+# Minos flaky-test repair mission
 
 Own one flaky-test repair run from claim to final forge state. Read the general
-skill at `$PUMP19_SKILL` in full and follow it. The skill owns evidence-led
+skill at `$MINOS_SKILL` in full and follow it. The skill owns evidence-led
 diagnosis: reproduction, rival hypotheses, discriminating experiments, honest
 suspected or stopped exits, and confirmation of the exact symptom. This mission
-supplies the flaky-test purpose, Pump-19 service facts, repair landing, and
+supplies the flaky-test purpose, Minos service facts, repair landing, and
 publication mechanics. Every flaky-specific instruction lives here; the synced
 general skill remains unchanged.
 
@@ -16,29 +16,29 @@ green run.
 
 ## Run facts
 
-- `PUMP19_FORGE`, `PUMP19_OWNER`, `PUMP19_REPO_NAME`, and `PUMP19_PR` identify
+- `MINOS_FORGE`, `MINOS_OWNER`, `MINOS_REPO_NAME`, and `MINOS_PR` identify
   the pull request.
-- `PUMP19_HEAD_SHA` is the head this repair run serves. A landed repair moves
+- `MINOS_HEAD_SHA` is the head this repair run serves. A landed repair moves
   the head past it; markers and statuses remain bound to the served head.
-- `PUMP19_BASE_REF` is the base ref, fetched into the workspace as
-  `origin/$PUMP19_BASE_REF` — the sync-first step below merges it.
-- `PUMP19_WORKSPACE` is the prepared head checkout. Run repository-controlled
-  commands only through `pump19 ws-exec --config "$PUMP19_CONFIG" …` so service
+- `MINOS_BASE_REF` is the base ref, fetched into the workspace as
+  `origin/$MINOS_BASE_REF` — the sync-first step below merges it.
+- `MINOS_WORKSPACE` is the prepared head checkout. Run repository-controlled
+  commands only through `minos ws-exec --config "$MINOS_CONFIG" …` so service
   credentials stay outside the disposable workspace.
-- `PUMP19_BUILD_CMD` and `PUMP19_TEST_CMD` are the repository's configured
+- `MINOS_BUILD_CMD` and `MINOS_TEST_CMD` are the repository's configured
   commands and are useful starting points for identifying the misbehaving test.
-- `PUMP19_RUN_DIR` holds the investigation evidence. Put diagnostic detail in
+- `MINOS_RUN_DIR` holds the investigation evidence. Put diagnostic detail in
   files there and append the final outcome line to `run.log`; the pull request
   carries only a successfully landed repair.
-- `pump19 adapt …` invokes the configured trusted forge adaptation with the
+- `minos adapt …` invokes the configured trusted forge adaptation with the
   dedicated credential, which never enters the workspace.
-- `PUMP19_CONFIG` is the service configuration root. `PUMP19_PINS`,
-  `PUMP19_FIX_AUTHOR_NAME`, and `PUMP19_FIX_AUTHOR_EMAIL` are deployment-static
+- `MINOS_CONFIG` is the service configuration root. `MINOS_PINS`,
+  `MINOS_FIX_AUTHOR_NAME`, and `MINOS_FIX_AUTHOR_EMAIL` are deployment-static
   model and attribution facts.
 
 ## Integrity, claim, and writability
 
-Run `pump19 run-guard --config "$PUMP19_CONFIG" begin`. Continue only on
+Run `minos run-guard --config "$MINOS_CONFIG" begin`. Continue only on
 `claimed`, which adds the run-owned `Repairing Flaky Tests` label;
 `yield-terminal` and `yield-head` mean exit successfully without writing
 anything to the forge. After a claim, release it on every controlled exit.
@@ -46,7 +46,7 @@ Abrupt termination is recovered by the sweep. The standing `Flaky Tests` label
 is not the run claim and release never removes it.
 
 Read current facts with
-`pump19 adapt get-pr-facts "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR"`.
+`minos adapt get-pr-facts "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR"`.
 If `LABELS` no longer contains `Flaky Tests`, the standing request was
 withdrawn: record that fact in `run.log`, release `Repairing Flaky Tests`, and
 exit without any outcome comment or status. The label is the request; a run
@@ -54,14 +54,14 @@ directory is not authority to outlive it.
 
 The head is writable only when `HEAD_BRANCH` is non-empty and `HEAD_REPO` equals
 `BASE_REPO`. An unwritable head is a private operational outcome: record it in
-`$PUMP19_RUN_DIR`, release the run claim, and leave `Flaky Tests` standing.
+`$MINOS_RUN_DIR`, release the run claim, and leave `Flaky Tests` standing.
 
 ## Sync with the base first
 
 The run's first move after the claim and writability checks is to bring the
 pull request current with its base branch in the workspace:
 
-`pump19 ws-exec --config "$PUMP19_CONFIG" -- git merge --no-ff --no-commit "origin/$PUMP19_BASE_REF"`
+`minos ws-exec --config "$MINOS_CONFIG" -- git merge --no-ff --no-commit "origin/$MINOS_BASE_REF"`
 
 Resolving what conflicts arise is part of the job. Leave the merge in
 progress rather than committing it yourself — commits belong to
@@ -95,9 +95,9 @@ distinguishes the mechanism. Sleeps, retries, loosened assertions, and broader
 timeouts belong only in declared experiments; the repair removes the cause.
 
 When the cause is proven, make the smallest durable repair and run the witness
-again. Exercise the relevant build and test commands through `pump19 ws-exec`.
+again. Exercise the relevant build and test commands through `minos ws-exec`.
 Record the test name, evidence, rejected rival, repair, and verification in
-`$PUMP19_RUN_DIR/flaky-investigation.md`.
+`$MINOS_RUN_DIR/flaky-investigation.md`.
 
 If the investigation exits **suspected** or **stopped**, or a proven repair
 cannot be made safely, the evidence belongs in `flaky-investigation.md` and
@@ -107,17 +107,17 @@ cannot be made safely, the evidence belongs in `flaky-investigation.md` and
 ## Landing the repair
 
 Immediately before landing, require
-`pump19 run-guard --config "$PUMP19_CONFIG" current`; `stale` means discard the
+`minos run-guard --config "$MINOS_CONFIG" current`; `stale` means discard the
 unposted repair, release the claim, and exit without writing anything to the
 forge. Land only through:
 
-`pump19 adapt commit-push "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" HEAD_BRANCH "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" MODEL MESSAGE_FILE`
+`minos adapt commit-push "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" HEAD_BRANCH "$MINOS_FIX_AUTHOR_NAME" "$MINOS_FIX_AUTHOR_EMAIL" MODEL MESSAGE_FILE`
 
 The adaptation commits inside the credential-free workspace with repository
 hooks disabled, then pushes from trusted service context. The credential
 therefore never executes against repository-controlled git configuration,
 hooks, or filters. It never force-pushes. Use the resolved lead model from
-`$PUMP19_RUN_DIR/resolved-lead.json` for `MODEL` and its provenance trailer.
+`$MINOS_RUN_DIR/resolved-lead.json` for `MODEL` and its provenance trailer.
 
 Run every long command — the repeated test runs this repair lives on
 included — in the foreground and stay with it. This session ends the moment
@@ -140,10 +140,10 @@ Read the first stdout token:
   its liveness pacing, up to its capped attempts. A **deterministic** cause —
   missing wiring or configuration (an unset required variable, a missing
   skill or script), invalid inputs, anything a retry cannot change — latches:
-  release the claim, run `pump19 run-terminal --reason REASON` (a short
+  release the claim, run `minos run-terminal --reason REASON` (a short
   lowercase code naming the cause, such as `config-error`;
   `controlled-failure` when nothing more precise fits), and exit non-zero,
-  holding the run until an operator `pump19 re-arm`. Either way, write no PR
+  holding the run until an operator `minos re-arm`. Either way, write no PR
   comment or error status; the split — retries burned on a deterministic
   error are silence, a latch on a transient one is a stall nobody re-fires —
   applies before the claim exists too. If release itself fails, exit
@@ -154,13 +154,13 @@ Read the first stdout token:
 ## Successful publication and terminal act
 
 A landed repair has moved the head, so its substantive record remains bound to
-`$PUMP19_HEAD_SHA` without a further current-head check. Write one concise PR
+`$MINOS_HEAD_SHA` without a further current-head check. Write one concise PR
 comment whose final line is:
 
-`Pump-19: head=FULL_SHA outcome=landed run=flaky`
+`Minos: head=FULL_SHA outcome=landed run=flaky`
 
-Format it with `pump19 marker format …`, post it with `pump19 adapt post-comment
-…`, and set `pump19/flaky success` on the served head. The prose names the
+Format it with `minos marker format …`, post it with `minos adapt post-comment
+…`, and set `minos/flaky success` on the served head. The prose names the
 test, the proven cause, the repair, and how the repair was verified — written
 for the repository's people, short, about their test. The process stays off
 the PR (operator ruling 2026-07-10): no run or workflow names, no model or
@@ -172,7 +172,7 @@ succeeded, remove `Flaky Tests`. **Removing `Flaky Tests` is the repair run's
 strictly final forge mutation** and the review loop's resume signal. Nothing in
 this run writes to the forge afterwards.
 
-Operational diagnostics belong in the run log under `$PUMP19_RUN_DIR`, not in
+Operational diagnostics belong in the run log under `$MINOS_RUN_DIR`, not in
 PR comments: the PR carries the landed repair for people, the run directory
 carries the machinery's evidence. Fruitless, unwritable, suspected, stopped,
 and failed outcomes leave `Flaky Tests` standing and write no error commit

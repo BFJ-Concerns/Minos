@@ -462,7 +462,7 @@ func readRunClaim(path string) (runClaim, error) {
 		path:        path,
 		kind:        kind,
 		sha:         matches[1],
-		headSHA:     meta["PUMP19_HEAD_SHA"],
+		headSHA:     meta["MINOS_HEAD_SHA"],
 		metaMissing: errors.Is(metaErr, os.ErrNotExist),
 	}
 	if metaErr != nil && !claim.metaMissing {
@@ -479,10 +479,10 @@ func readRunClaim(path string) (runClaim, error) {
 	if claim.headSHA == "" {
 		claim.headSHA = claim.sha
 	}
-	if started := meta["PUMP19_STARTED_AT"]; started != "" {
+	if started := meta["MINOS_STARTED_AT"]; started != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, started)
 		if err != nil {
-			claim.metaErr = fmt.Errorf("parse PUMP19_STARTED_AT: %w", err)
+			claim.metaErr = fmt.Errorf("parse MINOS_STARTED_AT: %w", err)
 			return claim, nil
 		}
 		claim.startedAt = parsed
@@ -710,13 +710,13 @@ func releaseRetryableClaim(ctx context.Context, runDir string, attempt int) erro
 
 func cleanupRunDirResources(ctx context.Context, runDir string) error {
 	meta := readMeta(filepath.Join(runDir, "meta.env"))
-	unit := meta["PUMP19_UNIT"]
+	unit := meta["MINOS_UNIT"]
 	if unit != "" {
 		if err := stopAndVerifyUnitGone(ctx, unit); err != nil {
 			return err
 		}
 	}
-	if workspace := meta["PUMP19_WORKSPACE"]; workspace != "" {
+	if workspace := meta["MINOS_WORKSPACE"]; workspace != "" {
 		if err := os.RemoveAll(workspace); err != nil {
 			return err
 		}
@@ -725,7 +725,7 @@ func cleanupRunDirResources(ctx context.Context, runDir string) error {
 }
 
 func runDirUnitActive(ctx context.Context, runDir string) (bool, error) {
-	unit := readMeta(filepath.Join(runDir, "meta.env"))["PUMP19_UNIT"]
+	unit := readMeta(filepath.Join(runDir, "meta.env"))["MINOS_UNIT"]
 	if unit == "" {
 		return false, nil
 	}

@@ -9,10 +9,10 @@ import (
 
 func TestScrubEnvRemovesOnlyConfiguredVariables(t *testing.T) {
 	got := scrubEnv([]string{
-		"PUMP19_FORGE_TOKEN=secret",
+		"MINOS_FORGE_TOKEN=secret",
 		"MODEL_KEY=secret",
 		"PATH=/bin",
-	}, []string{"PUMP19_FORGE_TOKEN", "MODEL_KEY"})
+	}, []string{"MINOS_FORGE_TOKEN", "MODEL_KEY"})
 	want := []string{"PATH=/bin"}
 	if len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("scrubbed env = %#v, want %#v", got, want)
@@ -26,8 +26,8 @@ func TestWorkspaceExecCommandRunsInWorkspaceWithScrubbedEnvironment(t *testing.T
 	if err := os.Mkdir(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PUMP19_WORKSPACE", workspace)
-	t.Setenv("PUMP19_FORGE_TOKEN", "secret")
+	t.Setenv("MINOS_WORKSPACE", workspace)
+	t.Setenv("MINOS_FORGE_TOKEN", "secret")
 	t.Setenv("MODEL_KEY", "secret")
 	cwdFile := filepath.Join(root, "cwd.txt")
 	envFile := filepath.Join(root, "env.txt")
@@ -49,7 +49,7 @@ func TestWorkspaceExecCommandRunsInWorkspaceWithScrubbedEnvironment(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(env), "PUMP19_FORGE_TOKEN=") || strings.Contains(string(env), "MODEL_KEY=") {
+	if strings.Contains(string(env), "MINOS_FORGE_TOKEN=") || strings.Contains(string(env), "MODEL_KEY=") {
 		t.Fatalf("child environment was not scrubbed:\n%s", env)
 	}
 }
@@ -57,7 +57,7 @@ func TestWorkspaceExecCommandRunsInWorkspaceWithScrubbedEnvironment(t *testing.T
 func TestWorkspaceExecCommandRefusesMissingWorkspace(t *testing.T) {
 	root := t.TempDir()
 	writeWorkspaceExecConfig(t, root)
-	t.Setenv("PUMP19_WORKSPACE", filepath.Join(root, "missing"))
+	t.Setenv("MINOS_WORKSPACE", filepath.Join(root, "missing"))
 	err := WorkspaceExecCommand(t.Context(), []string{"--config", root, "true"})
 	if err == nil {
 		t.Fatal("expected missing workspace to fail")
@@ -68,7 +68,7 @@ func writeWorkspaceExecConfig(t *testing.T, root string) {
 	t.Helper()
 	data := validServiceConfig + `
 [scrub]
-vars = ["PUMP19_FORGE_TOKEN", "MODEL_KEY"]
+vars = ["MINOS_FORGE_TOKEN", "MODEL_KEY"]
 `
 	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)

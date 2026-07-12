@@ -9,7 +9,7 @@ build = "REPLACE_WITH_BUILD_COMMAND"
 test = "REPLACE_WITH_TEST_COMMAND"
 briefs = ".review"
 skill = "REPLACE_WITH_PINNED_REVIEW_SKILL_PATH"
-run-body = "/opt/pump19/run-body/run-body"
+run-body = "/opt/minos/run-body/run-body"
 
 # If the forge enforces the repository's build and full test suite as required
 # checks, name those contexts here and omit build/test above. An absent or empty

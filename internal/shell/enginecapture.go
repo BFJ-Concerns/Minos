@@ -54,7 +54,7 @@ func CaptureClaudeCommand(ctx context.Context, args []string, stdin io.Reader, s
 	}
 	command := fs.Args()
 	if *pinsPath == "" || *outputPath == "" || *resolvedPath == "" || len(command) == 0 {
-		return fmt.Errorf("usage: pump19 capture-claude --pins FILE --output FILE --resolved FILE COMMAND [ARG...]")
+		return fmt.Errorf("usage: minos capture-claude --pins FILE --output FILE --resolved FILE COMMAND [ARG...]")
 	}
 
 	pins, err := loadModelPins(*pinsPath)
@@ -104,7 +104,7 @@ func CaptureClaudeCommand(ctx context.Context, args []string, stdin io.Reader, s
 			_ = cmd.Wait()
 			return fmt.Errorf("decode Claude stream event: %w", err)
 		}
-		fmt.Fprintf(safeStderr, "pump19 lead stream event type=%s subtype=%s\n", event.Type, event.Subtype)
+		fmt.Fprintf(safeStderr, "minos lead stream event type=%s subtype=%s\n", event.Type, event.Subtype)
 		model := ""
 		if event.Type == "system" && event.Subtype == "init" {
 			model = event.Model

@@ -27,12 +27,12 @@ type changedLine struct {
 
 func ReviewCommand(args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pump19 review changed-line|anchor|dedupe")
+		return fmt.Errorf("usage: minos review changed-line|anchor|dedupe")
 	}
 	switch args[0] {
 	case "changed-line":
 		if len(args) != 4 {
-			return fmt.Errorf("usage: pump19 review changed-line DIFF PATH LINE")
+			return fmt.Errorf("usage: minos review changed-line DIFF PATH LINE")
 		}
 		line, err := positiveLine(args[3])
 		if err != nil {
@@ -52,7 +52,7 @@ func ReviewCommand(args []string, stdin io.Reader, stdout io.Writer) error {
 		return nil
 	case "anchor":
 		if len(args) != 4 {
-			return fmt.Errorf("usage: pump19 review anchor DIFF PATH LINE")
+			return fmt.Errorf("usage: minos review anchor DIFF PATH LINE")
 		}
 		line, err := positiveLine(args[3])
 		if err != nil {
@@ -71,7 +71,7 @@ func ReviewCommand(args []string, stdin io.Reader, stdout io.Writer) error {
 		return json.NewEncoder(stdout).Encode(ReviewAnchor{Path: args[2], NewPosition: line})
 	case "dedupe":
 		if len(args) != 1 {
-			return fmt.Errorf("usage: pump19 review dedupe")
+			return fmt.Errorf("usage: minos review dedupe")
 		}
 		return dedupeReview(stdin, stdout)
 	default:

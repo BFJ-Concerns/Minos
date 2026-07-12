@@ -24,9 +24,9 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	runDir := os.Getenv("PUMP19_RUN_DIR")
+	runDir := os.Getenv("MINOS_RUN_DIR")
 	if runDir == "" {
-		return fmt.Errorf("PUMP19_RUN_DIR is required")
+		return fmt.Errorf("MINOS_RUN_DIR is required")
 	}
 	claimed, err := ClaimRunDir(runDir)
 	if err != nil {
@@ -47,16 +47,16 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	if err := writeMeta(runDir); err != nil {
 		return err
 	}
-	fmt.Fprintf(logFile, "pump19 run-wrap started at %s\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(logFile, "minos run-wrap started at %s\n", time.Now().UTC().Format(time.RFC3339))
 	touchRunLog(logPath, logFile, "metadata written")
-	workspace := os.Getenv("PUMP19_WORKSPACE")
+	workspace := os.Getenv("MINOS_WORKSPACE")
 	if workspace == "" {
-		return fmt.Errorf("PUMP19_WORKSPACE is required")
+		return fmt.Errorf("MINOS_WORKSPACE is required")
 	}
 	defer func() {
 		_ = os.RemoveAll(workspace)
 		finishedAt := time.Now().UTC()
-		fmt.Fprintf(logFile, "pump19 run-wrap finished at %s\n", finishedAt.Format(time.RFC3339))
+		fmt.Fprintf(logFile, "minos run-wrap finished at %s\n", finishedAt.Format(time.RFC3339))
 		_ = logFile.Sync()
 		outcome := "success"
 		if err != nil {
@@ -66,15 +66,15 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 			if err == nil {
 				err = fmt.Errorf("record run completion: %w", markerErr)
 			} else {
-				fmt.Fprintf(logFile, "pump19 run-wrap could not record completion: %v\n", markerErr)
+				fmt.Fprintf(logFile, "minos run-wrap could not record completion: %v\n", markerErr)
 			}
 		}
 	}()
-	kind, err := ParseRunKind(os.Getenv("PUMP19_RUN_KIND"))
+	kind, err := ParseRunKind(os.Getenv("MINOS_RUN_KIND"))
 	if err != nil {
 		return err
 	}
-	forgeName := os.Getenv("PUMP19_FORGE")
+	forgeName := os.Getenv("MINOS_FORGE")
 	forge, ok := cfg.Forges[forgeName]
 	if !ok {
 		return fmt.Errorf("unknown forge %q", forgeName)
@@ -90,20 +90,20 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 		if err == nil {
 			return
 		}
-		fmt.Fprintf(logFile, "pump19 run-wrap error: %v\n", err)
+		fmt.Fprintf(logFile, "minos run-wrap error: %v\n", err)
 		if !bodyStarted || !hasForgeWritesAttempted(runDir) {
 			if markerErr := writeRetryableFailure(runDir, failurePhase); markerErr != nil {
-				fmt.Fprintf(logFile, "pump19 run-wrap could not record retryable failure: %v\n", markerErr)
+				fmt.Fprintf(logFile, "minos run-wrap could not record retryable failure: %v\n", markerErr)
 			}
 			return
 		}
-		if markerErr := writeTerminalMarker(runDir, kind, os.Getenv("PUMP19_HEAD_SHA"), "body-exit-after-forge-write"); markerErr != nil {
-			fmt.Fprintf(logFile, "pump19 run-wrap could not record terminal failure: %v\n", markerErr)
+		if markerErr := writeTerminalMarker(runDir, kind, os.Getenv("MINOS_HEAD_SHA"), "body-exit-after-forge-write"); markerErr != nil {
+			fmt.Fprintf(logFile, "minos run-wrap could not record terminal failure: %v\n", markerErr)
 		}
 	}()
 	touchRunLog(logPath, logFile, "preparing workspace")
 	failurePhase = "prepare-workspace"
-	if err := adaptation.PrepareWorkspace(ctx, facts, workspace, os.Getenv("PUMP19_DIFF")); err != nil {
+	if err := adaptation.PrepareWorkspace(ctx, facts, workspace, os.Getenv("MINOS_DIFF")); err != nil {
 		return err
 	}
 	touchRunLog(logPath, logFile, "workspace ready")
@@ -115,7 +115,7 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	cmd.Stdout = multiOut
 	cmd.Stderr = multiErr
 	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, "PUMP19_RUN_KIND="+string(kind))
+	cmd.Env = append(cmd.Env, "MINOS_RUN_KIND="+string(kind))
 	configureRunProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
@@ -148,7 +148,7 @@ func cleanupRunProcessGroup(leaderPID int) error {
 }
 
 func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {
-	if body := os.Getenv("PUMP19_RUN_BODY"); body != "" {
+	if body := os.Getenv("MINOS_RUN_BODY"); body != "" {
 		return exec.CommandContext(ctx, body), nil
 	}
 	exe, err := os.Executable()
@@ -160,15 +160,15 @@ func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {
 
 func writeRetryableFailure(runDir, phase string) error {
 	values := []string{
-		"PUMP19_RETRYABLE_FAILURE=1",
-		"PUMP19_FAILURE_PHASE=" + phase,
-		"PUMP19_FAILURE_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
+		"MINOS_RETRYABLE_FAILURE=1",
+		"MINOS_FAILURE_PHASE=" + phase,
+		"MINOS_FAILURE_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	return atomicPublishFile(filepath.Join(runDir, "retry.env"), []byte(values[0]+"\n"+values[1]+"\n"+values[2]+"\n"), 0o644)
 }
 
 func touchRunLog(logPath string, logFile *os.File, message string) {
-	fmt.Fprintf(logFile, "pump19 run-wrap: %s at %s\n", message, time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(logFile, "minos run-wrap: %s at %s\n", message, time.Now().UTC().Format(time.RFC3339))
 	_ = logFile.Sync()
 	now := time.Now()
 	_ = os.Chtimes(logPath, now, now)
@@ -176,11 +176,11 @@ func touchRunLog(logPath string, logFile *os.File, message string) {
 
 func writeMeta(runDir string) error {
 	meta := []string{
-		"PUMP19_UNIT=" + os.Getenv("PUMP19_UNIT"),
-		"PUMP19_WORKSPACE=" + os.Getenv("PUMP19_WORKSPACE"),
-		"PUMP19_STARTED_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
-		"PUMP19_OCCASION=" + os.Getenv("PUMP19_OCCASION"),
-		"PUMP19_HEAD_SHA=" + os.Getenv("PUMP19_HEAD_SHA"),
+		"MINOS_UNIT=" + os.Getenv("MINOS_UNIT"),
+		"MINOS_WORKSPACE=" + os.Getenv("MINOS_WORKSPACE"),
+		"MINOS_STARTED_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
+		"MINOS_OCCASION=" + os.Getenv("MINOS_OCCASION"),
+		"MINOS_HEAD_SHA=" + os.Getenv("MINOS_HEAD_SHA"),
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "meta.env"), []byte(strings.Join(meta, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write run metadata: %w", err)
@@ -189,14 +189,14 @@ func writeMeta(runDir string) error {
 }
 
 func envFacts(forge string) Facts {
-	owner := os.Getenv("PUMP19_OWNER")
-	repo := os.Getenv("PUMP19_REPO_NAME")
+	owner := os.Getenv("MINOS_OWNER")
+	repo := os.Getenv("MINOS_REPO_NAME")
 	return Facts{
 		Forge:   forge,
 		Owner:   owner,
 		Repo:    repo,
-		PR:      os.Getenv("PUMP19_PR"),
-		HeadSHA: os.Getenv("PUMP19_HEAD_SHA"),
-		BaseRef: os.Getenv("PUMP19_BASE_REF"),
+		PR:      os.Getenv("MINOS_PR"),
+		HeadSHA: os.Getenv("MINOS_HEAD_SHA"),
+		BaseRef: os.Getenv("MINOS_BASE_REF"),
 	}
 }

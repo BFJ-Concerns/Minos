@@ -6,27 +6,27 @@ set -eu
 # fruitless for a writable head; writability itself is read honestly from the
 # forge facts, so a fork fixture drives the unwritable path on its own.
 
-: "${PUMP19_BIN:=pump19}"
-: "${PUMP19_CONFIG:?PUMP19_CONFIG is required}"
-: "${PUMP19_RUN_DIR:?PUMP19_RUN_DIR is required}"
+: "${MINOS_BIN:=minos}"
+: "${MINOS_CONFIG:?MINOS_CONFIG is required}"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 
-standin_model=${PUMP19_STANDIN_LEAD_MODEL:-claude-opus-pinned}
+standin_model=${MINOS_STANDIN_LEAD_MODEL:-claude-opus-pinned}
 printf '{"type":"system","subtype":"init","model":"%s"}\n' "$standin_model"
-cat >"$PUMP19_RUN_DIR/mission.received.md"
+cat >"$MINOS_RUN_DIR/mission.received.md"
 
-claim=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" begin)
+claim=$("$MINOS_BIN" run-guard --config "$MINOS_CONFIG" begin)
 case "$claim" in
   claimed) ;;
   yield-terminal|yield-head) printf '{"result":"%s"}\n' "$claim"; exit 0 ;;
   *) echo "unexpected run claim result: $claim" >&2; exit 2 ;;
 esac
 release() {
-  "$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" release >/dev/null
+  "$MINOS_BIN" run-guard --config "$MINOS_CONFIG" release >/dev/null
 }
 trap release EXIT HUP INT TERM
 
 require_current() {
-  current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
+  current=$("$MINOS_BIN" run-guard --config "$MINOS_CONFIG" current)
   case "$current" in
     current) ;;
     stale) exit 0 ;;
@@ -36,38 +36,38 @@ require_current() {
 
 # The capture wrapper validates the served model against the lead pin and writes
 # this file; a fix that reaches here serves the pinned model.
-while [ ! -s "$PUMP19_RUN_DIR/resolved-lead.json" ]; do
+while [ ! -s "$MINOS_RUN_DIR/resolved-lead.json" ]; do
   sleep 1
 done
-model=$(jq -r '.[0].resolved_model' "$PUMP19_RUN_DIR/resolved-lead.json")
+model=$(jq -r '.[0].resolved_model' "$MINOS_RUN_DIR/resolved-lead.json")
 
-facts="$PUMP19_RUN_DIR/pr-facts.txt"
-"$PUMP19_BIN" adapt get-pr-facts "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$facts"
+facts="$MINOS_RUN_DIR/pr-facts.txt"
+"$MINOS_BIN" adapt get-pr-facts "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" >"$facts"
 head_branch=$(sed -n 's/^HEAD_BRANCH=//p' "$facts")
 head_repo=$(sed -n 's/^HEAD_REPO=//p' "$facts")
 base_repo=$(sed -n 's/^BASE_REPO=//p' "$facts")
 
 # The fix session reads its findings from the PR record; a stand-in only proves
 # the seam, so it reads and discards them.
-"$PUMP19_BIN" adapt list-review-comments "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$PUMP19_RUN_DIR/findings.json"
+"$MINOS_BIN" adapt list-review-comments "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" >"$MINOS_RUN_DIR/findings.json"
 
 outcome=unwritable
 if [ -n "$head_branch" ] && [ "$head_repo" = "$base_repo" ]; then
-  outcome=${PUMP19_STANDIN_FIX_OUTCOME:-landed}
+  outcome=${MINOS_STANDIN_FIX_OUTCOME:-landed}
 fi
 
 if [ "$outcome" = landed ]; then
   # Edit the prepared workspace, then land through the credentialled adaptation —
   # never a push from inside the workspace. The adaptation reports the real
   # outcome as a stdout token: a protected head reports unwritable.
-  printf 'fix applied by stand-in\n' >>"$PUMP19_WORKSPACE/file.txt"
-  printf 'Answer the standing finding.\n' >"$PUMP19_RUN_DIR/fix-message.txt"
+  printf 'fix applied by stand-in\n' >>"$MINOS_WORKSPACE/file.txt"
+  printf 'Answer the standing finding.\n' >"$MINOS_RUN_DIR/fix-message.txt"
   require_current
-  landed=$("$PUMP19_BIN" adapt commit-push \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
-    "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
-    "$model" "$PUMP19_RUN_DIR/fix-message.txt")
-  printf '%s\n' "$landed" >"$PUMP19_RUN_DIR/commit-push.out"
+  landed=$("$MINOS_BIN" adapt commit-push \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" \
+    "$head_branch" "$MINOS_FIX_AUTHOR_NAME" "$MINOS_FIX_AUTHOR_EMAIL" \
+    "$model" "$MINOS_RUN_DIR/fix-message.txt")
+  printf '%s\n' "$landed" >"$MINOS_RUN_DIR/commit-push.out"
   case $(printf '%s' "$landed" | awk 'NR==1{print $1}') in
     landed) outcome=landed ;;
     fruitless) outcome=fruitless ;;
@@ -76,11 +76,11 @@ if [ "$outcome" = landed ]; then
   esac
 fi
 
-marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome="$outcome" run=fix)
+marker=$("$MINOS_BIN" marker format head="$MINOS_HEAD_SHA" outcome="$outcome" run=fix)
 {
-  printf 'Pump-19 fix stand-in. Outcome: %s.\n\n' "$outcome"
+  printf 'Minos fix stand-in. Outcome: %s.\n\n' "$outcome"
   printf '%s\n' "$marker"
-} >"$PUMP19_RUN_DIR/fix-summary.md"
+} >"$MINOS_RUN_DIR/fix-summary.md"
 
 # A landed fix has moved the head; its record binds to the head the fix acted
 # against and needs no further current check. The other outcomes moved no head.
@@ -88,11 +88,11 @@ case "$outcome" in
   landed) ;;
   *) require_current ;;
 esac
-"$PUMP19_BIN" adapt post-comment \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_RUN_DIR/fix-summary.md" >/dev/null
-"$PUMP19_BIN" adapt set-status \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
-  pump19/fix success "Pump-19 fix completed: $outcome" >/dev/null
+"$MINOS_BIN" adapt post-comment \
+  "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" "$MINOS_RUN_DIR/fix-summary.md" >/dev/null
+"$MINOS_BIN" adapt set-status \
+  "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_HEAD_SHA" \
+  minos/fix success "Minos fix completed: $outcome" >/dev/null
 release
 trap - EXIT HUP INT TERM
 
@@ -101,18 +101,18 @@ trap - EXIT HUP INT TERM
 # turning an already-landed and recorded fix into a failed run.
 if [ "$outcome" = landed ]; then
   landed_sha=$(printf '%s' "$landed" | awk 'NR==1{print $2}')
-  jq -c '.[] | select(.body | contains("finding=F-FIXED"))' "$PUMP19_RUN_DIR/findings.json" |
+  jq -c '.[] | select(.body | contains("finding=F-FIXED"))' "$MINOS_RUN_DIR/findings.json" |
     while IFS= read -r finding; do
       review_id=$(printf '%s' "$finding" | jq -r '.review_id')
       path=$(printf '%s' "$finding" | jq -r '.path')
       new_position=$(printf '%s' "$finding" | jq -r '.new_position')
       old_position=$(printf '%s' "$finding" | jq -r '.old_position')
-      body="$PUMP19_RUN_DIR/fixed-$review_id.md"
+      body="$MINOS_RUN_DIR/fixed-$review_id.md"
       printf 'fixed in `%s`\n' "$landed_sha" >"$body"
-      if ! "$PUMP19_BIN" adapt post-review-comment \
-        "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
+      if ! "$MINOS_BIN" adapt post-review-comment \
+        "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" \
         "$review_id" "$path" "$new_position" "$old_position" "$body" >/dev/null; then
-        printf 'per-finding acknowledgement failed for review %s\n' "$review_id" >>"$PUMP19_RUN_DIR/run.log"
+        printf 'per-finding acknowledgement failed for review %s\n' "$review_id" >>"$MINOS_RUN_DIR/run.log"
       fi
     done
 fi

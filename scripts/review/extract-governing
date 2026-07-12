@@ -1,23 +1,23 @@
 #!/usr/bin/env sh
 set -eu
 
-: "${PUMP19_WORKSPACE:?PUMP19_WORKSPACE is required}"
-: "${PUMP19_RUN_DIR:?PUMP19_RUN_DIR is required}"
-: "${PUMP19_BASE_REF:?PUMP19_BASE_REF is required}"
-: "${PUMP19_BRIEFS:?PUMP19_BRIEFS is required}"
+: "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+: "${MINOS_BASE_REF:?MINOS_BASE_REF is required}"
+: "${MINOS_BRIEFS:?MINOS_BRIEFS is required}"
 
-case "$PUMP19_BRIEFS" in
+case "$MINOS_BRIEFS" in
   /*|..|../*|*/../*|*/..)
-    echo "PUMP19_BRIEFS must be a safe repository-relative path" >&2
+    echo "MINOS_BRIEFS must be a safe repository-relative path" >&2
     exit 2
     ;;
 esac
 
-ref="origin/$PUMP19_BASE_REF"
-git -C "$PUMP19_WORKSPACE" rev-parse --verify "$ref^{commit}" >/dev/null
+ref="origin/$MINOS_BASE_REF"
+git -C "$MINOS_WORKSPACE" rev-parse --verify "$ref^{commit}" >/dev/null
 
-target="$PUMP19_RUN_DIR/governing"
-tmp="$PUMP19_RUN_DIR/.governing.$$"
+target="$MINOS_RUN_DIR/governing"
+tmp="$MINOS_RUN_DIR/.governing.$$"
 rm -rf "$tmp"
 mkdir -p "$tmp"
 cleanup() {
@@ -34,18 +34,18 @@ copy_blob() {
       ;;
   esac
   mkdir -p "$tmp/$(dirname "$path")"
-  git -C "$PUMP19_WORKSPACE" show "$ref:$path" >"$tmp/$path"
+  git -C "$MINOS_WORKSPACE" show "$ref:$path" >"$tmp/$path"
 }
 
 # Brief files are selected from the base tree. A brief introduced by the head
 # is intentionally absent, because a change never governs its own review.
-git -C "$PUMP19_WORKSPACE" ls-tree -r --name-only "$ref" -- "$PUMP19_BRIEFS" |
+git -C "$MINOS_WORKSPACE" ls-tree -r --name-only "$ref" -- "$MINOS_BRIEFS" |
   while IFS= read -r path; do
     [ -n "$path" ] && copy_blob "$path"
   done
 
 # Root and per-directory guidance use the same base-ref integrity rule.
-git -C "$PUMP19_WORKSPACE" ls-tree -r --name-only "$ref" |
+git -C "$MINOS_WORKSPACE" ls-tree -r --name-only "$ref" |
   while IFS= read -r path; do
     case "$path" in
       AGENTS.md|CLAUDE.md|*/AGENTS.md|*/CLAUDE.md) copy_blob "$path" ;;

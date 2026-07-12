@@ -1,4 +1,4 @@
-# Pump-19
+# Minos
 
 Agent-native code verification. The first deliverable is an automated,
 independent PR review-and-fix service — see `AGENTS.md` for the corrected
@@ -13,26 +13,26 @@ not as a base.
 
 The rebuilt shell is deliberately small:
 
-- `pump19 receive --config /etc/pump19` listens for forge webhooks at
+- `minos receive --config /etc/minos` listens for forge webhooks at
   `/hooks/{forge}`.
-- `pump19 sweep --config /etc/pump19` is the cron-runnable reconciliation pass.
-- `pump19 run-wrap --config /etc/pump19` owns run mechanics: atomic run claim,
+- `minos sweep --config /etc/minos` is the cron-runnable reconciliation pass.
+- `minos run-wrap --config /etc/minos` owns run mechanics: atomic run claim,
   log and metadata creation, workspace preparation, body execution, and
   workspace cleanup.
 - `scripts/run-body/run-body` is the deployed agent-session launcher. It serves
-  review, fix, finish, and flaky-test repair runs. An empty `PUMP19_RUN_BODY`
-  still selects `pump19 stub-run` for mechanical shell tests.
-- `pump19 run-guard` exposes the current-head, terminal-status, and superseding-
+  review, fix, finish, and flaky-test repair runs. An empty `MINOS_RUN_BODY`
+  still selects `minos stub-run` for mechanical shell tests.
+- `minos run-guard` exposes the current-head, terminal-status, and superseding-
   run checks used by accountable sessions.
-- `pump19 adapt` invokes a configured, service-owned forge adaptation with the
+- `minos adapt` invokes a configured, service-owned forge adaptation with the
   dedicated forge credential.
-- `pump19 review`, `pump19 marker`, `pump19 handle`, and `pump19 provenance`
+- `minos review`, `minos marker`, `minos handle`, and `minos provenance`
   expose changed-line and anchor checks, stable finding identities, marker
   formatting, and resolved-model pin verification to the session.
-- `pump19 capture-claude` records Claude's JSONL audit stream and validates the
+- `minos capture-claude` records Claude's JSONL audit stream and validates the
   engine-reported lead model before the session may publish.
-- `pump19 ws-exec --config /etc/pump19 -- command ...` runs PR-controlled build
-  or test commands inside `PUMP19_WORKSPACE` with configured service credentials
+- `minos ws-exec --config /etc/minos -- command ...` runs PR-controlled build
+  or test commands inside `MINOS_WORKSPACE` with configured service credentials
   scrubbed from the environment.
 
 The Go binary does not construct forge API URLs. Forge-specific reads and writes
@@ -48,10 +48,10 @@ condition `Flaky Tests`.
 
 Commit status contexts are:
 
-- `pump19/review`
-- `pump19/fix`
-- `pump19/finish`
-- `pump19/flaky` (successful landed repairs only; failures stay in `run.log`)
+- `minos/review`
+- `minos/fix`
+- `minos/finish`
+- `minos/flaky` (successful landed repairs only; failures stay in `run.log`)
 
 Only `success`, `failure`, and `error` are used. Forgejo's `warning` state is
 intentionally avoided so the vocabulary survives a GitHub adaptation.
@@ -59,7 +59,7 @@ intentionally avoided so the vocabulary survives a GitHub adaptation.
 Machine-readable marker lines are trailing prose footers with this grammar:
 
 ```text
-Pump-19: key=value another-key=value
+Minos: key=value another-key=value
 ```
 
 Values contain no spaces. Unknown keys are ignored by consumers.
@@ -69,29 +69,29 @@ Values contain no spaces. Unknown keys are ignored by consumers.
 Every spawned run receives:
 
 ```text
-PUMP19_RUN_DIR        run directory containing run.log, meta.env, diff.patch
-PUMP19_RUN_KIND       review | fix | finish | flaky
-PUMP19_OCCASION       triggering occasion, or reconcile
-PUMP19_FORGE          configured forge name
-PUMP19_REPO           owner/name
-PUMP19_OWNER          repository owner
-PUMP19_REPO_NAME      bare repository name
-PUMP19_PR             pull request number
-PUMP19_HEAD_SHA       full head SHA the run serves
-PUMP19_BASE_REF       base branch
-PUMP19_WORKSPACE      prepared clone-shaped checkout
-PUMP19_DIFF           PR diff path
-PUMP19_ADAPTATION     forge adaptation scripts directory
-PUMP19_SKILL          run skill/prompt file path
-PUMP19_RUN_BODY       run-body executable path; empty means pump19 stub-run
-PUMP19_BRIEFS         brief directory
-PUMP19_CONFIG         configuration root
-PUMP19_UNIT           transient systemd unit name
+MINOS_RUN_DIR        run directory containing run.log, meta.env, diff.patch
+MINOS_RUN_KIND       review | fix | finish | flaky
+MINOS_OCCASION       triggering occasion, or reconcile
+MINOS_FORGE          configured forge name
+MINOS_REPO           owner/name
+MINOS_OWNER          repository owner
+MINOS_REPO_NAME      bare repository name
+MINOS_PR             pull request number
+MINOS_HEAD_SHA       full head SHA the run serves
+MINOS_BASE_REF       base branch
+MINOS_WORKSPACE      prepared clone-shaped checkout
+MINOS_DIFF           PR diff path
+MINOS_ADAPTATION     forge adaptation scripts directory
+MINOS_SKILL          run skill/prompt file path
+MINOS_RUN_BODY       run-body executable path; empty means minos stub-run
+MINOS_BRIEFS         brief directory
+MINOS_CONFIG         configuration root
+MINOS_UNIT           transient systemd unit name
 ```
 
 The run directory path is the `(PR, head SHA, run kind)` claim. `run-wrap`
 creates it with atomic `mkdir`; a loser exits cleanly and touches nothing.
-`PUMP19_WORKSPACE` is a per-run path under the host temp directory, and
+`MINOS_WORKSPACE` is a per-run path under the host temp directory, and
 `run-wrap` removes it on normal exit. The run body owns forge-visible state: it
 re-reads PR facts, applies and removes its in-flight label, guards against head
 changes before posting, writes the terminal status for the served head, and
@@ -119,13 +119,13 @@ atomic `terminal.env` marker and no longer reconciles for that head and run
 kind. A body failure after a forge write was attempted latches immediately,
 because publication may be partial. Controlled mission failures, stub crashes,
 and stale crashes after an attempted write use the same marker. A new head has
-a distinct identity and runs normally; `pump19 re-arm` explicitly removes a
+a distinct identity and runs normally; `minos re-arm` explicitly removes a
 same-head latch while retaining its marker as an audit copy.
 
 Re-arm only the exact identity the operator has inspected:
 
 ```sh
-pump19 re-arm --config /etc/pump19 --forge FORGE --owner OWNER --repo REPO \
+minos re-arm --config /etc/minos --forge FORGE --owner OWNER --repo REPO \
   --pr PR --head FULL_SHA --run review|fix|finish|flaky
 ```
 
@@ -157,7 +157,7 @@ outcome labels/statuses, and a loud resolved-model mismatch without model cost.
 Focused tests separately prove base-ref governing extraction and degraded
 `model-unknown` provenance.
 
-`make e2e` is the stable disposable-Forgejo journey gate. It builds `pump19`,
+`make e2e` is the stable disposable-Forgejo journey gate. It builds `minos`,
 starts Forgejo 14.0.5 in Docker, installs a local webhook through a
 capture-forward endpoint, and drives:
 
@@ -178,7 +178,7 @@ capture-forward endpoint, and drives:
 - Same-second status writes agree with Forgejo combined-status ordering; the
   live Forgejo timeline and pulls paging assumptions are pinned.
 
-Set `PUMP19_E2E_UPDATE_FIXTURES=1 make e2e` to refresh
+Set `MINOS_E2E_UPDATE_FIXTURES=1 make e2e` to refresh
 `internal/shell/testdata/forgejo14/` from the same run. The normalisation tests
 bind to those captured Forgejo 14.0.5 payloads, headers, and timeline fixtures.
 

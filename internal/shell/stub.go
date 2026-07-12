@@ -13,15 +13,15 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := LoadServiceConfig(os.Getenv("PUMP19_CONFIG"))
+	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
 		return err
 	}
-	kind, err := ParseRunKind(os.Getenv("PUMP19_RUN_KIND"))
+	kind, err := ParseRunKind(os.Getenv("MINOS_RUN_KIND"))
 	if err != nil {
 		return err
 	}
-	facts := envFacts(os.Getenv("PUMP19_FORGE"))
+	facts := envFacts(os.Getenv("MINOS_FORGE"))
 	forge := cfg.Forges[facts.Forge]
 	adaptation, err := NewAdaptation(forge)
 	if err != nil {
@@ -42,7 +42,7 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	defer func() {
 		_ = releaseRun(context.Background(), cfg, adaptation, facts, kind)
 	}()
-	mode := os.Getenv("PUMP19_STUB_MODE")
+	mode := os.Getenv("MINOS_STUB_MODE")
 	if mode == "" {
 		mode = "normal"
 	}
@@ -53,7 +53,7 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	case "slow":
 		fmt.Println("stub slow mode started")
 		duration := 2 * time.Second
-		if seconds := os.Getenv("PUMP19_STUB_SLOW_SECONDS"); seconds != "" {
+		if seconds := os.Getenv("MINOS_STUB_SLOW_SECONDS"); seconds != "" {
 			parsed, err := time.ParseDuration(seconds + "s")
 			if err != nil {
 				return err
@@ -64,14 +64,14 @@ func StubRunCommand(ctx context.Context, args []string) error {
 		fmt.Println("stub slow mode heartbeat")
 	case "crash":
 		fmt.Println("stub crash mode")
-		if err := writeTerminalMarker(os.Getenv("PUMP19_RUN_DIR"), kind, facts.HeadSHA, "stub-crash"); err != nil {
+		if err := writeTerminalMarker(os.Getenv("MINOS_RUN_DIR"), kind, facts.HeadSHA, "stub-crash"); err != nil {
 			return fmt.Errorf("record stub crash: %w", err)
 		}
 		return fmt.Errorf("stub crash requested")
 	case "normal":
 		fmt.Println("stub normal mode")
 	default:
-		return fmt.Errorf("unknown PUMP19_STUB_MODE %q", mode)
+		return fmt.Errorf("unknown MINOS_STUB_MODE %q", mode)
 	}
 	liveFacts, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
 	if err != nil {
@@ -82,9 +82,9 @@ func StubRunCommand(ctx context.Context, args []string) error {
 		return nil
 	}
 	state := "success"
-	description := "Pump-19 stub " + string(kind) + " completed"
-	if kind == RunReview && os.Getenv("PUMP19_STUB_REVIEW_STATE") != "" {
-		state = os.Getenv("PUMP19_STUB_REVIEW_STATE")
+	description := "Minos stub " + string(kind) + " completed"
+	if kind == RunReview && os.Getenv("MINOS_STUB_REVIEW_STATE") != "" {
+		state = os.Getenv("MINOS_STUB_REVIEW_STATE")
 	}
 	return adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, contextName, state, description)
 }

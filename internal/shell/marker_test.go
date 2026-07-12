@@ -23,13 +23,13 @@ func TestMarkerRoundTrip(t *testing.T) {
 }
 
 func TestMarkerRejectsSpacesInValues(t *testing.T) {
-	if _, err := ParseMarker("Pump-19: run=review coverage=not full"); err == nil {
+	if _, err := ParseMarker("Minos: run=review coverage=not full"); err == nil {
 		t.Fatal("marker with spaced value was accepted")
 	}
 }
 
 func TestMarkerRejectsDuplicateKeys(t *testing.T) {
-	if _, err := ParseMarker("Pump-19: run=review run=fix"); err == nil {
+	if _, err := ParseMarker("Minos: run=review run=fix"); err == nil {
 		t.Fatal("marker with duplicate keys was accepted")
 	}
 }

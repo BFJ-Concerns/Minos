@@ -26,7 +26,7 @@ func TestFlakyRunBodyLandsRepairAndKeepsFailuresOffThePR(t *testing.T) {
 		filepath.Join("..", "..", "missions", "review.md"):                                                "apply `" + LabelFlakyTests + "`",
 		filepath.Join("..", "..", "scripts", "e2e", "flaky-engine-standin"):                               `"` + LabelFlakyTests + `"`,
 		filepath.Join("..", "..", "examples", "config", "repos", "forgejo-org--BFJ-Concerns--Widget.toml"): "label-added:" + LabelFlakyTests,
-		filepath.Join("..", "..", "deploy", "etc", "pump19", "repos", "owner--repository.toml.example"):   "label-added:" + LabelFlakyTests,
+		filepath.Join("..", "..", "deploy", "etc", "minos", "repos", "owner--repository.toml.example"):    "label-added:" + LabelFlakyTests,
 	} {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -38,12 +38,12 @@ func TestFlakyRunBodyLandsRepairAndKeepsFailuresOffThePR(t *testing.T) {
 	}
 
 	env.setRunEnv(t, "aaaaaaaaaaaaaaaa", map[string]string{
-		"PUMP19_FIXTURE_LABELS": "Flaky Tests",
+		"MINOS_FIXTURE_LABELS": "Flaky Tests",
 	})
 	if err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot}); err != nil {
 		t.Fatal(err)
 	}
-	landed := RunDir(env.runsDir, "local", "pump19", "subject", "7", "aaaaaaaaaaaaaaaa", RunFlaky)
+	landed := RunDir(env.runsDir, "local", "minos", "subject", "7", "aaaaaaaaaaaaaaaa", RunFlaky)
 	assertContainsFile(t, filepath.Join(landed, "flaky-summary.md"), "outcome=landed")
 	assertContainsFile(t, filepath.Join(landed, "flaky-summary.md"), "run=flaky")
 	assertPostedSummaryOmitsModelIdentity(t, filepath.Join(landed, "flaky-summary.md"))
@@ -52,8 +52,8 @@ func TestFlakyRunBodyLandsRepairAndKeepsFailuresOffThePR(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertContainsFile(t, filepath.Join(landed, "skill.path"), wantSkill)
-	assertContainsFile(t, filepath.Join(env.stateDir, "commit-push.args"), "Pump-19")
-	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "pump19/flaky\nsuccess")
+	assertContainsFile(t, filepath.Join(env.stateDir, "commit-push.args"), "Minos")
+	assertContainsFile(t, filepath.Join(env.stateDir, "status.args"), "minos/flaky\nsuccess")
 	assertLastOperation(t, filepath.Join(env.stateDir, "operations"), "remove-label:Flaky Tests")
 
 	// The repair push supplies a new head and the strictly-last label removal
@@ -71,20 +71,20 @@ func TestFlakyRunBodyLandsRepairAndKeepsFailuresOffThePR(t *testing.T) {
 		extra   map[string]string
 		wantErr bool
 	}{
-		{name: "fruitless", head: "bbbbbbbbbbbbbbbb", extra: map[string]string{"PUMP19_STANDIN_FLAKY_OUTCOME": "fruitless", "PUMP19_FIXTURE_COMMIT_OUTCOME": "fruitless"}},
-		{name: "unwritable", head: "cccccccccccccccc", extra: map[string]string{"PUMP19_FIXTURE_FORK": "1"}},
-		{name: "suspected", head: "dddddddddddddddd", extra: map[string]string{"PUMP19_STANDIN_FLAKY_OUTCOME": "suspected"}},
-		{name: "stopped", head: "eeeeeeeeeeeeeeee", extra: map[string]string{"PUMP19_STANDIN_FLAKY_OUTCOME": "stopped"}},
-		{name: "failed", head: "ffffffffffffffff", extra: map[string]string{"PUMP19_STANDIN_FLAKY_OUTCOME": "failed"}, wantErr: true},
-		{name: "withdrawn", head: "9999999999999999", extra: map[string]string{"PUMP19_FIXTURE_LABELS": "none"}},
+		{name: "fruitless", head: "bbbbbbbbbbbbbbbb", extra: map[string]string{"MINOS_STANDIN_FLAKY_OUTCOME": "fruitless", "MINOS_FIXTURE_COMMIT_OUTCOME": "fruitless"}},
+		{name: "unwritable", head: "cccccccccccccccc", extra: map[string]string{"MINOS_FIXTURE_FORK": "1"}},
+		{name: "suspected", head: "dddddddddddddddd", extra: map[string]string{"MINOS_STANDIN_FLAKY_OUTCOME": "suspected"}},
+		{name: "stopped", head: "eeeeeeeeeeeeeeee", extra: map[string]string{"MINOS_STANDIN_FLAKY_OUTCOME": "stopped"}},
+		{name: "failed", head: "ffffffffffffffff", extra: map[string]string{"MINOS_STANDIN_FLAKY_OUTCOME": "failed"}, wantErr: true},
+		{name: "withdrawn", head: "9999999999999999", extra: map[string]string{"MINOS_FIXTURE_LABELS": "none"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, name := range []string{"comments", "status.args", "labels-removed", "operations", "commit-push.args"} {
 				_ = os.Remove(filepath.Join(env.stateDir, name))
 			}
-			if _, set := tc.extra["PUMP19_FIXTURE_LABELS"]; !set {
-				tc.extra["PUMP19_FIXTURE_LABELS"] = "Flaky Tests"
+			if _, set := tc.extra["MINOS_FIXTURE_LABELS"]; !set {
+				tc.extra["MINOS_FIXTURE_LABELS"] = "Flaky Tests"
 			}
 			env.setRunEnv(t, tc.head, tc.extra)
 			err := RunWrapCommand(t.Context(), []string{"--config", env.configRoot})
@@ -94,8 +94,8 @@ func TestFlakyRunBodyLandsRepairAndKeepsFailuresOffThePR(t *testing.T) {
 			if !tc.wantErr && err != nil {
 				t.Fatal(err)
 			}
-			run := RunDir(env.runsDir, "local", "pump19", "subject", "7", tc.head, RunFlaky)
-			assertContainsFile(t, filepath.Join(run, "run.log"), "Pump-19 flaky")
+			run := RunDir(env.runsDir, "local", "minos", "subject", "7", tc.head, RunFlaky)
+			assertContainsFile(t, filepath.Join(run, "run.log"), "Minos flaky")
 			for _, name := range []string{"comments", "status.args"} {
 				if _, err := os.Stat(filepath.Join(env.stateDir, name)); !os.IsNotExist(err) {
 					t.Fatalf("%s flaky outcome wrote %s: %v", tc.name, name, err)

@@ -71,7 +71,7 @@ func withRunAdmission(ctx context.Context, cfg ServiceConfig, start func() error
 }
 
 func liveRunUnitCount(ctx context.Context) (int, error) {
-	cmd := systemctlCommand(ctx, "systemctl", "--user", "list-units", "--type=service", "--state=activating,active", "--no-legend", "--plain", "--full", "--no-pager", "pump19-run-*.service")
+	cmd := systemctlCommand(ctx, "systemctl", "--user", "list-units", "--type=service", "--state=activating,active", "--no-legend", "--plain", "--full", "--no-pager", "minos-run-*.service")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%w: systemctl list-units: %v: %s", ErrRunLedger, err, strings.TrimSpace(string(out)))
@@ -93,7 +93,7 @@ func countLiveRunUnits(output []byte) (int, error) {
 		if len(fields) < 4 {
 			return 0, fmt.Errorf("malformed systemctl list-units row %q", line)
 		}
-		if !strings.HasPrefix(fields[0], "pump19-run-") || !strings.HasSuffix(fields[0], ".service") {
+		if !strings.HasPrefix(fields[0], "minos-run-") || !strings.HasSuffix(fields[0], ".service") {
 			continue
 		}
 		if fields[2] == "active" || fields[2] == "activating" {
@@ -111,7 +111,7 @@ func spawnRunUnit(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts
 	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, kind)
 	unitName := UnitName(facts, kind)
 	env := runEnv(cfg, repo, facts, kind, runDir, unitName, occasion)
-	for _, name := range []string{"PUMP19_STUB_MODE", "PUMP19_STUB_REVIEW_STATE", "PUMP19_STUB_SLOW_SECONDS"} {
+	for _, name := range []string{"MINOS_STUB_MODE", "MINOS_STUB_REVIEW_STATE", "MINOS_STUB_SLOW_SECONDS"} {
 		if value := os.Getenv(name); value != "" {
 			env = append(env, name+"="+value)
 		}
@@ -134,12 +134,12 @@ func spawnRunUnit(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts
 }
 
 func UnitName(facts Facts, kind RunKind) string {
-	raw := fmt.Sprintf("pump19-run-%s-%s-pr%s-%s-%s", facts.Owner, facts.Repo, facts.PR, kind, shortSHA(facts.HeadSHA))
+	raw := fmt.Sprintf("minos-run-%s-%s-pr%s-%s-%s", facts.Owner, facts.Repo, facts.PR, kind, shortSHA(facts.HeadSHA))
 	return unitSafe.ReplaceAllString(raw, "-")
 }
 
 func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, kind RunKind, runDir, unitName, occasion string) []string {
-	workspace := filepath.Join(os.TempDir(), "pump19-workspaces", unitName)
+	workspace := filepath.Join(os.TempDir(), "minos-workspaces", unitName)
 	diff := runDir + "/diff.patch"
 	skill := repo.Adaptation.Skill
 	runBody := repo.Adaptation.RunBody
@@ -157,26 +157,26 @@ func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, kind RunKind, runDi
 		autoMerge = "true"
 	}
 	return []string{
-		"PUMP19_RUN_DIR=" + runDir,
-		"PUMP19_RUN_KIND=" + string(kind),
-		"PUMP19_OCCASION=" + occasion,
-		"PUMP19_FORGE=" + facts.Forge,
-		"PUMP19_REPO=" + facts.RepoSlug(),
-		"PUMP19_OWNER=" + facts.Owner,
-		"PUMP19_REPO_NAME=" + facts.Repo,
-		"PUMP19_PR=" + facts.PR,
-		"PUMP19_HEAD_SHA=" + facts.HeadSHA,
-		"PUMP19_BASE_REF=" + facts.BaseRef,
-		"PUMP19_WORKSPACE=" + workspace,
-		"PUMP19_DIFF=" + diff,
-		"PUMP19_ADAPTATION=" + forge.Adaptation,
-		"PUMP19_SKILL=" + skill,
-		"PUMP19_RUN_BODY=" + runBody,
-		"PUMP19_BRIEFS=" + briefs,
-		"PUMP19_BUILD_CMD=" + repo.Adaptation.Build,
-		"PUMP19_TEST_CMD=" + repo.Adaptation.Test,
-		"PUMP19_AUTO_MERGE=" + autoMerge,
-		"PUMP19_CONFIG=" + cfg.Root,
-		"PUMP19_UNIT=" + unitName,
+		"MINOS_RUN_DIR=" + runDir,
+		"MINOS_RUN_KIND=" + string(kind),
+		"MINOS_OCCASION=" + occasion,
+		"MINOS_FORGE=" + facts.Forge,
+		"MINOS_REPO=" + facts.RepoSlug(),
+		"MINOS_OWNER=" + facts.Owner,
+		"MINOS_REPO_NAME=" + facts.Repo,
+		"MINOS_PR=" + facts.PR,
+		"MINOS_HEAD_SHA=" + facts.HeadSHA,
+		"MINOS_BASE_REF=" + facts.BaseRef,
+		"MINOS_WORKSPACE=" + workspace,
+		"MINOS_DIFF=" + diff,
+		"MINOS_ADAPTATION=" + forge.Adaptation,
+		"MINOS_SKILL=" + skill,
+		"MINOS_RUN_BODY=" + runBody,
+		"MINOS_BRIEFS=" + briefs,
+		"MINOS_BUILD_CMD=" + repo.Adaptation.Build,
+		"MINOS_TEST_CMD=" + repo.Adaptation.Test,
+		"MINOS_AUTO_MERGE=" + autoMerge,
+		"MINOS_CONFIG=" + cfg.Root,
+		"MINOS_UNIT=" + unitName,
 	}
 }

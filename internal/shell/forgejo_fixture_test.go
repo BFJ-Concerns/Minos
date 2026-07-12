@@ -35,7 +35,7 @@ func TestForgejo14FixturesNormaliseOccasions(t *testing.T) {
 			if facts.Occasion != occasion {
 				t.Fatalf("occasion = %q, want %q", facts.Occasion, occasion)
 			}
-			if facts.Owner != "pump19" || facts.Repo != "subject" || facts.PR == "" {
+			if facts.Owner != "minos-e2e-owner" || facts.Repo != "subject" || facts.PR == "" {
 				t.Fatalf("repo facts not normalised: %#v", facts)
 			}
 			if facts.HeadSHA == "" {
@@ -114,8 +114,8 @@ func runNormaliseEvent(t *testing.T, fixture webhookFixture) Facts {
 	cmd := exec.Command(script)
 	cmd.Stdin = bytes.NewBufferString(fixture.Body)
 	cmd.Env = append(os.Environ(),
-		"PUMP19_HEADER_X_FORGEJO_EVENT="+fixture.Headers["X-Forgejo-Event"],
-		"PUMP19_HEADER_X_GITEA_EVENT="+fixture.Headers["X-Gitea-Event"],
+		"MINOS_HEADER_X_FORGEJO_EVENT="+fixture.Headers["X-Forgejo-Event"],
+		"MINOS_HEADER_X_GITEA_EVENT="+fixture.Headers["X-Gitea-Event"],
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

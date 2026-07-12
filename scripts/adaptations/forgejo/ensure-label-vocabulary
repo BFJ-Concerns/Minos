@@ -36,11 +36,11 @@ ensure_label() {
   printf '%s\n' "$name" >>"$existing"
 }
 
-ensure_label "Reviewing" "#1f6feb" "Pump-19 review run in progress"
-ensure_label "Fixing" "#bf8700" "Pump-19 fix run in progress"
-ensure_label "Finishing" "#8250df" "Pump-19 finish run in progress"
-ensure_label "Repairing Flaky Tests" "#d4a72c" "Pump-19 flaky-test repair in progress"
-ensure_label "Converged" "#2da44e" "Pump-19 review converged"
+ensure_label "Reviewing" "#1f6feb" "Minos review run in progress"
+ensure_label "Fixing" "#bf8700" "Minos fix run in progress"
+ensure_label "Finishing" "#8250df" "Minos finish run in progress"
+ensure_label "Repairing Flaky Tests" "#d4a72c" "Minos flaky-test repair in progress"
+ensure_label "Converged" "#2da44e" "Minos review converged"
 ensure_label "Standing Findings" "#cf222e" "Verified material findings remain"
 ensure_label "Partial Coverage" "#fb8f44" "Review coverage is incomplete"
 ensure_label "Flaky Tests" "#d4a72c" "Flaky tests pause review convergence"

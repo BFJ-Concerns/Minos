@@ -51,15 +51,15 @@ func TestConvergenceFirstDispatchAtCapAndBlockedDrainFallback(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configRoot, "service.toml"), []byte(service), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	repo := "forge = \"local\"\nowner = \"pump19\"\nrepo = \"subject\"\n\n[adaptation]\nbuild = \"true\"\ntest = \"true\"\nskill = \"fixture\"\n\n[[trigger]]\nrun = \"review\"\non = [\"pr-opened\"]\nauthors = [\"*\"]\n"
-	if err := os.WriteFile(filepath.Join(configRoot, "repos", "local--pump19--subject.toml"), []byte(repo), 0o644); err != nil {
+	repo := "forge = \"local\"\nowner = \"minos\"\nrepo = \"subject\"\n\n[adaptation]\nbuild = \"true\"\ntest = \"true\"\nskill = \"fixture\"\n\n[[trigger]]\nrun = \"review\"\non = [\"pr-opened\"]\nauthors = [\"*\"]\n"
+	if err := os.WriteFile(filepath.Join(configRoot, "repos", "local--minos--subject.toml"), []byte(repo), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	writeScript(t, filepath.Join(adaptationDir, "list-open-prs"), `#!/usr/bin/env sh
 cat <<'EOF'
 OCCASION=reconcile
-OWNER=pump19
+OWNER=minos
 REPO=subject
 PR=2
 HEAD_SHA=bbbbbbbbbbbbbbbb
@@ -68,7 +68,7 @@ AUTHOR=bob
 DRAFT=false
 
 OCCASION=reconcile
-OWNER=pump19
+OWNER=minos
 REPO=subject
 PR=1
 HEAD_SHA=aaaaaaaaaaaaaaaa
@@ -80,14 +80,14 @@ EOF
 `)
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), `#!/usr/bin/env sh
 if [ "$3" = aaaaaaaaaaaaaaaa ]; then
-  printf '[{"id":7,"context":"pump19/fix","state":"success","creator":"Minos"}]\n'
+  printf '[{"id":7,"context":"minos/fix","state":"success","creator":"Minos"}]\n'
 else
   printf '[]\n'
 fi
 `)
 	writeScript(t, filepath.Join(adaptationDir, "list-reviews"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
 
-	drainFacts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "1", HeadSHA: "aaaaaaaaaaaaaaaa"}
+	drainFacts := Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "1", HeadSHA: "aaaaaaaaaaaaaaaa"}
 	terminalDir := RunDir(runs, drainFacts.Forge, drainFacts.Owner, drainFacts.Repo, drainFacts.PR, drainFacts.HeadSHA, RunReview) + ".retry-1"
 	if err := os.MkdirAll(terminalDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ fi
 		t.Fatal(err)
 	}
 	spawned := filepath.Join(root, "spawned")
-	writeScript(t, filepath.Join(fakeBin, "systemctl"), "#!/usr/bin/env sh\nif [ -s '"+spawned+"' ]; then printf 'pump19-run-fixture.service loaded active running fixture\\n'; fi\n")
+	writeScript(t, filepath.Join(fakeBin, "systemctl"), "#!/usr/bin/env sh\nif [ -s '"+spawned+"' ]; then printf 'minos-run-fixture.service loaded active running fixture\\n'; fi\n")
 	writeScript(t, filepath.Join(fakeBin, "systemd-run"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >>'"+spawned+"'\n")
 	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
 
@@ -119,7 +119,7 @@ fi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Index(string(logData), "terminal marker suppresses review for pump19/subject#1") > strings.Index(string(logData), "reconcile fires review for pump19/subject#2") {
+	if strings.Index(string(logData), "terminal marker suppresses review for minos/subject#1") > strings.Index(string(logData), "reconcile fires review for minos/subject#2") {
 		t.Fatalf("widen dispatch ran before higher-ranked blocked drain candidate:\n%s", logData)
 	}
 
@@ -203,7 +203,7 @@ func TestSweepDispatchRanksDrainBeforeWidenAndOldestAmongPeers(t *testing.T) {
 func TestRetryBackoffUsesFailureMarkerAcrossSweepPasses(t *testing.T) {
 	runDir := t.TempDir()
 	failureAt := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
-	data := "PUMP19_RETRYABLE_FAILURE=1\nPUMP19_FAILURE_AT=" + failureAt.Format(time.RFC3339Nano) + "\n"
+	data := "MINOS_RETRYABLE_FAILURE=1\nMINOS_FAILURE_AT=" + failureAt.Format(time.RFC3339Nano) + "\n"
 	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestFinishedMarkerOverridesFreshRunLogAtLivenessThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	finishedAt := time.Now().Add(-2 * time.Hour).UTC()
-	data := "PUMP19_FINISHED_VERSION=1\nPUMP19_FINISHED_AT=" + finishedAt.Format(time.RFC3339Nano) + "\n"
+	data := "MINOS_FINISHED_VERSION=1\nMINOS_FINISHED_AT=" + finishedAt.Format(time.RFC3339Nano) + "\n"
 	if err := os.WriteFile(filepath.Join(runDir, "finished.env"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -279,12 +279,12 @@ func TestSweepReapsFinishedUnitOnlyAfterLivenessThreshold(t *testing.T) {
 			cfg := ServiceConfig{}
 			cfg.Runs.Dir = filepath.Join(root, "runs")
 			cfg.Sweep.LivenessThreshold.Duration = time.Hour
-			facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "abcdef1234567890"}
+			facts := Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "42", HeadSHA: "abcdef1234567890"}
 			runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
 			if err := os.MkdirAll(runDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			meta := "PUMP19_HEAD_SHA=" + facts.HeadSHA + "\nPUMP19_STARTED_AT=" + tt.finishedAt.Add(-time.Minute).UTC().Format(time.RFC3339Nano) + "\nPUMP19_UNIT=pump19-run-fixture.service\n"
+			meta := "MINOS_HEAD_SHA=" + facts.HeadSHA + "\nMINOS_STARTED_AT=" + tt.finishedAt.Add(-time.Minute).UTC().Format(time.RFC3339Nano) + "\nMINOS_UNIT=minos-run-fixture.service\n"
 			if err := os.WriteFile(filepath.Join(runDir, "meta.env"), []byte(meta), 0o644); err != nil {
 				t.Fatal(err)
 			}

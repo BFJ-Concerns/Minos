@@ -1,6 +1,6 @@
 ---
-name: pump19-fix
-description: The procedure a Pump-19 fix session follows to work the verified material findings a review has already posted to a pull request — read the loop's state from the PR record, answer the findings with real source changes, land them as ordinary attributed commits on the head branch, and route a pass that fixes nothing back honestly. Use only as the procedure a fix run is launched with by the service; not a general-purpose skill. Composes over the general debugging skill for the craft of diagnosing and making each change; this skill owns only the service-loop procedure around it.
+name: minos-fix
+description: The procedure a Minos fix session follows to work the verified material findings a review has already posted to a pull request — read the loop's state from the PR record, answer the findings with real source changes, land them as ordinary attributed commits on the head branch, and route a pass that fixes nothing back honestly. Use only as the procedure a fix run is launched with by the service; not a general-purpose skill. Composes over the general debugging skill for the craft of diagnosing and making each change; this skill owns only the service-loop procedure around it.
 allowed-tools:
 - Bash
 - Read
@@ -10,7 +10,7 @@ allowed-tools:
 - Glob
 ---
 
-# Pump-19 fix
+# Minos fix
 
 You are one fix run in a review→fix→re-review loop. A review has already run,
 verified its findings independently, and posted the material ones to the pull

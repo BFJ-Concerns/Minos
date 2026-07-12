@@ -1,12 +1,12 @@
 [Unit]
-Description=Pump-19 Forgejo webhook receiver
-Documentation=file:/opt/pump19/docs/go-live.md
+Description=Minos Forgejo webhook receiver
+Documentation=file:/opt/minos/docs/go-live.md
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/pump19 receive --config /etc/pump19
+ExecStart=/usr/local/bin/minos receive --config /etc/minos
 Restart=on-failure
 RestartSec=5s
 UMask=0077

@@ -45,13 +45,13 @@ func InFlightLabel(kind RunKind) (string, error) {
 func StatusContext(kind RunKind) (string, error) {
 	switch kind {
 	case RunReview:
-		return "pump19/review", nil
+		return "minos/review", nil
 	case RunFix:
-		return "pump19/fix", nil
+		return "minos/fix", nil
 	case RunFinish:
-		return "pump19/finish", nil
+		return "minos/finish", nil
 	case RunFlaky:
-		return "pump19/flaky", nil
+		return "minos/flaky", nil
 	default:
 		return "", fmt.Errorf("unknown run kind %q", kind)
 	}

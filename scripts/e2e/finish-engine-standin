@@ -7,50 +7,50 @@ set -eu
 # no finish method; the gate is honest to the fixture's build/test commands and
 # the forge's mergeable fact, so a scenario is chosen by the fixture, not faked.
 
-: "${PUMP19_BIN:=pump19}"
-: "${PUMP19_CONFIG:?PUMP19_CONFIG is required}"
-: "${PUMP19_RUN_DIR:?PUMP19_RUN_DIR is required}"
+: "${MINOS_BIN:=minos}"
+: "${MINOS_CONFIG:?MINOS_CONFIG is required}"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 
-standin_model=${PUMP19_STANDIN_LEAD_MODEL:-claude-opus-pinned}
+standin_model=${MINOS_STANDIN_LEAD_MODEL:-claude-opus-pinned}
 printf '{"type":"system","subtype":"init","model":"%s"}\n' "$standin_model"
-cat >"$PUMP19_RUN_DIR/mission.received.md"
+cat >"$MINOS_RUN_DIR/mission.received.md"
 
-claim=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" begin)
+claim=$("$MINOS_BIN" run-guard --config "$MINOS_CONFIG" begin)
 case "$claim" in
   claimed) ;;
   yield-terminal|yield-head) printf '{"result":"%s"}\n' "$claim"; exit 0 ;;
   *) echo "unexpected run claim result: $claim" >&2; exit 2 ;;
 esac
 release() {
-  "$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" release >/dev/null
+  "$MINOS_BIN" run-guard --config "$MINOS_CONFIG" release >/dev/null
 }
 trap release EXIT HUP INT TERM
 
-while [ ! -s "$PUMP19_RUN_DIR/resolved-lead.json" ]; do
+while [ ! -s "$MINOS_RUN_DIR/resolved-lead.json" ]; do
   sleep 1
 done
-model=$(jq -r '.[0].resolved_model' "$PUMP19_RUN_DIR/resolved-lead.json")
+model=$(jq -r '.[0].resolved_model' "$MINOS_RUN_DIR/resolved-lead.json")
 
-facts="$PUMP19_RUN_DIR/pr-facts.txt"
-"$PUMP19_BIN" adapt get-pr-facts "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$facts"
+facts="$MINOS_RUN_DIR/pr-facts.txt"
+"$MINOS_BIN" adapt get-pr-facts "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" >"$facts"
 head_branch=$(sed -n 's/^HEAD_BRANCH=//p' "$facts")
 mergeable=$(sed -n 's/^MERGEABLE=//p' "$facts")
 
 # Eligibility: the service's OWN verdict for the current head, read from the
 # trailing marker of its posted reviews — not a forge review's state or author.
 # A review without the service marker (human commentary) never counts.
-"$PUMP19_BIN" adapt list-reviews "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$PUMP19_RUN_DIR/reviews.json"
+"$MINOS_BIN" adapt list-reviews "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" >"$MINOS_RUN_DIR/reviews.json"
 verdict=none
-count=$(jq 'length' "$PUMP19_RUN_DIR/reviews.json")
+count=$(jq 'length' "$MINOS_RUN_DIR/reviews.json")
 i=0
 while [ "$i" -lt "$count" ]; do
-  body=$(jq -r ".[$i].body // \"\"" "$PUMP19_RUN_DIR/reviews.json")
+  body=$(jq -r ".[$i].body // \"\"" "$MINOS_RUN_DIR/reviews.json")
   i=$((i + 1))
-  line=$(printf '%s\n' "$body" | grep '^Pump-19:' | tail -n1)
+  line=$(printf '%s\n' "$body" | grep '^Minos:' | tail -n1)
   [ -n "$line" ] || continue
-  parsed=$("$PUMP19_BIN" marker parse "$line" 2>/dev/null) || continue
+  parsed=$("$MINOS_BIN" marker parse "$line" 2>/dev/null) || continue
   [ "$(printf '%s' "$parsed" | jq -r '.run // ""')" = review ] || continue
-  [ "$(printf '%s' "$parsed" | jq -r '.head // ""')" = "$PUMP19_HEAD_SHA" ] || continue
+  [ "$(printf '%s' "$parsed" | jq -r '.head // ""')" = "$MINOS_HEAD_SHA" ] || continue
   verdict=$(printf '%s' "$parsed" | jq -r '.verdict // "none"')
 done
 
@@ -72,72 +72,72 @@ case "$verdict" in
   paused-flaky) eligibility_branch=paused-flaky ;;
   *) eligibility_branch=other ;;
 esac
-printf '%s\n' "$eligibility_branch" >"$PUMP19_RUN_DIR/eligibility-branch"
-current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
+printf '%s\n' "$eligibility_branch" >"$MINOS_RUN_DIR/eligibility-branch"
+current=$("$MINOS_BIN" run-guard --config "$MINOS_CONFIG" current)
 if [ "$current" != current ]; then
   finish refused not-current
-elif ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- \
-    git merge-base --is-ancestor "origin/$PUMP19_BASE_REF" HEAD; then
+elif ! "$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- \
+    git merge-base --is-ancestor "origin/$MINOS_BASE_REF" HEAD; then
   # This run still serves the current PR head, but main has moved. Land the
   # ordinary merge as a PR update and let the loop review the combined tree —
   # whatever the head's verdict.
-  "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- \
-    git merge --no-ff --no-commit "origin/$PUMP19_BASE_REF"
-  printf 'Sync %s into the finish head.\n' "$PUMP19_BASE_REF" >"$PUMP19_RUN_DIR/sync-message.txt"
-  sync_result=$("$PUMP19_BIN" adapt commit-push \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
-    "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
-    "$model" "$PUMP19_RUN_DIR/sync-message.txt")
+  "$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- \
+    git merge --no-ff --no-commit "origin/$MINOS_BASE_REF"
+  printf 'Sync %s into the finish head.\n' "$MINOS_BASE_REF" >"$MINOS_RUN_DIR/sync-message.txt"
+  sync_result=$("$MINOS_BIN" adapt commit-push \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" \
+    "$head_branch" "$MINOS_FIX_AUTHOR_NAME" "$MINOS_FIX_AUTHOR_EMAIL" \
+    "$model" "$MINOS_RUN_DIR/sync-message.txt")
   case "$sync_result" in
     landed\ *) finish refused review-pending ;;
     *) echo "unexpected base-sync commit-push token: $sync_result" >&2; exit 2 ;;
   esac
 elif [ "$eligibility_branch" != eligible ]; then
   finish refused not-eligible
-elif [ -n "${PUMP19_BUILD_CMD:-}" ] && ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_BUILD_CMD"; then
+elif [ -n "${MINOS_BUILD_CMD:-}" ] && ! "$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- sh -c "$MINOS_BUILD_CMD"; then
   finish refused build-failed
-elif [ -n "${PUMP19_TEST_CMD:-}" ] && ! "$PUMP19_BIN" ws-exec --config "$PUMP19_CONFIG" -- sh -c "$PUMP19_TEST_CMD"; then
+elif [ -n "${MINOS_TEST_CMD:-}" ] && ! "$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- sh -c "$MINOS_TEST_CMD"; then
   finish refused test-failed
-elif [ "${PUMP19_STANDIN_MAINTENANCE:-0}" = 1 ]; then
+elif [ "${MINOS_STANDIN_MAINTENANCE:-0}" = 1 ]; then
   # Maintenance changed the tree; it must be reviewed before it can merge.
-  printf 'maintenance by stand-in\n' >>"$PUMP19_WORKSPACE/file.txt"
-  printf 'Occasion maintenance.\n' >"$PUMP19_RUN_DIR/maint-message.txt"
-  "$PUMP19_BIN" adapt commit-push \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
-    "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
-    "$model" "$PUMP19_RUN_DIR/maint-message.txt" >/dev/null
+  printf 'maintenance by stand-in\n' >>"$MINOS_WORKSPACE/file.txt"
+  printf 'Occasion maintenance.\n' >"$MINOS_RUN_DIR/maint-message.txt"
+  "$MINOS_BIN" adapt commit-push \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" \
+    "$head_branch" "$MINOS_FIX_AUTHOR_NAME" "$MINOS_FIX_AUTHOR_EMAIL" \
+    "$model" "$MINOS_RUN_DIR/maint-message.txt" >/dev/null
   finish refused review-pending
 elif [ "$mergeable" != true ]; then
   finish refused not-mergeable
-elif ! "$PUMP19_BIN" adapt merge "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" merge >/dev/null 2>&1; then
+elif ! "$MINOS_BIN" adapt merge "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" merge >/dev/null 2>&1; then
   finish refused not-mergeable
 fi
 
 if [ "$outcome" = merged ]; then
-  marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome=merged run=finish)
+  marker=$("$MINOS_BIN" marker format head="$MINOS_HEAD_SHA" outcome=merged run=finish)
   status_state=success
 else
-  marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome=refused reason="$reason" run=finish)
+  marker=$("$MINOS_BIN" marker format head="$MINOS_HEAD_SHA" outcome=refused reason="$reason" run=finish)
   status_state=failure
 fi
 {
-  printf 'Pump-19 finish stand-in. Outcome: %s%s.\n\n' \
+  printf 'Minos finish stand-in. Outcome: %s%s.\n\n' \
 	"$outcome" "${reason:+ ($reason)}"
   printf '%s\n' "$marker"
-} >"$PUMP19_RUN_DIR/finish-summary.md"
+} >"$MINOS_RUN_DIR/finish-summary.md"
 
 if [ "$outcome" = merged ]; then
   # The finish label is consumed by the merge; a refused finish leaves it sticky
   # for the next attempt.
-  "$PUMP19_BIN" adapt remove-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" Ready >/dev/null
+  "$MINOS_BIN" adapt remove-label "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" Ready >/dev/null
   # A refusal is service process and posts nothing to the PR (operator ruling
   # 2026-07-11); only a completed merge earns the summary comment.
-  "$PUMP19_BIN" adapt post-comment \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_RUN_DIR/finish-summary.md" >/dev/null
+  "$MINOS_BIN" adapt post-comment \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" "$MINOS_RUN_DIR/finish-summary.md" >/dev/null
 fi
-"$PUMP19_BIN" adapt set-status \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
-  pump19/finish "$status_state" "Pump-19 finish: $outcome" >/dev/null
+"$MINOS_BIN" adapt set-status \
+  "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_HEAD_SHA" \
+  minos/finish "$status_state" "Minos finish: $outcome" >/dev/null
 
 printf '{"type":"assistant","message":{"model":"%s"}}\n' "$standin_model"
 printf '{"type":"result","subtype":"success","modelUsage":{"%s":{}}}\n' "$standin_model"

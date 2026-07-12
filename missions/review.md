@@ -1,9 +1,9 @@
-# Pump-19 review mission
+# Minos review mission
 
 Own one review run from claim to final forge state. Read the general skill at
-`$PUMP19_SKILL` in full and follow it. The skill owns review method, evidence
+`$MINOS_SKILL` in full and follow it. The skill owns review method, evidence
 standards, verification-before-posting, and the review-bar check. This mission
-supplies only Pump-19 service facts and publication mechanics.
+supplies only Minos service facts and publication mechanics.
 
 **Where the skill and this mission meet (composition contract).** The skill is
 a general skill; the surfaces below are bridged here and must be followed as
@@ -11,10 +11,10 @@ the mission says, not as the skill says:
 
 - **Enter the skill in the service's diff mode.** A service run reviews one pull
   request against its base, so drive the skill in its diff mode with the
-  service's own inputs: `$PUMP19_BASE_REF` as the diff base (passed to the
+  service's own inputs: `$MINOS_BASE_REF` as the diff base (passed to the
   skill's planning helper, never left to the skill's own base auto-detection),
-  `$PUMP19_BRIEFS` as the briefs path read from the trusted base as the
-  Integrity section directs, and `$PUMP19_OCCASION` as the occasion. Keep the
+  `$MINOS_BRIEFS` as the briefs path read from the trusted base as the
+  Integrity section directs, and `$MINOS_OCCASION` as the occasion. Keep the
   skill's standard aspects on and never skip its verification: a pull request
   with no `.review/` briefs still gets an ordinary full review — the standard
   aspects provide it — and every finding still clears the skill's independent
@@ -26,8 +26,8 @@ the mission says, not as the skill says:
   service role — rather than running the skill's own pull-request discovery (its
   `gh pr view` / `gh`-based lookup sections). There is no second source to
   reconcile against.
-- **Publish only through this mission's `pump19 adapt` path.** Post findings and
-  the review solely through the `pump19 adapt` commands below, because they
+- **Publish only through this mission's `minos adapt` path.** Post findings and
+  the review solely through the `minos adapt` commands below, because they
   select the configured forge and apply the service's credential boundary; no
   other forge-writing route is used, and the skill's own comment-posting
   machinery is not used here. The skill's mechanical helpers
@@ -37,9 +37,9 @@ the mission says, not as the skill says:
 - **Route the skill's pre-existing findings through the configured ingest
   adaptation, never to the PR.** The skill's diff mode marks findings the change
   did not introduce as `preexisting: true`. Write those findings as a JSON array
-  to `$PUMP19_RUN_DIR/preexisting-findings.json`; when the array is non-empty,
+  to `$MINOS_RUN_DIR/preexisting-findings.json`; when the array is non-empty,
   run
-  `pump19 adapt append-findings "$PUMP19_REPO" "$PUMP19_PR" "$PUMP19_RUN_DIR/preexisting-findings.json"`.
+  `minos adapt append-findings "$MINOS_REPO" "$MINOS_PR" "$MINOS_RUN_DIR/preexisting-findings.json"`.
   The adaptation appends them to the repository's configured find-ingest log;
   when no destination is configured it reports `unconfigured` and the run-dir
   file is the final sink. Ingest is best-effort: if the command fails, record
@@ -52,27 +52,27 @@ the mission says, not as the skill says:
 
 ## Run facts
 
-- `PUMP19_FORGE`, `PUMP19_OWNER`, `PUMP19_REPO_NAME`, and `PUMP19_PR` identify
+- `MINOS_FORGE`, `MINOS_OWNER`, `MINOS_REPO_NAME`, and `MINOS_PR` identify
   the pull request.
-- `PUMP19_HEAD_SHA` is the only head this run may serve.
-- `PUMP19_BASE_REF` is the base used for governing content and the diff.
-- `PUMP19_OCCASION` selects applicable briefs as the skill directs.
-- `PUMP19_WORKSPACE` is the prepared head checkout. Do not edit, commit, or
+- `MINOS_HEAD_SHA` is the only head this run may serve.
+- `MINOS_BASE_REF` is the base used for governing content and the diff.
+- `MINOS_OCCASION` selects applicable briefs as the skill directs.
+- `MINOS_WORKSPACE` is the prepared head checkout. Do not edit, commit, or
   intentionally rewrite tracked PR files. Run PR-controlled commands only
-  through `pump19 ws-exec --config "$PUMP19_CONFIG" …`. Transient build and
+  through `minos ws-exec --config "$MINOS_CONFIG" …`. Transient build and
   test artefacts in this disposable workspace are permitted.
-- `PUMP19_DIFF` is the prepared base-to-head diff.
-- `PUMP19_BRIEFS` names the subject repository's briefs path.
-- `PUMP19_AUTO_MERGE` is `true` only when repository policy authorises the
+- `MINOS_DIFF` is the prepared base-to-head diff.
+- `MINOS_BRIEFS` names the subject repository's briefs path.
+- `MINOS_AUTO_MERGE` is `true` only when repository policy authorises the
   service to apply the `Ready` finish label after convergence.
-- `PUMP19_RUN_DIR` holds writable session evidence. The wrapper captures
+- `MINOS_RUN_DIR` holds writable session evidence. The wrapper captures
   diagnostics in `run.log`; the sweep uses its activity as the liveness signal.
-- `pump19 adapt …` selects the configured forge adaptation from
-  `PUMP19_FORGE` and `PUMP19_CONFIG`, then invokes its trusted script with the
+- `minos adapt …` selects the configured forge adaptation from
+  `MINOS_FORGE` and `MINOS_CONFIG`, then invokes its trusted script with the
   dedicated forge credential.
-- `PUMP19_CONFIG` is the service configuration root.
+- `MINOS_CONFIG` is the service configuration root.
 
-`PUMP19_ENSEMBLE_LAUNCH`, `PUMP19_PINS`, and `PUMP19_REVIEW_SCRIPTS` are
+`MINOS_ENSEMBLE_LAUNCH`, `MINOS_PINS`, and `MINOS_REVIEW_SCRIPTS` are
 deployment-static paths. Invoke Ensemble as a tool while conducting the run;
 infrastructure has not invoked it for you.
 
@@ -85,28 +85,28 @@ their results directly, however long they take.
 
 ## Integrity and claim
 
-Run `$PUMP19_REVIEW_SCRIPTS/extract-governing` first. A non-zero exit is a run
+Run `$MINOS_REVIEW_SCRIPTS/extract-governing` first. A non-zero exit is a run
 failure: post no verdict and exit non-zero. The change is judged against two
 halves of one standard: the skill's standard aspects, fixed by the pinned
 skill, and the subject repository's own `.review/` briefs and root/per-directory
 guidance. Read every applicable brief and guidance file from the trusted base
-under `$PUMP19_RUN_DIR/governing`, so a pull request cannot rewrite the
+under `$MINOS_RUN_DIR/governing`, so a pull request cannot rewrite the
 repository-side standard it is judged against: its own head-side edits to review
 criteria are part of the diff under review, never criteria this run adopts. Do
 not read a head copy as governing content. A pull request that carries no briefs
 is still fully reviewed — the standard aspects are the other half of the
 standard, and they always run.
 
-Then run `pump19 run-guard --config "$PUMP19_CONFIG" begin`. A command failure
+Then run `minos run-guard --config "$MINOS_CONFIG" begin`. A command failure
 is a run failure. Continue only when it prints `claimed`; `yield-terminal` and
 `yield-head` mean exit successfully without writing anything to the forge.
 After `claimed`, run
-`pump19 run-guard --config "$PUMP19_CONFIG" release` on every controlled exit
+`minos run-guard --config "$MINOS_CONFIG" release` on every controlled exit
 path. Abrupt termination is recovered by the sweep. Release keeps `Reviewing`
 when a newer live review owns it.
 
 Immediately before every forge mutation (review, comment, label, or status),
-run `pump19 run-guard --config "$PUMP19_CONFIG" current`. If it prints `stale`,
+run `minos run-guard --config "$MINOS_CONFIG" current`. If it prints `stale`,
 a newer head has superseded this run: keep the current PR state unchanged, leave
 the unposted old-head output unwritten, use `release` as the only remaining
 forge write to relinquish the claim, and exit successfully. Content already
@@ -114,7 +114,7 @@ posted remains bound to its old head.
 
 ## Exact mechanical interfaces
 
-- `$PUMP19_REVIEW_SCRIPTS/changed-line-gate "$PUMP19_DIFF" PATH LINE` accepts
+- `$MINOS_REVIEW_SCRIPTS/changed-line-gate "$MINOS_DIFF" PATH LINE` accepts
   only a changed head-side line. This gate validates publication eligibility;
   it does not judge whether a finding is substantively valid. A verified
   change-introduced finding that the gate rejects is a run failure, never
@@ -122,27 +122,27 @@ posted remains bound to its old head.
   in the run evidence sink and route to the configured find-ingest log where
   present (see the composition contract), so the gate judges only findings the
   change introduced.
-- `$PUMP19_REVIEW_SCRIPTS/anchor-resolve "$PUMP19_DIFF" PATH LINE` writes
+- `$MINOS_REVIEW_SCRIPTS/anchor-resolve "$MINOS_DIFF" PATH LINE` writes
   `{"path":"…","old_position":0,"new_position":LINE}`.
-- `pump19 adapt list-review-comments OWNER REPO PR` writes a JSON array of
+- `minos adapt list-review-comments OWNER REPO PR` writes a JSON array of
   existing inline comments, including `id` and `body`.
-- `$PUMP19_REVIEW_SCRIPTS/dedupe` reads one JSON object on stdin:
+- `$MINOS_REVIEW_SCRIPTS/dedupe` reads one JSON object on stdin:
   `{"existing":[{"id":ID,"body":"…"}],"candidates":[{"finding":"F-XXXX"?,"path":"…","line":LINE,"priority":"P0|P1|P2|P3","body":"…"}]}`.
   It writes `{"updates":[…],"new":[…]}`. Reuse an existing handle only for
   the same still-present finding represented by that comment; otherwise omit
   `finding`. The script validates identity use but does not infer recurrence.
-- `$PUMP19_REVIEW_SCRIPTS/mint-handle EXISTING…` writes one fresh handle. Pass
+- `$MINOS_REVIEW_SCRIPTS/mint-handle EXISTING…` writes one fresh handle. Pass
   every existing handle and every handle minted earlier in this run.
-- `$PUMP19_REVIEW_SCRIPTS/mark format KEY=VALUE…` writes one sorted marker.
-- `pump19 adapt update-comment OWNER REPO COMMENT_ID BODY_FILE` updates one
+- `$MINOS_REVIEW_SCRIPTS/mark format KEY=VALUE…` writes one sorted marker.
+- `minos adapt update-comment OWNER REPO COMMENT_ID BODY_FILE` updates one
   recurring finding comment.
-- `pump19 adapt post-review OWNER REPO PR HEAD_SHA STATE BODY_FILE COMMENTS_FILE`
+- `minos adapt post-review OWNER REPO PR HEAD_SHA STATE BODY_FILE COMMENTS_FILE`
   posts one consolidated review. `STATE` is `APPROVE`, `REQUEST_CHANGES`, or
   `COMMENT`. `COMMENTS_FILE` is a JSON array of
   `{"path":"…","body":"…","old_position":0,"new_position":LINE}`.
-- Label mutations are `pump19 adapt add-label OWNER REPO PR LABEL` and
-  `pump19 adapt remove-label OWNER REPO PR LABEL`. The terminal status is
-  `pump19 adapt set-status OWNER REPO HEAD_SHA pump19/review STATE DESCRIPTION`.
+- Label mutations are `minos adapt add-label OWNER REPO PR LABEL` and
+  `minos adapt remove-label OWNER REPO PR LABEL`. The terminal status is
+  `minos adapt set-status OWNER REPO HEAD_SHA minos/review STATE DESCRIPTION`.
 
 ## Output contract
 
@@ -152,18 +152,18 @@ A test that appears to fail for reasons the pull request did not touch is a
 candidate flaky-test claim, not a code finding to chase. Put the claim through
 the skill's independent per-finding verification before changing forge state.
 When verification confirms it, apply `Flaky Tests` with
-`pump19 adapt add-label OWNER REPO PR "Flaky Tests"`; a rejected or uncertain
+`minos adapt add-label OWNER REPO PR "Flaky Tests"`; a rejected or uncertain
 claim changes nothing. Require `current` immediately before the label write.
 Apply a confirmed label before the fresh verdict facts read below so a clean
 review from this same run publishes `paused-flaky`, never an approval.
 
 Each finding comment ends with exactly one marker:
 
-`Pump-19: finding=F-XXXX head=FULL_SHA priority=P0|P1|P2|P3 run=review`
+`Minos: finding=F-XXXX head=FULL_SHA priority=P0|P1|P2|P3 run=review`
 
 The consolidated review ends with exactly one marker:
 
-`Pump-19: bar=passed|failed|degraded|not-run coverage=full|partial head=FULL_SHA run=review verdict=converged|standing-findings|partial-coverage|paused-flaky`
+`Minos: bar=passed|failed|degraded|not-run coverage=full|partial head=FULL_SHA run=review verdict=converged|standing-findings|partial-coverage|paused-flaky`
 
 Markers are machine state; the preceding review is ordinary prose for people.
 Record honest coverage in that prose. The converged tuples are
@@ -207,7 +207,7 @@ converge, with the degradation on the record — the same loudly-degraded path
 single-family verification walks, never an indefinite stall.
 
 Immediately before choosing a successful verdict, read current PR facts with
-`pump19 adapt get-pr-facts OWNER REPO PR`. If the review would otherwise
+`minos adapt get-pr-facts OWNER REPO PR`. If the review would otherwise
 publish a converged tuple and `LABELS` contains `Flaky Tests`, publish
 `verdict=paused-flaky` instead: the tuple's `bar` value and `coverage=full`
 unchanged, forge review state
@@ -218,7 +218,7 @@ convergence decision.
 
 Map successful verdicts as follows:
 
-| Verdict | Review state | Outcome label | `pump19/review` |
+| Verdict | Review state | Outcome label | `minos/review` |
 | --- | --- | --- | --- |
 | `converged` | `APPROVE` | `Converged` | `success` |
 | `standing-findings` | `REQUEST_CHANGES` | `Standing Findings` | `success` |
@@ -240,24 +240,24 @@ Publish a successful terminal result in this order:
    `Standing Findings`, and `Partial Coverage` labels. Add the mapped outcome
    label when there is one; `paused-flaky` and `bar-dissent` deliberately add
    none. Leave `Ready` untouched.
-5. Require `current`, then write the terminal `pump19/review=success` status.
-6. Only when the verdict is `converged` and `PUMP19_AUTO_MERGE=true`, re-read
-   current PR facts with `pump19 adapt get-pr-facts OWNER REPO PR` after the
+5. Require `current`, then write the terminal `minos/review=success` status.
+6. Only when the verdict is `converged` and `MINOS_AUTO_MERGE=true`, re-read
+   current PR facts with `minos adapt get-pr-facts OWNER REPO PR` after the
    terminal status write. If its `LABELS` contains `Flaky Tests`, do not apply
    `Ready`; the flaky-test pause owns the next move. Otherwise read the head's
-   combined CI state with `pump19 adapt get-statuses OWNER REPO HEAD_SHA`,
+   combined CI state with `minos adapt get-statuses OWNER REPO HEAD_SHA`,
    taking the newest status per context and ignoring the service's own
-   `pump19/…` contexts. If any remaining context is not `success`, defer
+   `minos/…` contexts. If any remaining context is not `success`, defer
    `Ready`: record the deferral in the run log and make no `Ready` write —
    the approving review and `Converged` stand, because they judge the change,
    not the pipeline, and the deferred label is applied when the head later
    reports green, by the status event or the sweep, never by this run. A
    deferral is still a successful terminal completion. When every remaining
    context is `success`, or none exist, require `current`, then apply `Ready`
-   with `pump19 adapt add-label OWNER REPO PR
+   with `minos adapt add-label OWNER REPO PR
    Ready`. This is deliberately the sole mutation after terminal success: a
    finish run triggered by the label can now observe both the complete head-matched
-   review marker and `pump19/review=success`. For every other verdict, and when
+   review marker and `minos/review=success`. For every other verdict, and when
    auto-merge is false, make no `Ready` read or write.
 7. Release `Reviewing`. A release failure after that terminal success is an
    operational clean-up failure: log it and leave the stale label for the
@@ -277,10 +277,10 @@ somewhere different:
 - **Deterministic causes** — missing wiring or configuration (an unset
   required variable, a missing skill or script), invalid inputs, anything a
   retry cannot change — latch: release the claim when one exists, run
-  `pump19 run-terminal --reason REASON` (a short lowercase code naming the
+  `minos run-terminal --reason REASON` (a short lowercase code naming the
   cause, such as `config-error`; `controlled-failure` when nothing more
   precise fits), then exit non-zero. The terminal marker holds the run until
-  an operator `pump19 re-arm`.
+  an operator `minos re-arm`.
 
 The split is what keeps failure loud: retries burned on a deterministic error
 are hours of silence, and a latch on a transient one is a stall nobody
@@ -289,7 +289,7 @@ simply no claim to release. If release itself fails, exit non-zero.
 Claim/release mutations are replay-safe and do not set the publication
 marker: whichever exit you chose, the wrapper retries only when no earlier
 substantive mutation was attempted and latches when one was.
-Operational diagnostics belong in the run log under `$PUMP19_RUN_DIR`, not in
+Operational diagnostics belong in the run log under `$MINOS_RUN_DIR`, not in
 PR comments or error statuses: the PR carries the outcome for people, the run
 directory carries the machinery's evidence. If a mutation before the terminal
 status fails after the review was posted, leave the partial forge record in
@@ -297,7 +297,7 @@ place; the internal marker records that terminal publication did not complete.
 If the later `Ready` apply fails, exit non-zero after controlled release; this
 is an operational failure, not successful post-terminal cleanup. The wrapper
 records the command failure in `run.log` but preserves the already-written
-`pump19/review=success` status; no finish
+`minos/review=success` status; no finish
 implication is triggered without the label. The current sweep cannot derive a missing
 `Ready` from that converged status, so automatic retry remains a bounded
 follow-up rather than a property this mission can provide.
@@ -306,9 +306,9 @@ follow-up rather than a property this mission can provide.
 
 The service pins file governs the **lead** — the accountable session's own
 model. The capture wrapper validates every model-bearing Claude `system/init`
-or `assistant` event against the lead pin in `$PUMP19_PINS` and writes the first
-validated engine record to `$PUMP19_RUN_DIR/resolved-lead.json`; the full audit
-stream is `$PUMP19_RUN_DIR/sessions/lead.jsonl`. Before any forge mutation,
+or `assistant` event against the lead pin in `$MINOS_PINS` and writes the first
+validated engine record to `$MINOS_RUN_DIR/resolved-lead.json`; the full audit
+stream is `$MINOS_RUN_DIR/sessions/lead.jsonl`. Before any forge mutation,
 require that lead file to exist and contain the lead pin ID. Its absence is a
 run failure; the served model differing from the lead pin is a loud run failure
 (post no verdict, release the claim when one exists, and exit non-zero so the
@@ -328,7 +328,7 @@ interlock. The pull request is the source of truth for what served
 (a landed fix carries its model in a commit trailer). Record the lead
 provenance row from `resolved-lead.json` (role, ID, requested engine and
 model, resolved model, family) and any best-effort worker models in the run
-evidence under `$PUMP19_RUN_DIR` — provenance belongs to the audit trail,
+evidence under `$MINOS_RUN_DIR` — provenance belongs to the audit trail,
 never to the posted review (operator ruling 2026-07-10; see the presentation
 rule below).
 
@@ -348,7 +348,7 @@ Concretely:
   step-by-step account of how the review was produced, no list of checks
   that passed, no panel or verification vocabulary.
 - **The one process artefact that stays is the single trailing marker
-  line** (`Pump-19: bar=… coverage=… head=… run=… verdict=…`) — machines
+  line** (`Minos: bar=… coverage=… head=… run=… verdict=…`) — machines
   read it; keep it exactly as specified in the output contract, as the last
   line, with nothing after it.
 
@@ -358,13 +358,13 @@ The synced `review-panel` skill is **final as delivered**; the composition
 contract bends service-side, settled by operator ruling (`maestro/gaps.md`,
 2026-07-10 composition-contract entry). The following are settled, not open:
 
-<!-- settled: review-panel is a SKILL.md read by path at $PUMP19_SKILL. -->
-<!-- settled: a service review run is review-panel's diff mode against $PUMP19_BASE_REF, with briefs from $PUMP19_BRIEFS and occasion from $PUMP19_OCCASION; the standard aspects stay on and verification is never skipped, so a PR with no .review/ briefs is an ordinary full review; the standard aspects provide it. -->
+<!-- settled: review-panel is a SKILL.md read by path at $MINOS_SKILL. -->
+<!-- settled: a service review run is review-panel's diff mode against $MINOS_BASE_REF, with briefs from $MINOS_BRIEFS and occasion from $MINOS_OCCASION; the standard aspects stay on and verification is never skipped, so a PR with no .review/ briefs is an ordinary full review; the standard aspects provide it. -->
 <!-- settled: PR context comes from this mission; the skill's gh-based discovery must not run (see the composition contract at the top). -->
 <!-- settled: review-panel legitimately retains gh-based PR discovery (its allowed-tools list gh pr view) for its general callers; a service run does not use it — the mission supplies PR context from the run environment, the permanent suppression, not a stopgap awaiting a Foundry change. -->
-<!-- settled: publication goes through this mission's `pump19 adapt` path; the skill's own comment-posting machinery is not used. -->
+<!-- settled: publication goes through this mission's `minos adapt` path; the skill's own comment-posting machinery is not used. -->
 <!-- settled: the skill's own mechanical scripts are the agent's to drive; they do not fail the contract. -->
-<!-- settled 2026-07-11: review-panel's preexisting:true findings record under $PUMP19_RUN_DIR and append to the repository's configured find-ingest log — never posted, never through the changed-line gate — while unconfigured repositories retain run-dir-only evidence and the posted review stays change-scoped. -->
+<!-- settled 2026-07-11: review-panel's preexisting:true findings record under $MINOS_RUN_DIR and append to the repository's configured find-ingest log — never posted, never through the changed-line gate — while unconfigured repositories retain run-dir-only evidence and the posted review stays change-scoped. -->
 <!-- settled: the service pins file governs the lead role only; the workflows carry their own worker engine/model pins. -->
 <!-- settled: worker provenance is best-effort session-log material — no resolved-workers.json, no pin mapping, no activation gate. -->
 <!-- settled: the lead early-stream pin interlock stands unchanged. -->

@@ -33,17 +33,17 @@ func RunTerminalCommand(args []string) error {
 		return err
 	}
 	if fs.NArg() != 0 || *reason == "" {
-		return fmt.Errorf("usage: pump19 run-terminal --reason REASON-CODE")
+		return fmt.Errorf("usage: minos run-terminal --reason REASON-CODE")
 	}
-	kind, err := ParseRunKind(os.Getenv("PUMP19_RUN_KIND"))
+	kind, err := ParseRunKind(os.Getenv("MINOS_RUN_KIND"))
 	if err != nil {
 		return err
 	}
-	runDir := os.Getenv("PUMP19_RUN_DIR")
+	runDir := os.Getenv("MINOS_RUN_DIR")
 	if runDir == "" {
-		return fmt.Errorf("PUMP19_RUN_DIR is required")
+		return fmt.Errorf("MINOS_RUN_DIR is required")
 	}
-	return writeTerminalMarker(runDir, kind, os.Getenv("PUMP19_HEAD_SHA"), *reason)
+	return writeTerminalMarker(runDir, kind, os.Getenv("MINOS_HEAD_SHA"), *reason)
 }
 
 func RearmCommand(args []string) error {
@@ -59,7 +59,7 @@ func RearmCommand(args []string) error {
 		return err
 	}
 	if fs.NArg() != 0 || !rearmIdentityPart.MatchString(*forge) || !rearmIdentityPart.MatchString(*owner) || !rearmIdentityPart.MatchString(*repo) || !rearmPR.MatchString(*pr) || !rearmIdentityPart.MatchString(*head) {
-		return fmt.Errorf("usage: pump19 re-arm --config ROOT --forge FORGE --owner OWNER --repo REPO --pr PR --head FULL-SHA --run RUN")
+		return fmt.Errorf("usage: minos re-arm --config ROOT --forge FORGE --owner OWNER --repo REPO --pr PR --head FULL-SHA --run RUN")
 	}
 	kind, err := ParseRunKind(*run)
 	if err != nil {
@@ -99,12 +99,12 @@ func writeTerminalMarker(runDir string, kind RunKind, headSHA, reason string) er
 		return fmt.Errorf("existing terminal marker is invalid: %w", err)
 	}
 	data := strings.Join([]string{
-		"PUMP19_TERMINAL_VERSION=1",
-		"PUMP19_RUN_KIND=" + string(kind),
-		"PUMP19_HEAD_SHA=" + headSHA,
-		"PUMP19_DISPOSITION=operational-error",
-		"PUMP19_REASON_CODE=" + reason,
-		"PUMP19_TERMINAL_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
+		"MINOS_TERMINAL_VERSION=1",
+		"MINOS_RUN_KIND=" + string(kind),
+		"MINOS_HEAD_SHA=" + headSHA,
+		"MINOS_DISPOSITION=operational-error",
+		"MINOS_REASON_CODE=" + reason,
+		"MINOS_TERMINAL_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
 	}, "\n") + "\n"
 	return atomicPublishFile(path, []byte(data), 0o644)
 }
@@ -114,25 +114,25 @@ func readTerminalMarker(runDir string) (terminalMarker, error) {
 	if err != nil {
 		return terminalMarker{}, err
 	}
-	if values["PUMP19_TERMINAL_VERSION"] != "1" {
+	if values["MINOS_TERMINAL_VERSION"] != "1" {
 		return terminalMarker{}, fmt.Errorf("unsupported terminal marker version")
 	}
-	kind, err := ParseRunKind(values["PUMP19_RUN_KIND"])
+	kind, err := ParseRunKind(values["MINOS_RUN_KIND"])
 	if err != nil {
 		return terminalMarker{}, err
 	}
-	if values["PUMP19_HEAD_SHA"] == "" || values["PUMP19_DISPOSITION"] != "operational-error" || !terminalReason.MatchString(values["PUMP19_REASON_CODE"]) {
+	if values["MINOS_HEAD_SHA"] == "" || values["MINOS_DISPOSITION"] != "operational-error" || !terminalReason.MatchString(values["MINOS_REASON_CODE"]) {
 		return terminalMarker{}, fmt.Errorf("invalid terminal marker fields")
 	}
-	at, err := time.Parse(time.RFC3339Nano, values["PUMP19_TERMINAL_AT"])
+	at, err := time.Parse(time.RFC3339Nano, values["MINOS_TERMINAL_AT"])
 	if err != nil {
 		return terminalMarker{}, fmt.Errorf("parse terminal timestamp: %w", err)
 	}
 	return terminalMarker{
 		RunKind:     kind,
-		HeadSHA:     values["PUMP19_HEAD_SHA"],
-		Disposition: values["PUMP19_DISPOSITION"],
-		Reason:      values["PUMP19_REASON_CODE"],
+		HeadSHA:     values["MINOS_HEAD_SHA"],
+		Disposition: values["MINOS_DISPOSITION"],
+		Reason:      values["MINOS_REASON_CODE"],
 		Timestamp:   at,
 	}, nil
 }
@@ -148,16 +148,16 @@ func writeForgeWritesAttempted(runDir, operation string) error {
 		return err
 	}
 	data := strings.Join([]string{
-		"PUMP19_FORGE_WRITE_ATTEMPTED=1",
-		"PUMP19_FORGE_OPERATION=" + operation,
-		"PUMP19_FORGE_WRITE_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
+		"MINOS_FORGE_WRITE_ATTEMPTED=1",
+		"MINOS_FORGE_OPERATION=" + operation,
+		"MINOS_FORGE_WRITE_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
 	}, "\n") + "\n"
 	return atomicPublishFile(path, []byte(data), 0o644)
 }
 
 func hasForgeWritesAttempted(runDir string) bool {
 	values, err := readMetaFile(filepath.Join(runDir, forgeWritesAttemptedFile))
-	return err == nil && values["PUMP19_FORGE_WRITE_ATTEMPTED"] == "1"
+	return err == nil && values["MINOS_FORGE_WRITE_ATTEMPTED"] == "1"
 }
 
 // atomicPublishFile publishes a complete, synced file without replacing a

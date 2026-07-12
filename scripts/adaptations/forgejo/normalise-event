@@ -2,7 +2,7 @@
 set -eu
 
 payload="$(cat)"
-event="${PUMP19_HEADER_X_FORGEJO_EVENT:-${PUMP19_HEADER_X_GITEA_EVENT:-}}"
+event="${MINOS_HEADER_X_FORGEJO_EVENT:-${MINOS_HEADER_X_GITEA_EVENT:-}}"
 
 action="$(printf '%s' "$payload" | jq -r '.action // ""')"
 owner="$(printf '%s' "$payload" | jq -r '.repository.owner.login // .repository.owner.username // .repository.owner.name // ""')"

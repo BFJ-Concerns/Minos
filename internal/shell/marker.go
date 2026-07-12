@@ -7,13 +7,13 @@ import (
 	"strings"
 )
 
-var markerLine = regexp.MustCompile(`^Pump-19:( [a-z][a-z0-9-]*=[A-Za-z0-9._/@-]+)+$`)
+var markerLine = regexp.MustCompile(`^Minos:( [a-z][a-z0-9-]*=[A-Za-z0-9._/@-]+)+$`)
 
 func ParseMarker(line string) (map[string]string, error) {
 	if !markerLine.MatchString(line) {
 		return nil, fmt.Errorf("invalid marker line")
 	}
-	fields := strings.Fields(strings.TrimPrefix(line, "Pump-19:"))
+	fields := strings.Fields(strings.TrimPrefix(line, "Minos:"))
 	values := make(map[string]string, len(fields))
 	for _, field := range fields {
 		key, value, _ := strings.Cut(field, "=")
@@ -35,7 +35,7 @@ func FormatMarker(values map[string]string) (string, error) {
 	}
 	sort.Strings(keys)
 	var b strings.Builder
-	b.WriteString("Pump-19:")
+	b.WriteString("Minos:")
 	for _, key := range keys {
 		b.WriteByte(' ')
 		b.WriteString(key)

@@ -15,7 +15,7 @@ Thumbs.db
 target/
 
 # Go build artefacts
-/pump19
+/minos
 
 # Claude Code runtime state (the rest of .claude/ is deliberately committable)
 .claude/scheduled_tasks.lock

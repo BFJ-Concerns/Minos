@@ -67,7 +67,7 @@ func TestSweepReleasesEyesBeforeStageLabelOnEveryLabelledClaimRecovery(t *testin
 				}
 				writeRunMeta(t, runDir, "abcdef1234567890", time.Now().Add(-2*time.Hour))
 				writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
-				if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("MINOS_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -95,7 +95,7 @@ func TestSweepReleasesEyesBeforeStageLabelOnEveryLabelledClaimRecovery(t *testin
 			cfg.Sweep.LivenessThreshold.Duration = time.Hour
 			facts := Facts{
 				Forge:   "local",
-				Owner:   "pump19",
+				Owner:   "minos",
 				Repo:    "subject",
 				PR:      "42",
 				HeadSHA: "abcdef1234567890",
@@ -145,15 +145,15 @@ func TestGuardsPassUsesStateDerivedActor(t *testing.T) {
 	drafts := false
 	repo := RepoConfig{Triggers: []TriggerRule{{
 		Run:    "fix",
-		Actors: []string{"pump19"},
+		Actors: []string{"minos"},
 		Drafts: &drafts,
 	}}}
 	facts := Facts{Draft: false}
-	if !guardsPass(repo, RunFix, facts, "pump19") {
+	if !guardsPass(repo, RunFix, facts, "minos") {
 		t.Fatal("expected state-derived actor to satisfy fix guard")
 	}
 	if guardsPass(repo, RunFix, facts, "bob") {
-		t.Fatal("unexpected human actor satisfying pump19-only fix guard")
+		t.Fatal("unexpected human actor satisfying minos-only fix guard")
 	}
 }
 
@@ -170,8 +170,8 @@ func TestSweepSuppressesLatchedHeadButNewHeadRuns(t *testing.T) {
 	}
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
 	cfg.Forges = map[string]ForgeConfig{"local": {Adaptation: adaptationDir}}
-	repo := RepoConfig{Forge: "local", Owner: "pump19", Repo: "subject", Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}}}}
-	latched := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "aaaaaaaaaaaaaaaa", Author: "alice"}
+	repo := RepoConfig{Forge: "local", Owner: "minos", Repo: "subject", Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}}}}
+	latched := Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "42", HeadSHA: "aaaaaaaaaaaaaaaa", Author: "alice"}
 	evidence := RunDir(cfg.Runs.Dir, latched.Forge, latched.Owner, latched.Repo, latched.PR, latched.HeadSHA, RunReview) + ".retry-5"
 	if err := os.MkdirAll(evidence, 0o755); err != nil {
 		t.Fatal(err)
@@ -222,20 +222,20 @@ func TestRetryWaveHonoursCapacityWithoutBurningDeferredAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	installAdmissionCommands(t, root, `
-count=$(cat "$PUMP19_TEST_ACTIVE_COUNT")
+count=$(cat "$MINOS_TEST_ACTIVE_COUNT")
 i=0
 while [ "$i" -lt "$count" ]; do
-  printf 'pump19-run-%s.service loaded active running live\n' "$i"
+  printf 'minos-run-%s.service loaded active running live\n' "$i"
   i=$((i + 1))
 done
 `, `
-count=$(cat "$PUMP19_TEST_ACTIVE_COUNT")
+count=$(cat "$MINOS_TEST_ACTIVE_COUNT")
 count=$((count + 1))
-printf '%s\n' "$count" >"$PUMP19_TEST_ACTIVE_COUNT"
-printf 'spawned\n' >>"$PUMP19_TEST_SPAWNED"
+printf '%s\n' "$count" >"$MINOS_TEST_ACTIVE_COUNT"
+printf 'spawned\n' >>"$MINOS_TEST_SPAWNED"
 `)
-	t.Setenv("PUMP19_TEST_ACTIVE_COUNT", activeCount)
-	t.Setenv("PUMP19_TEST_SPAWNED", spawned)
+	t.Setenv("MINOS_TEST_ACTIVE_COUNT", activeCount)
+	t.Setenv("MINOS_TEST_SPAWNED", spawned)
 
 	cfg := ServiceConfig{Root: root}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
@@ -249,7 +249,7 @@ printf 'spawned\n' >>"$PUMP19_TEST_SPAWNED"
 	writeScript(t, filepath.Join(adaptationDir, "remove-reaction"), "#!/usr/bin/env sh\nexit 0\n")
 	writeScript(t, filepath.Join(adaptationDir, "remove-label"), "#!/usr/bin/env sh\nexit 0\n")
 	cfg.Forges = map[string]ForgeConfig{"local": {Adaptation: adaptationDir}}
-	repo := RepoConfig{Forge: "local", Owner: "pump19", Repo: "subject", Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}}}}
+	repo := RepoConfig{Forge: "local", Owner: "minos", Repo: "subject", Triggers: []TriggerRule{{Run: "review", Authors: []string{"*"}}}}
 	logPath := filepath.Join(root, "sweep.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -260,7 +260,7 @@ printf 'spawned\n' >>"$PUMP19_TEST_SPAWNED"
 	var factsByRun []Facts
 	for index, sha := range []string{"aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "cccccccccccccccc"} {
 		facts := Facts{
-			Forge: "local", Owner: "pump19", Repo: "subject", PR: string(rune('1' + index)),
+			Forge: "local", Owner: "minos", Repo: "subject", PR: string(rune('1' + index)),
 			HeadSHA: sha, Author: "alice", Labels: []string{LabelReviewing},
 		}
 		factsByRun = append(factsByRun, facts)
@@ -271,7 +271,7 @@ printf 'spawned\n' >>"$PUMP19_TEST_SPAWNED"
 		}
 		writeRunMeta(t, runDir, sha, time.Now().Add(-2*time.Hour))
 		writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
-		if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("MINOS_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if err := sweepPR(t.Context(), cfg, repo, Adaptation{Dir: adaptationDir}, facts, logFile); err != nil {
@@ -305,7 +305,7 @@ printf 'spawned\n' >>"$PUMP19_TEST_SPAWNED"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "deferred review for pump19/subject#3 capacity=2") {
+	if !strings.Contains(string(logData), "deferred review for minos/subject#3 capacity=2") {
 		t.Fatalf("sweep log lacks capacity deferral:\n%s", logData)
 	}
 
@@ -555,7 +555,7 @@ func TestRetryableFailureReleasePreservesBoundedEvidence(t *testing.T) {
 	}
 	writeRunMetaWithWorkspace(t, runDir, facts.HeadSHA, time.Now().Add(-2*time.Hour), workspace)
 	writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
-	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("MINOS_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
@@ -622,14 +622,14 @@ func TestRetryableFailurePreservesEveryAttemptWithoutExhaustionLatch(t *testing.
 	}
 	writeRunMeta(t, runDir, facts.HeadSHA, time.Now().Add(-2*time.Hour))
 	writeQuietRunLog(t, runDir, time.Now().Add(-2*time.Hour))
-	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\nPUMP19_FAILURE_AT=2026-07-11T09:00:00Z\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("MINOS_RETRYABLE_FAILURE=1\nMINOS_FAILURE_AT=2026-07-11T09:00:00Z\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	retryDir := runDir + ".retry-1"
 	if err := os.MkdirAll(retryDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(retryDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(retryDir, "retry.env"), []byte("MINOS_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
@@ -725,7 +725,7 @@ func TestUnreadableRunMetaSkipsOnlyThatClaim(t *testing.T) {
 		}
 		writeQuietRunLog(t, dir, time.Now().Add(-2*time.Hour))
 	}
-	if err := os.WriteFile(filepath.Join(badRun, "meta.env"), []byte("PUMP19_STARTED_AT=plainly-not-a-time\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(badRun, "meta.env"), []byte("MINOS_STARTED_AT=plainly-not-a-time\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeRunMeta(t, goodRun, facts.HeadSHA, time.Now().Add(-2*time.Hour))
@@ -762,9 +762,9 @@ func writeRunMeta(t *testing.T, runDir, headSHA string, startedAt time.Time) {
 
 func writeRunMetaWithWorkspace(t *testing.T, runDir, headSHA string, startedAt time.Time, workspace string) {
 	t.Helper()
-	data := "PUMP19_HEAD_SHA=" + headSHA + "\nPUMP19_STARTED_AT=" + startedAt.UTC().Format(time.RFC3339Nano) + "\n"
+	data := "MINOS_HEAD_SHA=" + headSHA + "\nMINOS_STARTED_AT=" + startedAt.UTC().Format(time.RFC3339Nano) + "\n"
 	if workspace != "" {
-		data += "PUMP19_WORKSPACE=" + workspace + "\n"
+		data += "MINOS_WORKSPACE=" + workspace + "\n"
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "meta.env"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
