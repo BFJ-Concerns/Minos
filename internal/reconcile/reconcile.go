@@ -90,7 +90,7 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 		if now.Sub(view.Lease.HeartbeatAt) < view.LivenessWindow {
 			return Decision{Kind: Live, Reason: "current lease heartbeat is live"}
 		}
-		if reason, served := terminalServed(snapshot); served {
+		if reason, served := productServed(snapshot); served {
 			return Decision{Kind: Reap, Reason: reason}
 		}
 		return Decision{Kind: Replace, Reason: "lease heartbeat is stale"}
@@ -114,24 +114,14 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 		}
 		return Decision{Kind: Admit, Reason: "wait fingerprint changed or failsafe expired"}
 	}
-	servedPair := productPairServed(snapshot)
-	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == PermissionBlock {
-		governingCurrent := snapshot.ProductBlockKnown && snapshot.ProductBlockIdentity == BlockReentryIdentity(snapshot)
-		if servedPair && governingCurrent {
-			return Decision{Kind: Nothing, Reason: "permission or policy block remains current"}
-		}
-		return Decision{Kind: Admit, Reason: "permission readiness or trusted policy changed"}
-	}
 	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == "" {
 		return Decision{Kind: Admit, Reason: "blocked result has no authoritative re-entry discriminator"}
 	}
-	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == FindingBlock {
-		if servedPair {
-			return Decision{Kind: Nothing, Reason: "unchanged head and target were already served"}
-		}
-	}
-	if reason, served := terminalServed(snapshot); served {
+	if reason, served := productServed(snapshot); served {
 		return Decision{Kind: Nothing, Reason: reason}
+	}
+	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == PermissionBlock {
+		return Decision{Kind: Admit, Reason: "permission readiness or trusted policy changed"}
 	}
 	if snapshot.Product == product.Merged() {
 		return Decision{Kind: Nothing, Reason: "pull request is already merged"}
@@ -143,9 +133,15 @@ func productPairServed(snapshot ForgeSnapshot) bool {
 	return snapshot.ProductHead == snapshot.HeadSHA && snapshot.ProductTarget != "" && snapshot.ProductTarget == snapshot.TargetSHA
 }
 
-func terminalServed(snapshot ForgeSnapshot) (string, bool) {
+func productServed(snapshot ForgeSnapshot) (string, bool) {
 	if !productPairServed(snapshot) {
 		return "", false
+	}
+	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == FindingBlock {
+		return "unchanged head and target were already served", true
+	}
+	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == PermissionBlock && snapshot.ProductBlockKnown && snapshot.ProductBlockIdentity == BlockReentryIdentity(snapshot) {
+		return "permission or policy block remains current", true
 	}
 	if snapshot.Product == product.Stopped() || snapshot.Product == product.Partial() {
 		return "unchanged head and target were already served", true
