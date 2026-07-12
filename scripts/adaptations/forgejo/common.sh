@@ -37,7 +37,11 @@ api_with_status() {
     return 0
   fi
   rm -f "$api_status_file"
+  # Callers consume these shared status fields after this sourced function
+  # returns; ShellCheck cannot see those reads while analysing the library.
+  # shellcheck disable=SC2034
   api_status_code=""
+  # shellcheck disable=SC2034
   api_status_body=""
   return 1
 }
@@ -106,6 +110,8 @@ guard_open_pull_request() {
     return 1
   fi
   if [ "$guard_actual_target" != "$guard_expected_target" ]; then
+    # The guarded caller reports this shared rejection reason.
+    # shellcheck disable=SC2034
     guard_reason="target moved"
     return 1
   fi

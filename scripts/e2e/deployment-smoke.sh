@@ -5,6 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="${MINOS_DEPLOYMENT_SMOKE_DIR:-$(mktemp -d)}"
 source "$root/scripts/e2e/resources.sh"
 declare -a MINOS_E2E_RESOURCE_LOCK_FDS=()
+port=""
 minos_e2e_claim_single_port port "${MINOS_DEPLOYMENT_SMOKE_PORT:-}"
 receiver_pid=""
 
