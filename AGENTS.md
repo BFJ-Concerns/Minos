@@ -21,7 +21,7 @@ intent artifact, the missing-seam meta-oracle, the provable (SMT) layer — is t
 ## The commission is the contract — start there
 
 Planning, intent, design, and the find/issue logs live in the sibling annexe
-`../Pump-19-Annexe`; its `README.md` is the **commission** — the single source of
+`../Minos-Annexe`; its `README.md` is the **commission** — the single source of
 truth for what Pump-19 must do and guarantee, with the full constraints,
 decisions, and glossary. Read it before writing code here. It was corrected
 2026-07-08 and again 2026-07-10 within one containment episode; while a root
