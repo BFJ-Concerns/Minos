@@ -153,6 +153,19 @@ Because their producer is Codex, the checker gate sends them to Claude
 checkers — the family opposite the producer, mirroring how the panel's
 Claude-produced findings go to Codex checkers.
 
+The leg's coverage joins the account honestly as its own category: the CLI
+returns only a verdict and its findings — never the files-read/commands-run
+trail an agent reviewer's clean-review note carries — so `merge_codex_review.py`
+records the leg as an `external-verdict` coverage entry (`method:
+"external-cli"`, carrying the verdict and the mapped-findings count), never
+reviewer-method `full`. The bar judges that named entry on verdict-honesty —
+that it represents itself as an external verdict and nothing more, and that its
+leg-attributed findings reconcile with the recorded mapped count — rather than
+on an evidence trail the CLI structurally cannot emit. Extent and source
+faithfulness are the run and merge scripts' mechanical guarantees, covered by
+their tests, not the judge's to re-establish; every agent reviewer stays held
+to the full coverage discipline.
+
 The leg runs on every diff-mode run by default, and is selectable and
 excludable like any concern: name it as `codex-review` to run it alone, or
 pass `--no-codex` to leave it out. The planner skips it — recorded and
@@ -671,7 +684,9 @@ blocked it rather than engineering around it silently.
      CLI error that caused it.
    - **The Codex leg's verdict**: when the leg ran, its `reviews` entry's
      notes carry Codex's overall verdict on the patch — include that verdict
-     in the run summary alongside the panel's own results.
+     in the run summary alongside the panel's own results. Its coverage entry
+     reads `status: external-verdict` (not `full`): report it as the external
+     tool's verdict, not as a fully-evidenced reviewer pass.
    - **Verification**: report the `verification` record — findings checked, the
      achieved engine pairing, any degradation — plus what the gates removed:
      `suppressed_by_validator` and `suppressed_by_checkers` (count and one line
