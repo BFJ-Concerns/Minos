@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Integration harness for the coverage-record-to-bar seam. Runs the real
-// (service-consumed) verify_workflow.js over a prepared verify-input.json, with
-// the model boundary stubbed, and prints the workflow's result JSON to stdout.
-// This exercises the actual workflow code Minos runs — not a reimplementation —
-// so a Go test can assert the mechanical coverage gate deterministically.
+// Integration harness for the coverage seam. Runs the real (service-consumed)
+// verify_workflow.js over a prepared verify-input.json, with the model boundary
+// stubbed, and prints { result, bar_prompt } to stdout: the workflow's returned
+// report, plus the exact prompt the bar judge received (or null if the bar did
+// not run). Capturing the prompt lets the Go test assert on the material the bar
+// actually saw — the inspection record's own entries, not merely a non-empty
+// field. This exercises the actual workflow code Minos runs, not a reimplementation.
 //
 //   node verify_workflow_harness.mjs <verify_workflow.js> <verify-input.json> <bar-verdict>
 //
@@ -40,6 +42,7 @@ const parallel = async (thunks) => {
   return out
 }
 
+let capturedBarPrompt = null
 const agent = async (prompt, opts) => {
   if (barVerdict === 'none') {
     throw new Error(`unexpected agent call (${opts && opts.label}); the deterministic path runs no model`)
@@ -47,6 +50,7 @@ const agent = async (prompt, opts) => {
   if (!opts || opts.label !== 'bar-check') {
     throw new Error(`unexpected non-bar agent call: ${opts && opts.label}`)
   }
+  capturedBarPrompt = prompt
   return { verdict: barVerdict, reasons: [], implicated_briefs: [] }
 }
 
@@ -67,4 +71,4 @@ const result = await body(
   [],
 )
 
-process.stdout.write(JSON.stringify(result))
+process.stdout.write(JSON.stringify({ result, bar_prompt: capturedBarPrompt }))
