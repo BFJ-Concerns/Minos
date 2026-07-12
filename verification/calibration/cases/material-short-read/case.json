@@ -1,0 +1,27 @@
+{
+  "id": "material-short-read",
+  "summary": "A packet reader starts accepting a short read as a complete payload.",
+  "tags": ["correctness", "historical-regression"],
+  "expected_review": "request-changes",
+  "expected_product_state": "blocked",
+  "coverage": "complete",
+  "omitted_paths": [],
+  "findings": [
+    {
+      "id": "accepts-short-payload",
+      "priority": "P1",
+      "material": true,
+      "path": "packet.go",
+      "line": 7,
+      "anchor": "reader.Read(payload)",
+      "trigger": "A reader may return fewer bytes than requested with a nil error, leaving the returned payload silently truncated or zero-filled."
+    }
+  ],
+  "suppressed_concerns": [],
+  "repair": {
+    "tree": "repair",
+    "resolves": ["accepts-short-payload"],
+    "expected_review": "approve",
+    "expected_product_state": "clean"
+  }
+}
