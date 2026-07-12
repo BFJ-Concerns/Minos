@@ -74,10 +74,14 @@ head and target you observed.
 - **Guard every consequential mutation.** Immediately before any forge write
   that matters — a status, a review, a repair or sync push, a merge, a branch
   deletion — re-check that your attempt token still owns the lease and that the
-  head and target are still the ones you are acting against. If ownership has
-  passed or the head has moved, your unpublished output is stale: discard it,
-  relinquish the lease, and exit. A stale attempt never overwrites a live one's
-  work.
+  head and target are still the ones you are acting against. If the head has
+  moved but you still hold the lease, your unpublished output is stale: discard it
+  and take the common exit close (remove the eyes reaction first, then release the
+  lease strictly last — step 9). If ownership has already passed to a live
+  successor, the eyes and the lease are no longer yours to manage: discard your
+  output and relinquish only your own stale claim, leaving the live owner's
+  presence untouched. A stale attempt never overwrites a live one's work, and it
+  never inverts the eyes-first, lease-last order on an exit it still owns.
 - **Renew** is not yours to call: the launch wrapper renews the heartbeat from
   the containment cgroup while you are alive, including across long synchronous
   commands. You never add an arbitrary timeout of your own — pacing is yours,
@@ -493,15 +497,18 @@ rules are in `failure-taxonomy.md`. In brief:
   degrade a fan-out) without ending the run. Ensemble's own retry and graceful
   degradation own most of this.
 - **Retryable exit (transient)** — host capacity, engine or model-backend
-  availability, anything a later attempt could find changed. Relinquish the
-  lease, write no product/terminal failure to the PR, and exit so reconciliation
-  and the ledger's backoff start a fresh successor. Operational failure is not
-  a product state and writes nothing to the PR: an errored head looks like a
-  never-run head, and the sweep reconciles it, paced by the ledger's backoff.
+  availability, anything a later attempt could find changed. Write no
+  product/terminal failure to the PR, then take the common exit close (step 9):
+  remove the eyes reaction first, release the lease strictly last, and exit so
+  reconciliation and the ledger's backoff start a fresh successor. Operational
+  failure is not a product state and writes nothing to the PR: an errored head
+  looks like a never-run head, and the sweep reconciles it, paced by the ledger's
+  backoff.
 - **Terminal-configuration failure** — missing wiring, invalid inputs, a lead or
   worker pin mismatch: a retry cannot change it, so it must not burn the retry
-  ladder. Raise the deduplicated deployment incident and take the lane the
-  taxonomy names; do not silently retry it into hours of waste.
+  ladder. Raise the deduplicated deployment incident, then take the same common
+  exit close (eyes off first, lease released strictly last); do not silently
+  retry it into hours of waste. The taxonomy names the lane in full.
 
 Whichever lane, the diagnostic *why* goes to the deployment log and the incident,
 never to the PR — and that a failure is visible to the operator is not

@@ -42,10 +42,12 @@ in-run:
 
 Take the retryable-exit lane:
 
-1. Relinquish the lease (and let the eyes reaction come off with your exit).
-2. Write **no** product-state failure and **no** terminal marker to the PR — an
+1. Write **no** product-state failure and **no** terminal marker to the PR — an
    operational failure is not a product state. The head is left looking exactly
    like a never-run head.
+2. Close exactly as every controlled exit closes (`lifecycle.md` step 9):
+   **remove the eyes reaction first, then release the lease strictly last** — the
+   order never inverts, on a failure exit any more than on a product exit.
 3. Exit so that reconciliation re-derives and a fresh successor attempts the
    remaining journey.
 
@@ -76,9 +78,11 @@ These must **not** burn the retry ladder: retrying a deterministic failure just
 spends attempts on a fault no attempt can fix, turning a loud problem into hours
 of silence. Take the terminal lane:
 
-1. Relinquish the lease.
-2. Raise the deduplicated deployment incident with the diagnostic-log location
+1. Raise the deduplicated deployment incident with the diagnostic-log location
    (no secrets), so the failure is loud to the operator.
+2. Close exactly as every controlled exit closes (`lifecycle.md` step 9):
+   **remove the eyes reaction first, then release the lease strictly last** — the
+   order never inverts on a terminal-configuration exit either.
 3. Do not re-enter the ordinary transient backoff as though a later attempt
    would differ. The recovery is an operator's — fix the wiring, correct the
    pin, restore the credential — after which readiness preflight and the
