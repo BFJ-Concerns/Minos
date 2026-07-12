@@ -46,15 +46,17 @@ shape:
     "commit": "full base or head commit ID",
     "blob": "immutable blob ID from the inventory",
     "line": 27,
-    "name": "FunctionName"
+    "name": "FunctionName",
+    "line_text": "func FunctionName() error {"
   }]
 }
 ```
 
 References may be `definition` or `call_site`, and may point to unchanged files.
 The script verifies that the path resolves to the claimed blob at the stated
-base or head commit and that the named location exists on the stated line. It
-does not infer program semantics from the name.
+base or head commit, that `line_text` exactly matches the stated line, and that
+`name` occurs there as a complete identifier rather than a substring of another
+identifier. It does not infer program semantics from the name.
 
 ## Worker model admission
 
@@ -79,15 +81,36 @@ The policy names exact pins and which roles carry a guarantee:
       "guarantee": true,
       "engine": "codex",
       "model": "gpt-5.6-sol",
-      "family": "gpt"
+      "family": "gpt",
+      "request_models": ["gpt-5.6-sol"],
+      "label_prefixes": ["verify:"]
     },
-    "inventory": {"guarantee": false}
+    "claude-verifier": {
+      "guarantee": true,
+      "engine": "claude",
+      "model": "claude-opus-4-8",
+      "family": "claude",
+      "request_models": ["opus", "claude-opus-4-8"],
+      "label_prefixes": ["verify:"]
+    },
+    "inventory": {
+      "guarantee": false,
+      "label_prefixes": ["inventory:"]
+    }
   }
 }
 ```
 
+`model` is always the exact concrete resolved-model pin. `request_models` is the
+explicit allow-list of concrete names or aliases the workflow may request for
+that pin; this accommodates records such as requested `opus`, resolved
+`claude-opus-4-8`, without treating the alias as served-model evidence. The
+record's own label must match one of the asserted role's `label_prefixes`.
+
 `unresolved_model` is `stop` unless repository policy explicitly sets
-`limited`. A requested or resolved pin mismatch is always inadmissible. An exact
-pin is `full` only when `--counterpart-family` is known and different; the same,
-unknown, or omitted counterpart family is honestly `limited`. Mechanical roles
-return `mechanical` without treating their record as guarantee evidence.
+`limited`. An unexpected engine, request form, role label, or resolved model is
+inadmissible. An exact resolved pin is `full` only when
+`--counterpart-family` is known and different; the same, unknown, or omitted
+counterpart family is honestly `limited`. Mechanical roles still bind their
+record label, then return `mechanical` without treating model fields as
+guarantee evidence.

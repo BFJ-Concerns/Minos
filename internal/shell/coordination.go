@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"bfj/minos/internal/ledger"
+	"bfj/minos/internal/product"
 	"bfj/minos/internal/reconcile"
 )
 
@@ -47,37 +48,21 @@ func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adap
 	// The current product-status read carries no authenticated identity for the
 	// governing inputs which produced it. Keep that provenance explicitly unknown
 	// so a clean result cannot silently suppress the commissioned re-entry axis.
-	if snapshot.Product != reconcile.ProductNone {
+	if snapshot.Product.Valid() {
 		snapshot.ProductGoverning = "unknown"
 		snapshot.ProductGoverningKnown = false
 	}
 	return snapshot, nil
 }
 
-func productState(status Status) reconcile.ProductState {
+func productState(status Status) product.State {
 	description := strings.TrimSpace(status.Description)
-	switch description {
-	case "Waiting for review":
-		return reconcile.ProductQueued
-	case "Reviewing changes":
-		return reconcile.ProductWorking
-	case "Waiting for checks":
-		return reconcile.ProductWaiting
-	case "Changes need attention":
-		return reconcile.ProductBlocked
-	case "Review incomplete":
-		return reconcile.ProductPartial
-	case "Review stopped; findings remain":
-		return reconcile.ProductStopped
-	case "Changes approved":
-		return reconcile.ProductClean
-	case "Changes approved; verification limited":
-		return reconcile.ProductCleanLimited
-	case "Merged":
-		return reconcile.ProductMerged
-	default:
-		return reconcile.ProductNone
+	for _, state := range product.States() {
+		if state.Description() == description {
+			return state
+		}
 	}
+	return product.State{}
 }
 
 func repoAuthorEligible(repo RepoConfig, author string) bool {

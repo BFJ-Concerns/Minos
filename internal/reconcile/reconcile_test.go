@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"bfj/minos/internal/ledger"
+	"bfj/minos/internal/product"
 )
 
 func snapshot() ForgeSnapshot {
@@ -53,8 +54,8 @@ func TestDecisionPriority(t *testing.T) {
 
 func TestStoppedAndCleanServedness(t *testing.T) {
 	now := time.Now()
-	for _, state := range []ProductState{ProductStopped, ProductBlocked, ProductPartial, ProductClean, ProductCleanLimited} {
-		t.Run(string(state), func(t *testing.T) {
+	for _, state := range []product.State{product.Stopped(), product.Blocked(), product.Partial(), product.Clean(), product.CleanLimited()} {
+		t.Run(state.Name(), func(t *testing.T) {
 			s := snapshot()
 			s.Product = state
 			s.ProductHead = s.HeadSHA
@@ -74,7 +75,7 @@ func TestStoppedAndCleanServedness(t *testing.T) {
 
 func TestCleanReAdmitsWhenProductGoverningIdentityIsUnknown(t *testing.T) {
 	s := snapshot()
-	s.Product = ProductClean
+	s.Product = product.Clean()
 	s.ProductHead = s.HeadSHA
 	s.ProductTarget = s.TargetSHA
 	s.ProductGoverning = "unknown"
@@ -87,7 +88,7 @@ func TestCleanReAdmitsWhenProductGoverningIdentityIsUnknown(t *testing.T) {
 func TestWaitFingerprintCurrency(t *testing.T) {
 	now := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
 	s := snapshot()
-	s.Product = ProductWaiting
+	s.Product = product.Waiting()
 	s.RequiredChecks = []Check{{Identity: "build", Conclusion: "pending"}}
 	fingerprint := WaitFingerprint(s)
 	failsafe := now.Add(time.Hour)

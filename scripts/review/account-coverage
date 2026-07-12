@@ -83,7 +83,7 @@ def omission(kind, **details):
 
 
 def validate_reference(repo, reference, allowed_commits):
-    required = ("kind", "path", "commit", "blob", "line", "name")
+    required = ("kind", "path", "commit", "blob", "line", "name", "line_text")
     if not isinstance(reference, dict) or any(field not in reference for field in required):
         raise InputError(f"reference requires {', '.join(required)}")
     if reference["kind"] not in ("definition", "call_site"):
@@ -107,7 +107,18 @@ def validate_reference(repo, reference, allowed_commits):
         content = git(repo, "show", f"{reference['blob']}").splitlines()
     except (TypeError, ValueError):
         return omission("reference_not_found", path=reference["path"], name=reference["name"])
-    if line_number < 1 or line_number > len(content) or reference["name"] not in content[line_number - 1]:
+    if (
+        line_number < 1
+        or line_number > len(content)
+        or not isinstance(reference["line_text"], str)
+        or content[line_number - 1] != reference["line_text"]
+        or not isinstance(reference["name"], str)
+        or not reference["name"]
+        or re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(reference['name'])}(?![A-Za-z0-9_])",
+            content[line_number - 1],
+        ) is None
+    ):
         return omission(
             "reference_not_found", path=reference["path"], line=line_number,
             name=reference["name"], reference_kind=reference["kind"],

@@ -11,21 +11,7 @@ import (
 	"time"
 
 	"bfj/minos/internal/ledger"
-)
-
-type ProductState string
-
-const (
-	ProductNone         ProductState = ""
-	ProductQueued       ProductState = "queued"
-	ProductWorking      ProductState = "working"
-	ProductWaiting      ProductState = "waiting"
-	ProductBlocked      ProductState = "blocked"
-	ProductPartial      ProductState = "partial"
-	ProductStopped      ProductState = "stopped"
-	ProductClean        ProductState = "clean"
-	ProductCleanLimited ProductState = "clean, limited"
-	ProductMerged       ProductState = "merged"
+	"bfj/minos/internal/product"
 )
 
 type Check struct {
@@ -48,7 +34,7 @@ type ForgeSnapshot struct {
 	AuthorInScope         bool
 	SkipDrafts            bool
 	Occasion              string
-	Product               ProductState
+	Product               product.State
 	ProductHead           string
 	ProductTarget         string
 	ProductGoverning      string
@@ -102,23 +88,24 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 		return Decision{Kind: Nothing, Reason: "operational backoff is not due"}
 	}
 	fingerprint := WaitFingerprint(snapshot)
-	if snapshot.Product == ProductWaiting {
+	if snapshot.Product == product.Waiting() {
 		if waitCurrent(view.Wait, fingerprint, now) {
 			return Decision{Kind: Nothing, Reason: "wait fingerprint is current"}
 		}
 		return Decision{Kind: Admit, Reason: "wait fingerprint changed or failsafe expired"}
 	}
 	servedPair := snapshot.ProductHead == snapshot.HeadSHA && snapshot.ProductTarget != "" && snapshot.ProductTarget == snapshot.TargetSHA
-	switch snapshot.Product {
-	case ProductStopped, ProductBlocked, ProductPartial:
+	if snapshot.Product == product.Stopped() || snapshot.Product == product.Blocked() || snapshot.Product == product.Partial() {
 		if servedPair {
 			return Decision{Kind: Nothing, Reason: "unchanged head and target were already served"}
 		}
-	case ProductClean, ProductCleanLimited:
+	}
+	if snapshot.Product == product.Clean() || snapshot.Product == product.CleanLimited() {
 		if servedPair && snapshot.ProductGoverningKnown && snapshot.ProductGoverning == snapshot.GoverningIdentity {
 			return Decision{Kind: Nothing, Reason: "unchanged head, target, and governing inputs are clean"}
 		}
-	case ProductMerged:
+	}
+	if snapshot.Product == product.Merged() {
 		return Decision{Kind: Nothing, Reason: "pull request is already merged"}
 	}
 	if snapshot.AuthorInScope {

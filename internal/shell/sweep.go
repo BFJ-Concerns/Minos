@@ -69,7 +69,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 			if err != nil {
 				return err
 			}
-			candidates = append(candidates, sweepCandidate{facts: facts, snapshot: snapshot, drain: view.Lease != nil || snapshot.Product != reconcile.ProductNone})
+			candidates = append(candidates, sweepCandidate{facts: facts, snapshot: snapshot, drain: view.Lease != nil || snapshot.Product.Valid()})
 		}
 		rankCandidates(candidates)
 		for _, candidate := range candidates {
