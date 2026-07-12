@@ -12,32 +12,5 @@ run-body = "/opt/minos/run-body/run-body"
 [policy]
 auto-merge = true
 
-[[trigger]]
-run = "review"
-on = ["pr-opened", "pr-reopened", "pr-synchronized", "pr-edited"]
+[[eligibility]]
 authors = ["*"]
-drafts = false
-
-# A rejected review triggers a fix run; the landed fix re-triggers review as an
-# ordinary PR update. A fruitless or unwritable-head fix stops the loop at the
-# standing findings — no re-review on an unchanged head.
-[[trigger]]
-run = "fix"
-on = ["review-rejected"]
-authors = ["*"]
-
-# Ready triggers finish; the finish run's own gate protects the tree. With
-# auto-merge on, the review run applies Ready on convergence as Minos, and the
-# operator may apply Ready by hand — both actors are honoured here.
-[[trigger]]
-run = "finish"
-on = ["label-added:Ready"]
-actors = ["bob", "Minos"]
-
-# CI and the Minos service may apply Flaky Tests. The sweep applies this same
-# actor guard to the label already standing on Widget PR #18, so activation does
-# not depend on observing a fresh webhook.
-[[trigger]]
-run = "flaky"
-on = ["label-added:Flaky Tests"]
-actors = ["bob", "Minos", "forgejo-actions"]

@@ -52,8 +52,8 @@ export FORGE_TOKEN_SOURCE=/secure/path/to/dedicated-forge-token
 
 ## 1. Create the deployment account and enable lingering
 
-Every review, fix, finish, and flaky-test repair run is a detached transient
-user unit. Lingering keeps the user's service manager alive when nobody is
+Every accountable lifecycle is a detached transient user unit. Lingering keeps
+the user's service manager alive when nobody is
 logged in.
 
 ```sh
@@ -309,33 +309,10 @@ repository-administrator permission.
 
 ## 8. Opt the repository in
 
-Copy the inactive example and replace every placeholder. The template now ships
-review, fix, finish, and flaky-test repair triggers: a rejected review triggers a
-fix, `Ready` triggers a finish, and `Flaky Tests` triggers a repair. Review both label
-triggers' `actors` carefully — they are authority, not display names. With
-auto-merge off, only the finish actors' `Ready` starts a merge; only the flaky
-actors' label application starts repair. The placeholders authorise nobody
-until you set real forge logins. Leaving out the flaky trigger keeps the label's
-review pause but makes repair inert.
-
-First create Minos's complete label vocabulary. The operation is idempotent:
-it leaves existing labels unchanged and creates only missing names. Run it
-before activating the repository configuration; Forgejo otherwise accepts an
-add-label request while silently skipping an undefined name.
-
-```sh
-DEPLOY_UID="$(id -u "$DEPLOY_USER")"
-sudo -u "$DEPLOY_USER" env XDG_RUNTIME_DIR="/run/user/$DEPLOY_UID" \
-  MINOS_CONFIG=/etc/minos MINOS_FORGE=forgejo \
-  /usr/local/bin/minos adapt ensure-label-vocabulary \
-  "$FORGEJO_OWNER" "$FORGEJO_REPO"
-```
-
-This creates the four in-flight labels (`Reviewing`, `Fixing`, `Finishing`,
-and `Repairing Flaky Tests`), the three review-outcome labels (`Converged`,
-`Standing Findings`, and `Partial Coverage`), and the `Flaky Tests` and `Ready`
-control labels. Ordinary add-label operations also read the PR back and fail
-loudly if Forgejo claims success without applying the requested label.
+Copy the inactive example and replace every placeholder. Eligibility selects
+the PR authors this deployment serves; current forge state then decides whether
+the PR needs a lifecycle. There are no review, repair, finish, or flaky-test
+trigger stanzas, and PR labels grant no authority.
 
 ```sh
 sudo -u "$DEPLOY_USER" cp \
@@ -346,11 +323,14 @@ sudo systemctl --user --machine="$DEPLOY_USER@.host" \
   restart minos-receiver.service
 ```
 
-Opt-in is immediate for the next webhook or sweep. There is no database or
-resident state to migrate.
+Opt-in is immediate for the next webhook or sweep. The coordination database is
+created beneath `runs.dir`; opening, migrating, or verifying it must succeed
+before Minos admits work. Do not delete or replace it to recover a deployment:
+its leases and fencing tokens prevent an old attempt from writing after
+replacement.
 
 `runs.max-concurrent` is the host-wide run admission cap. The shipped value is
-`2`: receiver deliveries beyond it return an accepted capacity deferral, and
+`3`: receiver deliveries beyond it return an accepted capacity deferral, and
 the reconciliation sweep starts the eligible run after a slot clears. Keep the
 value aligned with the host's measured capacity; it counts complete run process
 trees, not the individual reviewer sessions inside each run.
@@ -371,9 +351,9 @@ sudo journalctl --user --machine="$DEPLOY_USER@.host" \
 sudo tail -n 50 /var/log/minos/sweep.log
 ```
 
-The delivery must receive HTTP `202`. With the repository active and a matching
-trigger, the body is `spawned review`; duplicate or non-triggering deliveries
-have other explicit `202` bodies. The receiver journal records one line when a
+The delivery must receive HTTP `202`. The body names the reconciliation
+decision, such as `admit`, `live`, or `nothing`; a capacity deferral remains an
+accepted delivery. The receiver journal records one line when a
 delivery passes signature authentication and one line when a bad signature is
 rejected, including the forge event and delivery identifiers. Also read the
 Forgejo delivery record itself: a red/failed delivery whose

@@ -9,9 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"bfj/minos/internal/ledger"
 )
 
 func RunWrapCommand(ctx context.Context, args []string) (err error) {
@@ -24,118 +27,147 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	runDir := os.Getenv("MINOS_RUN_DIR")
-	if runDir == "" {
-		return fmt.Errorf("MINOS_RUN_DIR is required")
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrRunLedger, err)
 	}
-	claimed, err := ClaimRunDir(runDir)
+	defer store.Close()
+	facts := envFacts(os.Getenv("MINOS_FORGE"))
+	key := coordinationKey(facts)
+	token, err := attemptToken()
 	if err != nil {
 		return err
 	}
-	if !claimed {
-		fmt.Fprintf(os.Stderr, "run claim already exists: %s\n", runDir)
-		return nil
+	owned, err := store.Owns(ctx, key, token)
+	if err != nil {
+		return err
 	}
-	logPath := filepath.Join(runDir, "run.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if !owned {
+		return ledger.ErrNotOwner
+	}
+	var leaderPID int
+	var cancelHeartbeat context.CancelFunc
+	var heartbeatDone <-chan struct{}
+	workspace := os.Getenv("MINOS_WORKSPACE")
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("run-wrap panic: %v", recovered)
+		}
+		if cancelHeartbeat != nil {
+			cancelHeartbeat()
+		}
+		if heartbeatDone != nil {
+			<-heartbeatDone
+		}
+		cleanupErr := cleanupRunProcessGroup(leaderPID)
+		var removeErr error
+		if workspace != "" {
+			removeErr = os.RemoveAll(workspace)
+		}
+		_, releaseErr := store.ReleaseLease(context.Background(), key, token)
+		err = errors.Join(err, cleanupErr, removeErr, releaseErr)
+	}()
+	runDir := os.Getenv("MINOS_RUN_DIR")
+	if runDir == "" || workspace == "" {
+		return fmt.Errorf("MINOS_RUN_DIR and MINOS_WORKSPACE are required")
+	}
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(filepath.Join(runDir, "run.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
 	defer logFile.Close()
-	multiOut := io.MultiWriter(os.Stdout, logFile)
-	multiErr := io.MultiWriter(os.Stderr, logFile)
+	multiOut, multiErr := io.MultiWriter(os.Stdout, logFile), io.MultiWriter(os.Stderr, logFile)
 	if err := writeMeta(runDir); err != nil {
 		return err
 	}
-	fmt.Fprintf(logFile, "minos run-wrap started at %s\n", time.Now().UTC().Format(time.RFC3339))
-	touchRunLog(logPath, logFile, "metadata written")
-	workspace := os.Getenv("MINOS_WORKSPACE")
-	if workspace == "" {
-		return fmt.Errorf("MINOS_WORKSPACE is required")
-	}
+	fmt.Fprintf(logFile, "minos lifecycle started at %s token=%d\n", time.Now().UTC().Format(time.RFC3339), token)
+
+	heartbeatCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	cancelHeartbeat, heartbeatDone = cancel, done
+	go renewHeartbeat(heartbeatCtx, store, key, token, heartbeatInterval(cfg), logFile, done)
 	defer func() {
-		_ = os.RemoveAll(workspace)
-		finishedAt := time.Now().UTC()
-		fmt.Fprintf(logFile, "minos run-wrap finished at %s\n", finishedAt.Format(time.RFC3339))
+		fmt.Fprintf(logFile, "minos lifecycle finished at %s error=%t\n", time.Now().UTC().Format(time.RFC3339), err != nil)
 		_ = logFile.Sync()
-		outcome := "success"
-		if err != nil {
-			outcome = "error"
-		}
-		if markerErr := writeFinishedMarker(runDir, finishedAt, outcome); markerErr != nil {
-			if err == nil {
-				err = fmt.Errorf("record run completion: %w", markerErr)
-			} else {
-				fmt.Fprintf(logFile, "minos run-wrap could not record completion: %v\n", markerErr)
-			}
-		}
 	}()
-	kind, err := ParseRunKind(os.Getenv("MINOS_RUN_KIND"))
-	if err != nil {
-		return err
-	}
-	forgeName := os.Getenv("MINOS_FORGE")
-	forge, ok := cfg.Forges[forgeName]
+
+	forge, ok := cfg.Forges[facts.Forge]
 	if !ok {
-		return fmt.Errorf("unknown forge %q", forgeName)
+		return fmt.Errorf("unknown forge %q", facts.Forge)
 	}
 	adaptation, err := NewAdaptation(forge)
 	if err != nil {
 		return err
 	}
-	facts := envFacts(forgeName)
-	bodyStarted := false
-	failurePhase := "pre-body"
-	defer func() {
-		if err == nil {
-			return
-		}
-		fmt.Fprintf(logFile, "minos run-wrap error: %v\n", err)
-		if !bodyStarted || !hasForgeWritesAttempted(runDir) {
-			if markerErr := writeRetryableFailure(runDir, failurePhase); markerErr != nil {
-				fmt.Fprintf(logFile, "minos run-wrap could not record retryable failure: %v\n", markerErr)
-			}
-			return
-		}
-		if markerErr := writeTerminalMarker(runDir, kind, os.Getenv("MINOS_HEAD_SHA"), "body-exit-after-forge-write"); markerErr != nil {
-			fmt.Fprintf(logFile, "minos run-wrap could not record terminal failure: %v\n", markerErr)
-		}
-	}()
-	touchRunLog(logPath, logFile, "preparing workspace")
-	failurePhase = "prepare-workspace"
 	if err := adaptation.PrepareWorkspace(ctx, facts, workspace, os.Getenv("MINOS_DIFF")); err != nil {
+		_, _ = store.RecordFailure(context.Background(), key)
 		return err
 	}
-	touchRunLog(logPath, logFile, "workspace ready")
-	failurePhase = "run-body-start"
-	cmd, err := runBodyCommand(ctx)
+	cmd, err := runBodyCommandForWrap(ctx)
 	if err != nil {
+		_, _ = store.RecordFailure(context.Background(), key)
 		return err
 	}
-	cmd.Stdout = multiOut
-	cmd.Stderr = multiErr
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, "MINOS_RUN_KIND="+string(kind))
+	cmd.Stdout, cmd.Stderr, cmd.Env = multiOut, multiErr, os.Environ()
 	configureRunProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
+		_, _ = store.RecordFailure(context.Background(), key)
 		return err
 	}
-	// Once Start succeeds, the body may touch forge-visible state. The shared
-	// adaptation dispatcher records that boundary precisely; an early body exit
-	// without its marker remains safe for the liveness-spaced retry budget.
-	bodyStarted = true
-	failurePhase = "run-body-exit"
-	waitErr := cmd.Wait()
-	cleanupErr := cleanupRunProcessGroup(cmd.Process.Pid)
-	return errors.Join(waitErr, cleanupErr)
+	leaderPID = cmd.Process.Pid
+	if err := cmd.Wait(); err != nil {
+		_, _ = store.RecordFailure(context.Background(), key)
+		return err
+	}
+	if err := store.ClearBackoff(context.Background(), key); err != nil {
+		return fmt.Errorf("clear operational backoff: %w", err)
+	}
+	return nil
 }
 
-func configureRunProcessGroup(cmd *exec.Cmd) {
-	// The body may leave adaptation pipeline children behind. Giving the body
-	// its own process group lets run-wrap remove those descendants without
-	// signalling itself or relying on an arbitrary runtime timeout.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+func attemptToken() (int64, error) {
+	value := os.Getenv("MINOS_ATTEMPT_TOKEN")
+	token, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || token <= 0 {
+		return 0, fmt.Errorf("invalid MINOS_ATTEMPT_TOKEN %q", value)
+	}
+	return token, nil
 }
+
+func heartbeatInterval(cfg ServiceConfig) time.Duration {
+	interval := cfg.Sweep.LivenessThreshold.Duration / 6
+	if interval < time.Second {
+		return time.Second
+	}
+	return interval
+}
+
+func renewHeartbeat(ctx context.Context, store *ledger.Store, key ledger.Key, token int64, interval time.Duration, logw io.Writer, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewed, err := store.RenewHeartbeat(context.Background(), key, token)
+			if err != nil {
+				fmt.Fprintf(logw, "heartbeat renewal failed: %v\n", err)
+				continue
+			}
+			if !renewed {
+				fmt.Fprintln(logw, "heartbeat stopped: lease superseded")
+				return
+			}
+		}
+	}
+}
+
+func configureRunProcessGroup(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
 
 func cleanupRunProcessGroup(leaderPID int) error {
 	if leaderPID <= 0 {
@@ -158,21 +190,7 @@ func runBodyCommand(ctx context.Context) (*exec.Cmd, error) {
 	return exec.CommandContext(ctx, exe, "stub-run"), nil
 }
 
-func writeRetryableFailure(runDir, phase string) error {
-	values := []string{
-		"MINOS_RETRYABLE_FAILURE=1",
-		"MINOS_FAILURE_PHASE=" + phase,
-		"MINOS_FAILURE_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	return atomicPublishFile(filepath.Join(runDir, "retry.env"), []byte(values[0]+"\n"+values[1]+"\n"+values[2]+"\n"), 0o644)
-}
-
-func touchRunLog(logPath string, logFile *os.File, message string) {
-	fmt.Fprintf(logFile, "minos run-wrap: %s at %s\n", message, time.Now().UTC().Format(time.RFC3339))
-	_ = logFile.Sync()
-	now := time.Now()
-	_ = os.Chtimes(logPath, now, now)
-}
+var runBodyCommandForWrap = runBodyCommand
 
 func writeMeta(runDir string) error {
 	meta := []string{
@@ -181,6 +199,8 @@ func writeMeta(runDir string) error {
 		"MINOS_STARTED_AT=" + time.Now().UTC().Format(time.RFC3339Nano),
 		"MINOS_OCCASION=" + os.Getenv("MINOS_OCCASION"),
 		"MINOS_HEAD_SHA=" + os.Getenv("MINOS_HEAD_SHA"),
+		"MINOS_TARGET_SHA=" + os.Getenv("MINOS_TARGET_SHA"),
+		"MINOS_ATTEMPT_TOKEN=" + os.Getenv("MINOS_ATTEMPT_TOKEN"),
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "meta.env"), []byte(strings.Join(meta, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write run metadata: %w", err)
@@ -189,14 +209,5 @@ func writeMeta(runDir string) error {
 }
 
 func envFacts(forge string) Facts {
-	owner := os.Getenv("MINOS_OWNER")
-	repo := os.Getenv("MINOS_REPO_NAME")
-	return Facts{
-		Forge:   forge,
-		Owner:   owner,
-		Repo:    repo,
-		PR:      os.Getenv("MINOS_PR"),
-		HeadSHA: os.Getenv("MINOS_HEAD_SHA"),
-		BaseRef: os.Getenv("MINOS_BASE_REF"),
-	}
+	return Facts{Forge: forge, Owner: os.Getenv("MINOS_OWNER"), Repo: os.Getenv("MINOS_REPO_NAME"), PR: os.Getenv("MINOS_PR"), HeadSHA: os.Getenv("MINOS_HEAD_SHA"), BaseRef: os.Getenv("MINOS_BASE_REF"), BaseSHA: os.Getenv("MINOS_TARGET_SHA")}
 }

@@ -251,7 +251,6 @@ build = "go build ./..."
 test = "go test ./..."
 skill = "/tmp/review-skill"
 
-[[trigger]]
-run = "review"
-on = ["pr-opened"]
+[[eligibility]]
+authors = ["*"]
 `
