@@ -77,6 +77,7 @@ func forgeGet(ctx context.Context, client *http.Client, url, token string, targe
 type EngineProbe struct {
 	Engines []EngineConfig
 	Runner  commandRunner
+	Now     func() time.Time
 }
 
 func (probe EngineProbe) Run(ctx context.Context) Result {
@@ -87,16 +88,23 @@ func (probe EngineProbe) Run(ctx context.Context) Result {
 			for index, arg := range engine.Args {
 				args[index] = strings.ReplaceAll(arg, "{model}", model)
 			}
-			// Engine output is inspected only long enough to classify the known
-			// failure shape; the returned deployment diagnostic is service-owned.
-			commandResult := CommandProbe{Name: "engine", Command: engine.Command, Args: args, Timeout: 30 * time.Second, Runner: probe.Runner, ExposeOutput: true}.Run(ctx)
-			check := Check{Name: engine.Name + ":" + model, Passed: commandResult.Passed, Diagnostic: "pinned model served successfully"}
-			if !commandResult.Passed {
+			// Engine output is inspected only long enough to classify observed
+			// failure evidence; the returned diagnostic remains service-owned.
+			output, runError, elapsed := probe.runCommand(ctx, engine.Command, args)
+			check := Check{Name: engine.Name + ":" + model, Passed: runError == nil, Diagnostic: "pinned model served successfully"}
+			if runError != nil {
+				immediate := elapsed <= 5*time.Second
+				cost, costObserved := observedCostUSD(output)
+				var costEvidence *float64
+				if costObserved {
+					costEvidence = &cost
+				}
+				message := string(output)
 				classification := ClassifyBackendFailure(BackendFailure{
-					StatusCode: inferredStatus(commandResult.Diagnostic),
-					Message:    commandResult.Diagnostic,
-					Immediate:  true,
-					CostUSD:    0,
+					StatusCode: inferredStatus(message),
+					Message:    message,
+					Immediate:  &immediate,
+					CostUSD:    costEvidence,
 				})
 				check.Diagnostic = fmt.Sprintf("%s; recovery: %s", classification.Kind, classification.Recovery)
 				result.Passed = false
@@ -110,6 +118,58 @@ func (probe EngineProbe) Run(ctx context.Context) Result {
 		result.Diagnostic = fmt.Sprintf("%d of %d pinned models failed", failedChecks(result.Checks), len(result.Checks))
 	}
 	return result
+}
+
+func (probe EngineProbe) runCommand(ctx context.Context, command string, args []string) ([]byte, error, time.Duration) {
+	runner := probe.Runner
+	if runner == nil {
+		runner = execRunner{}
+	}
+	now := probe.Now
+	if now == nil {
+		now = time.Now
+	}
+	commandContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	started := now()
+	output, err := runner.CombinedOutput(commandContext, command, args...)
+	return output, err, now().Sub(started)
+}
+
+func observedCostUSD(output []byte) (float64, bool) {
+	for _, line := range strings.Split(string(output), "\n") {
+		var value any
+		if json.Unmarshal([]byte(line), &value) != nil {
+			continue
+		}
+		if cost, found := findNumericField(value, "total_cost_usd", "cost_usd"); found {
+			return cost, true
+		}
+	}
+	return 0, false
+}
+
+func findNumericField(value any, names ...string) (float64, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, name := range names {
+			if number, ok := typed[name].(float64); ok {
+				return number, true
+			}
+		}
+		for _, child := range typed {
+			if number, found := findNumericField(child, names...); found {
+				return number, true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if number, found := findNumericField(child, names...); found {
+				return number, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func failedChecks(checks []Check) int {
@@ -151,8 +211,12 @@ func (probe RegistryProbe) Run(ctx context.Context) Result {
 type AlertProbe struct{ Directory string }
 
 func (probe AlertProbe) Run(context.Context) Result {
-	if err := os.MkdirAll(probe.Directory, 0o750); err != nil {
+	info, err := os.Stat(probe.Directory)
+	if err != nil {
 		return Result{Name: "alert", Diagnostic: fmt.Sprintf("incident stream unavailable: %v", err)}
+	}
+	if !info.IsDir() {
+		return Result{Name: "alert", Diagnostic: "incident stream is not a directory"}
 	}
 	file, err := os.CreateTemp(probe.Directory, ".preflight-*")
 	if err != nil {

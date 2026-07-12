@@ -51,10 +51,13 @@ func mutateCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("incident "+action, flag.ContinueOnError)
 	storePath := flags.String("store", "/var/lib/minos/incidents", "incident store")
 	forge := flags.String("forge", "", "forge name")
-	repository := flags.String("repository", "", "owner/repository")
-	pullRequest := flags.Int("pr", 0, "pull request number")
-	attempt := flags.String("attempt", "", "attempt identity")
-	family := flags.String("family", "", "failure family")
+	owner := flags.String("owner", "", "repository owner")
+	repo := flags.String("repo", "", "repository name")
+	pullRequest := flags.String("pr", "", "pull request identity")
+	category := flags.String("category", "", "failure category")
+	attempt := flags.Int("attempt", 0, "latest attempt counter")
+	observedHead := flags.String("observed-head", "", "observed head revision")
+	observedTarget := flags.String("observed-target", "", "observed target revision")
 	diagnostic := flags.String("diagnostic", "", "secret-free operator diagnostic")
 	logPath := flags.String("log", "", "secret-free diagnostic-log location")
 	actor := flags.String("actor", "", "acknowledging operator")
@@ -64,7 +67,7 @@ func mutateCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("usage: minos incident %s [options]", action)
 	}
-	key := Key{Forge: *forge, Repository: *repository, PullRequest: *pullRequest, Attempt: *attempt, Family: *family}
+	key := Key{Forge: *forge, Owner: *owner, Repo: *repo, PullRequest: *pullRequest, Category: *category}
 	store := NewFileStore(*storePath)
 	var (
 		incident Incident
@@ -72,7 +75,7 @@ func mutateCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	)
 	switch action {
 	case "raise":
-		incident, err = store.Raise(ctx, Event{Key: key, Diagnostic: *diagnostic, LogPath: *logPath, At: time.Now()})
+		incident, err = store.Raise(ctx, Event{Key: key, Diagnostic: *diagnostic, LogPath: *logPath, Attempt: *attempt, ObservedHead: *observedHead, ObservedTarget: *observedTarget, At: time.Now()})
 	case "acknowledge":
 		incident, err = store.Acknowledge(ctx, key, *actor, time.Now())
 	case "recover":

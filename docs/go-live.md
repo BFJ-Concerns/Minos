@@ -132,7 +132,7 @@ repository in.
 ```sh
 sudo install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 \
   /etc/minos /etc/minos/repos \
-  /var/lib/minos/runs /var/log/minos
+  /var/lib/minos/runs /var/lib/minos/incidents /var/log/minos
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/minos/service.toml /etc/minos/service.toml
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
@@ -170,7 +170,9 @@ Two machines using the same Claude subscription can rotate the shared refresh
 token out from under each other. The characteristic failure is an immediate,
 zero-cost HTTP 403 claiming that the organisation disabled Claude subscription
 access. Minos reports this as `stale-oauth`; it is distinct from quota
-exhaustion and a genuinely disabled subscription.
+exhaustion and a genuinely disabled subscription only when the probe observes
+both immediate failure and zero recorded cost. If either discriminator is
+absent, Minos reports `unknown` rather than guessing from the misleading text.
 
 Prefer re-authenticating directly as the deployment user:
 
@@ -298,19 +300,20 @@ and scheduler. No pager or notification transport is commissioned in the current
 configuration; until one is chosen, the container host's failed units are the active
 operator signal.
 
-Each incident is identified by forge, repository, pull request, attempt, and
-failure family. Repeating the same `incident raise` updates that record instead
-of producing another alert. Operators can inspect the JSON stream and make
+Each incident is identified by forge, owner, repository, pull request, and
+failure category. Attempt number and observed revisions are updated evidence,
+not identity, so retries update the same record instead of producing another
+alert. Operators can inspect the JSON stream and make
 acknowledgement and recovery explicit:
 
 ```sh
 minos incident list --store /var/lib/minos/incidents
 minos incident acknowledge --store /var/lib/minos/incidents \
-  --forge forgejo --repository OWNER/REPOSITORY --pr NUMBER \
-  --attempt HEAD_OR_ATTEMPT --family FAILURE_FAMILY --actor OPERATOR
+  --forge forgejo --owner OWNER --repo REPOSITORY --pr NUMBER \
+  --category FAILURE_CATEGORY --actor OPERATOR
 minos incident recover --store /var/lib/minos/incidents \
-  --forge forgejo --repository OWNER/REPOSITORY --pr NUMBER \
-  --attempt HEAD_OR_ATTEMPT --family FAILURE_FAMILY
+  --forge forgejo --owner OWNER --repo REPOSITORY --pr NUMBER \
+  --category FAILURE_CATEGORY
 ```
 
 Incident diagnostics must use a service-owned failure description and point to

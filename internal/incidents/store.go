@@ -29,28 +29,31 @@ const (
 
 type Key struct {
 	Forge       string `json:"forge"`
-	Repository  string `json:"repository"`
-	PullRequest int    `json:"pull_request"`
-	Attempt     string `json:"attempt"`
-	Family      string `json:"family"`
+	Owner       string `json:"owner"`
+	Repo        string `json:"repo"`
+	PullRequest string `json:"pr"`
+	Category    string `json:"category"`
 }
 
 func (key Key) String() string {
-	return fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s", key.Forge, key.Repository, key.PullRequest, key.Attempt, key.Family)
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", key.Forge, key.Owner, key.Repo, key.PullRequest, key.Category)
 }
 
 func (key Key) validate() error {
-	if strings.TrimSpace(key.Forge) == "" || strings.TrimSpace(key.Repository) == "" || key.PullRequest <= 0 || strings.TrimSpace(key.Attempt) == "" || strings.TrimSpace(key.Family) == "" {
-		return errors.New("incident identity requires forge, repository, positive pull request, attempt, and family")
+	if strings.TrimSpace(key.Forge) == "" || strings.TrimSpace(key.Owner) == "" || strings.TrimSpace(key.Repo) == "" || strings.TrimSpace(key.PullRequest) == "" || strings.TrimSpace(key.Category) == "" {
+		return errors.New("incident identity requires forge, owner, repo, pull request, and category")
 	}
 	return nil
 }
 
 type Event struct {
-	Key        Key
-	Diagnostic string
-	LogPath    string
-	At         time.Time
+	Key            Key
+	Diagnostic     string
+	LogPath        string
+	Attempt        int
+	ObservedHead   string
+	ObservedTarget string
+	At             time.Time
 }
 
 type Incident struct {
@@ -61,6 +64,9 @@ type Incident struct {
 	FirstSeenAt    time.Time  `json:"first_seen_at"`
 	LastSeenAt     time.Time  `json:"last_seen_at"`
 	Updates        int        `json:"updates"`
+	Attempt        int        `json:"attempt"`
+	ObservedHead   string     `json:"observed_head,omitempty"`
+	ObservedTarget string     `json:"observed_target,omitempty"`
 	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
 	AcknowledgedBy string     `json:"acknowledged_by,omitempty"`
 	RecoveredAt    *time.Time `json:"recovered_at,omitempty"`
@@ -98,11 +104,16 @@ func (store *FileStore) Raise(_ context.Context, event Event) (Incident, error) 
 		}
 		current.Diagnostic = event.Diagnostic
 		current.LogPath = event.LogPath
+		current.Attempt = event.Attempt
+		current.ObservedHead = event.ObservedHead
+		current.ObservedTarget = event.ObservedTarget
 		current.LastSeenAt = event.At.UTC()
 		current.Updates++
-		// A recurrence after recovery is the same deduplicated incident, open
-		// again. Retain acknowledgement history but clear the stale recovery.
+		// Every recurrence requires fresh operator eyes, even when the same
+		// incident was acknowledged or recovered previously.
 		current.State = StateOpen
+		current.AcknowledgedAt = nil
+		current.AcknowledgedBy = ""
 		current.RecoveredAt = nil
 		return nil
 	})

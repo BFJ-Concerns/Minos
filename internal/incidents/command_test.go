@@ -11,9 +11,9 @@ import (
 
 func TestCommandProvidesOperatorAcknowledgementAndRecoveryRoute(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "incidents")
-	identity := []string{"--store", store, "--forge", "forgejo", "--repository", "owner/repo", "--pr", strconv.Itoa(7), "--attempt", "head-abc", "--family", "stale-oauth"}
+	identity := []string{"--store", store, "--forge", "forgejo", "--owner", "owner", "--repo", "repo", "--pr", strconv.Itoa(7), "--category", "stale-oauth"}
 	actions := [][]string{
-		append([]string{"raise"}, append(identity, "--diagnostic", "Claude OAuth stale", "--log", "runs/7/run.log")...),
+		append([]string{"raise"}, append(identity, "--attempt", "1", "--observed-head", "head-abc", "--diagnostic", "Claude OAuth stale", "--log", "runs/7/run.log")...),
 		append([]string{"acknowledge"}, append(identity, "--actor", "operator")...),
 		append([]string{"recover"}, identity...),
 	}
@@ -35,7 +35,7 @@ func TestCommandProvidesOperatorAcknowledgementAndRecoveryRoute(t *testing.T) {
 
 func TestCheckFailsWhileIncidentIsOpen(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "incidents")
-	identity := []string{"--store", store, "--forge", "forgejo", "--repository", "owner/repo", "--pr", "9", "--attempt", "head", "--family", "engine"}
+	identity := []string{"--store", store, "--forge", "forgejo", "--owner", "owner", "--repo", "repo", "--pr", "9", "--category", "engine"}
 	if err := Command(context.Background(), append([]string{"raise"}, append(identity, "--diagnostic", "engine unavailable", "--log", "runs/9/run.log")...), &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}

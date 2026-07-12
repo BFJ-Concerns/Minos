@@ -10,18 +10,23 @@ func TestClassifyBackendFailure(t *testing.T) {
 	}{
 		{
 			name:  "stale shared subscription oauth",
-			input: BackendFailure{StatusCode: 403, Message: "organization has disabled Claude subscription access", Immediate: true, CostUSD: 0},
+			input: BackendFailure{StatusCode: 403, Message: "organization has disabled Claude subscription access", Immediate: boolPointer(true), CostUSD: floatPointer(0)},
 			want:  FailureStaleOAuth,
 		},
 		{
 			name:  "quota",
-			input: BackendFailure{StatusCode: 429, Message: "usage limit reached", Immediate: true, CostUSD: 0},
+			input: BackendFailure{StatusCode: 429, Message: "usage limit reached", Immediate: boolPointer(true), CostUSD: floatPointer(0)},
 			want:  FailureQuota,
 		},
 		{
 			name:  "genuinely disabled",
-			input: BackendFailure{StatusCode: 403, Message: "account disabled by organization administrator", Immediate: true, CostUSD: 0},
+			input: BackendFailure{StatusCode: 403, Message: "account disabled by organization administrator", Immediate: boolPointer(true), CostUSD: floatPointer(0)},
 			want:  FailureAccountDisabled,
+		},
+		{
+			name:  "misleading text without observed cost",
+			input: BackendFailure{StatusCode: 403, Message: "organization has disabled Claude subscription access", Immediate: boolPointer(true)},
+			want:  FailureUnknown,
 		},
 	}
 	for _, test := range tests {
@@ -36,3 +41,6 @@ func TestClassifyBackendFailure(t *testing.T) {
 		})
 	}
 }
+
+func boolPointer(value bool) *bool        { return &value }
+func floatPointer(value float64) *float64 { return &value }
