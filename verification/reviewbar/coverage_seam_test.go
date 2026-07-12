@@ -153,6 +153,37 @@ func TestCompleteResultConvergesAndInspectionRecordReachesTheBar(t *testing.T) {
 	assertRecordCarriesReference(t, "workflow return", string(result.InspectionRecord))
 }
 
+func TestCompleteResultWithoutInspectionRecordIsBlocked(t *testing.T) {
+	requireSeam(t)
+	repo, base, head := seedSeamRepository(t)
+
+	// A genuinely complete accounting result — but the lead forwards no inspection
+	// record. Depth cannot be judged, so this must not converge: the gate blocks
+	// deterministically, with the bar off (no LLM). Without this, a complete
+	// result alone could carry a convergence-bearing pass past the depth judgement.
+	record := inspectionRecordFor(t, repo, base, head, nil)
+	check, exit := runAccountCoverage(t, repo, base, head, record)
+	if exit != 0 || check.Status != "complete" {
+		t.Fatalf("expected a complete result (exit 0), got status=%q exit=%d", check.Status, exit)
+	}
+
+	// Omit the inspection record (empty path), bar off — the block must be purely
+	// mechanical.
+	verifyInput := assembleVerifyInput(t, panelFullValidated(), check.resultPath, "", "off")
+	out := runVerifyWorkflow(t, verifyInput, "none")
+	result := out.Result
+
+	if !result.CoverageGate.BlocksConvergence {
+		t.Fatalf("coverage_gate.blocks_convergence = false for a complete result with no inspection record; depth would go unjudged")
+	}
+	if result.CoverageGate.ResultStatus != "complete" {
+		t.Errorf("coverage_gate.result_status = %q, want complete", result.CoverageGate.ResultStatus)
+	}
+	if !hasReasonMentioning(result.Bar.TriggerReasons, "inspection record is missing") {
+		t.Errorf("bar trigger reasons do not name the missing inspection record: %#v", result.Bar.TriggerReasons)
+	}
+}
+
 // --- helpers -------------------------------------------------------------
 
 func repoRoot(t *testing.T) string {
@@ -370,8 +401,9 @@ func seamPlan(t *testing.T) map[string]any {
 	}
 }
 
-// assembleVerifyInput runs the real assemble_verify_input.py with both coverage
-// artefacts wired in under their own flags, returning the verify-input.json path.
+// assembleVerifyInput runs the real assemble_verify_input.py, wiring in whichever
+// coverage artefacts are given (an empty path omits that flag), and returns the
+// verify-input.json path.
 func assembleVerifyInput(t *testing.T, validated map[string]any, coverageResultPath, inspectionRecordPath, barMode string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -381,11 +413,14 @@ func assembleVerifyInput(t *testing.T, validated map[string]any, coverageResultP
 	writeJSON(t, validatedPath, validated)
 
 	assemble := filepath.Join(reviewScriptsDir(t), "assemble_verify_input.py")
-	out, err := exec.Command("python3", assemble, planPath, validatedPath,
-		"--bar", barMode,
-		"--coverage-result", coverageResultPath,
-		"--inspection-record", inspectionRecordPath,
-	).Output()
+	cmdArgs := []string{assemble, planPath, validatedPath, "--bar", barMode}
+	if coverageResultPath != "" {
+		cmdArgs = append(cmdArgs, "--coverage-result", coverageResultPath)
+	}
+	if inspectionRecordPath != "" {
+		cmdArgs = append(cmdArgs, "--inspection-record", inspectionRecordPath)
+	}
+	out, err := exec.Command("python3", cmdArgs...).Output()
 	if err != nil {
 		t.Fatalf("assemble_verify_input.py: %v", err)
 	}

@@ -374,7 +374,11 @@ judge itself, so when you follow the verify recipe (step 5) pass the skill's
 
 A `complete` result proves only that every change was *labelled* read; it is not
 proof of depth, which is why the record travels alongside it. Do not call the
-result "the record", and do not send one in place of the other.
+result "the record", and do not send one in place of the other. The two must
+arrive together to converge: the gate treats supplying only one as a wiring error
+and blocks — a result without its record leaves depth unjudged, a record without
+its result has no completeness verdict — so pass **both** whenever you mean to
+converge.
 
 **A `partial` result is a result you carry, never a step that failed.**
 `account-coverage` exits `1` when a well-formed check finds a gap and `2` only
