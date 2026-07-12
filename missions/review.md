@@ -1,5 +1,11 @@
 # Minos review mission
 
+> **RETIRED — superseded by `../lifecycle/lifecycle.md`.** The lifecycle rebuild
+> folds review, repair, fresh re-review, final clearance, and optional merge
+> into one accountable lead session with no per-stage runs, one `Minos` status
+> context, and no PR labels. This file is kept only until integration rewires
+> the launcher off the per-stage missions and removes it; do not extend it.
+
 Own one review run from claim to final forge state. Read the general skill at
 `$MINOS_SKILL` in full and follow it. The skill owns review method, evidence
 standards, verification-before-posting, and the review-bar check. This mission
