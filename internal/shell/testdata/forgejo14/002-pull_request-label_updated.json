@@ -16,12 +16,12 @@
     "X-Gitea-Delivery": "1f749546-d01f-4374-a74e-f73b81986bf5",
     "X-Gitea-Event": "pull_request",
     "X-Gitea-Event-Type": "pull_request_label",
-    "X-Gitea-Signature": "de6baaa003afd4e319bd070b4c83f638867902f76a17b80cc818f5ec20ff045b",
+    "X-Gitea-Signature": "2ad656c238e845afed7ee21086b2d2019a18cb98fc1550c0f97f566ded9f1202",
     "X-Gogs-Delivery": "1f749546-d01f-4374-a74e-f73b81986bf5",
     "X-Gogs-Event": "pull_request",
     "X-Gogs-Event-Type": "pull_request_label",
-    "X-Gogs-Signature": "de6baaa003afd4e319bd070b4c83f638867902f76a17b80cc818f5ec20ff045b",
-    "X-Hub-Signature": "sha1=3d0fb13b932596e05118670c16018f04692ac806",
-    "X-Hub-Signature-256": "sha256=de6baaa003afd4e319bd070b4c83f638867902f76a17b80cc818f5ec20ff045b"
+    "X-Gogs-Signature": "2ad656c238e845afed7ee21086b2d2019a18cb98fc1550c0f97f566ded9f1202",
+    "X-Hub-Signature": "sha1=1844618fc002116df0d4853822773540234282be",
+    "X-Hub-Signature-256": "sha256=2ad656c238e845afed7ee21086b2d2019a18cb98fc1550c0f97f566ded9f1202"
   }
 }
