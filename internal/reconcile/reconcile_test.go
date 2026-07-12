@@ -60,6 +60,7 @@ func TestStoppedAndCleanServedness(t *testing.T) {
 			s.ProductHead = s.HeadSHA
 			s.ProductTarget = s.TargetSHA
 			s.ProductGoverning = s.GoverningIdentity
+			s.ProductGoverningKnown = true
 			if got := Decide(s, View{}, now).Kind; got != Nothing {
 				t.Fatalf("unchanged served state = %s, want nothing", got)
 			}
@@ -68,6 +69,18 @@ func TestStoppedAndCleanServedness(t *testing.T) {
 				t.Fatalf("moved head = %s, want admit", got)
 			}
 		})
+	}
+}
+
+func TestCleanReAdmitsWhenProductGoverningIdentityIsUnknown(t *testing.T) {
+	s := snapshot()
+	s.Product = ProductClean
+	s.ProductHead = s.HeadSHA
+	s.ProductTarget = s.TargetSHA
+	s.ProductGoverning = "unknown"
+	s.ProductGoverningKnown = false
+	if got := Decide(s, View{}, time.Now()).Kind; got != Admit {
+		t.Fatalf("decision=%s, want admit", got)
 	}
 }
 

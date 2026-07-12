@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adap
 	// explicit unknown rather than mistaking a mutable ref name for a revision.
 	if !targetKnown {
 		target = "unknown:" + current.BaseRef
+		log.Printf("coordination degraded: target revision unknown forge=%s repo=%s pr=%s target-branch=%s", current.Forge, current.RepoSlug(), current.PR, current.BaseRef)
 	}
 	snapshot := reconcile.ForgeSnapshot{
 		Key: coordinationKey(current), HeadSHA: current.HeadSHA, TargetBranch: current.BaseRef,
@@ -42,11 +44,12 @@ func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adap
 		ProductTarget: target, GoverningIdentity: governingIdentity(repo), DeploymentProfile: deploymentIdentity(cfg, repo),
 		RequiredChecks: requiredCheckSnapshot(repo, statuses),
 	}
-	// A current-head status is served for the current governing identity. The
-	// wave-two product snapshot will provide independently authenticated binding;
-	// this compatibility path is reported as degraded while target SHA is unknown.
+	// The current product-status read carries no authenticated identity for the
+	// governing inputs which produced it. Keep that provenance explicitly unknown
+	// so a clean result cannot silently suppress the commissioned re-entry axis.
 	if snapshot.Product != reconcile.ProductNone {
-		snapshot.ProductGoverning = snapshot.GoverningIdentity
+		snapshot.ProductGoverning = "unknown"
+		snapshot.ProductGoverningKnown = false
 	}
 	return snapshot, nil
 }
@@ -193,8 +196,6 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 			return err
 		}
 		fmt.Fprintf(logw, "replaced dead lifecycle for %s#%s token=%d\n", facts.RepoSlug(), facts.PR, newLease.Token)
-	case reconcile.Wait:
-		return store.SetWait(ctx, ledger.Wait{Key: snapshot.Key, Fingerprint: decision.Fingerprint})
 	case reconcile.CleanUp:
 		// The behavioural adapter owns the expected-head delete. Until it lands,
 		// retain the obligation rather than issuing an unsafe read-then-delete.

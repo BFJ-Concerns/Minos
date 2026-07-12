@@ -33,15 +33,6 @@ func (f Facts) RepoSlug() string {
 	return f.Owner + "/" + f.Repo
 }
 
-func (f Facts) HasLabel(label string) bool {
-	for _, existing := range f.Labels {
-		if existing == label {
-			return true
-		}
-	}
-	return false
-}
-
 func ParseFacts(r io.Reader) (Facts, error) {
 	return parseFacts(r, false)
 }

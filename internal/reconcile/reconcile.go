@@ -37,25 +37,26 @@ type Check struct {
 // shell adaptation may temporarily report TargetKnown=false, but the interface
 // makes the commissioned target revision explicit for the wave-two adapter.
 type ForgeSnapshot struct {
-	Key               ledger.Key
-	HeadSHA           string
-	TargetBranch      string
-	TargetSHA         string
-	TargetKnown       bool
-	Open              bool
-	Merged            bool
-	Draft             bool
-	AuthorInScope     bool
-	SkipDrafts        bool
-	Occasion          string
-	Product           ProductState
-	ProductHead       string
-	ProductTarget     string
-	ProductGoverning  string
-	GoverningIdentity string
-	DeploymentProfile string
-	RequiredChecks    []Check
-	Mergeability      string
+	Key                   ledger.Key
+	HeadSHA               string
+	TargetBranch          string
+	TargetSHA             string
+	TargetKnown           bool
+	Open                  bool
+	Merged                bool
+	Draft                 bool
+	AuthorInScope         bool
+	SkipDrafts            bool
+	Occasion              string
+	Product               ProductState
+	ProductHead           string
+	ProductTarget         string
+	ProductGoverning      string
+	ProductGoverningKnown bool
+	GoverningIdentity     string
+	DeploymentProfile     string
+	RequiredChecks        []Check
+	Mergeability          string
 }
 
 type View struct {
@@ -72,7 +73,6 @@ const (
 	Admit   DecisionKind = "admit"
 	Live    DecisionKind = "live"
 	Replace DecisionKind = "replace"
-	Wait    DecisionKind = "wait"
 	CleanUp DecisionKind = "cleanup"
 	Nothing DecisionKind = "nothing"
 )
@@ -116,7 +116,7 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 			return Decision{Kind: Nothing, Reason: "unchanged head and target were already served"}
 		}
 	case ProductClean, ProductCleanLimited:
-		if servedPair && snapshot.ProductGoverning == snapshot.GoverningIdentity {
+		if servedPair && snapshot.ProductGoverningKnown && snapshot.ProductGoverning == snapshot.GoverningIdentity {
 			return Decision{Kind: Nothing, Reason: "unchanged head, target, and governing inputs are clean"}
 		}
 	case ProductMerged:
