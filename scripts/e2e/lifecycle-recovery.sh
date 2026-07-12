@@ -284,3 +284,117 @@ run_uncertain_write_journeys() {
   record_evidence wrapper close predecessor applied "review-and-status-durable=true; duplicate-writes=0; attempts=1"
   author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${status_pr}" '{"state":"closed"}' >/dev/null
 }
+
+post_raw_hook() {
+  local event="$1" payload="$2" signature="$3" output="$4"
+  curl -sS -o "$output" -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' \
+    -H "X-Forgejo-Event: ${event}" \
+    -H "X-Forgejo-Signature: ${signature}" \
+    --data "$payload" "http://127.0.0.1:${hook_port}/hooks/local"
+}
+
+signed_payload() {
+  printf '%s' "$1" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}'
+}
+
+all_attempts_absent() {
+  [[ ! -d "$work/runs/attempts" ]] || [[ -z "$(find "$work/runs/attempts" -mindepth 2 -maxdepth 2 -type d -print -quit)" ]]
+}
+
+run_ingress_failure_journeys() {
+  local payload signature status
+  payload='{"action":"opened","repository":{"owner":{"login":"Minos"},"name":"subject"},"pull_request":{"number":99}}'
+  status="$(post_raw_hook pull_request "$payload" deadbeef "$work/logs/invalid-signature.body")"
+  require 'invalid signature returns unauthorised' count_is "$status" 401
+  require 'invalid signature creates no attempt' all_attempts_absent
+  require 'invalid signature creates no coordination database' test ! -e "$work/runs/coordination.db"
+  record_evidence receiver authenticate none rejected "case=invalid-signature; http=401; attempts=0; ledger=absent"
+
+  payload='{"action":"opened","repository":{"owner":{"login":"Other"},"name":"elsewhere"},"pull_request":{"number":1,"head":{"sha":"head"},"base":{"ref":"main"},"user":{"login":"author"}}}'
+  signature="$(signed_payload "$payload")"
+  status="$(post_raw_hook pull_request "$payload" "$signature" "$work/logs/unconfigured-repository.body")"
+  require 'unconfigured repository is acknowledged without admission' count_is "$status" 202
+  require 'unconfigured repository response is explicit' grep -Fxq 'not opted in' "$work/logs/unconfigured-repository.body"
+  require 'unconfigured repository creates no attempt' all_attempts_absent
+  require 'unconfigured repository creates no coordination database' test ! -e "$work/runs/coordination.db"
+  record_evidence receiver route none skipped "case=unconfigured-repository; http=202; attempts=0; ledger=absent"
+}
+
+run_unmapped_event_journey() {
+  local payload signature status
+  payload='{"action":"pushed","repository":{"owner":{"login":"Minos"},"name":"subject"}}'
+  signature="$(signed_payload "$payload")"
+  status="$(post_raw_hook push "$payload" "$signature" "$work/logs/unmapped-event.body")"
+  require 'authenticated unmapped event is acknowledged' count_is "$status" 202
+  require 'unmapped event response is explicit' grep -Fxq 'unmapped event' "$work/logs/unmapped-event.body"
+  require 'unmapped event creates no attempt' all_attempts_absent
+  require 'unmapped event creates no coordination database' test ! -e "$work/runs/coordination.db"
+  record_evidence receiver normalise none skipped "case=unmapped-event; http=202; attempts=0; ledger=absent"
+}
+
+run_capacity_journey() {
+  local first_pr first_sha second_pr second_sha
+  first_pr="$(create_pr capacity-holder-one)"
+  first_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${first_pr}" | jq -r '.head.sha')"
+  journey_units+=("minos-run-${owner}-${repo}-pr${first_pr}-${first_sha:0:12}.service")
+  send_opened_hook "$first_pr"
+  wait_until 'capacity holder owns the only slot' test -e "$work/control/capacity-${first_pr}-ready"
+  require 'capacity holder has one lease' lease_token_is "$first_pr" "$(lease_json "$first_pr" | jq -r '.[0].token')"
+  require 'capacity holder publishes eyes' eyes_present "$first_pr"
+
+  second_pr="$(create_pr capacity-holder-two)"
+  second_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${second_pr}" | jq -r '.head.sha')"
+  journey_units+=("minos-run-${owner}-${repo}-pr${second_pr}-${second_sha:0:12}.service")
+  send_opened_hook "$second_pr"
+  require 'capacity-full PR has no lease' lease_absent "$second_pr"
+  require 'capacity-full PR has no attempt' attempt_count_is "$second_pr" 0
+  require 'capacity-full PR has no eyes' eyes_absent "$second_pr"
+  require 'capacity-full PR has no product status' no_product_status "$second_sha"
+  record_evidence ledger admit none skipped "case=capacity-full; held-pr=${first_pr}; deferred-pr=${second_pr}; deferred-attempts=0"
+
+  : >"$work/control/capacity-${first_pr}-release"
+  wait_until 'capacity holder releases its lease' lease_absent "$first_pr"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${first_pr}" '{"state":"closed"}' >/dev/null
+  "$root/minos" sweep --config "$work/config"
+  wait_until 'deferred PR is admitted by a later sweep' test -e "$work/control/capacity-${second_pr}-ready"
+  require 'deferred PR owns the released slot' eyes_present "$second_pr"
+  require 'deferred PR launches exactly once' attempt_count_is "$second_pr" 1
+  record_evidence sweep admit successor applied "case=capacity-released; pr=${second_pr}; attempts=1"
+  : >"$work/control/capacity-${second_pr}-release"
+  wait_until 'deferred PR settles stopped' status_is "$second_sha" 'Review stopped; findings remain'
+  wait_until 'deferred PR removes eyes' eyes_absent "$second_pr"
+  wait_until 'deferred PR releases lease' lease_absent "$second_pr"
+  require 'deferred PR remains exactly one attempt' attempt_count_is "$second_pr" 1
+  record_evidence wrapper close successor applied "case=capacity-released; terminal=stopped; eyes=absent; lease=absent; attempts=1"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${second_pr}" '{"state":"closed"}' >/dev/null
+}
+
+run_closed_before_sweep_journey() {
+  local closed_pr closed_sha
+  closed_pr="$(create_pr closed-before-sweep-lifecycle)"
+  closed_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${closed_pr}" | jq -r '.head.sha')"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${closed_pr}" '{"state":"closed"}' >/dev/null
+  record_evidence forge close none applied "case=closed-before-sweep; pr=${closed_pr}; webhook=suppressed"
+  "$root/minos" sweep --config "$work/config"
+  require 'closed-before-sweep PR has no lease' lease_absent "$closed_pr"
+  require 'closed-before-sweep PR has no attempt' attempt_count_is "$closed_pr" 0
+  require 'closed-before-sweep PR has no eyes' eyes_absent "$closed_pr"
+  require 'closed-before-sweep PR has no product status' no_product_status "$closed_sha"
+  record_evidence sweep reconcile none skipped "case=closed-before-sweep; attempts=0; lease=absent; eyes=absent; status=absent"
+}
+
+run_receiver_boundary_journeys() {
+  local status
+  status="$(curl -sS -o "$work/logs/method-not-allowed.body" -w '%{http_code}' \
+    "http://127.0.0.1:${hook_port}/hooks/local")"
+  require 'non-POST webhook request is rejected' count_is "$status" 405
+  require 'method rejection creates no attempt' all_attempts_absent
+  record_evidence receiver method none rejected "case=non-post; http=405; attempts=0"
+
+  status="$(curl -sS -o "$work/logs/unknown-forge.body" -w '%{http_code}' -X POST \
+    --data '{}' "http://127.0.0.1:${hook_port}/hooks/unknown")"
+  require 'unknown forge route is rejected' count_is "$status" 404
+  require 'unknown forge route creates no attempt' all_attempts_absent
+  record_evidence receiver route none rejected "case=unknown-forge; http=404; attempts=0"
+}

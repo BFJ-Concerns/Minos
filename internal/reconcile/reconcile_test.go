@@ -76,6 +76,88 @@ func TestStoppedAndCleanServedness(t *testing.T) {
 	}
 }
 
+func TestStaleLeaseReapsServedTerminalStateWithoutReplacement(t *testing.T) {
+	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
+	deadLease := &ledger.Lease{HeartbeatAt: now.Add(-2 * time.Hour)}
+	view := View{Lease: deadLease, LivenessWindow: time.Hour}
+	for _, state := range []product.State{product.Stopped(), product.Partial(), product.Clean(), product.CleanLimited()} {
+		t.Run(state.Name(), func(t *testing.T) {
+			s := snapshot()
+			s.Product = state
+			s.ProductHead = s.HeadSHA
+			s.ProductTarget = s.TargetSHA
+			s.ProductGoverning = s.GoverningIdentity
+			s.ProductGoverningKnown = true
+			if got := Decide(s, view, now).Kind; got != Reap {
+				t.Fatalf("stale lease over served terminal state = %s, want reap", got)
+			}
+			s.TargetSHA = "target-2"
+			if got := Decide(s, view, now).Kind; got != Replace {
+				t.Fatalf("stale lease over moved terminal state = %s, want replace", got)
+			}
+		})
+	}
+}
+
+func TestStaleLeaseReplacesCleanStateWhenGoverningInputsMoved(t *testing.T) {
+	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
+	s := snapshot()
+	s.Product = product.Clean()
+	s.ProductHead = s.HeadSHA
+	s.ProductTarget = s.TargetSHA
+	s.ProductGoverning = "policy-0"
+	s.ProductGoverningKnown = true
+	view := View{Lease: &ledger.Lease{HeartbeatAt: now.Add(-2 * time.Hour)}, LivenessWindow: time.Hour}
+	if got := Decide(s, view, now).Kind; got != Replace {
+		t.Fatalf("stale lease over superseded clean governance = %s, want replace", got)
+	}
+}
+
+func TestStaleLeaseMirrorsServedBlockedReentryRules(t *testing.T) {
+	now := time.Date(2026, 7, 12, 22, 0, 0, 0, time.UTC)
+	view := View{Lease: &ledger.Lease{HeartbeatAt: now.Add(-2 * time.Hour)}, LivenessWindow: time.Hour}
+	tests := []struct {
+		name string
+		edit func(*ForgeSnapshot)
+		want DecisionKind
+	}{
+		{"served finding block", nil, Reap},
+		{"finding block moved head", func(s *ForgeSnapshot) { s.HeadSHA = "head-2" }, Replace},
+		{"served permission block", func(s *ForgeSnapshot) {
+			s.ProductBlockKind = PermissionBlock
+			s.ProductBlockIdentity = BlockReentryIdentity(*s)
+			s.ProductBlockKnown = true
+		}, Reap},
+		{"permission block moved head", func(s *ForgeSnapshot) {
+			s.ProductBlockKind = PermissionBlock
+			s.ProductBlockIdentity = BlockReentryIdentity(*s)
+			s.ProductBlockKnown = true
+			s.HeadSHA = "head-2"
+		}, Replace},
+		{"permission block changed governing identity", func(s *ForgeSnapshot) {
+			s.ProductBlockKind = PermissionBlock
+			s.ProductBlockIdentity = BlockReentryIdentity(*s)
+			s.ProductBlockKnown = true
+			s.GoverningIdentity = "policy-2"
+		}, Replace},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := snapshot()
+			s.Product = product.Blocked()
+			s.ProductBlockKind = FindingBlock
+			s.ProductHead = s.HeadSHA
+			s.ProductTarget = s.TargetSHA
+			if test.edit != nil {
+				test.edit(&s)
+			}
+			if got := Decide(s, view, now).Kind; got != test.want {
+				t.Fatalf("decision=%s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCleanReAdmitsWhenProductGoverningIdentityIsUnknown(t *testing.T) {
 	s := snapshot()
 	s.Product = product.Clean()

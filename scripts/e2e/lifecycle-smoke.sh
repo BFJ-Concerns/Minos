@@ -179,7 +179,7 @@ create_pr() {
     git checkout -q main
     git checkout -q -b "$branch"
     if [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
-      "$branch" == restart-* || "$branch" == uncertain-* ]]; then
+      "$branch" == restart-* || "$branch" == uncertain-* || "$branch" == capacity-* ]]; then
       sed -i 's/return true/return false/' ready.go
     else
       printf '\n// Clean lifecycle fixture.\n' >>ready.go
@@ -488,6 +488,12 @@ elif [[ "$branch" == uncertain-status-* ]]; then
   "$minos" forge status stopped
   : >"$control_root/uncertain-status-applied"
   while [[ ! -e "$control_root/uncertain-status-release" ]]; do sleep 1; done
+elif [[ "$branch" == capacity-* ]]; then
+  : >"$control_root/capacity-${MINOS_PR}-ready"
+  while [[ ! -e "$control_root/capacity-${MINOS_PR}-release" ]]; do sleep 1; done
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  "$minos" forge status stopped
 elif [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ]]; then
   if [[ "$branch" == missed-webhook-* ]]; then
     : >"$control_root/missed-webhook-ready"
@@ -576,6 +582,26 @@ fi
 
 if journey_enabled uncertain-write; then
   run_uncertain_write_journeys
+fi
+
+if journey_enabled ingress-failures; then
+  run_ingress_failure_journeys
+fi
+
+if journey_enabled unmapped-event; then
+  run_unmapped_event_journey
+fi
+
+if journey_enabled capacity; then
+  run_capacity_journey
+fi
+
+if journey_enabled closed-before-sweep; then
+  run_closed_before_sweep_journey
+fi
+
+if journey_enabled receiver-boundaries; then
+  run_receiver_boundary_journeys
 fi
 
 printf 'Minos lifecycle E2E passed. Evidence: %s\n' "$work"

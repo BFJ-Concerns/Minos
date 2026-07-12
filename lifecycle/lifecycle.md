@@ -356,6 +356,27 @@ assembled review. An oversized PR is reported as **partial** rather than
 pretended complete, and a partially covered review can never converge: it
 surfaces to the operator instead.
 
+That immutable record is bar material and a hard convergence gate, so bind it
+into the verification invocation — it does not judge itself. Capture the
+`account-coverage` output to a file under `$MINOS_RUN_DIR` (for example
+`coverage-check.json`) and pass its path to the skill's `assemble_verify_input.py`
+as `--coverage-record` when you follow the verify recipe (step 5): the record
+then reaches the bar as material beside the panel's own coverage declarations,
+and the workflow's `coverage_gate` settles convergence over it mechanically.
+
+**A `partial` account is a result you carry, never a step that failed.**
+`account-coverage` exits `1` when a well-formed check finds a gap and `2` only
+when the record itself could not be checked (its schemas are in
+`$MINOS_REVIEW_SCRIPTS/README.md`). Exit `1` is the mechanical `partial` verdict —
+capture its JSON and carry it into the seam exactly as you would a `complete`
+one; do not let the non-zero status abort the review or discard the record. An
+exit `2` is a genuine input failure to diagnose, not a coverage verdict. When the
+record's status is anything but `complete`, the verify workflow returns
+`coverage_gate.blocks_convergence: true`: the review still publishes its verified
+findings, but it settles **partial** and cannot converge whatever the panel
+declared or the bar judged. Convergence (step 7) therefore requires a `complete`
+mechanical record on top of zero verified material findings and a passed bar.
+
 **Every judgement-bearing worker's model pin is admitted before its output
 counts.** Before you admit any worker judgement that can supply a finding,
 verify a finding or repair, pass the review bar, or establish post-repair
@@ -482,9 +503,11 @@ path exists.
 ### 7. Converge, or stop the chase honestly
 
 **Review convergence** is a positive, head-bound result: zero verified material
-findings, honest complete coverage, and either a passed review-bar check or the
-explicit checker-unavailable limited policy. You record it as the service's
-approving review on that head.
+findings, honest complete coverage (a `complete` mechanical coverage record —
+the verify workflow's `coverage_gate.blocks_convergence` is false), and either a
+passed review-bar check or the explicit checker-unavailable limited policy. You
+record it as the service's approving review on that head. A blocking coverage
+gate settles **partial**, never convergence, whatever the bar concluded.
 
 Termination is your judgement, not a counter — there is no pass ceiling and no
 infrastructure clock. Apply a **rising bar to chasing** a finding that keeps

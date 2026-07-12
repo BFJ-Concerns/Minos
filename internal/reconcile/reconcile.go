@@ -71,6 +71,7 @@ type DecisionKind string
 const (
 	Admit   DecisionKind = "admit"
 	Live    DecisionKind = "live"
+	Reap    DecisionKind = "reap"
 	Replace DecisionKind = "replace"
 	CleanUp DecisionKind = "cleanup"
 	Nothing DecisionKind = "nothing"
@@ -88,6 +89,9 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 	if view.Lease != nil {
 		if now.Sub(view.Lease.HeartbeatAt) < view.LivenessWindow {
 			return Decision{Kind: Live, Reason: "current lease heartbeat is live"}
+		}
+		if reason, served := productServed(snapshot); served {
+			return Decision{Kind: Reap, Reason: reason}
 		}
 		return Decision{Kind: Replace, Reason: "lease heartbeat is stale"}
 	}
@@ -110,31 +114,42 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 		}
 		return Decision{Kind: Admit, Reason: "wait fingerprint changed or failsafe expired"}
 	}
-	servedPair := snapshot.ProductHead == snapshot.HeadSHA && snapshot.ProductTarget != "" && snapshot.ProductTarget == snapshot.TargetSHA
-	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == PermissionBlock {
-		governingCurrent := snapshot.ProductBlockKnown && snapshot.ProductBlockIdentity == BlockReentryIdentity(snapshot)
-		if servedPair && governingCurrent {
-			return Decision{Kind: Nothing, Reason: "permission or policy block remains current"}
-		}
-		return Decision{Kind: Admit, Reason: "permission readiness or trusted policy changed"}
-	}
 	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == "" {
 		return Decision{Kind: Admit, Reason: "blocked result has no authoritative re-entry discriminator"}
 	}
-	if snapshot.Product == product.Stopped() || (snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == FindingBlock) || snapshot.Product == product.Partial() {
-		if servedPair {
-			return Decision{Kind: Nothing, Reason: "unchanged head and target were already served"}
-		}
+	if reason, served := productServed(snapshot); served {
+		return Decision{Kind: Nothing, Reason: reason}
 	}
-	if snapshot.Product == product.Clean() || snapshot.Product == product.CleanLimited() {
-		if servedPair && snapshot.ProductGoverningKnown && snapshot.ProductGoverning == snapshot.GoverningIdentity {
-			return Decision{Kind: Nothing, Reason: "unchanged head, target, and governing inputs are clean"}
-		}
+	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == PermissionBlock {
+		return Decision{Kind: Admit, Reason: "permission readiness or trusted policy changed"}
 	}
 	if snapshot.Product == product.Merged() {
 		return Decision{Kind: Nothing, Reason: "pull request is already merged"}
 	}
 	return Decision{Kind: Admit, Reason: "eligible current state requires a lifecycle"}
+}
+
+func productPairServed(snapshot ForgeSnapshot) bool {
+	return snapshot.ProductHead == snapshot.HeadSHA && snapshot.ProductTarget != "" && snapshot.ProductTarget == snapshot.TargetSHA
+}
+
+func productServed(snapshot ForgeSnapshot) (string, bool) {
+	if !productPairServed(snapshot) {
+		return "", false
+	}
+	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == FindingBlock {
+		return "unchanged head and target were already served", true
+	}
+	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == PermissionBlock && snapshot.ProductBlockKnown && snapshot.ProductBlockIdentity == BlockReentryIdentity(snapshot) {
+		return "permission or policy block remains current", true
+	}
+	if snapshot.Product == product.Stopped() || snapshot.Product == product.Partial() {
+		return "unchanged head and target were already served", true
+	}
+	if (snapshot.Product == product.Clean() || snapshot.Product == product.CleanLimited()) && snapshot.ProductGoverningKnown && snapshot.ProductGoverning == snapshot.GoverningIdentity {
+		return "unchanged head, target, and governing inputs are clean", true
+	}
+	return "", false
 }
 
 // BlockReentryIdentity is the marker value for a permission or policy block.
