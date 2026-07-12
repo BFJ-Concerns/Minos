@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Admit all guarantee-bearing Ensemble records for one lifecycle stage."""
+
+import argparse
+import json
+import pathlib
+import subprocess
+import sys
+
+
+def classification(label, engine):
+    if label.startswith("review:"):
+        return ("reviewer" if engine == "claude" else "codex-reviewer", "openai" if engine == "claude" else "anthropic", "review")
+    if label.startswith("check:"):
+        return ("verifier" if engine == "codex" else "claude-verifier", "anthropic" if engine == "codex" else "openai", "verify")
+    if label.startswith("bar-check"):
+        return ("bar-judge" if engine == "codex" else "claude-bar-judge", "anthropic" if engine == "codex" else "openai", "verify")
+    if label.startswith("repair:"):
+        return ("repairer" if engine == "codex" else "claude-repairer", "anthropic" if engine == "codex" else "openai", "repair")
+    return None
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--policy", required=True)
+    parser.add_argument("--records", required=True)
+    parser.add_argument("--stage", choices=("review", "verify", "repair", "all"), default="all")
+    args = parser.parse_args()
+
+    records_root = pathlib.Path(args.records)
+    checker = pathlib.Path(__file__).with_name("admit-worker-model")
+    results = []
+    invalid = []
+    for record_path in sorted(records_root.rglob("agent.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            invalid.append({"record": str(record_path), "error": str(error)})
+            continue
+        selected = classification(record.get("label", ""), record.get("engine", ""))
+        if selected is None:
+            continue
+        role, counterpart, stage = selected
+        if args.stage not in ("all", stage):
+            continue
+        completed = subprocess.run(
+            [str(checker), "--policy", args.policy, "--role", role,
+             "--record", str(record_path), "--counterpart-family", counterpart],
+            text=True, capture_output=True, check=False,
+        )
+        try:
+            decision = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            decision = {"admitted": False, "level": "none", "reason": "invalid_admission_output", "error": completed.stderr.strip()}
+        decision["record"] = str(record_path)
+        results.append(decision)
+
+    admitted = bool(results) and not invalid and all(item.get("admitted") for item in results)
+    output = {
+        "schema_version": 1,
+        "stage": args.stage,
+        "admitted": admitted,
+        "records": results,
+        "invalid_records": invalid,
+    }
+    json.dump(output, sys.stdout, sort_keys=True)
+    sys.stdout.write("\n")
+    return 0 if admitted else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

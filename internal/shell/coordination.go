@@ -7,62 +7,86 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"bfj/minos/internal/forge"
 	"bfj/minos/internal/ledger"
 	"bfj/minos/internal/product"
 	"bfj/minos/internal/reconcile"
 )
 
-func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adaptation Adaptation, facts Facts) (reconcile.ForgeSnapshot, error) {
-	current, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
+func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (reconcile.ForgeSnapshot, error) {
+	adapter, err := newBehaviouralForge(cfg, facts.Forge, denyForgeMutation{})
 	if err != nil {
 		return reconcile.ForgeSnapshot{}, err
 	}
-	current.Forge = facts.Forge
-	current.Occasion = facts.Occasion
-	statuses, err := adaptation.GetStatuses(ctx, current.Owner, current.Repo, current.HeadSHA)
+	pullRequest, err := strconv.ParseInt(facts.PR, 10, 64)
+	if err != nil {
+		return reconcile.ForgeSnapshot{}, fmt.Errorf("invalid pull request %q: %w", facts.PR, err)
+	}
+	current, err := adapter.Snapshot(ctx, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, pullRequest)
 	if err != nil {
 		return reconcile.ForgeSnapshot{}, err
 	}
-	status, _ := statusForContext(statuses, "Minos")
-	target := current.BaseSHA
-	targetKnown := target != ""
-	// The legacy adaptation exposes only the target branch name. Preserve an
-	// explicit unknown rather than mistaking a mutable ref name for a revision.
-	if !targetKnown {
-		target = "unknown:" + current.BaseRef
-		log.Printf("coordination degraded: target revision unknown forge=%s repo=%s pr=%s target-branch=%s", current.Forge, current.RepoSlug(), current.PR, current.BaseRef)
+	if current.AuthenticatedUser != cfg.Service.BotLogin {
+		return reconcile.ForgeSnapshot{}, fmt.Errorf("forge snapshot authenticated as %q, want service identity %q", current.AuthenticatedUser, cfg.Service.BotLogin)
 	}
+	state := productStateFromForge(current, cfg.Service.BotLogin)
 	snapshot := reconcile.ForgeSnapshot{
-		Key: coordinationKey(current), HeadSHA: current.HeadSHA, TargetBranch: current.BaseRef,
-		TargetSHA: target, TargetKnown: targetKnown, Open: current.Open, Merged: current.Merged,
+		Key: coordinationKey(facts), HeadSHA: current.HeadSHA, TargetBranch: current.TargetBranch,
+		TargetSHA: current.TargetSHA, TargetKnown: true, Open: current.State == "open" && !current.Merged, Merged: current.Merged,
 		Draft: current.Draft, SkipDrafts: true, AuthorInScope: repoAuthorEligible(repo, current.Author),
-		Occasion: facts.Occasion, Product: productState(status), ProductHead: current.HeadSHA,
-		ProductTarget: target, GoverningIdentity: governingIdentity(repo), DeploymentProfile: deploymentIdentity(cfg, repo),
-		RequiredChecks: requiredCheckSnapshot(repo, statuses),
+		Occasion: facts.Occasion, Product: state, ProductHead: current.HeadSHA,
+		GoverningIdentity: governingIdentity(repo), DeploymentProfile: deploymentIdentity(cfg, repo),
+		RequiredChecks: requiredCheckSnapshotFromForge(current), Mergeability: strconv.FormatBool(current.Mergeable),
 	}
-	// The current product-status read carries no authenticated identity for the
-	// governing inputs which produced it. Keep that provenance explicitly unknown
-	// so a clean result cannot silently suppress the commissioned re-entry axis.
-	if snapshot.Product.Valid() {
-		snapshot.ProductGoverning = "unknown"
-		snapshot.ProductGoverningKnown = false
+	if record, ok := currentProductRecord(current, cfg.Service.BotLogin); ok {
+		snapshot.ProductHead = record["head"]
+		snapshot.ProductTarget = record["target"]
+		if governing := record["governing"]; governing != "" {
+			snapshot.ProductGoverning = governing
+			snapshot.ProductGoverningKnown = true
+		}
+		switch reconcile.BlockKind(record["block-kind"]) {
+		case reconcile.FindingBlock, reconcile.PermissionBlock:
+			snapshot.ProductBlockKind = reconcile.BlockKind(record["block-kind"])
+			snapshot.ProductBlockIdentity = record["block-identity"]
+			snapshot.ProductBlockKnown = snapshot.ProductBlockIdentity != ""
+		}
 	}
 	return snapshot, nil
 }
 
-func productState(status Status) product.State {
-	description := strings.TrimSpace(status.Description)
+func productStateFromForge(snapshot forge.Snapshot, serviceLogin string) product.State {
+	var newest forge.Status
+	for _, status := range snapshot.Statuses {
+		if status.Provider != forge.ForgejoProvider || status.Context != forge.OwnedStatusContext || status.Creator != serviceLogin || status.ID <= newest.ID {
+			continue
+		}
+		newest = status
+	}
 	for _, state := range product.States() {
-		if state.Description() == description {
+		if state.ForgeState() == string(newest.State) && state.Description() == strings.TrimSpace(newest.Description) {
 			return state
 		}
 	}
 	return product.State{}
+}
+
+func currentProductRecord(snapshot forge.Snapshot, serviceLogin string) (map[string]string, bool) {
+	var newest forge.Review
+	for _, review := range snapshot.Reviews {
+		if review.User == serviceLogin && review.CommitID == snapshot.HeadSHA && review.ID > newest.ID {
+			newest = review
+		}
+	}
+	if newest.ID == 0 {
+		return nil, false
+	}
+	return product.TrailingRecord(newest.Body)
 }
 
 func repoAuthorEligible(repo RepoConfig, author string) bool {
@@ -86,27 +110,20 @@ func deploymentIdentity(cfg ServiceConfig, repo RepoConfig) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func requiredCheckSnapshot(repo RepoConfig, statuses []Status) []reconcile.Check {
-	wanted := make(map[string]bool, len(repo.CI.RequiredChecks))
-	for _, name := range repo.CI.RequiredChecks {
-		wanted[name] = true
-	}
-	newest := make(map[string]Status)
-	for _, status := range statuses {
-		if !wanted[status.Context] || status.Context == "Minos" {
-			continue
+func requiredCheckSnapshotFromForge(snapshot forge.Snapshot) []reconcile.Check {
+	checks := make([]reconcile.Check, 0, len(snapshot.RequiredChecks))
+	for _, required := range snapshot.RequiredChecks {
+		state := string(forge.StatusAbsent)
+		var newest forge.Status
+		for _, status := range snapshot.Statuses {
+			if status.Provider == required.Provider && status.Context == required.Context && status.ID > newest.ID {
+				newest = status
+			}
 		}
-		if prior, ok := newest[status.Context]; !ok || status.ID > prior.ID {
-			newest[status.Context] = status
+		if newest.ID > 0 {
+			state = string(newest.State)
 		}
-	}
-	checks := make([]reconcile.Check, 0, len(repo.CI.RequiredChecks))
-	for _, name := range repo.CI.RequiredChecks {
-		state := "absent"
-		if status, ok := newest[name]; ok {
-			state = strings.ToLower(status.State)
-		}
-		checks = append(checks, reconcile.Check{Identity: name, Conclusion: state})
+		checks = append(checks, reconcile.Check{Identity: required.Provider + "/" + required.Context, Conclusion: state})
 	}
 	return checks
 }
@@ -145,6 +162,11 @@ func ledgerView(ctx context.Context, store *ledger.Store, key ledger.Key, thresh
 func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, snapshot reconcile.ForgeSnapshot, decision reconcile.Decision, store *ledger.Store, logw io.Writer) error {
 	switch decision.Kind {
 	case reconcile.Admit:
+		if snapshot.Product == product.Working() {
+			if err := publishReconciliationState(ctx, cfg, facts, snapshot, store, product.Queued()); err != nil {
+				return fmt.Errorf("return stale working status to queued: %w", err)
+			}
+		}
 		if err := SpawnRun(ctx, cfg, repo, facts, snapshot.TargetSHA, facts.Occasion); err != nil {
 			if errors.Is(err, ledger.ErrCapacity) {
 				fmt.Fprintf(logw, "deferred %s#%s: capacity\n", facts.RepoSlug(), facts.PR)
@@ -179,6 +201,9 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 		if err != nil {
 			return err
 		}
+		if err := ensureLaunchReady(ctx, cfg, facts, snapshot.TargetSHA, store); err != nil {
+			return err
+		}
 		// Remove the old owner's presence before atomically replacing its token.
 		// A forge failure leaves the old lease intact for a later reap attempt.
 		if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
@@ -197,9 +222,67 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 		}
 		fmt.Fprintf(logw, "replaced dead lifecycle for %s#%s token=%d\n", facts.RepoSlug(), facts.PR, newLease.Token)
 	case reconcile.CleanUp:
-		// The behavioural adapter owns the expected-head delete. Until it lands,
-		// retain the obligation rather than issuing an unsafe read-then-delete.
-		return fmt.Errorf("guarded branch cleanup adapter is unavailable")
+		if err := executeCleanup(ctx, cfg, facts, snapshot, store, logw); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func publishReconciliationState(ctx context.Context, cfg ServiceConfig, facts Facts, snapshot reconcile.ForgeSnapshot, store *ledger.Store, state product.State) error {
+	adapter, err := newBehaviouralForge(cfg, facts.Forge, ledgerForgeOwnership{store: store, key: snapshot.Key})
+	if err != nil {
+		return err
+	}
+	pullRequest, err := strconv.ParseInt(facts.PR, 10, 64)
+	if err != nil {
+		return err
+	}
+	result := adapter.SetProductStatus(ctx, forge.Guard{
+		Ownership: forge.ReconciliationOwnership(), Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+		PullRequest: pullRequest, HeadSHA: snapshot.HeadSHA, TargetSHA: snapshot.TargetSHA,
+	}, state)
+	if result.Outcome != forge.WriteApplied {
+		return fmt.Errorf("forge status %s: %s: %s", state.Name(), result.Outcome, result.Reason)
+	}
+	return nil
+}
+
+func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapshot reconcile.ForgeSnapshot, store *ledger.Store, logw io.Writer) error {
+	if snapshot.Key != coordinationKey(facts) {
+		return fmt.Errorf("cleanup snapshot identity does not match pull request")
+	}
+	adapter, err := newBehaviouralForge(cfg, facts.Forge, ledgerForgeOwnership{store: store, key: snapshot.Key})
+	if err != nil {
+		return err
+	}
+	pullRequest, err := strconv.ParseInt(facts.PR, 10, 64)
+	if err != nil {
+		return err
+	}
+	result := adapter.DeleteMergedBranch(ctx, forge.Guard{
+		Ownership: forge.ReconciliationOwnership(), Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+		PullRequest: pullRequest, HeadSHA: snapshot.HeadSHA, TargetSHA: snapshot.TargetSHA,
+	})
+	switch result.Outcome {
+	case forge.WriteApplied:
+		return store.RemoveCleanup(ctx, snapshot.Key)
+	case forge.WriteUncertain:
+		if err := store.BumpCleanupAttempt(ctx, snapshot.Key); err != nil {
+			return err
+		}
+		fmt.Fprintf(logw, "cleanup retained %s#%s: %s\n", facts.RepoSlug(), facts.PR, result.Reason)
+		return nil
+	case forge.WriteRejected:
+		if err := store.BumpCleanupAttempt(ctx, snapshot.Key); err != nil {
+			return err
+		}
+		_, incidentErr := store.UpsertIncident(ctx, ledger.Incident{
+			Key: snapshot.Key, Category: "cleanup-unsafe", ObservedHead: snapshot.HeadSHA,
+			ObservedTarget: snapshot.TargetSHA, LogLocation: cfg.Sweep.Log,
+		})
+		return incidentErr
+	default:
+		return fmt.Errorf("invalid cleanup outcome %q", result.Outcome)
+	}
 }

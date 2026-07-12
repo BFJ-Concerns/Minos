@@ -27,10 +27,9 @@ set -eu
 #   landed <sha>   committed and pushed
 #   fruitless      nothing to commit (empty tree)
 #   unwritable     the remote refused the push (a protected branch)
-# Only a genuine infrastructure failure exits non-zero. This is deliberate: the
-# session reaches this script through `minos adapt`, whose Go wrapper collapses
-# any non-zero exit to 1 and discards stdout on error — so a distinct exit code
-# could not reach the session. The token on a zero exit does.
+# Only a genuine infrastructure failure exits non-zero. This is deliberate:
+# guarded-commit-push consumes this token through command substitution, where a
+# non-zero exit cannot carry the typed outcome. The token on a zero exit does.
 
 owner="$1"
 repo="$2"
@@ -39,8 +38,7 @@ repo="$2"
 head_branch="$4"
 author_name="$5"
 author_email="$6"
-model="$7"
-message_file="$8"
+message_file="$7"
 
 : "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
 
@@ -79,11 +77,7 @@ cleanup() {
 trap cleanup EXIT
 
 # 1. Commit inside the workspace, credential-free.
-{
-  cat "$message_file"
-  printf '\n'
-  printf 'Minos-Model: %s\n' "$model"
-} >"$commit_message"
+cat "$message_file" >"$commit_message"
 ws_git add -A
 env GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
     GIT_COMMITTER_NAME="$author_name" GIT_COMMITTER_EMAIL="$author_email" \

@@ -57,11 +57,11 @@ esac
 		t.Fatal(err)
 	}
 	result := adapter.Push(t.Context(), Guard{
-		Ownership: Ownership{Attempt: "attempt"}, Repository: Repository{Owner: "acme", Name: "widget"},
+		Ownership: LifecycleOwnership(1), Repository: Repository{Owner: "acme", Name: "widget"},
 		PullRequest: 4, HeadSHA: "expected-head", TargetSHA: "expected-target",
 	}, PushRequest{
 		Branch: "feature", AuthorName: "Minos", AuthorEmail: "minos@example.invalid",
-		Model: "test-model", MessageFile: message, Workspace: t.TempDir(),
+		MessageFile: message, Workspace: t.TempDir(),
 	})
 	if result.Outcome != WriteApplied || result.SHA != "landed-head" {
 		t.Fatalf("Push() = %#v, want API-discovered applied outcome", result)

@@ -65,13 +65,7 @@ type RepoConfig struct {
 	CI struct {
 		RequiredChecks []string `toml:"required-checks"`
 	} `toml:"ci"`
-	FindIngest  *FindIngestConfig `toml:"find-ingest"`
 	Eligibility []EligibilityRule `toml:"eligibility"`
-}
-
-type FindIngestConfig struct {
-	Repository string `toml:"repository"`
-	Path       string `toml:"path"`
 }
 
 type Duration struct {
@@ -195,43 +189,7 @@ func validateRepoConfig(repo RepoConfig) error {
 			missing = append(missing, fmt.Sprintf("eligibility[%d].authors", index))
 		}
 	}
-	if repo.FindIngest != nil {
-		repository := strings.TrimSpace(repo.FindIngest.Repository)
-		path := strings.TrimSpace(repo.FindIngest.Path)
-		requireConfigValue(&missing, "find-ingest.repository", repository)
-		requireConfigValue(&missing, "find-ingest.path", path)
-		if repository != "" && !validRepositoryName(repository) {
-			missing = append(missing, "find-ingest.repository")
-		}
-		if path != "" && !validFindIngestPath(path) {
-			missing = append(missing, "find-ingest.path")
-		}
-	}
 	return missingConfigError(missing)
-}
-
-func validRepositoryName(value string) bool {
-	parts := strings.Split(value, "/")
-	if len(parts) != 2 {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" || part == "." || part == ".." {
-			return false
-		}
-		for _, char := range part {
-			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
-				(char < '0' || char > '9') && char != '.' && char != '_' && char != '-' {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func validFindIngestPath(value string) bool {
-	clean := filepath.Clean(value)
-	return !filepath.IsAbs(value) && clean != "." && clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
 
 func requireConfigValue(missing *[]string, name, value string) {

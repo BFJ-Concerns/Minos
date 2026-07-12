@@ -10,6 +10,7 @@ import unittest
 SCRIPT_DIR = pathlib.Path(__file__).parent
 COVERAGE = SCRIPT_DIR / "account-coverage"
 ADMISSION = SCRIPT_DIR / "admit-worker-model"
+WORKFLOW_ADMISSION = SCRIPT_DIR / "admit-workflow-models"
 
 
 def run_json(command, expected_code=0):
@@ -283,6 +284,72 @@ class ModelAdmissionTest(unittest.TestCase):
         }
         result = self.admit(record, role="inventory", counterpart=None)
         self.assertEqual((result["admitted"], result["level"]), (True, "mechanical"))
+
+
+class WorkflowAdmissionTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.temporary.name)
+        self.records = self.root / "ensemble"
+        self.policy = self.root / "policy.json"
+        self.policy.write_text(json.dumps({
+            "schema_version": 1,
+            "unresolved_model": "stop",
+            "roles": {
+                "reviewer": {
+                    "guarantee": True, "engine": "claude", "model": "claude-opus-4-8",
+                    "family": "anthropic", "request_models": ["opus"], "label_prefixes": ["review:"],
+                },
+                "verifier": {
+                    "guarantee": True, "engine": "codex", "model": "gpt-5.6-sol",
+                    "family": "openai", "request_models": ["gpt-5.6-sol"], "label_prefixes": ["check:"],
+                },
+                "repairer": {
+                    "guarantee": True, "engine": "codex", "model": "gpt-5.6-sol",
+                    "family": "openai", "request_models": ["gpt-5.6-sol"], "label_prefixes": ["repair:"],
+                },
+            },
+        }), encoding="utf-8")
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def record(self, number, label, engine, model, resolved):
+        directory = self.records / "runs" / "cwd" / "hash" / "run" / "agents" / f"{number:06d}"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "agent.json").write_text(json.dumps({
+            "schema_version": 2, "kind": "agent_record", "id": number,
+            "label": label, "engine": engine, "model": model, "resolved_model": resolved,
+        }), encoding="utf-8")
+
+    def admit(self, stage, expected_code=0):
+        return run_json([
+            str(WORKFLOW_ADMISSION), "--policy", str(self.policy),
+            "--records", str(self.records), "--stage", stage,
+        ], expected_code)
+
+    def test_stage_admits_every_exact_record(self):
+        self.record(1, "review:correctness", "claude", "opus", "claude-opus-4-8")
+        self.record(2, "check:correctness:ready.go", "codex", "gpt-5.6-sol", "gpt-5.6-sol")
+        review = self.admit("review")
+        verify = self.admit("verify")
+        self.assertTrue(review["admitted"])
+        self.assertTrue(verify["admitted"])
+        self.assertEqual(len(review["records"]), 1)
+        self.assertEqual(len(verify["records"]), 1)
+
+    def test_stage_rejects_missing_or_mismatched_records(self):
+        self.assertFalse(self.admit("review", expected_code=1)["admitted"])
+        self.record(1, "review:correctness", "claude", "opus", "claude-fable-5")
+        result = self.admit("review", expected_code=1)
+        self.assertFalse(result["admitted"])
+        self.assertEqual(result["records"][0]["reason"], "pin_mismatch")
+
+    def test_repair_stage_admits_exact_repair_author(self):
+        self.record(1, "repair:F-E2E", "codex", "gpt-5.6-sol", "gpt-5.6-sol")
+        result = self.admit("repair")
+        self.assertTrue(result["admitted"])
+        self.assertEqual(result["records"][0]["role"], "repairer")
 
 
 if __name__ == "__main__":

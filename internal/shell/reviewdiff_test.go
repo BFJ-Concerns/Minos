@@ -69,7 +69,7 @@ func TestReviewCommandsRejectPathsOutsideRepository(t *testing.T) {
 func TestReviewDedupeSplitsUpdatesFromNewFindings(t *testing.T) {
 	input := `{
   "existing": [
-    {"id": 91, "body": "Existing finding\n\nMinos: finding=F-7KQ3 head=abc priority=P1 run=review"},
+    {"id": 91, "body": "Existing finding\n\n<!-- Minos: finding=F-7KQ3 head=abc priority=P1 -->"},
     {"id": 92, "body": "Human comment"}
   ],
   "candidates": [

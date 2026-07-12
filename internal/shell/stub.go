@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"bfj/minos/internal/product"
 )
 
 // StubRunCommand is a mechanical lifecycle stand-in for coordination tests. It
@@ -15,12 +17,12 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_, adaptation, facts, store, token, err := loadRunGuard(os.Getenv("MINOS_CONFIG"))
+	cfg, adaptation, facts, store, token, err := loadRunGuard(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	if err := beginRun(ctx, adaptation, facts, store, token); err != nil {
+	if err := beginRun(ctx, cfg, adaptation, facts, store, token); err != nil {
 		return err
 	}
 	defer func() { _ = releaseRun(context.Background(), adaptation, facts, store, token) }()
@@ -43,7 +45,7 @@ func StubRunCommand(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown MINOS_STUB_MODE %q", mode)
 	}
-	current, err := currentAttempt(ctx, adaptation, facts, store, token)
+	current, err := currentAttempt(ctx, cfg, facts, store, token)
 	if err != nil {
 		return err
 	}
@@ -51,5 +53,5 @@ func StubRunCommand(ctx context.Context, args []string) error {
 		fmt.Println("stale; output discarded")
 		return nil
 	}
-	return adaptation.SetStatus(ctx, facts.Owner, facts.Repo, facts.HeadSHA, "Minos", "success", "Changes approved")
+	return publishLifecycleState(ctx, cfg, facts, store, token, product.Clean())
 }

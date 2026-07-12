@@ -3,8 +3,11 @@ package forge
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"bfj/minos/internal/product"
 )
 
 type recordingOwnership struct {
@@ -49,22 +52,41 @@ func TestAdapterRejectsMutationBeforeRunnerWhenOwnershipIsLost(t *testing.T) {
 		t.Fatalf("NewAdapter() error = %v", err)
 	}
 
-	result := adapter.SetStatus(t.Context(), Guard{
-		Ownership:   Ownership{Attempt: "attempt-7"},
+	result := adapter.SetProductStatus(t.Context(), Guard{
+		Ownership:   LifecycleOwnership(7),
 		Repository:  Repository{Owner: "acme", Name: "widget"},
 		PullRequest: 4,
 		HeadSHA:     "head",
 		TargetSHA:   "target",
-	}, StatusPending, "Reviewing changes")
+	}, product.Working())
 
 	if result.Outcome != WriteRejected || result.Reason != "ownership: lease lost" {
-		t.Fatalf("SetStatus() = %#v, want ownership rejection", result)
+		t.Fatalf("SetProductStatus() = %#v, want ownership rejection", result)
 	}
 	if ownership.calls != 1 {
 		t.Fatalf("ownership checks = %d, want 1", ownership.calls)
 	}
 	if len(runner.requests) != 0 {
 		t.Fatalf("runner received %d requests after ownership rejection", len(runner.requests))
+	}
+}
+
+func TestSetProductStatusRejectsInvalidStateBeforeOwnershipOrRunner(t *testing.T) {
+	t.Parallel()
+
+	ownership := &recordingOwnership{}
+	runner := &recordingRunner{}
+	adapter, err := NewAdapter(runner, ownership, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := adapter.SetProductStatus(t.Context(), Guard{}, product.State{})
+	if result.Outcome != WriteRejected || !strings.Contains(result.Reason, "invalid product state") {
+		t.Fatalf("SetProductStatus() = %#v, want invalid-state rejection", result)
+	}
+	if ownership.calls != 0 || len(runner.requests) != 0 {
+		t.Fatalf("invalid state reached ownership=%d runner=%d", ownership.calls, len(runner.requests))
 	}
 }
 

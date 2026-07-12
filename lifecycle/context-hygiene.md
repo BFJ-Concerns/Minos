@@ -91,11 +91,19 @@ and the outcomes you believe you published actually are. If you cannot
 re-establish those facts, exit without the mutation and let reconciliation start
 a fresh successor; do not act on a half-remembered state.
 
+The mechanical fallback is `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG"
+revalidate INDEX_PATH`. Run it after reloading the index and before the first
+post-compaction forge mutation. It checks the fenced owner, current head and
+target, trusted configuration identities, the non-empty lifecycle index, and
+the captured lead-model evidence. Its success does not replace re-checking the
+worker admissions and published outcomes recorded in the index; those remain
+the lead's judgement-bearing revalidation.
+
 ## Instrumentation you keep
 
-The live proof reads what this lifecycle measures, so the instruction obliges you
-to make these measurable; the measuring machinery itself is the integration's,
-but the hooks must exist in what you do and record:
+The launch wrapper records these automatically in
+`$MINOS_RUN_DIR/instrumentation.json`; keep the lifecycle index and full worker
+artefacts under `$MINOS_RUN_DIR` so their sizes are included:
 
 - **lead prompt growth** across the journey;
 - **input and output tokens** consumed;

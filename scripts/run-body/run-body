@@ -22,11 +22,22 @@ set +a
 : "${MINOS_ENSEMBLE_LAUNCH:?MINOS_ENSEMBLE_LAUNCH is required}"
 : "${MINOS_PINS:?MINOS_PINS is required}"
 : "${MINOS_REVIEW_SCRIPTS:?MINOS_REVIEW_SCRIPTS is required}"
+: "${MINOS_WORKER_MODEL_POLICY:?MINOS_WORKER_MODEL_POLICY is required}"
+: "${MINOS_FIX_SKILL:?MINOS_FIX_SKILL is required}"
+: "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
 : "${MINOS_BIN:?MINOS_BIN is required}"
 : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
 
 if [ ! -r "$MINOS_LIFECYCLE_INSTRUCTION" ]; then
   echo "lifecycle instruction is not readable: $MINOS_LIFECYCLE_INSTRUCTION" >&2
+  exit 2
+fi
+if [ ! -r "$MINOS_WORKER_MODEL_POLICY" ]; then
+  echo "worker model policy is not readable: $MINOS_WORKER_MODEL_POLICY" >&2
+  exit 2
+fi
+if [ ! -r "$MINOS_FIX_SKILL" ] || [ ! -r "$MINOS_ROOT_CAUSE_SKILL" ]; then
+  echo "repair skill wiring is not readable" >&2
   exit 2
 fi
 
@@ -39,4 +50,5 @@ exec "$MINOS_BIN" capture-claude \
   --pins "$MINOS_PINS" \
   --output "$MINOS_RUN_DIR/sessions/lead.jsonl" \
   --resolved "$MINOS_RUN_DIR/resolved-lead.json" \
+  --metrics "$MINOS_RUN_DIR/lead-metrics.json" \
   "$MINOS_ENGINE_LAUNCH_LEAD" <"$MINOS_LIFECYCLE_INSTRUCTION"

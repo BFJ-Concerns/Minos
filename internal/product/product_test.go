@@ -2,6 +2,7 @@ package product_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"bfj/minos/internal/product"
@@ -46,6 +47,34 @@ func TestStatesAreTheCompleteCommissionedVocabulary(t *testing.T) {
 	states[0] = product.State{}
 	if product.States()[0] != product.Queued() {
 		t.Fatal("caller mutated the package's state vocabulary")
+	}
+}
+
+func TestMachineRecordIsHiddenCanonicalAndStrict(t *testing.T) {
+	line, err := product.FormatRecord(map[string]string{
+		"finding": "F-7KQ3",
+		"head":    "abc123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "<!-- Minos: finding=F-7KQ3 head=abc123 -->" {
+		t.Fatalf("FormatRecord() = %q", line)
+	}
+	parsed, err := product.ParseRecord(line)
+	if err != nil || parsed["finding"] != "F-7KQ3" || parsed["head"] != "abc123" {
+		t.Fatalf("ParseRecord() = %#v, %v", parsed, err)
+	}
+	if _, err := product.ParseRecord("Minos: finding=F-7KQ3"); err == nil {
+		t.Fatal("visible legacy marker was accepted")
+	}
+	if _, err := product.ParseRecord("<!-- Minos: run=review run=fix -->"); err == nil {
+		t.Fatal("duplicate record key was accepted")
+	}
+	body := strings.Join([]string{"Substantive review text.", "", line, ""}, "\n")
+	trailing, ok := product.TrailingRecord(body)
+	if !ok || !reflect.DeepEqual(parsed, trailing) {
+		t.Fatalf("TrailingRecord() = %#v, %t", trailing, ok)
 	}
 }
 

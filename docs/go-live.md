@@ -85,6 +85,8 @@ sudo install -o root -g root -m 0755 scripts/review/* \
 sudo install -o root -g root -m 0644 lifecycle/*.md /opt/minos/lifecycle/
 sudo install -o root -g root -m 0644 examples/config/pins.toml \
   /opt/minos/pins.toml
+sudo install -o root -g root -m 0644 deploy/etc/minos/worker-models.json \
+  /opt/minos/worker-models.json
 
 # The fix run's skill is the one service-authored skill, shipped with this
 # repository (unlike the sync-owned skills/foundry tree installed below).
@@ -106,6 +108,14 @@ verifier, bar-judge) are reference only: the Foundry review workflows carry
 their own worker engine/model pins (see the pins file header). The
 placeholder-rejection machinery remains: the launcher fails before model use
 while a `REPLACE_WITH_…` placeholder remains in the role set.
+
+`worker-models.json` is the separate admission policy for the pins carried by
+the synced Foundry workflows. The Ensemble launcher relocates each durable run
+record under the Minos attempt directory, and the lifecycle admits every
+recognised review, verification, bar, and repair `agent.json` against this
+policy before its judgement counts. Other labels carry no lifecycle authority.
+Reconcile this file whenever the synced workflow pins change; it validates
+served models and does not select them.
 
 After Foundry sync populates `skills/foundry/`, install that sync-owned tree:
 
@@ -243,6 +253,16 @@ for forge identity and permissions, every pinned engine model, the optional
 registry, the incident stream, and required toolchain binaries. A failed probe
 also makes the command exit non-zero.
 
+Admission repeats this gate automatically before every detached lifecycle
+launch. The report is cached for five minutes under `runs.dir`, keyed by the
+exact `preflight.toml` content, so webhook bursts do not repeatedly spend engine
+quota. An expired or changed configuration is probed again. Failure refuses the
+launch and always updates the PR-keyed `readiness-preflight` incident in the
+coordination ledger. When `preflight.toml` remains readable, it also updates the
+configured incident stream; a malformed or unreadable preflight file cannot
+supply that stream path and remains visible through the ledger and service log.
+No launch-gate failure writes a PR error.
+
 From the checkout, run the offline deployment smoke:
 
 ```sh
@@ -256,9 +276,21 @@ systemd units. Its expected delivery response is `202 not opted in`: this proves
 the listener, HMAC verification, event normalisation, and opt-in boundary without
 contacting a forge or spawning a run.
 
-For a full disposable-Forgejo exercise, run `make e2e`. That test uses Docker
-and Forgejo 14.0.5; it is a development gate, not a substitute for the live
-smoke below.
+For a full disposable-Forgejo exercise, run `make e2e`. That deterministic mode
+uses Docker and Forgejo 14.0.5 and spends no engine quota. Run the deliberately
+small representative journeys separately when real pinned-engine evidence is
+required:
+
+```sh
+MINOS_E2E_LIVE=clean make e2e
+MINOS_E2E_LIVE=stopped make e2e
+```
+
+The harness prints the retained temporary directory on completion. Every mode
+keeps automatic `instrumentation.json` evidence under `runs/attempts/`; the live
+engine modes additionally require the lead log and `lifecycle-index.md`. These
+are development gates against a disposable forge; none contacts or mutates the
+deployed Minos service, and they do not replace the live smoke below.
 
 ## 6. Start the receiver and sweep timer
 

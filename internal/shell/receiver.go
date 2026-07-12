@@ -109,7 +109,7 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		_, _ = w.Write([]byte("not opted in\n"))
 		return nil
 	}
-	snapshot, err := buildSnapshot(ctx, cfg, repo, adaptation, facts)
+	snapshot, err := buildSnapshot(ctx, cfg, repo, facts)
 	if err != nil {
 		http.Error(w, "forge snapshot unavailable", http.StatusBadGateway)
 		return err

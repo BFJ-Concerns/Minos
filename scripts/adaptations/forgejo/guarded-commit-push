@@ -5,7 +5,7 @@ set -eu
 
 owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
 branch="$7"; author_name="$8"; author_email="$9"; shift 9
-model="$1"; message_file="$2"
+message_file="$1"
 : "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
 
 # The workspace is PR-controlled. Even read-only Git commands must not inherit
@@ -32,7 +32,7 @@ if [ "$(workspace_git rev-parse HEAD)" != "$head" ]; then
   exit 0
 fi
 
-if result="$("$(dirname "$0")/commit-push" "$owner" "$repo" "$pr" "$branch" "$author_name" "$author_email" "$model" "$message_file")"; then
+if result="$("$(dirname "$0")/commit-push" "$owner" "$repo" "$pr" "$branch" "$author_name" "$author_email" "$message_file")"; then
   case "$result" in
     landed\ *) write_result applied "" "${result#landed }" ;;
     fruitless) write_result rejected "workspace contains no change to push" ;;

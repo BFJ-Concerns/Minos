@@ -10,16 +10,24 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
+	"bfj/minos/internal/incidents"
 	"bfj/minos/internal/ledger"
+	"bfj/minos/internal/preflight"
 )
 
 var unitSafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
 var ErrRunCapacity = ledger.ErrCapacity
 var ErrRunLedger = ledger.ErrLedger
+var ErrLaunchPreflight = errors.New("lifecycle launch preflight failed")
 
 var systemdRunCommand = exec.CommandContext
+
+var checkLaunchPreflight = cachedLaunchPreflight
+
+const launchPreflightTTL = 5 * time.Minute
 
 func ledgerPath(cfg ServiceConfig) string { return filepath.Join(cfg.Runs.Dir, "coordination.db") }
 
@@ -33,6 +41,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return fmt.Errorf("%w: %v", ErrRunLedger, err)
 	}
 	defer store.Close()
+	if err := ensureLaunchReady(ctx, cfg, facts, targetSHA, store); err != nil {
+		return err
+	}
 	unitName := UnitName(facts)
 	workspace := filepath.Join(os.TempDir(), "minos-workspaces", unitName)
 	lease, err := store.AcquireLease(ctx, ledger.Lease{
@@ -53,6 +64,41 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return errors.Join(err, releaseErr)
 	}
 	return nil
+}
+
+func cachedLaunchPreflight(ctx context.Context, cfg ServiceConfig) (preflight.Report, bool, error) {
+	return preflight.CachedGate{
+		ConfigPath: filepath.Join(cfg.Root, "preflight.toml"),
+		CachePath:  filepath.Join(cfg.Runs.Dir, "preflight-cache.json"),
+		TTL:        launchPreflightTTL,
+	}.Check(ctx)
+}
+
+func ensureLaunchReady(ctx context.Context, cfg ServiceConfig, facts Facts, targetSHA string, store *ledger.Store) error {
+	report, _, err := checkLaunchPreflight(ctx, cfg)
+	if err == nil && report.Passed {
+		return nil
+	}
+	_, incidentErr := store.UpsertIncident(ctx, ledger.Incident{
+		Key: coordinationKey(facts), Category: "readiness-preflight", ObservedHead: facts.HeadSHA,
+		ObservedTarget: targetSHA, LogLocation: cfg.Sweep.Log,
+	})
+	var alertErr error
+	if preflightConfig, configErr := preflight.LoadConfig(filepath.Join(cfg.Root, "preflight.toml")); configErr == nil {
+		logPath := cfg.Sweep.Log
+		if strings.TrimSpace(logPath) == "" {
+			logPath = filepath.Join(cfg.Runs.Dir, "preflight.log")
+		}
+		_, alertErr = incidents.NewFileStore(preflightConfig.Alert.Directory).Raise(ctx, incidents.Event{
+			Key:        incidents.Key{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PullRequest: facts.PR, Category: "readiness-preflight"},
+			Diagnostic: "lifecycle readiness preflight failed", LogPath: logPath,
+			ObservedHead: facts.HeadSHA, ObservedTarget: targetSHA,
+		})
+	}
+	if err != nil {
+		return errors.Join(ErrLaunchPreflight, err, incidentErr, alertErr)
+	}
+	return errors.Join(ErrLaunchPreflight, incidentErr, alertErr)
 }
 
 func spawnRunUnit(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, lease ledger.Lease, occasion string) error {
@@ -129,5 +175,7 @@ func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, lease ledger.Lease,
 		"MINOS_AUTO_MERGE=" + autoMerge,
 		"MINOS_CONFIG=" + cfg.Root,
 		"MINOS_UNIT=" + lease.Unit,
+		"MINOS_GOVERNING_IDENTITY=" + governingIdentity(repo),
+		"MINOS_DEPLOYMENT_PROFILE=" + deploymentIdentity(cfg, repo),
 	}
 }

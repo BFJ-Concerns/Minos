@@ -71,16 +71,16 @@ func (r commitPushRepo) run(t *testing.T, token string, extraEnv ...string) (str
 		t.Fatal(err)
 	}
 	cmd := exec.Command(script, "minos", "subject", "7", "feature",
-		"Minos", "minos@bfj.invalid", "test-model", message)
+		"Minos", "minos@bfj.invalid", message)
 	cmd.Env = append(os.Environ(),
 		"MINOS_API_BASE=file://"+r.root,
 		"MINOS_FORGE_TOKEN="+token,
 		"MINOS_WORKSPACE="+r.workspace,
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
-	// Capture stdout alone — the outcome token — the way the session does through
-	// `minos adapt` (command substitution). The git diagnostics on stderr are
-	// noise for the token, folded into the error only when the run fails.
+	// Capture stdout alone — the outcome token — the way guarded-commit-push does
+	// through command substitution. The git diagnostics on stderr are noise for
+	// the token, folded into the error only when the run fails.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -138,8 +138,8 @@ func TestCommitPushLandsAttributedFastForward(t *testing.T) {
 	if author := gitAt(t, repo.remote, "log", "-1", "--format=%an <%ae>", "feature"); author != "Minos <minos@bfj.invalid>" {
 		t.Fatalf("fix commit misattributed: %q", author)
 	}
-	if body := gitAt(t, repo.remote, "log", "-1", "--format=%B", "feature"); !strings.Contains(body, "Minos-Model: test-model") {
-		t.Fatalf("fix commit missing model trailer:\n%s", body)
+	if body := gitAt(t, repo.remote, "log", "-1", "--format=%B", "feature"); strings.Contains(body, "Minos-Model:") {
+		t.Fatalf("fix commit exposed deployment model provenance:\n%s", body)
 	}
 }
 
@@ -201,8 +201,8 @@ func TestCommitPushKeepsCredentialFromWorkspaceHooks(t *testing.T) {
 // TestCommitPushClassifiesRemoteRejection is the F3 regression: a protected head
 // whose push the remote refuses reports the unwritable outcome, distinct from an
 // infrastructure failure (which would exit non-zero). The outcome rides stdout
-// at exit 0 because the session reaches this script through the `minos adapt`
-// wrapper, which discards a non-zero adaptation's stdout and exit code.
+// at exit 0 because guarded-commit-push consumes it through command substitution;
+// a non-zero command substitution cannot carry that typed outcome.
 func TestCommitPushClassifiesRemoteRejection(t *testing.T) {
 	repo := setupCommitPushRepo(t)
 	// A pre-receive hook that declines every push stands in for a protected

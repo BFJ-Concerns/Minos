@@ -105,7 +105,7 @@ esac
 			// retry semantics without making the unit suite wait for wall time.
 			adapter.mergeRetryDelays = []time.Duration{0, 0}
 			result := adapter.Merge(t.Context(), Guard{
-				Ownership: Ownership{Attempt: "attempt"}, Repository: Repository{Owner: "acme", Name: "widget"},
+				Ownership: LifecycleOwnership(1), Repository: Repository{Owner: "acme", Name: "widget"},
 				PullRequest: 4, HeadSHA: "expected-head", TargetSHA: "expected-target",
 			}, MergeMethodSquash)
 			if result.Outcome != test.want {

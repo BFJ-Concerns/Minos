@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,8 +15,16 @@ import (
 	"syscall"
 	"time"
 
+	"bfj/minos/internal/atomicreplace"
 	"bfj/minos/internal/ledger"
 )
+
+type attemptInstrumentation struct {
+	Schema        int          `json:"schema"`
+	ArtefactFiles int          `json:"artefact_files"`
+	ArtefactBytes int64        `json:"artefact_bytes"`
+	Lead          *leadMetrics `json:"lead,omitempty"`
+}
 
 func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	fs := flag.NewFlagSet("run-wrap", flag.ContinueOnError)
@@ -49,6 +58,7 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 	var cancelHeartbeat context.CancelFunc
 	var heartbeatDone <-chan struct{}
 	workspace := os.Getenv("MINOS_WORKSPACE")
+	runDir := os.Getenv("MINOS_RUN_DIR")
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("run-wrap panic: %v", recovered)
@@ -64,10 +74,10 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 		if workspace != "" {
 			removeErr = os.RemoveAll(workspace)
 		}
+		instrumentationErr := writeAttemptInstrumentation(runDir)
 		closeErr := closeRunLease(context.Background(), cfg, facts, store, token)
-		err = errors.Join(err, cleanupErr, removeErr, closeErr)
+		err = errors.Join(err, cleanupErr, removeErr, instrumentationErr, closeErr)
 	}()
-	runDir := os.Getenv("MINOS_RUN_DIR")
 	if runDir == "" || workspace == "" {
 		return fmt.Errorf("MINOS_RUN_DIR and MINOS_WORKSPACE are required")
 	}
@@ -134,6 +144,44 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 		}
 	}
 	return nil
+}
+
+func writeAttemptInstrumentation(runDir string) error {
+	if strings.TrimSpace(runDir) == "" {
+		return nil
+	}
+	metrics := attemptInstrumentation{Schema: 1}
+	err := filepath.WalkDir(runDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Base(path) == "instrumentation.json" {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			metrics.ArtefactFiles++
+			metrics.ArtefactBytes += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if data, err := os.ReadFile(filepath.Join(runDir, "lead-metrics.json")); err == nil {
+		var lead leadMetrics
+		if json.Unmarshal(data, &lead) == nil {
+			metrics.Lead = &lead
+		}
+	}
+	data, err := json.Marshal(metrics)
+	if err != nil {
+		return err
+	}
+	return atomicreplace.Write(filepath.Join(runDir, "instrumentation.json"), append(data, '\n'), 0o644)
 }
 
 func attemptToken() (int64, error) {

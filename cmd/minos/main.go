@@ -20,7 +20,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos preflight|incident|heartbeat|heartbeat-check|receive|sweep|run-wrap|run-guard|adapt|capture-claude|review|marker|handle|provenance|stub-run|ws-exec")
+		return fmt.Errorf("usage: minos preflight|incident|heartbeat|heartbeat-check|receive|sweep|run-wrap|run-guard|forge|capture-claude|review|marker|handle|provenance|stub-run|ws-exec")
 	}
 	ctx := context.Background()
 	switch args[0] {
@@ -40,8 +40,8 @@ func run(args []string) error {
 		return shell.RunWrapCommand(ctx, args[1:])
 	case "run-guard":
 		return shell.RunGuardCommand(ctx, args[1:])
-	case "adapt":
-		return shell.AdaptCommand(ctx, args[1:], os.Stdin, os.Stdout)
+	case "forge":
+		return shell.ForgeCommand(ctx, args[1:], os.Stdin, os.Stdout)
 	case "capture-claude":
 		return shell.CaptureClaudeCommand(ctx, args[1:], os.Stdin, os.Stderr)
 	case "review":

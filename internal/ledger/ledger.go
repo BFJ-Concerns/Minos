@@ -583,6 +583,41 @@ func (s *Store) AckIncident(ctx context.Context, key Key, category string) (bool
 	return n == 1, err
 }
 
+func (s *Store) ListIncidents(ctx context.Context) ([]Incident, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT forge,owner,repo,pr,category,first_at,last_at,retry_count,
+		COALESCE(observed_head,''),COALESCE(observed_target,''),COALESCE(log_location,''),acknowledged_at
+		FROM incidents ORDER BY first_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var incidents []Incident
+	for rows.Next() {
+		var incident Incident
+		var first, last string
+		var acknowledged sql.NullString
+		if err := rows.Scan(&incident.Forge, &incident.Owner, &incident.Repo, &incident.PR, &incident.Category,
+			&first, &last, &incident.RetryCount, &incident.ObservedHead, &incident.ObservedTarget, &incident.LogLocation, &acknowledged); err != nil {
+			return nil, err
+		}
+		if incident.FirstAt, err = parseStamp(first); err != nil {
+			return nil, err
+		}
+		if incident.LastAt, err = parseStamp(last); err != nil {
+			return nil, err
+		}
+		if acknowledged.Valid {
+			value, parseErr := parseStamp(acknowledged.String)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			incident.AcknowledgedAt = &value
+		}
+		incidents = append(incidents, incident)
+	}
+	return incidents, rows.Err()
+}
+
 func (s *Store) AddCleanup(ctx context.Context, cleanup Cleanup) error {
 	now := s.now().UTC()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO cleanup_obligations(forge,owner,repo,pr,merged_head,branch,created_at,attempts) VALUES(?,?,?,?,?,?,?,0)
