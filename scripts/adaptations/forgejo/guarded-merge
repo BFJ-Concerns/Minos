@@ -1,0 +1,72 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; method="$7"
+case "$method" in
+  merge|rebase|squash|rebase-merge|fast-forward-only) ;;
+  *) write_result rejected "unsupported merge method: $method"; exit 0 ;;
+esac
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+if [ "$(printf '%s' "$guard_base_json" | jq -r '.user_can_merge // false')" != "true" ]; then
+  write_result rejected "authenticated identity cannot merge the target branch"
+  exit 0
+fi
+
+payload="$(jq -nc --arg method "$method" --arg head "$head" '{Do:$method,head_commit_id:$head}')"
+merge_http_status=transport-error
+merge_http_detail=""
+if api_with_status POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/merge" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1; then
+  merge_http_status="$api_status_code"
+  merge_http_detail="$(printf '%s' "$api_status_body" | jq -r '.message // .error // empty' 2>/dev/null || true)"
+fi
+
+# Forgejo may acknowledge the merge before the updated PR becomes visible to a
+# following read. Poll the actual condition over a short, bounded window; a
+# read that never proves the expected head merged remains honestly uncertain.
+attempt=1
+delay=0.05
+discovery_attempts=6
+retryable_refusal=false
+if [ "$merge_http_status" = "405" ] && [ "$merge_http_detail" = "Please try again later" ]; then
+  # Forgejo confirms that this attempt made no change. One discovery read still
+  # protects against an inconsistent response; the Go adapter may then re-check
+  # ownership before invoking a fresh guarded attempt.
+  discovery_attempts=1
+  retryable_refusal=true
+fi
+while [ "$attempt" -le "$discovery_attempts" ]; do
+  if observed="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}" 2>/dev/null)" &&
+    printf '%s' "$observed" | jq -e --arg head "$head" '(.merged // false) and .head.sha == $head' >/dev/null; then
+    write_result applied
+    exit 0
+  fi
+  [ "$attempt" -eq "$discovery_attempts" ] && break
+  sleep "$delay"
+  case "$delay" in
+    0.05) delay=0.1 ;;
+    0.1) delay=0.2 ;;
+    0.2) delay=0.4 ;;
+    0.4) delay=0.8 ;;
+  esac
+  attempt=$((attempt + 1))
+done
+
+if [ "$retryable_refusal" = "true" ]; then
+  write_result retryable "Forgejo merge is temporarily not ready"
+  exit 0
+fi
+if [ -n "$merge_http_detail" ]; then
+  write_result uncertain "merge outcome could not be discovered after HTTP ${merge_http_status}: ${merge_http_detail}"
+else
+  write_result uncertain "merge outcome could not be discovered after HTTP ${merge_http_status}"
+fi

@@ -1,0 +1,53 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
+branch="$7"; author_name="$8"; author_email="$9"; shift 9
+model="$1"; message_file="$2"
+: "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
+
+# The workspace is PR-controlled. Even read-only Git commands must not inherit
+# the forge credential or honour workspace-selected hooks and fsmonitor.
+workspace_git() {
+  env -u MINOS_FORGE_TOKEN \
+    git -C "$MINOS_WORKSPACE" -c core.hooksPath=/dev/null -c core.fsmonitor= "$@"
+}
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+if [ "$(printf '%s' "$guard_pr_json" | jq -r '.head.repo.full_name // ""')" != "${owner}/${repo}" ] ||
+   [ "$(printf '%s' "$guard_pr_json" | jq -r '.head.ref // ""')" != "$branch" ]; then
+  write_result rejected "pull request branch is outside the guarded repository"
+  exit 0
+fi
+if [ "$(workspace_git rev-parse HEAD)" != "$head" ]; then
+  write_result rejected "workspace does not start at the expected head"
+  exit 0
+fi
+
+if result="$("$(dirname "$0")/commit-push" "$owner" "$repo" "$pr" "$branch" "$author_name" "$author_email" "$model" "$message_file")"; then
+  case "$result" in
+    landed\ *) write_result applied "" "${result#landed }" ;;
+    fruitless) write_result rejected "workspace contains no change to push" ;;
+    unwritable) write_result rejected "branch rejected the guarded non-force push" ;;
+    *) write_result uncertain "commit-push returned an unknown outcome" ;;
+  esac
+else
+  local_head="$(workspace_git rev-parse HEAD 2>/dev/null || true)"
+  remote_head=""
+  if branch_json="$(api GET "/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$branch")" 2>/dev/null)"; then
+    remote_head="$(printf '%s' "$branch_json" | jq -r '.commit.id // .commit.sha // ""')"
+  fi
+  if [ -n "$local_head" ] && [ "$remote_head" = "$local_head" ]; then
+    write_result applied "" "$local_head"
+  else
+    write_result uncertain "push outcome could not be discovered"
+  fi
+fi

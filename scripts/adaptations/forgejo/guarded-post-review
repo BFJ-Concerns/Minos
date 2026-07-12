@@ -1,0 +1,40 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
+input="$(cat)"
+
+if ! printf '%s' "$input" | jq -e '
+  (.state == "APPROVE" or .state == "REQUEST_CHANGES" or .state == "COMMENT") and
+  (.body | type) == "string" and
+  all(.comments[]?; (.path | type) == "string" and (.path | length) > 0 and (.body | type) == "string" and (.body | length) > 0 and .new_position > 0 and .old_position == 0)' >/dev/null; then
+  write_result rejected "invalid consolidated review payload"
+  exit 0
+fi
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+requested_state="$(printf '%s' "$input" | jq -r '.state')"
+forge_state="$requested_state"
+[ "$requested_state" != "APPROVE" ] || forge_state="APPROVED"
+body="$(printf '%s' "$input" | jq -r '.body')"
+payload="$(printf '%s' "$input" | jq --arg head "$head" '
+  {event:(if .state == "APPROVE" then "APPROVED" else .state end), body, commit_id:$head,
+   comments:[.comments[]? | {path, body, new_position}]}')"
+api POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+
+if reviews="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" 2>/dev/null)" &&
+  printf '%s' "$reviews" | jq -e --arg head "$head" --arg state "$forge_state" --arg body "$body" --arg login "$login" '
+    any(.[]; .commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login)' >/dev/null; then
+  write_result applied
+else
+  write_result uncertain "review write could not be discovered"
+fi

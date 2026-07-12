@@ -1,4 +1,4 @@
-.PHONY: test build check scripts shellcheck e2e deployment-smoke
+.PHONY: test build check scripts shellcheck e2e forgejo-conformance deployment-smoke
 
 test:
 	go test ./...
@@ -52,6 +52,9 @@ shellcheck:
 
 e2e: build
 	./scripts/e2e/forgejo-smoke.sh
+
+forgejo-conformance:
+	./scripts/e2e/forgejo-conformance.sh
 
 deployment-smoke: build
 	./scripts/e2e/deployment-smoke.sh
