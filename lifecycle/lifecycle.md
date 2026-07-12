@@ -95,10 +95,17 @@ send to the background cannot notify you when it finishes, so yielding to "wait
 for" background work ends the run with the journey unfinished and nothing to
 resume it but a fresh successor. Invoke Ensemble, reviewer and repair fan-outs,
 build and test commands, and CI polling as **foreground** calls that return
-their results to you directly, however long they take. Waiting on something real
-— CI, an engine, a long suite — is either live foreground work you stay with
-while the heartbeat proves you alive, or a product-visible waiting state you
-record before you exit. It is never a backgrounded job you expect to hear from.
+their results to you directly, however long they take. Awaiting a real,
+in-progress thing — a long engine call you have made, a long test suite you are
+running, prerequisite CI you need to clear — is live foreground work you stay
+with while the heartbeat proves you alive; it is never a backgrounded job you
+expect to hear from. Distinguish that from two things it is not: **pending
+prerequisite CI** may instead be recorded as the `waiting` **product state** and
+exited on, because reconciliation can watch its fingerprint and resume (step 9);
+an **engine or model-backend that is unavailable** — down, or a stale-refreshed
+credential — is not a wait at all but an operational failure that takes the
+retryable-exit lane (see `failure-taxonomy.md`), never the `waiting` product
+state, whose fingerprint has no engine dimension to resume on.
 
 ## The journey
 
@@ -119,7 +126,13 @@ wait, a final clearance and merge — and proceed.
 ### 2. Take ownership
 
 Acquire the lease and add the eyes reaction (see Ownership above). If the lease
-is already held live, exit successfully.
+is already held live, exit successfully without touching the forge. On a
+successful acquisition, publish the **`working`** product state — write the
+single `Minos` status to `working` on the observed head through the
+product-surface status operation — so the PR shows a live owner is attempting the
+lifecycle. Do this before substantive work: an older or absent status on the head
+otherwise reads as unowned to both the sweep and the PR's people while you are in
+fact working it.
 
 ### 3. Sync the target into a writable head
 
@@ -178,11 +191,15 @@ Bridge it to the service like this:
 - **Publish and read the forge only through the service's guarded operations**
   (below), which select the configured forge and hold the credential boundary —
   not the skill's own posting machinery.
-- **Route the skill's pre-existing findings** — those it marks as not introduced
-  by the change — to the repository's configured find-ingest log, never to the
-  PR and never through the changed-line gate. When no destination is configured,
-  they stay in deployment evidence. The posted review is change-scoped, so a
-  repair answers only what this change raised and never chases a legacy backlog.
+- **Keep the skill's pre-existing findings in deployment evidence** — those it
+  marks as not introduced by the change stay in the session log, never posted to
+  the PR and never through the changed-line gate. The first service does not gain
+  a second repository write path to ingest them elsewhere: the skill's own
+  annexe/find-ingest routing is a general-caller convenience that this service
+  adapts away — do not use it. The posted review is change-scoped, so a repair
+  answers only what this change raised and never chases a legacy backlog. (A
+  person with repository authority may always ship over the change-introduced
+  findings that do post; the machine is who they bind.)
 
 **Coverage is honest and accounted.** While reviewing, keep a scratch inspection
 record of the changed material and the definitions and call sites you read to
@@ -248,13 +265,18 @@ remain honest history rather than being mutated across moved lines.
 
 A failed bar check is a critique you address within the lifecycle, not a run
 failure and never grounds to discard verified findings — those always publish.
-The review skill answers a failed bar with one fresh remediation round over the
-briefs the verdict implicates; drive that mechanism first. Whether a further
-resubmission is worth it after that round is your judgement at your own pacing —
-there is no fixed count and no clock. **The bar gates convergence, never the
-publication of surviving verified findings:** if a critique remains unresolved,
-the one review still posts those findings with a non-approving verdict, the
-product state is partial, and auto-merge stays ineligible.
+The pinned review skill owns how the critique is worked, and you compose its
+procedure rather than inventing your own: a failed bar drives **one** fresh
+remediation round over the briefs the verdict implicates, re-verified and
+re-judged by a bar that is not handed the first verdict. **One round, then
+stop** — if that second bar judgement is also adverse, do not loop again; a
+review ground through repeated re-judging until a judge relents is worth less
+than an honestly failed one. Publish the review as it stands. **The bar gates
+convergence, never the publication of surviving verified findings:** an
+unresolved critique means the one review posts those findings with a
+non-approving verdict, the product state is partial, and auto-merge stays
+ineligible. This is composition, not judgement of your own — do not license
+yourself a further round the skill forbids.
 
 A *valid adverse* bar judgement is never degraded away. The bar *check itself*
 failing — a checker that cannot run or returns unusable output — is different:
@@ -279,9 +301,16 @@ must perform.
 Repair is done by fresh workers you convene — composing the service's fix
 procedure over the general debugging skill — never by your own judgement acting
 on findings it also verified. Independence is load-bearing and holds even though
-one accountable lead owns the journey: **the worker repairing a finding is never
-the worker that verified it, and the fresh review of a repaired head is never
-performed by the worker that authored the repair.**
+one accountable lead owns the journey. Make it executable in the fan-out
+assignment, both directions: **the worker repairing a finding is never the
+worker that verified it; and a worker that authored a repair is excluded from
+every judgement role on the repaired head that assesses that repair — neither a
+reviewer nor a finding-verifier of the repaired head.** "No agent verifies its
+own finding or repair" is a constraint you enforce when you assign the roles, not
+one the pinned workflow enforces for you: the review-panel workflow guarantees a
+finding's producer and its checker are disjoint, but it knows nothing of who
+authored the repair, so the repair-author exclusion across the repaired head's
+review *and* verification is yours to hold.
 
 - The workspace merge/repair is committed as an ordinary attributed,
   non-force-pushed commit parented by the observed head; forge and model-backend
@@ -290,8 +319,9 @@ performed by the worker that authored the repair.**
   current head; guard ownership, then push against the expected old head.
 - **After the push, a repaired head is a new head.** Refresh your observed head,
   refresh the index, re-form the worker briefs from current facts, and give the
-  **entire current PR** to fresh review and verification — the full current diff
-  and all changed files in context, not only the commits since the last pass. The
+  **entire current PR** to review and verification workers that did not author
+  the repair (fresh, per the exclusion above) — the full current diff and all
+  changed files in context, not only the commits since the last pass. The
   repair delta and the prior material findings get extra attention, but they
   never narrow the review boundary: every currently changed file, applicable
   brief, and relevant call site is in scope again.
@@ -366,21 +396,42 @@ satisfied.
 The journey settles into exactly one product state, and the settling is an
 explicit, honest exit — converged, stopped-with-findings, waiting, blocked,
 partial, or (where policy grants it) merged. The current head's one consolidated
-review is already published with its verdict (step 5); the exit now writes the
-single `Minos` status for the settled state, takes any policy-permitted merge,
-removes the eyes reaction, and releases the lease — in an order that never leaves
-a live lease without its outcome. The product states and their forge spellings
-are the product-surface seam (named below); use its vocabulary, never process
-language.
+review is already published with its verdict (step 5). Settle in this concrete
+order, guarding lease ownership immediately before each consequential write:
 
-- **A wait is a settled shape too.** When the journey turns on something real
-  that has not happened yet — pending prerequisite CI, an engine you cannot
-  reach now — you may either stay in the foreground and keep heartbeating through
-  it (never backgrounded), or record the **waiting** product state with its wait
-  fingerprint in the ledger, remove eyes, and release the lease. A later webhook
-  or the sweep starts a fresh successor when the fingerprint changes or its
-  configured failsafe expires. An approving review already posted stands while
-  the `Minos` status waits on CI.
+1. **Write the settled `Minos` status** on the observed head: for a converging,
+   mergeable head, `clean` (or `clean, limited` under degraded independence); for
+   a stopped chase, `stopped`; for outside action needed, `blocked`; for
+   inadequate coverage, `partial`; for pending prerequisite CI, `waiting`.
+   **`merged` is not written here** — a head is not merged until the merge
+   confirms.
+2. **Take the policy-permitted merge, if any** (next bullet). The `clean` status
+   settles *before* the merge; the merge is a separate, later operation. A path
+   that does not merge ends here — the status from step 1 is the settled outcome.
+3. **On confirmed merge only, write `merged`** and perform the guarded
+   source-branch delete (below). If any consequential write's outcome is
+   uncertain — a merge, a status, the review — do **not** blindly retry it: first
+   discover whether the service-authored result already landed (the merge
+   outcome, the status, the submitted review) and retry only if it did not. A
+   merge you cannot confirm is not `merged`.
+4. **Remove the eyes reaction.**
+5. **Release the lease — strictly last**, after every owned write above has
+   completed, so a post-merge status update is never left unowned and no live
+   lease is ever left without its outcome.
+
+The product states and their forge spellings are the product-surface seam (named
+below); use its vocabulary, never process language.
+
+- **A wait is a settled shape too.** When the head must clear **pending
+  prerequisite CI** before it can go further, you may either stay in the
+  foreground and keep heartbeating through it (never backgrounded), or settle the
+  **`waiting`** status (order step 1) with its wait fingerprint in the ledger,
+  then remove eyes and release the lease. A later webhook or the sweep starts a
+  fresh successor when the fingerprint changes or its configured failsafe
+  expires. An approving review already posted stands while the `Minos` status
+  waits on CI. An *unavailable* engine or model-backend is not this — it is an
+  operational failure on the retryable-exit lane (`failure-taxonomy.md`), never
+  the `waiting` product state.
 - **Merge only where policy grants it.** Repository policy alone decides whether
   the service may merge automatically or leaves merging to an authorised person
   through the forge; Minos reads no second human approval signal. Where auto-merge
