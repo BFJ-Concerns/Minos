@@ -65,8 +65,8 @@ type RepoConfig struct {
 	CI struct {
 		RequiredChecks []string `toml:"required-checks"`
 	} `toml:"ci"`
-	FindIngest *FindIngestConfig `toml:"find-ingest"`
-	Triggers   []TriggerRule     `toml:"trigger"`
+	FindIngest  *FindIngestConfig `toml:"find-ingest"`
+	Eligibility []EligibilityRule `toml:"eligibility"`
 }
 
 type FindIngestConfig struct {
@@ -187,14 +187,12 @@ func validateRepoConfig(repo RepoConfig) error {
 		}
 	}
 	requireConfigValue(&missing, "adaptation.skill", repo.Adaptation.Skill)
-	if len(repo.Triggers) == 0 {
-		missing = append(missing, "trigger")
+	if len(repo.Eligibility) == 0 {
+		missing = append(missing, "eligibility")
 	}
-	for index, trigger := range repo.Triggers {
-		prefix := fmt.Sprintf("trigger[%d].", index)
-		requireConfigValue(&missing, prefix+"run", trigger.Run)
-		if len(trigger.On) == 0 {
-			missing = append(missing, prefix+"on")
+	for index, rule := range repo.Eligibility {
+		if len(rule.Authors) == 0 {
+			missing = append(missing, fmt.Sprintf("eligibility[%d].authors", index))
 		}
 	}
 	if repo.FindIngest != nil {

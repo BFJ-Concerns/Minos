@@ -9,6 +9,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
+
+	"bfj/minos/internal/ledger"
+	"bfj/minos/internal/reconcile"
 )
 
 // Webhooks contain event metadata, not repository contents. One MiB leaves
@@ -105,73 +109,32 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		_, _ = w.Write([]byte("not opted in\n"))
 		return nil
 	}
-	facts, err = resolveReceiverFacts(ctx, adaptation, facts)
+	snapshot, err := buildSnapshot(ctx, cfg, repo, adaptation, facts)
 	if err != nil {
-		http.Error(w, "label event resolution failed", http.StatusBadRequest)
+		http.Error(w, "forge snapshot unavailable", http.StatusBadGateway)
 		return err
 	}
-	decision, ok := EvaluateTriggers(facts, repo)
-	if !ok {
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("no trigger\n"))
-		return nil
-	}
-	label, err := InFlightLabel(decision.Kind)
+	store, err := ledger.Open(ledgerPath(cfg))
 	if err != nil {
+		http.Error(w, "run ledger unavailable", http.StatusServiceUnavailable)
 		return err
 	}
-	if facts.HasLabel(label) && !NewHeadOccasion(facts.Occasion) {
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("already in flight\n"))
-		return nil
-	}
-	latched, err := hasTerminalMarker(cfg.Runs.Dir, facts, decision.Kind)
+	defer store.Close()
+	view, err := ledgerView(ctx, store, snapshot.Key, cfg.Sweep.LivenessThreshold.Duration)
 	if err != nil {
-		http.Error(w, "terminal evidence unavailable", http.StatusInternalServerError)
+		http.Error(w, "run ledger unavailable", http.StatusServiceUnavailable)
 		return err
 	}
-	if latched {
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("terminal latch\n"))
-		return nil
-	}
-	if err := SpawnRun(ctx, cfg, repo, facts, decision.Kind, facts.Occasion); err != nil {
-		if errors.Is(err, ErrRunCapacity) {
-			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte("deferred: capacity\n"))
-			return nil
-		}
+	decision := reconcile.Decide(snapshot, view, time.Now())
+	if err := executeDecision(ctx, cfg, repo, facts, snapshot, decision, store, log.Writer()); err != nil {
 		if errors.Is(err, ErrRunLedger) {
 			http.Error(w, "run ledger unavailable", http.StatusServiceUnavailable)
-			return err
+		} else {
+			http.Error(w, "reconcile failed", http.StatusInternalServerError)
 		}
-		http.Error(w, "spawn failed", http.StatusInternalServerError)
 		return err
 	}
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = fmt.Fprintf(w, "spawned %s\n", decision.Kind)
+	_, _ = fmt.Fprintf(w, "%s\n", decision.Kind)
 	return nil
-}
-
-func resolveReceiverFacts(ctx context.Context, adaptation Adaptation, facts Facts) (Facts, error) {
-	if facts.Occasion != "label-updated" {
-		return facts, nil
-	}
-	event, err := adaptation.LatestLabelEvent(ctx, facts.Owner, facts.Repo, facts.PR)
-	if err != nil {
-		return Facts{}, err
-	}
-	if event.Label == "" || event.Action == "" {
-		return facts, nil
-	}
-	facts.Occasion = "label-" + event.Action + ":" + event.Label
-	facts.Actor = event.Actor
-	if event.Action == "added" {
-		actor, err := adaptation.LabelActor(ctx, facts.Owner, facts.Repo, facts.PR, event.Label)
-		if err != nil {
-			return Facts{}, err
-		}
-		facts.Actor = actor
-	}
-	return facts, nil
 }

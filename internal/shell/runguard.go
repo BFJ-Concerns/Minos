@@ -5,140 +5,170 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
+
+	"bfj/minos/internal/ledger"
 )
 
 const runPresenceReaction = "eyes"
 
-// RunGuardCommand exposes the run claim's forge-visible guards to an agent
-// session. Keeping these checks here gives real and stand-in sessions one
-// lifecycle for posting work and releasing presence.
 func RunGuardCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run-guard", flag.ContinueOnError)
 	configRoot := fs.String("config", DefaultConfigRoot, "configuration root")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: minos run-guard [--config root] begin|current|release")
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: minos run-guard [--config root] begin|current|release|advance|clearance|wait")
 	}
-
-	cfg, adaptation, facts, kind, err := loadRunGuard(*configRoot)
+	_, adaptation, facts, store, token, err := loadRunGuard(*configRoot)
 	if err != nil {
 		return err
 	}
+	defer store.Close()
 	switch fs.Arg(0) {
 	case "begin":
-		return beginRun(ctx, cfg.Service.BotLogin, adaptation, facts, kind)
+		return beginRun(ctx, adaptation, facts, store, token)
 	case "current":
-		return currentRun(ctx, adaptation, facts)
+		return currentRun(ctx, adaptation, facts, store, token)
 	case "release":
-		return releaseRun(ctx, cfg, adaptation, facts, kind)
+		return releaseRun(ctx, adaptation, facts, store, token)
+	case "advance":
+		if fs.NArg() != 5 {
+			return fmt.Errorf("usage: minos run-guard advance OLD_HEAD OLD_TARGET NEW_HEAD NEW_TARGET")
+		}
+		updated, err := store.UpdateObservedPair(ctx, coordinationKey(facts), token, fs.Arg(1), fs.Arg(2), fs.Arg(3), fs.Arg(4))
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return ledger.ErrNotOwner
+		}
+		fmt.Println("advanced")
+		return nil
+	case "clearance":
+		if fs.NArg() != 3 {
+			return fmt.Errorf("usage: minos run-guard clearance HEAD TARGET")
+		}
+		set, err := store.SetClearance(ctx, coordinationKey(facts), token, fs.Arg(1), fs.Arg(2))
+		if err != nil {
+			return err
+		}
+		if !set {
+			return ledger.ErrNotOwner
+		}
+		fmt.Println("cleared")
+		return nil
+	case "wait":
+		if fs.NArg() < 2 || fs.NArg() > 3 {
+			return fmt.Errorf("usage: minos run-guard wait FINGERPRINT [FAILSAFE_RFC3339]")
+		}
+		var failsafe *time.Time
+		if fs.NArg() == 3 {
+			parsed, err := time.Parse(time.RFC3339Nano, fs.Arg(2))
+			if err != nil {
+				return err
+			}
+			failsafe = &parsed
+		}
+		if err := store.SetWait(ctx, ledger.Wait{Key: coordinationKey(facts), Fingerprint: fs.Arg(1), FailsafeAt: failsafe}); err != nil {
+			return err
+		}
+		fmt.Println("waiting")
+		return nil
 	default:
 		return fmt.Errorf("unknown run-guard action %q", fs.Arg(0))
 	}
 }
 
-func loadRunGuard(configRoot string) (ServiceConfig, Adaptation, Facts, RunKind, error) {
+func loadRunGuard(configRoot string) (ServiceConfig, Adaptation, Facts, *ledger.Store, int64, error) {
 	cfg, err := LoadServiceConfig(configRoot)
 	if err != nil {
-		return ServiceConfig{}, Adaptation{}, Facts{}, "", err
-	}
-	kind, err := ParseRunKind(os.Getenv("MINOS_RUN_KIND"))
-	if err != nil {
-		return ServiceConfig{}, Adaptation{}, Facts{}, "", err
+		return ServiceConfig{}, Adaptation{}, Facts{}, nil, 0, err
 	}
 	forgeName := os.Getenv("MINOS_FORGE")
 	forge, ok := cfg.Forges[forgeName]
 	if !ok {
-		return ServiceConfig{}, Adaptation{}, Facts{}, "", fmt.Errorf("unknown forge %q", forgeName)
+		return ServiceConfig{}, Adaptation{}, Facts{}, nil, 0, fmt.Errorf("unknown forge %q", forgeName)
 	}
 	adaptation, err := NewAdaptation(forge)
 	if err != nil {
-		return ServiceConfig{}, Adaptation{}, Facts{}, "", err
+		return ServiceConfig{}, Adaptation{}, Facts{}, nil, 0, err
 	}
-	return cfg, adaptation, envFacts(forgeName), kind, nil
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		return ServiceConfig{}, Adaptation{}, Facts{}, nil, 0, err
+	}
+	token, err := attemptToken()
+	if err != nil {
+		store.Close()
+		return ServiceConfig{}, Adaptation{}, Facts{}, nil, 0, err
+	}
+	return cfg, adaptation, envFacts(forgeName), store, token, nil
 }
 
-func beginRun(ctx context.Context, botLogin string, adaptation Adaptation, facts Facts, kind RunKind) error {
-	outcome, err := claimRun(ctx, botLogin, adaptation, facts, kind)
+func beginRun(ctx context.Context, adaptation Adaptation, facts Facts, store *ledger.Store, token int64) error {
+	current, err := currentAttempt(ctx, adaptation, facts, store, token)
 	if err != nil {
 		return err
 	}
-	fmt.Println(outcome)
-	return nil
-}
-
-func claimRun(ctx context.Context, botLogin string, adaptation Adaptation, facts Facts, kind RunKind) (string, error) {
-	contextName, err := StatusContext(kind)
-	if err != nil {
-		return "", err
-	}
-	statuses, err := adaptation.GetStatuses(ctx, facts.Owner, facts.Repo, facts.HeadSHA)
-	if err != nil {
-		return "", err
-	}
-	// Only a status in a terminal state records a completed run for this head.
-	// A newest state of "pending" is the deliberate exception: it is how an
-	// operator supersedes a stale terminal outcome to authorise a re-run on the
-	// same head (a forge status cannot be deleted, only written over).
-	if status, exists := statusForContext(statuses, contextName); exists && status.State != "pending" {
-		return "yield-terminal", nil
-	}
-	current, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
-	if err != nil {
-		return "", err
-	}
-	if current.HeadSHA != facts.HeadSHA {
-		return "yield-head", nil
-	}
-	label, err := InFlightLabel(kind)
-	if err != nil {
-		return "", err
-	}
-	if err := adaptation.addRunClaimLabel(ctx, facts.Owner, facts.Repo, facts.PR, label); err != nil {
-		return "", err
-	}
-	if err := adaptation.addRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
-		return "", err
-	}
-	if err := adaptation.assignRunClaimIfMissing(ctx, facts.Owner, facts.Repo, facts.PR, botLogin); err != nil {
-		return "", err
-	}
-	return "claimed", nil
-}
-
-func currentRun(ctx context.Context, adaptation Adaptation, facts Facts) error {
-	current, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
-	if err != nil {
-		return err
-	}
-	if current.HeadSHA != facts.HeadSHA {
+	if !current {
 		fmt.Println("stale")
 		return nil
 	}
-	fmt.Println("current")
+	if err := adaptation.addRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
+		return err
+	}
+	fmt.Println("claimed")
 	return nil
 }
 
-func releaseRun(ctx context.Context, cfg ServiceConfig, adaptation Adaptation, facts Facts, kind RunKind) error {
-	if newerLiveRunDirExists(cfg.Runs.Dir, facts, kind, os.Getenv("MINOS_RUN_DIR"), cfg.Sweep.LivenessThreshold.Duration) {
-		fmt.Println("retained-newer-run")
-		return nil
-	}
-	label, err := InFlightLabel(kind)
+func currentRun(ctx context.Context, adaptation Adaptation, facts Facts, store *ledger.Store, token int64) error {
+	current, err := currentAttempt(ctx, adaptation, facts, store, token)
 	if err != nil {
 		return err
 	}
-	if err := releaseRunPresence(ctx, adaptation, facts, label); err != nil {
+	if current {
+		fmt.Println("current")
+	} else {
+		fmt.Println("stale")
+	}
+	return nil
+}
+
+func currentAttempt(ctx context.Context, adaptation Adaptation, facts Facts, store *ledger.Store, token int64) (bool, error) {
+	lease, found, err := store.Lease(ctx, coordinationKey(facts))
+	if err != nil || !found || lease.Token != token {
+		return false, err
+	}
+	current, err := adaptation.GetPRFacts(ctx, facts.Forge, facts.Owner, facts.Repo, facts.PR)
+	if err != nil {
+		return false, err
+	}
+	if current.HeadSHA != lease.ObservedHead {
+		return false, nil
+	}
+	// Until the adapter supplies BASE_SHA, the lease still fences target-aware
+	// mutations through the target observed at launch; unknown is degraded, not
+	// guessed from a branch name.
+	if current.BaseSHA != "" && current.BaseSHA != lease.ObservedTarget {
+		return false, nil
+	}
+	return true, nil
+}
+
+func releaseRun(ctx context.Context, adaptation Adaptation, facts Facts, store *ledger.Store, token int64) error {
+	owned, err := store.Owns(ctx, coordinationKey(facts), token)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		fmt.Println("stale")
+		return nil
+	}
+	if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
 		return err
 	}
 	fmt.Println("released")
 	return nil
-}
-
-func releaseRunPresence(ctx context.Context, adaptation Adaptation, facts Facts, label string) error {
-	if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
-		return err
-	}
-	return adaptation.removeRunClaimLabel(ctx, facts.Owner, facts.Repo, facts.PR, label)
 }
