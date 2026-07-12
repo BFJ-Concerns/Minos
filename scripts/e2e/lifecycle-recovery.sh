@@ -96,6 +96,27 @@ count_is() {
   [[ "$1" -eq "$2" ]]
 }
 
+ledger_incident_json() {
+  local pr="$1" result
+  result="$(sqlite3 -json "$work/runs/coordination.db" \
+    "SELECT category,retry_count,observed_head,observed_target,log_location FROM incidents WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${pr}' AND category='lifecycle-hard-kill'")"
+  printf '%s\n' "${result:-[]}"
+}
+
+operator_incident_json() {
+  local pr="$1"
+  find "$work/incidents" -maxdepth 1 -type f -name '*.json' -print0 |
+    xargs -0 -r jq -s --arg pr "$pr" '[.[] | select(.key.pr == $pr and .key.category == "lifecycle-hard-kill")]'
+}
+
+hard_kill_incident_is() {
+  local pr="$1" updates="$2"
+  [[ "$(ledger_incident_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(ledger_incident_json "$pr" | jq -r '.[0].retry_count')" -eq "$updates" ]] &&
+    [[ "$(operator_incident_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(operator_incident_json "$pr" | jq -r '.[0].updates')" -eq "$updates" ]]
+}
+
 run_missed_webhook_journey() {
   local missed_pr missed_sha missed_lease
   missed_pr="$(create_pr missed-webhook-lifecycle)"
@@ -170,13 +191,26 @@ run_hard_kill_journey() {
   record_evidence forge move-target no-owner applied "target=${hardkill_target}"
 
   sleep 7
+  mkdir -p "$work/faults"
+  : >"$work/faults/fail-remove-reaction-once"
+  "$root/minos" sweep --config "$work/config"
+  require 'first hard-kill observation retains predecessor after eyes failure' lease_token_is "$hardkill_pr" "$predecessor_token"
+  require 'first hard-kill observation retains predecessor eyes' eyes_present "$hardkill_pr"
+  require 'first hard-kill observation raises one incident' hard_kill_incident_is "$hardkill_pr" 1
+  record_evidence incident raise predecessor applied "category=lifecycle-hard-kill; ledger-retries=1; operator-updates=1; successor=absent"
   "$root/minos" sweep --config "$work/config"
   wait_until 'hard-kill successor is held before claiming eyes' test -e "$work/control/hard-kill-successor-before-begin"
   successor_token="$(<"$work/control/hard-kill-successor-before-begin")"
   require 'hard-kill successor receives a higher token' token_greater_than "$successor_token" "$predecessor_token"
   require 'hard-kill successor owns the lease' lease_token_is "$hardkill_pr" "$successor_token"
   require 'predecessor eyes are absent before successor begins' eyes_absent "$hardkill_pr"
-  record_evidence sweep replace successor applied "predecessor=${predecessor_token}; successor=${successor_token}; target=${hardkill_target}; eyes-before-successor=absent"
+  require 'repeated hard-kill observation updates one incident' hard_kill_incident_is "$hardkill_pr" 2
+  require 'hard-kill incident retains predecessor pair' test \
+    "$(ledger_incident_json "$hardkill_pr" | jq -r '.[0].observed_head + ":" + .[0].observed_target')" = \
+    "${hardkill_sha}:$(jq -r '.[0].observed_target' <<<"$predecessor_lease")"
+  require 'operator incident retains predecessor attempt' test \
+    "$(operator_incident_json "$hardkill_pr" | jq -r '.[0].attempt')" = "$predecessor_token"
+  record_evidence sweep replace successor applied "predecessor=${predecessor_token}; successor=${successor_token}; target=${hardkill_target}; eyes-before-successor=absent; incident-updates=2"
   : >"$work/control/hard-kill-successor-allow-begin"
   wait_until 'hard-kill successor reaches claimed checkpoint' test -e "$work/control/hard-kill-successor-ready"
   require 'hard-kill successor observes the moved target' attempt_target_is "$hardkill_pr" "$successor_token" "$hardkill_target"
@@ -206,7 +240,73 @@ run_hard_kill_journey() {
   "$root/minos" sweep --config "$work/config"
   require 'final hard-kill sweep is stable' attempt_count_is "$hardkill_pr" 2
   require 'final hard-kill sweep leaves no lease' lease_absent "$hardkill_pr"
-  record_evidence wrapper close successor applied "terminal=stopped; eyes=absent; lease=absent; attempts=2; pr-operational-chatter=absent; incident-assertion=deferred"
+  require 'final hard-kill sweep does not duplicate the incident' hard_kill_incident_is "$hardkill_pr" 2
+  record_evidence wrapper close successor applied "terminal=stopped; eyes=absent; lease=absent; attempts=2; pr-operational-chatter=absent; incident-updates=2"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${hardkill_pr}" '{"state":"closed"}' >/dev/null
+}
+
+run_durable_kill_journey() {
+  local terminal="$1" terminal_description
+  local durable_pr durable_sha durable_unit durable_token durable_lease heartbeat_before
+  local statuses_before statuses_after workspace
+  case "$terminal" in
+    stopped) terminal_description='Review stopped; findings remain' ;;
+    blocked) terminal_description='Changes need attention' ;;
+    *) printf 'unknown durable-kill terminal: %s\n' "$terminal" >&2; return 1 ;;
+  esac
+  durable_pr="$(create_pr "durable-${terminal}-kill-lifecycle")"
+  durable_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${durable_pr}" | jq -r '.head.sha')"
+  durable_unit="minos-run-${owner}-${repo}-pr${durable_pr}-${durable_sha:0:12}.service"
+  journey_units+=("$durable_unit")
+  send_opened_hook "$durable_pr"
+  wait_until "durable-${terminal}-kill attempt publishes terminal product" test -e "$work/control/durable-${terminal}-kill-ready"
+  durable_token="$(<"$work/control/durable-${terminal}-kill-ready")"
+  durable_lease="$(lease_json "$durable_pr")"
+  workspace="$(jq -r '.[0].workspace' <<<"$durable_lease")"
+  require 'durable-kill attempt owns its lease' lease_token_is "$durable_pr" "$durable_token"
+  require 'durable-kill attempt publishes eyes' eyes_present "$durable_pr"
+  require 'durable review is visible exactly once' count_is "$(review_count "$durable_pr")" 1
+  require "durable ${terminal} status is visible exactly once" count_is "$(status_description_count "$durable_sha" "$terminal_description")" 1
+  heartbeat_before="$(lease_heartbeat "$durable_pr")"
+  wait_until 'durable-kill attempt renews after product write' heartbeat_differs "$durable_pr" "$heartbeat_before"
+  record_evidence forge durable-product predecessor applied "pr=${durable_pr}; token=${durable_token}; terminal=${terminal}; reviews=1; terminal-statuses=1"
+
+  systemctl --user kill --kill-whom=all --signal=SIGKILL "$durable_unit"
+  wait_until 'durable-kill predecessor unit is not running' unit_not_running "$durable_unit"
+  require 'durable-kill lease survives process death' lease_token_is "$durable_pr" "$durable_token"
+  sleep 7
+  "$root/minos" sweep --config "$work/config"
+  wait_until 'served terminal reap releases the dead lease' lease_absent "$durable_pr"
+  require 'served terminal reap removes predecessor eyes' eyes_absent "$durable_pr"
+  require 'served terminal reap launches no successor' attempt_count_is "$durable_pr" 1
+  require 'served terminal reap removes the workspace' test ! -e "$workspace"
+  require 'served terminal reap raises one incident' hard_kill_incident_is "$durable_pr" 1
+  require 'served terminal incident retains observed pair' test \
+    "$(ledger_incident_json "$durable_pr" | jq -r '.[0].observed_head + ":" + .[0].observed_target')" = \
+    "${durable_sha}:$(jq -r '.[0].observed_target' <<<"$durable_lease")"
+  require 'served terminal incident reports no-successor disposition' test \
+    "$(operator_incident_json "$durable_pr" | jq -r '.[0].diagnostic')" = \
+    'stale lifecycle reaped; current terminal product retained without a successor'
+  require 'durable review remains exactly once after reap' count_is "$(review_count "$durable_pr")" 1
+  require "durable ${terminal} status remains exactly once after reap" count_is "$(status_description_count "$durable_sha" "$terminal_description")" 1
+
+  statuses_before="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${durable_sha}/statuses" | jq 'length')"
+  if env \
+    MINOS_CONFIG="$work/config" MINOS_FORGE=local MINOS_OWNER="$owner" MINOS_REPO_NAME="$repo" \
+    MINOS_PR="$durable_pr" MINOS_HEAD_SHA="$durable_sha" MINOS_TARGET_SHA="$(jq -r '.[0].observed_target' <<<"$durable_lease")" \
+    MINOS_ATTEMPT_TOKEN="$durable_token" \
+    "$root/minos" forge status partial >"$work/logs/durable-stale.out" 2>"$work/logs/durable-stale.err"; then
+    printf 'failed: reaped terminal predecessor mutation unexpectedly succeeded\n' >&2
+    exit 1
+  fi
+  statuses_after="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${durable_sha}/statuses" | jq 'length')"
+  [[ "$statuses_after" == "$statuses_before" ]]
+  require 'served terminal reap leaves no operational PR chatter' no_operational_chatter "$durable_pr" "$durable_sha"
+  "$root/minos" sweep --config "$work/config"
+  require 'served terminal final sweep launches no successor' attempt_count_is "$durable_pr" 1
+  require 'served terminal final sweep preserves one incident update' hard_kill_incident_is "$durable_pr" 1
+  record_evidence sweep reap predecessor applied "terminal=${terminal}; attempts=1; successor=absent; eyes=absent; lease=absent; workspace=absent; incident-updates=1; stale-write=rejected"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${durable_pr}" '{"state":"closed"}' >/dev/null
 }
 
 run_restart_journey() {
@@ -331,6 +431,15 @@ run_unmapped_event_journey() {
   require 'unmapped event creates no attempt' all_attempts_absent
   require 'unmapped event creates no coordination database' test ! -e "$work/runs/coordination.db"
   record_evidence receiver normalise none skipped "case=unmapped-event; http=202; attempts=0; ledger=absent"
+
+  payload='{"action":"opened","repository":{"owner":{"login":"Minos"},"name":"subject"}}'
+  signature="$(signed_payload "$payload")"
+  status="$(post_raw_hook pull_request "$payload" "$signature" "$work/logs/mapped-missing-identity.body")"
+  require 'mapped event with missing PR identity is rejected' count_is "$status" 400
+  require 'mapped missing-identity response names normalisation failure' grep -Fxq 'normalise failed' "$work/logs/mapped-missing-identity.body"
+  require 'mapped missing-identity event creates no attempt' all_attempts_absent
+  require 'mapped missing-identity event creates no coordination database' test ! -e "$work/runs/coordination.db"
+  record_evidence receiver normalise none rejected "case=mapped-missing-identity; http=400; attempts=0; ledger=absent"
 }
 
 run_capacity_journey() {
