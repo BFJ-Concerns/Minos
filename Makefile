@@ -14,7 +14,7 @@ scripts:
 		[ -f "$$script" ] || continue; \
 		case "$$(head -n 1 "$$script")" in *sh) sh -n "$$script" ;; esac; \
 	done
-	@bash -n scripts/e2e/forgejo-smoke.sh scripts/e2e/deployment-smoke.sh scripts/e2e/resource-isolation-test.sh scripts/e2e/resources.sh
+	@bash -n scripts/e2e/*.sh
 	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/e2e/test_capture_forward.py scripts/review/test_soundness.py
 	@sh -n scripts/e2e/review-engine-standin scripts/e2e/fix-engine-standin scripts/e2e/finish-engine-standin scripts/e2e/flaky-engine-standin
 	@./scripts/e2e/resource-isolation-test.sh
@@ -37,6 +37,7 @@ shellcheck:
 			scripts/adaptations/forgejo/ensure-label-vocabulary \
 			scripts/adaptations/forgejo/remove-reaction \
 			scripts/adaptations/forgejo/assign-if-missing \
+			scripts/e2e/materialise-calibration-case.sh \
 			scripts/e2e/review-engine-standin \
 			scripts/e2e/fix-engine-standin \
 			scripts/e2e/finish-engine-standin \
