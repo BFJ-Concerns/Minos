@@ -41,7 +41,7 @@ func ParseFactsAllowUnmapped(r io.Reader) (Facts, error) {
 	return parseFacts(r, true)
 }
 
-func parseFacts(r io.Reader, allowEmptyOccasion bool) (Facts, error) {
+func parseFacts(r io.Reader, allowUnmapped bool) (Facts, error) {
 	values, err := parseKeyValues(r)
 	if err != nil {
 		return Facts{}, err
@@ -73,7 +73,14 @@ func parseFacts(r io.Reader, allowEmptyOccasion bool) (Facts, error) {
 			}
 		}
 	}
-	if (!allowEmptyOccasion && facts.Occasion == "") || facts.Owner == "" || facts.Repo == "" || facts.PR == "" {
+	// Unmapped events are acknowledged before any repository or pull-request
+	// admission, so they do not need identity fields that their payloads cannot
+	// supply. Once an occasion is mapped, retain the complete PR identity
+	// required by every downstream reconciliation path.
+	if facts.Occasion == "" && allowUnmapped {
+		return facts, nil
+	}
+	if facts.Occasion == "" || facts.Owner == "" || facts.Repo == "" || facts.PR == "" {
 		return Facts{}, fmt.Errorf("normalised facts missing required fields")
 	}
 	return facts, nil
