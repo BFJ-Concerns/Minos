@@ -88,15 +88,18 @@ workspace with the observed target forced as base:
 ```sh
 "$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
   "$REVIEW_SKILL_DIR/scripts/plan_review.py" --mode diff \
-  --base "$MINOS_TARGET_SHA" --occasion "$MINOS_OCCASION" --no-codex \
+  --base "$MINOS_TARGET_SHA" --occasion "$MINOS_OCCASION" \
   >"$MINOS_RUN_DIR/review-plan.json"
 ```
 
-The service passes `--no-codex` because the review skill's native Codex CLI leg
-does not emit an Ensemble `agent.json` with resolved-model evidence. Its output
-is therefore inadmissible under Minos's exact-pin contract. This does not remove
-cross-family verification: the verification workflow assigns Claude-produced
-findings to pinned Codex checkers whose records are admitted below.
+The review skill's native Codex CLI leg is an additional external verdict, not
+a guarantee-bearing Minos worker. It does not emit an Ensemble `agent.json` and
+therefore contributes no worker-model admission or clearance. Preserve its
+result only through the review-panel's `external-verdict` record and let the bar
+judge that record under the skill's exact external-leg boundary. All
+guarantee-bearing reviewers, finding checkers, bar judges, and repairers remain
+subject to the exact-pin admission gates below; the verification workflow still
+assigns Claude-produced findings to pinned Codex checkers.
 
 Keep the plan, workflow arguments/results/logs, quote validation, verification,
 coverage, and engine records beneath `$MINOS_RUN_DIR`. Follow the skill's
