@@ -138,6 +138,8 @@ sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/minos/run-body.env /etc/minos/run-body.env
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
+  deploy/etc/minos/preflight.toml /etc/minos/preflight.toml
+sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/minos/repos/owner--repository.toml.example \
   /etc/minos/repos/owner--repository.toml.example
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
@@ -162,6 +164,32 @@ sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/claude auth status
 sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/codex login status
 ```
 
+### Recover a stale Claude OAuth refresh token
+
+Two machines using the same Claude subscription can rotate the shared refresh
+token out from under each other. The characteristic failure is an immediate,
+zero-cost HTTP 403 claiming that the organisation disabled Claude subscription
+access. Minos reports this as `stale-oauth`; it is distinct from quota
+exhaustion and a genuinely disabled subscription.
+
+Prefer re-authenticating directly as the deployment user:
+
+```sh
+sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/claude auth login
+sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/claude auth status
+sudo -u "$DEPLOY_USER" /usr/local/bin/minos preflight \
+  --config /etc/minos/preflight.toml
+```
+
+If authentication must happen on another trusted machine, stop before copying
+anything until `claude auth status` succeeds there. Transfer
+`~/.claude/.credentials.json` through the operator's protected secret-transfer
+channel, install it as the deployment user with mode `0600`, and delete the
+transfer copy. Never print, paste, source, or place this file in the checkout,
+a command argument, a PR workspace, or a diagnostic log. Then run the same
+status and preflight commands as the deployment user. `minos ws-exec` remains
+the boundary that removes service credentials from PR-controlled commands.
+
 The lead launcher uses the explicit `MINOS_CLAUDE` path from `run-body.env` and
 depends on Claude JSONL exposing a served model in a model-bearing early
 `system/init` or `assistant` event. Update the deployment CLI during go-live and
@@ -180,6 +208,8 @@ sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0644 \
   deploy/systemd/user/minos-receiver.service \
   deploy/systemd/user/minos-sweep.service \
   deploy/systemd/user/minos-sweep.timer \
+  deploy/systemd/user/minos-heartbeat.service \
+  deploy/systemd/user/minos-heartbeat.timer \
   "/home/$DEPLOY_USER/.config/systemd/user/"
 
 DEPLOY_UID="$(id -u "$DEPLOY_USER")"
@@ -187,7 +217,9 @@ sudo -u "$DEPLOY_USER" env XDG_RUNTIME_DIR="/run/user/$DEPLOY_UID" \
   systemd-analyze --user verify \
   "/home/$DEPLOY_USER/.config/systemd/user/minos-receiver.service" \
   "/home/$DEPLOY_USER/.config/systemd/user/minos-sweep.service" \
-  "/home/$DEPLOY_USER/.config/systemd/user/minos-sweep.timer"
+  "/home/$DEPLOY_USER/.config/systemd/user/minos-sweep.timer" \
+  "/home/$DEPLOY_USER/.config/systemd/user/minos-heartbeat.service" \
+  "/home/$DEPLOY_USER/.config/systemd/user/minos-heartbeat.timer"
 sudo systemctl --user --machine="$DEPLOY_USER@.host" daemon-reload
 ```
 
@@ -197,6 +229,18 @@ the timer after that point may run it immediately. Later sweeps are scheduled
 sweep service cannot overlap itself.
 
 ## 5. Rehearse before activation
+
+Run readiness preflight before any expensive lifecycle or live activation:
+
+```sh
+sudo -u "$DEPLOY_USER" /usr/local/bin/minos preflight \
+  --config /etc/minos/preflight.toml
+```
+
+The command emits one JSON report containing a pass/fail result and diagnostic
+for forge identity and permissions, every pinned engine model, the optional
+registry, the incident stream, and required toolchain binaries. A failed probe
+also makes the command exit non-zero.
 
 From the checkout, run the offline deployment smoke:
 
@@ -225,9 +269,54 @@ sudo systemctl --user --machine="$DEPLOY_USER@.host" \
   enable --now minos-receiver.service
 sudo systemctl --user --machine="$DEPLOY_USER@.host" \
   enable --now minos-sweep.timer
+sudo systemctl --user --machine="$DEPLOY_USER@.host" \
+  enable --now minos-heartbeat.timer
 sudo systemctl --user --machine="$DEPLOY_USER@.host" status --no-pager \
-  minos-receiver.service minos-sweep.timer
+  minos-receiver.service minos-sweep.timer minos-heartbeat.timer
 ```
+
+### Wire the external dead-man monitor
+
+The heartbeat and incident stream are useful only when something outside Minos
+checks them. Install `deploy/systemd/host/minos-{deadman,incidents}@.{service,timer}`
+on the container host (or use an equivalent external monitor), install the `minos`
+binary there, and create
+`/etc/minos-deadman/minos.env` with the host-visible path:
+
+```sh
+MINOS_HEARTBEAT_PATH=/host/path/to/the/container/rootfs/var/lib/minos/heartbeat.json
+MINOS_HEARTBEAT_MAX_AGE=3m
+MINOS_INCIDENT_STORE=/host/path/to/the/container/rootfs/var/lib/minos/incidents
+```
+
+The host path depends on the container storage backend, so the repository cannot name
+it honestly. `deployment-cutover` must determine that path, install and enable
+`minos-deadman@minos.timer` and `minos-incidents@minos.timer`, and connect failed
+units to the operator's alerting transport. The incident monitor exits non-zero
+while any incident is open, making the failure visible outside the Minos service
+and scheduler. No pager or notification transport is commissioned in the current
+configuration; until one is chosen, the container host's failed units are the active
+operator signal.
+
+Each incident is identified by forge, repository, pull request, attempt, and
+failure family. Repeating the same `incident raise` updates that record instead
+of producing another alert. Operators can inspect the JSON stream and make
+acknowledgement and recovery explicit:
+
+```sh
+minos incident list --store /var/lib/minos/incidents
+minos incident acknowledge --store /var/lib/minos/incidents \
+  --forge forgejo --repository OWNER/REPOSITORY --pr NUMBER \
+  --attempt HEAD_OR_ATTEMPT --family FAILURE_FAMILY --actor OPERATOR
+minos incident recover --store /var/lib/minos/incidents \
+  --forge forgejo --repository OWNER/REPOSITORY --pr NUMBER \
+  --attempt HEAD_OR_ATTEMPT --family FAILURE_FAMILY
+```
+
+Incident diagnostics must use a service-owned failure description and point to
+the relevant `run.log`; never pass raw backend output or credentials to
+`--diagnostic`. Pull-request reviews, comments, and statuses must not contain
+incident or backend error text.
 
 Confirm the receiver journal contains `minos receiver listening on :8919`:
 
