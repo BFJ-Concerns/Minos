@@ -405,19 +405,29 @@ order, guarding lease ownership immediately before each consequential write:
    inadequate coverage, `partial`; for pending prerequisite CI, `waiting`.
    **`merged` is not written here** — a head is not merged until the merge
    confirms.
-2. **Take the policy-permitted merge, if any** (next bullet). The `clean` status
-   settles *before* the merge; the merge is a separate, later operation. A path
-   that does not merge ends here — the status from step 1 is the settled outcome.
-3. **On confirmed merge only, write `merged`** and perform the guarded
-   source-branch delete (below). If any consequential write's outcome is
-   uncertain — a merge, a status, the review — do **not** blindly retry it: first
-   discover whether the service-authored result already landed (the merge
-   outcome, the status, the submitted review) and retry only if it did not. A
-   merge you cannot confirm is not `merged`.
-4. **Remove the eyes reaction.**
-5. **Release the lease — strictly last**, after every owned write above has
+2. **Merge, only on the merge path.** When policy grants auto-merge and the
+   candidate is cleared: the `clean` status from step 1 settles *before* the
+   merge; the merge is a separate, later operation. On **confirmed merge only**,
+   write `merged` and perform the guarded source-branch delete (below). If any
+   consequential write's outcome is uncertain — a merge, a status, the review —
+   do **not** blindly retry it: first discover whether the service-authored
+   result already landed (the merge outcome, the status, the submitted review)
+   and retry only if it did not. A merge you cannot confirm is not `merged`. Every
+   non-merge exit — a converged head under a no-auto-merge policy, `stopped`,
+   `blocked`, `partial`, `waiting` — skips this step entirely and carries the
+   step-1 status as its settled outcome.
+3. **Remove the eyes reaction** — every controlled exit reaches this step,
+   whether or not it merged.
+4. **Release the lease — strictly last**, after every owned write above has
    completed, so a post-merge status update is never left unowned and no live
    lease is ever left without its outcome.
+
+Steps 3 and 4 are the common close of **every** controlled exit shape: the
+merge path and each non-merge path alike converge on them, and so do the
+failure exits — a retryable operational exit and a terminal-configuration exit
+each still remove eyes and release the lease last (the Ownership section's "every
+exit path you control"), differing only in what they write at step 1 (a
+retryable exit writes no product status at all; see `failure-taxonomy.md`).
 
 The product states and their forge spellings are the product-surface seam (named
 below); use its vocabulary, never process language.
