@@ -36,6 +36,11 @@ export const defaults = {
 //     quote_validation,                    // the quote gate's counts
 //     verify,      // boolean — run the per-finding checkers (default true)
 //     bar_mode,    // "off" | "on" | "auto" (default "off")
+//     coverage_record,  // optional — an external immutable coverage-accounting
+//                       // result ({ status, omissions, … }) or null. When
+//                       // present it is bar material AND the hard completeness
+//                       // gate: a status that is not "complete" blocks
+//                       // convergence deterministically (coverage_gate below).
 //   }
 //
 // The return value is the run's single, complete report: everything the skill
@@ -74,6 +79,17 @@ const suppressedByValidator = input.suppressed_by_validator || []
 const quoteValidation = input.quote_validation || null
 const verify = input.verify !== false
 const barMode = input.bar_mode || 'off'
+// The optional external immutable coverage record (account-coverage output, or
+// any equivalent mechanical accounting). Null for a caller that supplies none.
+const coverageRecord = input.coverage_record || null
+// A present record whose mechanical status is anything but 'complete' — partial,
+// or an accounting error — is short. "Partial coverage can never converge" is a
+// determinate guarantee, so this is settled in code: a short record fires the
+// bar trigger below AND blocks convergence outright (coverage_gate), whatever
+// the panel declared or the judge concludes. A null record leaves the gate
+// inactive — that is the absence of a gate, not a passed one.
+const coverageRecordShort =
+  !!coverageRecord && coverageRecord.status !== 'complete'
 if (!['off', 'on', 'auto'].includes(barMode)) {
   throw new Error(`review-panel-verify: bar_mode must be "off", "on", or "auto", got "${barMode}".`)
 }
@@ -364,6 +380,17 @@ const partial = coverage.filter((c) => c.status === 'partial' || c.status === 'n
 if (notRun.length) triggerReasons.push(`${notRun.length} criterion/criteria not run`)
 if (partial.length) triggerReasons.push(`${partial.length} criterion/criteria only partially covered`)
 if (failures.length) triggerReasons.push(`${failures.length} reviewer(s) returned nothing`)
+// The immutable coverage record is a trigger input in its own right — the panel
+// account is reviewers' self-declaration, this is the diff-bound mechanical
+// truth. A short record always convenes the judge (so the panel-vs-record
+// contradiction is examined), independently of the hard gate below.
+if (coverageRecordShort) {
+  const omitted = Array.isArray(coverageRecord.omissions) ? coverageRecord.omissions.length : 0
+  triggerReasons.push(
+    `the immutable coverage record is ${coverageRecord.status || 'unaccounted'}` +
+      (omitted ? ` (${omitted} omission(s))` : ''),
+  )
+}
 const triggerFired = triggerReasons.length > 0
 
 const bar = {
@@ -384,6 +411,10 @@ if (barMode === 'on' || (barMode === 'auto' && triggerFired)) {
   const material = {
     findings: survivors,
     coverage,
+    // The immutable coverage record beside the panel account, so the judge can
+    // see a contradiction between what reviewers declared and what the diff-bound
+    // mechanical accounting actually found. Null when the run supplied none.
+    coverage_record: coverageRecord,
     skipped,
     failures,
     reviewer_notes: reviews,
@@ -435,6 +466,19 @@ if (barMode === 'on' || (barMode === 'auto' && triggerFired)) {
   }
 }
 
+// The mechanical convergence gate over the immutable coverage record. This is
+// where "partial coverage can never converge" is enforced: a determinate,
+// LLM-independent block that stands whatever the panel declared or the bar
+// judged. `blocks_convergence` is true only when a record was supplied and its
+// status is not 'complete'; a null record leaves the gate inactive (record_status
+// null), which a caller must read as "no gate", never as a pass. The caller
+// treats a blocking gate as inadequate coverage — the review may still publish
+// its verified findings, but it cannot converge.
+const coverageGate = {
+  record_status: coverageRecord ? (coverageRecord.status ?? null) : null,
+  blocks_convergence: coverageRecordShort,
+}
+
 // The single, complete report for the run: posting and the chat summary read
 // this one object, so nothing has to be re-joined across stage files.
 return {
@@ -447,6 +491,8 @@ return {
   verification,
   bar,
   coverage,
+  coverage_record: coverageRecord,
+  coverage_gate: coverageGate,
   skipped,
   failures,
   reviews,

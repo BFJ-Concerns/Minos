@@ -476,7 +476,8 @@ blocked it rather than engineering around it silently.
    ```bash
    python3 ~/.claude/skills/review-panel/scripts/assemble_verify_input.py \
      /tmp/claude/review-panel-plan.json /tmp/claude/review-panel-validated.json \
-     [--no-verify] [--bar off|on|auto] > /tmp/claude/review-panel-verify-input.json
+     [--no-verify] [--bar off|on|auto] [--coverage-record <path>] \
+     > /tmp/claude/review-panel-verify-input.json
    node ~/.claude/skills/ensemble-workflow/scripts/ensemble.mjs \
      --json-args "$(cat /tmp/claude/review-panel-verify-input.json)" \
      ~/.claude/skills/review-panel/scripts/verify_workflow.js \
@@ -485,7 +486,12 @@ blocked it rather than engineering around it silently.
 
    Pass `--no-verify` only when the run was invoked with it; pass `--bar on`
    under `--bar`, `--bar auto` for a headless caller that wants the
-   trigger-fired mode, and nothing otherwise.
+   trigger-fired mode, and nothing otherwise. `--coverage-record` is for a
+   caller — typically a service — that produces its own external, immutable
+   coverage accounting (a mechanical `status` + `omissions` over the diff's
+   blobs); pass its path and the record reaches the bar as material and hard-gates
+   convergence (`coverage_gate` below). An ordinary interactive run has no such
+   record and omits the flag.
 
    Each checker is a fresh clean-context agent that is never the finding's
    producer, preferring the family opposite the producer — Codex checkers for
@@ -505,8 +511,14 @@ blocked it rather than engineering around it silently.
    output is the run's single, complete report: the surviving `findings` plus
    every record the report step needs (`suppressed_by_checkers`,
    `suppressed_by_validator`, `quote_validation`, `reclassified`,
-   `attribution_indeterminate`, `verification`, `bar`, `coverage`, `skipped`,
-   `failures`, `reviews`, `sweep_advisories`, `mode`, `pr`).
+   `attribution_indeterminate`, `verification`, `bar`, `coverage`,
+   `coverage_record`, `coverage_gate`, `skipped`, `failures`, `reviews`,
+   `sweep_advisories`, `mode`, `pr`). `coverage_gate.blocks_convergence` is the
+   mechanical completeness gate: when a `--coverage-record` was supplied and its
+   status is not `complete`, convergence is blocked outright — the review still
+   publishes its verified findings, but a caller must not treat it as converged
+   whatever the bar verdict says. Inactive (`record_status: null`) when no record
+   was supplied.
 
 5. **Remediate — once, when the bar fails.** When step 4's `bar.outcome` is
    `"fail"`, run one remediation round so the run's work is repaired rather

@@ -8,6 +8,20 @@ the coverage account (the dispatch record combined with each reviewer's own
 coverage declaration), the briefs that were skipped or failed, the reviewers'
 notes, and the verification record.
 
+When the run supplies one, the material also carries an **immutable coverage
+record** (`coverage_record`): a mechanical accounting of the changed files and
+hunks against the diff's own blobs, carrying a `status` (`complete` when every
+change was accounted, otherwise `partial`) and a list of `omissions`. It is the
+diff-bound truth about what was
+accounted, where the coverage account above is the reviewers' own word. Judge
+coverage adequacy against this record and its omissions where it is present, not
+against the self-declarations alone. It is null when no such record was supplied;
+its absence is not a coverage failure — only a present record that contradicts
+the review is. A short record (`status` other than `complete`) also blocks
+convergence mechanically before you ever run, so your task on it is honesty, not
+the completeness arithmetic: convict the review that hides or misrepresents the
+gap, not the one that owns it.
+
 ## What passes
 
 A review passes when it is quiet, high-confidence, and grounded: every finding
@@ -81,6 +95,12 @@ Fail the review when you find:
   formatter or linter would flag, offered in place of judgement.
 - **A silent gap** — a skipped, failed, or partially covered criterion the
   review does not acknowledge.
+- **A record the review contradicts** — where an immutable coverage record is
+  present, a reviewer's or the panel account's `status: full` while that record
+  reports `partial` with omissions is coverage pretence, whichever way the panel
+  declared it. The mechanical record is the diff-bound truth; a review that reads
+  as complete over a record that is not is convicted here, not excused because the
+  reviewers sounded diligent.
 
 Judge against the bar text as written. Do not weaken it, average it against
 what seems achievable, or excuse a miss because the review was otherwise
