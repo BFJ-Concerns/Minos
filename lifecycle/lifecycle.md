@@ -107,6 +107,31 @@ bundled `review_workflow.js` and `verify_workflow.js` recipes from there. The
 launch preflight has already proved the configured binaries and engines; do not
 probe them again inside the lifecycle unless an actual invocation fails.
 
+The external leg is a required part of an unskipped diff plan. The foreground
+rule applies: after the review workflow returns, run and merge the leg before
+quote validation or verification (running it concurrently through a supported
+foreground task is optional, never required):
+
+```sh
+"$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
+  "$REVIEW_SKILL_DIR/scripts/run_codex_review.py" \
+  "$MINOS_RUN_DIR/review-plan.json" \
+  >"$MINOS_RUN_DIR/codex-leg.json"
+
+"$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
+  "$REVIEW_SKILL_DIR/scripts/merge_codex_review.py" \
+  "$MINOS_RUN_DIR/review-result.json" "$MINOS_RUN_DIR/codex-leg.json" \
+  >"$MINOS_RUN_DIR/review-combined.json"
+```
+
+When the plan's `codex_review.skip_reason` is null, do not continue until
+`review-combined.json` contains both a `coverage` entry and a `reviews` entry
+whose `brief` is `codex-review`, whose `method` is `external-cli`, and whose
+coverage `status` is `external-verdict`. A missing or failed leg is a recorded
+coverage failure under the review skill's contract, never permission to
+silently validate the unmerged reviewer result. Quote validation and all later
+review gates consume `review-combined.json`, not `review-result.json`.
+
 `$MINOS_ENSEMBLE_LAUNCH` automatically archives each workflow and its
 `agent.json` records under `$MINOS_RUN_DIR/ensemble`. After the review workflow
 returns, and again after verification or bar work returns, admit the stage's
