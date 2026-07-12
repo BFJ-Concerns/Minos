@@ -4,10 +4,9 @@ Agent-native code verification. The first deliverable is an automated,
 independent PR review-and-fix service — see `AGENTS.md` for the corrected
 architecture stance.
 
-The previous implementation was removed under a containment episode (see
-`CONTAINMENT.md`), and this rebuild works from the corrected commission in the
-sibling annexe. Quarantined code remains readable in git history as evidence,
-not as a base.
+This rebuild follows the current commission in the sibling annexe. Superseded
+designs remain readable in the annexe's containment archive and git history as
+evidence, not as architectural authority.
 
 ## Service Shell
 
@@ -23,14 +22,14 @@ The rebuilt shell is deliberately small:
 - `scripts/run-body/run-body` launches one fresh accountable lead session from
   the pinned lifecycle instruction. Infrastructure does not select review,
   repair, or finish stages.
-- `minos run-guard` exposes fenced ownership, current-head checks, owner-followed
-  head/target advancement, integration clearance, waiting, and presence release.
-- `minos adapt` invokes a configured, service-owned forge adaptation with the
-  dedicated forge credential. Lifecycle mutations are rejected unless their
-  attempt token still owns the current lease and observed head/target pair.
+- `minos run-guard` exposes fenced ownership, current-head checks, integration
+  clearance, wait state, post-compaction revalidation, and presence release.
+- `minos forge` exposes authenticated snapshots and typed, guarded status,
+  review, push, merge, and cleanup operations. Lifecycle mutations are rejected
+  unless their attempt token owns the current lease and observed head/target.
 - `minos review`, `minos marker`, `minos handle`, and `minos provenance`
-  expose changed-line and anchor checks, stable finding identities, marker
-  formatting, and resolved-model pin verification to the session.
+  expose changed-line and anchor checks, the product package's stable finding
+  identities and hidden records, and resolved-model pin verification.
 - `minos capture-claude` records Claude's JSONL audit stream and validates the
   engine-reported lead model before the session may publish.
 - `minos ws-exec --config /etc/minos -- command ...` runs PR-controlled build
@@ -65,13 +64,16 @@ The status descriptions are the product vocabulary defined by the commission,
 such as `Reviewing changes`, `Waiting for checks`, `Changes need attention`,
 and `Changes approved`.
 
-Machine-readable marker lines are trailing prose footers with this grammar:
+Machine-readable lineage and re-entry records are hidden trailing lines with
+this grammar:
 
 ```text
-Minos: key=value another-key=value
+<!-- Minos: key=value another-key=value -->
 ```
 
-Values contain no spaces. Unknown keys are ignored by consumers.
+Keys use lower-case letters, digits, and hyphens. Values are restricted to
+letters, digits, `.`, `_`, `/`, `@`, and `-`. Unknown keys are ignored by
+consumers.
 
 ## Run-Body Contract
 
@@ -97,6 +99,11 @@ MINOS_RUN_BODY       run-body executable path; empty means minos stub-run
 MINOS_BRIEFS         brief directory
 MINOS_CONFIG         configuration root
 MINOS_UNIT           transient systemd unit name
+MINOS_BUILD_CMD      trusted repository build command
+MINOS_TEST_CMD       trusted repository test command
+MINOS_AUTO_MERGE     repository auto-merge policy
+MINOS_GOVERNING_IDENTITY immutable trusted-input identity for this attempt
+MINOS_DEPLOYMENT_PROFILE deployment/readiness identity for re-entry
 ```
 
 The run directory is attempt-local evidence, not the ownership claim. Ownership
@@ -111,10 +118,13 @@ indefinite 15-minute-to-six-hour backoff and remain off the PR surface.
 wait and backoff currency, dead-session replacement ordering, all wrapper exit
 paths, and a receiver-to-launch-to-release coordination journey.
 
-The existing Docker `make e2e` harness still describes the retired stage loop
-and is not a release gate for this transitional checkout. Its replacement needs
-the parallel lifecycle instruction and behavioural Forgejo adapter; until that
-wave-two integration lands, use `make check` and the Go coordination tests.
+`make e2e` runs the current disposable-Forgejo lifecycle harness. Its normal
+mode proves receiver → reconciliation → detached lead launch → guarded product
+and cleanup wiring with deterministic engine fixtures. Use
+`MINOS_E2E_LIVE=clean make e2e` or `MINOS_E2E_LIVE=stopped make e2e` for the
+small real-engine representative journeys. The harness prints its retained
+temporary directory; each attempt directory below `runs/attempts/` contains
+measured token, artefact, and compaction evidence.
 
 ## Deployment
 
