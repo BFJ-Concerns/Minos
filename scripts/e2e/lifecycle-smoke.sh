@@ -6,12 +6,15 @@ work="${MINOS_E2E_DIR:-$(mktemp -d)}"
 live="${MINOS_E2E_LIVE:-0}"
 liveness_threshold="${MINOS_E2E_LIVENESS_THRESHOLD:-10m}"
 journeys="${MINOS_E2E_JOURNEYS:-}"
-if [[ ",${journeys}," == *",hard-kill,"* && -z "${MINOS_E2E_LIVENESS_THRESHOLD:-}" ]]; then
+if [[ (",${journeys}," == *",hard-kill,"* || ",${journeys}," == *",restart,"*) &&
+  -z "${MINOS_E2E_LIVENESS_THRESHOLD:-}" ]]; then
   liveness_threshold="6s"
 fi
 wait_attempts=300
 [[ "$live" = 0 ]] || wait_attempts=900
 source "$root/scripts/e2e/resources.sh"
+# shellcheck source=scripts/e2e/lifecycle-recovery.sh
+source "$root/scripts/e2e/lifecycle-recovery.sh"
 declare -a MINOS_E2E_RESOURCE_LOCK_FDS=()
 declare -a journey_units=()
 evidence_sequence=0
@@ -155,84 +158,6 @@ one_session() {
   [[ "$(find "$work/runs/attempts" -mindepth 2 -maxdepth 2 -type d -path "*--pr$1/*" | wc -l)" -eq 1 ]]
 }
 
-attempt_count() {
-  [[ -d "$work/runs/attempts" ]] || { printf '0\n'; return; }
-  find "$work/runs/attempts" -mindepth 2 -maxdepth 2 -type d -path "*--pr$1/*" | wc -l
-}
-
-attempt_dir() {
-  local pr="$1" token="$2"
-  find "$work/runs/attempts" -mindepth 2 -maxdepth 2 -type d -path "*--pr${pr}/${token}" -print -quit
-}
-
-lease_json() {
-  local pr="$1" result
-  [[ -e "$work/runs/coordination.db" ]] || { printf '[]\n'; return; }
-  result="$(sqlite3 -json "$work/runs/coordination.db" \
-    "SELECT token,observed_head,observed_target,heartbeat_at,unit,workspace FROM leases WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${pr}'")"
-  printf '%s\n' "${result:-[]}"
-}
-
-lease_absent() {
-  [[ "$(lease_json "$1")" == "[]" ]]
-}
-
-lease_token_is() {
-  [[ "$(lease_json "$1" | jq -r '.[0].token // 0')" == "$2" ]]
-}
-
-lease_heartbeat() {
-  lease_json "$1" | jq -r '.[0].heartbeat_at // ""'
-}
-
-heartbeat_differs() {
-  [[ -n "$(lease_heartbeat "$1")" && "$(lease_heartbeat "$1")" != "$2" ]]
-}
-
-no_product_status() {
-  [[ -z "$(status_description "$1")" ]]
-}
-
-no_operational_chatter() {
-  local pr="$1" head="$2" combined
-  combined="$({
-    api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" | jq -r '.[].body // ""'
-    api GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/comments" | jq -r '.[].body // ""'
-    api GET "/api/v1/repos/${owner}/${repo}/commits/${head}/statuses" | jq -r '.[].description // ""'
-  } 2>/dev/null)"
-  ! grep -Eqi 'hard[- ]?kill|cgroup|stale lease|attempt token|incident|stack trace|credential failure' <<<"$combined"
-}
-
-eyes_present() {
-  api GET "/api/v1/repos/${owner}/${repo}/issues/$1/reactions" |
-    jq -e 'any(.[]; .content == "eyes" and (.user.login // .user.username) == "Minos")' >/dev/null
-}
-
-unit_not_running() {
-  local state
-  state="$(systemctl --user show "$1" --property=ActiveState --value 2>/dev/null || true)"
-  [[ -z "$state" || "$state" == inactive || "$state" == failed ]]
-}
-
-unit_state() {
-  systemctl --user show "$1" --property=ActiveState --property=SubState --property=ControlGroup 2>/dev/null |
-    tr '\n' ';' || true
-}
-
-attempt_target_is() {
-  local dir
-  dir="$(attempt_dir "$1" "$2")"
-  [[ -n "$dir" ]] && grep -Fxq "MINOS_TARGET_SHA=$3" "$dir/meta.env"
-}
-
-attempt_count_is() {
-  [[ "$(attempt_count "$1")" -eq "$2" ]]
-}
-
-token_greater_than() {
-  (( $1 > $2 ))
-}
-
 send_opened_hook() {
   local pr="$1" payload signature
   payload="$(jq -nc \
@@ -253,7 +178,8 @@ create_pr() {
     cd "$work/subject"
     git checkout -q main
     git checkout -q -b "$branch"
-    if [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ]]; then
+    if [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
+      "$branch" == restart-* || "$branch" == uncertain-* ]]; then
       sed -i 's/return true/return false/' ready.go
     else
       printf '\n// Clean lifecycle fixture.\n' >>ready.go
@@ -302,6 +228,51 @@ seed_stopped_history() {
 
 mkdir -p "$work"/{adaptations,bin,config/repos,forgejo/gitea/conf,incidents,logs,runs}
 cp -R "$root/scripts/adaptations/forgejo/." "$work/adaptations/"
+cat >"$work/adaptations/fault-common.sh" <<'EOF'
+#!/usr/bin/env sh
+# shellcheck source=common.sh
+. "$(dirname "$0")/common.sh"
+
+# The disposable rig can apply one guarded write and then make its response
+# unavailable. The unchanged guarded verb must discover the forge effect.
+api() {
+  method="$1"
+  path="$2"
+  shift 2
+  fault_root="$(dirname "$MINOS_CONFIG")/faults"
+  drop_response=false
+  case "${method}:${path}" in
+    POST:*/reviews)
+      if [ -e "$fault_root/drop-review-response" ]; then
+        rm -f "$fault_root/drop-review-response"
+        drop_response=true
+      fi
+      ;;
+    POST:*/statuses/*)
+      if [ -e "$fault_root/drop-status-response" ]; then
+        rm -f "$fault_root/drop-status-response"
+        drop_response=true
+      fi
+      ;;
+  esac
+  if ! command curl -fsS \
+    -X "$method" \
+    -H "Authorization: token ${MINOS_FORGE_TOKEN}" \
+    -H "Accept: application/json" \
+    "$@" \
+    "${MINOS_API_BASE%/}${path}"; then
+    return 1
+  fi
+  if $drop_response; then
+    printf '%s %s\n' "$method" "$path" >>"$(dirname "$MINOS_CONFIG")/logs/forge-faults.log"
+    return 1
+  fi
+  return 0
+}
+EOF
+sed -i 's#/common.sh"#/fault-common.sh"#' \
+  "$work/adaptations/guarded-post-review" \
+  "$work/adaptations/guarded-set-status"
 
 cat >"$work/forgejo/gitea/conf/app.ini" <<EOF
 APP_NAME = Minos lifecycle E2E
@@ -499,6 +470,24 @@ if [[ "$branch" == hard-kill-* && ! -e "$control_root/hard-kill-predecessor-toke
   printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-predecessor-token"
   printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-predecessor-ready"
   while :; do sleep 1; done
+elif [[ "$branch" == restart-* ]]; then
+  : >"$control_root/restart-ready"
+  while [[ ! -e "$control_root/restart-release" ]]; do sleep 1; done
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  "$minos" forge status stopped
+elif [[ "$branch" == uncertain-review-* ]]; then
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  : >"$control_root/uncertain-review-applied"
+  while [[ ! -e "$control_root/uncertain-review-release" ]]; do sleep 1; done
+  "$minos" forge status stopped
+elif [[ "$branch" == uncertain-status-* ]]; then
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  "$minos" forge status stopped
+  : >"$control_root/uncertain-status-applied"
+  while [[ ! -e "$control_root/uncertain-status-release" ]]; do sleep 1; done
 elif [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ]]; then
   if [[ "$branch" == missed-webhook-* ]]; then
     : >"$control_root/missed-webhook-ready"
@@ -574,112 +563,19 @@ if journey_enabled stopped; then
 fi
 
 if journey_enabled missed-webhook; then
-  missed_pr="$(create_pr missed-webhook-lifecycle)"
-  missed_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${missed_pr}" | jq -r '.head.sha')"
-  journey_units+=("minos-run-${owner}-${repo}-pr${missed_pr}-${missed_sha:0:12}.service")
-  record_evidence harness suppress none observed "PR ${missed_pr} opening webhook deliberately not delivered"
-  sleep 2
-  require 'missed-webhook quiet interval has no lease' lease_absent "$missed_pr"
-  require 'missed-webhook quiet interval has no attempt' attempt_count_is "$missed_pr" 0
-  require 'missed-webhook quiet interval has no eyes' eyes_absent "$missed_pr"
-  require 'missed-webhook quiet interval has no product status' no_product_status "$missed_sha"
-  record_evidence forge observe none observed "head=${missed_sha}; lease=absent; eyes=absent; status=absent"
-
-  "$root/minos" sweep --config "$work/config"
-  record_evidence sweep reconcile none applied "manual sweep over suppressed PR ${missed_pr}"
-  wait_until 'missed-webhook sweep launches an owner' test -e "$work/control/missed-webhook-ready"
-  missed_lease="$(lease_json "$missed_pr")"
-  require 'missed-webhook lease is present while work is held' lease_token_is "$missed_pr" "$(jq -r '.[0].token' <<<"$missed_lease")"
-  require 'missed-webhook eyes are present only while held' eyes_present "$missed_pr"
-  record_evidence ledger admit successor applied "${missed_lease}"
-  : >"$work/control/missed-webhook-release"
-  wait_until 'missed-webhook journey stops normally' status_is "$missed_sha" 'Review stopped; findings remain'
-  wait_until 'missed-webhook review is on current head' review_on_head "$missed_pr" "$missed_sha"
-  wait_until 'missed-webhook eyes are removed' eyes_absent "$missed_pr"
-  wait_until 'missed-webhook lease is released' lease_absent "$missed_pr"
-  require 'missed-webhook has exactly one attempt' attempt_count_is "$missed_pr" 1
-  record_evidence wrapper close successor applied "terminal=stopped; eyes=absent; lease=absent; attempts=1"
-
-  "$root/minos" sweep --config "$work/config"
-  require 'second missed-webhook sweep does not relaunch' attempt_count_is "$missed_pr" 1
-  record_evidence sweep reconcile no-owner skipped "unchanged terminal product remained at one attempt"
-  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${missed_pr}" '{"state":"closed"}' >/dev/null
-  record_evidence forge close no-owner applied "completed missed-webhook fixture closed before the next drill"
+  run_missed_webhook_journey
 fi
 
 if journey_enabled hard-kill; then
-  hardkill_pr="$(create_pr hard-kill-lifecycle)"
-  hardkill_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${hardkill_pr}" | jq -r '.head.sha')"
-  hardkill_unit="minos-run-${owner}-${repo}-pr${hardkill_pr}-${hardkill_sha:0:12}.service"
-  journey_units+=("$hardkill_unit")
-  send_opened_hook "$hardkill_pr"
-  record_evidence receiver delivery none applied "authenticated opened webhook for PR ${hardkill_pr}"
-  wait_until 'hard-kill predecessor reaches held checkpoint' test -e "$work/control/hard-kill-predecessor-ready"
-  predecessor_token="$(<"$work/control/hard-kill-predecessor-token")"
-  require 'hard-kill predecessor owns the lease' lease_token_is "$hardkill_pr" "$predecessor_token"
-  require 'hard-kill predecessor publishes eyes' eyes_present "$hardkill_pr"
-  first_heartbeat="$(lease_heartbeat "$hardkill_pr")"
-  wait_until 'hard-kill predecessor renews first heartbeat' heartbeat_differs "$hardkill_pr" "$first_heartbeat"
-  second_heartbeat="$(lease_heartbeat "$hardkill_pr")"
-  wait_until 'hard-kill predecessor renews second heartbeat' heartbeat_differs "$hardkill_pr" "$second_heartbeat"
-  third_heartbeat="$(lease_heartbeat "$hardkill_pr")"
-  predecessor_lease="$(lease_json "$hardkill_pr")"
-  record_evidence ledger heartbeat predecessor applied "first=${first_heartbeat}; second=${second_heartbeat}; third=${third_heartbeat}; lease=${predecessor_lease}"
+  run_hard_kill_journey
+fi
 
-  systemctl --user kill --kill-whom=all --signal=SIGKILL "$hardkill_unit"
-  wait_until 'hard-killed predecessor unit is not running' unit_not_running "$hardkill_unit"
-  require 'hard-killed predecessor lease survives process death' lease_token_is "$hardkill_pr" "$predecessor_token"
-  record_evidence harness kill predecessor applied "unit=${hardkill_unit}; state=$(unit_state "$hardkill_unit"); lease-retained=true"
+if journey_enabled restart; then
+  run_restart_journey
+fi
 
-  (
-    cd "$work/subject"
-    git checkout -q main
-    printf '\n// Target moved while predecessor was dead.\n' >>ready.go
-    git add ready.go
-    git commit -q -m 'test: advance recovery target'
-    git push -q origin main
-  )
-  hardkill_target="$(api GET "/api/v1/repos/${owner}/${repo}/branches/main" | jq -r '.commit.id')"
-  record_evidence forge move-target no-owner applied "target=${hardkill_target}"
-
-  sleep 7
-  "$root/minos" sweep --config "$work/config"
-  wait_until 'hard-kill successor is held before claiming eyes' test -e "$work/control/hard-kill-successor-before-begin"
-  successor_token="$(<"$work/control/hard-kill-successor-before-begin")"
-  require 'hard-kill successor receives a higher token' token_greater_than "$successor_token" "$predecessor_token"
-  require 'hard-kill successor owns the lease' lease_token_is "$hardkill_pr" "$successor_token"
-  require 'predecessor eyes are absent before successor begins' eyes_absent "$hardkill_pr"
-  record_evidence sweep replace successor applied "predecessor=${predecessor_token}; successor=${successor_token}; target=${hardkill_target}; eyes-before-successor=absent"
-  : >"$work/control/hard-kill-successor-allow-begin"
-  wait_until 'hard-kill successor reaches claimed checkpoint' test -e "$work/control/hard-kill-successor-ready"
-  require 'hard-kill successor observes the moved target' attempt_target_is "$hardkill_pr" "$successor_token" "$hardkill_target"
-  require 'hard-kill successor publishes eyes' eyes_present "$hardkill_pr"
-  record_evidence forge claim successor applied "eyes-after-successor=present"
-
-  statuses_before="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${hardkill_sha}/statuses" | jq 'length')"
-  if env \
-    MINOS_CONFIG="$work/config" MINOS_FORGE=local MINOS_OWNER="$owner" MINOS_REPO_NAME="$repo" \
-    MINOS_PR="$hardkill_pr" MINOS_HEAD_SHA="$hardkill_sha" MINOS_TARGET_SHA="$(jq -r '.[0].observed_target' <<<"$predecessor_lease")" \
-    MINOS_ATTEMPT_TOKEN="$predecessor_token" \
-    "$root/minos" forge status partial >"$work/logs/stale-predecessor.out" 2>"$work/logs/stale-predecessor.err"; then
-    printf 'failed: stale predecessor mutation unexpectedly succeeded\n' >&2
-    exit 1
-  fi
-  statuses_after="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${hardkill_sha}/statuses" | jq 'length')"
-  [[ "$statuses_after" == "$statuses_before" ]]
-  record_evidence forge guarded-status predecessor rejected "status-count-before=${statuses_before}; status-count-after=${statuses_after}; error=$(tr '\n' ' ' <"$work/logs/stale-predecessor.err")"
-
-  : >"$work/control/hard-kill-successor-release"
-  wait_until 'hard-kill successor settles stopped product state' status_is "$hardkill_sha" 'Review stopped; findings remain'
-  wait_until 'hard-kill successor review is on current head' review_on_head "$hardkill_pr" "$hardkill_sha"
-  wait_until 'hard-kill recovery removes eyes' eyes_absent "$hardkill_pr"
-  wait_until 'hard-kill recovery releases lease' lease_absent "$hardkill_pr"
-  require 'hard-kill recovery has exactly two attempts' attempt_count_is "$hardkill_pr" 2
-  require 'hard-kill recovery leaves no operational chatter on the PR' no_operational_chatter "$hardkill_pr" "$hardkill_sha"
-  "$root/minos" sweep --config "$work/config"
-  require 'final hard-kill sweep is stable' attempt_count_is "$hardkill_pr" 2
-  require 'final hard-kill sweep leaves no lease' lease_absent "$hardkill_pr"
-  record_evidence wrapper close successor applied "terminal=stopped; eyes=absent; lease=absent; attempts=2; pr-operational-chatter=absent; incident-assertion=deferred"
+if journey_enabled uncertain-write; then
+  run_uncertain_write_journeys
 fi
 
 printf 'Minos lifecycle E2E passed. Evidence: %s\n' "$work"
