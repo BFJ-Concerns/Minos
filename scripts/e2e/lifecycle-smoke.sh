@@ -596,4 +596,12 @@ if journey_enabled capacity; then
   run_capacity_journey
 fi
 
+if journey_enabled closed-before-sweep; then
+  run_closed_before_sweep_journey
+fi
+
+if journey_enabled receiver-boundaries; then
+  run_receiver_boundary_journeys
+fi
+
 printf 'Minos lifecycle E2E passed. Evidence: %s\n' "$work"

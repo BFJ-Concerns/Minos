@@ -369,3 +369,32 @@ run_capacity_journey() {
   record_evidence wrapper close successor applied "case=capacity-released; terminal=stopped; eyes=absent; lease=absent; attempts=1"
   author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${second_pr}" '{"state":"closed"}' >/dev/null
 }
+
+run_closed_before_sweep_journey() {
+  local closed_pr closed_sha
+  closed_pr="$(create_pr closed-before-sweep-lifecycle)"
+  closed_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${closed_pr}" | jq -r '.head.sha')"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${closed_pr}" '{"state":"closed"}' >/dev/null
+  record_evidence forge close none applied "case=closed-before-sweep; pr=${closed_pr}; webhook=suppressed"
+  "$root/minos" sweep --config "$work/config"
+  require 'closed-before-sweep PR has no lease' lease_absent "$closed_pr"
+  require 'closed-before-sweep PR has no attempt' attempt_count_is "$closed_pr" 0
+  require 'closed-before-sweep PR has no eyes' eyes_absent "$closed_pr"
+  require 'closed-before-sweep PR has no product status' no_product_status "$closed_sha"
+  record_evidence sweep reconcile none skipped "case=closed-before-sweep; attempts=0; lease=absent; eyes=absent; status=absent"
+}
+
+run_receiver_boundary_journeys() {
+  local status
+  status="$(curl -sS -o "$work/logs/method-not-allowed.body" -w '%{http_code}' \
+    "http://127.0.0.1:${hook_port}/hooks/local")"
+  require 'non-POST webhook request is rejected' count_is "$status" 405
+  require 'method rejection creates no attempt' all_attempts_absent
+  record_evidence receiver method none rejected "case=non-post; http=405; attempts=0"
+
+  status="$(curl -sS -o "$work/logs/unknown-forge.body" -w '%{http_code}' -X POST \
+    --data '{}' "http://127.0.0.1:${hook_port}/hooks/unknown")"
+  require 'unknown forge route is rejected' count_is "$status" 404
+  require 'unknown forge route creates no attempt' all_attempts_absent
+  record_evidence receiver route none rejected "case=unknown-forge; http=404; attempts=0"
+}
