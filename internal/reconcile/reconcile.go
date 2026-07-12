@@ -78,9 +78,8 @@ const (
 )
 
 type Decision struct {
-	Kind        DecisionKind
-	Reason      string
-	Fingerprint string
+	Kind   DecisionKind
+	Reason string
 }
 
 func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
@@ -105,9 +104,9 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 	fingerprint := WaitFingerprint(snapshot)
 	if snapshot.Product == ProductWaiting {
 		if waitCurrent(view.Wait, fingerprint, now) {
-			return Decision{Kind: Nothing, Reason: "wait fingerprint is current", Fingerprint: fingerprint}
+			return Decision{Kind: Nothing, Reason: "wait fingerprint is current"}
 		}
-		return Decision{Kind: Admit, Reason: "wait fingerprint changed or failsafe expired", Fingerprint: fingerprint}
+		return Decision{Kind: Admit, Reason: "wait fingerprint changed or failsafe expired"}
 	}
 	servedPair := snapshot.ProductHead == snapshot.HeadSHA && snapshot.ProductTarget != "" && snapshot.ProductTarget == snapshot.TargetSHA
 	switch snapshot.Product {
