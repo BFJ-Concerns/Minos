@@ -13,7 +13,7 @@ signature-header = "X-Forgejo-Signature"
 
 [runs]
 dir = "/var/lib/minos/runs"
-max-concurrent = 2
+max-concurrent = 3
 
 [sweep]
 liveness-threshold = "60m"
