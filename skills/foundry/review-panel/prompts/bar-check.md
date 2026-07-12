@@ -22,6 +22,49 @@ is the expected outcome of a constrained slice, not a coverage failure: judge
 coverage on whether the claims match the record, never on the existence of a
 declared, named gap.
 
+One panel member is not an agent reviewer and cannot produce that trail: the
+external CLI leg. It is the `codex-review` brief's entry specifically — the
+coverage entry whose `brief` is `codex-review`, carrying `status:
+external-verdict` and `method: external-cli`, with a paired review that also
+carries `method: external-cli`. These markers together are the exemption
+selector; an entry missing any of them is not this leg and gets no exemption.
+The leg runs an external tool (`codex review`) that returns only an overall
+verdict and its mapped findings; it structurally never emits files-read or
+commands-run evidence. Judge it on **verdict-honesty**, using only what the
+assembled review puts in front of you — never the raw leg output or an
+invocation record, which are not in your material:
+
+- **Representation** — the entry and its review present as an external CLI
+  verdict and nothing more: no implied files-read or commands-run trail, no
+  clean-review note dressing, no reviewer-method `full` coverage claim.
+- **Internal consistency with the visible record** — the findings attributed to
+  the leg (producer `…@codex-cli`, brief `codex-review`) reconcile with the
+  entry's `findings_mapped`: those still present in the findings list plus those
+  in the suppression records account for the mapped count, with none appearing
+  from nowhere.
+
+An entry clearing both passes on zero findings without a clean-review evidence
+trail, because that trail is one the tool cannot emit and the record does not
+pretend to.
+
+State the boundary to yourself plainly, because crossing it is the failure this
+bar exists to convict. Whether the leg was actually run over its stated
+`extent`, and whether its mapped findings faithfully carry what the CLI
+returned at source, rest on the run and merge scripts: the run script passes
+the requested base to `codex review` and maps every returned finding without a
+filtering branch, with deterministic tests over its rollout-matching and
+mapping layer. They are not facts you can establish from the assembled
+review. Do not demand them of yourself here: a judge told to
+verify what it cannot see must rubber-stamp or hallucinate, and either is a
+worse failure than the honest limit. Judge only the representation and internal
+consistency above.
+
+This exemption is exact to the `codex-review` external leg and grants no general
+trust in external tools: every agent reviewer still owes the full evidence
+discipline above, and anything dressed as more than an external verdict — a
+files-read trail, a reviewer-method `full` claim, a clean-note evidence story —
+still fails under *What fails* below.
+
 ## What fails
 
 Fail the review when you find:

@@ -80,14 +80,27 @@ def main():
             ) if part
         )
         doc["findings"].extend(findings)
+        # The leg's account is recorded honestly as an *external verdict*, not a
+        # reviewer-method review. The Codex CLI emits only a verdict plus its
+        # findings — never the files-read/commands-run trail a reviewer's own
+        # clean-review note must carry — so labelling it reviewer-method `full`
+        # would assert an evidence trail that does not exist. `method:
+        # "external-cli"` on both the review and its coverage entry names the
+        # category the bar judges on verdict-honesty (extent + faithful finding
+        # mapping) rather than on that trail; every agent reviewer stays held to
+        # the full evidence discipline. See prompts/bar-check.md.
         doc["reviews"].append({
             "brief": name, "shard": "1/1",
+            "method": "external-cli",
             "notes": notes or None,
             "findings": len(findings),
         })
         doc["coverage"].append({
             "brief": name, "title": title, "scope": None,
-            "extent": "diff", "status": "full",
+            "extent": "diff", "status": "external-verdict",
+            "method": "external-cli",
+            "verdict": overall.get("correctness"),
+            "findings_mapped": len(findings),
             "shards_dispatched": 1, "shards_returned": 1,
         })
 

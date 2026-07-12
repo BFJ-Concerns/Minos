@@ -88,21 +88,49 @@ workspace with the observed target forced as base:
 ```sh
 "$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
   "$REVIEW_SKILL_DIR/scripts/plan_review.py" --mode diff \
-  --base "$MINOS_TARGET_SHA" --occasion "$MINOS_OCCASION" --no-codex \
+  --base "$MINOS_TARGET_SHA" --occasion "$MINOS_OCCASION" \
   >"$MINOS_RUN_DIR/review-plan.json"
 ```
 
-The service passes `--no-codex` because the review skill's native Codex CLI leg
-does not emit an Ensemble `agent.json` with resolved-model evidence. Its output
-is therefore inadmissible under Minos's exact-pin contract. This does not remove
-cross-family verification: the verification workflow assigns Claude-produced
-findings to pinned Codex checkers whose records are admitted below.
+The review skill's native Codex CLI leg is an additional external verdict, not
+a guarantee-bearing Minos worker. It does not emit an Ensemble `agent.json` and
+therefore contributes no worker-model admission or clearance. Preserve its
+result only through the review-panel's `external-verdict` record and let the bar
+judge that record under the skill's exact external-leg boundary. All
+guarantee-bearing reviewers, finding checkers, bar judges, and repairers remain
+subject to the exact-pin admission gates below; the verification workflow still
+assigns Claude-produced findings to pinned Codex checkers.
 
 Keep the plan, workflow arguments/results/logs, quote validation, verification,
 coverage, and engine records beneath `$MINOS_RUN_DIR`. Follow the skill's
 bundled `review_workflow.js` and `verify_workflow.js` recipes from there. The
 launch preflight has already proved the configured binaries and engines; do not
 probe them again inside the lifecycle unless an actual invocation fails.
+
+The external leg is a required part of an unskipped diff plan. The foreground
+rule applies: after the review workflow returns, run and merge the leg before
+quote validation or verification (running it concurrently through a supported
+foreground task is optional, never required):
+
+```sh
+"$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
+  "$REVIEW_SKILL_DIR/scripts/run_codex_review.py" \
+  "$MINOS_RUN_DIR/review-plan.json" \
+  >"$MINOS_RUN_DIR/codex-leg.json"
+
+"$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
+  "$REVIEW_SKILL_DIR/scripts/merge_codex_review.py" \
+  "$MINOS_RUN_DIR/review-result.json" "$MINOS_RUN_DIR/codex-leg.json" \
+  >"$MINOS_RUN_DIR/review-combined.json"
+```
+
+When the plan's `codex_review.skip_reason` is null, do not continue until
+`review-combined.json` contains both a `coverage` entry and a `reviews` entry
+whose `brief` is `codex-review`, whose `method` is `external-cli`, and whose
+coverage `status` is `external-verdict`. A missing or failed leg is a recorded
+coverage failure under the review skill's contract, never permission to
+silently validate the unmerged reviewer result. Quote validation and all later
+review gates consume `review-combined.json`, not `review-result.json`.
 
 `$MINOS_ENSEMBLE_LAUNCH` automatically archives each workflow and its
 `agent.json` records under `$MINOS_RUN_DIR/ensemble`. After the review workflow
