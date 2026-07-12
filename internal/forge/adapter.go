@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Adapter struct {
@@ -14,6 +15,8 @@ type Adapter struct {
 	ownership    OwnershipChecker
 	serviceLogin string
 }
+
+const writeRetryable WriteOutcome = "retryable"
 
 func NewAdapter(runner Runner, ownership OwnershipChecker, serviceLogin string) (*Adapter, error) {
 	if runner == nil {
@@ -94,14 +97,30 @@ func (a *Adapter) Push(ctx context.Context, guard Guard, request PushRequest) Wr
 }
 
 func (a *Adapter) Merge(ctx context.Context, guard Guard, method MergeMethod) WriteResult {
-	if rejected := a.checkOwnership(ctx, guard.Ownership); rejected != nil {
-		return *rejected
+	delays := [...]time.Duration{50 * time.Millisecond, 100 * time.Millisecond}
+	for attempt := 0; attempt < 3; attempt++ {
+		// A confirmed transient Forgejo refusal made no mutation. Re-check the
+		// fenced owner before every fresh attempt; uncertain writes are never
+		// retried because their effect is not known.
+		if rejected := a.checkOwnership(ctx, guard.Ownership); rejected != nil {
+			return *rejected
+		}
+		out, err := a.runner.Run(ctx, RunRequest{
+			Operation: "guarded-merge",
+			Arguments: append(a.guardArguments(guard), string(method)),
+		})
+		result, retryable := decodeMergeResult(out, err)
+		if !retryable {
+			return result
+		}
+		if attempt == len(delays) {
+			return WriteResult{Outcome: WriteUncertain, Reason: "Forgejo merge remained temporarily unavailable after bounded retries"}
+		}
+		if err := waitForRetry(ctx, delays[attempt]); err != nil {
+			return WriteResult{Outcome: WriteUncertain, Reason: "merge retry interrupted: " + err.Error()}
+		}
 	}
-	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-merge",
-		Arguments: append(a.guardArguments(guard), string(method)),
-	})
-	return decodeWriteResult(out, err)
+	return WriteResult{Outcome: WriteUncertain, Reason: "Forgejo merge retry exhausted"}
 }
 
 func (a *Adapter) DeleteMergedBranch(ctx context.Context, guard Guard) WriteResult {
@@ -146,6 +165,31 @@ func decodeWriteResult(out []byte, runErr error) WriteResult {
 		return result
 	default:
 		return WriteResult{Outcome: WriteUncertain, Reason: "guarded write returned invalid outcome " + string(result.Outcome)}
+	}
+}
+
+func decodeMergeResult(out []byte, runErr error) (WriteResult, bool) {
+	if runErr != nil {
+		return decodeWriteResult(out, runErr), false
+	}
+	var result WriteResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		return decodeWriteResult(out, nil), false
+	}
+	if result.Outcome == writeRetryable {
+		return result, true
+	}
+	return decodeWriteResult(out, nil), false
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
