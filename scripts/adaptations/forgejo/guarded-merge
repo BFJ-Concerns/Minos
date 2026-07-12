@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; method="$7"
+case "$method" in
+  merge|rebase|squash|rebase-merge|fast-forward-only) ;;
+  *) write_result rejected "unsupported merge method: $method"; exit 0 ;;
+esac
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+if [ "$(printf '%s' "$guard_base_json" | jq -r '.user_can_merge // false')" != "true" ]; then
+  write_result rejected "authenticated identity cannot merge the target branch"
+  exit 0
+fi
+
+payload="$(jq -nc --arg method "$method" --arg head "$head" '{Do:$method,head_commit_id:$head}')"
+api POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/merge" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+
+if observed="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}" 2>/dev/null)" &&
+  printf '%s' "$observed" | jq -e --arg head "$head" '(.merged // false) and .head.sha == $head' >/dev/null; then
+  write_result applied
+else
+  write_result uncertain "merge outcome could not be discovered"
+fi
