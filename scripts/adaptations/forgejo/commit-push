@@ -27,10 +27,9 @@ set -eu
 #   landed <sha>   committed and pushed
 #   fruitless      nothing to commit (empty tree)
 #   unwritable     the remote refused the push (a protected branch)
-# Only a genuine infrastructure failure exits non-zero. This is deliberate: the
-# session reaches this script through `minos adapt`, whose Go wrapper collapses
-# any non-zero exit to 1 and discards stdout on error — so a distinct exit code
-# could not reach the session. The token on a zero exit does.
+# Only a genuine infrastructure failure exits non-zero. This is deliberate:
+# guarded-commit-push consumes this token through command substitution, where a
+# non-zero exit cannot carry the typed outcome. The token on a zero exit does.
 
 owner="$1"
 repo="$2"

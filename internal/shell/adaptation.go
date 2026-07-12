@@ -18,14 +18,9 @@ import (
 // mutating adaptation without changing the service; treating unknown verbs as
 // writes keeps replay safety conservative when that happens.
 var forgeReadOperations = map[string]bool{
-	"get-pr-facts":         true,
-	"get-combined-status":  true,
-	"get-statuses":         true,
-	"list-open-prs":        true,
-	"list-review-comments": true,
-	"list-reviews":         true,
-	"normalise-event":      true,
-	"prepare-workspace":    true,
+	"list-open-prs":     true,
+	"normalise-event":   true,
+	"prepare-workspace": true,
 }
 
 var runClaimMutationOperations = map[string]bool{
@@ -56,8 +51,8 @@ func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extra
 }
 
 // runClaimMutation is reserved for the service's idempotent claim/release
-// seam. A mission invoking the same adaptation verb through minos adapt still
-// takes the ordinary tracked path above.
+// seam. Calling the same adaptation verb through Run still takes the ordinary
+// tracked path above.
 func (a Adaptation) runClaimMutation(ctx context.Context, name string, args ...string) ([]byte, error) {
 	if !runClaimMutationOperations[name] {
 		return nil, fmt.Errorf("adaptation operation %q is not run-claim state", name)
