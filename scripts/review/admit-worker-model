@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Admit an Ensemble worker record against exact model and family policy."""
+
+import argparse
+import json
+import sys
+
+
+class InputError(Exception):
+    pass
+
+
+def load(path, label):
+    try:
+        with open(path, encoding="utf-8") as source:
+            value = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        raise InputError(f"read {label}: {error}") from error
+    if not isinstance(value, dict):
+        raise InputError(f"{label} must be a JSON object")
+    return value
+
+
+def decide(policy, role_name, record, counterpart_family):
+    if policy.get("schema_version") != 1:
+        raise InputError("policy schema_version must be 1")
+    roles = policy.get("roles")
+    if not isinstance(roles, dict) or role_name not in roles:
+        raise InputError(f"unknown worker role: {role_name}")
+    role = roles[role_name]
+    if not isinstance(role, dict) or not isinstance(role.get("guarantee"), bool):
+        raise InputError(f"role {role_name} requires boolean guarantee")
+    if not role["guarantee"]:
+        return {
+            "schema_version": 1, "role": role_name, "admitted": True,
+            "level": "mechanical", "reason": "outside_guarantee",
+        }
+
+    required = ("engine", "model", "family")
+    if any(not isinstance(role.get(field), str) or not role[field] for field in required):
+        raise InputError(f"guarantee-bearing role {role_name} requires {', '.join(required)}")
+    if record.get("kind") != "agent_record" or record.get("schema_version") not in (1, 2):
+        raise InputError("record must be an Ensemble agent_record with schema_version 1 or 2")
+    evidence = {
+        "agent_id": record.get("id"),
+        "requested_engine": record.get("engine"),
+        "requested_model": record.get("model"),
+        "resolved_model": record.get("resolved_model"),
+        "pinned_engine": role["engine"],
+        "pinned_model": role["model"],
+        "family": role["family"],
+        "counterpart_family": counterpart_family,
+    }
+    result = {"schema_version": 1, "role": role_name, "evidence": evidence}
+
+    if record.get("engine") != role["engine"] or record.get("model") != role["model"]:
+        return {**result, "admitted": False, "level": "none", "reason": "requested_pin_mismatch"}
+    resolved = record.get("resolved_model")
+    if resolved is None or resolved == "":
+        unresolved = policy.get("unresolved_model", "stop")
+        if unresolved not in ("stop", "limited"):
+            raise InputError("unresolved_model policy must be stop or limited")
+        if unresolved == "limited":
+            return {**result, "admitted": True, "level": "limited", "reason": "resolved_model_unproved"}
+        return {**result, "admitted": False, "level": "none", "reason": "resolved_model_unavailable"}
+    if resolved != role["model"]:
+        return {**result, "admitted": False, "level": "none", "reason": "pin_mismatch"}
+
+    cross_family = (
+        isinstance(counterpart_family, str)
+        and counterpart_family not in ("", "unknown")
+        and counterpart_family != role["family"]
+    )
+    return {
+        **result,
+        "admitted": True,
+        "level": "full" if cross_family else "limited",
+        "reason": "exact_pin_cross_family" if cross_family else "exact_pin_family_degraded",
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--policy", required=True)
+    parser.add_argument("--role", required=True)
+    parser.add_argument("--record", required=True)
+    parser.add_argument("--counterpart-family")
+    args = parser.parse_args()
+    try:
+        policy = load(args.policy, "policy")
+        roles = policy.get("roles", {})
+        role = roles.get(args.role) if isinstance(roles, dict) else None
+        # Mechanical roles carry no model guarantee, so their engine record is
+        # deliberately not interpreted as provenance evidence.
+        record = {} if isinstance(role, dict) and role.get("guarantee") is False else load(args.record, "record")
+        result = decide(policy, args.role, record, args.counterpart_family)
+        code = 0 if result["admitted"] else 1
+    except InputError as error:
+        result = {"schema_version": 1, "admitted": False, "level": "none", "reason": "invalid_input", "error": str(error)}
+        code = 2
+    json.dump(result, sys.stdout, sort_keys=True)
+    sys.stdout.write("\n")
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
