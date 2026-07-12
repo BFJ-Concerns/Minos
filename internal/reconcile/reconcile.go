@@ -39,11 +39,24 @@ type ForgeSnapshot struct {
 	ProductTarget         string
 	ProductGoverning      string
 	ProductGoverningKnown bool
+	ProductBlockKind      BlockKind
+	ProductBlockIdentity  string
+	ProductBlockKnown     bool
 	GoverningIdentity     string
 	DeploymentProfile     string
 	RequiredChecks        []Check
 	Mergeability          string
 }
+
+// BlockKind preserves the commissioned re-entry distinction without expanding
+// the closed product-state vocabulary. The forge adapter derives this from the
+// service-owned trailing marker attached to the substantive review.
+type BlockKind string
+
+const (
+	FindingBlock    BlockKind = "finding"
+	PermissionBlock BlockKind = "permission-policy"
+)
 
 type View struct {
 	Lease          *ledger.Lease
@@ -84,6 +97,9 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 	if snapshot.Draft && snapshot.SkipDrafts {
 		return Decision{Kind: Nothing, Reason: "drafts are excluded by policy"}
 	}
+	if !snapshot.AuthorInScope {
+		return Decision{Kind: Nothing, Reason: "author or occasion is outside eligibility"}
+	}
 	if view.Backoff != nil && now.Before(view.Backoff.NextDueAt) {
 		return Decision{Kind: Nothing, Reason: "operational backoff is not due"}
 	}
@@ -95,7 +111,17 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 		return Decision{Kind: Admit, Reason: "wait fingerprint changed or failsafe expired"}
 	}
 	servedPair := snapshot.ProductHead == snapshot.HeadSHA && snapshot.ProductTarget != "" && snapshot.ProductTarget == snapshot.TargetSHA
-	if snapshot.Product == product.Stopped() || snapshot.Product == product.Blocked() || snapshot.Product == product.Partial() {
+	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == PermissionBlock {
+		governingCurrent := snapshot.ProductBlockKnown && snapshot.ProductBlockIdentity == BlockReentryIdentity(snapshot)
+		if servedPair && governingCurrent {
+			return Decision{Kind: Nothing, Reason: "permission or policy block remains current"}
+		}
+		return Decision{Kind: Admit, Reason: "permission readiness or trusted policy changed"}
+	}
+	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == "" {
+		return Decision{Kind: Admit, Reason: "blocked result has no authoritative re-entry discriminator"}
+	}
+	if snapshot.Product == product.Stopped() || (snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == FindingBlock) || snapshot.Product == product.Partial() {
 		if servedPair {
 			return Decision{Kind: Nothing, Reason: "unchanged head and target were already served"}
 		}
@@ -108,10 +134,15 @@ func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
 	if snapshot.Product == product.Merged() {
 		return Decision{Kind: Nothing, Reason: "pull request is already merged"}
 	}
-	if snapshot.AuthorInScope {
-		return Decision{Kind: Admit, Reason: "eligible current state requires a lifecycle"}
-	}
-	return Decision{Kind: Nothing, Reason: "author or occasion is outside eligibility"}
+	return Decision{Kind: Admit, Reason: "eligible current state requires a lifecycle"}
+}
+
+// BlockReentryIdentity is the marker value for a permission or policy block.
+// It covers both trusted repository policy and the deployment/readiness profile
+// because either commissioned axis is sufficient to re-enter an unchanged PR.
+func BlockReentryIdentity(snapshot ForgeSnapshot) string {
+	sum := sha256.Sum256([]byte(snapshot.GoverningIdentity + "\n" + snapshot.DeploymentProfile))
+	return hex.EncodeToString(sum[:])
 }
 
 func waitCurrent(wait *ledger.Wait, fingerprint string, now time.Time) bool {

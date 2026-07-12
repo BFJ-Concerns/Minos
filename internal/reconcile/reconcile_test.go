@@ -58,6 +58,9 @@ func TestStoppedAndCleanServedness(t *testing.T) {
 		t.Run(state.Name(), func(t *testing.T) {
 			s := snapshot()
 			s.Product = state
+			if state == product.Blocked() {
+				s.ProductBlockKind = FindingBlock
+			}
 			s.ProductHead = s.HeadSHA
 			s.ProductTarget = s.TargetSHA
 			s.ProductGoverning = s.GoverningIdentity
@@ -103,6 +106,57 @@ func TestWaitFingerprintCurrency(t *testing.T) {
 	s.RequiredChecks[0].Conclusion = "pending"
 	if got := Decide(s, view, failsafe).Kind; got != Admit {
 		t.Fatalf("expired failsafe = %s, want admit", got)
+	}
+}
+
+func TestChangedWaitStillRequiresCurrentEligibility(t *testing.T) {
+	s := snapshot()
+	s.Product = product.Waiting()
+	s.AuthorInScope = false
+	view := View{Wait: &ledger.Wait{Fingerprint: "prior"}}
+	if got := Decide(s, view, time.Now()).Kind; got != Nothing {
+		t.Fatalf("changed wait for ineligible author=%s, want nothing", got)
+	}
+}
+
+func TestPermissionPolicyBlockReentryUsesGoverningInputs(t *testing.T) {
+	s := snapshot()
+	s.Product = product.Blocked()
+	s.ProductBlockKind = PermissionBlock
+	s.ProductHead = s.HeadSHA
+	s.ProductTarget = s.TargetSHA
+	s.ProductBlockIdentity = BlockReentryIdentity(s)
+	s.ProductBlockKnown = true
+	if got := Decide(s, View{}, time.Now()).Kind; got != Nothing {
+		t.Fatalf("current permission block=%s, want nothing", got)
+	}
+	s.GoverningIdentity = "policy-2"
+	if got := Decide(s, View{}, time.Now()).Kind; got != Admit {
+		t.Fatalf("changed permission policy=%s, want admit", got)
+	}
+}
+
+func TestPermissionPolicyBlockReentersOnDeploymentReadinessChange(t *testing.T) {
+	s := snapshot()
+	s.Product = product.Blocked()
+	s.ProductBlockKind = PermissionBlock
+	s.ProductHead = s.HeadSHA
+	s.ProductTarget = s.TargetSHA
+	s.ProductBlockIdentity = BlockReentryIdentity(s)
+	s.ProductBlockKnown = true
+	s.DeploymentProfile = "profile-2"
+	if got := Decide(s, View{}, time.Now()).Kind; got != Admit {
+		t.Fatalf("changed deployment readiness=%s, want admit", got)
+	}
+}
+
+func TestBlockedWithoutDiscriminatorReentersConservatively(t *testing.T) {
+	s := snapshot()
+	s.Product = product.Blocked()
+	s.ProductHead = s.HeadSHA
+	s.ProductTarget = s.TargetSHA
+	if got := Decide(s, View{}, time.Now()).Kind; got != Admit {
+		t.Fatalf("undiscriminated block=%s, want admit", got)
 	}
 }
 

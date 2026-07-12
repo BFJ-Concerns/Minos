@@ -49,7 +49,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	if err := spawnRunUnit(ctx, cfg, repo, facts, lease, occasion); err != nil {
 		// A failed detached launch must never strand the admission slot.
-		_, releaseErr := store.ReleaseLease(context.Background(), lease.Key, lease.Token)
+		releaseErr := closeRunLease(context.Background(), cfg, facts, store, lease.Token)
 		return errors.Join(err, releaseErr)
 	}
 	return nil

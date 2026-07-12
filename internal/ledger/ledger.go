@@ -15,7 +15,8 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	lib "modernc.org/sqlite/lib"
 )
 
 var (
@@ -118,7 +119,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
 		"PRAGMA synchronous = NORMAL",
 		"PRAGMA foreign_keys = ON",
 	} {
-		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+		if err := execBootstrapPragma(ctx, s.db, pragma); err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrLedger, pragma, err)
 		}
 	}
@@ -158,6 +159,32 @@ func (s *Store) bootstrap(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func execBootstrapPragma(ctx context.Context, db *sql.DB, pragma string) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := db.ExecContext(ctx, pragma)
+		if err == nil || !sqliteBusy(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		// busy_timeout does not reliably cover a concurrent journal-mode change.
+		// Retrying that idempotent pragma lets the winning opener finish bootstrap
+		// without weakening the integrity and schema refusal checks which follow.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func sqliteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == lib.SQLITE_BUSY
 }
 
 const schemaSQL = `
@@ -397,16 +424,23 @@ func (s *Store) UpdateObservedPair(ctx context.Context, key Key, token int64, ol
 	return n == 1, err
 }
 
-func (s *Store) SetWait(ctx context.Context, wait Wait) error {
+func (s *Store) SetWait(ctx context.Context, wait Wait, token int64) (bool, error) {
 	now := s.now().UTC()
 	var failsafe any
 	if wait.FailsafeAt != nil {
 		failsafe = stamp(*wait.FailsafeAt)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO waits(forge,owner,repo,pr,fingerprint,failsafe_at,updated_at) VALUES(?,?,?,?,?,?,?)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO waits(forge,owner,repo,pr,fingerprint,failsafe_at,updated_at)
+		SELECT ?,?,?,?,?,?,? WHERE EXISTS (
+			SELECT 1 FROM leases WHERE forge=? AND owner=? AND repo=? AND pr=? AND token=?)
 		ON CONFLICT(forge,owner,repo,pr) DO UPDATE SET fingerprint=excluded.fingerprint,failsafe_at=excluded.failsafe_at,updated_at=excluded.updated_at`,
-		wait.Forge, wait.Owner, wait.Repo, wait.PR, wait.Fingerprint, failsafe, stamp(now))
-	return err
+		wait.Forge, wait.Owner, wait.Repo, wait.PR, wait.Fingerprint, failsafe, stamp(now),
+		wait.Forge, wait.Owner, wait.Repo, wait.PR, token)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) Wait(ctx context.Context, key Key) (Wait, bool, error) {
@@ -435,9 +469,15 @@ func (s *Store) Wait(ctx context.Context, key Key) (Wait, bool, error) {
 	return wait, true, nil
 }
 
-func (s *Store) ClearWait(ctx context.Context, key Key) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM waits WHERE forge=? AND owner=? AND repo=? AND pr=?", keyArgs(key)...)
-	return err
+func (s *Store) ClearWait(ctx context.Context, key Key, token int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM waits WHERE forge=? AND owner=? AND repo=? AND pr=?
+		AND EXISTS (SELECT 1 FROM leases WHERE forge=? AND owner=? AND repo=? AND pr=? AND token=?)`,
+		append(keyArgs(key), append(keyArgs(key), token)...)...)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }
 
 func backoffDelay(attempt int) time.Duration {
@@ -454,9 +494,16 @@ func backoffDelay(attempt int) time.Duration {
 	return delay
 }
 
-func (s *Store) RecordFailure(ctx context.Context, key Key) (Backoff, error) {
+func (s *Store) RecordFailure(ctx context.Context, key Key, token int64) (Backoff, error) {
 	var value Backoff
 	err := s.immediate(ctx, func(conn *sql.Conn) error {
+		var owned int
+		if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM leases WHERE forge=? AND owner=? AND repo=? AND pr=? AND token=?", append(keyArgs(key), token)...).Scan(&owned); err != nil {
+			return err
+		}
+		if owned != 1 {
+			return ErrNotOwner
+		}
 		var prior int
 		err := conn.QueryRowContext(ctx, "SELECT attempt FROM backoff WHERE forge=? AND owner=? AND repo=? AND pr=?", keyArgs(key)...).Scan(&prior)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -493,9 +540,15 @@ func (s *Store) Backoff(ctx context.Context, key Key) (Backoff, bool, error) {
 	return value, true, err
 }
 
-func (s *Store) ClearBackoff(ctx context.Context, key Key) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM backoff WHERE forge=? AND owner=? AND repo=? AND pr=?", keyArgs(key)...)
-	return err
+func (s *Store) ClearBackoff(ctx context.Context, key Key, token int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM backoff WHERE forge=? AND owner=? AND repo=? AND pr=?
+		AND EXISTS (SELECT 1 FROM leases WHERE forge=? AND owner=? AND repo=? AND pr=? AND token=?)`,
+		append(keyArgs(key), append(keyArgs(key), token)...)...)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) UpsertIncident(ctx context.Context, incident Incident) (Incident, error) {

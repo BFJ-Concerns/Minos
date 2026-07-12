@@ -165,10 +165,23 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 			return err
 		}
 		if !snapshot.Open || snapshot.Merged || (snapshot.Draft && snapshot.SkipDrafts) || !snapshot.AuthorInScope {
-			_, err := store.ReleaseLease(ctx, lease.Key, lease.Token)
+			err := closeRunLease(ctx, cfg, facts, store, lease.Token)
 			if err == nil {
 				err = os.RemoveAll(lease.Workspace)
 			}
+			return err
+		}
+		forge, ok := cfg.Forges[facts.Forge]
+		if !ok {
+			return fmt.Errorf("unknown forge %q", facts.Forge)
+		}
+		adaptation, err := NewAdaptation(forge)
+		if err != nil {
+			return err
+		}
+		// Remove the old owner's presence before atomically replacing its token.
+		// A forge failure leaves the old lease intact for a later reap attempt.
+		if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
 			return err
 		}
 		newLease, err := store.ReplaceLease(ctx, lease.Token, ledger.Lease{Key: snapshot.Key, ObservedHead: snapshot.HeadSHA, ObservedTarget: snapshot.TargetSHA, Unit: UnitName(facts), Workspace: lease.Workspace})
@@ -176,9 +189,11 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 			return err
 		}
 		if err := spawnRunUnit(ctx, cfg, repo, facts, newLease, facts.Occasion); err != nil {
-			_, _ = store.ReleaseLease(context.Background(), newLease.Key, newLease.Token)
-			_ = os.RemoveAll(newLease.Workspace)
-			return err
+			closeErr := closeRunLease(context.Background(), cfg, facts, store, newLease.Token)
+			if closeErr == nil {
+				closeErr = os.RemoveAll(newLease.Workspace)
+			}
+			return errors.Join(err, closeErr)
 		}
 		fmt.Fprintf(logw, "replaced dead lifecycle for %s#%s token=%d\n", facts.RepoSlug(), facts.PR, newLease.Token)
 	case reconcile.CleanUp:
