@@ -95,7 +95,7 @@ func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extra
 }
 
 // runClaimMutation is reserved for the service's idempotent claim/release
-// seam. A mission invoking the same adaptation verb through pump19 adapt still
+// seam. A mission invoking the same adaptation verb through minos adapt still
 // takes the ordinary tracked path above.
 func (a Adaptation) runClaimMutation(ctx context.Context, name string, args ...string) ([]byte, error) {
 	if !runClaimMutationOperations[name] {
@@ -118,7 +118,7 @@ func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extra
 	if trackMutation && !forgeReadOperations[name] {
 		// This record must become durable before the adaptation can make a forge
 		// mutation. A later non-zero exit is replayable only when it is absent.
-		if err := writeForgeWritesAttempted(os.Getenv("PUMP19_RUN_DIR"), name); err != nil {
+		if err := writeForgeWritesAttempted(os.Getenv("MINOS_RUN_DIR"), name); err != nil {
 			return nil, fmt.Errorf("record forge write attempt for %s: %w", name, err)
 		}
 	}
@@ -126,8 +126,8 @@ func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extra
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdin = stdin
 	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, "PUMP19_API_BASE="+a.APIBase)
-	cmd.Env = append(cmd.Env, "PUMP19_FORGE_TOKEN="+a.Credential)
+	cmd.Env = append(cmd.Env, "MINOS_API_BASE="+a.APIBase)
+	cmd.Env = append(cmd.Env, "MINOS_FORGE_TOKEN="+a.Credential)
 	for key, value := range extraEnv {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
@@ -145,13 +145,13 @@ func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extra
 // never a caller-selected path into the host filesystem.
 func AdaptCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 || !adaptationOperation.MatchString(args[0]) {
-		return fmt.Errorf("usage: pump19 adapt OPERATION [ARG...]")
+		return fmt.Errorf("usage: minos adapt OPERATION [ARG...]")
 	}
-	cfg, err := LoadServiceConfig(os.Getenv("PUMP19_CONFIG"))
+	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
 		return err
 	}
-	forgeName := os.Getenv("PUMP19_FORGE")
+	forgeName := os.Getenv("MINOS_FORGE")
 	forge, ok := cfg.Forges[forgeName]
 	if !ok {
 		return fmt.Errorf("unknown forge %q", forgeName)
@@ -171,8 +171,8 @@ func AdaptCommand(ctx context.Context, args []string, stdin io.Reader, stdout io
 			return err
 		}
 		extraEnv = map[string]string{
-			"PUMP19_FIND_INGEST_REPOSITORY": repo.FindIngest.Repository,
-			"PUMP19_FIND_INGEST_PATH":       repo.FindIngest.Path,
+			"MINOS_FIND_INGEST_REPOSITORY": repo.FindIngest.Repository,
+			"MINOS_FIND_INGEST_PATH":       repo.FindIngest.Path,
 		}
 	}
 	var out []byte
@@ -191,7 +191,7 @@ func AdaptCommand(ctx context.Context, args []string, stdin io.Reader, stdout io
 func (a Adaptation) NormaliseEvent(ctx context.Context, body []byte, headers map[string]string) (Facts, error) {
 	env := make(map[string]string, len(headers))
 	for key, value := range headers {
-		env["PUMP19_HEADER_"+headerEnvName(key)] = value
+		env["MINOS_HEADER_"+headerEnvName(key)] = value
 	}
 	out, err := a.Run(ctx, "normalise-event", bytes.NewReader(body), env)
 	if err != nil {
@@ -351,8 +351,8 @@ func (a Adaptation) LatestLabelEvent(ctx context.Context, owner, repo, pr string
 
 func (a Adaptation) PrepareWorkspace(ctx context.Context, facts Facts, workspace, diffPath string) error {
 	_, err := a.Run(ctx, "prepare-workspace", nil, map[string]string{
-		"PUMP19_WORKSPACE": workspace,
-		"PUMP19_DIFF":      diffPath,
+		"MINOS_WORKSPACE": workspace,
+		"MINOS_DIFF":      diffPath,
 	}, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, facts.BaseRef)
 	return err
 }

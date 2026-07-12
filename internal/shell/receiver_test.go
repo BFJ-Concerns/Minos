@@ -132,7 +132,7 @@ func TestHandleHookDefersAtCapacity(t *testing.T) {
 	root := writeRepoConfig(t, validRepoConfig)
 	spawned := filepath.Join(root, "spawned")
 	installAdmissionCommands(t, root,
-		"printf 'pump19-run-one.service loaded active running one\\npump19-run-two.service loaded active running two\\n'\n",
+		"printf 'minos-run-one.service loaded active running one\\nminos-run-two.service loaded active running two\\n'\n",
 		"exit 99\n")
 	response := httptest.NewRecorder()
 	cfg := receiverTestConfig(t, root)
@@ -158,9 +158,9 @@ func TestHandleHookDefersAtCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	facts := Facts{
-		Forge: "local", Owner: "pump19", Repo: "subject", PR: "1",
+		Forge: "local", Owner: "minos-e2e-owner", Repo: "subject", PR: "1",
 		HeadSHA: "2ff55f9248630929f5dbef0f99d713743d5f0a33", BaseRef: "main",
-		Author: "pump19", Draft: false,
+		Author: "minos-e2e-owner", Draft: false,
 	}
 	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
 	if err != nil {
@@ -224,7 +224,7 @@ func signedHookRequest(t *testing.T) *http.Request {
 
 func TestResolveReceiverFactsBindsReadyActorToLabelApplication(t *testing.T) {
 	adaptation := fixtureTimelineAdaptation(t, "timeline-ready-added.json")
-	facts := Facts{Occasion: "label-updated", Owner: "pump19", Repo: "subject", PR: "1", Actor: "mallory", Labels: []string{LabelReady}}
+	facts := Facts{Occasion: "label-updated", Owner: "minos", Repo: "subject", PR: "1", Actor: "mallory", Labels: []string{LabelReady}}
 	got, err := resolveReceiverFacts(t.Context(), adaptation, facts)
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestResolveReceiverFactsBindsReadyActorToLabelApplication(t *testing.T) {
 
 func TestResolveReceiverFactsSupportsGenericLabelRemovalVocabulary(t *testing.T) {
 	adaptation := fixtureTimelineAdaptation(t, "timeline-ready-removed.json")
-	facts := Facts{Occasion: "label-updated", Owner: "pump19", Repo: "subject", PR: "1", Actor: "mallory"}
+	facts := Facts{Occasion: "label-updated", Owner: "minos", Repo: "subject", PR: "1", Actor: "mallory"}
 	got, err := resolveReceiverFacts(t.Context(), adaptation, facts)
 	if err != nil {
 		t.Fatal(err)

@@ -1,4 +1,4 @@
-module bfj/pump19
+module bfj/minos
 
 go 1.26
 

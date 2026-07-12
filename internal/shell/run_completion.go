@@ -12,7 +12,7 @@ const finishedMarkerFile = "finished.env"
 
 func writeFinishedMarker(runDir string, finishedAt time.Time, outcome string) error {
 	data := fmt.Sprintf(
-		"PUMP19_FINISHED_VERSION=1\nPUMP19_FINISHED_AT=%s\nPUMP19_FINISHED_OUTCOME=%s\n",
+		"MINOS_FINISHED_VERSION=1\nMINOS_FINISHED_AT=%s\nMINOS_FINISHED_OUTCOME=%s\n",
 		finishedAt.UTC().Format(time.RFC3339Nano), outcome,
 	)
 	return atomicPublishFile(filepath.Join(runDir, finishedMarkerFile), []byte(data), 0o644)
@@ -26,10 +26,10 @@ func readFinishedAt(runDir string) (time.Time, bool, error) {
 	if err != nil {
 		return time.Time{}, false, err
 	}
-	if values["PUMP19_FINISHED_VERSION"] != "1" {
+	if values["MINOS_FINISHED_VERSION"] != "1" {
 		return time.Time{}, false, fmt.Errorf("unsupported finished marker version")
 	}
-	finishedAt, err := time.Parse(time.RFC3339Nano, values["PUMP19_FINISHED_AT"])
+	finishedAt, err := time.Parse(time.RFC3339Nano, values["MINOS_FINISHED_AT"])
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("parse finished timestamp: %w", err)
 	}

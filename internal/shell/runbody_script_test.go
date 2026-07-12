@@ -18,11 +18,11 @@ func TestRunBodyLaunchesOneReviewSessionFromRunDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcher := filepath.Join(root, "launch")
-	capture := filepath.Join(root, "pump19-capture")
+	capture := filepath.Join(root, "minos-capture")
 	writeScript(t, launcher, `#!/usr/bin/env sh
 set -eu
 printf 'cwd=%s\n' "$PWD"
-printf 'scripts=%s\n' "$PUMP19_REVIEW_SCRIPTS"
+printf 'scripts=%s\n' "$MINOS_REVIEW_SCRIPTS"
 printf 'mission='; cat
 `)
 	writeScript(t, capture, `#!/usr/bin/env sh
@@ -40,20 +40,20 @@ done
 "$launcher" >"$output"
 printf '[{"id":"lead","resolved_model":"fixture"}]\n' >"$resolved"
 `)
-	envFile := "PUMP19_ENGINE_LAUNCH_LEAD='" + launcher + "'\n" +
-		"PUMP19_ENSEMBLE_LAUNCH='/opt/pump19/bin/ensemble'\n" +
-		"PUMP19_PINS='/opt/pump19/pins.toml'\n" +
-		"PUMP19_REVIEW_SCRIPTS='/opt/pump19/review'\n" +
-		"PUMP19_BIN='" + capture + "'\n"
+	envFile := "MINOS_ENGINE_LAUNCH_LEAD='" + launcher + "'\n" +
+		"MINOS_ENSEMBLE_LAUNCH='/opt/minos/bin/ensemble'\n" +
+		"MINOS_PINS='/opt/minos/pins.toml'\n" +
+		"MINOS_REVIEW_SCRIPTS='/opt/minos/review'\n" +
+		"MINOS_BIN='" + capture + "'\n"
 	if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte(envFile), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd := exec.Command(filepath.Join(installRoot, "run-body", "run-body"))
 	cmd.Env = append(os.Environ(),
-		"PUMP19_CONFIG="+configDir,
-		"PUMP19_RUN_DIR="+runDir,
-		"PUMP19_RUN_KIND=review",
+		"MINOS_CONFIG="+configDir,
+		"MINOS_RUN_DIR="+runDir,
+		"MINOS_RUN_KIND=review",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -64,7 +64,7 @@ printf '[{"id":"lead","resolved_model":"fixture"}]\n' >"$resolved"
 		t.Fatal(err)
 	}
 	text := string(lead)
-	if !strings.Contains(text, "cwd="+runDir) || !strings.Contains(text, "scripts=/opt/pump19/review") || !strings.Contains(text, "mission=review mission fixture") {
+	if !strings.Contains(text, "cwd="+runDir) || !strings.Contains(text, "scripts=/opt/minos/review") || !strings.Contains(text, "mission=review mission fixture") {
 		t.Fatalf("launcher did not receive the run contract:\n%s", text)
 	}
 }
@@ -79,13 +79,13 @@ func TestRunBodyRejectsUnknownKindAndUnconfiguredSkillRuns(t *testing.T) {
 	}
 	// The run-specific skill paths are deliberately absent: a fix or flaky run
 	// without its skill wired must fail loudly. An unknown kind is rejected.
-	if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("MINOS_ENGINE_LAUNCH_LEAD=x\nMINOS_ENSEMBLE_LAUNCH=x\nMINOS_PINS=x\nMINOS_REVIEW_SCRIPTS=x\nMINOS_BIN=x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"fix", "flaky", "surprise"} {
 		t.Run(kind, func(t *testing.T) {
 			cmd := exec.Command(filepath.Join(installRoot, "run-body", "run-body"))
-			cmd.Env = append(os.Environ(), "PUMP19_CONFIG="+configDir, "PUMP19_RUN_DIR="+filepath.Join(root, kind), "PUMP19_RUN_KIND="+kind)
+			cmd.Env = append(os.Environ(), "MINOS_CONFIG="+configDir, "MINOS_RUN_DIR="+filepath.Join(root, kind), "MINOS_RUN_KIND="+kind)
 			if err := cmd.Run(); err == nil {
 				t.Fatalf("kind %s unexpectedly succeeded", kind)
 			}
@@ -114,33 +114,33 @@ func TestRunWrapEarlyBodyFailureIsRetryableAndInvisibleOnEveryRunKind(t *testing
 			if err := os.WriteFile(webhookSecret, []byte("secret\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), "#!/usr/bin/env sh\nmkdir -p \"$PUMP19_WORKSPACE\"\n: >\"$PUMP19_DIFF\"\n")
+			writeScript(t, filepath.Join(adaptationDir, "prepare-workspace"), "#!/usr/bin/env sh\nmkdir -p \"$MINOS_WORKSPACE\"\n: >\"$MINOS_DIFF\"\n")
 			service := "[service]\nbot-login = \"Minos\"\n\n[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 			if err := os.WriteFile(filepath.Join(configDir, "service.toml"), []byte(service), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			// The kind dispatches, but the engine launch fails before the mission can
 			// attempt a forge write. This common backend-start failure is retryable.
-			if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("PUMP19_ENGINE_LAUNCH_LEAD=x\nPUMP19_ENSEMBLE_LAUNCH=x\nPUMP19_PINS=x\nPUMP19_REVIEW_SCRIPTS=x\nPUMP19_BIN=x\nPUMP19_FIX_SKILL=x\nPUMP19_FLAKY_SKILL=x\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(configDir, "run-body.env"), []byte("MINOS_ENGINE_LAUNCH_LEAD=x\nMINOS_ENSEMBLE_LAUNCH=x\nMINOS_PINS=x\nMINOS_REVIEW_SCRIPTS=x\nMINOS_BIN=x\nMINOS_FIX_SKILL=x\nMINOS_FLAKY_SKILL=x\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			runDir := filepath.Join(root, "runs", kind)
-			t.Setenv("PUMP19_RUN_DIR", runDir)
-			t.Setenv("PUMP19_WORKSPACE", filepath.Join(root, "workspace"))
-			t.Setenv("PUMP19_DIFF", filepath.Join(runDir, "diff.patch"))
-			t.Setenv("PUMP19_RUN_KIND", kind)
-			t.Setenv("PUMP19_FORGE", "local")
-			t.Setenv("PUMP19_OWNER", "pump19")
-			t.Setenv("PUMP19_REPO_NAME", "subject")
-			t.Setenv("PUMP19_PR", "42")
-			t.Setenv("PUMP19_HEAD_SHA", "abcdef123456")
-			t.Setenv("PUMP19_CONFIG", configDir)
-			t.Setenv("PUMP19_RUN_BODY", filepath.Join(installRoot, "run-body", "run-body"))
+			t.Setenv("MINOS_RUN_DIR", runDir)
+			t.Setenv("MINOS_WORKSPACE", filepath.Join(root, "workspace"))
+			t.Setenv("MINOS_DIFF", filepath.Join(runDir, "diff.patch"))
+			t.Setenv("MINOS_RUN_KIND", kind)
+			t.Setenv("MINOS_FORGE", "local")
+			t.Setenv("MINOS_OWNER", "minos")
+			t.Setenv("MINOS_REPO_NAME", "subject")
+			t.Setenv("MINOS_PR", "42")
+			t.Setenv("MINOS_HEAD_SHA", "abcdef123456")
+			t.Setenv("MINOS_CONFIG", configDir)
+			t.Setenv("MINOS_RUN_BODY", filepath.Join(installRoot, "run-body", "run-body"))
 			if err := RunWrapCommand(t.Context(), []string{"--config", configDir}); err == nil {
 				t.Fatalf("%s body unexpectedly completed", kind)
 			}
-			assertContainsFile(t, filepath.Join(runDir, "run.log"), "pump19 run-wrap error")
-			assertContainsFile(t, filepath.Join(runDir, "retry.env"), "PUMP19_FAILURE_PHASE=run-body-exit")
+			assertContainsFile(t, filepath.Join(runDir, "run.log"), "minos run-wrap error")
+			assertContainsFile(t, filepath.Join(runDir, "retry.env"), "MINOS_FAILURE_PHASE=run-body-exit")
 			if _, err := os.Stat(filepath.Join(runDir, terminalMarkerFile)); !os.IsNotExist(err) {
 				t.Fatalf("%s early body failure latched instead of retrying: %v", kind, err)
 			}

@@ -1,46 +1,46 @@
 #!/usr/bin/env sh
 set -eu
 
-: "${PUMP19_BIN:=pump19}"
-: "${PUMP19_REVIEW_SCRIPTS:?PUMP19_REVIEW_SCRIPTS is required}"
-: "${PUMP19_RUN_DIR:?PUMP19_RUN_DIR is required}"
-: "${PUMP19_CONFIG:?PUMP19_CONFIG is required}"
-: "${PUMP19_PINS:?PUMP19_PINS is required}"
+: "${MINOS_BIN:=minos}"
+: "${MINOS_REVIEW_SCRIPTS:?MINOS_REVIEW_SCRIPTS is required}"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+: "${MINOS_CONFIG:?MINOS_CONFIG is required}"
+: "${MINOS_PINS:?MINOS_PINS is required}"
 
-standin_model=${PUMP19_STANDIN_LEAD_MODEL:-claude-opus-pinned}
+standin_model=${MINOS_STANDIN_LEAD_MODEL:-claude-opus-pinned}
 printf '{"type":"system","subtype":"init","model":"%s"}\n' "$standin_model"
-cat >"$PUMP19_RUN_DIR/mission.received.md"
-if [ -n "${PUMP19_STANDIN_DISPATCH_RECORD:-}" ]; then
+cat >"$MINOS_RUN_DIR/mission.received.md"
+if [ -n "${MINOS_STANDIN_DISPATCH_RECORD:-}" ]; then
   # Record what reached the real E1 engine seam, after run-wrap and run-body.
   # This is deliberately the same 18-field contract as the Forgejo estate rig.
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$PUMP19_RUN_KIND" "$PUMP19_HEAD_SHA" "$PUMP19_OCCASION" "$PUMP19_SKILL" \
-    "$PUMP19_RUN_BODY" "$PUMP19_RUN_DIR" "$PUMP19_FORGE" "$PUMP19_REPO" \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_BASE_REF" \
-    "$PUMP19_WORKSPACE" "$PUMP19_DIFF" "$PUMP19_ADAPTATION" "$PUMP19_BRIEFS" \
-    "$PUMP19_CONFIG" "$PUMP19_UNIT" >>"$PUMP19_STANDIN_DISPATCH_RECORD"
+    "$MINOS_RUN_KIND" "$MINOS_HEAD_SHA" "$MINOS_OCCASION" "$MINOS_SKILL" \
+    "$MINOS_RUN_BODY" "$MINOS_RUN_DIR" "$MINOS_FORGE" "$MINOS_REPO" \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" "$MINOS_BASE_REF" \
+    "$MINOS_WORKSPACE" "$MINOS_DIFF" "$MINOS_ADAPTATION" "$MINOS_BRIEFS" \
+    "$MINOS_CONFIG" "$MINOS_UNIT" >>"$MINOS_STANDIN_DISPATCH_RECORD"
 fi
-claim=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" begin)
+claim=$("$MINOS_BIN" run-guard --config "$MINOS_CONFIG" begin)
 case "$claim" in
   claimed) ;;
   yield-terminal|yield-head) printf '{"result":"%s"}\n' "$claim"; exit 0 ;;
   *) echo "unexpected run claim result: $claim" >&2; exit 2 ;;
 esac
 release() {
-  "$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" release >/dev/null
+  "$MINOS_BIN" run-guard --config "$MINOS_CONFIG" release >/dev/null
 }
 trap release EXIT HUP INT TERM
 
-if [ -n "${PUMP19_STANDIN_MISMATCH_AFTER_CLAIM:-}" ]; then
+if [ -n "${MINOS_STANDIN_MISMATCH_AFTER_CLAIM:-}" ]; then
   # Emit the mismatch only after the forge claim exists. The capture wrapper
   # deliberately kills this process, modelling the hard abort whose EXIT trap
   # cannot release Reviewing.
-  printf '{"type":"assistant","message":{"model":"%s"}}\n' "$PUMP19_STANDIN_MISMATCH_AFTER_CLAIM"
+  printf '{"type":"assistant","message":{"model":"%s"}}\n' "$MINOS_STANDIN_MISMATCH_AFTER_CLAIM"
   while :; do sleep 1; done
 fi
 
 require_current() {
-  current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
+  current=$("$MINOS_BIN" run-guard --config "$MINOS_CONFIG" current)
   case "$current" in
     current) ;;
     stale) exit 0 ;;
@@ -48,8 +48,8 @@ require_current() {
   esac
 }
 
-"$PUMP19_REVIEW_SCRIPTS/extract-governing" >/dev/null
-while [ ! -s "$PUMP19_RUN_DIR/resolved-lead.json" ]; do
+"$MINOS_REVIEW_SCRIPTS/extract-governing" >/dev/null
+while [ ! -s "$MINOS_RUN_DIR/resolved-lead.json" ]; do
   sleep 1
 done
 # The service interlock governs the accountable lead only. Worker models belong
@@ -61,13 +61,13 @@ jq '[.[] | {
   requested_model: .resolved_model,
   resolved_model: .resolved_model,
   family: "anthropic"
-}]' "$PUMP19_RUN_DIR/resolved-lead.json" >"$PUMP19_RUN_DIR/provenance.json"
+}]' "$MINOS_RUN_DIR/resolved-lead.json" >"$MINOS_RUN_DIR/provenance.json"
 
-verdict=${PUMP19_STANDIN_VERDICT:-converged}
+verdict=${MINOS_STANDIN_VERDICT:-converged}
 if [ "$verdict" = converged ]; then
-  verdict_facts="$PUMP19_RUN_DIR/verdict-pr-facts.txt"
-  "$PUMP19_BIN" adapt get-pr-facts \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$verdict_facts"
+  verdict_facts="$MINOS_RUN_DIR/verdict-pr-facts.txt"
+  "$MINOS_BIN" adapt get-pr-facts \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" >"$verdict_facts"
   verdict_labels=$(sed -n 's/^LABELS=//p' "$verdict_facts")
   case ",$verdict_labels," in
     *,"Flaky Tests",*) verdict=paused-flaky ;;
@@ -76,132 +76,132 @@ fi
 case "$verdict" in
   converged) coverage=full; bar=passed; review_state=APPROVE; outcome_label=Converged ;;
   standing-findings) coverage=full; bar=passed; review_state=REQUEST_CHANGES; outcome_label='Standing Findings' ;;
-  partial-coverage) coverage=partial; bar=${PUMP19_STANDIN_BAR:-passed}; review_state=COMMENT; outcome_label='Partial Coverage' ;;
+  partial-coverage) coverage=partial; bar=${MINOS_STANDIN_BAR:-passed}; review_state=COMMENT; outcome_label='Partial Coverage' ;;
   paused-flaky) coverage=full; bar=passed; review_state=COMMENT; outcome_label='' ;;
   bar-dissent) coverage=full; bar=failed; review_state=COMMENT; outcome_label='' ;;
   *) echo "unsupported stand-in verdict: $verdict" >&2; exit 2 ;;
 esac
 
-existing="$PUMP19_RUN_DIR/existing-comments.json"
-"$PUMP19_BIN" adapt list-review-comments "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$existing"
-printf '[]\n' >"$PUMP19_RUN_DIR/new-comments.json"
+existing="$MINOS_RUN_DIR/existing-comments.json"
+"$MINOS_BIN" adapt list-review-comments "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" >"$existing"
+printf '[]\n' >"$MINOS_RUN_DIR/new-comments.json"
 
-if [ -n "${PUMP19_STANDIN_PREEXISTING_FILE:-}" ]; then
-  cp "$PUMP19_STANDIN_PREEXISTING_FILE" "$PUMP19_RUN_DIR/preexisting-findings.json"
+if [ -n "${MINOS_STANDIN_PREEXISTING_FILE:-}" ]; then
+  cp "$MINOS_STANDIN_PREEXISTING_FILE" "$MINOS_RUN_DIR/preexisting-findings.json"
   # Find ingest is deliberately best-effort. The evidence remains in the run
   # directory whether the destination is absent, succeeds, or rejects the push.
-  if ! "$PUMP19_BIN" adapt append-findings \
-      "$PUMP19_REPO" "$PUMP19_PR" "$PUMP19_RUN_DIR/preexisting-findings.json" >/dev/null; then
+  if ! "$MINOS_BIN" adapt append-findings \
+      "$MINOS_REPO" "$MINOS_PR" "$MINOS_RUN_DIR/preexisting-findings.json" >/dev/null; then
     echo "find-ingest failed; pre-existing findings remain in run evidence" >&2
   fi
 fi
-if [ "${PUMP19_STANDIN_FAIL_AFTER_INGEST:-}" = 1 ]; then
+if [ "${MINOS_STANDIN_FAIL_AFTER_INGEST:-}" = 1 ]; then
   echo "fixture transient failure after find ingest" >&2
   exit 75
 fi
 
-if [ -n "${PUMP19_STANDIN_FINDING_FILE:-}" ]; then
-  path=$(jq -er '.path' "$PUMP19_STANDIN_FINDING_FILE")
-  line=$(jq -er '.line' "$PUMP19_STANDIN_FINDING_FILE")
-  priority=$(jq -er '.priority' "$PUMP19_STANDIN_FINDING_FILE")
-  finding=$(jq -r '.finding // ""' "$PUMP19_STANDIN_FINDING_FILE")
-  "$PUMP19_REVIEW_SCRIPTS/changed-line-gate" "$PUMP19_DIFF" "$path" "$line" >/dev/null
-  anchor=$("$PUMP19_REVIEW_SCRIPTS/anchor-resolve" "$PUMP19_DIFF" "$path" "$line")
+if [ -n "${MINOS_STANDIN_FINDING_FILE:-}" ]; then
+  path=$(jq -er '.path' "$MINOS_STANDIN_FINDING_FILE")
+  line=$(jq -er '.line' "$MINOS_STANDIN_FINDING_FILE")
+  priority=$(jq -er '.priority' "$MINOS_STANDIN_FINDING_FILE")
+  finding=$(jq -r '.finding // ""' "$MINOS_STANDIN_FINDING_FILE")
+  "$MINOS_REVIEW_SCRIPTS/changed-line-gate" "$MINOS_DIFF" "$path" "$line" >/dev/null
+  anchor=$("$MINOS_REVIEW_SCRIPTS/anchor-resolve" "$MINOS_DIFF" "$path" "$line")
   jq -nc \
     --slurpfile existing "$existing" \
-    --slurpfile candidate "$PUMP19_STANDIN_FINDING_FILE" \
+    --slurpfile candidate "$MINOS_STANDIN_FINDING_FILE" \
     '{existing:$existing[0],candidates:$candidate}' |
-    "$PUMP19_REVIEW_SCRIPTS/dedupe" >"$PUMP19_RUN_DIR/dedupe.json"
+    "$MINOS_REVIEW_SCRIPTS/dedupe" >"$MINOS_RUN_DIR/dedupe.json"
 
-  update_count=$(jq '.updates | length' "$PUMP19_RUN_DIR/dedupe.json")
+  update_count=$(jq '.updates | length' "$MINOS_RUN_DIR/dedupe.json")
   if [ "$update_count" -eq 1 ]; then
-    comment_id=$(jq -er '.updates[0].comment_id' "$PUMP19_RUN_DIR/dedupe.json")
-    body=$(jq -er '.updates[0].body' "$PUMP19_RUN_DIR/dedupe.json")
-    marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review finding="$finding" head="$PUMP19_HEAD_SHA" priority="$priority")
-    printf '%s\n\n%s\n' "$body" "$marker" >"$PUMP19_RUN_DIR/finding.md"
+    comment_id=$(jq -er '.updates[0].comment_id' "$MINOS_RUN_DIR/dedupe.json")
+    body=$(jq -er '.updates[0].body' "$MINOS_RUN_DIR/dedupe.json")
+    marker=$("$MINOS_REVIEW_SCRIPTS/mark" format run=review finding="$finding" head="$MINOS_HEAD_SHA" priority="$priority")
+    printf '%s\n\n%s\n' "$body" "$marker" >"$MINOS_RUN_DIR/finding.md"
     require_current
-    "$PUMP19_BIN" adapt update-comment "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$comment_id" "$PUMP19_RUN_DIR/finding.md" >/dev/null
+    "$MINOS_BIN" adapt update-comment "$MINOS_OWNER" "$MINOS_REPO_NAME" "$comment_id" "$MINOS_RUN_DIR/finding.md" >/dev/null
   else
     if [ -n "$finding" ]; then
       echo "new stand-in finding unexpectedly carried an existing handle" >&2
       exit 2
     fi
-    finding=${PUMP19_STANDIN_NEW_HANDLE:-}
+    finding=${MINOS_STANDIN_NEW_HANDLE:-}
     if [ -z "$finding" ]; then
-      handles=$(jq -r '.[].body | split("\n")[-1] | select(startswith("Pump-19:")) | split(" ")[] | select(startswith("finding=")) | split("=")[1]' "$existing")
+      handles=$(jq -r '.[].body | split("\n")[-1] | select(startswith("Minos:")) | split(" ")[] | select(startswith("finding=")) | split("=")[1]' "$existing")
       # Shell field splitting is intentional: handles cannot contain spaces.
       # shellcheck disable=SC2086
-      finding=$("$PUMP19_REVIEW_SCRIPTS/mint-handle" $handles)
+      finding=$("$MINOS_REVIEW_SCRIPTS/mint-handle" $handles)
     fi
-    body=$(jq -er '.body' "$PUMP19_STANDIN_FINDING_FILE")
-    marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review finding="$finding" head="$PUMP19_HEAD_SHA" priority="$priority")
-    printf '%s\n\n%s\n' "$body" "$marker" >"$PUMP19_RUN_DIR/finding.md"
+    body=$(jq -er '.body' "$MINOS_STANDIN_FINDING_FILE")
+    marker=$("$MINOS_REVIEW_SCRIPTS/mark" format run=review finding="$finding" head="$MINOS_HEAD_SHA" priority="$priority")
+    printf '%s\n\n%s\n' "$body" "$marker" >"$MINOS_RUN_DIR/finding.md"
     jq -nc \
       --argjson anchor "$anchor" \
-      --arg body "$(cat "$PUMP19_RUN_DIR/finding.md")" \
-      '[$anchor + {body:$body}]' >"$PUMP19_RUN_DIR/new-comments.json"
+      --arg body "$(cat "$MINOS_RUN_DIR/finding.md")" \
+      '[$anchor + {body:$body}]' >"$MINOS_RUN_DIR/new-comments.json"
   fi
 fi
 
-marker=$("$PUMP19_REVIEW_SCRIPTS/mark" format run=review head="$PUMP19_HEAD_SHA" verdict="$verdict" coverage="$coverage" bar="$bar")
+marker=$("$MINOS_REVIEW_SCRIPTS/mark" format run=review head="$MINOS_HEAD_SHA" verdict="$verdict" coverage="$coverage" bar="$bar")
 {
   if [ "$verdict" = paused-flaky ]; then
     printf 'Review complete with full coverage. Convergence is paused while Flaky Tests stands; no approval was given.\n\n'
   elif [ "$verdict" = bar-dissent ]; then
     printf 'Review complete with full coverage. The review-bar check dissents; the verified review publishes and no approval was given.\n\n'
   else
-    printf 'Pump-19 stand-in seam review. Coverage: %s.\n\n' "$coverage"
+    printf 'Minos stand-in seam review. Coverage: %s.\n\n' "$coverage"
   fi
   printf '%s\n' "$marker"
-} >"$PUMP19_RUN_DIR/review.md"
+} >"$MINOS_RUN_DIR/review.md"
 
-if [ -n "${PUMP19_STANDIN_BEFORE_POST_READY:-}" ]; then
-  : >"$PUMP19_STANDIN_BEFORE_POST_READY"
-  while [ ! -e "$PUMP19_STANDIN_BEFORE_POST_CONTINUE" ]; do
+if [ -n "${MINOS_STANDIN_BEFORE_POST_READY:-}" ]; then
+  : >"$MINOS_STANDIN_BEFORE_POST_READY"
+  while [ ! -e "$MINOS_STANDIN_BEFORE_POST_CONTINUE" ]; do
     sleep 0.05
   done
 fi
 require_current
 
-"$PUMP19_BIN" adapt post-review \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_HEAD_SHA" \
-  "$review_state" "$PUMP19_RUN_DIR/review.md" "$PUMP19_RUN_DIR/new-comments.json" \
-  >"$PUMP19_RUN_DIR/review-response.json"
+"$MINOS_BIN" adapt post-review \
+  "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" "$MINOS_HEAD_SHA" \
+  "$review_state" "$MINOS_RUN_DIR/review.md" "$MINOS_RUN_DIR/new-comments.json" \
+  >"$MINOS_RUN_DIR/review-response.json"
 
-facts=$("$PUMP19_BIN" adapt get-pr-facts "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR")
+facts=$("$MINOS_BIN" adapt get-pr-facts "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR")
 labels=$(printf '%s\n' "$facts" | sed -n 's/^LABELS=//p')
 for label in Converged 'Standing Findings' 'Partial Coverage'; do
   case ",$labels," in
     *",$label,"*)
       require_current
-      "$PUMP19_BIN" adapt remove-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$label" >/dev/null
+      "$MINOS_BIN" adapt remove-label "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" "$label" >/dev/null
       ;;
   esac
 done
 require_current
 if [ -n "$outcome_label" ]; then
-  "$PUMP19_BIN" adapt add-label "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$outcome_label" >/dev/null
+  "$MINOS_BIN" adapt add-label "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" "$outcome_label" >/dev/null
 fi
 require_current
-"$PUMP19_BIN" adapt set-status \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
-  pump19/review success "Pump-19 review completed: $verdict" >/dev/null
+"$MINOS_BIN" adapt set-status \
+  "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_HEAD_SHA" \
+  minos/review success "Minos review completed: $verdict" >/dev/null
 
-if [ "$verdict" = converged ] && [ "${PUMP19_AUTO_MERGE:-false}" = true ]; then
+if [ "$verdict" = converged ] && [ "${MINOS_AUTO_MERGE:-false}" = true ]; then
   # Ready triggers finish immediately, so take a fresh label snapshot only after
   # both terminal review records exist. Flaky Tests owns the pause while its
   # label is present; convergence alone must not jump that queue.
-  ready_facts="$PUMP19_RUN_DIR/ready-pr-facts.txt"
-  "$PUMP19_BIN" adapt get-pr-facts \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$ready_facts"
+  ready_facts="$MINOS_RUN_DIR/ready-pr-facts.txt"
+  "$MINOS_BIN" adapt get-pr-facts \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" >"$ready_facts"
   ready_labels=$(sed -n 's/^LABELS=//p' "$ready_facts")
   # Mirror the mission's deferred-Ready rule: the newest status per context,
-  # service (pump19/…) contexts ignored, must be all-success or absent. A red
+  # service (minos/…) contexts ignored, must be all-success or absent. A red
   # or pending head defers the label; the approving review stands either way.
-  ci_state=$("$PUMP19_BIN" adapt get-statuses \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" |
+  ci_state=$("$MINOS_BIN" adapt get-statuses \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_HEAD_SHA" |
     jq -r '[group_by(.context)[] | max_by(.id)
-            | select(.context | startswith("pump19/") | not)]
+            | select(.context | startswith("minos/") | not)]
            | if length == 0 then "absent"
              elif all(.state == "success") then "green"
              else "deferred" end')
@@ -212,11 +212,11 @@ if [ "$verdict" = converged ] && [ "${PUMP19_AUTO_MERGE:-false}" = true ]; then
         echo "Ready deferred: head combined status not green" >&2
       else
         require_current
-        "$PUMP19_BIN" adapt add-label \
-          "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" Ready >/dev/null
-        if [ -n "${PUMP19_STANDIN_AFTER_READY_READY:-}" ]; then
-          : >"$PUMP19_STANDIN_AFTER_READY_READY"
-          while [ ! -e "$PUMP19_STANDIN_AFTER_READY_CONTINUE" ]; do
+        "$MINOS_BIN" adapt add-label \
+          "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" Ready >/dev/null
+        if [ -n "${MINOS_STANDIN_AFTER_READY_READY:-}" ]; then
+          : >"$MINOS_STANDIN_AFTER_READY_READY"
+          while [ ! -e "$MINOS_STANDIN_AFTER_READY_CONTINUE" ]; do
             sleep 0.05
           done
         fi

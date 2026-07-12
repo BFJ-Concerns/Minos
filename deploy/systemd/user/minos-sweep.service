@@ -1,0 +1,10 @@
+[Unit]
+Description=Minos reconciliation sweep
+Documentation=file:/opt/minos/docs/go-live.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/minos sweep --config /etc/minos
+UMask=0077

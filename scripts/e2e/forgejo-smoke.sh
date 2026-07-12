@@ -2,19 +2,19 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-work="${PUMP19_E2E_DIR:-$(mktemp -d)}"
+work="${MINOS_E2E_DIR:-$(mktemp -d)}"
 source "$root/scripts/e2e/resources.sh"
-declare -a PUMP19_E2E_RESOURCE_LOCK_FDS=()
-pump19_e2e_allocate_resources
-container="$PUMP19_E2E_RESOLVED_CONTAINER"
-image="${PUMP19_FORGEJO_IMAGE:-codeberg.org/forgejo/forgejo:14.0.5}"
-port="$PUMP19_E2E_RESOLVED_FORGEJO_PORT"
-hook_port="$PUMP19_E2E_RESOLVED_HOOK_PORT"
-capture_port="$PUMP19_E2E_RESOLVED_CAPTURE_PORT"
-secret="pump19-secret"
-owner="pump19"
+declare -a MINOS_E2E_RESOURCE_LOCK_FDS=()
+minos_e2e_allocate_resources
+container="$MINOS_E2E_RESOLVED_CONTAINER"
+image="${MINOS_FORGEJO_IMAGE:-codeberg.org/forgejo/forgejo:14.0.5}"
+port="$MINOS_E2E_RESOLVED_FORGEJO_PORT"
+hook_port="$MINOS_E2E_RESOLVED_HOOK_PORT"
+capture_port="$MINOS_E2E_RESOLVED_CAPTURE_PORT"
+secret="minos-secret"
+owner="minos-e2e-owner"
 repo="subject"
-fixture_dir="${PUMP19_E2E_FIXTURE_DIR:-${work}/fixtures}"
+fixture_dir="${MINOS_E2E_FIXTURE_DIR:-${work}/fixtures}"
 run_body_records="${work}/logs/run-body-records.tsv"
 recording_skill="${work}/skills/review.md"
 recording_body="${work}/recording-run-body"
@@ -100,10 +100,10 @@ assert_run_body_record() {
   local pr="$7"
   if [[ ! -f "$run_body_records" ]] || ! awk -F '\t' \
     -v kind="$kind" -v sha="$sha" -v occasion="$occasion" -v skill="$skill" -v body="$body" -v pr="$pr" \
-    -v runs="$work/runs/" -v adaptation="$work/adaptations" -v config="$work/config" \
+    -v runs="$work/runs/" -v adaptation="$work/adaptations" -v config="$work/config" -v owner="$owner" \
     '$1 == kind && $2 == sha && $3 == occasion && $4 == skill && $5 == body &&
-     index($6, runs) == 1 && $7 == "local" && $8 == "pump19/subject" &&
-     $9 == "pump19" && $10 == "subject" && $11 == pr && $12 == "main" &&
+     index($6, runs) == 1 && $7 == "local" && $8 == owner "/subject" &&
+     $9 == owner && $10 == "subject" && $11 == pr && $12 == "main" &&
      $13 != "" && $14 == $6 "/diff.patch" && $15 == adaptation &&
      $16 == ".review" && $17 == config && $18 != "" && NF == 18 { found = 1 }
      END { exit !found }' \
@@ -237,7 +237,7 @@ drafts = false
 [[trigger]]
 run = "fix"
 on = ["review-rejected"]
-actors = ["pump19"]
+actors = ["minos-e2e-owner"]
 
 [[trigger]]
 run = "finish"
@@ -252,7 +252,7 @@ head_sha() {
 }
 
 run_sweep() {
-  PUMP19_STUB_MODE="${1:-normal}" "${root}/pump19" sweep --config "$work/config"
+  MINOS_STUB_MODE="${1:-normal}" "${root}/minos" sweep --config "$work/config"
 }
 
 mkdir -p "$work/config/repos" "$work/runs" "$work/logs" "$work/adaptations" "$work/forgejo/gitea/conf" "$work/skills" "$fixture_dir"
@@ -264,31 +264,31 @@ set -euo pipefail
 
 # One append records the body-start order observed beyond systemd and run-wrap.
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-  "\${PUMP19_RUN_KIND}" \
-  "\${PUMP19_HEAD_SHA}" \
-  "\${PUMP19_OCCASION}" \
-  "\${PUMP19_SKILL}" \
-  "\${PUMP19_RUN_BODY}" \
-  "\${PUMP19_RUN_DIR}" \
-  "\${PUMP19_FORGE}" \
-  "\${PUMP19_REPO}" \
-  "\${PUMP19_OWNER}" \
-  "\${PUMP19_REPO_NAME}" \
-  "\${PUMP19_PR}" \
-  "\${PUMP19_BASE_REF}" \
-  "\${PUMP19_WORKSPACE}" \
-  "\${PUMP19_DIFF}" \
-  "\${PUMP19_ADAPTATION}" \
-  "\${PUMP19_BRIEFS}" \
-  "\${PUMP19_CONFIG}" \
-  "\${PUMP19_UNIT}" >>"${run_body_records}"
+  "\${MINOS_RUN_KIND}" \
+  "\${MINOS_HEAD_SHA}" \
+  "\${MINOS_OCCASION}" \
+  "\${MINOS_SKILL}" \
+  "\${MINOS_RUN_BODY}" \
+  "\${MINOS_RUN_DIR}" \
+  "\${MINOS_FORGE}" \
+  "\${MINOS_REPO}" \
+  "\${MINOS_OWNER}" \
+  "\${MINOS_REPO_NAME}" \
+  "\${MINOS_PR}" \
+  "\${MINOS_BASE_REF}" \
+  "\${MINOS_WORKSPACE}" \
+  "\${MINOS_DIFF}" \
+  "\${MINOS_ADAPTATION}" \
+  "\${MINOS_BRIEFS}" \
+  "\${MINOS_CONFIG}" \
+  "\${MINOS_UNIT}" >>"${run_body_records}"
 
-exec "${root}/pump19" stub-run
+exec "${root}/minos" stub-run
 EOF
 chmod +x "$recording_body"
 
 cat >"$work/forgejo/gitea/conf/app.ini" <<EOF
-APP_NAME = Pump-19 E2E
+APP_NAME = Minos E2E
 RUN_USER = git
 
 [server]
@@ -303,8 +303,8 @@ PATH = /data/gitea/gitea.db
 
 [security]
 INSTALL_LOCK = true
-SECRET_KEY = pump19-e2e-secret-key
-INTERNAL_TOKEN = pump19-e2e-internal-token
+SECRET_KEY = minos-e2e-secret-key
+INTERNAL_TOKEN = minos-e2e-internal-token
 
 [service]
 DISABLE_REGISTRATION = false
@@ -327,13 +327,13 @@ wait_for_call "Forgejo API" curl -fsS "http://127.0.0.1:${port}/api/v1/version"
 docker exec -u git "$container" forgejo admin user create \
   --username bob --password password --email bob@example.invalid --admin --must-change-password=false >/dev/null
 docker exec -u git "$container" forgejo admin user create \
-  --username "$owner" --password password --email pump19@example.invalid --must-change-password=false >/dev/null
+  --username "$owner" --password password --email minos-e2e-owner@example.invalid --must-change-password=false >/dev/null
 docker exec -u git "$container" forgejo admin user create \
   --username Minos --password password --email minos@example.invalid --must-change-password=false >/dev/null
 docker exec -u git "$container" forgejo admin user create \
   --username mallory --password password --email mallory@example.invalid --admin --must-change-password=false >/dev/null
 bot_token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
-  --username "$owner" --token-name pump19-e2e --scopes 'write:repository,write:issue,write:user' --raw)"
+  --username "$owner" --token-name minos-e2e --scopes 'write:repository,write:issue,write:user' --raw)"
 ben_token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
   --username bob --token-name bob-e2e --scopes 'write:repository,write:issue,write:user' --raw)"
 mallory_token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
@@ -369,19 +369,19 @@ liveness-threshold = "2s"
 log = "${work}/logs/sweep.log"
 
 [scrub]
-vars = ["PUMP19_FORGE_TOKEN"]
+vars = ["MINOS_FORGE_TOKEN"]
 
 EOF
 
 write_repo_config ""
 
-PUMP19_FIXTURE_DIR="$fixture_dir" \
-PUMP19_CAPTURE_PORT="$capture_port" \
-PUMP19_FORWARD_URL="http://127.0.0.1:${hook_port}/hooks/local" \
+MINOS_FIXTURE_DIR="$fixture_dir" \
+MINOS_CAPTURE_PORT="$capture_port" \
+MINOS_FORWARD_URL="http://127.0.0.1:${hook_port}/hooks/local" \
   "$root/scripts/e2e/capture_forward.py" >"$work/logs/capture.log" 2>&1 &
 capture_pid="$!"
 
-"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver.log" 2>&1 &
+"${root}/minos" receive --config "$work/config" >"$work/logs/receiver.log" 2>&1 &
 receiver_pid="$!"
 sleep 1
 
@@ -391,17 +391,17 @@ subject_clone="$work/subject"
 git clone "http://${owner}:${bot_token}@127.0.0.1:${port}/${owner}/${repo}.git" "$subject_clone" >/dev/null 2>&1
 (
   cd "$subject_clone"
-  git config user.name "Pump 19 E2E"
-  git config user.email "pump19@example.invalid"
+  git config user.name "Minos E2E"
+  git config user.email "minos@example.invalid"
 )
 
 pr1="$(create_branch_and_pr journey-one "journey one")"
 sha1="$(head_sha "$pr1")"
-wait_for_call "journey 1 review status" status_is "$sha1" "pump19/review" success
+wait_for_call "journey 1 review status" status_is "$sha1" "minos/review" success
 wait_for_call "journey 1 label cleared" label_lacks "$pr1" Reviewing
 assert_run_body_record "journey 1 run-body dispatch recorded" review "$sha1" pr-opened "$recording_skill" "$recording_body" "$pr1"
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr1}/labels" '{"labels":["Ready"]}' >/dev/null
-wait_for_call "journey 1 finish status" status_is "$sha1" "pump19/finish" success
+wait_for_call "journey 1 finish status" status_is "$sha1" "minos/finish" success
 wait_for_call "journey 1 finishing cleared" label_lacks "$pr1" Finishing
 assert_run_body_record "journey 1 finish dispatch recorded" finish "$sha1" label-added:Ready "$recording_skill" "$recording_body" "$pr1"
 assert_run_body_order "journey 1 body order is review then finish" review "$sha1" finish "$sha1"
@@ -410,14 +410,14 @@ wait_for_call "authorised Ready survives sweep" label_has "$pr1" Ready
 
 pr_ready="$(create_branch_and_pr ready-removal "ready removal")"
 sha_ready="$(head_sha "$pr_ready")"
-wait_for_call "ready-removal review status" status_is "$sha_ready" "pump19/review" success
+wait_for_call "ready-removal review status" status_is "$sha_ready" "minos/review" success
 api_with_token "$mallory_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels" '{"labels":["Ready"]}' >/dev/null
-assert_no_status_after "unauthorised Ready add does not trigger finish" "$sha_ready" "pump19/finish"
+assert_no_status_after "unauthorised Ready add does not trigger finish" "$sha_ready" "minos/finish"
 run_sweep normal
 wait_for_call "unauthorised Ready cleared by sweep" label_lacks "$pr_ready" Ready
-assert_no_status_after "unauthorised Ready clearance does not trigger finish" "$sha_ready" "pump19/finish"
+assert_no_status_after "unauthorised Ready clearance does not trigger finish" "$sha_ready" "minos/finish"
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/issues/${pr_ready}/labels" '{"labels":["Ready"]}' >/dev/null
-wait_for_call "authorised Ready re-add triggers finish" status_is "$sha_ready" "pump19/finish" success
+wait_for_call "authorised Ready re-add triggers finish" status_is "$sha_ready" "minos/finish" success
 wait_for_call "ready-removal finishing cleared" label_lacks "$pr_ready" Finishing
 
 first_fixture="$(ls "$fixture_dir"/*pull_request-opened.json | head -n1)"
@@ -427,7 +427,7 @@ curl -fsS -X POST "http://127.0.0.1:${hook_port}/hooks/local" \
   -H "X-Forgejo-Signature: $(jq -r '.headers["X-Forgejo-Signature"]' "$first_fixture")" \
   --data-binary "$(jq -r '.body' "$first_fixture")" >/dev/null
 sleep 1
-status_count="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha1}/statuses" | jq '[.[] | select(.context == "pump19/review")] | length')"
+status_count="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha1}/statuses" | jq '[.[] | select(.context == "minos/review")] | length')"
 if [[ "$status_count" != "1" ]]; then
   echo "duplicate delivery produced ${status_count} review statuses" >&2
   exit 1
@@ -437,19 +437,19 @@ assert_run_body_count "journey 2 duplicate delivery never reaches run body" revi
 
 kill "$receiver_pid" >/dev/null 2>&1 || true
 sleep 1
-PUMP19_STUB_MODE=hang "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-hang.log" 2>&1 &
+MINOS_STUB_MODE=hang "${root}/minos" receive --config "$work/config" >"$work/logs/receiver-hang.log" 2>&1 &
 hang_receiver_pid="$!"
 receiver_pid="$hang_receiver_pid"
 pr2="$(create_branch_and_pr journey-three "journey three")"
 wait_for_call "journey 3 reviewing label" label_has "$pr2" Reviewing
-unit="$(find "$work/runs/local--${owner}--${repo}/pr${pr2}" -name meta.env -print -quit | xargs -r grep -h '^PUMP19_UNIT=' | tail -n1 | cut -d= -f2-)"
+unit="$(find "$work/runs/local--${owner}--${repo}/pr${pr2}" -name meta.env -print -quit | xargs -r grep -h '^MINOS_UNIT=' | tail -n1 | cut -d= -f2-)"
 if [[ -n "$unit" ]]; then
   systemctl --user kill --signal=KILL "$unit" >/dev/null 2>&1 || true
 fi
 sleep 3
 sha2="$(head_sha "$pr2")"
 run_sweep normal
-wait_for_call "journey 3 refired status" status_is "$sha2" "pump19/review" success
+wait_for_call "journey 3 refired status" status_is "$sha2" "minos/review" success
 wait_for_call "journey 3 reviewing cleared" label_lacks "$pr2" Reviewing
 assert_run_body_count "journey 3 presence-only crash retries once" review "$sha2" 2
 journey3_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr2}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
@@ -466,27 +466,27 @@ publication_hang_body="${work}/publication-hang-run-body"
 cat >"$publication_hang_body" <<EOF
 #!/usr/bin/env sh
 set -eu
-claim="\$("${root}/pump19" run-guard --config "\$PUMP19_CONFIG" begin)"
+claim="\$("${root}/minos" run-guard --config "\$MINOS_CONFIG" begin)"
 test "\$claim" = claimed
-"${root}/pump19" adapt add-label "\$PUMP19_OWNER" "\$PUMP19_REPO_NAME" "\$PUMP19_PR" "Partial Coverage" >/dev/null
+"${root}/minos" adapt add-label "\$MINOS_OWNER" "\$MINOS_REPO_NAME" "\$MINOS_PR" "Partial Coverage" >/dev/null
 while :; do sleep 60; done
 EOF
 chmod +x "$publication_hang_body"
 write_repo_config "$publication_hang_body"
-"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-publication-hang.log" 2>&1 &
+"${root}/minos" receive --config "$work/config" >"$work/logs/receiver-publication-hang.log" 2>&1 &
 receiver_pid="$!"
 pr_publication="$(create_branch_and_pr publication-hang "publication hang")"
 sha_publication="$(head_sha "$pr_publication")"
 wait_for_call "publication hang reviewing label" label_has "$pr_publication" Reviewing
 wait_for_call "publication hang outcome label" label_has "$pr_publication" "Partial Coverage"
-publication_unit="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -name meta.env -print -quit | xargs -r grep -h '^PUMP19_UNIT=' | tail -n1 | cut -d= -f2-)"
+publication_unit="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -name meta.env -print -quit | xargs -r grep -h '^MINOS_UNIT=' | tail -n1 | cut -d= -f2-)"
 if [[ -n "$publication_unit" ]]; then
   systemctl --user kill --signal=KILL "$publication_unit" >/dev/null 2>&1 || true
 fi
 sleep 3
 run_sweep normal
 wait_for_call "publication hang reviewing cleared" label_lacks "$pr_publication" Reviewing
-assert_no_status_after "publication hang stays off the PR status surface" "$sha_publication" "pump19/review"
+assert_no_status_after "publication hang stays off the PR status surface" "$sha_publication" "minos/review"
 publication_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -name terminal.env | wc -l | tr -d ' ')"
 publication_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_publication}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
 if [[ "$publication_terminal_count" != "1" || "$publication_retry_count" != "0" ]]; then
@@ -500,15 +500,15 @@ echo "ok: journey 3b crash after a mission publication latches internally"
 kill "$receiver_pid" >/dev/null 2>&1 || true
 sleep 1
 write_repo_config ""
-PUMP19_STUB_MODE=slow PUMP19_STUB_SLOW_SECONDS=6 "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-slow.log" 2>&1 &
+MINOS_STUB_MODE=slow MINOS_STUB_SLOW_SECONDS=6 "${root}/minos" receive --config "$work/config" >"$work/logs/receiver-slow.log" 2>&1 &
 receiver_pid="$!"
 pr3="$(create_branch_and_pr journey-four "journey four")"
 old_sha="$(head_sha "$pr3")"
 sleep 1
 new_sha="$(push_update journey-four "journey four update")"
-wait_for_call "journey 4 new-head status" status_is "$new_sha" "pump19/review" success
+wait_for_call "journey 4 new-head status" status_is "$new_sha" "minos/review" success
 wait_for_call "journey 4 reviewing cleared" label_lacks "$pr3" Reviewing
-old_count="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${old_sha}/statuses" | jq '[.[] | select(.context == "pump19/review")] | length')"
+old_count="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${old_sha}/statuses" | jq '[.[] | select(.context == "minos/review")] | length')"
 if [[ "$old_count" != "0" ]]; then
   echo "old head received ${old_count} statuses after head moved" >&2
   exit 1
@@ -517,7 +517,7 @@ echo "ok: journey 4 stale output discarded"
 
 kill "$receiver_pid" >/dev/null 2>&1 || true
 sleep 1
-PUMP19_STUB_MODE=hang "${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-superseded-hang.log" 2>&1 &
+MINOS_STUB_MODE=hang "${root}/minos" receive --config "$work/config" >"$work/logs/receiver-superseded-hang.log" 2>&1 &
 receiver_pid="$!"
 pr_superseded="$(create_branch_and_pr superseded-hang "superseded hang")"
 wait_for_call "superseded hang reviewing label" label_has "$pr_superseded" Reviewing
@@ -534,14 +534,14 @@ if [[ -z "$old_meta" ]]; then
   exit 1
 fi
 old_run_dir="$(dirname "$old_meta")"
-old_unit="$(grep -h '^PUMP19_UNIT=' "$old_meta" | tail -n1 | cut -d= -f2-)"
-old_workspace="$(grep -h '^PUMP19_WORKSPACE=' "$old_meta" | tail -n1 | cut -d= -f2-)"
+old_unit="$(grep -h '^MINOS_UNIT=' "$old_meta" | tail -n1 | cut -d= -f2-)"
+old_workspace="$(grep -h '^MINOS_WORKSPACE=' "$old_meta" | tail -n1 | cut -d= -f2-)"
 kill "$receiver_pid" >/dev/null 2>&1 || true
 sleep 1
-"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-after-superseded-hang.log" 2>&1 &
+"${root}/minos" receive --config "$work/config" >"$work/logs/receiver-after-superseded-hang.log" 2>&1 &
 receiver_pid="$!"
 new_superseded_sha="$(push_update superseded-hang "superseded hang update")"
-wait_for_call "superseded hang new-head status" status_is "$new_superseded_sha" "pump19/review" success
+wait_for_call "superseded hang new-head status" status_is "$new_superseded_sha" "minos/review" success
 wait_for_call "superseded hang reviewing cleared" label_lacks "$pr_superseded" Reviewing
 sleep 3
 run_sweep normal
@@ -573,7 +573,7 @@ pr4="$(create_branch_and_pr journey-five "journey five")"
 sha4="$(head_sha "$pr4")"
 sleep 1
 run_sweep normal
-wait_for_call "journey 5 sweep-triggered status" status_is "$sha4" "pump19/review" success
+wait_for_call "journey 5 sweep-triggered status" status_is "$sha4" "minos/review" success
 
 prepare_workspace="${work}/adaptations/prepare-workspace"
 real_prepare_workspace="${prepare_workspace}.real"
@@ -587,7 +587,7 @@ fi
 exec "${real_prepare_workspace}" "\$@"
 EOF
 chmod +x "$prepare_workspace"
-"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-transient-prepare.log" 2>&1 &
+"${root}/minos" receive --config "$work/config" >"$work/logs/receiver-transient-prepare.log" 2>&1 &
 receiver_pid="$!"
 pr_transient="$(create_branch_and_pr transient-prepare "transient prepare")"
 sha_transient="$(head_sha "$pr_transient")"
@@ -603,13 +603,13 @@ if [[ -z "$transient_retry_marker" ]]; then
   echo "transient prepare failure did not record retry.env" >&2
   exit 1
 fi
-assert_no_status_after "transient prepare failure does not poison head" "$sha_transient" "pump19/review"
+assert_no_status_after "transient prepare failure does not poison head" "$sha_transient" "minos/review"
 mv "$real_prepare_workspace" "$prepare_workspace"
 # The production cadence is deliberately longer than this estate run. Age the
 # machine marker rather than sleeping through a quarter-hour integration test.
-sed -i 's/^PUMP19_FAILURE_AT=.*/PUMP19_FAILURE_AT=2020-01-01T00:00:00Z/' "$transient_retry_marker"
+sed -i 's/^MINOS_FAILURE_AT=.*/MINOS_FAILURE_AT=2020-01-01T00:00:00Z/' "$transient_retry_marker"
 run_sweep normal
-wait_for_call "transient prepare recovers review status" status_is "$sha_transient" "pump19/review" success
+wait_for_call "transient prepare recovers review status" status_is "$sha_transient" "minos/review" success
 wait_for_call "transient prepare reviewing absent after recovery" label_lacks "$pr_transient" Reviewing
 transient_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_transient}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
 if [[ "$transient_retry_count" != "1" ]]; then
@@ -628,11 +628,11 @@ exit 42
 EOF
 chmod +x "$failing_body"
 write_repo_config "$failing_body"
-"${root}/pump19" receive --config "$work/config" >"$work/logs/receiver-failing-body.log" 2>&1 &
+"${root}/minos" receive --config "$work/config" >"$work/logs/receiver-failing-body.log" 2>&1 &
 receiver_pid="$!"
 pr_fail="$(create_branch_and_pr persistent-failure "persistent failure")"
 sha_fail="$(head_sha "$pr_fail")"
-assert_no_status_after "persistent failure stays off the PR" "$sha_fail" "pump19/review"
+assert_no_status_after "persistent failure stays off the PR" "$sha_fail" "minos/review"
 failure_run="$work/runs/local--${owner}--${repo}/pr${pr_fail}/$(cut -c1-12 <<<"$sha_fail")-review"
 for _ in {1..60}; do
   [[ -f "$failure_run/retry.env" ]] && break
@@ -648,13 +648,13 @@ if [[ "$failure_retry_count" != "0" ]]; then
   echo "persistent failure retried before its backoff elapsed" >&2
   exit 1
 fi
-sed -i 's/^PUMP19_FAILURE_AT=.*/PUMP19_FAILURE_AT=2020-01-01T00:00:00Z/' "$failure_run/retry.env"
+sed -i 's/^MINOS_FAILURE_AT=.*/MINOS_FAILURE_AT=2020-01-01T00:00:00Z/' "$failure_run/retry.env"
 run_sweep normal
 for _ in {1..60}; do
   [[ -f "$failure_run/retry.env" ]] && break
   sleep 1
 done
-assert_no_status_after "backed-off retry stays off the PR" "$sha_fail" "pump19/review"
+assert_no_status_after "backed-off retry stays off the PR" "$sha_fail" "minos/review"
 failure_retry_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -maxdepth 1 -name '*.retry-*' | wc -l | tr -d ' ')"
 failure_terminal_count="$(find "$work/runs/local--${owner}--${repo}/pr${pr_fail}" -name terminal.env | wc -l | tr -d ' ')"
 if [[ "$failure_retry_count" != "1" || "$failure_terminal_count" != "0" ]]; then
@@ -666,16 +666,16 @@ kill "$receiver_pid" >/dev/null 2>&1 || true
 receiver_pid=""
 write_repo_config ""
 
-api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "pump19/review" '{context:$context,state:"success",description:"same-second success probe"}')" >/dev/null
-api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "pump19/review" '{context:$context,state:"error",description:"same-second error probe"}')" >/dev/null
-status_pair="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha4}/statuses" | jq '[.[] | select(.context == "pump19/review")][0:2]')"
+api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "minos/review" '{context:$context,state:"success",description:"same-second success probe"}')" >/dev/null
+api POST "/api/v1/repos/${owner}/${repo}/statuses/${sha4}" "$(jq -nc --arg context "minos/review" '{context:$context,state:"error",description:"same-second error probe"}')" >/dev/null
+status_pair="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha4}/statuses" | jq '[.[] | select(.context == "minos/review")][0:2]')"
 printf '%s\n' "$status_pair" >"${fixture_dir}/commit-statuses.json"
 same_second_count="$(jq '[.[].created_at] | unique | length' <<<"$status_pair")"
 if [[ "$same_second_count" != "1" ]]; then
   echo "status ordering probe crossed a second boundary" >&2
   exit 1
 fi
-latest_review_state="$(PUMP19_API_BASE="http://127.0.0.1:${port}" PUMP19_FORGE_TOKEN="$bot_token" "$work/adaptations/get-statuses" "$owner" "$repo" "$sha4" | jq -r '[.[] | select(.context == "pump19/review")][0].state')"
+latest_review_state="$(MINOS_API_BASE="http://127.0.0.1:${port}" MINOS_FORGE_TOKEN="$bot_token" "$work/adaptations/get-statuses" "$owner" "$repo" "$sha4" | jq -r '[.[] | select(.context == "minos/review")][0].state')"
 combined_state="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha4}/status" | jq -r '.state // .status // ""')"
 case "$latest_review_state" in
   error) service_combined_state="failure" ;;
@@ -707,7 +707,7 @@ api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/pulls/${approve
 api_with_token "$ben_token" POST "/api/v1/repos/${owner}/${repo}/pulls/${pr1}/reviews" '{"body":"fixture reject","event":"REQUEST_CHANGES"}' >/dev/null || true
 sleep 2
 
-if [[ -n "${PUMP19_E2E_UPDATE_FIXTURES:-}" ]]; then
+if [[ -n "${MINOS_E2E_UPDATE_FIXTURES:-}" ]]; then
   rm -rf "$root/internal/shell/testdata/forgejo14"
   mkdir -p "$root/internal/shell/testdata/forgejo14"
   cp "$fixture_dir"/*.json "$root/internal/shell/testdata/forgejo14/"

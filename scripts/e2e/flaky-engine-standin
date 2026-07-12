@@ -4,16 +4,16 @@ set -eu
 # service mechanics at zero model cost; the synced root-cause skill owns the
 # quality of a real diagnosis.
 
-: "${PUMP19_BIN:=pump19}"
-: "${PUMP19_CONFIG:?PUMP19_CONFIG is required}"
-: "${PUMP19_RUN_DIR:?PUMP19_RUN_DIR is required}"
+: "${MINOS_BIN:=minos}"
+: "${MINOS_CONFIG:?MINOS_CONFIG is required}"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 
-standin_model=${PUMP19_STANDIN_LEAD_MODEL:-claude-opus-pinned}
+standin_model=${MINOS_STANDIN_LEAD_MODEL:-claude-opus-pinned}
 printf '{"type":"system","subtype":"init","model":"%s"}\n' "$standin_model"
-cat >"$PUMP19_RUN_DIR/mission.received.md"
-printf '%s\n' "$PUMP19_SKILL" >"$PUMP19_RUN_DIR/skill.path"
+cat >"$MINOS_RUN_DIR/mission.received.md"
+printf '%s\n' "$MINOS_SKILL" >"$MINOS_RUN_DIR/skill.path"
 
-claim=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" begin)
+claim=$("$MINOS_BIN" run-guard --config "$MINOS_CONFIG" begin)
 case "$claim" in
   claimed) ;;
   yield-terminal|yield-head) printf '{"result":"%s"}\n' "$claim"; exit 0 ;;
@@ -22,18 +22,18 @@ esac
 released=0
 release() {
   if [ "$released" = 0 ]; then
-    "$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" release >/dev/null
+    "$MINOS_BIN" run-guard --config "$MINOS_CONFIG" release >/dev/null
   fi
 }
 trap release EXIT HUP INT TERM
 
-while [ ! -s "$PUMP19_RUN_DIR/resolved-lead.json" ]; do
+while [ ! -s "$MINOS_RUN_DIR/resolved-lead.json" ]; do
   sleep 1
 done
-model=$(jq -r '.[0].resolved_model' "$PUMP19_RUN_DIR/resolved-lead.json")
+model=$(jq -r '.[0].resolved_model' "$MINOS_RUN_DIR/resolved-lead.json")
 
-facts="$PUMP19_RUN_DIR/pr-facts.txt"
-"$PUMP19_BIN" adapt get-pr-facts "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" >"$facts"
+facts="$MINOS_RUN_DIR/pr-facts.txt"
+"$MINOS_BIN" adapt get-pr-facts "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" >"$facts"
 head_branch=$(sed -n 's/^HEAD_BRANCH=//p' "$facts")
 head_repo=$(sed -n 's/^HEAD_REPO=//p' "$facts")
 base_repo=$(sed -n 's/^BASE_REPO=//p' "$facts")
@@ -41,33 +41,33 @@ labels=$(sed -n 's/^LABELS=//p' "$facts")
 case ",$labels," in
   *,"Flaky Tests",*) ;;
   *)
-    printf 'Pump-19 flaky outcome: withdrawn; standing label is absent\n' >>"$PUMP19_RUN_DIR/run.log"
+    printf 'Minos flaky outcome: withdrawn; standing label is absent\n' >>"$MINOS_RUN_DIR/run.log"
     exit 0
     ;;
 esac
 
-outcome=${PUMP19_STANDIN_FLAKY_OUTCOME:-landed}
+outcome=${MINOS_STANDIN_FLAKY_OUTCOME:-landed}
 if [ -z "$head_branch" ] || [ "$head_repo" != "$base_repo" ]; then
   outcome=unwritable
 fi
 
 if [ "$outcome" = failed ]; then
-  printf 'Pump-19 flaky outcome: failed; evidence remains private\n' >>"$PUMP19_RUN_DIR/run.log"
+  printf 'Minos flaky outcome: failed; evidence remains private\n' >>"$MINOS_RUN_DIR/run.log"
   exit 9
 fi
 
 if [ "$outcome" = landed ] || [ "$outcome" = fruitless ]; then
   if [ "$outcome" = landed ]; then
-    printf 'flaky repair applied by stand-in\n' >>"$PUMP19_WORKSPACE/file.txt"
+    printf 'flaky repair applied by stand-in\n' >>"$MINOS_WORKSPACE/file.txt"
   fi
-  printf 'Repair the proven flaky-test cause.\n' >"$PUMP19_RUN_DIR/flaky-message.txt"
-  current=$("$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" current)
+  printf 'Repair the proven flaky-test cause.\n' >"$MINOS_RUN_DIR/flaky-message.txt"
+  current=$("$MINOS_BIN" run-guard --config "$MINOS_CONFIG" current)
   [ "$current" = current ] || exit 0
-  result=$("$PUMP19_BIN" adapt commit-push \
-    "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" \
-    "$head_branch" "$PUMP19_FIX_AUTHOR_NAME" "$PUMP19_FIX_AUTHOR_EMAIL" \
-    "$model" "$PUMP19_RUN_DIR/flaky-message.txt")
-  printf '%s\n' "$result" >"$PUMP19_RUN_DIR/commit-push.out"
+  result=$("$MINOS_BIN" adapt commit-push \
+    "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" \
+    "$head_branch" "$MINOS_FIX_AUTHOR_NAME" "$MINOS_FIX_AUTHOR_EMAIL" \
+    "$model" "$MINOS_RUN_DIR/flaky-message.txt")
+  printf '%s\n' "$result" >"$MINOS_RUN_DIR/commit-push.out"
   outcome=$(printf '%s' "$result" | awk 'NR==1{print $1}')
   case "$outcome" in
     landed|fruitless|unwritable) ;;
@@ -75,12 +75,12 @@ if [ "$outcome" = landed ] || [ "$outcome" = fruitless ]; then
   esac
 fi
 
-marker=$("$PUMP19_BIN" marker format head="$PUMP19_HEAD_SHA" outcome="$outcome" run=flaky)
+marker=$("$MINOS_BIN" marker format head="$MINOS_HEAD_SHA" outcome="$outcome" run=flaky)
 {
-  printf 'Pump-19 flaky stand-in. Test: fixture::intermittent. Outcome: %s.\n\n' "$outcome"
+  printf 'Minos flaky stand-in. Test: fixture::intermittent. Outcome: %s.\n\n' "$outcome"
   printf '%s\n' "$marker"
-} >"$PUMP19_RUN_DIR/flaky-summary.md"
-printf 'Pump-19 flaky outcome: %s; evidence recorded in %s\n' "$outcome" "$PUMP19_RUN_DIR/flaky-summary.md" >>"$PUMP19_RUN_DIR/run.log"
+} >"$MINOS_RUN_DIR/flaky-summary.md"
+printf 'Minos flaky outcome: %s; evidence recorded in %s\n' "$outcome" "$MINOS_RUN_DIR/flaky-summary.md" >>"$MINOS_RUN_DIR/run.log"
 
 if [ "$outcome" != landed ]; then
   printf '{"type":"assistant","message":{"model":"%s"}}\n' "$standin_model"
@@ -88,18 +88,18 @@ if [ "$outcome" != landed ]; then
   exit 0
 fi
 
-"$PUMP19_BIN" adapt post-comment \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "$PUMP19_RUN_DIR/flaky-summary.md" >/dev/null
-"$PUMP19_BIN" adapt set-status \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_HEAD_SHA" \
-  pump19/flaky success "Pump-19 flaky-test repair landed" >/dev/null
+"$MINOS_BIN" adapt post-comment \
+  "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" "$MINOS_RUN_DIR/flaky-summary.md" >/dev/null
+"$MINOS_BIN" adapt set-status \
+  "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_HEAD_SHA" \
+  minos/flaky success "Minos flaky-test repair landed" >/dev/null
 
 # Release the liveness claim before removing the standing pause. There is no
 # forge write after Flaky Tests: its removal is observably the terminal act.
-"$PUMP19_BIN" run-guard --config "$PUMP19_CONFIG" release >/dev/null
+"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" release >/dev/null
 released=1
-"$PUMP19_BIN" adapt remove-label \
-  "$PUMP19_OWNER" "$PUMP19_REPO_NAME" "$PUMP19_PR" "Flaky Tests" >/dev/null
+"$MINOS_BIN" adapt remove-label \
+  "$MINOS_OWNER" "$MINOS_REPO_NAME" "$MINOS_PR" "Flaky Tests" >/dev/null
 
 printf '{"type":"assistant","message":{"model":"%s"}}\n' "$standin_model"
 printf '{"type":"result","subtype":"success","modelUsage":{"%s":{}}}\n' "$standin_model"

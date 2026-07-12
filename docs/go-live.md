@@ -1,6 +1,6 @@
-# Go Live with Pump-19
+# Go Live with Minos
 
-This runbook takes a bare systemd-based deployment box to a listening Pump-19
+This runbook takes a bare systemd-based deployment box to a listening Minos
 receiver and periodic reconciliation sweep. It runs as the deployment
 account on a disposable box: the box is the container. Do not add a nested container runtime.
 
@@ -15,11 +15,11 @@ Prepare these before starting:
 - root access on the deployment box;
 - `go`, `git`, `curl`, and `jq`;
 - the Forgejo base URL, repository owner, and repository name;
-- the dedicated `pump19` Forgejo bot token in a local file, with its effective
+- the dedicated `minos` Forgejo bot token in a local file, with its effective
   access checked and limited to the opted-in repository before activation;
 - a new high-entropy webhook secret in a different local file;
 - a short-lived, dedicated repository-administration token for registering the
-  hook (do not store this token in `/etc/pump19`);
+  hook (do not store this token in `/etc/minos`);
 - the synced, pinned `review-panel` and `root-cause` skills;
 - working Claude and Codex logins
   for the deployment user. These are the service's model
@@ -32,7 +32,7 @@ Prepare these before starting:
 
 > [!WARNING]
 > Never use the operator's personal Forgejo credential: the forge token must
-> belong to the dedicated `pump19` bot. Constrain its effective token scopes and
+> belong to the dedicated `minos` bot. Constrain its effective token scopes and
 > prove that access before activation. Do not put any credential in the
 > repository, shell history, webhook URL, or PR workspace.
 
@@ -41,11 +41,11 @@ Set the deployment values. `FORGEJO_BASE` is the instance root, without
 
 ```sh
 export DEPLOY_USER=bob
-export PUMP19_CHECKOUT=/path/to/Pump-19
+export MINOS_CHECKOUT=/path/to/Minos
 export FORGEJO_BASE=https://forgejo.example.invalid
 export FORGEJO_OWNER=REPLACE_WITH_OWNER
 export FORGEJO_REPO=REPLACE_WITH_REPOSITORY
-export PUMP19_RECEIVER_URL=http://REPLACE_WITH_PUMP_LAN_ADDRESS:8919
+export MINOS_RECEIVER_URL=http://REPLACE_WITH_MINOS_LAN_ADDRESS:8919
 export WEBHOOK_SECRET_SOURCE=/secure/path/to/new-webhook-secret
 export FORGE_TOKEN_SOURCE=/secure/path/to/dedicated-forge-token
 ```
@@ -67,34 +67,34 @@ The final command must print `Linger=yes`.
 ## 2. Build and install the binary, adaptations, and review run body
 
 ```sh
-cd "$PUMP19_CHECKOUT"
+cd "$MINOS_CHECKOUT"
 make check
-go build -o /tmp/pump19 ./cmd/pump19
+go build -o /tmp/minos ./cmd/minos
 
-sudo install -o root -g root -m 0755 /tmp/pump19 /usr/local/bin/pump19
-sudo install -d -o root -g root -m 0755 /opt/pump19/adaptations/forgejo
+sudo install -o root -g root -m 0755 /tmp/minos /usr/local/bin/minos
+sudo install -d -o root -g root -m 0755 /opt/minos/adaptations/forgejo
 sudo install -o root -g root -m 0755 scripts/adaptations/forgejo/* \
-  /opt/pump19/adaptations/forgejo/
+  /opt/minos/adaptations/forgejo/
 
 sudo install -d -o root -g root -m 0755 \
-  /opt/pump19/run-body /opt/pump19/review /opt/pump19/missions
+  /opt/minos/run-body /opt/minos/review /opt/minos/missions
 sudo install -o root -g root -m 0755 scripts/run-body/* \
-  /opt/pump19/run-body/
+  /opt/minos/run-body/
 sudo install -o root -g root -m 0755 scripts/review/* \
-  /opt/pump19/review/
+  /opt/minos/review/
 sudo install -o root -g root -m 0644 missions/review.md missions/fix.md \
-  missions/finish.md missions/flaky.md /opt/pump19/missions/
+  missions/finish.md missions/flaky.md /opt/minos/missions/
 sudo install -o root -g root -m 0644 examples/config/pins.toml \
-  /opt/pump19/pins.toml
+  /opt/minos/pins.toml
 
 # The fix run's skill is the one service-authored skill, shipped with this
 # repository (unlike the sync-owned skills/foundry tree installed below).
-sudo install -d -o root -g root -m 0755 /opt/pump19/skills/service/fix
+sudo install -d -o root -g root -m 0755 /opt/minos/skills/service/fix
 sudo install -o root -g root -m 0644 skills/service/fix/SKILL.md \
-  /opt/pump19/skills/service/fix/SKILL.md
+  /opt/minos/skills/service/fix/SKILL.md
 
-sudo install -d -o root -g root -m 0755 /opt/pump19/docs
-sudo install -o root -g root -m 0644 docs/go-live.md /opt/pump19/docs/go-live.md
+sudo install -d -o root -g root -m 0755 /opt/minos/docs
+sudo install -o root -g root -m 0644 docs/go-live.md /opt/minos/docs/go-live.md
 ```
 
 The adaptation and review scripts call `curl`, `git`, and `jq`; keep those
@@ -111,8 +111,8 @@ while a `REPLACE_WITH_…` placeholder remains in the role set.
 After Foundry sync populates `skills/foundry/`, install that sync-owned tree:
 
 ```sh
-sudo install -d -o root -g root -m 0755 /opt/pump19/skills/foundry
-sudo cp -a skills/foundry/. /opt/pump19/skills/foundry/
+sudo install -d -o root -g root -m 0755 /opt/minos/skills/foundry
+sudo cp -a skills/foundry/. /opt/minos/skills/foundry/
 ```
 
 Confirm the detached-unit environment can resolve every engine-side executable:
@@ -131,29 +131,29 @@ repository in.
 
 ```sh
 sudo install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 \
-  /etc/pump19 /etc/pump19/repos \
-  /var/lib/pump19/runs /var/log/pump19
+  /etc/minos /etc/minos/repos \
+  /var/lib/minos/runs /var/log/minos
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
-  deploy/etc/pump19/service.toml /etc/pump19/service.toml
+  deploy/etc/minos/service.toml /etc/minos/service.toml
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
-  deploy/etc/pump19/run-body.env /etc/pump19/run-body.env
+  deploy/etc/minos/run-body.env /etc/minos/run-body.env
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
-  deploy/etc/pump19/repos/owner--repository.toml.example \
-  /etc/pump19/repos/owner--repository.toml.example
+  deploy/etc/minos/repos/owner--repository.toml.example \
+  /etc/minos/repos/owner--repository.toml.example
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
-  "$WEBHOOK_SECRET_SOURCE" /etc/pump19/webhook.secret
+  "$WEBHOOK_SECRET_SOURCE" /etc/minos/webhook.secret
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
-  "$FORGE_TOKEN_SOURCE" /etc/pump19/forgejo.token
+  "$FORGE_TOKEN_SOURCE" /etc/minos/forgejo.token
 ```
 
-Edit `/etc/pump19/service.toml` and replace
+Edit `/etc/minos/service.toml` and replace
 `REPLACE_WITH_FORGEJO_BASE_URL` with `FORGEJO_BASE`. Keep the receiver bound to
 the LAN interface only; `:8919` is appropriate when the container itself has no
 non-LAN route.
 
 Do not activate a repository yet. First sync the grown `review-panel` and
 general `root-cause` skills into the checkout, install them under
-`/opt/pump19/skills/foundry/`, complete the missions' verify-on-arrival checks,
+`/opt/minos/skills/foundry/`, complete the missions' verify-on-arrival checks,
 obtain operator approval for every model pin, and verify both subscription
 logins as the deployment user:
 
@@ -162,7 +162,7 @@ sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/claude auth status
 sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/codex login status
 ```
 
-The lead launcher uses the explicit `PUMP19_CLAUDE` path from `run-body.env` and
+The lead launcher uses the explicit `MINOS_CLAUDE` path from `run-body.env` and
 depends on Claude JSONL exposing a served model in a model-bearing early
 `system/init` or `assistant` event. Update the deployment CLI during go-live and
 prove that event before activation. If a deployed worker engine exposes no
@@ -177,17 +177,17 @@ of falling back to `stub-run`.
 sudo install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0755 \
   "/home/$DEPLOY_USER/.config/systemd/user"
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0644 \
-  deploy/systemd/user/pump19-receiver.service \
-  deploy/systemd/user/pump19-sweep.service \
-  deploy/systemd/user/pump19-sweep.timer \
+  deploy/systemd/user/minos-receiver.service \
+  deploy/systemd/user/minos-sweep.service \
+  deploy/systemd/user/minos-sweep.timer \
   "/home/$DEPLOY_USER/.config/systemd/user/"
 
 DEPLOY_UID="$(id -u "$DEPLOY_USER")"
 sudo -u "$DEPLOY_USER" env XDG_RUNTIME_DIR="/run/user/$DEPLOY_UID" \
   systemd-analyze --user verify \
-  "/home/$DEPLOY_USER/.config/systemd/user/pump19-receiver.service" \
-  "/home/$DEPLOY_USER/.config/systemd/user/pump19-sweep.service" \
-  "/home/$DEPLOY_USER/.config/systemd/user/pump19-sweep.timer"
+  "/home/$DEPLOY_USER/.config/systemd/user/minos-receiver.service" \
+  "/home/$DEPLOY_USER/.config/systemd/user/minos-sweep.service" \
+  "/home/$DEPLOY_USER/.config/systemd/user/minos-sweep.timer"
 sudo systemctl --user --machine="$DEPLOY_USER@.host" daemon-reload
 ```
 
@@ -217,23 +217,23 @@ smoke below.
 
 ## 6. Start the receiver and sweep timer
 
-Do this only after `/etc/pump19/service.toml` contains the real Forgejo URL and
+Do this only after `/etc/minos/service.toml` contains the real Forgejo URL and
 both installed secret files are populated.
 
 ```sh
 sudo systemctl --user --machine="$DEPLOY_USER@.host" \
-  enable --now pump19-receiver.service
+  enable --now minos-receiver.service
 sudo systemctl --user --machine="$DEPLOY_USER@.host" \
-  enable --now pump19-sweep.timer
+  enable --now minos-sweep.timer
 sudo systemctl --user --machine="$DEPLOY_USER@.host" status --no-pager \
-  pump19-receiver.service pump19-sweep.timer
+  minos-receiver.service minos-sweep.timer
 ```
 
-Confirm the receiver journal contains `pump19 receiver listening on :8919`:
+Confirm the receiver journal contains `minos receiver listening on :8919`:
 
 ```sh
 sudo journalctl --user --machine="$DEPLOY_USER@.host" \
-  --unit=pump19-receiver.service --lines=20 --no-pager
+  --unit=minos-receiver.service --lines=20 --no-pager
 ```
 
 ## 7. Register the Forgejo webhook
@@ -269,7 +269,7 @@ files keep both credentials out of process arguments:
 printf 'Forgejo hook token: ' >&2
 read -rs FORGEJO_HOOK_TOKEN
 printf '\n'
-WEBHOOK_SECRET="$(sudo cat /etc/pump19/webhook.secret)"
+WEBHOOK_SECRET="$(sudo cat /etc/minos/webhook.secret)"
 export WEBHOOK_SECRET
 umask 077
 HOOK_BODY="$(mktemp)"
@@ -277,7 +277,7 @@ CURL_CONFIG="$(mktemp)"
 trap 'rm -f "$HOOK_BODY" "$CURL_CONFIG"' EXIT
 
 jq -n \
-  --arg url "$PUMP19_RECEIVER_URL/hooks/forgejo" \
+  --arg url "$MINOS_RECEIVER_URL/hooks/forgejo" \
   '{
     type: "gitea",
     config: {url: $url, content_type: "json", secret: env.WEBHOOK_SECRET},
@@ -318,7 +318,7 @@ actors' label application starts repair. The placeholders authorise nobody
 until you set real forge logins. Leaving out the flaky trigger keeps the label's
 review pause but makes repair inert.
 
-First create Pump-19's complete label vocabulary. The operation is idempotent:
+First create Minos's complete label vocabulary. The operation is idempotent:
 it leaves existing labels unchanged and creates only missing names. Run it
 before activating the repository configuration; Forgejo otherwise accepts an
 add-label request while silently skipping an undefined name.
@@ -326,8 +326,8 @@ add-label request while silently skipping an undefined name.
 ```sh
 DEPLOY_UID="$(id -u "$DEPLOY_USER")"
 sudo -u "$DEPLOY_USER" env XDG_RUNTIME_DIR="/run/user/$DEPLOY_UID" \
-  PUMP19_CONFIG=/etc/pump19 PUMP19_FORGE=forgejo \
-  /usr/local/bin/pump19 adapt ensure-label-vocabulary \
+  MINOS_CONFIG=/etc/minos MINOS_FORGE=forgejo \
+  /usr/local/bin/minos adapt ensure-label-vocabulary \
   "$FORGEJO_OWNER" "$FORGEJO_REPO"
 ```
 
@@ -339,11 +339,11 @@ loudly if Forgejo claims success without applying the requested label.
 
 ```sh
 sudo -u "$DEPLOY_USER" cp \
-  /etc/pump19/repos/owner--repository.toml.example \
-  "/etc/pump19/repos/${FORGEJO_OWNER}--${FORGEJO_REPO}.toml"
-sudoedit "/etc/pump19/repos/${FORGEJO_OWNER}--${FORGEJO_REPO}.toml"
+  /etc/minos/repos/owner--repository.toml.example \
+  "/etc/minos/repos/${FORGEJO_OWNER}--${FORGEJO_REPO}.toml"
+sudoedit "/etc/minos/repos/${FORGEJO_OWNER}--${FORGEJO_REPO}.toml"
 sudo systemctl --user --machine="$DEPLOY_USER@.host" \
-  restart pump19-receiver.service
+  restart minos-receiver.service
 ```
 
 Opt-in is immediate for the next webhook or sweep. There is no database or
@@ -362,13 +362,13 @@ PR. Then check both sides:
 
 ```sh
 sudo journalctl --user --machine="$DEPLOY_USER@.host" \
-  --unit=pump19-receiver.service --since='5 minutes ago' --no-pager
-sudo systemctl --user --machine="$DEPLOY_USER@.host" start pump19-sweep.service
+  --unit=minos-receiver.service --since='5 minutes ago' --no-pager
+sudo systemctl --user --machine="$DEPLOY_USER@.host" start minos-sweep.service
 sudo systemctl --user --machine="$DEPLOY_USER@.host" show \
-  pump19-sweep.service --property=Result --property=ExecMainStatus
+  minos-sweep.service --property=Result --property=ExecMainStatus
 sudo journalctl --user --machine="$DEPLOY_USER@.host" \
-  --unit=pump19-sweep.service --since='5 minutes ago' --no-pager
-sudo tail -n 50 /var/log/pump19/sweep.log
+  --unit=minos-sweep.service --since='5 minutes ago' --no-pager
+sudo tail -n 50 /var/log/minos/sweep.log
 ```
 
 The delivery must receive HTTP `202`. With the repository active and a matching
@@ -387,7 +387,7 @@ Finally, confirm the timer and lingering state:
 
 ```sh
 sudo systemctl --user --machine="$DEPLOY_USER@.host" \
-  list-timers pump19-sweep.timer
+  list-timers minos-sweep.timer
 loginctl show-user "$DEPLOY_USER" --property=Linger
 ```
 
@@ -405,10 +405,10 @@ settings, and carry across every newly shipped key. In particular, do not copy
 a template wholesale over credentials or deployment-specific values.
 
 ```sh
-cd "$PUMP19_CHECKOUT"
+cd "$MINOS_CHECKOUT"
 sudo diff -ru \
   --exclude=webhook.secret --exclude=forgejo.token \
-  deploy/etc/pump19/ /etc/pump19/ || {
+  deploy/etc/minos/ /etc/minos/ || {
     status=$?
     [ "$status" -eq 1 ] || exit "$status"
   }

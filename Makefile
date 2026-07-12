@@ -4,7 +4,7 @@ test:
 	go test ./...
 
 build:
-	go build ./cmd/pump19
+	go build ./cmd/minos
 
 check: scripts shellcheck test build
 

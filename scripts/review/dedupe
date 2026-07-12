@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
 set -eu
-: "${PUMP19_BIN:=pump19}"
-exec "$PUMP19_BIN" review dedupe "$@"
+: "${MINOS_BIN:=minos}"
+exec "$MINOS_BIN" review dedupe "$@"

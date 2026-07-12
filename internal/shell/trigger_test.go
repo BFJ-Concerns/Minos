@@ -43,7 +43,7 @@ func TestFlakyLabelTriggerUsesExactVocabularyAndActorGuard(t *testing.T) {
 	repo := RepoConfig{Triggers: []TriggerRule{{
 		Run:    "flaky",
 		On:     []string{"label-added:" + LabelFlakyTests},
-		Actors: []string{"ci-bot", "pump19"},
+		Actors: []string{"ci-bot", "minos"},
 	}}}
 	facts := Facts{Occasion: "label-added:" + LabelFlakyTests, Actor: "ci-bot"}
 

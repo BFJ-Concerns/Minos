@@ -15,13 +15,13 @@ probe() {
   bash -c '
     set -euo pipefail
     source "$1/scripts/e2e/resources.sh"
-    declare -a PUMP19_E2E_RESOURCE_LOCK_FDS=()
-    pump19_e2e_allocate_resources
+    declare -a MINOS_E2E_RESOURCE_LOCK_FDS=()
+    minos_e2e_allocate_resources
     printf "%s\t%s\t%s\t%s\n" \
-      "$PUMP19_E2E_RESOLVED_CONTAINER" \
-      "$PUMP19_E2E_RESOLVED_FORGEJO_PORT" \
-      "$PUMP19_E2E_RESOLVED_HOOK_PORT" \
-      "$PUMP19_E2E_RESOLVED_CAPTURE_PORT" >"$2"
+      "$MINOS_E2E_RESOLVED_CONTAINER" \
+      "$MINOS_E2E_RESOLVED_FORGEJO_PORT" \
+      "$MINOS_E2E_RESOLVED_HOOK_PORT" \
+      "$MINOS_E2E_RESOLVED_CAPTURE_PORT" >"$2"
     for _ in {1..100}; do
       [[ -s "$3" ]] && exit 0
       sleep 0.05

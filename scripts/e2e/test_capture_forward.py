@@ -32,8 +32,8 @@ class CaptureForwardTest(unittest.TestCase):
             thread.start()
             try:
                 environment = {
-                    "PUMP19_FIXTURE_DIR": fixture_dir,
-                    "PUMP19_FORWARD_URL": f"http://127.0.0.1:{unavailable_port}/hooks/local",
+                    "MINOS_FIXTURE_DIR": fixture_dir,
+                    "MINOS_FORWARD_URL": f"http://127.0.0.1:{unavailable_port}/hooks/local",
                 }
                 request = urllib.request.Request(
                     f"http://127.0.0.1:{server.server_address[1]}/hooks/local",

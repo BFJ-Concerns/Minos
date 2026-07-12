@@ -15,15 +15,15 @@ func WorkspaceExecCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: pump19 ws-exec [--config root] command [args...]")
+		return fmt.Errorf("usage: minos ws-exec [--config root] command [args...]")
 	}
 	cfg, err := LoadServiceConfig(*configRoot)
 	if err != nil {
 		return err
 	}
-	workspace := os.Getenv("PUMP19_WORKSPACE")
+	workspace := os.Getenv("MINOS_WORKSPACE")
 	if workspace == "" {
-		return fmt.Errorf("PUMP19_WORKSPACE is required")
+		return fmt.Errorf("MINOS_WORKSPACE is required")
 	}
 	cmd := exec.CommandContext(ctx, fs.Arg(0), fs.Args()[1:]...)
 	cmd.Dir = workspace

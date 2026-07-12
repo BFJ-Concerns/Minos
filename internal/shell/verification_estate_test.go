@@ -38,13 +38,13 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 	cfg.Forges = map[string]ForgeConfig{
 		"local": {Adaptation: filepath.Join(root, "adaptations")},
 	}
-	repo := RepoConfig{Forge: "local", Owner: "pump19", Repo: "subject"}
+	repo := RepoConfig{Forge: "local", Owner: "minos", Repo: "subject"}
 	repo.Adaptation.Skill = filepath.Join(root, "skills", "review")
 	repo.Adaptation.RunBody = filepath.Join(root, "bin", "run-agent")
 	repo.Adaptation.Briefs = ".review"
 	facts := Facts{
 		Forge:   "local",
-		Owner:   "pump19",
+		Owner:   "minos",
 		Repo:    "subject",
 		PR:      "42",
 		HeadSHA: "abcdef1234567890",
@@ -56,35 +56,35 @@ func TestSpawnEnvironmentMatchesRunBodyContract(t *testing.T) {
 	env := envMap(runEnv(cfg, repo, facts, RunReview, runDir, unit, "pr-opened"))
 
 	required := map[string]string{
-		"PUMP19_RUN_DIR":    runDir,
-		"PUMP19_RUN_KIND":   "review",
-		"PUMP19_OCCASION":   "pr-opened",
-		"PUMP19_FORGE":      "local",
-		"PUMP19_REPO":       "pump19/subject",
-		"PUMP19_OWNER":      "pump19",
-		"PUMP19_REPO_NAME":  "subject",
-		"PUMP19_PR":         "42",
-		"PUMP19_HEAD_SHA":   "abcdef1234567890",
-		"PUMP19_BASE_REF":   "main",
-		"PUMP19_WORKSPACE":  filepath.Join(os.TempDir(), "pump19-workspaces", unit),
-		"PUMP19_DIFF":       filepath.Join(runDir, "diff.patch"),
-		"PUMP19_ADAPTATION": filepath.Join(root, "adaptations"),
-		"PUMP19_SKILL":      filepath.Join(root, "skills", "review"),
-		"PUMP19_RUN_BODY":   filepath.Join(root, "bin", "run-agent"),
-		"PUMP19_BRIEFS":     ".review",
-		"PUMP19_CONFIG":     cfg.Root,
-		"PUMP19_UNIT":       unit,
+		"MINOS_RUN_DIR":    runDir,
+		"MINOS_RUN_KIND":   "review",
+		"MINOS_OCCASION":   "pr-opened",
+		"MINOS_FORGE":      "local",
+		"MINOS_REPO":       "minos/subject",
+		"MINOS_OWNER":      "minos",
+		"MINOS_REPO_NAME":  "subject",
+		"MINOS_PR":         "42",
+		"MINOS_HEAD_SHA":   "abcdef1234567890",
+		"MINOS_BASE_REF":   "main",
+		"MINOS_WORKSPACE":  filepath.Join(os.TempDir(), "minos-workspaces", unit),
+		"MINOS_DIFF":       filepath.Join(runDir, "diff.patch"),
+		"MINOS_ADAPTATION": filepath.Join(root, "adaptations"),
+		"MINOS_SKILL":      filepath.Join(root, "skills", "review"),
+		"MINOS_RUN_BODY":   filepath.Join(root, "bin", "run-agent"),
+		"MINOS_BRIEFS":     ".review",
+		"MINOS_CONFIG":     cfg.Root,
+		"MINOS_UNIT":       unit,
 	}
 	for key, want := range required {
 		if got := env[key]; got != want {
 			t.Fatalf("%s = %q, want %q", key, got, want)
 		}
 	}
-	if strings.Contains(env["PUMP19_RUN_DIR"], ".reaped-") {
-		t.Fatalf("spawn handed a reaped evidence path as the live claim: %s", env["PUMP19_RUN_DIR"])
+	if strings.Contains(env["MINOS_RUN_DIR"], ".reaped-") {
+		t.Fatalf("spawn handed a reaped evidence path as the live claim: %s", env["MINOS_RUN_DIR"])
 	}
-	if strings.HasPrefix(env["PUMP19_WORKSPACE"], cfg.Runs.Dir) {
-		t.Fatalf("workspace should be in temp storage, got %s", env["PUMP19_WORKSPACE"])
+	if strings.HasPrefix(env["MINOS_WORKSPACE"], cfg.Runs.Dir) {
+		t.Fatalf("workspace should be in temp storage, got %s", env["MINOS_WORKSPACE"])
 	}
 }
 
@@ -92,11 +92,11 @@ func TestPartialCoverageNeverReconcilesAsConverged(t *testing.T) {
 	drafts := false
 	repo := RepoConfig{Triggers: []TriggerRule{
 		{Run: "review", Authors: []string{"*"}, Drafts: &drafts},
-		{Run: "fix", Actors: []string{"pump19"}},
+		{Run: "fix", Actors: []string{"minos"}},
 	}}
 	facts := Facts{
 		Forge:  "local",
-		Owner:  "pump19",
+		Owner:  "minos",
 		Repo:   "subject",
 		PR:     "42",
 		Draft:  false,
@@ -107,7 +107,7 @@ func TestPartialCoverageNeverReconcilesAsConverged(t *testing.T) {
 	decision, ok := reconcileDecision(repo, facts, []Status{{
 		Context: reviewContext,
 		State:   "failure",
-		Creator: "pump19",
+		Creator: "minos",
 	}}, "")
 	if !ok || decision != RunFix {
 		t.Fatalf("partial coverage with findings should still drive fix, got ok=%v decision=%s", ok, decision)
@@ -116,7 +116,7 @@ func TestPartialCoverageNeverReconcilesAsConverged(t *testing.T) {
 	decision, ok = reconcileDecision(repo, facts, []Status{{
 		Context: reviewContext,
 		State:   "error",
-		Creator: "pump19",
+		Creator: "minos",
 	}}, "")
 	if ok {
 		t.Fatalf("partial coverage without findings must not auto-fire, got decision=%s", decision)
@@ -125,10 +125,10 @@ func TestPartialCoverageNeverReconcilesAsConverged(t *testing.T) {
 
 func TestStatusForContextUsesForgejoStatusIDs(t *testing.T) {
 	status, ok := statusForContext([]Status{
-		{ID: 11, Context: "pump19/review", State: "success"},
-		{ID: 12, Context: "pump19/review", State: "error"},
+		{ID: 11, Context: "minos/review", State: "success"},
+		{ID: 12, Context: "minos/review", State: "error"},
 		{ID: 13, Context: "other", State: "success"},
-	}, "pump19/review")
+	}, "minos/review")
 	if !ok {
 		t.Fatal("expected review status")
 	}
@@ -139,8 +139,8 @@ func TestStatusForContextUsesForgejoStatusIDs(t *testing.T) {
 
 func TestGetStatusesRejectsMissingForgejoStatusID(t *testing.T) {
 	dir := t.TempDir()
-	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[{\"context\":\"pump19/review\",\"state\":\"error\"}]\\n'\n")
-	_, err := (Adaptation{Dir: dir}).GetStatuses(context.Background(), "pump19", "subject", "abcdef")
+	writeScript(t, filepath.Join(dir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[{\"context\":\"minos/review\",\"state\":\"error\"}]\\n'\n")
+	_, err := (Adaptation{Dir: dir}).GetStatuses(context.Background(), "minos", "subject", "abcdef")
 	if err == nil || !strings.Contains(err.Error(), "positive id") {
 		t.Fatalf("missing status id error = %v", err)
 	}
@@ -151,12 +151,12 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 	repo := RepoConfig{Triggers: []TriggerRule{
 		{Run: "flaky", On: []string{"label-added:Flaky Tests"}, Actors: []string{"ci-bot"}},
 		{Run: "review", Authors: []string{"*"}, Drafts: &drafts},
-		{Run: "fix", Actors: []string{"pump19"}},
+		{Run: "fix", Actors: []string{"minos"}},
 		{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}},
 	}}
 	facts := Facts{
 		Forge:   "local",
-		Owner:   "pump19",
+		Owner:   "minos",
 		Repo:    "subject",
 		PR:      "42",
 		HeadSHA: "abcdef1234567890",
@@ -184,31 +184,31 @@ func TestReconcileImplicationsAreOrderedAndActorSourced(t *testing.T) {
 		{
 			name:     "completed flaky head does not refire",
 			labels:   []string{LabelFlakyTests},
-			statuses: []Status{{Context: flakyContext, State: "success", Creator: "pump19"}, {Context: reviewContext, State: "success", Creator: "pump19"}},
+			statuses: []Status{{Context: flakyContext, State: "success", Creator: "minos"}, {Context: reviewContext, State: "success", Creator: "minos"}},
 		},
 		{
 			name:     "labelled failed review fires fix from status creator",
 			labels:   []string{LabelStandingFindings},
-			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "pump19"}},
+			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "minos"}},
 			want:     RunFix,
 			wantOK:   true,
 		},
 		{
 			name:     "existing fix status blocks duplicate fix",
 			labels:   []string{LabelStandingFindings},
-			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "pump19"}, {Context: fixContext, State: "success", Creator: "pump19"}},
+			statuses: []Status{{Context: reviewContext, State: "failure", Creator: "minos"}, {Context: fixContext, State: "success", Creator: "minos"}},
 		},
 		{
 			name:     "ready label fires finish from label actor",
 			labels:   []string{LabelReady},
-			statuses: []Status{{Context: reviewContext, State: "success", Creator: "pump19"}},
+			statuses: []Status{{Context: reviewContext, State: "success", Creator: "minos"}},
 			want:     RunFinish,
 			wantOK:   true,
 		},
 		{
 			name:     "existing finish status blocks duplicate finish",
 			labels:   []string{LabelReady},
-			statuses: []Status{{Context: reviewContext, State: "success", Creator: "pump19"}, {Context: finishContext, State: "success", Creator: "bob"}},
+			statuses: []Status{{Context: reviewContext, State: "success", Creator: "minos"}, {Context: finishContext, State: "success", Creator: "bob"}},
 		},
 	}
 	for _, tt := range tests {
@@ -241,7 +241,7 @@ func TestPausedFlakyReviewSuccessIsTerminalForTheHead(t *testing.T) {
 	}}
 	reviewContext, _ := StatusContext(RunReview)
 	facts := Facts{Labels: []string{LabelFlakyTests}, Author: "contributor", Actor: "ci-bot"}
-	statuses := []Status{{Context: reviewContext, State: "success", Creator: "pump19"}}
+	statuses := []Status{{Context: reviewContext, State: "success", Creator: "minos"}}
 
 	// The standing label may start its repair run, but the paused review's
 	// success status remains terminal: absence of Converged never implies review.
@@ -258,7 +258,7 @@ func TestPersistentlyFailingFlakyRepairContinuesPastFormerAttemptLimit(t *testin
 	root := t.TempDir()
 	facts := Facts{
 		Forge:   "local",
-		Owner:   "pump19",
+		Owner:   "minos",
 		Repo:    "subject",
 		PR:      "18",
 		HeadSHA: "abcdef1234567890",
@@ -274,7 +274,7 @@ func TestPersistentlyFailingFlakyRepairContinuesPastFormerAttemptLimit(t *testin
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\nPUMP19_FAILURE_AT=2026-07-11T09:00:00Z\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "retry.env"), []byte("MINOS_RETRYABLE_FAILURE=1\nMINOS_FAILURE_AT=2026-07-11T09:00:00Z\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	logFile, err := os.Create(filepath.Join(root, "sweep.log"))
@@ -297,7 +297,7 @@ func TestPersistentlyFailingFlakyRepairContinuesPastFormerAttemptLimit(t *testin
 
 func TestStandingFlakyLabelUsesRecordedActorToStartRepair(t *testing.T) {
 	repo := RepoConfig{Triggers: []TriggerRule{{Run: "flaky", Actors: []string{"bob"}}}}
-	facts := Facts{Owner: "pump19", Repo: "subject", PR: "18", Labels: []string{LabelFlakyTests}}
+	facts := Facts{Owner: "minos", Repo: "subject", PR: "18", Labels: []string{LabelFlakyTests}}
 	dir := t.TempDir()
 	writeScript(t, filepath.Join(dir, "label-actor"), "#!/usr/bin/env sh\nprintf 'bob\\n'\n")
 
@@ -319,13 +319,13 @@ func TestFlakyCrashRecoveryKeepsErrorsOffThePR(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "set-status"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >'"+statusFile+"'\n")
-	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "18", HeadSHA: "abcdef1234567890", Labels: []string{LabelFlakyTests, LabelRepairingFlaky}}
+	facts := Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "18", HeadSHA: "abcdef1234567890", Labels: []string{LabelFlakyTests, LabelRepairingFlaky}}
 
 	crashed := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunFlaky)
 	if err := os.MkdirAll(crashed, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(crashed, "meta.env"), []byte("PUMP19_HEAD_SHA="+facts.HeadSHA+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(crashed, "meta.env"), []byte("MINOS_HEAD_SHA="+facts.HeadSHA+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(crashed+".reaped-1", 0o755); err != nil {
@@ -342,10 +342,10 @@ func TestFlakyCrashRecoveryKeepsErrorsOffThePR(t *testing.T) {
 	if err := os.MkdirAll(retry, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(retry, "meta.env"), []byte("PUMP19_HEAD_SHA=fedcba9876543210\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(retry, "meta.env"), []byte("MINOS_HEAD_SHA=fedcba9876543210\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(retry, "retry.env"), []byte("PUMP19_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(retry, "retry.env"), []byte("MINOS_RETRYABLE_FAILURE=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(retry+".retry-1", 0o755); err != nil {
@@ -370,7 +370,7 @@ func TestFlakyCrashRecoveryKeepsErrorsOffThePR(t *testing.T) {
 func TestUnauthorisedReadyIsClearedBeforeReconcile(t *testing.T) {
 	drafts := false
 	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Drafts: &drafts}}}
-	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Labels: []string{LabelReady}, Draft: false}
+	facts := Facts{Owner: "minos", Repo: "subject", PR: "42", Labels: []string{LabelReady}, Draft: false}
 	adaptationDir := t.TempDir()
 	removeFile := filepath.Join(adaptationDir, "removed.args")
 	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'mallory\\n'\n")
@@ -402,7 +402,7 @@ func TestAuthorisedReadyIsNotCleared(t *testing.T) {
 	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Authors: []string{"alice"}, Drafts: &drafts}}}
 	// Clearance is solely an actor-authorisation repair. Draft and author guards
 	// still decide whether finish fires, but must not relabel an authorised act.
-	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Author: "mallory", Labels: []string{LabelReady}, Draft: true}
+	facts := Facts{Owner: "minos", Repo: "subject", PR: "42", Author: "mallory", Labels: []string{LabelReady}, Draft: true}
 	adaptationDir := t.TempDir()
 	removeFile := filepath.Join(adaptationDir, "removed.args")
 	writeScript(t, filepath.Join(adaptationDir, "label-actor"), "#!/usr/bin/env sh\nprintf 'bob\\n'\n")
@@ -428,7 +428,7 @@ func TestAuthorisedReadyIsNotCleared(t *testing.T) {
 func TestReadyActorIsReadOnceAcrossClearanceAndReconcile(t *testing.T) {
 	drafts := false
 	repo := RepoConfig{Triggers: []TriggerRule{{Run: "finish", On: []string{"label-added:Ready"}, Actors: []string{"bob"}, Drafts: &drafts}}}
-	facts := Facts{Owner: "pump19", Repo: "subject", PR: "42", Labels: []string{LabelReady}}
+	facts := Facts{Owner: "minos", Repo: "subject", PR: "42", Labels: []string{LabelReady}}
 	dir := t.TempDir()
 	countFile := filepath.Join(dir, "label-actor.count")
 	writeScript(t, filepath.Join(dir, "label-actor"), "#!/usr/bin/env sh\nprintf x >>'"+countFile+"'\nprintf 'bob\\n'\n")
@@ -484,7 +484,7 @@ func TestReapFailsClosedWhenUnitCannotBeStopped(t *testing.T) {
 	if err := os.Mkdir(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "meta.env"), []byte("PUMP19_UNIT=pump19-definitely-not-a-real-unit.service\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "meta.env"), []byte("MINOS_UNIT=minos-definitely-not-a-real-unit.service\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -552,7 +552,7 @@ func TestLabelLessClaimIsReapedWhenStaleAndUnfinished(t *testing.T) {
 	cfg.Runs.Dir = filepath.Join(root, "runs")
 	cfg.Runs.MaxConcurrent = 2
 	cfg.Sweep.LivenessThreshold.Duration = time.Hour
-	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "abcdef1234567890"}
+	facts := Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "42", HeadSHA: "abcdef1234567890"}
 	runDir := RunDir(cfg.Runs.Dir, facts.Forge, facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, RunReview)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -589,9 +589,9 @@ func TestRunMetadataWriteFailureIsLoud(t *testing.T) {
 }
 
 func TestRunBodyCommandUsesRunBodyNotSkill(t *testing.T) {
-	t.Setenv("PUMP19_SKILL", filepath.Join(t.TempDir(), "review-skill.md"))
+	t.Setenv("MINOS_SKILL", filepath.Join(t.TempDir(), "review-skill.md"))
 	body := filepath.Join(t.TempDir(), "run-body")
-	t.Setenv("PUMP19_RUN_BODY", body)
+	t.Setenv("MINOS_RUN_BODY", body)
 	cmd, err := runBodyCommand(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -617,17 +617,17 @@ func TestRunWrapTreatsBodyStartFailureAsRetryable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(serviceConfig), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runDir := filepath.Join(root, "runs", "local--pump19--subject", "pr42", "abcdef123456-review")
+	runDir := filepath.Join(root, "runs", "local--minos--subject", "pr42", "abcdef123456-review")
 	workspace := filepath.Join(root, "workspace")
-	t.Setenv("PUMP19_RUN_DIR", runDir)
-	t.Setenv("PUMP19_WORKSPACE", workspace)
-	t.Setenv("PUMP19_RUN_KIND", "review")
-	t.Setenv("PUMP19_FORGE", "local")
-	t.Setenv("PUMP19_OWNER", "pump19")
-	t.Setenv("PUMP19_REPO_NAME", "subject")
-	t.Setenv("PUMP19_PR", "42")
-	t.Setenv("PUMP19_HEAD_SHA", "abcdef1234567890")
-	t.Setenv("PUMP19_RUN_BODY", filepath.Join(root, "missing-run-body"))
+	t.Setenv("MINOS_RUN_DIR", runDir)
+	t.Setenv("MINOS_WORKSPACE", workspace)
+	t.Setenv("MINOS_RUN_KIND", "review")
+	t.Setenv("MINOS_FORGE", "local")
+	t.Setenv("MINOS_OWNER", "minos")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "42")
+	t.Setenv("MINOS_HEAD_SHA", "abcdef1234567890")
+	t.Setenv("MINOS_RUN_BODY", filepath.Join(root, "missing-run-body"))
 
 	runErr := RunWrapCommand(context.Background(), []string{"--config", root})
 	if runErr == nil {
@@ -637,14 +637,14 @@ func TestRunWrapTreatsBodyStartFailureAsRetryable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("body start failure %v did not record retry evidence: %v", runErr, err)
 	}
-	if got := values["PUMP19_FAILURE_PHASE"]; got != "run-body-start" {
+	if got := values["MINOS_FAILURE_PHASE"]; got != "run-body-start" {
 		t.Fatalf("failure phase = %q, want run-body-start", got)
 	}
 }
 
 func TestLiveRunStateTreatsWarmLogAsAliveAndQuietLogAsDead(t *testing.T) {
 	root := t.TempDir()
-	facts := Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42"}
+	facts := Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "42"}
 	runDir := RunDir(root, facts.Forge, facts.Owner, facts.Repo, facts.PR, "abcdef1234567890", RunReview)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)

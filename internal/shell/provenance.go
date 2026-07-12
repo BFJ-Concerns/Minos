@@ -26,7 +26,7 @@ type ModelPins struct {
 
 func ProvenanceCommand(args []string, stdout io.Writer) error {
 	if len(args) != 2 || args[0] != "lead-pin" {
-		return fmt.Errorf("usage: pump19 provenance lead-pin PINS_TOML")
+		return fmt.Errorf("usage: minos provenance lead-pin PINS_TOML")
 	}
 	pins, err := loadModelPins(args[1])
 	if err != nil {

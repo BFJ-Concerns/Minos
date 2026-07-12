@@ -35,10 +35,10 @@ func TestTerminalMarkerKeepsFirstReasonAndFullIdentity(t *testing.T) {
 func TestAdaptationMarksMutatingVerbBeforeItExecutes(t *testing.T) {
 	runDir := t.TempDir()
 	adaptationDir := t.TempDir()
-	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\ntest -f \"$PUMP19_RUN_DIR/forge-writes-attempted.env\"\n")
-	t.Setenv("PUMP19_RUN_DIR", runDir)
-	t.Setenv("PUMP19_RUN_KIND", "review")
-	t.Setenv("PUMP19_HEAD_SHA", "abcdef1234567890")
+	writeScript(t, filepath.Join(adaptationDir, "post-comment"), "#!/usr/bin/env sh\ntest -f \"$MINOS_RUN_DIR/forge-writes-attempted.env\"\n")
+	t.Setenv("MINOS_RUN_DIR", runDir)
+	t.Setenv("MINOS_RUN_KIND", "review")
+	t.Setenv("MINOS_HEAD_SHA", "abcdef1234567890")
 
 	if _, err := (Adaptation{Dir: adaptationDir}).Run(context.Background(), "post-comment", nil, nil); err != nil {
 		t.Fatalf("mutating adaptation did not observe its pre-exec marker: %v", err)
@@ -47,8 +47,8 @@ func TestAdaptationMarksMutatingVerbBeforeItExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if values["PUMP19_FORGE_OPERATION"] != "post-comment" {
-		t.Fatalf("recorded operation = %q", values["PUMP19_FORGE_OPERATION"])
+	if values["MINOS_FORGE_OPERATION"] != "post-comment" {
+		t.Fatalf("recorded operation = %q", values["MINOS_FORGE_OPERATION"])
 	}
 }
 
@@ -56,7 +56,7 @@ func TestAdaptationReadDoesNotMarkForgeWrite(t *testing.T) {
 	runDir := t.TempDir()
 	adaptationDir := t.TempDir()
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
-	t.Setenv("PUMP19_RUN_DIR", runDir)
+	t.Setenv("MINOS_RUN_DIR", runDir)
 
 	if _, err := (Adaptation{Dir: adaptationDir}).Run(context.Background(), "get-statuses", nil, nil); err != nil {
 		t.Fatal(err)
@@ -69,17 +69,17 @@ func TestAdaptationReadDoesNotMarkForgeWrite(t *testing.T) {
 func TestMissionDrivenLabelMutationStillMarksForgeWrite(t *testing.T) {
 	runDir := t.TempDir()
 	adaptationDir := t.TempDir()
-	writeScript(t, filepath.Join(adaptationDir, "add-label"), "#!/usr/bin/env sh\ntest -f \"$PUMP19_RUN_DIR/forge-writes-attempted.env\"\n")
-	t.Setenv("PUMP19_RUN_DIR", runDir)
+	writeScript(t, filepath.Join(adaptationDir, "add-label"), "#!/usr/bin/env sh\ntest -f \"$MINOS_RUN_DIR/forge-writes-attempted.env\"\n")
+	t.Setenv("MINOS_RUN_DIR", runDir)
 
-	if err := (Adaptation{Dir: adaptationDir}).AddLabel(t.Context(), "pump19", "subject", "42", LabelReady); err != nil {
+	if err := (Adaptation{Dir: adaptationDir}).AddLabel(t.Context(), "minos", "subject", "42", LabelReady); err != nil {
 		t.Fatalf("mission-driven label mutation did not observe its marker: %v", err)
 	}
 }
 
 func TestRearmRetainsAuditCopyForExactIdentity(t *testing.T) {
 	root := t.TempDir()
-	runDir := RunDir(root, "local", "pump19", "subject", "42", "abcdef1234567890", RunReview) + ".retry-5"
+	runDir := RunDir(root, "local", "minos", "subject", "42", "abcdef1234567890", RunReview) + ".retry-5"
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestRearmRetainsAuditCopyForExactIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	count, err := rearmTerminalMarkers(root, Facts{Forge: "local", Owner: "pump19", Repo: "subject", PR: "42", HeadSHA: "abcdef1234567890"}, RunReview)
+	count, err := rearmTerminalMarkers(root, Facts{Forge: "local", Owner: "minos", Repo: "subject", PR: "42", HeadSHA: "abcdef1234567890"}, RunReview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestRearmRetainsAuditCopyForExactIdentity(t *testing.T) {
 		t.Fatalf("re-arm audit copies = %v err=%v", matches, err)
 	}
 
-	other := RunDir(root, "local", "pump19", "subject", "42", "abcdef1234567890", RunFix)
+	other := RunDir(root, "local", "minos", "subject", "42", "abcdef1234567890", RunFix)
 	if err := os.MkdirAll(other, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestStubCrashWritesOnlyInternalTerminalMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(adaptationDir, "get-statuses"), "#!/usr/bin/env sh\nprintf '[]\\n'\n")
-	writeScript(t, filepath.Join(adaptationDir, "get-pr-facts"), "#!/usr/bin/env sh\nprintf 'OCCASION=pr-opened\\nOWNER=pump19\\nREPO=subject\\nPR=42\\nHEAD_SHA=%s\\nBASE_REF=main\\nAUTHOR=alice\\nDRAFT=false\\n' \"$PUMP19_HEAD_SHA\"\n")
+	writeScript(t, filepath.Join(adaptationDir, "get-pr-facts"), "#!/usr/bin/env sh\nprintf 'OCCASION=pr-opened\\nOWNER=minos\\nREPO=subject\\nPR=42\\nHEAD_SHA=%s\\nBASE_REF=main\\nAUTHOR=alice\\nDRAFT=false\\n' \"$MINOS_HEAD_SHA\"\n")
 	for _, operation := range []string{"add-label", "add-reaction", "assign-if-missing", "remove-reaction", "remove-label"} {
 		writeScript(t, filepath.Join(adaptationDir, operation), "#!/usr/bin/env sh\nexit 0\n")
 	}
@@ -153,15 +153,15 @@ func TestStubCrashWritesOnlyInternalTerminalMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, value := range map[string]string{
-		"PUMP19_CONFIG":    root,
-		"PUMP19_RUN_DIR":   runDir,
-		"PUMP19_RUN_KIND":  "review",
-		"PUMP19_FORGE":     "local",
-		"PUMP19_OWNER":     "pump19",
-		"PUMP19_REPO_NAME": "subject",
-		"PUMP19_PR":        "42",
-		"PUMP19_HEAD_SHA":  "abcdef1234567890",
-		"PUMP19_STUB_MODE": "crash",
+		"MINOS_CONFIG":    root,
+		"MINOS_RUN_DIR":   runDir,
+		"MINOS_RUN_KIND":  "review",
+		"MINOS_FORGE":     "local",
+		"MINOS_OWNER":     "minos",
+		"MINOS_REPO_NAME": "subject",
+		"MINOS_PR":        "42",
+		"MINOS_HEAD_SHA":  "abcdef1234567890",
+		"MINOS_STUB_MODE": "crash",
 	} {
 		t.Setenv(key, value)
 	}

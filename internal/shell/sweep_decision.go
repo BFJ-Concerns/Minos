@@ -90,7 +90,7 @@ func classifySweepPriority(snapshot sweepSnapshot) sweepPriority {
 		}
 	}
 	for _, status := range snapshot.statuses {
-		if strings.HasPrefix(status.Context, "pump19/") {
+		if strings.HasPrefix(status.Context, "minos/") {
 			return sweepDrain
 		}
 	}

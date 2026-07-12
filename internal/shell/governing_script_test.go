@@ -45,10 +45,10 @@ func TestExtractGoverningReadsBriefsAndGuidanceFromBaseRef(t *testing.T) {
 	script := filepath.Join("..", "..", "scripts", "review", "extract-governing")
 	cmd := exec.Command(script)
 	cmd.Env = append(os.Environ(),
-		"PUMP19_WORKSPACE="+workspace,
-		"PUMP19_RUN_DIR="+runDir,
-		"PUMP19_BASE_REF=main",
-		"PUMP19_BRIEFS=.review",
+		"MINOS_WORKSPACE="+workspace,
+		"MINOS_RUN_DIR="+runDir,
+		"MINOS_BASE_REF=main",
+		"MINOS_BRIEFS=.review",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("extract-governing failed: %v\n%s", err, out)
@@ -71,7 +71,7 @@ func TestExtractGoverningReadsBriefsAndGuidanceFromBaseRef(t *testing.T) {
 func TestExtractGoverningRejectsParentBriefPath(t *testing.T) {
 	script := filepath.Join("..", "..", "scripts", "review", "extract-governing")
 	cmd := exec.Command(script)
-	cmd.Env = append(os.Environ(), "PUMP19_WORKSPACE=x", "PUMP19_RUN_DIR=x", "PUMP19_BASE_REF=main", "PUMP19_BRIEFS=../escape")
+	cmd.Env = append(os.Environ(), "MINOS_WORKSPACE=x", "MINOS_RUN_DIR=x", "MINOS_BASE_REF=main", "MINOS_BRIEFS=../escape")
 	if err := cmd.Run(); err == nil {
 		t.Fatal("parent brief path was accepted")
 	}
@@ -88,25 +88,25 @@ func TestReviewEngineStandInPropagatesGoverningExtractionFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(reviewScripts, "extract-governing"), "#!/usr/bin/env sh\nexit 17\n")
-	pump19 := filepath.Join(root, "pump19-fixture")
-	writeScript(t, pump19, `#!/usr/bin/env sh
+	minos := filepath.Join(root, "minos-fixture")
+	writeScript(t, minos, `#!/usr/bin/env sh
 case "$1:$4" in
   run-guard:begin) printf 'claimed\n' ;;
   run-guard:release) ;;
-  *) printf '%s\n' "$*" >"$PUMP19_UNEXPECTED_CALL"; exit 99 ;;
+  *) printf '%s\n' "$*" >"$MINOS_UNEXPECTED_CALL"; exit 99 ;;
 esac
 `)
 	standin := filepath.Join("..", "..", "scripts", "e2e", "review-engine-standin")
 	cmd := exec.Command(standin)
 	cmd.Stdin = strings.NewReader("mission")
 	cmd.Env = append(os.Environ(),
-		"PUMP19_BIN="+pump19,
-		"PUMP19_REVIEW_SCRIPTS="+reviewScripts,
-		"PUMP19_RUN_DIR="+runDir,
-		"PUMP19_CONFIG="+root,
-		"PUMP19_PINS="+filepath.Join(root, "pins.toml"),
-		"PUMP19_STANDIN_RESOLVED_MODELS="+filepath.Join(root, "workers.json"),
-		"PUMP19_UNEXPECTED_CALL="+filepath.Join(root, "unexpected-call"),
+		"MINOS_BIN="+minos,
+		"MINOS_REVIEW_SCRIPTS="+reviewScripts,
+		"MINOS_RUN_DIR="+runDir,
+		"MINOS_CONFIG="+root,
+		"MINOS_PINS="+filepath.Join(root, "pins.toml"),
+		"MINOS_STANDIN_RESOLVED_MODELS="+filepath.Join(root, "workers.json"),
+		"MINOS_UNEXPECTED_CALL="+filepath.Join(root, "unexpected-call"),
 	)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("stand-in ignored governing extraction failure:\n%s", out)

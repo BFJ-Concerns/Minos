@@ -19,7 +19,7 @@ func RunGuardCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: pump19 run-guard [--config root] begin|current|release")
+		return fmt.Errorf("usage: minos run-guard [--config root] begin|current|release")
 	}
 
 	cfg, adaptation, facts, kind, err := loadRunGuard(*configRoot)
@@ -43,11 +43,11 @@ func loadRunGuard(configRoot string) (ServiceConfig, Adaptation, Facts, RunKind,
 	if err != nil {
 		return ServiceConfig{}, Adaptation{}, Facts{}, "", err
 	}
-	kind, err := ParseRunKind(os.Getenv("PUMP19_RUN_KIND"))
+	kind, err := ParseRunKind(os.Getenv("MINOS_RUN_KIND"))
 	if err != nil {
 		return ServiceConfig{}, Adaptation{}, Facts{}, "", err
 	}
-	forgeName := os.Getenv("PUMP19_FORGE")
+	forgeName := os.Getenv("MINOS_FORGE")
 	forge, ok := cfg.Forges[forgeName]
 	if !ok {
 		return ServiceConfig{}, Adaptation{}, Facts{}, "", fmt.Errorf("unknown forge %q", forgeName)
@@ -121,7 +121,7 @@ func currentRun(ctx context.Context, adaptation Adaptation, facts Facts) error {
 }
 
 func releaseRun(ctx context.Context, cfg ServiceConfig, adaptation Adaptation, facts Facts, kind RunKind) error {
-	if newerLiveRunDirExists(cfg.Runs.Dir, facts, kind, os.Getenv("PUMP19_RUN_DIR"), cfg.Sweep.LivenessThreshold.Duration) {
+	if newerLiveRunDirExists(cfg.Runs.Dir, facts, kind, os.Getenv("MINOS_RUN_DIR"), cfg.Sweep.LivenessThreshold.Duration) {
 		fmt.Println("retained-newer-run")
 		return nil
 	}

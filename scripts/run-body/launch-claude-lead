@@ -1,17 +1,17 @@
 #!/usr/bin/env sh
 set -eu
 
-: "${PUMP19_BIN:=pump19}"
-: "${PUMP19_CLAUDE:?PUMP19_CLAUDE is required}"
-: "${PUMP19_PINS:?PUMP19_PINS is required}"
-: "${PUMP19_WORKSPACE:?PUMP19_WORKSPACE is required}"
+: "${MINOS_BIN:=minos}"
+: "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
+: "${MINOS_PINS:?MINOS_PINS is required}"
+: "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
 
-model=$("$PUMP19_BIN" provenance lead-pin "$PUMP19_PINS")
-exec "$PUMP19_CLAUDE" -p \
+model=$("$MINOS_BIN" provenance lead-pin "$MINOS_PINS")
+exec "$MINOS_CLAUDE" -p \
   --output-format stream-json \
   --verbose \
   --include-partial-messages \
   --no-session-persistence \
   --permission-mode bypassPermissions \
   --model "$model" \
-  --add-dir "$PUMP19_WORKSPACE"
+  --add-dir "$MINOS_WORKSPACE"

@@ -25,13 +25,13 @@ func TestAdaptCommandLoadsCredentialAndRejectsPaths(t *testing.T) {
 	if err := os.WriteFile(webhookSecret, []byte("webhook-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeScript(t, filepath.Join(adaptationDir, "inspect"), "#!/usr/bin/env sh\nprintf '%s:%s' \"$PUMP19_FORGE_TOKEN\" \"$1\"\n")
+	writeScript(t, filepath.Join(adaptationDir, "inspect"), "#!/usr/bin/env sh\nprintf '%s:%s' \"$MINOS_FORGE_TOKEN\" \"$1\"\n")
 	service := "[service]\nbot-login = \"Minos\"\n\n[listener]\nbind = \":0\"\n\n[forges.local]\nadaptation = \"" + adaptationDir + "\"\napi-base = \"http://forge.invalid\"\nwebhook-secret-file = \"" + webhookSecret + "\"\ncredential-file = \"" + credential + "\"\n\n[runs]\ndir = \"" + filepath.Join(root, "runs") + "\"\nmax-concurrent = 2\n\n[sweep]\nliveness-threshold = \"1h\"\n"
 	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(service), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PUMP19_CONFIG", root)
-	t.Setenv("PUMP19_FORGE", "local")
+	t.Setenv("MINOS_CONFIG", root)
+	t.Setenv("MINOS_FORGE", "local")
 	var out bytes.Buffer
 	if err := AdaptCommand(context.Background(), []string{"inspect", "argument"}, strings.NewReader(""), &out); err != nil {
 		t.Fatal(err)
@@ -69,12 +69,12 @@ func TestForgejoAppendFindingsCommitsConventionEntryAsServiceIdentity(t *testing
 	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "append-findings")
 	cmd := exec.Command(path, "BFJ-Concerns/Subject", "17", findings)
 	cmd.Env = append(os.Environ(),
-		"PUMP19_API_BASE=file://"+forgeRoot,
-		"PUMP19_FORGE_TOKEN=test-token",
-		"PUMP19_FIND_INGEST_REPOSITORY=annexes/subject",
-		"PUMP19_FIND_INGEST_PATH=ISSUES.md",
-		"PUMP19_FIX_AUTHOR_NAME=Minos",
-		"PUMP19_FIX_AUTHOR_EMAIL=minos@example.invalid",
+		"MINOS_API_BASE=file://"+forgeRoot,
+		"MINOS_FORGE_TOKEN=test-token",
+		"MINOS_FIND_INGEST_REPOSITORY=annexes/subject",
+		"MINOS_FIND_INGEST_PATH=ISSUES.md",
+		"MINOS_FIX_AUTHOR_NAME=Minos",
+		"MINOS_FIX_AUTHOR_EMAIL=minos@example.invalid",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("append findings: %v\n%s", err, out)
@@ -88,7 +88,7 @@ func TestForgejoAppendFindingsCommitsConventionEntryAsServiceIdentity(t *testing
 	}
 	entry := string(data)
 	if !strings.Contains(entry, "- **Name the hidden failure** — The error is swallowed beside the changed code.") ||
-		!strings.Contains(entry, "Source: Pump-19 review of BFJ-Concerns/Subject#17,") {
+		!strings.Contains(entry, "Source: Minos review of BFJ-Concerns/Subject#17,") {
 		t.Fatalf("find-ingest entry does not follow convention:\n%s", entry)
 	}
 	author := strings.TrimSpace(gitCommand(t, "-C", checkout, "show", "-s", "--format=%an <%ae>", "HEAD"))
@@ -105,12 +105,12 @@ func TestForgejoAppendFindingsTreatsEmptyArrayAsNoOp(t *testing.T) {
 	path := filepath.Join("..", "..", "scripts", "adaptations", "forgejo", "append-findings")
 	cmd := exec.Command(path, "BFJ-Concerns/Subject", "17", findings)
 	cmd.Env = append(os.Environ(),
-		"PUMP19_API_BASE=http://unreachable.invalid",
-		"PUMP19_FORGE_TOKEN=test-token",
-		"PUMP19_FIND_INGEST_REPOSITORY=annexes/unreachable",
-		"PUMP19_FIND_INGEST_PATH=ISSUES.md",
-		"PUMP19_FIX_AUTHOR_NAME=Minos",
-		"PUMP19_FIX_AUTHOR_EMAIL=minos@example.invalid",
+		"MINOS_API_BASE=http://unreachable.invalid",
+		"MINOS_FORGE_TOKEN=test-token",
+		"MINOS_FIND_INGEST_REPOSITORY=annexes/unreachable",
+		"MINOS_FIND_INGEST_PATH=ISSUES.md",
+		"MINOS_FIX_AUTHOR_NAME=Minos",
+		"MINOS_FIX_AUTHOR_EMAIL=minos@example.invalid",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -135,7 +135,7 @@ func TestForgejoPostReviewMapsServiceStateAndPreservesAnchors(t *testing.T) {
 	dir := t.TempDir()
 	body := filepath.Join(dir, "body.md")
 	comments := filepath.Join(dir, "comments.json")
-	if err := os.WriteFile(body, []byte("Review body\n\nPump-19: bar=passed coverage=full head=abc run=review verdict=converged\n"), 0o644); err != nil {
+	if err := os.WriteFile(body, []byte("Review body\n\nMinos: bar=passed coverage=full head=abc run=review verdict=converged\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(comments, []byte(`[{"path":"main.go","body":"Finding","new_position":12,"old_position":0}]`), 0o644); err != nil {
@@ -150,7 +150,7 @@ func TestForgejoPostReviewMapsServiceStateAndPreservesAnchors(t *testing.T) {
 func TestForgejoUpdateCommentTargetsStableComment(t *testing.T) {
 	dir := t.TempDir()
 	body := filepath.Join(dir, "body.md")
-	if err := os.WriteFile(body, []byte("Updated\n\nPump-19: finding=F-7KQ3 head=abc priority=P1 run=review\n"), 0o644); err != nil {
+	if err := os.WriteFile(body, []byte("Updated\n\nMinos: finding=F-7KQ3 head=abc priority=P1 run=review\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	captured := runForgejoWriteScript(t, "update-comment", "{}", "owner", "repo", "91", body)
@@ -204,8 +204,8 @@ esac
 	cmd := exec.Command(path, "owner", "repo", "7", LabelReviewing)
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
-		"PUMP19_API_BASE=http://forge.invalid",
-		"PUMP19_FORGE_TOKEN=token",
+		"MINOS_API_BASE=http://forge.invalid",
+		"MINOS_FORGE_TOKEN=token",
 	)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -228,7 +228,7 @@ case " $* " in
   *" -X POST "*)
     while [ "$#" -gt 0 ]; do
       if [ "$1" = "--data" ]; then
-        printf '%s\n' "$2" >>"$PUMP19_TEST_CAPTURE"
+        printf '%s\n' "$2" >>"$MINOS_TEST_CAPTURE"
         break
       fi
       shift
@@ -245,9 +245,9 @@ esac
 	cmd := exec.Command(path, "owner", "repo")
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
-		"PUMP19_API_BASE=http://forge.invalid",
-		"PUMP19_FORGE_TOKEN=token",
-		"PUMP19_TEST_CAPTURE="+capture,
+		"MINOS_API_BASE=http://forge.invalid",
+		"MINOS_FORGE_TOKEN=token",
+		"MINOS_TEST_CAPTURE="+capture,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -352,8 +352,8 @@ esac
 	cmd := exec.Command(path, "owner", "repo")
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
-		"PUMP19_API_BASE=http://forge.invalid",
-		"PUMP19_FORGE_TOKEN=token",
+		"MINOS_API_BASE=http://forge.invalid",
+		"MINOS_FORGE_TOKEN=token",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -384,8 +384,8 @@ esac
 	cmd := exec.Command(path, "owner", "repo", "7")
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
-		"PUMP19_API_BASE=http://forge.invalid",
-		"PUMP19_FORGE_TOKEN=token",
+		"MINOS_API_BASE=http://forge.invalid",
+		"MINOS_FORGE_TOKEN=token",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -405,8 +405,8 @@ func TestForgejoListReviewCommentsStopsWhenForgeRepeatsCommentPage(t *testing.T)
 for arg do url="$arg"; done
 case "$url" in
   *reviews/17/comments*)
-    printf '.\n' >>"$PUMP19_TEST_COMMENT_CALLS"
-    [ "$(wc -l <"$PUMP19_TEST_COMMENT_CALLS")" -le 3 ] || exit 88
+    printf '.\n' >>"$MINOS_TEST_COMMENT_CALLS"
+    [ "$(wc -l <"$MINOS_TEST_COMMENT_CALLS")" -le 3 ] || exit 88
     printf '%s\n' '[{"id":91,"body":"finding","path":"main.go","position":12,"original_position":0,"pull_request_review_id":17}]'
     ;;
   *reviews*page=1*) printf '%s\n' '[{"id":17}]' ;;
@@ -419,9 +419,9 @@ esac
 	cmd := exec.Command(path, "owner", "repo", "7")
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
-		"PUMP19_API_BASE=http://forge.invalid",
-		"PUMP19_FORGE_TOKEN=token",
-		"PUMP19_TEST_COMMENT_CALLS="+commentCalls,
+		"MINOS_API_BASE=http://forge.invalid",
+		"MINOS_FORGE_TOKEN=token",
+		"MINOS_TEST_COMMENT_CALLS="+commentCalls,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -481,8 +481,8 @@ func runForgejoScript(t *testing.T, name, curlOutput string, args ...string) str
 	cmd := exec.Command(path, args...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
-		"PUMP19_API_BASE=http://forge.invalid",
-		"PUMP19_FORGE_TOKEN=token",
+		"MINOS_API_BASE=http://forge.invalid",
+		"MINOS_FORGE_TOKEN=token",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -505,7 +505,7 @@ func runForgejoWriteScript(t *testing.T, name, response string, args ...string) 
 	fakeBin := t.TempDir()
 	capture := filepath.Join(fakeBin, "capture")
 	curl := filepath.Join(fakeBin, "curl")
-	script := "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >\"$PUMP19_TEST_CAPTURE\"\nprintf '%s\\n' '" + response + "'\n"
+	script := "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" >\"$MINOS_TEST_CAPTURE\"\nprintf '%s\\n' '" + response + "'\n"
 	if err := os.WriteFile(curl, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -513,9 +513,9 @@ func runForgejoWriteScript(t *testing.T, name, response string, args ...string) 
 	cmd := exec.Command(path, args...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
-		"PUMP19_API_BASE=http://forge.invalid",
-		"PUMP19_FORGE_TOKEN=token",
-		"PUMP19_TEST_CAPTURE="+capture,
+		"MINOS_API_BASE=http://forge.invalid",
+		"MINOS_FORGE_TOKEN=token",
+		"MINOS_TEST_CAPTURE="+capture,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s failed: %v\n%s", name, err, out)
@@ -538,7 +538,7 @@ func runForgejoAssignIfMissing(t *testing.T, response string) string {
 	curl := filepath.Join(fakeBin, "curl")
 	script := `#!/usr/bin/env sh
 set -eu
-printf '%s\n' "$*" >>"$PUMP19_TEST_CAPTURE"
+printf '%s\n' "$*" >>"$MINOS_TEST_CAPTURE"
 method=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -X ]; then
@@ -549,7 +549,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 if [ "$method" = GET ]; then
-  cat "$PUMP19_TEST_RESPONSE"
+  cat "$MINOS_TEST_RESPONSE"
 else
   printf '{}\n'
 fi
@@ -561,10 +561,10 @@ fi
 	cmd := exec.Command(path, "owner", "repo", "7", "Minos")
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
-		"PUMP19_API_BASE=http://forge.invalid",
-		"PUMP19_FORGE_TOKEN=token",
-		"PUMP19_TEST_CAPTURE="+capture,
-		"PUMP19_TEST_RESPONSE="+responseFile,
+		"MINOS_API_BASE=http://forge.invalid",
+		"MINOS_FORGE_TOKEN=token",
+		"MINOS_TEST_CAPTURE="+capture,
+		"MINOS_TEST_RESPONSE="+responseFile,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("assign-if-missing failed: %v\n%s", err, out)

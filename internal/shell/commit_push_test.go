@@ -25,7 +25,7 @@ func setupCommitPushRepo(t *testing.T) commitPushRepo {
 		t.Skip("git unavailable")
 	}
 	root := t.TempDir()
-	remote := filepath.Join(root, "pump19", "subject.git")
+	remote := filepath.Join(root, "minos", "subject.git")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -70,16 +70,16 @@ func (r commitPushRepo) run(t *testing.T, token string, extraEnv ...string) (str
 	if err := os.WriteFile(message, []byte("Answer the finding.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(script, "pump19", "subject", "7", "feature",
-		"Pump-19", "pump19@bfj.invalid", "test-model", message)
+	cmd := exec.Command(script, "minos", "subject", "7", "feature",
+		"Minos", "minos@bfj.invalid", "test-model", message)
 	cmd.Env = append(os.Environ(),
-		"PUMP19_API_BASE=file://"+r.root,
-		"PUMP19_FORGE_TOKEN="+token,
-		"PUMP19_WORKSPACE="+r.workspace,
+		"MINOS_API_BASE=file://"+r.root,
+		"MINOS_FORGE_TOKEN="+token,
+		"MINOS_WORKSPACE="+r.workspace,
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	// Capture stdout alone — the outcome token — the way the session does through
-	// `pump19 adapt` (command substitution). The git diagnostics on stderr are
+	// `minos adapt` (command substitution). The git diagnostics on stderr are
 	// noise for the token, folded into the error only when the run fails.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -135,10 +135,10 @@ func TestCommitPushLandsAttributedFastForward(t *testing.T) {
 	if parent := gitAt(t, repo.remote, "rev-parse", "feature^"); parent != repo.branchTip {
 		t.Fatalf("fix commit was not a fast-forward: parent %s, old tip %s", parent, repo.branchTip)
 	}
-	if author := gitAt(t, repo.remote, "log", "-1", "--format=%an <%ae>", "feature"); author != "Pump-19 <pump19@bfj.invalid>" {
+	if author := gitAt(t, repo.remote, "log", "-1", "--format=%an <%ae>", "feature"); author != "Minos <minos@bfj.invalid>" {
 		t.Fatalf("fix commit misattributed: %q", author)
 	}
-	if body := gitAt(t, repo.remote, "log", "-1", "--format=%B", "feature"); !strings.Contains(body, "Pump-19-Model: test-model") {
+	if body := gitAt(t, repo.remote, "log", "-1", "--format=%B", "feature"); !strings.Contains(body, "Minos-Model: test-model") {
 		t.Fatalf("fix commit missing model trailer:\n%s", body)
 	}
 }
@@ -201,7 +201,7 @@ func TestCommitPushKeepsCredentialFromWorkspaceHooks(t *testing.T) {
 // TestCommitPushClassifiesRemoteRejection is the F3 regression: a protected head
 // whose push the remote refuses reports the unwritable outcome, distinct from an
 // infrastructure failure (which would exit non-zero). The outcome rides stdout
-// at exit 0 because the session reaches this script through the `pump19 adapt`
+// at exit 0 because the session reaches this script through the `minos adapt`
 // wrapper, which discards a non-zero adaptation's stdout and exit code.
 func TestCommitPushClassifiesRemoteRejection(t *testing.T) {
 	repo := setupCommitPushRepo(t)

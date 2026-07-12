@@ -30,7 +30,7 @@ func retryDue(runDir string, attempt int, now time.Time) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	failureAt, err := time.Parse(time.RFC3339Nano, values["PUMP19_FAILURE_AT"])
+	failureAt, err := time.Parse(time.RFC3339Nano, values["MINOS_FAILURE_AT"])
 	if err != nil {
 		// Legacy retry markers predate cadence timestamps. They have already
 		// survived at least one deployment interval, so admit their next attempt
@@ -42,7 +42,7 @@ func retryDue(runDir string, attempt int, now time.Time) (bool, error) {
 
 func hasRetryableFailureMarker(runDir string) bool {
 	values, err := readMetaFile(filepath.Join(runDir, "retry.env"))
-	return err == nil && values["PUMP19_RETRYABLE_FAILURE"] == "1"
+	return err == nil && values["MINOS_RETRYABLE_FAILURE"] == "1"
 }
 
 func retryBackoffPending(root string, facts Facts, kind RunKind, statuses []Status, now time.Time) (bool, int, error) {

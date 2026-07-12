@@ -88,7 +88,7 @@ func TestLoadRepoConfigsRejectsUnknownKeys(t *testing.T) {
 }
 
 func TestLoadRepoConfigsRejectsMissingRequiredFields(t *testing.T) {
-	root := writeRepoConfig(t, strings.Replace(validRepoConfig, "owner = \"pump19\"\n", "", 1))
+	root := writeRepoConfig(t, strings.Replace(validRepoConfig, "owner = \"minos-e2e-owner\"\n", "", 1))
 	_, err := LoadRepoConfigs(root)
 	if err == nil || !strings.Contains(err.Error(), "owner") {
 		t.Fatalf("error = %v, want missing owner", err)
@@ -113,10 +113,10 @@ func TestLoadRepoConfigsRequiresCompleteSafeFindIngest(t *testing.T) {
 		want   string
 	}{
 		{name: "missing repository", config: "\n[find-ingest]\npath = \"ISSUES.md\"\n", want: "find-ingest.repository"},
-		{name: "missing path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Pump-19-Annexe\"\n", want: "find-ingest.path"},
-		{name: "malformed repository", config: "\n[find-ingest]\nrepository = \"Pump-19-Annexe\"\npath = \"ISSUES.md\"\n", want: "find-ingest.repository"},
-		{name: "absolute path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Pump-19-Annexe\"\npath = \"/tmp/ISSUES.md\"\n", want: "find-ingest.path"},
-		{name: "escaping path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Pump-19-Annexe\"\npath = \"../ISSUES.md\"\n", want: "find-ingest.path"},
+		{name: "missing path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Minos-Annexe\"\n", want: "find-ingest.path"},
+		{name: "malformed repository", config: "\n[find-ingest]\nrepository = \"Minos-Annexe\"\npath = \"ISSUES.md\"\n", want: "find-ingest.repository"},
+		{name: "absolute path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Minos-Annexe\"\npath = \"/tmp/ISSUES.md\"\n", want: "find-ingest.path"},
+		{name: "escaping path", config: "\n[find-ingest]\nrepository = \"BFJ-Concerns/Minos-Annexe\"\npath = \"../ISSUES.md\"\n", want: "find-ingest.path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -132,14 +132,14 @@ func TestLoadRepoConfigsRequiresCompleteSafeFindIngest(t *testing.T) {
 func TestLoadRepoConfigsAcceptsConfiguredFindIngest(t *testing.T) {
 	root := writeRepoConfig(t, validRepoConfig+`
 [find-ingest]
-repository = "BFJ-Concerns/Pump-19-Annexe"
+repository = "BFJ-Concerns/Minos-Annexe"
 path = "logs/finds.md"
 `)
 	repos, err := LoadRepoConfigs(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repos[0].FindIngest == nil || repos[0].FindIngest.Repository != "BFJ-Concerns/Pump-19-Annexe" || repos[0].FindIngest.Path != "logs/finds.md" {
+	if repos[0].FindIngest == nil || repos[0].FindIngest.Repository != "BFJ-Concerns/Minos-Annexe" || repos[0].FindIngest.Path != "logs/finds.md" {
 		t.Fatalf("find ingest = %#v", repos[0].FindIngest)
 	}
 }
@@ -172,7 +172,7 @@ func TestShippedConfigsLoadClean(t *testing.T) {
 	projectRoot := filepath.Join("..", "..")
 	for _, root := range []string{
 		filepath.Join(projectRoot, "examples", "config"),
-		filepath.Join(projectRoot, "deploy", "etc", "pump19"),
+		filepath.Join(projectRoot, "deploy", "etc", "minos"),
 	} {
 		if _, err := LoadServiceConfig(root); err != nil {
 			t.Errorf("load %s/service.toml: %v", root, err)
@@ -182,7 +182,7 @@ func TestShippedConfigsLoadClean(t *testing.T) {
 	if _, err := LoadRepoConfigs(filepath.Join(projectRoot, "examples", "config")); err != nil {
 		t.Errorf("load example repository config: %v", err)
 	}
-	deployExample, err := os.ReadFile(filepath.Join(projectRoot, "deploy", "etc", "pump19", "repos", "owner--repository.toml.example"))
+	deployExample, err := os.ReadFile(filepath.Join(projectRoot, "deploy", "etc", "minos", "repos", "owner--repository.toml.example"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ liveness-threshold = "5m"
 `
 
 const validRepoConfig = `forge = "local"
-owner = "pump19"
+owner = "minos-e2e-owner"
 repo = "subject"
 
 [adaptation]
