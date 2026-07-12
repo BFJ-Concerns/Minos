@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"bfj/minos/internal/ledger"
+	"bfj/minos/internal/product"
 	"bfj/minos/internal/reconcile"
 )
 
@@ -47,37 +48,21 @@ func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, adap
 	// The current product-status read carries no authenticated identity for the
 	// governing inputs which produced it. Keep that provenance explicitly unknown
 	// so a clean result cannot silently suppress the commissioned re-entry axis.
-	if snapshot.Product != reconcile.ProductNone {
+	if snapshot.Product.Valid() {
 		snapshot.ProductGoverning = "unknown"
 		snapshot.ProductGoverningKnown = false
 	}
 	return snapshot, nil
 }
 
-func productState(status Status) reconcile.ProductState {
+func productState(status Status) product.State {
 	description := strings.TrimSpace(status.Description)
-	switch description {
-	case "Waiting for review":
-		return reconcile.ProductQueued
-	case "Reviewing changes":
-		return reconcile.ProductWorking
-	case "Waiting for checks":
-		return reconcile.ProductWaiting
-	case "Changes need attention":
-		return reconcile.ProductBlocked
-	case "Review incomplete":
-		return reconcile.ProductPartial
-	case "Review stopped; findings remain":
-		return reconcile.ProductStopped
-	case "Changes approved":
-		return reconcile.ProductClean
-	case "Changes approved; verification limited":
-		return reconcile.ProductCleanLimited
-	case "Merged":
-		return reconcile.ProductMerged
-	default:
-		return reconcile.ProductNone
+	for _, state := range product.States() {
+		if state.Description() == description {
+			return state
+		}
 	}
+	return product.State{}
 }
 
 func repoAuthorEligible(repo RepoConfig, author string) bool {
@@ -180,10 +165,23 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 			return err
 		}
 		if !snapshot.Open || snapshot.Merged || (snapshot.Draft && snapshot.SkipDrafts) || !snapshot.AuthorInScope {
-			_, err := store.ReleaseLease(ctx, lease.Key, lease.Token)
+			err := closeRunLease(ctx, cfg, facts, store, lease.Token)
 			if err == nil {
 				err = os.RemoveAll(lease.Workspace)
 			}
+			return err
+		}
+		forge, ok := cfg.Forges[facts.Forge]
+		if !ok {
+			return fmt.Errorf("unknown forge %q", facts.Forge)
+		}
+		adaptation, err := NewAdaptation(forge)
+		if err != nil {
+			return err
+		}
+		// Remove the old owner's presence before atomically replacing its token.
+		// A forge failure leaves the old lease intact for a later reap attempt.
+		if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
 			return err
 		}
 		newLease, err := store.ReplaceLease(ctx, lease.Token, ledger.Lease{Key: snapshot.Key, ObservedHead: snapshot.HeadSHA, ObservedTarget: snapshot.TargetSHA, Unit: UnitName(facts), Workspace: lease.Workspace})
@@ -191,9 +189,11 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 			return err
 		}
 		if err := spawnRunUnit(ctx, cfg, repo, facts, newLease, facts.Occasion); err != nil {
-			_, _ = store.ReleaseLease(context.Background(), newLease.Key, newLease.Token)
-			_ = os.RemoveAll(newLease.Workspace)
-			return err
+			closeErr := closeRunLease(context.Background(), cfg, facts, store, newLease.Token)
+			if closeErr == nil {
+				closeErr = os.RemoveAll(newLease.Workspace)
+			}
+			return errors.Join(err, closeErr)
 		}
 		fmt.Fprintf(logw, "replaced dead lifecycle for %s#%s token=%d\n", facts.RepoSlug(), facts.PR, newLease.Token)
 	case reconcile.CleanUp:

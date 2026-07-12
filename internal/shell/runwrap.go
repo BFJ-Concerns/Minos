@@ -64,8 +64,8 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 		if workspace != "" {
 			removeErr = os.RemoveAll(workspace)
 		}
-		_, releaseErr := store.ReleaseLease(context.Background(), key, token)
-		err = errors.Join(err, cleanupErr, removeErr, releaseErr)
+		closeErr := closeRunLease(context.Background(), cfg, facts, store, token)
+		err = errors.Join(err, cleanupErr, removeErr, closeErr)
 	}()
 	runDir := os.Getenv("MINOS_RUN_DIR")
 	if runDir == "" || workspace == "" {
@@ -103,27 +103,35 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	if err := adaptation.PrepareWorkspace(ctx, facts, workspace, os.Getenv("MINOS_DIFF")); err != nil {
-		_, _ = store.RecordFailure(context.Background(), key)
-		return err
+		_, backoffErr := store.RecordFailure(context.Background(), key, token)
+		return errors.Join(err, backoffErr)
 	}
 	cmd, err := runBodyCommandForWrap(ctx)
 	if err != nil {
-		_, _ = store.RecordFailure(context.Background(), key)
-		return err
+		_, backoffErr := store.RecordFailure(context.Background(), key, token)
+		return errors.Join(err, backoffErr)
 	}
 	cmd.Stdout, cmd.Stderr, cmd.Env = multiOut, multiErr, os.Environ()
 	configureRunProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
-		_, _ = store.RecordFailure(context.Background(), key)
-		return err
+		_, backoffErr := store.RecordFailure(context.Background(), key, token)
+		return errors.Join(err, backoffErr)
 	}
 	leaderPID = cmd.Process.Pid
 	if err := cmd.Wait(); err != nil {
-		_, _ = store.RecordFailure(context.Background(), key)
-		return err
+		_, backoffErr := store.RecordFailure(context.Background(), key, token)
+		return errors.Join(err, backoffErr)
 	}
-	if err := store.ClearBackoff(context.Background(), key); err != nil {
+	cleared, err := store.ClearBackoff(context.Background(), key, token)
+	if err != nil {
 		return fmt.Errorf("clear operational backoff: %w", err)
+	}
+	if !cleared {
+		if _, found, lookupErr := store.Backoff(context.Background(), key); lookupErr != nil {
+			return fmt.Errorf("confirm operational backoff: %w", lookupErr)
+		} else if found {
+			return ledger.ErrNotOwner
+		}
 	}
 	return nil
 }

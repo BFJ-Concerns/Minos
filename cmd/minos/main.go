@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 
+	"bfj/minos/internal/heartbeat"
+	"bfj/minos/internal/incidents"
+	"bfj/minos/internal/preflight"
 	"bfj/minos/internal/shell"
 )
 
@@ -17,10 +20,18 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos receive|sweep|run-wrap|run-guard|adapt|capture-claude|review|marker|handle|provenance|stub-run|ws-exec")
+		return fmt.Errorf("usage: minos preflight|incident|heartbeat|heartbeat-check|receive|sweep|run-wrap|run-guard|adapt|capture-claude|review|marker|handle|provenance|stub-run|ws-exec")
 	}
 	ctx := context.Background()
 	switch args[0] {
+	case "preflight":
+		return preflight.Command(ctx, args[1:], os.Stdout)
+	case "incident":
+		return incidents.Command(ctx, args[1:], os.Stdout)
+	case "heartbeat":
+		return heartbeat.WriteCommand(args[1:], os.Stdout)
+	case "heartbeat-check":
+		return heartbeat.CheckCommand(args[1:], os.Stdout)
 	case "receive":
 		return shell.ReceiveCommand(ctx, args[1:])
 	case "sweep":

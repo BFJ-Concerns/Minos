@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -74,6 +75,48 @@ func TestAcquireLeaseIsAtomicAcrossConnections(t *testing.T) {
 	}
 }
 
+func TestConcurrentFirstOpenBootstrapsBeforeAtomicAdmission(t *testing.T) {
+	root := t.TempDir()
+	for attempt := range 100 {
+		path := filepath.Join(root, fmt.Sprintf("ledger-%03d.db", attempt))
+		start := make(chan struct{})
+		stores := make(chan *Store, 2)
+		errs := make(chan error, 2)
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				store, err := Open(path)
+				if err == nil {
+					stores <- store
+				}
+				errs <- err
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(stores)
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("attempt %d first open: %v", attempt, err)
+			}
+		}
+		opened := make([]*Store, 0, 2)
+		for store := range stores {
+			opened = append(opened, store)
+		}
+		if len(opened) != 2 {
+			t.Fatalf("attempt %d opened %d stores, want 2", attempt, len(opened))
+		}
+		for _, store := range opened {
+			_ = store.Close()
+		}
+	}
+}
+
 func TestAdmissionCapacityIsLeaseCardinality(t *testing.T) {
 	store := testStore(t, time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC))
 	first := testKey()
@@ -122,8 +165,8 @@ func TestWaitOutlivesReleasedLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	failsafe := now.Add(2 * time.Hour)
-	if err := store.SetWait(t.Context(), Wait{Key: key, Fingerprint: "fingerprint", FailsafeAt: &failsafe}); err != nil {
-		t.Fatal(err)
+	if set, err := store.SetWait(t.Context(), Wait{Key: key, Fingerprint: "fingerprint", FailsafeAt: &failsafe}, lease.Token); err != nil || !set {
+		t.Fatalf("set wait=%v err=%v", set, err)
 	}
 	if _, err := store.ReleaseLease(t.Context(), key, lease.Token); err != nil {
 		t.Fatal(err)
@@ -137,15 +180,64 @@ func TestWaitOutlivesReleasedLease(t *testing.T) {
 func TestBackoffIsExponentialWithoutTerminalCap(t *testing.T) {
 	now := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
 	store := testStore(t, now)
+	lease, err := store.AcquireLease(t.Context(), testLease(testKey()), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wants := []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 6 * time.Hour, 6 * time.Hour, 6 * time.Hour}
 	for i, want := range wants {
-		backoff, err := store.RecordFailure(t.Context(), testKey())
+		backoff, err := store.RecordFailure(t.Context(), testKey(), lease.Token)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got := backoff.NextDueAt.Sub(backoff.LastFailureAt); got != want {
 			t.Fatalf("attempt %d delay = %s, want %s", i+1, got, want)
 		}
+	}
+}
+
+func TestPacingMutationsRejectStaleToken(t *testing.T) {
+	store := testStore(t, time.Now())
+	key := testKey()
+	first, err := store.AcquireLease(t.Context(), testLease(key), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failsafe := time.Now().Add(time.Hour)
+	if set, err := store.SetWait(t.Context(), Wait{Key: key, Fingerprint: "current", FailsafeAt: &failsafe}, first.Token); err != nil || !set {
+		t.Fatalf("initial wait set=%v err=%v", set, err)
+	}
+	if _, err := store.RecordFailure(t.Context(), key, first.Token); err != nil {
+		t.Fatal(err)
+	}
+	replacement := testLease(key)
+	replacement.ObservedHead = "head-2"
+	second, err := store.ReplaceLease(t.Context(), first.Token, replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set, err := store.SetWait(t.Context(), Wait{Key: key, Fingerprint: "stale"}, first.Token); err != nil || set {
+		t.Fatalf("stale wait set=%v err=%v", set, err)
+	}
+	if cleared, err := store.ClearWait(t.Context(), key, first.Token); err != nil || cleared {
+		t.Fatalf("stale wait clear=%v err=%v", cleared, err)
+	}
+	if _, err := store.RecordFailure(t.Context(), key, first.Token); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("stale failure err=%v, want ErrNotOwner", err)
+	}
+	if cleared, err := store.ClearBackoff(t.Context(), key, first.Token); err != nil || cleared {
+		t.Fatalf("stale backoff clear=%v err=%v", cleared, err)
+	}
+	wait, found, err := store.Wait(t.Context(), key)
+	if err != nil || !found || wait.Fingerprint != "current" {
+		t.Fatalf("wait=%#v found=%v err=%v", wait, found, err)
+	}
+	backoff, found, err := store.Backoff(t.Context(), key)
+	if err != nil || !found || backoff.Attempt != 1 {
+		t.Fatalf("backoff=%#v found=%v err=%v", backoff, found, err)
+	}
+	if set, err := store.SetWait(t.Context(), Wait{Key: key, Fingerprint: "successor"}, second.Token); err != nil || !set {
+		t.Fatalf("successor wait set=%v err=%v", set, err)
 	}
 }
 

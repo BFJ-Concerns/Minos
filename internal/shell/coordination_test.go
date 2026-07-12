@@ -30,6 +30,8 @@ func coordinationConfig(t *testing.T) (ServiceConfig, RepoConfig, Facts) {
 	if err := os.MkdirAll(adapt, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeScript(t, filepath.Join(adapt, "add-reaction"), "#!/bin/sh\nexit 0\n")
+	writeScript(t, filepath.Join(adapt, "remove-reaction"), "#!/bin/sh\nexit 0\n")
 	secret := filepath.Join(root, "secret")
 	if err := os.WriteFile(secret, []byte("secret\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -47,6 +49,27 @@ func coordinationConfig(t *testing.T) (ServiceConfig, RepoConfig, Facts) {
 	repo.Eligibility = []EligibilityRule{{Authors: []string{"*"}}}
 	facts := Facts{Forge: "local", Owner: "owner", Repo: "subject", PR: "7", HeadSHA: "head-1", BaseRef: "main", Author: "alice", Open: true}
 	return cfg, repo, facts
+}
+
+func presenceProbe(t *testing.T, cfg ServiceConfig) (reaction, removals string) {
+	t.Helper()
+	reaction = filepath.Join(t.TempDir(), "eyes-present")
+	removals = filepath.Join(t.TempDir(), "removals")
+	adapt := cfg.Forges["local"].Adaptation
+	writeScript(t, filepath.Join(adapt, "add-reaction"), "#!/bin/sh\ntouch "+strconv.Quote(reaction)+"\n")
+	writeScript(t, filepath.Join(adapt, "remove-reaction"), "#!/bin/sh\nrm -f "+strconv.Quote(reaction)+"\nprintf 'removed\\n' >> "+strconv.Quote(removals)+"\n")
+	return reaction, removals
+}
+
+func assertPresenceClosed(t *testing.T, reaction, removals string) {
+	t.Helper()
+	if _, err := os.Stat(reaction); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("eyes reaction remains: %v", err)
+	}
+	data, err := os.ReadFile(removals)
+	if err != nil || !strings.Contains(string(data), "removed") {
+		t.Fatalf("reaction removal was not observed: data=%q err=%v", data, err)
+	}
 }
 
 func TestDuplicateLaunchCollapsesAtLeaseAcquire(t *testing.T) {
@@ -105,6 +128,10 @@ func TestSweepRanksDrainBeforeWidenAndOldestWithinPeers(t *testing.T) {
 
 func TestFailedDetachedLaunchReleasesCapacity(t *testing.T) {
 	cfg, repo, facts := coordinationConfig(t)
+	reaction, removals := presenceProbe(t, cfg)
+	if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	original := systemdRunCommand
 	defer func() { systemdRunCommand = original }()
 	systemdRunCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -122,10 +149,15 @@ func TestFailedDetachedLaunchReleasesCapacity(t *testing.T) {
 	if err != nil || len(leases) != 0 {
 		t.Fatalf("leases=%v err=%v", leases, err)
 	}
+	assertPresenceClosed(t, reaction, removals)
 }
 
 func TestReplacementEmptiesUnitBeforeAllocatingToken(t *testing.T) {
 	cfg, repo, facts := coordinationConfig(t)
+	reaction, removals := presenceProbe(t, cfg)
+	if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	store, err := ledger.Open(ledgerPath(cfg))
 	if err != nil {
 		t.Fatal(err)
@@ -164,6 +196,81 @@ func TestReplacementEmptiesUnitBeforeAllocatingToken(t *testing.T) {
 	if err != nil || !found || replacement.Token <= lease.Token {
 		t.Fatalf("replacement=%#v found=%v err=%v", replacement, found, err)
 	}
+	assertPresenceClosed(t, reaction, removals)
+}
+
+func TestIneligibleReapClosesPresenceAndLeaseTogether(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	reaction, removals := presenceProbe(t, cfg)
+	if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	lease, err := store.AcquireLease(t.Context(), ledger.Lease{Key: coordinationKey(facts), ObservedHead: facts.HeadSHA, ObservedTarget: "target-1", Unit: "old-unit", Workspace: t.TempDir()}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSystemctl := systemctlCommand
+	defer func() { systemctlCommand = originalSystemctl }()
+	systemctlCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if args[1] == "show" {
+			return exec.CommandContext(ctx, "sh", "-c", "printf inactive")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+	snapshot := reconcile.ForgeSnapshot{Key: lease.Key, Open: true, AuthorInScope: false}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, reconcile.Decision{Kind: reconcile.Replace}, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.Lease(t.Context(), lease.Key); err != nil || found {
+		t.Fatalf("lease remains found=%v err=%v", found, err)
+	}
+	assertPresenceClosed(t, reaction, removals)
+}
+
+func TestFailedSuccessorLaunchClosesPresenceAndReplacementLease(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	reaction, removals := presenceProbe(t, cfg)
+	if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	lease, err := store.AcquireLease(t.Context(), ledger.Lease{Key: coordinationKey(facts), ObservedHead: facts.HeadSHA, ObservedTarget: "target-1", Unit: "old-unit", Workspace: t.TempDir()}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSystemctl := systemctlCommand
+	originalRun := systemdRunCommand
+	defer func() { systemctlCommand = originalSystemctl; systemdRunCommand = originalRun }()
+	systemctlCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if args[1] == "show" {
+			return exec.CommandContext(ctx, "sh", "-c", "printf inactive")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+	systemdRunCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "false")
+	}
+	snapshot := reconcile.ForgeSnapshot{Key: lease.Key, HeadSHA: "head-2", TargetSHA: "target-2", Open: true, AuthorInScope: true}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, reconcile.Decision{Kind: reconcile.Replace}, store, os.Stderr); err == nil {
+		t.Fatal("replacement launch succeeded")
+	}
+	if _, found, err := store.Lease(t.Context(), lease.Key); err != nil || found {
+		t.Fatalf("replacement lease remains found=%v err=%v", found, err)
+	}
+	assertPresenceClosed(t, reaction, removals)
+	data, err := os.ReadFile(removals)
+	if err != nil || strings.Count(string(data), "removed") != 2 {
+		t.Fatalf("old and successor removals=%q err=%v", data, err)
+	}
 }
 
 func TestRunWrapReleasesLeaseOnEveryExit(t *testing.T) {
@@ -180,6 +287,10 @@ func TestRunWrapReleasesLeaseOnEveryExit(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			cfg, _, facts := coordinationConfig(t)
+			reaction, removals := presenceProbe(t, cfg)
+			if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			adapt := cfg.Forges["local"].Adaptation
 			writeScript(t, filepath.Join(adapt, "prepare-workspace"), test.prepare)
 			store, err := ledger.Open(ledgerPath(cfg))
@@ -217,6 +328,7 @@ func TestRunWrapReleasesLeaseOnEveryExit(t *testing.T) {
 			if _, found, err := verify.Lease(t.Context(), lease.Key); err != nil || found {
 				t.Fatalf("lease remains found=%v err=%v", found, err)
 			}
+			assertPresenceClosed(t, reaction, removals)
 		})
 	}
 }

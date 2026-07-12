@@ -71,8 +71,12 @@ func RunGuardCommand(ctx context.Context, args []string) error {
 			}
 			failsafe = &parsed
 		}
-		if err := store.SetWait(ctx, ledger.Wait{Key: coordinationKey(facts), Fingerprint: fs.Arg(1), FailsafeAt: failsafe}); err != nil {
+		set, err := store.SetWait(ctx, ledger.Wait{Key: coordinationKey(facts), Fingerprint: fs.Arg(1), FailsafeAt: failsafe}, token)
+		if err != nil {
 			return err
+		}
+		if !set {
+			return ledger.ErrNotOwner
 		}
 		fmt.Println("waiting")
 		return nil
@@ -170,5 +174,38 @@ func releaseRun(ctx context.Context, adaptation Adaptation, facts Facts, store *
 		return err
 	}
 	fmt.Println("released")
+	return nil
+}
+
+// closeRunLease keeps the forge presence gesture and the coordination row on
+// one mechanical exit seam. Reaction removal happens first: if the forge is
+// unavailable, retaining the lease is safer than advertising free capacity
+// while eyes still claim that Minos owns the pull request.
+func closeRunLease(ctx context.Context, cfg ServiceConfig, facts Facts, store *ledger.Store, token int64) error {
+	owned, err := store.Owns(ctx, coordinationKey(facts), token)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return ledger.ErrNotOwner
+	}
+	forge, ok := cfg.Forges[facts.Forge]
+	if !ok {
+		return fmt.Errorf("unknown forge %q", facts.Forge)
+	}
+	adaptation, err := NewAdaptation(forge)
+	if err != nil {
+		return err
+	}
+	if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
+		return err
+	}
+	released, err := store.ReleaseLease(ctx, coordinationKey(facts), token)
+	if err != nil {
+		return err
+	}
+	if !released {
+		return ledger.ErrNotOwner
+	}
 	return nil
 }
