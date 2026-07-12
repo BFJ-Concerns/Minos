@@ -14,6 +14,11 @@ func TestClassifyBackendFailure(t *testing.T) {
 			want:  FailureStaleOAuth,
 		},
 		{
+			name:  "current cli stale oauth",
+			input: BackendFailure{Message: "Failed to authenticate: OAuth session expired and could not be refreshed", Immediate: boolPointer(true), CostUSD: floatPointer(0)},
+			want:  FailureStaleOAuth,
+		},
+		{
 			name:  "quota",
 			input: BackendFailure{StatusCode: 429, Message: "usage limit reached", Immediate: boolPointer(true), CostUSD: floatPointer(0)},
 			want:  FailureQuota,
@@ -26,6 +31,11 @@ func TestClassifyBackendFailure(t *testing.T) {
 		{
 			name:  "misleading text without observed cost",
 			input: BackendFailure{StatusCode: 403, Message: "organization has disabled Claude subscription access", Immediate: boolPointer(true)},
+			want:  FailureUnknown,
+		},
+		{
+			name:  "current cli stale wording without observed cost",
+			input: BackendFailure{Message: "OAuth session expired and could not be refreshed", Immediate: boolPointer(true)},
 			want:  FailureUnknown,
 		},
 	}
