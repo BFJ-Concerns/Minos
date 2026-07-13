@@ -114,17 +114,44 @@ bundled `review_workflow.js` and `verify_workflow.js` recipes from there. The
 launch preflight has already proved the configured binaries and engines; do not
 probe them again inside the lifecycle unless an actual invocation fails.
 
-The external leg is a required part of an unskipped diff plan. The foreground
-rule applies: after the review workflow returns, run and merge the leg before
-quote validation or verification (running it concurrently through a supported
-foreground task is optional, never required):
+The external leg is a required part of an unskipped diff plan, and it is
+independent of the panel by design — so run it **beside** the panel, not after
+it. Before you launch the review workflow, start the Codex leg as a shell
+background task (the shell tool's background mode, never `&`): it takes minutes
+on the CLI's own model and shares no state with the panel, so serialising it
+behind the panel only wastes that time. Then launch the review workflow in the
+foreground and stay with it. This does not breach the foreground doctrine — the
+leg is safe in the background *precisely because* you keep working in the
+foreground on the panel and collect the leg's result (polling if it has not yet
+finished) before any yield (see "Stay in the foreground"). Only once **both**
+the panel workflow and the leg have returned do you merge them: the merge
+consumes both `review-result.json` and `codex-leg.json`, a genuine data
+dependency, so it stays strictly after both — before quote validation or
+verification:
 
 ```sh
+# 1. Start the external Codex leg beside the panel, in the shell tool's
+#    background mode (never `&`). A backgrounded task is not under the foreground
+#    120s cap, so it needs no tool-level timeout.
 "$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
   "$REVIEW_SKILL_DIR/scripts/run_codex_review.py" \
   "$MINOS_RUN_DIR/review-plan.json" \
   >"$MINOS_RUN_DIR/codex-leg.json"
 
+# 2. Launch the panel in the foreground by following the skill's
+#    review_workflow.js recipe through the run's Ensemble launcher, wrapping
+#    review-plan.json as the workflow's JSON input (the skill's recipe is
+#    authoritative for the exact argument shape). This call PRODUCES
+#    review-result.json — the panel result the merge below consumes. It runs for
+#    minutes, so it MUST carry a generous explicit tool-level `timeout` (the
+#    sizing rule is in "Stay in the foreground").
+"$MINOS_ENSEMBLE_LAUNCH" \
+  --json-args "{\"plan\": $(cat "$MINOS_RUN_DIR/review-plan.json")}" \
+  "$REVIEW_SKILL_DIR/scripts/review_workflow.js" \
+  >"$MINOS_RUN_DIR/review-result.json" 2>"$MINOS_RUN_DIR/review-run.log"
+
+# 3. Only after BOTH the panel (review-result.json) and the leg (codex-leg.json)
+#    have returned, merge them:
 "$MINOS_BIN" ws-exec --config "$MINOS_CONFIG" -- python3 \
   "$REVIEW_SKILL_DIR/scripts/merge_codex_review.py" \
   "$MINOS_RUN_DIR/review-result.json" "$MINOS_RUN_DIR/codex-leg.json" \
@@ -229,9 +256,13 @@ head and target you observed.
   never inverts the eyes-first, lease-last order on an exit it still owns.
 - **Renew** is not yours to call: the launch wrapper renews the heartbeat from
   the containment cgroup while you are alive, including across long synchronous
-  commands. You never add an arbitrary timeout of your own — pacing is yours,
-  and the only clock that may reap you is the reconciliation sweep's liveness
-  threshold, applied to a genuinely dead session.
+  commands. Never impose an arbitrary *lifecycle* deadline of your own — a
+  self-set clock that abandons live, in-progress work because it is "taking too
+  long." Pacing is yours, and the only clock that may reap the session is the
+  reconciliation sweep's liveness threshold, applied to a genuinely dead
+  session. This is a different thing from the tool-level `timeout` a long
+  foreground command needs to survive the harness — that parameter is
+  *required*, not an arbitrary deadline (see "Stay in the foreground" below).
 
 The exact ledger and reaction operations are service seams bound at integration;
 this instruction names the operation and its contract, and the deployment
@@ -239,22 +270,58 @@ supplies the invocation.
 
 ## Stay in the foreground; this session ends the moment you yield
 
-This session ends the instant you stop with no tool call in flight. A task you
-send to the background cannot notify you when it finishes, so yielding to "wait
-for" background work ends the run with the journey unfinished and nothing to
-resume it but a fresh successor. Invoke Ensemble, reviewer and repair fan-outs,
-build and test commands, and CI polling as **foreground** calls that return
-their results to you directly, however long they take. Awaiting a real,
-in-progress thing — a long engine call you have made, a long test suite you are
-running, prerequisite CI you need to clear — is live foreground work you stay
-with while the heartbeat proves you alive; it is never a backgrounded job you
-expect to hear from. Distinguish that from two things it is not: **pending
-prerequisite CI** may instead be recorded as the `waiting` **product state** and
-exited on, because reconciliation can watch its fingerprint and resume (step 9);
-an **engine or model-backend that is unavailable** — down, or a stale-refreshed
-credential — is not a wait at all but an operational failure that takes the
-retryable-exit lane (see `failure-taxonomy.md`), never the `waiting` product
-state, whose fingerprint has no engine dimension to resume on.
+This session ends the instant you stop with no tool call in flight. The fatal
+move is yielding the turn while work you still need is outstanding: the launch
+wrapper runs you on a headless print transport that cannot be resumed, so a yield
+is the session's end, not a pause, and no later event re-invokes you. The run
+ends with the journey unfinished, nothing to continue it but a fresh successor.
+The rule is about the yield, not the shell tool's background mode: **never yield
+while delegated or long-running work you depend on is unfinished.**
+
+Long foreground calls must survive their own harness. The Claude harness kills a
+foreground Bash tool call at a **120-second default** unless the call passes an
+explicit `timeout` parameter — so any call that can run past two minutes (an
+Ensemble workflow, a reviewer or repair fan-out, a build, a full test suite, a
+CI poll) MUST carry a generous explicit tool-level `timeout`. Size it well above
+the command's own expected runtime — at least double your best estimate, and
+never below `570000` (about 9.5 minutes) for a workflow-scale call. An
+over-generous timeout costs nothing (the heartbeat, not this parameter, is what
+proves you alive across a long call), while an under-generous one gets honest
+work reaped. This is the parameter
+the Ownership section's "no arbitrary lifecycle deadline" does *not* forbid:
+omitting it does not make the call patient, it makes the harness reap honest
+in-progress work at 120s, and you discover the cap only by being killed
+mid-flight.
+
+Awaiting a real, in-progress thing — a long engine call you have made, a long
+test suite you are running, prerequisite CI you need to clear — is live
+foreground work you stay with while the heartbeat proves you alive. Background
+mode is its safe mirror image: you may hand a long, *independent* task to the
+shell tool's background mode **when you immediately continue real foreground
+work yourself** and poll or collect that task before any yield — never as a job
+you start and then yield to "wait for." Collecting is a real tool call, not a
+yield: the background task carries a task id from the shell tool, and you check
+its status and output through the harness's background-task output surface (the
+tool that returns a running shell task's output by that id). Treat it as
+collected only once that surface reports the task has **exited** — its redirect
+output file (here `codex-leg.json`) is complete only then, so testing for the
+bare file is not enough. If the panel returns while the task is still running,
+keep issuing status/output tool calls until it exits; never let the turn end
+with it outstanding. Collecting before the yield is not
+caution for its own sake: on the launch wrapper's headless print transport a
+background task still running when the session yields is *killed* as the session
+exits — verified on CLI 2.1.207 (2026-07-13 spike): an uncollected 30s
+background task was reaped at the yield, its output file never written and
+nothing re-invoked. Collect before you yield, or the work dies with you.
+Starting the external Codex review leg beside the panel is exactly this shape
+(step 4). Distinguish live foreground
+waiting from two things it is not: **pending prerequisite CI** may instead be
+recorded as the `waiting` **product state** and exited on, because
+reconciliation can watch its fingerprint and resume (step 9); an **engine or
+model-backend that is unavailable** — down, or a stale-refreshed credential — is
+not a wait at all but an operational failure that takes the retryable-exit lane
+(see `failure-taxonomy.md`), never the `waiting` product state, whose
+fingerprint has no engine dimension to resume on.
 
 ## The journey
 
@@ -447,6 +514,17 @@ The order is fixed. Assemble a draft review; the bar examines it; then:
   non-approving comment verdict. Waiting before a review is ready posts no empty
   review. The verdict's forge spelling is the product-surface seam's.
 
+The review body is written for the repository's people, in ordinary reviewer
+language: it carries the substantive assessment of the change — what was
+examined, what is wrong or right about the diff, and each finding with its
+reasoning — and nothing about how the service produced it. Panel composition and
+aspect counts, the external Codex CLI leg, engine or model identities, model
+verdicts and confidence scores, and coverage accounting (the files and hunks
+read or omitted) are lifecycle machinery: they stay in the run artefacts under
+`$MINOS_RUN_DIR` and the deployment evidence, and never appear in the published
+review or any PR-rendered comment. A reader of the review learns about their own
+code, never about Minos's internals.
+
 This publication is per head: a repaired head (step 6) is a new head and gets
 its own fresh consolidated review here, while the old head's posted findings
 remain honest history rather than being mutated across moved lines.
@@ -535,7 +613,10 @@ service's approving review on that head. A blocking coverage
 gate settles **partial**, never convergence, whatever the bar concluded.
 
 Termination is your judgement, not a counter — there is no pass ceiling and no
-infrastructure clock. Apply a **rising bar to chasing** a finding that keeps
+lifecycle clock counting the chase down. (The reconciliation sweep's liveness
+threshold reaps only a genuinely dead session, and the 120s harness cap is a
+per-call tool mechanic; neither is a deadline on how long the journey may run.)
+Apply a **rising bar to chasing** a finding that keeps
 surviving repairs: a fix-surviving finding stays visible and keeps its
 materiality, but eventually stops earning another repair attempt. Stopping the
 chase is a **stopped-with-findings** result — not convergence; auto-merge stays
