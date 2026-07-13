@@ -306,12 +306,19 @@ func TestCleanupObligationPersistsUntilGuardedSuccess(t *testing.T) {
 	if err := store.BumpCleanupAttempt(t.Context(), cleanup.Key); err != nil {
 		t.Fatal(err)
 	}
+	stored, found, err := store.Cleanup(t.Context(), cleanup.Key)
+	if err != nil || !found || stored.MergedHead != cleanup.MergedHead || stored.Attempts != 1 {
+		t.Fatalf("stored cleanup=%#v found=%v err=%v", stored, found, err)
+	}
 	values, err := store.ListCleanup(t.Context())
 	if err != nil || len(values) != 1 || values[0].Attempts != 1 {
 		t.Fatalf("cleanup=%v err=%v", values, err)
 	}
 	if err := store.RemoveCleanup(t.Context(), cleanup.Key); err != nil {
 		t.Fatal(err)
+	}
+	if stored, found, err := store.Cleanup(t.Context(), cleanup.Key); err != nil || found {
+		t.Fatalf("removed cleanup=%#v found=%v err=%v", stored, found, err)
 	}
 	values, err = store.ListCleanup(t.Context())
 	if err != nil || len(values) != 0 {

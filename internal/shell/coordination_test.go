@@ -359,10 +359,20 @@ func TestCleanupDecisionRetainsRejectedObligationAndRaisesOperatorIncident(t *te
 	}
 }
 
-func TestCleanupSnapshotGuardsDeletionWithMergedHead(t *testing.T) {
+func TestCleanupExecutionGuardsSweepSnapshotWithMergedHead(t *testing.T) {
+	assertAdvancedBranchCleanupRejected(t, "head-1")
+}
+
+func TestCleanupExecutionGuardsReceiverSnapshotWithMergedHead(t *testing.T) {
+	assertAdvancedBranchCleanupRejected(t, "head-advanced-after-merge")
+}
+
+func assertAdvancedBranchCleanupRejected(t *testing.T, factsHead string) {
+	t.Helper()
 	cfg, repo, facts := coordinationConfig(t)
 	mergedHead := facts.HeadSHA
 	currentHead := "head-advanced-after-merge"
+	facts.HeadSHA = factsHead
 	facts.Occasion = "cleanup"
 
 	forgeSnapshot := forge.Snapshot{
@@ -389,7 +399,7 @@ func TestCleanupSnapshotGuardsDeletionWithMergedHead(t *testing.T) {
 	deleteScript := filepath.Join(cfg.Forges["local"].Adaptation, "delete-branch")
 	writeScript(t, deleteScript, "#!/bin/sh\nif [ \"$4\" = "+strconv.Quote(mergedHead)+" ]; then\n  printf '{\"outcome\":\"rejected\",\"reason\":\"branch advanced\"}\\n'\nelse\n  printf '{\"outcome\":\"applied\"}\\n'\nfi\n")
 
-	snapshot, err := buildCleanupSnapshot(t.Context(), cfg, repo, facts)
+	snapshot, err := buildSnapshot(t.Context(), cfg, repo, facts)
 	if err != nil {
 		t.Fatal(err)
 	}

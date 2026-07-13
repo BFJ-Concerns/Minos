@@ -97,7 +97,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 			continue
 		}
 		facts := Facts{Forge: cleanup.Forge, Owner: cleanup.Owner, Repo: cleanup.Repo, PR: cleanup.PR, HeadSHA: cleanup.MergedHead, Occasion: "cleanup"}
-		snapshot, err := buildCleanupSnapshot(ctx, cfg, repo, facts)
+		snapshot, err := buildSnapshot(ctx, cfg, repo, facts)
 		if err != nil {
 			fmt.Fprintf(logw, "cleanup snapshot %s/%s#%s: %v\n", cleanup.Owner, cleanup.Repo, cleanup.PR, err)
 			continue

@@ -61,18 +61,6 @@ func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fact
 	return snapshot, nil
 }
 
-func buildCleanupSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (reconcile.ForgeSnapshot, error) {
-	snapshot, err := buildSnapshot(ctx, cfg, repo, facts)
-	if err != nil {
-		return reconcile.ForgeSnapshot{}, err
-	}
-	// Cleanup facts come from the durable obligation. The forge snapshot's
-	// current PR head is useful elsewhere, but it must not replace the immutable
-	// merged head which guards post-merge branch deletion.
-	snapshot.HeadSHA = facts.HeadSHA
-	return snapshot, nil
-}
-
 func productStateFromForge(snapshot forge.Snapshot, serviceLogin string) product.State {
 	var newest forge.Status
 	for _, status := range snapshot.Statuses {
@@ -306,6 +294,14 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 	if snapshot.Key != coordinationKey(facts) {
 		return fmt.Errorf("cleanup snapshot identity does not match pull request")
 	}
+	cleanup, found, err := store.Cleanup(ctx, snapshot.Key)
+	if err != nil {
+		return err
+	}
+	if !found {
+		// Another reconciliation may already have settled the obligation.
+		return nil
+	}
 	adapter, err := newBehaviouralForge(cfg, facts.Forge, ledgerForgeOwnership{store: store, key: snapshot.Key})
 	if err != nil {
 		return err
@@ -316,7 +312,7 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 	}
 	result := adapter.DeleteMergedBranch(ctx, forge.Guard{
 		Ownership: forge.ReconciliationOwnership(), Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo},
-		PullRequest: pullRequest, HeadSHA: snapshot.HeadSHA, TargetSHA: snapshot.TargetSHA,
+		PullRequest: pullRequest, HeadSHA: cleanup.MergedHead, TargetSHA: snapshot.TargetSHA,
 	})
 	switch result.Outcome {
 	case forge.WriteApplied:
@@ -333,7 +329,7 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 		}
 		logPath := incidentLogPath(cfg, "sweep.log")
 		return recordOperationalIncident(ctx, cfg, store, ledger.Incident{
-			Key: snapshot.Key, Category: "cleanup-unsafe", ObservedHead: snapshot.HeadSHA,
+			Key: snapshot.Key, Category: "cleanup-unsafe", ObservedHead: cleanup.MergedHead,
 			ObservedTarget: snapshot.TargetSHA, LogLocation: logPath,
 		}, incidents.Event{
 			Key: incidents.Key{
@@ -341,7 +337,7 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 				PullRequest: facts.PR, Category: "cleanup-unsafe",
 			},
 			Diagnostic: "guarded branch cleanup rejected: " + result.Reason,
-			LogPath:    logPath, ObservedHead: snapshot.HeadSHA, ObservedTarget: snapshot.TargetSHA,
+			LogPath:    logPath, ObservedHead: cleanup.MergedHead, ObservedTarget: snapshot.TargetSHA,
 		})
 	default:
 		return fmt.Errorf("invalid cleanup outcome %q", result.Outcome)
