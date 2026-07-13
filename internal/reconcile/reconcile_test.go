@@ -52,6 +52,38 @@ func TestDecisionPriority(t *testing.T) {
 	}
 }
 
+func TestOwnerlessWorkingResetFollowsEligibilityAndLedgerOwnership(t *testing.T) {
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	base := snapshot()
+	base.Product = product.Working()
+	backoff := &ledger.Backoff{NextDueAt: now.Add(time.Hour)}
+	tests := []struct {
+		name  string
+		edit  func(*ForgeSnapshot)
+		view  View
+		reset bool
+	}{
+		{name: "eligible without owner during backoff", view: View{Backoff: backoff}, reset: true},
+		{name: "eligible without owner when retry is due", view: View{}, reset: true},
+		{name: "live owner", view: View{Lease: &ledger.Lease{HeartbeatAt: now}, LivenessWindow: time.Hour}},
+		{name: "closed", edit: func(value *ForgeSnapshot) { value.Open = false }},
+		{name: "excluded draft", edit: func(value *ForgeSnapshot) { value.Draft = true }},
+		{name: "ineligible author", edit: func(value *ForgeSnapshot) { value.AuthorInScope = false }},
+		{name: "queued already", edit: func(value *ForgeSnapshot) { value.Product = product.Queued() }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := base
+			if test.edit != nil {
+				test.edit(&value)
+			}
+			if got := Decide(value, test.view, now).ResetWorking; got != test.reset {
+				t.Fatalf("reset working=%v, want %v", got, test.reset)
+			}
+		})
+	}
+}
+
 func TestStoppedAndCleanServedness(t *testing.T) {
 	now := time.Now()
 	for _, state := range []product.State{product.Stopped(), product.Blocked(), product.Partial(), product.Clean(), product.CleanLimited()} {

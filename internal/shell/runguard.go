@@ -25,7 +25,7 @@ func RunGuardCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: minos run-guard [--config root] begin|current|release|advance|clearance|wait|revalidate")
+		return fmt.Errorf("usage: minos run-guard [--config root] begin|current|release|retryable-exit|advance|clearance|wait|revalidate")
 	}
 	cfg, adaptation, facts, store, token, err := loadRunGuard(*configRoot)
 	if err != nil {
@@ -39,6 +39,11 @@ func RunGuardCommand(ctx context.Context, args []string) error {
 		return currentRun(ctx, cfg, facts, store, token)
 	case "release":
 		return releaseRun(ctx, adaptation, facts, store, token)
+	case "retryable-exit":
+		if fs.NArg() != 2 {
+			return fmt.Errorf("usage: minos run-guard retryable-exit FAILURE_CATEGORY")
+		}
+		return declareRetryableExit(ctx, adaptation, facts, store, token, fs.Arg(1))
 	case "advance":
 		if fs.NArg() != 5 {
 			return fmt.Errorf("usage: minos run-guard advance OLD_HEAD OLD_TARGET NEW_HEAD NEW_TARGET")

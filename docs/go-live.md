@@ -332,9 +332,9 @@ configuration; until one is chosen, the container host's failed units are the ac
 operator signal.
 
 Each incident is identified by forge, owner, repository, pull request, and
-failure category. Attempt number and observed revisions are updated evidence,
-not identity, so retries update the same record instead of producing another
-alert. Operators can inspect the JSON stream and make
+failure category. Attempt number, observed revisions, and retry disposition are
+updated evidence, not identity, so retries update the same record instead of
+producing another alert. Operators can inspect the JSON stream and make
 acknowledgement and recovery explicit:
 
 ```sh

@@ -69,9 +69,16 @@ the executable seams; do not call the adaptation scripts directly.
   the lifecycle index and run `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG"
   revalidate INDEX_PATH` before any consequential action; failure means exit
   without the mutation.
-- `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" release` removes eyes on the
-  controlled close. Exit immediately afterwards; the launch wrapper releases
-  the lease strictly last and records attempt instrumentation.
+- `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" release` removes eyes on a
+  product-state controlled close. Exit immediately afterwards; the launch
+  wrapper releases the lease strictly last and records attempt instrumentation.
+- `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" retryable-exit
+  FAILURE_CATEGORY` durably declares a retryable operational failure and removes
+  eyes. The category is exactly one of `host-capacity`, `engine-unavailable`,
+  `stale-oauth`, `forge-unavailable`, or `network-unavailable`; use the matching
+  service category, never raw backend text. Exit immediately afterwards. The
+  wrapper records backoff and the deduplicated operator incident before releasing
+  the lease strictly last.
 
 Run repository commands only through `"$MINOS_BIN" ws-exec --config "$MINOS_CONFIG"
 -- ...`. Invoke Ensemble through `$MINOS_ENSEMBLE_LAUNCH`; use
@@ -692,12 +699,12 @@ rules are in `failure-taxonomy.md`. In brief:
   degradation own most of this.
 - **Retryable exit (transient)** — host capacity, engine or model-backend
   availability, anything a later attempt could find changed. Write no
-  product/terminal failure to the PR, then take the common exit close (step 9):
-  remove the eyes reaction first, release the lease strictly last, and exit so
-  reconciliation and the ledger's backoff start a fresh successor. Operational
-  failure is not a product state and writes nothing to the PR: an errored head
-  looks like a never-run head, and the sweep reconciles it, paced by the ledger's
-  backoff.
+  product/terminal failure to the PR, then run `run-guard retryable-exit` with a
+  stable failure category and exit immediately. That guarded close removes eyes;
+  the wrapper records the incident and backoff, then releases the lease strictly
+  last so reconciliation can start a fresh successor. Operational failure is not
+  a product state and writes nothing to the PR: an errored head looks like a
+  never-run head, and the sweep reconciles it, paced by the ledger's backoff.
 - **Terminal-configuration failure** — missing wiring, invalid inputs, a lead or
   worker pin mismatch: a retry cannot change it, so it must not burn the retry
   ladder. Raise the deduplicated deployment incident, then take the same common

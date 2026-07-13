@@ -117,6 +117,39 @@ hard_kill_incident_is() {
     [[ "$(operator_incident_json "$pr" | jq -r '.[0].updates')" -eq "$updates" ]]
 }
 
+retryable_backoff_json() {
+  local pr="$1" result
+  result="$(sqlite3 -json "$work/runs/coordination.db" \
+    "SELECT attempt,last_failure_at,next_due_at FROM backoff WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${pr}'")"
+  printf '%s\n' "${result:-[]}"
+}
+
+retryable_ledger_incident_json() {
+  local pr="$1" result
+  result="$(sqlite3 -json "$work/runs/coordination.db" \
+    "SELECT category,retry_count,observed_head,observed_target,log_location FROM incidents WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${pr}' AND category='stale-oauth'")"
+  printf '%s\n' "${result:-[]}"
+}
+
+retryable_operator_incident_json() {
+  local pr="$1"
+  find "$work/incidents" -maxdepth 1 -type f -name '*.json' -print0 |
+    xargs -0 -r jq -s --arg pr "$pr" '[.[] | select(.key.pr == $pr and .key.category == "stale-oauth")]'
+}
+
+retryable_failure_is_recorded() {
+  local pr="$1"
+  [[ "$(retryable_backoff_json "$pr" | jq -r '.[0].attempt // 0')" -eq 1 ]] &&
+    [[ "$(retryable_ledger_incident_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(retryable_operator_incident_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(retryable_operator_incident_json "$pr" | jq -r '.[0].updates')" -eq 1 ]] &&
+    [[ "$(retryable_operator_incident_json "$pr" | jq -r '.[0].retry_disposition')" == retry\ after\ * ]]
+}
+
+retryable_backoff_absent() {
+  [[ "$(retryable_backoff_json "$1")" == "[]" ]]
+}
+
 cleanup_obligation_json() {
   local pr="$1" result
   result="$(sqlite3 -json "$work/runs/coordination.db" \
@@ -295,6 +328,47 @@ run_missed_webhook_journey() {
   record_evidence sweep reconcile no-owner skipped "unchanged terminal product remained at one attempt"
   author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${missed_pr}" '{"state":"closed"}' >/dev/null
   record_evidence forge close no-owner applied "completed missed-webhook fixture closed before the next drill"
+}
+
+run_retryable_exit_journey() {
+  local retry_pr retry_sha retry_unit receiver_result
+  retry_pr="$(create_pr retryable-exit-lifecycle)"
+  retry_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${retry_pr}" | jq -r '.head.sha')"
+  retry_unit="minos-run-${owner}-${repo}-pr${retry_pr}-${retry_sha:0:12}.service"
+  journey_units+=("$retry_unit")
+
+  send_opened_hook "$retry_pr"
+  wait_until 'retryable exit is declared' test -e "$work/control/retryable-exit-attempted"
+  wait_until 'retryable exit releases its lease' lease_absent "$retry_pr"
+  wait_until 'retryable exit removes eyes' eyes_absent "$retry_pr"
+  require 'retryable exit leaves the working presentation for reconciliation' status_is "$retry_sha" 'Reviewing changes'
+  require 'retryable exit records backoff and one categorised incident' retryable_failure_is_recorded "$retry_pr"
+  require 'retryable exit publishes no review' count_is "$(review_count "$retry_pr")" 0
+  require 'retryable exit writes no operational chatter to the PR' no_operational_chatter "$retry_pr" "$retry_sha"
+  require 'retryable exit completes exactly one attempt before reconciliation' attempt_count_is "$retry_pr" 1
+  record_evidence wrapper retryable-exit predecessor applied \
+    "pr=${retry_pr}; status=working; lease=absent; eyes=absent; backoff-attempt=1; incident=stale-oauth"
+
+  receiver_result="$work/logs/retryable-exit-receiver.out"
+  send_opened_hook "$retry_pr" "$receiver_result"
+  require 'receiver defers admission during retry backoff' grep -Fxq nothing "$receiver_result"
+  wait_until 'receiver returns ownerless working to queued' status_is "$retry_sha" 'Waiting for review'
+  require 'receiver starts no attempt before retry is due' attempt_count_is "$retry_pr" 1
+  record_evidence receiver reconcile predecessor applied \
+    "pr=${retry_pr}; status=queued; lease=absent; retry=deferred"
+
+  sqlite3 "$work/runs/coordination.db" \
+    "UPDATE backoff SET next_due_at='1970-01-01T00:00:00Z' WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${retry_pr}'"
+  "$root/minos" sweep --config "$work/config"
+  wait_until 'due retry launches and reaches a settled product state' status_is "$retry_sha" 'Review stopped; findings remain'
+  wait_until 'due retry publishes its current-head review' review_on_head "$retry_pr" "$retry_sha"
+  wait_until 'due retry releases its lease' lease_absent "$retry_pr"
+  wait_until 'successful successor clears operational backoff' retryable_backoff_absent "$retry_pr"
+  require 'due retry uses exactly one fresh successor' attempt_count_is "$retry_pr" 2
+  require 'retry incident remains deduplicated' test "$(retryable_operator_incident_json "$retry_pr" | jq -r 'length')" -eq 1
+  require 'retry recovery writes no operational chatter to the PR' no_operational_chatter "$retry_pr" "$retry_sha"
+  record_evidence sweep retry successor applied \
+    "pr=${retry_pr}; attempts=2; status=stopped; backoff=absent; incident-records=1"
 }
 
 run_hard_kill_journey() {

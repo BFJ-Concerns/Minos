@@ -161,9 +161,14 @@ func ledgerView(ctx context.Context, store *ledger.Store, key ledger.Key, thresh
 }
 
 func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, snapshot reconcile.ForgeSnapshot, decision reconcile.Decision, store *ledger.Store, logw io.Writer) error {
+	if decision.ResetWorking {
+		if err := publishReconciliationState(ctx, cfg, facts, snapshot, store, product.Queued()); err != nil {
+			return fmt.Errorf("return stale working status to queued: %w", err)
+		}
+	}
 	switch decision.Kind {
 	case reconcile.Admit:
-		if snapshot.Product == product.Working() {
+		if snapshot.Product == product.Working() && !decision.ResetWorking {
 			if err := publishReconciliationState(ctx, cfg, facts, snapshot, store, product.Queued()); err != nil {
 				return fmt.Errorf("return stale working status to queued: %w", err)
 			}
@@ -272,6 +277,16 @@ func recordHardKillIncident(ctx context.Context, cfg ServiceConfig, facts Facts,
 }
 
 func publishReconciliationState(ctx context.Context, cfg ServiceConfig, facts Facts, snapshot reconcile.ForgeSnapshot, store *ledger.Store, state product.State) error {
+	if state == product.Queued() {
+		// The ledger, not the stale status text, decides whether an owner exists.
+		// Re-check at the mutation seam because another delivery may have acquired
+		// the lease after the reconciliation decision was calculated.
+		if _, found, err := store.Lease(ctx, snapshot.Key); err != nil {
+			return err
+		} else if found {
+			return nil
+		}
+	}
 	adapter, err := newBehaviouralForge(cfg, facts.Forge, ledgerForgeOwnership{store: store, key: snapshot.Key})
 	if err != nil {
 		return err
