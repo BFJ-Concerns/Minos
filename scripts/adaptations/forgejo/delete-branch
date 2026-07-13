@@ -64,6 +64,8 @@ else
   elif [ "$remote_head" != "$head" ]; then
     write_result rejected "source branch advanced after merge"
   else
-    write_result uncertain "branch deletion should be retried"
+    # The failed write has been discovered as a confirmed no-op: the branch
+    # still names the expected head. This is retryable, not an uncertain write.
+    write_result retryable "branch deletion should be retried"
   fi
 fi

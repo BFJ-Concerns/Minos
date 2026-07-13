@@ -188,6 +188,14 @@ cleanup_incident_is() {
     [[ "$(cleanup_operator_incident_json "$pr" | jq -r '.[0].updates')" -eq "$updates" ]]
 }
 
+cleanup_incomplete_incident_is() {
+  local pr="$1"
+  [[ "$(sqlite3 -json "$work/runs/coordination.db" \
+    "SELECT category FROM incidents WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${pr}' AND category='cleanup-incomplete'" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(find "$work/incidents" -maxdepth 1 -type f -name '*.json' -print0 |
+      xargs -0 -r jq -s --arg pr "$pr" '[.[] | select(.key.pr == $pr and .key.category == "cleanup-incomplete" and .state == "open")] | length')" -eq 1 ]]
+}
+
 branch_sha() {
   api GET "/api/v1/repos/${owner}/${repo}/branches/$1" | jq -r '.commit.id // .commit.sha // ""'
 }
@@ -227,6 +235,7 @@ run_post_merge_cleanup_journey() {
   local unchanged_pr unchanged_sha unchanged_surface
   local absent_pr absent_sha absent_surface
   local advanced_pr advanced_sha advanced_branch_sha advanced_pr_head advanced_pr_ref advanced_surface
+  local stranded_pr stranded_sha stranded_unit stranded_lease stranded_workspace
 
   prepare_cleanup_fixture cleanup-unchanged unchanged_pr unchanged_sha
   unchanged_surface="$(pr_surface_digest "$unchanged_pr" "$unchanged_sha")"
@@ -273,26 +282,70 @@ run_post_merge_cleanup_journey() {
   require 'advanced webhook is reconciled as cleanup' grep -Fxq cleanup "$work/logs/cleanup-advanced-receiver.out"
   require 'receiver cleanup preserves the advanced branch' test \
     "$(branch_sha cleanup-advanced)" = "$advanced_branch_sha"
-  require 'receiver cleanup retains its obligation' cleanup_obligation_is "$advanced_pr" 1
+  require 'receiver cleanup settles its unsafe obligation' cleanup_obligation_absent "$advanced_pr"
   require 'receiver cleanup raises one ledger and operator incident' cleanup_incident_is "$advanced_pr" 1
   require 'receiver cleanup writes nothing to the PR' test \
     "$(pr_surface_digest "$advanced_pr" "$advanced_sha")" = "$advanced_surface"
   require 'receiver cleanup starts no successor lifecycle' attempt_count_is "$advanced_pr" 1
   require 'receiver cleanup preserves merged product truth' pr_merged "$advanced_pr"
   record_evidence receiver cleanup advanced rejected \
-    "pr=${advanced_pr}; branch=${advanced_branch_sha}; obligation-attempts=1; ledger-incidents=1; operator-incidents=1; updates=1; pr-surface=unchanged"
+    "pr=${advanced_pr}; branch=${advanced_branch_sha}; obligation=absent; ledger-incidents=1; operator-incidents=1; updates=1; pr-surface=unchanged"
 
   "$root/minos" sweep --config "$work/config"
   require 'repeated sweep cleanup preserves the advanced branch' test \
     "$(branch_sha cleanup-advanced)" = "$advanced_branch_sha"
-  require 'repeated sweep cleanup retains its obligation' cleanup_obligation_is "$advanced_pr" 2
-  require 'repeated cleanup deduplicates the ledger and operator incident' cleanup_incident_is "$advanced_pr" 2
+  require 'repeated sweep finds no unsafe cleanup obligation' cleanup_obligation_absent "$advanced_pr"
+  require 'settled unsafe cleanup retains one operator incident' cleanup_incident_is "$advanced_pr" 1
   require 'repeated cleanup writes nothing to the PR' test \
     "$(pr_surface_digest "$advanced_pr" "$advanced_sha")" = "$advanced_surface"
   require 'repeated cleanup starts no successor lifecycle' attempt_count_is "$advanced_pr" 1
   require 'repeated cleanup preserves merged product truth' pr_merged "$advanced_pr"
   record_evidence sweep cleanup advanced rejected \
-    "pr=${advanced_pr}; branch=${advanced_branch_sha}; obligation-attempts=2; ledger-incidents=1; operator-incidents=1; updates=2; pr-surface=unchanged"
+    "pr=${advanced_pr}; branch=${advanced_branch_sha}; obligation=absent; ledger-incidents=1; operator-incidents=1; updates=1; pr-surface=unchanged"
+
+  stranded_pr="$(create_pr cleanup-stranded-state)"
+  stranded_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${stranded_pr}" | jq -r '.head.sha')"
+  stranded_unit="minos-run-${owner}-${repo}-pr${stranded_pr}-${stranded_sha:0:12}.service"
+  journey_units+=("$stranded_unit")
+  send_opened_hook "$stranded_pr"
+  wait_until 'stranded fixture reaches post-merge hold' test -e "$work/control/cleanup-stranded-ready"
+  require 'stranded fixture is merged' pr_merged "$stranded_pr"
+  require 'stranded fixture has merged product status' status_is "$stranded_sha" Merged
+  require 'stranded fixture has durable cleanup' cleanup_obligation_is "$stranded_pr" 0
+  require 'stranded fixture retains eyes before process death' eyes_present "$stranded_pr"
+  stranded_lease="$(lease_json "$stranded_pr")"
+  stranded_workspace="$(jq -r '.[0].workspace' <<<"$stranded_lease")"
+  require 'stranded fixture retains its lease before process death' test "$stranded_lease" != '[]'
+
+  systemctl --user kill --kill-whom=all --signal=SIGKILL "$stranded_unit"
+  wait_until 'stranded fixture process is dead' unit_not_running "$stranded_unit"
+  sleep 7
+  mkdir -p "$work/faults"
+  : >"$work/faults/retry-delete-branch"
+
+  send_opened_hook "$stranded_pr" "$work/logs/cleanup-stranded-receiver.out"
+  require 'stranded receiver keeps cleanup first' grep -Fxq cleanup "$work/logs/cleanup-stranded-receiver.out"
+  require 'first retryable refusal retains cleanup' cleanup_obligation_is "$stranded_pr" 1
+  require 'first retryable refusal retains stale lease' test "$(lease_json "$stranded_pr")" != '[]'
+  require 'first retryable refusal retains eyes' eyes_present "$stranded_pr"
+
+  "$root/minos" sweep --config "$work/config"
+  require 'second retryable refusal retains cleanup' cleanup_obligation_is "$stranded_pr" 2
+  require 'second retryable refusal retains stale lease' test "$(lease_json "$stranded_pr")" != '[]'
+
+  "$root/minos" sweep --config "$work/config"
+  require 'bounded cleanup preserves the source branch' test "$(branch_sha cleanup-stranded-state)" = "$stranded_sha"
+  require 'bounded cleanup settles the obligation' cleanup_obligation_absent "$stranded_pr"
+  require 'bounded cleanup raises an operator signal' cleanup_incomplete_incident_is "$stranded_pr"
+  require 'same reconciliation reaps the stale lease' lease_absent "$stranded_pr"
+  require 'same reconciliation removes eyes' eyes_absent "$stranded_pr"
+  require 'same reconciliation removes the stale workspace' test ! -e "$stranded_workspace"
+  require 'stranded convergence starts no successor lifecycle' attempt_count_is "$stranded_pr" 1
+  require 'stranded convergence retains merged product truth' pr_merged "$stranded_pr"
+  require 'stranded convergence writes no operational chatter' no_operational_chatter "$stranded_pr" "$stranded_sha"
+  record_evidence sweep cleanup stranded preserved \
+    "pr=${stranded_pr}; retries=3; branch=preserved; obligation=absent; eyes=absent; lease=absent; workspace=absent; operator-signal=open"
+  rm -f "$work/faults/retry-delete-branch"
 }
 
 run_missed_webhook_journey() {

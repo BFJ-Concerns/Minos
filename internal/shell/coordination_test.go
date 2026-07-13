@@ -319,7 +319,153 @@ func TestCleanupDecisionRetainsUncertainObligationAndRemovesApplied(t *testing.T
 	}
 }
 
-func TestCleanupDecisionRetainsRejectedObligationAndRaisesOperatorIncident(t *testing.T) {
+func TestCleanupDecisionNeverBoundsUndiscoveredUncertainty(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	obligation := ledger.Cleanup{Key: coordinationKey(facts), MergedHead: facts.HeadSHA, Branch: "change"}
+	if err := store.AddCleanup(t.Context(), obligation); err != nil {
+		t.Fatal(err)
+	}
+	for range 7 {
+		if err := store.BumpCleanupAttempt(t.Context(), obligation.Key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeScript(t, filepath.Join(cfg.Forges["local"].Adaptation, "delete-branch"), "#!/bin/sh\nprintf '{\"outcome\":\"uncertain\",\"reason\":\"branch deletion outcome could not be read\"}\\n'\n")
+	snapshot := reconcile.ForgeSnapshot{Key: obligation.Key, HeadSHA: facts.HeadSHA, TargetSHA: "target-1", Merged: true}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, reconcile.Decision{Kind: reconcile.CleanUp}, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, found, err := store.Cleanup(t.Context(), obligation.Key)
+	if err != nil || !found || cleanup.Attempts != 8 {
+		t.Fatalf("undiscovered cleanup = %#v found=%v err=%v", cleanup, found, err)
+	}
+	if values, err := incidents.NewFileStore(cfg.Root).List(t.Context()); err != nil || len(values) != 0 {
+		t.Fatalf("uncertain cleanup raised a terminal incident: incidents=%#v err=%v", values, err)
+	}
+}
+
+func TestStrandedCleanupConvergesAfterDiscoveredNoOp(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	reaction, removals := presenceProbe(t, cfg)
+	if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduce the live strand: the lifecycle is dead, but its stale lease and
+	// eyes remain beside a repeatedly uncertain post-merge cleanup obligation.
+	staleAt := time.Now().Add(-time.Hour)
+	store, err := ledger.OpenWithClock(ledgerPath(cfg), func() time.Time { return staleAt })
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	lease, err := store.AcquireLease(t.Context(), ledger.Lease{
+		Key: coordinationKey(facts), ObservedHead: facts.HeadSHA, ObservedTarget: "target-merged",
+		Unit: "dead-unit", Workspace: workspace,
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddCleanup(t.Context(), ledger.Cleanup{Key: lease.Key, MergedHead: facts.HeadSHA, Branch: "change"}); err != nil {
+		t.Fatal(err)
+	}
+	for range 7 {
+		if err := store.BumpCleanupAttempt(t.Context(), lease.Key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := incidents.NewFileStore(cfg.Root).Raise(t.Context(), incidents.Event{
+		Key:        incidents.Key{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PullRequest: facts.PR, Category: "run-guard-fence-desync"},
+		Diagnostic: "attempt mutation fences disagreed after merge", LogPath: filepath.Join(cfg.Runs.Dir, "attempt.log"),
+		Attempt: int(lease.Token), ObservedHead: facts.HeadSHA, ObservedTarget: "target-merged",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	// The exact live delete result proves the merged-head checks passed, the
+	// guarded Git deletion failed, and discovery still found the expected head.
+	// The fixed adapter reports that confirmed no-op as retryable rather than
+	// weakening genuinely uncertain write discovery.
+	writeScript(t, filepath.Join(cfg.Forges["local"].Adaptation, "delete-branch"), `#!/bin/sh
+if [ "$4" != "head-1" ]; then
+  printf '%s\n' '{"outcome":"rejected","reason":"wrong merged-head guard"}'
+else
+  printf '%s\n' '{"outcome":"retryable","reason":"branch deletion should be retried"}'
+fi
+`)
+
+	store, err = ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	originalSystemctl := systemctlCommand
+	defer func() { systemctlCommand = originalSystemctl }()
+	systemctlCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if args[1] == "show" {
+			return exec.CommandContext(ctx, "sh", "-c", "printf inactive")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+
+	snapshot := reconcile.ForgeSnapshot{
+		Key: lease.Key, HeadSHA: facts.HeadSHA, TargetSHA: "target-merged",
+		Merged: true, Product: product.Merged(), ProductHead: facts.HeadSHA, ProductTarget: "target-merged",
+	}
+	view, err := ledgerView(t.Context(), store, lease.Key, cfg.Sweep.LivenessThreshold.Duration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := reconcile.Decide(snapshot, view, time.Now())
+	if decision.Kind != reconcile.CleanUp {
+		t.Fatalf("stranded decision = %s, want cleanup first", decision.Kind)
+	}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, decision, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if cleanup, found, err := store.Cleanup(t.Context(), lease.Key); err != nil || found {
+		t.Fatalf("stranded cleanup remains: cleanup=%#v found=%v err=%v", cleanup, found, err)
+	}
+	if current, found, err := store.Lease(t.Context(), lease.Key); err != nil || found {
+		t.Fatalf("stranded lease remains: lease=%#v found=%v err=%v", current, found, err)
+	}
+	assertPresenceClosed(t, reaction, removals)
+	if _, err := os.Stat(workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stranded workspace remains: %v", err)
+	}
+
+	operatorIncidents, err := incidents.NewFileStore(cfg.Root).List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preserved, fence *incidents.Incident
+	for i := range operatorIncidents {
+		switch operatorIncidents[i].Key.Category {
+		case "cleanup-incomplete":
+			preserved = &operatorIncidents[i]
+		case "run-guard-fence-desync":
+			fence = &operatorIncidents[i]
+		}
+	}
+	if preserved == nil || preserved.State != incidents.StateOpen {
+		t.Fatalf("preserved-branch operator signal = %#v", preserved)
+	}
+	if fence == nil {
+		t.Fatal("original fence-desync incident disappeared")
+	}
+	if recovered, err := incidents.NewFileStore(cfg.Root).Recover(t.Context(), fence.Key, time.Now()); err != nil || recovered.State != incidents.StateRecovered {
+		t.Fatalf("fence-desync incident is not resolvable: incident=%#v err=%v", recovered, err)
+	}
+}
+
+func TestCleanupDecisionSettlesRejectedObligationAndRaisesOperatorIncident(t *testing.T) {
 	cfg, repo, facts := coordinationConfig(t)
 	store, err := ledger.Open(ledgerPath(cfg))
 	if err != nil {
@@ -335,15 +481,11 @@ func TestCleanupDecisionRetainsRejectedObligationAndRaisesOperatorIncident(t *te
 	snapshot := reconcile.ForgeSnapshot{Key: obligation.Key, HeadSHA: facts.HeadSHA, TargetSHA: "target-1", Merged: true}
 	decision := reconcile.Decision{Kind: reconcile.CleanUp}
 
-	// Reconciliation may revisit the retained obligation. Both incident stores
-	// must update one stable identity rather than creating a fresh alert.
-	for range 2 {
-		if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, decision, store, os.Stderr); err != nil {
-			t.Fatal(err)
-		}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, decision, store, os.Stderr); err != nil {
+		t.Fatal(err)
 	}
 	cleanups, err := store.ListCleanup(t.Context())
-	if err != nil || len(cleanups) != 1 || cleanups[0].Attempts != 2 {
+	if err != nil || len(cleanups) != 0 {
 		t.Fatalf("rejected cleanup = %#v err=%v", cleanups, err)
 	}
 	ledgerIncidents, err := store.ListIncidents(t.Context())
@@ -354,8 +496,8 @@ func TestCleanupDecisionRetainsRejectedObligationAndRaisesOperatorIncident(t *te
 	if err != nil || len(operatorIncidents) != 1 || operatorIncidents[0].Key.Category != "cleanup-unsafe" {
 		t.Fatalf("cleanup operator incidents = %#v err=%v", operatorIncidents, err)
 	}
-	if operatorIncidents[0].Updates != 2 {
-		t.Fatalf("cleanup operator incident updates = %d, want 2", operatorIncidents[0].Updates)
+	if operatorIncidents[0].Updates != 1 {
+		t.Fatalf("cleanup operator incident updates = %d, want 1", operatorIncidents[0].Updates)
 	}
 }
 
@@ -408,7 +550,7 @@ func assertAdvancedBranchCleanupRejected(t *testing.T, factsHead string) {
 	}
 
 	cleanups, err := store.ListCleanup(t.Context())
-	if err != nil || len(cleanups) != 1 || cleanups[0].Attempts != 1 {
+	if err != nil || len(cleanups) != 0 {
 		t.Fatalf("advanced-branch cleanup = %#v err=%v", cleanups, err)
 	}
 	ledgerIncidents, err := store.ListIncidents(t.Context())

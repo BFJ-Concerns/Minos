@@ -19,6 +19,13 @@ import (
 	"bfj/minos/internal/reconcile"
 )
 
+// A guarded branch deletion may be confirmed not to have happened without the
+// forge explaining whether its refusal is transient. Retrying a small bounded
+// number of times covers transient refusal; after that, preserving the branch
+// with an operator signal is safer than allowing cleanup to mask stale-owner
+// recovery forever.
+const cleanupRetryLimit = 3
+
 func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (reconcile.ForgeSnapshot, error) {
 	adapter, err := newBehaviouralForge(cfg, facts.Forge, denyForgeMutation{})
 	if err != nil {
@@ -254,8 +261,19 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 		}
 		fmt.Fprintf(logw, "replaced dead lifecycle for %s#%s token=%d\n", facts.RepoSlug(), facts.PR, newLease.Token)
 	case reconcile.CleanUp:
-		if err := executeCleanup(ctx, cfg, facts, snapshot, store, logw); err != nil {
+		settled, err := executeCleanup(ctx, cfg, facts, snapshot, store, logw)
+		if err != nil {
 			return err
+		}
+		if settled {
+			// Cleanup deliberately has first refusal. Once that obligation is
+			// settled, continue the same current-state reconciliation so a stale
+			// lease cannot require an unrelated future prompt to be retired.
+			view, err := ledgerView(ctx, store, snapshot.Key, cfg.Sweep.LivenessThreshold.Duration)
+			if err != nil {
+				return err
+			}
+			return executeDecision(ctx, cfg, repo, facts, snapshot, reconcile.Decide(snapshot, view, time.Now()), store, logw)
 		}
 	}
 	return nil
@@ -305,25 +323,25 @@ func publishReconciliationState(ctx context.Context, cfg ServiceConfig, facts Fa
 	return nil
 }
 
-func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapshot reconcile.ForgeSnapshot, store *ledger.Store, logw io.Writer) error {
+func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapshot reconcile.ForgeSnapshot, store *ledger.Store, logw io.Writer) (bool, error) {
 	if snapshot.Key != coordinationKey(facts) {
-		return fmt.Errorf("cleanup snapshot identity does not match pull request")
+		return false, fmt.Errorf("cleanup snapshot identity does not match pull request")
 	}
 	cleanup, found, err := store.Cleanup(ctx, snapshot.Key)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !found {
 		// Another reconciliation may already have settled the obligation.
-		return nil
+		return true, nil
 	}
 	adapter, err := newBehaviouralForge(cfg, facts.Forge, ledgerForgeOwnership{store: store, key: snapshot.Key})
 	if err != nil {
-		return err
+		return false, err
 	}
 	pullRequest, err := strconv.ParseInt(facts.PR, 10, 64)
 	if err != nil {
-		return err
+		return false, err
 	}
 	result := adapter.DeleteMergedBranch(ctx, forge.Guard{
 		Ownership: forge.ReconciliationOwnership(), Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo},
@@ -331,19 +349,38 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 	})
 	switch result.Outcome {
 	case forge.WriteApplied:
-		return store.RemoveCleanup(ctx, snapshot.Key)
-	case forge.WriteUncertain:
+		return true, store.RemoveCleanup(ctx, snapshot.Key)
+	case forge.WriteRetryable:
 		if err := store.BumpCleanupAttempt(ctx, snapshot.Key); err != nil {
-			return err
+			return false, err
+		}
+		attempts := cleanup.Attempts + 1
+		if attempts < cleanupRetryLimit {
+			fmt.Fprintf(logw, "cleanup retained %s#%s: %s\n", facts.RepoSlug(), facts.PR, result.Reason)
+			return false, nil
+		}
+		if err := recordIncompleteCleanupIncident(ctx, cfg, facts, snapshot, store, cleanup, result.Reason, attempts); err != nil {
+			return false, err
+		}
+		if err := store.RemoveCleanup(ctx, snapshot.Key); err != nil {
+			return false, err
+		}
+		fmt.Fprintf(logw, "cleanup preserved %s#%s after %d retryable refusals: %s\n", facts.RepoSlug(), facts.PR, attempts, result.Reason)
+		return true, nil
+	case forge.WriteUncertain:
+		// Discovery could not establish whether the mutation happened. Keep the
+		// obligation regardless of age; only a confirmed no-op is retry-bounded.
+		if err := store.BumpCleanupAttempt(ctx, snapshot.Key); err != nil {
+			return false, err
 		}
 		fmt.Fprintf(logw, "cleanup retained %s#%s: %s\n", facts.RepoSlug(), facts.PR, result.Reason)
-		return nil
+		return false, nil
 	case forge.WriteRejected:
 		if err := store.BumpCleanupAttempt(ctx, snapshot.Key); err != nil {
-			return err
+			return false, err
 		}
 		logPath := incidentLogPath(cfg, "sweep.log")
-		return recordOperationalIncident(ctx, cfg, store, ledger.Incident{
+		if err := recordOperationalIncident(ctx, cfg, store, ledger.Incident{
 			Key: snapshot.Key, Category: "cleanup-unsafe", ObservedHead: cleanup.MergedHead,
 			ObservedTarget: snapshot.TargetSHA, LogLocation: logPath,
 		}, incidents.Event{
@@ -353,8 +390,30 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 			},
 			Diagnostic: "guarded branch cleanup rejected: " + result.Reason,
 			LogPath:    logPath, ObservedHead: cleanup.MergedHead, ObservedTarget: snapshot.TargetSHA,
-		})
+		}); err != nil {
+			return false, err
+		}
+		// Rejection proves that deletion is unsafe, so the branch is deliberately
+		// preserved under the durable operator signal. Retaining the obligation
+		// would only repeat a mutation which the guard has already forbidden.
+		return true, store.RemoveCleanup(ctx, snapshot.Key)
 	default:
-		return fmt.Errorf("invalid cleanup outcome %q", result.Outcome)
+		return false, fmt.Errorf("invalid cleanup outcome %q", result.Outcome)
 	}
+}
+
+func recordIncompleteCleanupIncident(ctx context.Context, cfg ServiceConfig, facts Facts, snapshot reconcile.ForgeSnapshot, store *ledger.Store, cleanup ledger.Cleanup, reason string, attempts int) error {
+	logPath := incidentLogPath(cfg, "sweep.log")
+	diagnostic := fmt.Sprintf("guarded branch cleanup preserved after %d retryable refusals: %s", attempts, reason)
+	return recordOperationalIncident(ctx, cfg, store, ledger.Incident{
+		Key: snapshot.Key, Category: "cleanup-incomplete", ObservedHead: cleanup.MergedHead,
+		ObservedTarget: snapshot.TargetSHA, LogLocation: logPath,
+	}, incidents.Event{
+		Key: incidents.Key{
+			Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo,
+			PullRequest: facts.PR, Category: "cleanup-incomplete",
+		},
+		Diagnostic: diagnostic, LogPath: logPath, Attempt: attempts,
+		ObservedHead: cleanup.MergedHead, ObservedTarget: snapshot.TargetSHA,
+	})
 }

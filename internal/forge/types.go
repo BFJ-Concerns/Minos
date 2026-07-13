@@ -169,6 +169,7 @@ type WriteOutcome string
 const (
 	WriteApplied   WriteOutcome = "applied"
 	WriteRejected  WriteOutcome = "rejected"
+	WriteRetryable WriteOutcome = "retryable"
 	WriteUncertain WriteOutcome = "uncertain"
 )
 

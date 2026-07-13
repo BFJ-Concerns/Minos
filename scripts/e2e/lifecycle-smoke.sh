@@ -7,7 +7,7 @@ live="${MINOS_E2E_LIVE:-0}"
 liveness_threshold="${MINOS_E2E_LIVENESS_THRESHOLD:-10m}"
 journeys="${MINOS_E2E_JOURNEYS:-}"
 if [[ (",${journeys}," == *",hard-kill,"* || ",${journeys}," == *",durable-kill,"* ||
-  ",${journeys}," == *",restart,"*) &&
+  ",${journeys}," == *",restart,"* || ",${journeys}," == *",post-merge-cleanup,"*) &&
   -z "${MINOS_E2E_LIVENESS_THRESHOLD:-}" ]]; then
   liveness_threshold="6s"
 fi
@@ -246,6 +246,18 @@ fi
 exec "$(dirname "$0")/remove-reaction-real" "$@"
 EOF
 chmod +x "$work/adaptations/remove-reaction"
+mv "$work/adaptations/delete-branch" "$work/adaptations/delete-branch-real"
+cat >"$work/adaptations/delete-branch" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+fault="$(dirname "$0")/../faults/retry-delete-branch"
+if [ -e "$fault" ]; then
+  printf '%s\n' '{"outcome":"retryable","reason":"branch deletion should be retried"}'
+  exit 0
+fi
+exec "$(dirname "$0")/delete-branch-real" "$@"
+EOF
+chmod +x "$work/adaptations/delete-branch"
 cat >"$work/adaptations/fault-common.sh" <<'EOF'
 #!/usr/bin/env sh
 # shellcheck source=common.sh
@@ -559,6 +571,10 @@ else
   "$minos" run-guard --config "$MINOS_CONFIG" advance \
     "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA" "$merged_head" "$merged_target"
   "$minos" forge status merged
+  if [[ "$branch" == cleanup-stranded-* ]]; then
+    : >"$control_root/cleanup-stranded-ready"
+    while :; do sleep 1; done
+  fi
   # Cleanup recovery fixtures stop after the merge obligation is durable. The
   # harness then changes the branch state and lets the ordinary sweep decide.
   [[ "$branch" == cleanup-* ]] || "$minos" forge cleanup
