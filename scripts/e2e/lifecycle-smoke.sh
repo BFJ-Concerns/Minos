@@ -160,7 +160,7 @@ one_session() {
 }
 
 send_opened_hook() {
-  local pr="$1" payload signature
+  local pr="$1" output="${2:-/dev/null}" payload signature
   payload="$(jq -nc \
     --argjson pull_request "$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}")" \
     --argjson repository "$(api GET "/api/v1/repos/${owner}/${repo}")" \
@@ -170,7 +170,7 @@ send_opened_hook() {
     -H 'Content-Type: application/json' \
     -H 'X-Forgejo-Event: pull_request' \
     -H "X-Forgejo-Signature: ${signature}" \
-    --data "$payload" "http://127.0.0.1:${hook_port}/hooks/local" >/dev/null
+    --data "$payload" "http://127.0.0.1:${hook_port}/hooks/local" >"$output"
 }
 
 create_pr() {
@@ -178,6 +178,10 @@ create_pr() {
   (
     cd "$work/subject"
     git checkout -q main
+    # Earlier fixture merges move the disposable target. Start every new PR
+    # from that current target rather than the clone's original local main.
+    git fetch -q origin main
+    git reset -q --hard origin/main
     git checkout -q -b "$branch"
     if [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
       "$branch" == restart-* || "$branch" == uncertain-* || "$branch" == capacity-* ||
@@ -536,7 +540,9 @@ else
   "$minos" run-guard --config "$MINOS_CONFIG" clearance "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA"
   "$minos" forge merge squash
   "$minos" forge status merged
-  "$minos" forge cleanup
+  # Cleanup recovery fixtures stop after the merge obligation is durable. The
+  # harness then changes the branch state and lets the ordinary sweep decide.
+  [[ "$branch" == cleanup-* ]] || "$minos" forge cleanup
 fi
 printf '%s\n' '{"schema":1,"input_tokens":0,"output_tokens":0,"prompt_start_tokens":0,"prompt_peak_tokens":0,"prompt_growth_tokens":0,"compaction_events":0,"stream_bytes":0}' >"$MINOS_RUN_DIR/lead-metrics.json"
 "$minos" run-guard --config "$MINOS_CONFIG" release
@@ -629,6 +635,10 @@ fi
 
 if journey_enabled receiver-boundaries; then
   run_receiver_boundary_journeys
+fi
+
+if journey_enabled post-merge-cleanup; then
+  run_post_merge_cleanup_journey
 fi
 
 printf 'Minos lifecycle E2E passed. Evidence: %s\n' "$work"
