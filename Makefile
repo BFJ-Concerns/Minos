@@ -19,10 +19,14 @@ scripts:
 	@./scripts/e2e/resource-isolation-test.sh
 
 shellcheck:
-	@if command -v shellcheck >/dev/null 2>&1; then \
+	@set -eu; \
+	if command -v shellcheck >/dev/null 2>&1; then \
 		for script in scripts/run-body/* scripts/adaptations/forgejo/* scripts/review/* scripts/e2e/*.sh; do \
 			[ -f "$$script" ] || continue; \
-			case "$$(head -n 1 "$$script")" in *sh) shellcheck -x -s sh "$$script" ;; esac; \
+			# lifecycle-recovery is a sourced fragment whose caller-owned inputs \
+			# are visible when lifecycle-smoke is checked with source following. \
+			[ "$$script" != scripts/e2e/lifecycle-recovery.sh ] || continue; \
+			case "$$(head -n 1 "$$script")" in *sh) shellcheck -x -P SCRIPTDIR "$$script" ;; esac; \
 		done; \
 	else \
 		echo "shellcheck unavailable; skipping static shell analysis"; \

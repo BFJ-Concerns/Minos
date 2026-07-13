@@ -121,13 +121,20 @@ func TestRepoConfigRejectsBlankRequiredCheck(t *testing.T) {
 
 func TestShippedConfigsLoadClean(t *testing.T) {
 	projectRoot := filepath.Join("..", "..")
+	var shipped []ServiceConfig
 	for _, root := range []string{
 		filepath.Join(projectRoot, "examples", "config"),
 		filepath.Join(projectRoot, "deploy", "etc", "minos"),
 	} {
-		if _, err := LoadServiceConfig(root); err != nil {
+		config, err := LoadServiceConfig(root)
+		if err != nil {
 			t.Errorf("load %s/service.toml: %v", root, err)
+			continue
 		}
+		shipped = append(shipped, config)
+	}
+	if len(shipped) == 2 && shipped[0].Runs.MaxConcurrent != shipped[1].Runs.MaxConcurrent {
+		t.Errorf("shipped runs.max-concurrent values disagree: example=%d deployment=%d", shipped[0].Runs.MaxConcurrent, shipped[1].Runs.MaxConcurrent)
 	}
 
 	if _, err := LoadRepoConfigs(filepath.Join(projectRoot, "examples", "config")); err != nil {

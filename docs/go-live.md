@@ -88,6 +88,19 @@ sudo install -o root -g root -m 0644 examples/config/pins.toml \
 sudo install -o root -g root -m 0644 deploy/etc/minos/worker-models.json \
   /opt/minos/worker-models.json
 
+# Detached lifecycle units inherit PATH from the user manager rather than an
+# interactive shell. Install the persistent environment and update the already
+# running manager during this deployment.
+sudo install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0755 \
+  "/home/$DEPLOY_USER/.config/environment.d"
+sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0644 \
+  deploy/environment.d/50-minos-path.conf \
+  "/home/$DEPLOY_USER/.config/environment.d/50-minos-path.conf"
+DEPLOY_UID="$(id -u "$DEPLOY_USER")"
+sudo -u "$DEPLOY_USER" env XDG_RUNTIME_DIR="/run/user/$DEPLOY_UID" \
+  PATH="/home/$DEPLOY_USER/.cargo/bin:/home/$DEPLOY_USER/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin" \
+  systemctl --user import-environment PATH
+
 # The fix run's skill is the one service-authored skill, shipped with this
 # repository (unlike the sync-owned skills/foundry tree installed below).
 sudo install -d -o root -g root -m 0755 /opt/minos/skills/service/fix
@@ -101,7 +114,7 @@ sudo install -o root -g root -m 0644 docs/go-live.md /opt/minos/docs/go-live.md
 The adaptation and review scripts call `curl`, `git`, and `jq`; keep those
 commands on the deployment account's normal system path. The installed pins
 file governs the **lead** role — the accountable session's own model,
-operator-approved 2026-07-10 (`claude-opus-4-8`) and enforced at runtime by the
+operator-approved 2026-07-13 (`claude-sonnet-5`) and enforced at runtime by the
 launch wrapper's early-stream interlock. Re-confirm at go-live that it still
 names a current model generation. The worker roster entries (specialist,
 verifier, bar-judge) are reference only: the Foundry review workflows carry
@@ -122,6 +135,7 @@ After Foundry sync populates `skills/foundry/`, install that sync-owned tree:
 ```sh
 sudo install -d -o root -g root -m 0755 /opt/minos/skills/foundry
 sudo cp -a skills/foundry/. /opt/minos/skills/foundry/
+sudo chown -R root:root /opt/minos/skills/foundry
 ```
 
 Confirm the detached-unit environment can resolve every engine-side executable:
@@ -134,14 +148,16 @@ sudo -u "$DEPLOY_USER" env \
 
 ## 3. Install configuration and credentials
 
-Create the production paths and install the inactive templates. The repository
-example deliberately ends in `.toml.example`: only `repos/*.toml` files opt a
-repository in.
+Create the production paths and install the inactive templates. The heartbeat
+writer creates its atomic replacement directly beneath `/var/lib/minos`, so the
+deployment user must own that parent as well as the run and incident
+subdirectories. The repository example deliberately ends in `.toml.example`:
+only `repos/*.toml` files opt a repository in.
 
 ```sh
 sudo install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 \
   /etc/minos /etc/minos/repos \
-  /var/lib/minos/runs /var/lib/minos/incidents /var/log/minos
+  /var/lib/minos /var/lib/minos/runs /var/lib/minos/incidents /var/log/minos
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/minos/service.toml /etc/minos/service.toml
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
@@ -176,12 +192,14 @@ sudo -u "$DEPLOY_USER" /home/"$DEPLOY_USER"/.local/bin/codex login status
 ### Recover a stale Claude OAuth refresh token
 
 Two machines using the same Claude subscription can rotate the shared refresh
-token out from under each other. The characteristic failure is an immediate,
-zero-cost HTTP 403 claiming that the organisation disabled Claude subscription
-access. Minos reports this as `stale-oauth`; it is distinct from quota
-exhaustion and a genuinely disabled subscription only when the probe observes
-both immediate failure and zero recorded cost. If either discriminator is
-absent, Minos reports `unknown` rather than guessing from the misleading text.
+token out from under each other. Claude 2.1.207 reports the current shape as an
+immediate, zero-cost failure saying that the OAuth session expired and could not
+be refreshed; earlier releases returned an equally immediate, zero-cost HTTP
+403 claiming that the organisation disabled Claude subscription access. Minos
+reports either exact shape as `stale-oauth` only when the probe also observes
+both immediate failure and zero recorded cost. Generic 401 responses and either
+message without both discriminators remain `unknown` rather than being guessed
+stale.
 
 Prefer re-authenticating directly as the deployment user:
 
