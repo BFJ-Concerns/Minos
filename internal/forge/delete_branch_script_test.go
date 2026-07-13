@@ -20,6 +20,7 @@ case " $* " in
   *" push "*) exit 1 ;;
   *" ls-remote "*)
     if [ "$TEST_REMOTE_READ" = "failed" ]; then exit 8; fi
+    if [ "$TEST_REMOTE_READ" = "same" ]; then printf '%s\t%s\n' expected-head refs/heads/feature; fi
     exit 0
     ;;
 esac
@@ -58,11 +59,13 @@ esac
 		branchRead string
 		remoteRead string
 		want       WriteOutcome
+		wantReason string
 		wantGit    bool
 	}{
 		{name: "confirmed API 404 is already deleted", branchRead: "absent", want: WriteApplied},
-		{name: "API transport failure remains uncertain", branchRead: "transport", want: WriteUncertain},
-		{name: "failed remote read remains uncertain", branchRead: "present", remoteRead: "failed", want: WriteUncertain, wantGit: true},
+		{name: "API transport failure remains uncertain", branchRead: "transport", want: WriteUncertain, wantReason: "source branch could not be read"},
+		{name: "failed remote read remains uncertain", branchRead: "present", remoteRead: "failed", want: WriteUncertain, wantReason: "branch deletion outcome could not be read", wantGit: true},
+		{name: "failed guarded delete with unchanged remote remains retryable", branchRead: "present", remoteRead: "same", want: WriteRetryable, wantReason: "branch deletion should be retried", wantGit: true},
 		{name: "successful empty remote read confirms deletion", branchRead: "present", remoteRead: "absent", want: WriteApplied, wantGit: true},
 	}
 	for _, test := range tests {
@@ -82,6 +85,9 @@ esac
 			})
 			if result.Outcome != test.want {
 				t.Fatalf("DeleteMergedBranch() = %#v, want %q", result, test.want)
+			}
+			if result.Reason != test.wantReason {
+				t.Fatalf("DeleteMergedBranch() reason = %q, want %q", result.Reason, test.wantReason)
 			}
 			_, statErr := os.Stat(gitCalled)
 			if test.wantGit && statErr != nil {

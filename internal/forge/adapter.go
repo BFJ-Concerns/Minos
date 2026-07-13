@@ -19,8 +19,6 @@ type Adapter struct {
 	mergeRetryDelays []time.Duration
 }
 
-const writeRetryable WriteOutcome = "retryable"
-
 var defaultMergeRetryDelays = []time.Duration{
 	250 * time.Millisecond,
 	500 * time.Millisecond,
@@ -182,7 +180,7 @@ func decodeWriteResult(out []byte, runErr error) WriteResult {
 		return WriteResult{Outcome: WriteUncertain, Reason: "decode guarded write result: " + err.Error()}
 	}
 	switch result.Outcome {
-	case WriteApplied, WriteRejected, WriteUncertain:
+	case WriteApplied, WriteRejected, WriteRetryable, WriteUncertain:
 		return result
 	default:
 		return WriteResult{Outcome: WriteUncertain, Reason: "guarded write returned invalid outcome " + string(result.Outcome)}
@@ -197,7 +195,7 @@ func decodeMergeResult(out []byte, runErr error) (WriteResult, bool) {
 	if err := json.Unmarshal(out, &result); err != nil {
 		return decodeWriteResult(out, nil), false
 	}
-	if result.Outcome == writeRetryable {
+	if result.Outcome == WriteRetryable {
 		return result, true
 	}
 	return decodeWriteResult(out, nil), false
