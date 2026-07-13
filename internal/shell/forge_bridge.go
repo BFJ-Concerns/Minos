@@ -37,6 +37,20 @@ type ledgerForgeOwnership struct {
 	key   ledger.Key
 }
 
+// ownedLease resolves both halves of lifecycle authority from the coordination
+// ledger. The attempt environment records where a run began; it cannot remain
+// authoritative after the owner carries a service-authored push.
+func ownedLease(ctx context.Context, store *ledger.Store, key ledger.Key, token int64) (ledger.Lease, error) {
+	lease, found, err := store.Lease(ctx, key)
+	if err != nil {
+		return ledger.Lease{}, err
+	}
+	if !found || lease.Token != token {
+		return ledger.Lease{}, ledger.ErrNotOwner
+	}
+	return lease, nil
+}
+
 func (checker ledgerForgeOwnership) Check(ctx context.Context, ownership forge.Ownership) error {
 	switch ownership.Kind {
 	case forge.OwnershipReconciliation:
@@ -45,14 +59,8 @@ func (checker ledgerForgeOwnership) Check(ctx context.Context, ownership forge.O
 		if ownership.Token <= 0 {
 			return fmt.Errorf("invalid lifecycle ownership token")
 		}
-		owned, err := checker.store.Owns(ctx, checker.key, ownership.Token)
-		if err != nil {
-			return err
-		}
-		if !owned {
-			return ledger.ErrNotOwner
-		}
-		return nil
+		_, err := ownedLease(ctx, checker.store, checker.key, ownership.Token)
+		return err
 	default:
 		return fmt.Errorf("invalid forge ownership kind %q", ownership.Kind)
 	}

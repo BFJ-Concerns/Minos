@@ -99,6 +99,10 @@ func validRetryableExitCategory(category string) bool {
 
 func recordRetryableExit(ctx context.Context, cfg ServiceConfig, facts Facts, store *ledger.Store, token int64, record retryableExitRecord) error {
 	key := coordinationKey(facts)
+	lease, leaseErr := ownedLease(ctx, store, key, token)
+	if leaseErr != nil {
+		return errors.Join(ErrRetryableExit, leaseErr)
+	}
 	backoff, backoffErr := store.RecordFailure(ctx, key, token)
 	disposition := retryableExitDisposition
 	if backoffErr == nil {
@@ -106,15 +110,15 @@ func recordRetryableExit(ctx context.Context, cfg ServiceConfig, facts Facts, st
 	}
 	logPath := filepath.Join(os.Getenv("MINOS_RUN_DIR"), "run.log")
 	incidentErr := recordOperationalIncident(ctx, cfg, store, ledger.Incident{
-		Key: key, Category: record.Category, ObservedHead: facts.HeadSHA,
-		ObservedTarget: os.Getenv("MINOS_TARGET_SHA"), LogLocation: logPath,
+		Key: key, Category: record.Category, ObservedHead: lease.ObservedHead,
+		ObservedTarget: lease.ObservedTarget, LogLocation: logPath,
 	}, incidents.Event{
 		Key: incidents.Key{
 			Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo,
 			PullRequest: facts.PR, Category: record.Category,
 		},
 		Diagnostic: retryableExitDiagnostic, LogPath: logPath, Attempt: int(token),
-		ObservedHead: facts.HeadSHA, ObservedTarget: os.Getenv("MINOS_TARGET_SHA"),
+		ObservedHead: lease.ObservedHead, ObservedTarget: lease.ObservedTarget,
 		RetryDisposition: disposition,
 	})
 	return errors.Join(ErrRetryableExit, backoffErr, incidentErr)

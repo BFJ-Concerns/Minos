@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -128,6 +129,114 @@ func TestForgeCommandMergeReadsSnapshotAndAddsCleanupObligation(t *testing.T) {
 	cleanups, err := store.ListCleanup(t.Context())
 	if err != nil || len(cleanups) != 1 || cleanups[0].MergedHead != facts.HeadSHA || cleanups[0].Branch != "change" {
 		t.Fatalf("cleanup obligations=%#v err=%v", cleanups, err)
+	}
+}
+
+func TestServiceAuthoredMergeAdvanceCarriesEveryFenceThroughTeardown(t *testing.T) {
+	cfg, facts, lease := forgeCommandAttempt(t)
+	reaction, removals := presenceProbe(t, cfg)
+	if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adaptation := cfg.Forges["local"].Adaptation
+	writeScript(t, filepath.Join(adaptation, "guarded-merge"), "#!/bin/sh\nprintf '{\"outcome\":\"applied\"}\\n'\n")
+	merged := forge.Snapshot{
+		AuthenticatedUser: "Minos", Repository: "owner/subject", PullRequest: 7, State: "merged", Merged: true,
+		Author: "alice", HeadSHA: facts.HeadSHA, HeadBranch: "change", HeadRepository: "owner/subject",
+		TargetSHA: "target-2", TargetBranch: "main", TargetRepository: "owner/subject", DefaultBranch: "main",
+	}
+	data, err := json.Marshal(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(adaptation, "snapshot"), "#!/bin/sh\nprintf '%s\\n' "+strconv.Quote(string(data))+"\n")
+	statusArgs := filepath.Join(t.TempDir(), "status-args")
+	writeScript(t, filepath.Join(adaptation, "guarded-set-status"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >"+strconv.Quote(statusArgs)+"\nif [ \"$5\" = target-2 ]; then\n  printf '{\"outcome\":\"applied\"}\\n'\nelse\n  printf '{\"outcome\":\"rejected\",\"reason\":\"stale target\"}\\n'\nfi\n")
+	writeScript(t, filepath.Join(adaptation, "delete-branch"), "#!/bin/sh\nif [ \"$5\" = target-2 ]; then\n  printf '{\"outcome\":\"applied\"}\\n'\nelse\n  printf '{\"outcome\":\"rejected\",\"reason\":\"stale target\"}\\n'\nfi\n")
+
+	if err := ForgeCommand(t.Context(), []string{"merge", "squash"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunGuardCommand(t.Context(), []string{"--config", cfg.Root, "advance", facts.HeadSHA, "target-1", facts.HeadSHA, "target-2"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := currentAttempt(t.Context(), cfg, facts, store, lease.Token)
+	if err != nil || !current {
+		t.Fatalf("advanced attempt current=%v err=%v", current, err)
+	}
+	owned, err := store.Owns(t.Context(), lease.Key, lease.Token)
+	if err != nil || !owned {
+		t.Fatalf("advanced token owns=%v err=%v", owned, err)
+	}
+
+	var failures []error
+	if err := ForgeCommand(t.Context(), []string{"status", "merged"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
+		failures = append(failures, err)
+	}
+	if err := ForgeCommand(t.Context(), []string{"cleanup"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
+		failures = append(failures, err)
+	}
+	forgeConfig := cfg.Forges[facts.Forge]
+	adapt, err := NewAdaptation(forgeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := releaseRun(t.Context(), adapt, facts, store, lease.Token); err != nil {
+		failures = append(failures, err)
+	}
+	if err := closeRunLease(t.Context(), cfg, facts, store, lease.Token); err != nil {
+		failures = append(failures, err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("post-merge teardown failures: %v", errors.Join(failures...))
+	}
+	if _, found, err := store.Lease(t.Context(), lease.Key); err != nil || found {
+		t.Errorf("lease remains found=%v err=%v", found, err)
+	}
+	if cleanup, found, err := store.Cleanup(t.Context(), lease.Key); err != nil || found {
+		t.Errorf("cleanup remains=%#v found=%v err=%v", cleanup, found, err)
+	}
+	store.Close()
+	assertPresenceClosed(t, reaction, removals)
+	arguments, err := os.ReadFile(statusArgs)
+	if err != nil || !strings.Contains(string(arguments), "head-1 target-2 Minos Minos success Merged") {
+		t.Errorf("terminal status arguments=%q err=%v", arguments, err)
+	}
+}
+
+func TestUnrelatedTargetMovementRemainsStaleWithoutOwnerAdvance(t *testing.T) {
+	cfg, facts, lease := forgeCommandAttempt(t)
+	adaptation := cfg.Forges["local"].Adaptation
+	moved := forge.Snapshot{
+		AuthenticatedUser: "Minos", Repository: "owner/subject", PullRequest: 7, State: "open",
+		Author: "alice", HeadSHA: facts.HeadSHA, HeadBranch: "change", HeadRepository: "owner/subject",
+		TargetSHA: "target-2", TargetBranch: "main", TargetRepository: "owner/subject", DefaultBranch: "main",
+	}
+	data, err := json.Marshal(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(adaptation, "snapshot"), "#!/bin/sh\nprintf '%s\\n' "+strconv.Quote(string(data))+"\n")
+	writeScript(t, filepath.Join(adaptation, "guarded-set-status"), "#!/bin/sh\nif [ \"$5\" = target-2 ]; then\n  printf '{\"outcome\":\"applied\"}\\n'\nelse\n  printf '{\"outcome\":\"rejected\",\"reason\":\"stale target\"}\\n'\nfi\n")
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	current, err := currentAttempt(t.Context(), cfg, facts, store, lease.Token)
+	if err != nil || current {
+		t.Fatalf("unadvanced attempt current=%v err=%v", current, err)
+	}
+	if err := ForgeCommand(t.Context(), []string{"status", "merged"}, strings.NewReader(""), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "stale target") {
+		t.Fatalf("unrelated movement status error=%v, want stale target rejection", err)
+	}
+	currentLease, found, err := store.Lease(t.Context(), lease.Key)
+	if err != nil || !found || currentLease.ObservedTarget != "target-1" {
+		t.Fatalf("unrelated movement changed lease=%#v found=%v err=%v", currentLease, found, err)
 	}
 }
 

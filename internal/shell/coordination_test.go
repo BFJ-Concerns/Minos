@@ -802,6 +802,43 @@ func TestRunWrapTreatsDeclaredRetryableExitAsOperationalFailure(t *testing.T) {
 	assertPresenceClosed(t, reaction, removals)
 }
 
+func TestRetryableExitAfterOwnerAdvanceUsesCarriedIncidentPair(t *testing.T) {
+	cfg, _, facts := coordinationConfig(t)
+	lease, _, reaction, removals := prepareRunWrapAttempt(t, cfg, facts, "#!/bin/sh\nexit 0\n")
+	original := runBodyCommandForWrap
+	defer func() { runBodyCommandForWrap = original }()
+	runBodyCommandForWrap = func(ctx context.Context) (*exec.Cmd, error) {
+		if err := RunGuardCommand(ctx, []string{"--config", cfg.Root, "advance", facts.HeadSHA, "target-1", facts.HeadSHA, "target-2"}); err != nil {
+			return nil, err
+		}
+		if err := RunGuardCommand(ctx, []string{"--config", cfg.Root, "retryable-exit", "forge-unavailable"}); err != nil {
+			return nil, err
+		}
+		return exec.CommandContext(ctx, "true"), nil
+	}
+
+	if err := RunWrapCommand(t.Context(), []string{"--config", cfg.Root}); err == nil {
+		t.Fatal("retryable exit was recorded as successful")
+	}
+	verify, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verify.Close()
+	if _, found, err := verify.Lease(t.Context(), lease.Key); err != nil || found {
+		t.Fatalf("lease remains found=%v err=%v", found, err)
+	}
+	ledgerIncidents, err := verify.ListIncidents(t.Context())
+	if err != nil || len(ledgerIncidents) != 1 || ledgerIncidents[0].ObservedHead != facts.HeadSHA || ledgerIncidents[0].ObservedTarget != "target-2" {
+		t.Fatalf("carried ledger incident=%#v err=%v", ledgerIncidents, err)
+	}
+	operatorIncidents, err := incidents.NewFileStore(cfg.Root).List(t.Context())
+	if err != nil || len(operatorIncidents) != 1 || operatorIncidents[0].ObservedHead != facts.HeadSHA || operatorIncidents[0].ObservedTarget != "target-2" {
+		t.Fatalf("carried operator incident=%#v err=%v", operatorIncidents, err)
+	}
+	assertPresenceClosed(t, reaction, removals)
+}
+
 func TestReconciliationQueuesOwnerlessWorkingStatusDuringBackoff(t *testing.T) {
 	cfg, repo, facts := coordinationConfig(t)
 	captured := filepath.Join(t.TempDir(), "status-args")
@@ -1004,6 +1041,9 @@ func TestMutationFenceRejectsSupersededToken(t *testing.T) {
 	t.Setenv("MINOS_ATTEMPT_TOKEN", fmtInt(first.Token))
 	if err := guardAdaptationMutation(t.Context()); !errors.Is(err, ledger.ErrNotOwner) {
 		t.Fatalf("guard error=%v, want ErrNotOwner", err)
+	}
+	if err := guardRunClaimMutation(t.Context()); !errors.Is(err, ledger.ErrNotOwner) {
+		t.Fatalf("run-claim guard error=%v, want ErrNotOwner", err)
 	}
 }
 

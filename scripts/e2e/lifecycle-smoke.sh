@@ -551,6 +551,13 @@ else
   "$minos" forge status clean
   "$minos" run-guard --config "$MINOS_CONFIG" clearance "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA"
   "$minos" forge merge squash
+  # The confirmed service-authored merge advances the target. Carry that
+  # movement through the ledger before terminal presentation and teardown.
+  merged_snapshot="$($minos forge snapshot)"
+  merged_head="$(jq -r .head_sha <<<"$merged_snapshot")"
+  merged_target="$(jq -r .target_sha <<<"$merged_snapshot")"
+  "$minos" run-guard --config "$MINOS_CONFIG" advance \
+    "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA" "$merged_head" "$merged_target"
   "$minos" forge status merged
   # Cleanup recovery fixtures stop after the merge obligation is durable. The
   # harness then changes the branch state and lets the ordinary sweep decide.
