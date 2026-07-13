@@ -520,6 +520,18 @@ elif [[ "$branch" == durable-*-kill-* ]]; then
   "$minos" forge status "$durable_state"
   printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/durable-${durable_state}-kill-ready"
   while :; do sleep 1; done
+elif [[ "$branch" == retryable-exit-* && ! -e "$control_root/retryable-exit-attempted" ]]; then
+  # Reproduce the live attempt shape: no review or terminal product is
+  # published, the lead declares a retryable operational failure, and its
+  # outer session still returns normally.
+  printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/retryable-exit-attempted"
+  printf '%s\n' '{"schema":1,"input_tokens":0,"output_tokens":0,"prompt_start_tokens":0,"prompt_peak_tokens":0,"prompt_growth_tokens":0,"compaction_events":0,"stream_bytes":0}' >"$MINOS_RUN_DIR/lead-metrics.json"
+  "$minos" run-guard --config "$MINOS_CONFIG" retryable-exit stale-oauth
+  exit 0
+elif [[ "$branch" == retryable-exit-* ]]; then
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  "$minos" forge status stopped
 elif [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ]]; then
   if [[ "$branch" == missed-webhook-* ]]; then
     : >"$control_root/missed-webhook-ready"
@@ -539,6 +551,13 @@ else
   "$minos" forge status clean
   "$minos" run-guard --config "$MINOS_CONFIG" clearance "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA"
   "$minos" forge merge squash
+  # The confirmed service-authored merge advances the target. Carry that
+  # movement through the ledger before terminal presentation and teardown.
+  merged_snapshot="$($minos forge snapshot)"
+  merged_head="$(jq -r .head_sha <<<"$merged_snapshot")"
+  merged_target="$(jq -r .target_sha <<<"$merged_snapshot")"
+  "$minos" run-guard --config "$MINOS_CONFIG" advance \
+    "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA" "$merged_head" "$merged_target"
   "$minos" forge status merged
   # Cleanup recovery fixtures stop after the merge obligation is durable. The
   # harness then changes the branch state and lets the ordinary sweep decide.
@@ -561,7 +580,7 @@ receiver_pid="$!"
 wait_until 'receiver ready' grep -q 'receiver listening' "$work/logs/receiver.log"
 
 if [[ -z "$journeys" ]]; then
-  journeys="clean,stopped"
+  journeys="clean,stopped,retryable-exit"
   [[ "$live" != clean ]] || journeys="clean"
   [[ "$live" != stopped ]] || journeys="stopped"
 fi
@@ -594,6 +613,10 @@ if journey_enabled stopped; then
   wait_until 'findings eyes removed' eyes_absent "$stopped_pr"
   wait_until 'findings instrumentation written' instrumented "$stopped_pr"
   one_session "$stopped_pr"
+fi
+
+if journey_enabled retryable-exit; then
+  run_retryable_exit_journey
 fi
 
 if journey_enabled missed-webhook; then

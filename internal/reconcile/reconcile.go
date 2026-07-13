@@ -78,55 +78,60 @@ const (
 )
 
 type Decision struct {
-	Kind   DecisionKind
-	Reason string
+	Kind         DecisionKind
+	Reason       string
+	ResetWorking bool
 }
 
 func Decide(snapshot ForgeSnapshot, view View, now time.Time) Decision {
+	resetWorking := view.Lease == nil && snapshot.Product == product.Working() && snapshot.Open && !snapshot.Merged && !(snapshot.Draft && snapshot.SkipDrafts) && snapshot.AuthorInScope
+	decision := func(kind DecisionKind, reason string) Decision {
+		return Decision{Kind: kind, Reason: reason, ResetWorking: resetWorking}
+	}
 	if view.Cleanup != nil {
-		return Decision{Kind: CleanUp, Reason: "post-merge branch cleanup is owed"}
+		return decision(CleanUp, "post-merge branch cleanup is owed")
 	}
 	if view.Lease != nil {
 		if now.Sub(view.Lease.HeartbeatAt) < view.LivenessWindow {
-			return Decision{Kind: Live, Reason: "current lease heartbeat is live"}
+			return decision(Live, "current lease heartbeat is live")
 		}
 		if reason, served := productServed(snapshot); served {
-			return Decision{Kind: Reap, Reason: reason}
+			return decision(Reap, reason)
 		}
-		return Decision{Kind: Replace, Reason: "lease heartbeat is stale"}
+		return decision(Replace, "lease heartbeat is stale")
 	}
 	if !snapshot.Open || snapshot.Merged {
-		return Decision{Kind: Nothing, Reason: "pull request is not open"}
+		return decision(Nothing, "pull request is not open")
 	}
 	if snapshot.Draft && snapshot.SkipDrafts {
-		return Decision{Kind: Nothing, Reason: "drafts are excluded by policy"}
+		return decision(Nothing, "drafts are excluded by policy")
 	}
 	if !snapshot.AuthorInScope {
-		return Decision{Kind: Nothing, Reason: "author or occasion is outside eligibility"}
+		return decision(Nothing, "author or occasion is outside eligibility")
 	}
 	if view.Backoff != nil && now.Before(view.Backoff.NextDueAt) {
-		return Decision{Kind: Nothing, Reason: "operational backoff is not due"}
+		return decision(Nothing, "operational backoff is not due")
 	}
 	fingerprint := WaitFingerprint(snapshot)
 	if snapshot.Product == product.Waiting() {
 		if waitCurrent(view.Wait, fingerprint, now) {
-			return Decision{Kind: Nothing, Reason: "wait fingerprint is current"}
+			return decision(Nothing, "wait fingerprint is current")
 		}
-		return Decision{Kind: Admit, Reason: "wait fingerprint changed or failsafe expired"}
+		return decision(Admit, "wait fingerprint changed or failsafe expired")
 	}
 	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == "" {
-		return Decision{Kind: Admit, Reason: "blocked result has no authoritative re-entry discriminator"}
+		return decision(Admit, "blocked result has no authoritative re-entry discriminator")
 	}
 	if reason, served := productServed(snapshot); served {
-		return Decision{Kind: Nothing, Reason: reason}
+		return decision(Nothing, reason)
 	}
 	if snapshot.Product == product.Blocked() && snapshot.ProductBlockKind == PermissionBlock {
-		return Decision{Kind: Admit, Reason: "permission readiness or trusted policy changed"}
+		return decision(Admit, "permission readiness or trusted policy changed")
 	}
 	if snapshot.Product == product.Merged() {
-		return Decision{Kind: Nothing, Reason: "pull request is already merged"}
+		return decision(Nothing, "pull request is already merged")
 	}
-	return Decision{Kind: Admit, Reason: "eligible current state requires a lifecycle"}
+	return decision(Admit, "eligible current state requires a lifecycle")
 }
 
 func productPairServed(snapshot ForgeSnapshot) bool {

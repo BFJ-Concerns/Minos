@@ -22,7 +22,7 @@ func ForgeCommand(ctx context.Context, args []string, _ io.Reader, stdout io.Wri
 	if len(args) == 0 {
 		return fmt.Errorf("usage: minos forge snapshot|wait-fingerprint|status|review|push|merge|cleanup [arguments]")
 	}
-	cfg, repo, facts, store, token, adapter, guard, err := loadForgeCommand()
+	cfg, repo, facts, store, token, adapter, guard, err := loadForgeCommand(ctx)
 	if err != nil {
 		return err
 	}
@@ -82,8 +82,8 @@ func ForgeCommand(ctx context.Context, args []string, _ io.Reader, stdout io.Wri
 		}
 		record := map[string]string{
 			"governing": governingIdentity(repo),
-			"head":      facts.HeadSHA,
-			"target":    os.Getenv("MINOS_TARGET_SHA"),
+			"head":      guard.HeadSHA,
+			"target":    guard.TargetSHA,
 		}
 		if blockKind != "" {
 			record["block-kind"] = string(blockKind)
@@ -106,7 +106,7 @@ func ForgeCommand(ctx context.Context, args []string, _ io.Reader, stdout io.Wri
 			Branch: args[1], AuthorName: args[2], AuthorEmail: args[3], MessageFile: args[4], Workspace: os.Getenv("MINOS_WORKSPACE"),
 		})
 		if result.Outcome == forge.WriteApplied {
-			updated, updateErr := store.UpdateObservedPair(ctx, coordinationKey(facts), token, facts.HeadSHA, os.Getenv("MINOS_TARGET_SHA"), result.SHA, os.Getenv("MINOS_TARGET_SHA"))
+			updated, updateErr := store.UpdateObservedPair(ctx, coordinationKey(facts), token, guard.HeadSHA, guard.TargetSHA, result.SHA, guard.TargetSHA)
 			if updateErr != nil {
 				return updateErr
 			}
@@ -127,7 +127,7 @@ func ForgeCommand(ctx context.Context, args []string, _ io.Reader, stdout io.Wri
 			if snapshotErr != nil {
 				return snapshotErr
 			}
-			if !snapshot.Merged || snapshot.HeadSHA != facts.HeadSHA {
+			if !snapshot.Merged || snapshot.HeadSHA != guard.HeadSHA {
 				return fmt.Errorf("merge reported applied without matching merged snapshot")
 			}
 			if err := store.AddCleanup(ctx, ledger.Cleanup{Key: coordinationKey(facts), MergedHead: snapshot.HeadSHA, Branch: snapshot.HeadBranch}); err != nil {
@@ -143,7 +143,7 @@ func ForgeCommand(ctx context.Context, args []string, _ io.Reader, stdout io.Wri
 		if err != nil {
 			return err
 		}
-		if !snapshot.Merged || snapshot.HeadSHA != facts.HeadSHA {
+		if !snapshot.Merged || snapshot.HeadSHA != guard.HeadSHA {
 			return fmt.Errorf("cleanup requires a confirmed merge of the observed head")
 		}
 		result := adapter.DeleteMergedBranch(ctx, guard)
@@ -163,7 +163,7 @@ func ForgeCommand(ctx context.Context, args []string, _ io.Reader, stdout io.Wri
 	}
 }
 
-func loadForgeCommand() (ServiceConfig, RepoConfig, Facts, *ledger.Store, int64, *forge.Adapter, forge.Guard, error) {
+func loadForgeCommand(ctx context.Context) (ServiceConfig, RepoConfig, Facts, *ledger.Store, int64, *forge.Adapter, forge.Guard, error) {
 	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
 		return ServiceConfig{}, RepoConfig{}, Facts{}, nil, 0, nil, forge.Guard{}, err
@@ -182,6 +182,11 @@ func loadForgeCommand() (ServiceConfig, RepoConfig, Facts, *ledger.Store, int64,
 		store.Close()
 		return ServiceConfig{}, RepoConfig{}, Facts{}, nil, 0, nil, forge.Guard{}, err
 	}
+	lease, err := ownedLease(ctx, store, coordinationKey(facts), token)
+	if err != nil {
+		store.Close()
+		return ServiceConfig{}, RepoConfig{}, Facts{}, nil, 0, nil, forge.Guard{}, err
+	}
 	adapter, err := newBehaviouralForge(cfg, facts.Forge, ledgerForgeOwnership{store: store, key: coordinationKey(facts)})
 	if err != nil {
 		store.Close()
@@ -194,7 +199,7 @@ func loadForgeCommand() (ServiceConfig, RepoConfig, Facts, *ledger.Store, int64,
 	}
 	guard := forge.Guard{
 		Ownership: forge.LifecycleOwnership(token), Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo},
-		PullRequest: pullRequest, HeadSHA: facts.HeadSHA, TargetSHA: os.Getenv("MINOS_TARGET_SHA"),
+		PullRequest: pullRequest, HeadSHA: lease.ObservedHead, TargetSHA: lease.ObservedTarget,
 	}
 	return cfg, repo, facts, store, token, adapter, guard, nil
 }

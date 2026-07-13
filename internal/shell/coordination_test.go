@@ -684,6 +684,42 @@ func TestFailedSuccessorLaunchClosesPresenceAndReplacementLease(t *testing.T) {
 	}
 }
 
+func prepareRunWrapAttempt(t *testing.T, cfg ServiceConfig, facts Facts, prepare string) (ledger.Lease, string, string, string) {
+	t.Helper()
+	reaction, removals := presenceProbe(t, cfg)
+	if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapt := cfg.Forges["local"].Adaptation
+	writeScript(t, filepath.Join(adapt, "prepare-workspace"), prepare)
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	lease, err := store.AcquireLease(t.Context(), ledger.Lease{Key: coordinationKey(facts), ObservedHead: facts.HeadSHA, ObservedTarget: "target-1", Unit: "unit", Workspace: workspace}, 2)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	store.Close()
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
+	t.Setenv("MINOS_HEAD_SHA", facts.HeadSHA)
+	t.Setenv("MINOS_TARGET_SHA", "target-1")
+	t.Setenv("MINOS_BASE_REF", facts.BaseRef)
+	t.Setenv("MINOS_ATTEMPT_TOKEN", fmtInt(lease.Token))
+	runDir := RunDir(cfg.Runs.Dir, facts, lease.Token)
+	t.Setenv("MINOS_RUN_DIR", runDir)
+	t.Setenv("MINOS_WORKSPACE", workspace)
+	t.Setenv("MINOS_DIFF", filepath.Join(t.TempDir(), "diff"))
+	t.Setenv("MINOS_UNIT", "unit")
+	return lease, runDir, reaction, removals
+}
+
 func TestRunWrapReleasesLeaseOnEveryExit(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -698,36 +734,7 @@ func TestRunWrapReleasesLeaseOnEveryExit(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			cfg, _, facts := coordinationConfig(t)
-			reaction, removals := presenceProbe(t, cfg)
-			if err := os.WriteFile(reaction, []byte("present"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			adapt := cfg.Forges["local"].Adaptation
-			writeScript(t, filepath.Join(adapt, "prepare-workspace"), test.prepare)
-			store, err := ledger.Open(ledgerPath(cfg))
-			if err != nil {
-				t.Fatal(err)
-			}
-			workspace := filepath.Join(t.TempDir(), "workspace")
-			lease, err := store.AcquireLease(t.Context(), ledger.Lease{Key: coordinationKey(facts), ObservedHead: facts.HeadSHA, ObservedTarget: "target-1", Unit: "unit", Workspace: workspace}, 2)
-			if err != nil {
-				t.Fatal(err)
-			}
-			store.Close()
-			t.Setenv("MINOS_CONFIG", cfg.Root)
-			t.Setenv("MINOS_FORGE", facts.Forge)
-			t.Setenv("MINOS_OWNER", facts.Owner)
-			t.Setenv("MINOS_REPO_NAME", facts.Repo)
-			t.Setenv("MINOS_PR", facts.PR)
-			t.Setenv("MINOS_HEAD_SHA", facts.HeadSHA)
-			t.Setenv("MINOS_TARGET_SHA", "target-1")
-			t.Setenv("MINOS_BASE_REF", facts.BaseRef)
-			t.Setenv("MINOS_ATTEMPT_TOKEN", fmtInt(lease.Token))
-			runDir := RunDir(cfg.Runs.Dir, facts, lease.Token)
-			t.Setenv("MINOS_RUN_DIR", runDir)
-			t.Setenv("MINOS_WORKSPACE", workspace)
-			t.Setenv("MINOS_DIFF", filepath.Join(t.TempDir(), "diff"))
-			t.Setenv("MINOS_UNIT", "unit")
+			lease, runDir, reaction, removals := prepareRunWrapAttempt(t, cfg, facts, test.prepare)
 			original := runBodyCommandForWrap
 			runBodyCommandForWrap = test.body
 			defer func() { runBodyCommandForWrap = original }()
@@ -747,6 +754,159 @@ func TestRunWrapReleasesLeaseOnEveryExit(t *testing.T) {
 			}
 			assertPresenceClosed(t, reaction, removals)
 		})
+	}
+}
+
+func TestRunWrapTreatsDeclaredRetryableExitAsOperationalFailure(t *testing.T) {
+	cfg, _, facts := coordinationConfig(t)
+	lease, runDir, reaction, removals := prepareRunWrapAttempt(t, cfg, facts, "#!/bin/sh\nexit 0\n")
+	original := runBodyCommandForWrap
+	defer func() { runBodyCommandForWrap = original }()
+	runBodyCommandForWrap = func(ctx context.Context) (*exec.Cmd, error) {
+		if err := RunGuardCommand(ctx, []string{"--config", cfg.Root, "retryable-exit", "stale-oauth"}); err != nil {
+			return nil, err
+		}
+		return exec.CommandContext(ctx, "true"), nil
+	}
+
+	err := RunWrapCommand(t.Context(), []string{"--config", cfg.Root})
+	if err == nil {
+		t.Fatal("retryable exit was recorded as successful")
+	}
+	verify, openErr := ledger.Open(ledgerPath(cfg))
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	defer verify.Close()
+	if _, found, lookupErr := verify.Lease(t.Context(), lease.Key); lookupErr != nil || found {
+		t.Fatalf("lease remains found=%v err=%v", found, lookupErr)
+	}
+	backoff, found, lookupErr := verify.Backoff(t.Context(), lease.Key)
+	if lookupErr != nil || !found || backoff.Attempt != 1 {
+		t.Fatalf("backoff=%#v found=%v err=%v", backoff, found, lookupErr)
+	}
+	ledgerIncidents, lookupErr := verify.ListIncidents(t.Context())
+	if lookupErr != nil || len(ledgerIncidents) != 1 || ledgerIncidents[0].Category != "stale-oauth" {
+		t.Fatalf("ledger incidents=%#v err=%v", ledgerIncidents, lookupErr)
+	}
+	operatorIncidents, lookupErr := incidents.NewFileStore(cfg.Root).List(t.Context())
+	if lookupErr != nil || len(operatorIncidents) != 1 || operatorIncidents[0].Key.Category != "stale-oauth" {
+		t.Fatalf("operator incidents=%#v err=%v", operatorIncidents, lookupErr)
+	}
+	if !strings.HasPrefix(operatorIncidents[0].RetryDisposition, "retry after ") {
+		t.Fatalf("retry disposition=%q", operatorIncidents[0].RetryDisposition)
+	}
+	if _, statErr := os.Stat(filepath.Join(runDir, retryableExitMarkerName)); statErr != nil {
+		t.Fatalf("retryable-exit evidence is unavailable: %v", statErr)
+	}
+	assertPresenceClosed(t, reaction, removals)
+}
+
+func TestRetryableExitAfterOwnerAdvanceUsesCarriedIncidentPair(t *testing.T) {
+	cfg, _, facts := coordinationConfig(t)
+	lease, _, reaction, removals := prepareRunWrapAttempt(t, cfg, facts, "#!/bin/sh\nexit 0\n")
+	original := runBodyCommandForWrap
+	defer func() { runBodyCommandForWrap = original }()
+	runBodyCommandForWrap = func(ctx context.Context) (*exec.Cmd, error) {
+		if err := RunGuardCommand(ctx, []string{"--config", cfg.Root, "advance", facts.HeadSHA, "target-1", facts.HeadSHA, "target-2"}); err != nil {
+			return nil, err
+		}
+		if err := RunGuardCommand(ctx, []string{"--config", cfg.Root, "retryable-exit", "forge-unavailable"}); err != nil {
+			return nil, err
+		}
+		return exec.CommandContext(ctx, "true"), nil
+	}
+
+	if err := RunWrapCommand(t.Context(), []string{"--config", cfg.Root}); err == nil {
+		t.Fatal("retryable exit was recorded as successful")
+	}
+	verify, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verify.Close()
+	if _, found, err := verify.Lease(t.Context(), lease.Key); err != nil || found {
+		t.Fatalf("lease remains found=%v err=%v", found, err)
+	}
+	ledgerIncidents, err := verify.ListIncidents(t.Context())
+	if err != nil || len(ledgerIncidents) != 1 || ledgerIncidents[0].ObservedHead != facts.HeadSHA || ledgerIncidents[0].ObservedTarget != "target-2" {
+		t.Fatalf("carried ledger incident=%#v err=%v", ledgerIncidents, err)
+	}
+	operatorIncidents, err := incidents.NewFileStore(cfg.Root).List(t.Context())
+	if err != nil || len(operatorIncidents) != 1 || operatorIncidents[0].ObservedHead != facts.HeadSHA || operatorIncidents[0].ObservedTarget != "target-2" {
+		t.Fatalf("carried operator incident=%#v err=%v", operatorIncidents, err)
+	}
+	assertPresenceClosed(t, reaction, removals)
+}
+
+func TestReconciliationQueuesOwnerlessWorkingStatusDuringBackoff(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	captured := filepath.Join(t.TempDir(), "status-args")
+	writeScript(t, filepath.Join(cfg.Forges["local"].Adaptation, "guarded-set-status"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >"+strconv.Quote(captured)+"\nprintf '{\"outcome\":\"applied\"}\\n'\n")
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	lease, err := store.AcquireLease(t.Context(), ledger.Lease{Key: coordinationKey(facts), ObservedHead: facts.HeadSHA, ObservedTarget: "target-1", Unit: "unit", Workspace: t.TempDir()}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backoff, err := store.RecordFailure(t.Context(), lease.Key, lease.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released, releaseErr := store.ReleaseLease(t.Context(), lease.Key, lease.Token); releaseErr != nil || !released {
+		t.Fatalf("release=%v err=%v", released, releaseErr)
+	}
+	snapshot := reconcile.ForgeSnapshot{
+		Key: lease.Key, HeadSHA: facts.HeadSHA, TargetSHA: "target-1",
+		Open: true, AuthorInScope: true, Product: product.Working(),
+	}
+	view := reconcile.View{Backoff: &backoff, LivenessWindow: cfg.Sweep.LivenessThreshold.Duration}
+	decision := reconcile.Decide(snapshot, view, time.Now())
+	if decision.Kind != reconcile.Nothing {
+		t.Fatalf("decision=%s, want nothing before backoff is due", decision.Kind)
+	}
+	original := systemdRunCommand
+	defer func() { systemdRunCommand = original }()
+	systemdRunCommand = func(context.Context, string, ...string) *exec.Cmd {
+		t.Fatal("reconciliation launched during operational backoff")
+		return nil
+	}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, decision, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatalf("queued status was not published: %v", err)
+	}
+	if !strings.Contains(string(arguments), "Minos pending Waiting for review") {
+		t.Fatalf("queued status arguments=%q", arguments)
+	}
+
+	// Once the backoff is due, the same shared reconciliation seam admits a
+	// fresh attempt from the queued presentation.
+	due := backoff
+	due.NextDueAt = time.Now().Add(-time.Second)
+	snapshot.Product = product.Queued()
+	decision = reconcile.Decide(snapshot, reconcile.View{Backoff: &due, LivenessWindow: cfg.Sweep.LivenessThreshold.Duration}, time.Now())
+	if decision.Kind != reconcile.Admit {
+		t.Fatalf("due decision=%s, want admit", decision.Kind)
+	}
+	var launches atomic.Int32
+	systemdRunCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		launches.Add(1)
+		return exec.CommandContext(ctx, "true")
+	}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, decision, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+	if launches.Load() != 1 {
+		t.Fatalf("successor launches=%d, want 1", launches.Load())
+	}
+	if _, found, err := store.Lease(t.Context(), lease.Key); err != nil || !found {
+		t.Fatalf("successor lease found=%v err=%v", found, err)
 	}
 }
 
@@ -881,6 +1041,9 @@ func TestMutationFenceRejectsSupersededToken(t *testing.T) {
 	t.Setenv("MINOS_ATTEMPT_TOKEN", fmtInt(first.Token))
 	if err := guardAdaptationMutation(t.Context()); !errors.Is(err, ledger.ErrNotOwner) {
 		t.Fatalf("guard error=%v, want ErrNotOwner", err)
+	}
+	if err := guardRunClaimMutation(t.Context()); !errors.Is(err, ledger.ErrNotOwner) {
+		t.Fatalf("run-claim guard error=%v, want ErrNotOwner", err)
 	}
 }
 

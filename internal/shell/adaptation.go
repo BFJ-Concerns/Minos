@@ -57,7 +57,13 @@ func (a Adaptation) runClaimMutation(ctx context.Context, name string, args ...s
 	if !runClaimMutationOperations[name] {
 		return nil, fmt.Errorf("adaptation operation %q is not run-claim state", name)
 	}
-	return a.run(ctx, name, nil, nil, args...)
+	// Eyes represent the current token-owned lease, not the immutable pair at
+	// which the process was launched. An authorised ledger advance must therefore
+	// carry claim and release without weakening ordinary forge mutations.
+	if err := guardRunClaimMutation(ctx); err != nil {
+		return nil, fmt.Errorf("fence forge mutation %s: %w", name, err)
+	}
+	return a.runUnchecked(ctx, name, nil, nil, args...)
 }
 
 func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
@@ -71,6 +77,10 @@ func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extra
 			return nil, fmt.Errorf("fence forge mutation %s: %w", name, err)
 		}
 	}
+	return a.runUnchecked(ctx, name, stdin, extraEnv, args...)
+}
+
+func (a Adaptation) runUnchecked(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
 	path := filepath.Join(a.Dir, name)
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdin = stdin
@@ -90,6 +100,14 @@ func (a Adaptation) run(ctx context.Context, name string, stdin io.Reader, extra
 }
 
 func guardAdaptationMutation(ctx context.Context) error {
+	return guardAttemptMutation(ctx, true)
+}
+
+func guardRunClaimMutation(ctx context.Context) error {
+	return guardAttemptMutation(ctx, false)
+}
+
+func guardAttemptMutation(ctx context.Context, requireLaunchPair bool) error {
 	value := os.Getenv("MINOS_ATTEMPT_TOKEN")
 	if value == "" {
 		// Receiver/sweep-owned guarded operations do not belong to a lifecycle
@@ -110,11 +128,11 @@ func guardAdaptationMutation(ctx context.Context) error {
 	}
 	defer store.Close()
 	facts := envFacts(os.Getenv("MINOS_FORGE"))
-	lease, found, err := store.Lease(ctx, coordinationKey(facts))
+	lease, err := ownedLease(ctx, store, coordinationKey(facts), token)
 	if err != nil {
 		return err
 	}
-	if !found || lease.Token != token || lease.ObservedHead != facts.HeadSHA || lease.ObservedTarget != os.Getenv("MINOS_TARGET_SHA") {
+	if requireLaunchPair && (lease.ObservedHead != facts.HeadSHA || lease.ObservedTarget != os.Getenv("MINOS_TARGET_SHA")) {
 		return ledger.ErrNotOwner
 	}
 	return nil

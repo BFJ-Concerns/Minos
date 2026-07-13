@@ -132,6 +132,13 @@ func RunWrapCommand(ctx context.Context, args []string) (err error) {
 		_, backoffErr := store.RecordFailure(context.Background(), key, token)
 		return errors.Join(err, backoffErr)
 	}
+	retryable, declared, err := readRetryableExitRecord(runDir)
+	if err != nil {
+		return errors.Join(err, recordRetryableExit(context.Background(), cfg, facts, store, token, retryableExitRecord{Category: "retryable-exit-record"}))
+	}
+	if declared {
+		return recordRetryableExit(context.Background(), cfg, facts, store, token, retryable)
+	}
 	cleared, err := store.ClearBackoff(context.Background(), key, token)
 	if err != nil {
 		return fmt.Errorf("clear operational backoff: %w", err)

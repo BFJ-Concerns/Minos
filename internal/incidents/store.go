@@ -47,29 +47,31 @@ func (key Key) validate() error {
 }
 
 type Event struct {
-	Key            Key
-	Diagnostic     string
-	LogPath        string
-	Attempt        int
-	ObservedHead   string
-	ObservedTarget string
-	At             time.Time
+	Key              Key
+	Diagnostic       string
+	LogPath          string
+	RetryDisposition string
+	Attempt          int
+	ObservedHead     string
+	ObservedTarget   string
+	At               time.Time
 }
 
 type Incident struct {
-	Key            Key        `json:"key"`
-	State          State      `json:"state"`
-	Diagnostic     string     `json:"diagnostic"`
-	LogPath        string     `json:"log_path"`
-	FirstSeenAt    time.Time  `json:"first_seen_at"`
-	LastSeenAt     time.Time  `json:"last_seen_at"`
-	Updates        int        `json:"updates"`
-	Attempt        int        `json:"attempt"`
-	ObservedHead   string     `json:"observed_head,omitempty"`
-	ObservedTarget string     `json:"observed_target,omitempty"`
-	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
-	AcknowledgedBy string     `json:"acknowledged_by,omitempty"`
-	RecoveredAt    *time.Time `json:"recovered_at,omitempty"`
+	Key              Key        `json:"key"`
+	State            State      `json:"state"`
+	Diagnostic       string     `json:"diagnostic"`
+	LogPath          string     `json:"log_path"`
+	RetryDisposition string     `json:"retry_disposition,omitempty"`
+	FirstSeenAt      time.Time  `json:"first_seen_at"`
+	LastSeenAt       time.Time  `json:"last_seen_at"`
+	Updates          int        `json:"updates"`
+	Attempt          int        `json:"attempt"`
+	ObservedHead     string     `json:"observed_head,omitempty"`
+	ObservedTarget   string     `json:"observed_target,omitempty"`
+	AcknowledgedAt   *time.Time `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy   string     `json:"acknowledged_by,omitempty"`
+	RecoveredAt      *time.Time `json:"recovered_at,omitempty"`
 }
 
 type Store interface {
@@ -104,6 +106,7 @@ func (store *FileStore) Raise(_ context.Context, event Event) (Incident, error) 
 		}
 		current.Diagnostic = event.Diagnostic
 		current.LogPath = event.LogPath
+		current.RetryDisposition = event.RetryDisposition
 		current.Attempt = event.Attempt
 		current.ObservedHead = event.ObservedHead
 		current.ObservedTarget = event.ObservedTarget

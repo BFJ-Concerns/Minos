@@ -45,11 +45,14 @@ Take the retryable-exit lane:
 1. Write **no** product-state failure and **no** terminal marker to the PR — an
    operational failure is not a product state. The head is left looking exactly
    like a never-run head.
-2. Close exactly as every controlled exit closes (`lifecycle.md` step 9):
-   **remove the eyes reaction first, then release the lease strictly last** — the
-   order never inverts, on a failure exit any more than on a product exit.
-3. Exit so that reconciliation re-derives and a fresh successor attempts the
-   remaining journey.
+2. Run `"$MINOS_BIN" run-guard --config "$MINOS_CONFIG" retryable-exit
+   FAILURE_CATEGORY`. Use exactly `host-capacity`, `engine-unavailable`,
+   `stale-oauth`, `forge-unavailable`, or `network-unavailable` according to the
+   failed dependency, never raw backend text. The command durably declares the
+   failure, then removes eyes.
+3. Exit immediately. The wrapper records the incident and backoff, then releases
+   the lease strictly last so reconciliation re-derives and a fresh successor
+   attempts the remaining journey.
 
 The ledger's attempt/backoff record paces the re-launch (exponential, from minutes
 to a capped few hours, indefinitely — there is no fixed attempt ceiling: the
