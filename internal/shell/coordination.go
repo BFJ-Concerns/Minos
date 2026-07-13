@@ -61,6 +61,18 @@ func buildSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fact
 	return snapshot, nil
 }
 
+func buildCleanupSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (reconcile.ForgeSnapshot, error) {
+	snapshot, err := buildSnapshot(ctx, cfg, repo, facts)
+	if err != nil {
+		return reconcile.ForgeSnapshot{}, err
+	}
+	// Cleanup facts come from the durable obligation. The forge snapshot's
+	// current PR head is useful elsewhere, but it must not replace the immutable
+	// merged head which guards post-merge branch deletion.
+	snapshot.HeadSHA = facts.HeadSHA
+	return snapshot, nil
+}
+
 func productStateFromForge(snapshot forge.Snapshot, serviceLogin string) product.State {
 	var newest forge.Status
 	for _, status := range snapshot.Statuses {
