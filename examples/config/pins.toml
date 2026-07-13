@@ -1,6 +1,6 @@
 # Model pins.
 #
-# Composition contract (operator ruling, 2026-07-10): the service pins file
+# Composition contract (operator ruling, updated 2026-07-13): the service pins file
 # governs the LEAD role only — the accountable session's own model, enforced at
 # runtime by the launch wrapper's early-stream interlock (a served model that
 # does not match the lead pin fails the run loudly). That interlock is the pin
@@ -10,12 +10,12 @@
 # Worker selections belong to the Foundry workflows. Adding worker roles here
 # is rejected so a retired service-side pin gate cannot quietly return.
 #
-# The lead value below is operator-approved (2026-07-10). The REPLACE_WITH_
+# The lead value below is operator-approved (2026-07-13). The REPLACE_WITH_
 # placeholder machinery and its rejection remain: a deployment that has not set
 # its lead pin fails loudly rather than serving an unapproved model.
 [roles.lead]
 id = "lead-claude"
 engine = "claude"
-model = "claude-opus-4-8"
+model = "claude-sonnet-5"
 family = "anthropic"
 effort = "high"

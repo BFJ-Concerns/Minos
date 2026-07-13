@@ -114,7 +114,7 @@ sudo install -o root -g root -m 0644 docs/go-live.md /opt/minos/docs/go-live.md
 The adaptation and review scripts call `curl`, `git`, and `jq`; keep those
 commands on the deployment account's normal system path. The installed pins
 file governs the **lead** role — the accountable session's own model,
-operator-approved 2026-07-10 (`claude-opus-4-8`) and enforced at runtime by the
+operator-approved 2026-07-13 (`claude-sonnet-5`) and enforced at runtime by the
 launch wrapper's early-stream interlock. Re-confirm at go-live that it still
 names a current model generation. The worker roster entries (specialist,
 verifier, bar-judge) are reference only: the Foundry review workflows carry

@@ -13,7 +13,7 @@ command = "/usr/local/bin/claude"
 # The prompt is deliberately trivial: this proves the pinned model is served
 # before an expensive lifecycle is admitted.
 args = ["--print", "--output-format", "json", "--model", "{model}", "Reply with OK."]
-models = ["claude-opus-4-8"]
+models = ["claude-sonnet-5"]
 
 [registry]
 # No registry is commissioned in the current deployment.
