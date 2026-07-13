@@ -319,11 +319,18 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 		if err := store.BumpCleanupAttempt(ctx, snapshot.Key); err != nil {
 			return err
 		}
-		_, incidentErr := store.UpsertIncident(ctx, ledger.Incident{
+		logPath := incidentLogPath(cfg, "sweep.log")
+		return recordOperationalIncident(ctx, cfg, store, ledger.Incident{
 			Key: snapshot.Key, Category: "cleanup-unsafe", ObservedHead: snapshot.HeadSHA,
-			ObservedTarget: snapshot.TargetSHA, LogLocation: cfg.Sweep.Log,
+			ObservedTarget: snapshot.TargetSHA, LogLocation: logPath,
+		}, incidents.Event{
+			Key: incidents.Key{
+				Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo,
+				PullRequest: facts.PR, Category: "cleanup-unsafe",
+			},
+			Diagnostic: "guarded branch cleanup rejected: " + result.Reason,
+			LogPath:    logPath, ObservedHead: snapshot.HeadSHA, ObservedTarget: snapshot.TargetSHA,
 		})
-		return incidentErr
 	default:
 		return fmt.Errorf("invalid cleanup outcome %q", result.Outcome)
 	}
