@@ -148,14 +148,16 @@ sudo -u "$DEPLOY_USER" env \
 
 ## 3. Install configuration and credentials
 
-Create the production paths and install the inactive templates. The repository
-example deliberately ends in `.toml.example`: only `repos/*.toml` files opt a
-repository in.
+Create the production paths and install the inactive templates. The heartbeat
+writer creates its atomic replacement directly beneath `/var/lib/minos`, so the
+deployment user must own that parent as well as the run and incident
+subdirectories. The repository example deliberately ends in `.toml.example`:
+only `repos/*.toml` files opt a repository in.
 
 ```sh
 sudo install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0750 \
   /etc/minos /etc/minos/repos \
-  /var/lib/minos/runs /var/lib/minos/incidents /var/log/minos
+  /var/lib/minos /var/lib/minos/runs /var/lib/minos/incidents /var/log/minos
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
   deploy/etc/minos/service.toml /etc/minos/service.toml
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 \
