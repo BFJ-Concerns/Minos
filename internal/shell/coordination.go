@@ -294,6 +294,14 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 	if snapshot.Key != coordinationKey(facts) {
 		return fmt.Errorf("cleanup snapshot identity does not match pull request")
 	}
+	cleanup, found, err := store.Cleanup(ctx, snapshot.Key)
+	if err != nil {
+		return err
+	}
+	if !found {
+		// Another reconciliation may already have settled the obligation.
+		return nil
+	}
 	adapter, err := newBehaviouralForge(cfg, facts.Forge, ledgerForgeOwnership{store: store, key: snapshot.Key})
 	if err != nil {
 		return err
@@ -304,7 +312,7 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 	}
 	result := adapter.DeleteMergedBranch(ctx, forge.Guard{
 		Ownership: forge.ReconciliationOwnership(), Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo},
-		PullRequest: pullRequest, HeadSHA: snapshot.HeadSHA, TargetSHA: snapshot.TargetSHA,
+		PullRequest: pullRequest, HeadSHA: cleanup.MergedHead, TargetSHA: snapshot.TargetSHA,
 	})
 	switch result.Outcome {
 	case forge.WriteApplied:
@@ -319,11 +327,18 @@ func executeCleanup(ctx context.Context, cfg ServiceConfig, facts Facts, snapsho
 		if err := store.BumpCleanupAttempt(ctx, snapshot.Key); err != nil {
 			return err
 		}
-		_, incidentErr := store.UpsertIncident(ctx, ledger.Incident{
-			Key: snapshot.Key, Category: "cleanup-unsafe", ObservedHead: snapshot.HeadSHA,
-			ObservedTarget: snapshot.TargetSHA, LogLocation: cfg.Sweep.Log,
+		logPath := incidentLogPath(cfg, "sweep.log")
+		return recordOperationalIncident(ctx, cfg, store, ledger.Incident{
+			Key: snapshot.Key, Category: "cleanup-unsafe", ObservedHead: cleanup.MergedHead,
+			ObservedTarget: snapshot.TargetSHA, LogLocation: logPath,
+		}, incidents.Event{
+			Key: incidents.Key{
+				Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo,
+				PullRequest: facts.PR, Category: "cleanup-unsafe",
+			},
+			Diagnostic: "guarded branch cleanup rejected: " + result.Reason,
+			LogPath:    logPath, ObservedHead: cleanup.MergedHead, ObservedTarget: snapshot.TargetSHA,
 		})
-		return incidentErr
 	default:
 		return fmt.Errorf("invalid cleanup outcome %q", result.Outcome)
 	}

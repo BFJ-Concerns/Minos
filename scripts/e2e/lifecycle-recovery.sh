@@ -117,6 +117,151 @@ hard_kill_incident_is() {
     [[ "$(operator_incident_json "$pr" | jq -r '.[0].updates')" -eq "$updates" ]]
 }
 
+cleanup_obligation_json() {
+  local pr="$1" result
+  result="$(sqlite3 -json "$work/runs/coordination.db" \
+    "SELECT merged_head,branch,attempts FROM cleanup_obligations WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${pr}'")"
+  printf '%s\n' "${result:-[]}"
+}
+
+cleanup_obligation_is() {
+  local pr="$1" attempts="$2"
+  [[ "$(cleanup_obligation_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(cleanup_obligation_json "$pr" | jq -r '.[0].attempts')" -eq "$attempts" ]]
+}
+
+cleanup_obligation_absent() {
+  [[ "$(cleanup_obligation_json "$1")" == "[]" ]]
+}
+
+cleanup_ledger_incident_json() {
+  local pr="$1" result
+  result="$(sqlite3 -json "$work/runs/coordination.db" \
+    "SELECT category,retry_count,observed_head,observed_target,log_location FROM incidents WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${pr}' AND category='cleanup-unsafe'")"
+  printf '%s\n' "${result:-[]}"
+}
+
+cleanup_operator_incident_json() {
+  local pr="$1"
+  find "$work/incidents" -maxdepth 1 -type f -name '*.json' -print0 |
+    xargs -0 -r jq -s --arg pr "$pr" '[.[] | select(.key.pr == $pr and .key.category == "cleanup-unsafe")]'
+}
+
+cleanup_incident_is() {
+  local pr="$1" updates="$2"
+  [[ "$(cleanup_ledger_incident_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(cleanup_ledger_incident_json "$pr" | jq -r '.[0].retry_count')" -eq "$updates" ]] &&
+    [[ "$(cleanup_operator_incident_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(cleanup_operator_incident_json "$pr" | jq -r '.[0].updates')" -eq "$updates" ]]
+}
+
+branch_sha() {
+  api GET "/api/v1/repos/${owner}/${repo}/branches/$1" | jq -r '.commit.id // .commit.sha // ""'
+}
+
+pr_surface_digest() {
+  local pr="$1" head="$2"
+  jq -Scn \
+    --argjson reviews "$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews")" \
+    --argjson comments "$(api GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/comments")" \
+    --argjson statuses "$(api GET "/api/v1/repos/${owner}/${repo}/commits/${head}/statuses")" \
+    --argjson reactions "$(api GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/reactions")" '
+      {
+        reviews: [($reviews // [])[] | {id,state,commit_id,body}],
+        comments: [($comments // [])[] | {id,body}],
+        statuses: [($statuses // [])[] | {id,context,status:(.status // .state),description}],
+        reactions: [($reactions // [])[] | {id,content,user:(.user.login // .user.username)}]
+      }' | sha256sum | awk '{print $1}'
+}
+
+prepare_cleanup_fixture() {
+  local branch="$1" pr_var="$2" sha_var="$3" pr sha
+  pr="$(create_pr "$branch")"
+  sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}" | jq -r '.head.sha')"
+  journey_units+=("minos-run-${owner}-${repo}-pr${pr}-${sha:0:12}.service")
+  send_opened_hook "$pr"
+  wait_until "${branch} merged" pr_merged "$pr"
+  wait_until "${branch} status merged" status_is "$sha" Merged
+  wait_until "${branch} cleanup obligation is durable" cleanup_obligation_is "$pr" 0
+  wait_until "${branch} eyes removed" eyes_absent "$pr"
+  wait_until "${branch} lease released" lease_absent "$pr"
+  require "${branch} used one lifecycle" attempt_count_is "$pr" 1
+  printf -v "$pr_var" '%s' "$pr"
+  printf -v "$sha_var" '%s' "$sha"
+}
+
+run_post_merge_cleanup_journey() {
+  local unchanged_pr unchanged_sha unchanged_surface
+  local absent_pr absent_sha absent_surface
+  local advanced_pr advanced_sha advanced_branch_sha advanced_pr_head advanced_pr_ref advanced_surface
+
+  prepare_cleanup_fixture cleanup-unchanged unchanged_pr unchanged_sha
+  unchanged_surface="$(pr_surface_digest "$unchanged_pr" "$unchanged_sha")"
+  "$root/minos" sweep --config "$work/config"
+  require 'unchanged cleanup deletes the guarded source branch' branch_absent cleanup-unchanged
+  require 'unchanged cleanup settles its obligation' cleanup_obligation_absent "$unchanged_pr"
+  require 'unchanged cleanup writes nothing to the PR' test \
+    "$(pr_surface_digest "$unchanged_pr" "$unchanged_sha")" = "$unchanged_surface"
+  require 'unchanged cleanup starts no successor lifecycle' attempt_count_is "$unchanged_pr" 1
+  record_evidence sweep cleanup unchanged applied "pr=${unchanged_pr}; branch=absent; obligation=absent; pr-surface=unchanged"
+
+  prepare_cleanup_fixture cleanup-already-absent absent_pr absent_sha
+  absent_surface="$(pr_surface_digest "$absent_pr" "$absent_sha")"
+  (
+    cd "$work/subject"
+    git push -q origin --delete cleanup-already-absent
+  )
+  require 'already-absent fixture removes the source branch before sweep' branch_absent cleanup-already-absent
+  "$root/minos" sweep --config "$work/config"
+  require 'already-absent cleanup settles as applied' cleanup_obligation_absent "$absent_pr"
+  require 'already-absent cleanup writes nothing to the PR' test \
+    "$(pr_surface_digest "$absent_pr" "$absent_sha")" = "$absent_surface"
+  require 'already-absent cleanup starts no successor lifecycle' attempt_count_is "$absent_pr" 1
+  record_evidence sweep cleanup absent applied "pr=${absent_pr}; branch=absent-before-sweep; obligation=absent; pr-surface=unchanged"
+
+  prepare_cleanup_fixture cleanup-advanced advanced_pr advanced_sha
+  advanced_surface="$(pr_surface_digest "$advanced_pr" "$advanced_sha")"
+  (
+    cd "$work/subject"
+    git checkout -q cleanup-advanced
+    printf '\n// Branch advanced after its pull request merged.\n' >>ready.go
+    git add ready.go
+    git commit -q -m 'test: advance merged source branch'
+    git push -q origin cleanup-advanced
+  )
+  advanced_branch_sha="$(branch_sha cleanup-advanced)"
+  require 'advanced fixture no longer points at the merged head' test "$advanced_branch_sha" != "$advanced_sha"
+  advanced_pr_head="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${advanced_pr}" | jq -r '.head.sha')"
+  advanced_pr_ref="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${advanced_pr}" | jq -r '.head.ref')"
+  record_evidence forge observe advanced observed \
+    "pr=${advanced_pr}; merged-head=${advanced_sha}; branch-ref=${advanced_pr_ref}; pr-head=${advanced_pr_head}; branch-head=${advanced_branch_sha}"
+
+  send_opened_hook "$advanced_pr" "$work/logs/cleanup-advanced-receiver.out"
+  require 'advanced webhook is reconciled as cleanup' grep -Fxq cleanup "$work/logs/cleanup-advanced-receiver.out"
+  require 'receiver cleanup preserves the advanced branch' test \
+    "$(branch_sha cleanup-advanced)" = "$advanced_branch_sha"
+  require 'receiver cleanup retains its obligation' cleanup_obligation_is "$advanced_pr" 1
+  require 'receiver cleanup raises one ledger and operator incident' cleanup_incident_is "$advanced_pr" 1
+  require 'receiver cleanup writes nothing to the PR' test \
+    "$(pr_surface_digest "$advanced_pr" "$advanced_sha")" = "$advanced_surface"
+  require 'receiver cleanup starts no successor lifecycle' attempt_count_is "$advanced_pr" 1
+  require 'receiver cleanup preserves merged product truth' pr_merged "$advanced_pr"
+  record_evidence receiver cleanup advanced rejected \
+    "pr=${advanced_pr}; branch=${advanced_branch_sha}; obligation-attempts=1; ledger-incidents=1; operator-incidents=1; updates=1; pr-surface=unchanged"
+
+  "$root/minos" sweep --config "$work/config"
+  require 'repeated sweep cleanup preserves the advanced branch' test \
+    "$(branch_sha cleanup-advanced)" = "$advanced_branch_sha"
+  require 'repeated sweep cleanup retains its obligation' cleanup_obligation_is "$advanced_pr" 2
+  require 'repeated cleanup deduplicates the ledger and operator incident' cleanup_incident_is "$advanced_pr" 2
+  require 'repeated cleanup writes nothing to the PR' test \
+    "$(pr_surface_digest "$advanced_pr" "$advanced_sha")" = "$advanced_surface"
+  require 'repeated cleanup starts no successor lifecycle' attempt_count_is "$advanced_pr" 1
+  require 'repeated cleanup preserves merged product truth' pr_merged "$advanced_pr"
+  record_evidence sweep cleanup advanced rejected \
+    "pr=${advanced_pr}; branch=${advanced_branch_sha}; obligation-attempts=2; ledger-incidents=1; operator-incidents=1; updates=2; pr-surface=unchanged"
+}
+
 run_missed_webhook_journey() {
   local missed_pr missed_sha missed_lease
   missed_pr="$(create_pr missed-webhook-lifecycle)"

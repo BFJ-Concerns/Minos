@@ -647,6 +647,24 @@ func (s *Store) ListCleanup(ctx context.Context) ([]Cleanup, error) {
 	return values, rows.Err()
 }
 
+func (s *Store) Cleanup(ctx context.Context, key Key) (Cleanup, bool, error) {
+	var value Cleanup
+	var created string
+	err := s.db.QueryRowContext(ctx, "SELECT forge,owner,repo,pr,merged_head,branch,created_at,attempts FROM cleanup_obligations WHERE forge=? AND owner=? AND repo=? AND pr=?", keyArgs(key)...).
+		Scan(&value.Forge, &value.Owner, &value.Repo, &value.PR, &value.MergedHead, &value.Branch, &created, &value.Attempts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Cleanup{}, false, nil
+	}
+	if err != nil {
+		return Cleanup{}, false, err
+	}
+	value.CreatedAt, err = parseStamp(created)
+	if err != nil {
+		return Cleanup{}, false, err
+	}
+	return value, true, nil
+}
+
 func (s *Store) RemoveCleanup(ctx context.Context, key Key) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM cleanup_obligations WHERE forge=? AND owner=? AND repo=? AND pr=?", keyArgs(key)...)
 	return err

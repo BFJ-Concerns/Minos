@@ -319,6 +319,108 @@ func TestCleanupDecisionRetainsUncertainObligationAndRemovesApplied(t *testing.T
 	}
 }
 
+func TestCleanupDecisionRetainsRejectedObligationAndRaisesOperatorIncident(t *testing.T) {
+	cfg, repo, facts := coordinationConfig(t)
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	obligation := ledger.Cleanup{Key: coordinationKey(facts), MergedHead: facts.HeadSHA, Branch: "change"}
+	if err := store.AddCleanup(t.Context(), obligation); err != nil {
+		t.Fatal(err)
+	}
+	deleteScript := filepath.Join(cfg.Forges["local"].Adaptation, "delete-branch")
+	writeScript(t, deleteScript, "#!/bin/sh\nprintf '{\"outcome\":\"rejected\",\"reason\":\"branch advanced\"}\\n'\n")
+	snapshot := reconcile.ForgeSnapshot{Key: obligation.Key, HeadSHA: facts.HeadSHA, TargetSHA: "target-1", Merged: true}
+	decision := reconcile.Decision{Kind: reconcile.CleanUp}
+
+	// Reconciliation may revisit the retained obligation. Both incident stores
+	// must update one stable identity rather than creating a fresh alert.
+	for range 2 {
+		if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, decision, store, os.Stderr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanups, err := store.ListCleanup(t.Context())
+	if err != nil || len(cleanups) != 1 || cleanups[0].Attempts != 2 {
+		t.Fatalf("rejected cleanup = %#v err=%v", cleanups, err)
+	}
+	ledgerIncidents, err := store.ListIncidents(t.Context())
+	if err != nil || len(ledgerIncidents) != 1 || ledgerIncidents[0].Category != "cleanup-unsafe" {
+		t.Fatalf("cleanup ledger incidents = %#v err=%v", ledgerIncidents, err)
+	}
+	operatorIncidents, err := incidents.NewFileStore(cfg.Root).List(t.Context())
+	if err != nil || len(operatorIncidents) != 1 || operatorIncidents[0].Key.Category != "cleanup-unsafe" {
+		t.Fatalf("cleanup operator incidents = %#v err=%v", operatorIncidents, err)
+	}
+	if operatorIncidents[0].Updates != 2 {
+		t.Fatalf("cleanup operator incident updates = %d, want 2", operatorIncidents[0].Updates)
+	}
+}
+
+func TestCleanupExecutionGuardsSweepSnapshotWithMergedHead(t *testing.T) {
+	assertAdvancedBranchCleanupRejected(t, "head-1")
+}
+
+func TestCleanupExecutionGuardsReceiverSnapshotWithMergedHead(t *testing.T) {
+	assertAdvancedBranchCleanupRejected(t, "head-advanced-after-merge")
+}
+
+func assertAdvancedBranchCleanupRejected(t *testing.T, factsHead string) {
+	t.Helper()
+	cfg, repo, facts := coordinationConfig(t)
+	mergedHead := facts.HeadSHA
+	currentHead := "head-advanced-after-merge"
+	facts.HeadSHA = factsHead
+	facts.Occasion = "cleanup"
+
+	forgeSnapshot := forge.Snapshot{
+		AuthenticatedUser: "Minos", Repository: "owner/subject", PullRequest: 7,
+		State: "closed", Merged: true, Author: "alice", HeadSHA: currentHead, HeadBranch: "change",
+		HeadRepository: "owner/subject", TargetSHA: "target-1", TargetBranch: "main",
+		TargetRepository: "owner/subject", DefaultBranch: "main",
+	}
+	data, err := json.Marshal(forgeSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(cfg.Forges["local"].Adaptation, "snapshot"), "#!/bin/sh\nprintf '%s\\n' "+strconv.Quote(string(data))+"\n")
+
+	store, err := ledger.Open(ledgerPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	obligation := ledger.Cleanup{Key: coordinationKey(facts), MergedHead: mergedHead, Branch: "change"}
+	if err := store.AddCleanup(t.Context(), obligation); err != nil {
+		t.Fatal(err)
+	}
+	deleteScript := filepath.Join(cfg.Forges["local"].Adaptation, "delete-branch")
+	writeScript(t, deleteScript, "#!/bin/sh\nif [ \"$4\" = "+strconv.Quote(mergedHead)+" ]; then\n  printf '{\"outcome\":\"rejected\",\"reason\":\"branch advanced\"}\\n'\nelse\n  printf '{\"outcome\":\"applied\"}\\n'\nfi\n")
+
+	snapshot, err := buildSnapshot(t.Context(), cfg, repo, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executeDecision(t.Context(), cfg, repo, facts, snapshot, reconcile.Decision{Kind: reconcile.CleanUp}, store, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanups, err := store.ListCleanup(t.Context())
+	if err != nil || len(cleanups) != 1 || cleanups[0].Attempts != 1 {
+		t.Fatalf("advanced-branch cleanup = %#v err=%v", cleanups, err)
+	}
+	ledgerIncidents, err := store.ListIncidents(t.Context())
+	if err != nil || len(ledgerIncidents) != 1 || ledgerIncidents[0].ObservedHead != mergedHead {
+		t.Fatalf("cleanup ledger incidents = %#v err=%v", ledgerIncidents, err)
+	}
+	operatorIncidents, err := incidents.NewFileStore(cfg.Root).List(t.Context())
+	if err != nil || len(operatorIncidents) != 1 || operatorIncidents[0].ObservedHead != mergedHead {
+		t.Fatalf("cleanup operator incidents = %#v err=%v", operatorIncidents, err)
+	}
+}
+
 func TestReplacementEmptiesUnitBeforeAllocatingToken(t *testing.T) {
 	cfg, repo, facts := coordinationConfig(t)
 	reaction, removals := presenceProbe(t, cfg)
