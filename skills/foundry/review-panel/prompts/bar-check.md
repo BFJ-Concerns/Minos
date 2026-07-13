@@ -8,6 +8,39 @@ the coverage account (the dispatch record combined with each reviewer's own
 coverage declaration), the briefs that were skipped or failed, the reviewers'
 notes, and the verification record.
 
+When the run supplies them, the material also carries two distinct coverage
+artefacts — do not confuse them:
+
+- The **inspection record** (`inspection_record`) — the lead's own account of
+  what it actually read, bound to the diff's immutable blobs: the changed files,
+  each hunk marked `read` or `omitted`, and the named definitions and call-sites
+  it inspected to confirm a suspicion. This is your **depth evidence**. Judge
+  from it whether the review reached adequate depth: were the changed hunks
+  actually read, and were the definitions and call-sites a real judgement needs
+  recorded, or does the record show a thin skim that labelled everything read
+  without the context a sound review requires? An empty or shallow record under
+  a substantive diff is a depth failure even when nothing is formally omitted.
+- The **accounting result** (`coverage_result`) — the mechanical verdict over
+  that record: a `status` (`complete` when every change was accounted,
+  otherwise `partial`) and a list of `omissions`. It is the diff-bound
+  completeness check, and it is all the panel's own `coverage` declaration
+  should be measured against. A short result (`status` other than `complete`)
+  already blocks convergence mechanically before you ever run, so your task on
+  it is honesty, not the completeness arithmetic: convict the review that hides
+  or misrepresents the gap, not the one that owns it.
+
+When the run supplied **neither** artefact, it kept no coverage seam and you
+judge coverage as before — from the panel account and the reviewers' own notes;
+their joint absence is not itself a failure. But a `coverage_result` present
+**without** its `inspection_record` is a different case, and a convergence-bearing
+one: depth is then *unjudged*, because the evidence you would weigh it from was
+never put in front of you. A `status: complete` you cannot see the record behind
+is not evidence of depth — it proves only that every change was *labelled* read.
+Such a review cannot earn a coverage-adequate pass; the mechanical gate already
+blocks its convergence, and you must not paper over the gap by reading the bare
+`complete` as depth. Where the record is present, judge depth from it together
+with the omissions, the diff, and the assembled review.
+
 ## What passes
 
 A review passes when it is quiet, high-confidence, and grounded: every finding
@@ -81,6 +114,21 @@ Fail the review when you find:
   formatter or linter would flag, offered in place of judgement.
 - **A silent gap** — a skipped, failed, or partially covered criterion the
   review does not acknowledge.
+- **A result the review contradicts** — where an accounting result
+  (`coverage_result`) is present, a reviewer's or the panel account's
+  `status: full` while that result reports `partial` with omissions is coverage
+  pretence, whichever way the panel declared it. The mechanical result is the
+  diff-bound completeness truth; a review that reads as complete over a result
+  that is not is convicted here, not excused because the reviewers sounded
+  diligent.
+- **Depth the inspection record does not support** — where an inspection record
+  (`inspection_record`) is present, judge the depth it evidences, not just its
+  labels. A record that marks the changed hunks `read` but shows no definitions
+  or call-sites inspected under a diff whose correctness plainly turns on
+  surrounding code, or whose entries betray a structural skim rather than a
+  judging read, fails on depth even when the accounting result is `complete` and
+  nothing is formally omitted. A complete result is a labelling proof, never a
+  depth proof; the record is where depth is shown or found wanting.
 
 Judge against the bar text as written. Do not weaken it, average it against
 what seems achievable, or excuse a miss because the review was otherwise

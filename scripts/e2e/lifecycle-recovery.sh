@@ -96,6 +96,27 @@ count_is() {
   [[ "$1" -eq "$2" ]]
 }
 
+ledger_incident_json() {
+  local pr="$1" result
+  result="$(sqlite3 -json "$work/runs/coordination.db" \
+    "SELECT category,retry_count,observed_head,observed_target,log_location FROM incidents WHERE forge='local' AND owner='${owner}' AND repo='${repo}' AND pr='${pr}' AND category='lifecycle-hard-kill'")"
+  printf '%s\n' "${result:-[]}"
+}
+
+operator_incident_json() {
+  local pr="$1"
+  find "$work/incidents" -maxdepth 1 -type f -name '*.json' -print0 |
+    xargs -0 -r jq -s --arg pr "$pr" '[.[] | select(.key.pr == $pr and .key.category == "lifecycle-hard-kill")]'
+}
+
+hard_kill_incident_is() {
+  local pr="$1" updates="$2"
+  [[ "$(ledger_incident_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(ledger_incident_json "$pr" | jq -r '.[0].retry_count')" -eq "$updates" ]] &&
+    [[ "$(operator_incident_json "$pr" | jq -r 'length')" -eq 1 ]] &&
+    [[ "$(operator_incident_json "$pr" | jq -r '.[0].updates')" -eq "$updates" ]]
+}
+
 run_missed_webhook_journey() {
   local missed_pr missed_sha missed_lease
   missed_pr="$(create_pr missed-webhook-lifecycle)"
@@ -170,13 +191,26 @@ run_hard_kill_journey() {
   record_evidence forge move-target no-owner applied "target=${hardkill_target}"
 
   sleep 7
+  mkdir -p "$work/faults"
+  : >"$work/faults/fail-remove-reaction-once"
+  "$root/minos" sweep --config "$work/config"
+  require 'first hard-kill observation retains predecessor after eyes failure' lease_token_is "$hardkill_pr" "$predecessor_token"
+  require 'first hard-kill observation retains predecessor eyes' eyes_present "$hardkill_pr"
+  require 'first hard-kill observation raises one incident' hard_kill_incident_is "$hardkill_pr" 1
+  record_evidence incident raise predecessor applied "category=lifecycle-hard-kill; ledger-retries=1; operator-updates=1; successor=absent"
   "$root/minos" sweep --config "$work/config"
   wait_until 'hard-kill successor is held before claiming eyes' test -e "$work/control/hard-kill-successor-before-begin"
   successor_token="$(<"$work/control/hard-kill-successor-before-begin")"
   require 'hard-kill successor receives a higher token' token_greater_than "$successor_token" "$predecessor_token"
   require 'hard-kill successor owns the lease' lease_token_is "$hardkill_pr" "$successor_token"
   require 'predecessor eyes are absent before successor begins' eyes_absent "$hardkill_pr"
-  record_evidence sweep replace successor applied "predecessor=${predecessor_token}; successor=${successor_token}; target=${hardkill_target}; eyes-before-successor=absent"
+  require 'repeated hard-kill observation updates one incident' hard_kill_incident_is "$hardkill_pr" 2
+  require 'hard-kill incident retains predecessor pair' test \
+    "$(ledger_incident_json "$hardkill_pr" | jq -r '.[0].observed_head + ":" + .[0].observed_target')" = \
+    "${hardkill_sha}:$(jq -r '.[0].observed_target' <<<"$predecessor_lease")"
+  require 'operator incident retains predecessor attempt' test \
+    "$(operator_incident_json "$hardkill_pr" | jq -r '.[0].attempt')" = "$predecessor_token"
+  record_evidence sweep replace successor applied "predecessor=${predecessor_token}; successor=${successor_token}; target=${hardkill_target}; eyes-before-successor=absent; incident-updates=2"
   : >"$work/control/hard-kill-successor-allow-begin"
   wait_until 'hard-kill successor reaches claimed checkpoint' test -e "$work/control/hard-kill-successor-ready"
   require 'hard-kill successor observes the moved target' attempt_target_is "$hardkill_pr" "$successor_token" "$hardkill_target"
@@ -206,7 +240,73 @@ run_hard_kill_journey() {
   "$root/minos" sweep --config "$work/config"
   require 'final hard-kill sweep is stable' attempt_count_is "$hardkill_pr" 2
   require 'final hard-kill sweep leaves no lease' lease_absent "$hardkill_pr"
-  record_evidence wrapper close successor applied "terminal=stopped; eyes=absent; lease=absent; attempts=2; pr-operational-chatter=absent; incident-assertion=deferred"
+  require 'final hard-kill sweep does not duplicate the incident' hard_kill_incident_is "$hardkill_pr" 2
+  record_evidence wrapper close successor applied "terminal=stopped; eyes=absent; lease=absent; attempts=2; pr-operational-chatter=absent; incident-updates=2"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${hardkill_pr}" '{"state":"closed"}' >/dev/null
+}
+
+run_durable_kill_journey() {
+  local terminal="$1" terminal_description
+  local durable_pr durable_sha durable_unit durable_token durable_lease heartbeat_before
+  local statuses_before statuses_after workspace
+  case "$terminal" in
+    stopped) terminal_description='Review stopped; findings remain' ;;
+    blocked) terminal_description='Changes need attention' ;;
+    *) printf 'unknown durable-kill terminal: %s\n' "$terminal" >&2; return 1 ;;
+  esac
+  durable_pr="$(create_pr "durable-${terminal}-kill-lifecycle")"
+  durable_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${durable_pr}" | jq -r '.head.sha')"
+  durable_unit="minos-run-${owner}-${repo}-pr${durable_pr}-${durable_sha:0:12}.service"
+  journey_units+=("$durable_unit")
+  send_opened_hook "$durable_pr"
+  wait_until "durable-${terminal}-kill attempt publishes terminal product" test -e "$work/control/durable-${terminal}-kill-ready"
+  durable_token="$(<"$work/control/durable-${terminal}-kill-ready")"
+  durable_lease="$(lease_json "$durable_pr")"
+  workspace="$(jq -r '.[0].workspace' <<<"$durable_lease")"
+  require 'durable-kill attempt owns its lease' lease_token_is "$durable_pr" "$durable_token"
+  require 'durable-kill attempt publishes eyes' eyes_present "$durable_pr"
+  require 'durable review is visible exactly once' count_is "$(review_count "$durable_pr")" 1
+  require "durable ${terminal} status is visible exactly once" count_is "$(status_description_count "$durable_sha" "$terminal_description")" 1
+  heartbeat_before="$(lease_heartbeat "$durable_pr")"
+  wait_until 'durable-kill attempt renews after product write' heartbeat_differs "$durable_pr" "$heartbeat_before"
+  record_evidence forge durable-product predecessor applied "pr=${durable_pr}; token=${durable_token}; terminal=${terminal}; reviews=1; terminal-statuses=1"
+
+  systemctl --user kill --kill-whom=all --signal=SIGKILL "$durable_unit"
+  wait_until 'durable-kill predecessor unit is not running' unit_not_running "$durable_unit"
+  require 'durable-kill lease survives process death' lease_token_is "$durable_pr" "$durable_token"
+  sleep 7
+  "$root/minos" sweep --config "$work/config"
+  wait_until 'served terminal reap releases the dead lease' lease_absent "$durable_pr"
+  require 'served terminal reap removes predecessor eyes' eyes_absent "$durable_pr"
+  require 'served terminal reap launches no successor' attempt_count_is "$durable_pr" 1
+  require 'served terminal reap removes the workspace' test ! -e "$workspace"
+  require 'served terminal reap raises one incident' hard_kill_incident_is "$durable_pr" 1
+  require 'served terminal incident retains observed pair' test \
+    "$(ledger_incident_json "$durable_pr" | jq -r '.[0].observed_head + ":" + .[0].observed_target')" = \
+    "${durable_sha}:$(jq -r '.[0].observed_target' <<<"$durable_lease")"
+  require 'served terminal incident reports no-successor disposition' test \
+    "$(operator_incident_json "$durable_pr" | jq -r '.[0].diagnostic')" = \
+    'stale lifecycle reaped; current terminal product retained without a successor'
+  require 'durable review remains exactly once after reap' count_is "$(review_count "$durable_pr")" 1
+  require "durable ${terminal} status remains exactly once after reap" count_is "$(status_description_count "$durable_sha" "$terminal_description")" 1
+
+  statuses_before="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${durable_sha}/statuses" | jq 'length')"
+  if env \
+    MINOS_CONFIG="$work/config" MINOS_FORGE=local MINOS_OWNER="$owner" MINOS_REPO_NAME="$repo" \
+    MINOS_PR="$durable_pr" MINOS_HEAD_SHA="$durable_sha" MINOS_TARGET_SHA="$(jq -r '.[0].observed_target' <<<"$durable_lease")" \
+    MINOS_ATTEMPT_TOKEN="$durable_token" \
+    "$root/minos" forge status partial >"$work/logs/durable-stale.out" 2>"$work/logs/durable-stale.err"; then
+    printf 'failed: reaped terminal predecessor mutation unexpectedly succeeded\n' >&2
+    exit 1
+  fi
+  statuses_after="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${durable_sha}/statuses" | jq 'length')"
+  [[ "$statuses_after" == "$statuses_before" ]]
+  require 'served terminal reap leaves no operational PR chatter' no_operational_chatter "$durable_pr" "$durable_sha"
+  "$root/minos" sweep --config "$work/config"
+  require 'served terminal final sweep launches no successor' attempt_count_is "$durable_pr" 1
+  require 'served terminal final sweep preserves one incident update' hard_kill_incident_is "$durable_pr" 1
+  record_evidence sweep reap predecessor applied "terminal=${terminal}; attempts=1; successor=absent; eyes=absent; lease=absent; workspace=absent; incident-updates=1; stale-write=rejected"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${durable_pr}" '{"state":"closed"}' >/dev/null
 }
 
 run_restart_journey() {
@@ -283,4 +383,127 @@ run_uncertain_write_journeys() {
   require 'lost-response status journey remains one attempt' attempt_count_is "$status_pr" 1
   record_evidence wrapper close predecessor applied "review-and-status-durable=true; duplicate-writes=0; attempts=1"
   author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${status_pr}" '{"state":"closed"}' >/dev/null
+}
+
+post_raw_hook() {
+  local event="$1" payload="$2" signature="$3" output="$4"
+  curl -sS -o "$output" -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' \
+    -H "X-Forgejo-Event: ${event}" \
+    -H "X-Forgejo-Signature: ${signature}" \
+    --data "$payload" "http://127.0.0.1:${hook_port}/hooks/local"
+}
+
+signed_payload() {
+  printf '%s' "$1" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}'
+}
+
+all_attempts_absent() {
+  [[ ! -d "$work/runs/attempts" ]] || [[ -z "$(find "$work/runs/attempts" -mindepth 2 -maxdepth 2 -type d -print -quit)" ]]
+}
+
+run_ingress_failure_journeys() {
+  local payload signature status
+  payload='{"action":"opened","repository":{"owner":{"login":"Minos"},"name":"subject"},"pull_request":{"number":99}}'
+  status="$(post_raw_hook pull_request "$payload" deadbeef "$work/logs/invalid-signature.body")"
+  require 'invalid signature returns unauthorised' count_is "$status" 401
+  require 'invalid signature creates no attempt' all_attempts_absent
+  require 'invalid signature creates no coordination database' test ! -e "$work/runs/coordination.db"
+  record_evidence receiver authenticate none rejected "case=invalid-signature; http=401; attempts=0; ledger=absent"
+
+  payload='{"action":"opened","repository":{"owner":{"login":"Other"},"name":"elsewhere"},"pull_request":{"number":1,"head":{"sha":"head"},"base":{"ref":"main"},"user":{"login":"author"}}}'
+  signature="$(signed_payload "$payload")"
+  status="$(post_raw_hook pull_request "$payload" "$signature" "$work/logs/unconfigured-repository.body")"
+  require 'unconfigured repository is acknowledged without admission' count_is "$status" 202
+  require 'unconfigured repository response is explicit' grep -Fxq 'not opted in' "$work/logs/unconfigured-repository.body"
+  require 'unconfigured repository creates no attempt' all_attempts_absent
+  require 'unconfigured repository creates no coordination database' test ! -e "$work/runs/coordination.db"
+  record_evidence receiver route none skipped "case=unconfigured-repository; http=202; attempts=0; ledger=absent"
+}
+
+run_unmapped_event_journey() {
+  local payload signature status
+  payload='{"action":"pushed","repository":{"owner":{"login":"Minos"},"name":"subject"}}'
+  signature="$(signed_payload "$payload")"
+  status="$(post_raw_hook push "$payload" "$signature" "$work/logs/unmapped-event.body")"
+  require 'authenticated unmapped event is acknowledged' count_is "$status" 202
+  require 'unmapped event response is explicit' grep -Fxq 'unmapped event' "$work/logs/unmapped-event.body"
+  require 'unmapped event creates no attempt' all_attempts_absent
+  require 'unmapped event creates no coordination database' test ! -e "$work/runs/coordination.db"
+  record_evidence receiver normalise none skipped "case=unmapped-event; http=202; attempts=0; ledger=absent"
+
+  payload='{"action":"opened","repository":{"owner":{"login":"Minos"},"name":"subject"}}'
+  signature="$(signed_payload "$payload")"
+  status="$(post_raw_hook pull_request "$payload" "$signature" "$work/logs/mapped-missing-identity.body")"
+  require 'mapped event with missing PR identity is rejected' count_is "$status" 400
+  require 'mapped missing-identity response names normalisation failure' grep -Fxq 'normalise failed' "$work/logs/mapped-missing-identity.body"
+  require 'mapped missing-identity event creates no attempt' all_attempts_absent
+  require 'mapped missing-identity event creates no coordination database' test ! -e "$work/runs/coordination.db"
+  record_evidence receiver normalise none rejected "case=mapped-missing-identity; http=400; attempts=0; ledger=absent"
+}
+
+run_capacity_journey() {
+  local first_pr first_sha second_pr second_sha
+  first_pr="$(create_pr capacity-holder-one)"
+  first_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${first_pr}" | jq -r '.head.sha')"
+  journey_units+=("minos-run-${owner}-${repo}-pr${first_pr}-${first_sha:0:12}.service")
+  send_opened_hook "$first_pr"
+  wait_until 'capacity holder owns the only slot' test -e "$work/control/capacity-${first_pr}-ready"
+  require 'capacity holder has one lease' lease_token_is "$first_pr" "$(lease_json "$first_pr" | jq -r '.[0].token')"
+  require 'capacity holder publishes eyes' eyes_present "$first_pr"
+
+  second_pr="$(create_pr capacity-holder-two)"
+  second_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${second_pr}" | jq -r '.head.sha')"
+  journey_units+=("minos-run-${owner}-${repo}-pr${second_pr}-${second_sha:0:12}.service")
+  send_opened_hook "$second_pr"
+  require 'capacity-full PR has no lease' lease_absent "$second_pr"
+  require 'capacity-full PR has no attempt' attempt_count_is "$second_pr" 0
+  require 'capacity-full PR has no eyes' eyes_absent "$second_pr"
+  require 'capacity-full PR has no product status' no_product_status "$second_sha"
+  record_evidence ledger admit none skipped "case=capacity-full; held-pr=${first_pr}; deferred-pr=${second_pr}; deferred-attempts=0"
+
+  : >"$work/control/capacity-${first_pr}-release"
+  wait_until 'capacity holder releases its lease' lease_absent "$first_pr"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${first_pr}" '{"state":"closed"}' >/dev/null
+  "$root/minos" sweep --config "$work/config"
+  wait_until 'deferred PR is admitted by a later sweep' test -e "$work/control/capacity-${second_pr}-ready"
+  require 'deferred PR owns the released slot' eyes_present "$second_pr"
+  require 'deferred PR launches exactly once' attempt_count_is "$second_pr" 1
+  record_evidence sweep admit successor applied "case=capacity-released; pr=${second_pr}; attempts=1"
+  : >"$work/control/capacity-${second_pr}-release"
+  wait_until 'deferred PR settles stopped' status_is "$second_sha" 'Review stopped; findings remain'
+  wait_until 'deferred PR removes eyes' eyes_absent "$second_pr"
+  wait_until 'deferred PR releases lease' lease_absent "$second_pr"
+  require 'deferred PR remains exactly one attempt' attempt_count_is "$second_pr" 1
+  record_evidence wrapper close successor applied "case=capacity-released; terminal=stopped; eyes=absent; lease=absent; attempts=1"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${second_pr}" '{"state":"closed"}' >/dev/null
+}
+
+run_closed_before_sweep_journey() {
+  local closed_pr closed_sha
+  closed_pr="$(create_pr closed-before-sweep-lifecycle)"
+  closed_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${closed_pr}" | jq -r '.head.sha')"
+  author_api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${closed_pr}" '{"state":"closed"}' >/dev/null
+  record_evidence forge close none applied "case=closed-before-sweep; pr=${closed_pr}; webhook=suppressed"
+  "$root/minos" sweep --config "$work/config"
+  require 'closed-before-sweep PR has no lease' lease_absent "$closed_pr"
+  require 'closed-before-sweep PR has no attempt' attempt_count_is "$closed_pr" 0
+  require 'closed-before-sweep PR has no eyes' eyes_absent "$closed_pr"
+  require 'closed-before-sweep PR has no product status' no_product_status "$closed_sha"
+  record_evidence sweep reconcile none skipped "case=closed-before-sweep; attempts=0; lease=absent; eyes=absent; status=absent"
+}
+
+run_receiver_boundary_journeys() {
+  local status
+  status="$(curl -sS -o "$work/logs/method-not-allowed.body" -w '%{http_code}' \
+    "http://127.0.0.1:${hook_port}/hooks/local")"
+  require 'non-POST webhook request is rejected' count_is "$status" 405
+  require 'method rejection creates no attempt' all_attempts_absent
+  record_evidence receiver method none rejected "case=non-post; http=405; attempts=0"
+
+  status="$(curl -sS -o "$work/logs/unknown-forge.body" -w '%{http_code}' -X POST \
+    --data '{}' "http://127.0.0.1:${hook_port}/hooks/unknown")"
+  require 'unknown forge route is rejected' count_is "$status" 404
+  require 'unknown forge route creates no attempt' all_attempts_absent
+  record_evidence receiver route none rejected "case=unknown-forge; http=404; attempts=0"
 }

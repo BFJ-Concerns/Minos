@@ -36,6 +36,23 @@ export const defaults = {
 //     quote_validation,                    // the quote gate's counts
 //     verify,      // boolean — run the per-finding checkers (default true)
 //     bar_mode,    // "off" | "on" | "auto" (default "off")
+//     coverage_result,   // optional — the mechanical coverage-accounting result
+//                        // ({ status, omissions, … }) or null. THE HARD GATE:
+//                        // a status that is not "complete" blocks convergence
+//                        // deterministically (coverage_gate below). Kept
+//                        // distinct from the inspection record — this is the
+//                        // labelling verdict, not the depth evidence.
+//     inspection_record, // optional — the lead-owned inspection record the
+//                        // accounting consumed (changed files, per-hunk
+//                        // read/omitted accounts, named definition/call-site
+//                        // references) or null. THE BAR'S DEPTH EVIDENCE: it
+//                        // rides into the bar material so the judge can weigh
+//                        // whether the recorded depth was adequate, not just
+//                        // whether every item was labelled read.
+//                        // The two must arrive together to converge: supplying
+//                        // one without the other is a wiring error and blocks
+//                        // the gate (a result with no record = depth unjudged).
+//                        // Supplying neither leaves the gate inactive.
 //   }
 //
 // The return value is the run's single, complete report: everything the skill
@@ -74,6 +91,28 @@ const suppressedByValidator = input.suppressed_by_validator || []
 const quoteValidation = input.quote_validation || null
 const verify = input.verify !== false
 const barMode = input.bar_mode || 'off'
+// Two distinct coverage artefacts, never conflated. The accounting RESULT
+// (account-coverage's output, or any equivalent mechanical accounting) is the
+// gate; the inspection RECORD it consumed is the bar's depth evidence. Null for
+// a caller that supplies neither.
+const coverageResult = input.coverage_result || null
+const inspectionRecord = input.inspection_record || null
+// A present result whose mechanical status is anything but 'complete' — partial,
+// or an accounting error — is short. "Partial coverage can never converge" is a
+// determinate guarantee, so this is settled in code: a short result fires the
+// bar trigger below AND blocks convergence outright (coverage_gate), whatever
+// the panel declared or the judge concludes.
+const coverageResultShort =
+  !!coverageResult && coverageResult.status !== 'complete'
+// The two artefacts must travel together to converge: the accounting result
+// gives the completeness verdict the gate trusts, and the inspection record
+// gives the bar the evidence to judge depth. Supplying exactly one is a wiring
+// error — a result with no record leaves depth unjudged, a record with no result
+// has no completeness verdict — so asymmetric supply blocks convergence
+// deterministically, exactly like a short result. Supplying neither is the
+// general caller with no coverage seam: the gate stays inactive, not passed.
+const coverageArtefactSupplied = !!coverageResult || !!inspectionRecord
+const coverageArtefactMissing = coverageArtefactSupplied && !(coverageResult && inspectionRecord)
 if (!['off', 'on', 'auto'].includes(barMode)) {
   throw new Error(`review-panel-verify: bar_mode must be "off", "on", or "auto", got "${barMode}".`)
 }
@@ -364,6 +403,27 @@ const partial = coverage.filter((c) => c.status === 'partial' || c.status === 'n
 if (notRun.length) triggerReasons.push(`${notRun.length} criterion/criteria not run`)
 if (partial.length) triggerReasons.push(`${partial.length} criterion/criteria only partially covered`)
 if (failures.length) triggerReasons.push(`${failures.length} reviewer(s) returned nothing`)
+// The mechanical accounting result is a trigger input in its own right — the
+// panel account is reviewers' self-declaration, this is the diff-bound
+// mechanical truth. A short result always convenes the judge (so the
+// panel-vs-result contradiction is examined), independently of the hard gate
+// below.
+if (coverageResultShort) {
+  const omitted = Array.isArray(coverageResult.omissions) ? coverageResult.omissions.length : 0
+  triggerReasons.push(
+    `the coverage accounting result is ${coverageResult.status || 'unaccounted'}` +
+      (omitted ? ` (${omitted} omission(s))` : ''),
+  )
+}
+// Asymmetric supply is surfaced as its own trigger reason so the block is
+// legible, not silent — even though a clean review already convenes the judge.
+if (coverageArtefactMissing) {
+  triggerReasons.push(
+    coverageResult
+      ? 'the inspection record is missing — coverage depth cannot be judged'
+      : 'the coverage accounting result is missing — completeness is unverified',
+  )
+}
 const triggerFired = triggerReasons.length > 0
 
 const bar = {
@@ -384,6 +444,14 @@ if (barMode === 'on' || (barMode === 'auto' && triggerFired)) {
   const material = {
     findings: survivors,
     coverage,
+    // Both coverage artefacts reach the judge, unconflated. The accounting
+    // RESULT lets it see a panel-vs-result contradiction (declared full, found
+    // partial); the inspection RECORD — the changed files with per-hunk
+    // read/omitted accounts and the named definitions and call-sites the lead
+    // recorded — is the evidence it weighs coverage *depth* from. Each is null
+    // when the run supplied none.
+    coverage_result: coverageResult,
+    inspection_record: inspectionRecord,
     skipped,
     failures,
     reviewer_notes: reviews,
@@ -435,6 +503,21 @@ if (barMode === 'on' || (barMode === 'auto' && triggerFired)) {
   }
 }
 
+// The mechanical convergence gate — a determinate, LLM-independent block that
+// stands whatever the panel declared or the bar judged. It clears convergence
+// only when BOTH artefacts are present AND the accounting result is 'complete':
+// "partial coverage can never converge" (a short result), and depth must be
+// judgeable (the inspection record must be in hand for the bar to weigh it), so
+// a result without its record blocks just as a short result does. A null gate
+// (neither artefact supplied) is inactive — "no gate", never a pass. The caller
+// treats a blocking gate as inadequate coverage: the review may still publish
+// its verified findings, but it cannot converge.
+const coverageGate = {
+  result_status: coverageResult ? (coverageResult.status ?? null) : null,
+  inspection_record_present: !!inspectionRecord,
+  blocks_convergence: coverageResultShort || coverageArtefactMissing,
+}
+
 // The single, complete report for the run: posting and the chat summary read
 // this one object, so nothing has to be re-joined across stage files.
 return {
@@ -447,6 +530,9 @@ return {
   verification,
   bar,
   coverage,
+  coverage_result: coverageResult,
+  inspection_record: inspectionRecord,
+  coverage_gate: coverageGate,
   skipped,
   failures,
   reviews,

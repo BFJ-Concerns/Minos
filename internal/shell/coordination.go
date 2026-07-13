@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"bfj/minos/internal/forge"
+	"bfj/minos/internal/incidents"
 	"bfj/minos/internal/ledger"
 	"bfj/minos/internal/product"
 	"bfj/minos/internal/reconcile"
@@ -177,6 +178,26 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 		fmt.Fprintf(logw, "admitted %s#%s head=%s\n", facts.RepoSlug(), facts.PR, facts.HeadSHA)
 	case reconcile.Live, reconcile.Nothing:
 		fmt.Fprintf(logw, "%s %s#%s: %s\n", decision.Kind, facts.RepoSlug(), facts.PR, decision.Reason)
+	case reconcile.Reap:
+		lease, found, err := store.Lease(ctx, snapshot.Key)
+		if err != nil || !found {
+			return err
+		}
+		// The old containment must be empty before its ownership and workspace
+		// are retired, even though current terminal truth needs no successor.
+		if err := stopAndVerifyUnitGone(ctx, lease.Unit); err != nil {
+			return err
+		}
+		if err := recordHardKillIncident(ctx, cfg, facts, store, lease, "stale lifecycle reaped; current terminal product retained without a successor"); err != nil {
+			return err
+		}
+		if err := closeRunLease(ctx, cfg, facts, store, lease.Token); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(lease.Workspace); err != nil {
+			return err
+		}
+		fmt.Fprintf(logw, "reaped dead lifecycle for %s#%s; terminal product retained\n", facts.RepoSlug(), facts.PR)
 	case reconcile.Replace:
 		lease, found, err := store.Lease(ctx, snapshot.Key)
 		if err != nil || !found {
@@ -204,6 +225,12 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 		if err := ensureLaunchReady(ctx, cfg, facts, snapshot.TargetSHA, store); err != nil {
 			return err
 		}
+		// A hard-killed lifecycle cannot report its own failure. Record the
+		// replacement before changing ownership so a failed reap is retried
+		// against the same deduplicated operational incident.
+		if err := recordHardKillIncident(ctx, cfg, facts, store, lease, "stale lifecycle replaced from current forge state"); err != nil {
+			return err
+		}
 		// Remove the old owner's presence before atomically replacing its token.
 		// A forge failure leaves the old lease intact for a later reap attempt.
 		if err := adaptation.removeRunClaimReaction(ctx, facts.Owner, facts.Repo, facts.PR, runPresenceReaction); err != nil {
@@ -227,6 +254,21 @@ func executeDecision(ctx context.Context, cfg ServiceConfig, repo RepoConfig, fa
 		}
 	}
 	return nil
+}
+
+func recordHardKillIncident(ctx context.Context, cfg ServiceConfig, facts Facts, store *ledger.Store, lease ledger.Lease, diagnostic string) error {
+	logPath := incidentLogPath(cfg, "sweep.log")
+	return recordOperationalIncident(ctx, cfg, store, ledger.Incident{
+		Key: lease.Key, Category: "lifecycle-hard-kill", ObservedHead: lease.ObservedHead,
+		ObservedTarget: lease.ObservedTarget, LogLocation: logPath,
+	}, incidents.Event{
+		Key: incidents.Key{
+			Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo,
+			PullRequest: facts.PR, Category: "lifecycle-hard-kill",
+		},
+		Diagnostic: diagnostic, LogPath: logPath, Attempt: int(lease.Token),
+		ObservedHead: lease.ObservedHead, ObservedTarget: lease.ObservedTarget,
+	})
 }
 
 func publishReconciliationState(ctx context.Context, cfg ServiceConfig, facts Facts, snapshot reconcile.ForgeSnapshot, store *ledger.Store, state product.State) error {

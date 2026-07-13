@@ -6,7 +6,8 @@ work="${MINOS_E2E_DIR:-$(mktemp -d)}"
 live="${MINOS_E2E_LIVE:-0}"
 liveness_threshold="${MINOS_E2E_LIVENESS_THRESHOLD:-10m}"
 journeys="${MINOS_E2E_JOURNEYS:-}"
-if [[ (",${journeys}," == *",hard-kill,"* || ",${journeys}," == *",restart,"*) &&
+if [[ (",${journeys}," == *",hard-kill,"* || ",${journeys}," == *",durable-kill,"* ||
+  ",${journeys}," == *",restart,"*) &&
   -z "${MINOS_E2E_LIVENESS_THRESHOLD:-}" ]]; then
   liveness_threshold="6s"
 fi
@@ -179,7 +180,8 @@ create_pr() {
     git checkout -q main
     git checkout -q -b "$branch"
     if [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
-      "$branch" == restart-* || "$branch" == uncertain-* ]]; then
+      "$branch" == restart-* || "$branch" == uncertain-* || "$branch" == capacity-* ||
+      "$branch" == durable-*-kill-* ]]; then
       sed -i 's/return true/return false/' ready.go
     else
       printf '\n// Clean lifecycle fixture.\n' >>ready.go
@@ -228,6 +230,18 @@ seed_stopped_history() {
 
 mkdir -p "$work"/{adaptations,bin,config/repos,forgejo/gitea/conf,incidents,logs,runs}
 cp -R "$root/scripts/adaptations/forgejo/." "$work/adaptations/"
+mv "$work/adaptations/remove-reaction" "$work/adaptations/remove-reaction-real"
+cat >"$work/adaptations/remove-reaction" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+fault="$(dirname "$0")/../faults/fail-remove-reaction-once"
+if [ -e "$fault" ]; then
+  rm -f "$fault"
+  exit 1
+fi
+exec "$(dirname "$0")/remove-reaction-real" "$@"
+EOF
+chmod +x "$work/adaptations/remove-reaction"
 cat >"$work/adaptations/fault-common.sh" <<'EOF'
 #!/usr/bin/env sh
 # shellcheck source=common.sh
@@ -488,6 +502,20 @@ elif [[ "$branch" == uncertain-status-* ]]; then
   "$minos" forge status stopped
   : >"$control_root/uncertain-status-applied"
   while [[ ! -e "$control_root/uncertain-status-release" ]]; do sleep 1; done
+elif [[ "$branch" == capacity-* ]]; then
+  : >"$control_root/capacity-${MINOS_PR}-ready"
+  while [[ ! -e "$control_root/capacity-${MINOS_PR}-release" ]]; do sleep 1; done
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  "$minos" forge status stopped
+elif [[ "$branch" == durable-*-kill-* ]]; then
+  durable_state=stopped
+  [[ "$branch" != durable-blocked-kill-* ]] || durable_state=blocked
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  "$minos" forge review material "$body" "$comments"
+  "$minos" forge status "$durable_state"
+  printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/durable-${durable_state}-kill-ready"
+  while :; do sleep 1; done
 elif [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ]]; then
   if [[ "$branch" == missed-webhook-* ]]; then
     : >"$control_root/missed-webhook-ready"
@@ -570,12 +598,37 @@ if journey_enabled hard-kill; then
   run_hard_kill_journey
 fi
 
+if journey_enabled durable-kill; then
+  run_durable_kill_journey stopped
+  run_durable_kill_journey blocked
+fi
+
 if journey_enabled restart; then
   run_restart_journey
 fi
 
 if journey_enabled uncertain-write; then
   run_uncertain_write_journeys
+fi
+
+if journey_enabled ingress-failures; then
+  run_ingress_failure_journeys
+fi
+
+if journey_enabled unmapped-event; then
+  run_unmapped_event_journey
+fi
+
+if journey_enabled capacity; then
+  run_capacity_journey
+fi
+
+if journey_enabled closed-before-sweep; then
+  run_closed_before_sweep_journey
+fi
+
+if journey_enabled receiver-boundaries; then
+  run_receiver_boundary_journeys
 fi
 
 printf 'Minos lifecycle E2E passed. Evidence: %s\n' "$work"

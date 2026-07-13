@@ -356,6 +356,44 @@ assembled review. An oversized PR is reported as **partial** rather than
 pretended complete, and a partially covered review can never converge: it
 surfaces to the operator instead.
 
+**Bind both coverage artefacts into the verification invocation — they are
+distinct, and the bar judges neither by proxy for the other.** Coverage does not
+judge itself, so when you follow the verify recipe (step 5) pass the skill's
+`assemble_verify_input.py` both:
+
+- the **inspection record** — your own scratch file, the one you fed to
+  `account-coverage`, carrying the changed files, their per-hunk read/omitted
+  accounts, and the named definitions and call sites you inspected — via
+  `--inspection-record`. This is the bar's coverage *depth* evidence: it lets the
+  judge weigh whether the recorded reading was deep enough, not merely whether
+  every item was labelled. It never gates.
+- the **accounting result** — the `account-coverage` output (`status` and
+  `omissions`), captured to a file under `$MINOS_RUN_DIR` (for example
+  `coverage-check.json`) — via `--coverage-result`. This is what the workflow's
+  `coverage_gate` keys off, mechanically.
+
+A `complete` result proves only that every change was *labelled* read; it is not
+proof of depth, which is why the record travels alongside it. Do not call the
+result "the record", and do not send one in place of the other. The two must
+arrive together to converge: the gate treats supplying only one as a wiring error
+and blocks — a result without its record leaves depth unjudged, a record without
+its result has no completeness verdict — so pass **both** whenever you mean to
+converge.
+
+**A `partial` result is a result you carry, never a step that failed.**
+`account-coverage` exits `1` when a well-formed check finds a gap and `2` only
+when the inspection record itself could not be checked (its schemas are in
+`$MINOS_REVIEW_SCRIPTS/README.md`). Exit `1` is the mechanical `partial` verdict —
+capture its JSON and carry it into the seam exactly as you would a `complete`
+one; do not let the non-zero status abort the review or discard either artefact.
+An exit `2` is a genuine input failure to diagnose, not a coverage verdict. When
+the accounting result's status is anything but `complete`, the verify workflow
+returns `coverage_gate.blocks_convergence: true`: the review still publishes its
+verified findings, but it settles **partial** and cannot converge whatever the
+panel declared or the bar judged. Convergence (step 7) therefore requires a
+`complete` accounting result on top of zero verified material findings and a
+passed bar.
+
 **Every judgement-bearing worker's model pin is admitted before its output
 counts.** Before you admit any worker judgement that can supply a finding,
 verify a finding or repair, pass the review bar, or establish post-repair
@@ -482,9 +520,12 @@ path exists.
 ### 7. Converge, or stop the chase honestly
 
 **Review convergence** is a positive, head-bound result: zero verified material
-findings, honest complete coverage, and either a passed review-bar check or the
-explicit checker-unavailable limited policy. You record it as the service's
-approving review on that head.
+findings, honest complete coverage (a `complete` mechanical accounting result —
+the verify workflow's `coverage_gate.blocks_convergence` is false — over an
+inspection record the bar judged deep enough), and either a passed review-bar
+check or the explicit checker-unavailable limited policy. You record it as the
+service's approving review on that head. A blocking coverage
+gate settles **partial**, never convergence, whatever the bar concluded.
 
 Termination is your judgement, not a counter — there is no pass ceiling and no
 infrastructure clock. Apply a **rising bar to chasing** a finding that keeps
