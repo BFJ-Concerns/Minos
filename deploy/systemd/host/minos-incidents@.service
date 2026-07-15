@@ -1,7 +1,0 @@
-[Unit]
-Description=Check for open Minos incidents outside deployment %i
-
-[Service]
-Type=oneshot
-EnvironmentFile=/etc/minos-deadman/%i.env
-ExecStart=/usr/local/bin/minos incident check --store ${MINOS_INCIDENT_STORE}

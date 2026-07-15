@@ -1,4 +1,0 @@
-#!/usr/bin/env sh
-set -eu
-: "${MINOS_BIN:=minos}"
-exec "$MINOS_BIN" review dedupe "$@"

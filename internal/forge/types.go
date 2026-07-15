@@ -18,35 +18,7 @@ type Repository struct {
 	Name  string
 }
 
-// Ownership is opaque to the forge adapter. The coordination spine decides
-// what proves a live lease; the adapter merely refuses to mutate without that
-// proof immediately before invoking a guarded verb.
-type OwnershipKind string
-
-const (
-	OwnershipLifecycle      OwnershipKind = "lifecycle"
-	OwnershipReconciliation OwnershipKind = "reconciliation"
-)
-
-type Ownership struct {
-	Kind  OwnershipKind
-	Token int64
-}
-
-func LifecycleOwnership(token int64) Ownership {
-	return Ownership{Kind: OwnershipLifecycle, Token: token}
-}
-
-func ReconciliationOwnership() Ownership {
-	return Ownership{Kind: OwnershipReconciliation}
-}
-
-type OwnershipChecker interface {
-	Check(context.Context, Ownership) error
-}
-
 type Guard struct {
-	Ownership   Ownership
 	Repository  Repository
 	PullRequest int64
 	HeadSHA     string
@@ -109,7 +81,7 @@ type Snapshot struct {
 	Reviews             []Review        `json:"reviews"`
 	AllowedMergeMethods []MergeMethod   `json:"allowed_merge_methods"`
 
-	CheckDecision CheckDecision `json:"-"`
+	CheckDecision CheckDecision `json:"check_decision"`
 }
 
 type MergeMethod string
@@ -141,14 +113,6 @@ type reviewWritePayload struct {
 	State    ReviewVerdict   `json:"state"`
 	Body     string          `json:"body"`
 	Comments []ReviewComment `json:"comments"`
-}
-
-type PushRequest struct {
-	Branch      string
-	AuthorName  string
-	AuthorEmail string
-	MessageFile string
-	Workspace   string
 }
 
 type CheckIdentity struct {

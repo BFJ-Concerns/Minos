@@ -2,195 +2,60 @@ package shell
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
-	"time"
-
-	"bfj/minos/internal/incidents"
-	"bfj/minos/internal/ledger"
-	"bfj/minos/internal/preflight"
 )
 
 var unitSafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
-
-var ErrRunCapacity = ledger.ErrCapacity
-var ErrRunLedger = ledger.ErrLedger
-var ErrLaunchPreflight = errors.New("lifecycle launch preflight failed")
-
 var systemdRunCommand = exec.CommandContext
 
-var checkLaunchPreflight = cachedLaunchPreflight
-
-const launchPreflightTTL = 5 * time.Minute
-
-func ledgerPath(cfg ServiceConfig) string { return filepath.Join(cfg.Runs.Dir, "coordination.db") }
-
-func coordinationKey(facts Facts) ledger.Key {
-	return ledger.Key{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR}
-}
-
-func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, targetSHA, occasion string) error {
-	store, err := ledger.Open(ledgerPath(cfg))
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrRunLedger, err)
-	}
-	defer store.Close()
-	if err := ensureLaunchReady(ctx, cfg, facts, targetSHA, store); err != nil {
-		return err
-	}
-	unitName := UnitName(facts)
-	workspace := filepath.Join(os.TempDir(), "minos-workspaces", unitName)
-	lease, err := store.AcquireLease(ctx, ledger.Lease{
-		Key: coordinationKey(facts), ObservedHead: facts.HeadSHA, ObservedTarget: targetSHA,
-		Unit: unitName, Workspace: workspace,
-	}, cfg.Runs.MaxConcurrent)
-	if err != nil {
-		// Another delivery won the same PR claim between Decide and the atomic
-		// acquire. That is successful duplicate collapse, not a launch failure.
-		if errors.Is(err, ledger.ErrNotOwner) {
-			return nil
-		}
-		return err
-	}
-	if err := spawnRunUnit(ctx, cfg, repo, facts, lease, occasion); err != nil {
-		// A failed detached launch must never strand the admission slot.
-		releaseErr := closeRunLease(context.Background(), cfg, facts, store, lease.Token)
-		return errors.Join(err, releaseErr)
-	}
-	return nil
-}
-
-func cachedLaunchPreflight(ctx context.Context, cfg ServiceConfig) (preflight.Report, bool, error) {
-	return preflight.CachedGate{
-		ConfigPath: filepath.Join(cfg.Root, "preflight.toml"),
-		CachePath:  filepath.Join(cfg.Runs.Dir, "preflight-cache.json"),
-		TTL:        launchPreflightTTL,
-	}.Check(ctx)
-}
-
-func ensureLaunchReady(ctx context.Context, cfg ServiceConfig, facts Facts, targetSHA string, store *ledger.Store) error {
-	report, _, err := checkLaunchPreflight(ctx, cfg)
-	if err == nil && report.Passed {
+func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) error {
+	unit := UnitName(facts)
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "is-active", "--quiet", unit).Run(); err == nil {
 		return nil
 	}
-	logPath := incidentLogPath(cfg, "preflight.log")
-	incidentErr := recordOperationalIncident(ctx, cfg, store, ledger.Incident{
-		Key: coordinationKey(facts), Category: "readiness-preflight", ObservedHead: facts.HeadSHA,
-		ObservedTarget: targetSHA, LogLocation: logPath,
-	}, incidents.Event{
-		Key:        incidents.Key{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PullRequest: facts.PR, Category: "readiness-preflight"},
-		Diagnostic: "lifecycle readiness preflight failed", LogPath: logPath,
-		ObservedHead: facts.HeadSHA, ObservedTarget: targetSHA,
-	})
-	if err != nil {
-		return errors.Join(ErrLaunchPreflight, err, incidentErr)
-	}
-	return errors.Join(ErrLaunchPreflight, incidentErr)
-}
-
-func incidentLogPath(cfg ServiceConfig, fallback string) string {
-	if strings.TrimSpace(cfg.Sweep.Log) != "" {
-		return cfg.Sweep.Log
-	}
-	return filepath.Join(cfg.Runs.Dir, fallback)
-}
-
-func recordOperationalIncident(ctx context.Context, cfg ServiceConfig, store *ledger.Store, ledgerIncident ledger.Incident, event incidents.Event) error {
-	_, ledgerErr := store.UpsertIncident(ctx, ledgerIncident)
-	var streamErr error
-	if preflightConfig, configErr := preflight.LoadConfig(filepath.Join(cfg.Root, "preflight.toml")); configErr == nil {
-		_, streamErr = incidents.NewFileStore(preflightConfig.Alert.Directory).Raise(ctx, event)
-	}
-	return errors.Join(ledgerErr, streamErr)
-}
-
-func spawnRunUnit(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, lease ledger.Lease, occasion string) error {
-	exe, err := os.Executable()
+	runDir, err := os.MkdirTemp(cfg.Runs.Dir, unit+"-")
 	if err != nil {
 		return err
 	}
-	env := runEnv(cfg, repo, facts, lease, occasion)
-	for _, name := range []string{"MINOS_STUB_MODE", "MINOS_STUB_REVIEW_STATE", "MINOS_STUB_SLOW_SECONDS"} {
-		if value := os.Getenv(name); value != "" {
-			env = append(env, name+"="+value)
-		}
+	forgeConfig := cfg.Forges[facts.Forge]
+	env := map[string]string{
+		"MINOS_RUN_DIR": runDir, "MINOS_CONFIG": cfg.Root, "MINOS_FORGE": facts.Forge,
+		"MINOS_WORKSPACE": filepath.Join(runDir, "workspace"),
+		"MINOS_OWNER":     facts.Owner, "MINOS_REPO_NAME": facts.Repo, "MINOS_PR": facts.PR,
+		"MINOS_HEAD_SHA": facts.HeadSHA, "MINOS_TARGET_SHA": facts.BaseSHA,
+		"MINOS_BASE_REF": facts.BaseRef, "MINOS_HEAD_BRANCH": facts.HeadRef,
+		"MINOS_API_BASE": forgeConfig.APIBase, "MINOS_CREDENTIAL_FILE": forgeConfig.CredentialFile,
+		"MINOS_BUILD_CMD": repo.Adaptation.Build, "MINOS_TEST_CMD": repo.Adaptation.Test,
+		"MINOS_RUN_BODY": repo.Adaptation.RunBody, "MINOS_AUTO_MERGE": fmt.Sprintf("%t", repo.Policy.AutoMerge),
 	}
-	args := []string{"--user", "--collect", "--unit", lease.Unit, "--property=ExitType=cgroup", "--property=KillMode=control-group"}
-	for _, pair := range env {
-		args = append(args, "--setenv", pair)
+	exe, err := os.Executable()
+	if err != nil {
+		_ = os.RemoveAll(runDir)
+		return err
 	}
-	args = append(args, exe, "run-wrap", "--config", cfg.Root)
+	args := []string{"--user", "--collect", "--unit", unit, "--property=KillMode=control-group"}
+	for key, value := range env {
+		args = append(args, "--setenv", key+"="+value)
+	}
+	args = append(args, exe, "run", "--config", cfg.Root)
 	out, err := systemdRunCommand(ctx, "systemd-run", args...).CombinedOutput()
 	if err != nil {
+		_ = os.RemoveAll(runDir)
+		if strings.Contains(string(out), "already exists") {
+			return nil
+		}
 		return fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
 func UnitName(facts Facts) string {
-	raw := fmt.Sprintf("minos-run-%s-%s-pr%s-%s", facts.Owner, facts.Repo, facts.PR, shortSHA(facts.HeadSHA))
-	return unitSafe.ReplaceAllString(raw, "-")
+	return unitSafe.ReplaceAllString(fmt.Sprintf("minos-%s-%s-pr%s", facts.Owner, facts.Repo, facts.PR), "-")
 }
 
-func shortSHA(sha string) string {
-	if len(sha) <= 12 {
-		return sha
-	}
-	return sha[:12]
-}
-
-func RunDir(root string, facts Facts, token int64) string {
-	return filepath.Join(root, "attempts", unitSafe.ReplaceAllString(facts.Forge+"--"+facts.Owner+"--"+facts.Repo+"--pr"+facts.PR, "-"), strconv.FormatInt(token, 10))
-}
-
-func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, lease ledger.Lease, occasion string) []string {
-	runDir := RunDir(cfg.Runs.Dir, facts, lease.Token)
-	diff := filepath.Join(runDir, "diff.patch")
-	briefs := repo.Adaptation.Briefs
-	if briefs == "" {
-		briefs = ".review"
-	}
-	autoMerge := "false"
-	if repo.Policy.AutoMerge {
-		autoMerge = "true"
-	}
-	forge := cfg.Forges[facts.Forge]
-	policy := repo.FindingPolicy()
-	return []string{
-		"MINOS_RUN_DIR=" + runDir,
-		"MINOS_ATTEMPT_TOKEN=" + strconv.FormatInt(lease.Token, 10),
-		"MINOS_OCCASION=" + occasion,
-		"MINOS_FORGE=" + facts.Forge,
-		"MINOS_REPO=" + facts.RepoSlug(),
-		"MINOS_OWNER=" + facts.Owner,
-		"MINOS_REPO_NAME=" + facts.Repo,
-		"MINOS_PR=" + facts.PR,
-		"MINOS_HEAD_SHA=" + facts.HeadSHA,
-		"MINOS_TARGET_SHA=" + lease.ObservedTarget,
-		"MINOS_BASE_REF=" + facts.BaseRef,
-		"MINOS_WORKSPACE=" + lease.Workspace,
-		"MINOS_DIFF=" + diff,
-		"MINOS_ADAPTATION=" + forge.Adaptation,
-		"MINOS_SKILL=" + repo.Adaptation.Skill,
-		"MINOS_RUN_BODY=" + repo.Adaptation.RunBody,
-		"MINOS_BRIEFS=" + briefs,
-		"MINOS_BUILD_CMD=" + repo.Adaptation.Build,
-		"MINOS_TEST_CMD=" + repo.Adaptation.Test,
-		"MINOS_AUTO_MERGE=" + autoMerge,
-		"MINOS_PUBLISH_THRESHOLD=" + policy.PublishThreshold.String(),
-		"MINOS_REPAIR_THRESHOLD=" + policy.RepairThreshold.String(),
-		"MINOS_FINDING_DISPOSITION_MODE=" + string(policy.Mode),
-		"MINOS_FINDING_DESTINATION=" + policy.Destination,
-		"MINOS_FINDING_TARGET=" + policy.Target,
-		"MINOS_CONFIG=" + cfg.Root,
-		"MINOS_UNIT=" + lease.Unit,
-		"MINOS_GOVERNING_IDENTITY=" + governingIdentity(repo),
-		"MINOS_DEPLOYMENT_PROFILE=" + deploymentIdentity(cfg, repo),
-	}
-}
+func runBodyPath() string { return filepath.Clean(os.Getenv("MINOS_RUN_BODY")) }
