@@ -504,8 +504,9 @@ blocked it rather than engineering around it silently.
    degrades to the other, recorded rather than refused). Checkers return
    per-dimension verdicts and the workflow
    applies them in code: a finding failing **evidence**, **applicability**, or
-   **genuine-issue** validity is suppressed as rejected; a dishonest
-   **priority** is reclassified, never suppressed; a failed **attribution**
+   **genuine-issue** validity is suppressed as rejected; a **priority**
+   disagreement preserves both classes and uses the more severe one, never
+   suppressing the finding or silently weakening it; a failed **attribution**
    call marks the finding indeterminate and routes it to the PR (the
    conservative direction). A finding no checker reaches on either engine is
    withheld from posting and recorded as **check-failed** — an infrastructure
@@ -528,6 +529,20 @@ blocked it rather than engineering around it silently.
    says. The gate is inactive (`result_status: null`) only when neither artefact
    was supplied. `inspection_record` rides through to the bar as its depth
    evidence; its content never gates, but its absence beside a result does.
+
+   A service that owns finding policy uses the same workflow in two explicit
+   phases. `entry_point: "verification-only"` with `bar_mode: "off"` returns
+   an exhaustive `verification_result`: every admitted candidate has a stable
+   producer identity and ordinal, `agent-judgement` assurance, proposed and
+   verifier priority, the conservative verified priority, and exactly one of
+   `verified`, `suppressed`, or `verification-unresolved`. The service then
+   constructs and validates its complete disposition manifest. It calls
+   `entry_point: "bar-only"` with `verify: false`, `bar_mode: "on"`, that exact
+   verification result, the complete manifest, and the manifest's lower-case
+   SHA-256 digest. The bar does not rerun finding verification or recompute
+   policy; it returns `bar_attestation` bound to the supplied digest. A later
+   manifest snapshot, including one changed by confirmed durable delivery,
+   requires a fresh bar-only call and fresh attestation.
 
 5. **Remediate — once, when the bar fails.** When step 4's `bar.outcome` is
    `"fail"`, run one remediation round so the run's work is repaired rather
@@ -754,3 +769,14 @@ blocked it rather than engineering around it silently.
   default-branch diff with chat output. When that happens, relay the warning's
   fix — add the section it names — rather than treating the run as PR-less by
   design.
+
+## Probation
+
+**Temporary — sunset 2026-08-15:** this skill was substantially revised on 2026-07-15,
+so treat friction with it as signal rather than noise. A defect in the skill itself — an
+instruction that is wrong or ambiguous, a bundled script, prompt, or binary that is broken,
+anything it tells you to do that you end up working around — is a report this window exists
+to collect: file it with the foundry-request skill once the task allows, or carry it in your
+session report where that skill is not available. A failure of the environment, the task,
+or other tooling is not this skill's defect; handle those as you normally would. If today
+is after 2026-08-15, this note has outstayed its window: tell the user to remove it.
