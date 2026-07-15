@@ -140,7 +140,16 @@ lowered to the review.
 Return the structured verdict the dispatch describes: `verdict` is exactly
 `pass` or `fail` — no other value, no synonym — with `reasons` listing each
 concrete failure you found (empty when passing), each one naming the note,
-finding, or gap it refers to. `implicated_briefs` is returned on every
+finding, or gap it refers to. `candidate_reconsiderations` is returned on every
+verdict. When a reason rejects a prior finding checker's decision, add one entry
+with the exact `candidate_id` from the supplied disposition manifest and that
+reason; use only candidates whose current manifest outcome is `suppressed`.
+This asks for fresh independent verification — it does not reinstate the
+finding on your authority. Do not use this field for a new allegation, an
+unresolved checker call, or a general coverage complaint. Return an empty array
+on a pass or when no prior suppression is disputed.
+
+`implicated_briefs` is also returned on every
 verdict: one entry per brief whose reviewer output your reasons concern —
 `brief` exactly as the name appears in the assembled review, `reasons` the
 subset of your reasons that concern that brief's output. A remediation round

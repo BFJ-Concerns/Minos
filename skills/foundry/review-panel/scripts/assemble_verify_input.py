@@ -95,6 +95,8 @@ def main():
         "pr": validated.get("pr", plan.get("pr")),
         "suppressed_by_validator": validated.get("suppressed_by_validator", []),
         "quote_validation": validated.get("quote_validation"),
+        "prior_verification_result": validated.get("prior_verification_result"),
+        "candidate_reconsiderations": validated.get("candidate_reconsiderations", []),
         "verify": not args.no_verify,
         "bar_mode": args.bar,
         "coverage_result": coverage_result,

@@ -276,7 +276,7 @@ func writeDecisionPair(t *testing.T, manifest findings.DispositionManifest, verd
 	if err != nil {
 		t.Fatal(err)
 	}
-	bar := findings.BarAttestation{SchemaVersion: 1, ManifestSHA256: digest, Verdict: verdict, Reasons: []string{}, ImplicatedBriefs: []findings.BriefReason{}, Checker: findings.BarChecker{Family: "claude", ID: "bar"}}
+	bar := findings.BarAttestation{SchemaVersion: 1, ManifestSHA256: digest, Verdict: verdict, Reasons: []string{}, ImplicatedBriefs: []findings.BriefReason{}, CandidateReconsiderations: []findings.CandidateReconsideration{}, Checker: findings.BarChecker{Family: "claude", ID: "bar"}}
 	root := t.TempDir()
 	manifestPath, barPath := filepath.Join(root, "manifest.json"), filepath.Join(root, "bar.json")
 	writeJSONFile(t, manifestPath, manifest)
@@ -334,7 +334,7 @@ func reviewDecisionFixture(t *testing.T, cfg ServiceConfig, facts Facts, priorit
 	if err != nil {
 		t.Fatal(err)
 	}
-	bar := findings.BarAttestation{SchemaVersion: 1, ManifestSHA256: digest, Verdict: verdict, Reasons: []string{}, ImplicatedBriefs: []findings.BriefReason{}, Checker: findings.BarChecker{Family: "claude", ID: "bar-1"}}
+	bar := findings.BarAttestation{SchemaVersion: 1, ManifestSHA256: digest, Verdict: verdict, Reasons: []string{}, ImplicatedBriefs: []findings.BriefReason{}, CandidateReconsiderations: []findings.CandidateReconsideration{}, Checker: findings.BarChecker{Family: "claude", ID: "bar-1"}}
 	root := t.TempDir()
 	manifestPath := filepath.Join(root, "manifest.json")
 	attestationPath := filepath.Join(root, "bar.json")

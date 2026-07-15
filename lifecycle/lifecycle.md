@@ -576,17 +576,37 @@ remain honest history rather than being mutated across moved lines.
 A failed bar check is a critique you address within the lifecycle, not a run
 failure and never grounds to discard verified findings — those always publish.
 The pinned review skill owns how the critique is worked, and you compose its
-procedure rather than inventing your own: a failed bar drives **one** fresh
-remediation round over the briefs the verdict implicates, re-verified and
-re-judged by a bar that is not handed the first verdict. **One round, then
-stop** — if that second bar judgement is also adverse, do not loop again; a
-review ground through repeated re-judging until a judge relents is worth less
-than an honestly failed one. Publish the review as it stands. **The bar gates
-convergence, never the publication of surviving verified findings:** an
-unresolved critique means the one review posts those findings with a
-non-approving verdict, the product state is partial, and auto-merge stays
-ineligible. This is composition, not judgement of your own — do not license
-yourself a further round the skill forbids.
+procedure rather than inventing your own. Preserve the failed bar-only report,
+its exhaustive `verification_result`, exact manifest, and digest-bound
+attestation. Run `plan_remediation.py` over the original panel plan and that
+report. It schedules fresh reviewers for implicated briefs and carries any
+mechanically validated `candidate_reconsiderations`: exact suppressed
+candidates whose verifier decision the bar rejected. A candidate mapping is
+usable only when the failed attestation names the same candidate and the exact
+manifest records it as suppressed; a prose complaint, unknown ID, verified
+candidate, or systemic criticism invents nothing.
+
+Run and quote-validate the resulting remediation review even when its only
+work is a candidate reconsideration and no reviewer shard can rerun. Feed the
+failed bar-only report and the fresh validated output to
+`merge_remediation.py`, then assemble a new verification input from that merged
+record. The merge preserves every prior candidate and already verified finding,
+carries unchallenged suppressions, re-offers unresolved checks, and removes the
+old checker verdict only from exact reconsiderations. Run `verification-only`
+afresh: every reintroduced or newly alleged candidate therefore receives an
+ordinary producer/checker-disjoint decision. Pass its exhaustive successor
+result to `minos findings assemble`; never edit, filter, or splice the manifest.
+Run `bar-only` again with that successor result, the rebuilt complete manifest,
+and its new digest. The first failed attestation is history and cannot authorise
+the successor; publication or convergence consumes only the fresh exact pair.
+
+This is **one** fresh remediation round, then stop. If planning finds no mapped
+candidate or implicated work, if validation is malformed, or if the second bar
+judgement is adverse, do not loop again or invent a finding. Publish the
+surviving verified findings with a non-approving verdict, settle partial, and
+leave auto-merge ineligible. **The bar gates convergence, never publication of
+surviving verified findings.** A review ground through repeated re-judging until
+a judge relents is worth less than an honestly failed one.
 
 A *valid adverse* bar judgement is never degraded away. The bar *check itself*
 failing — a checker that cannot run or returns unusable output — is different:
