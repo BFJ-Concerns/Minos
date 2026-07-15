@@ -7,7 +7,8 @@ When the bar judge fails the assembled review, one remediation round re-runs
 the implicated work instead of discarding the run: fresh clean-context
 reviewers for the briefs the judge implicated (their prompts carry the bar's
 complaints), plus a plain retry of any reviewer shard that returned nothing in
-the first round — and the Codex leg, when it was implicated or failed. This
+the first round — and exact suppressed candidates whose checker decision the
+bar rejected. The Codex leg is re-run only when it failed. This
 script derives that round's plan mechanically from the original plan and the
 verification report, so the re-dispatch reviews exactly what the record says
 went wrong, nothing more.
@@ -30,6 +31,10 @@ review_workflow.js (and run_codex_review.py) unchanged:
     complaint is surfaced as a warning. A leg not re-run is emitted as skipped
     with skip_kind "carried" (the marker merge_remediation.py drops in favour
     of the round-one leg records).
+
+`candidate_reconsiderations` rides on the plan for the merge step. It is not a
+new finding: the exact candidate is recovered from the failed bar's exhaustive
+verification result and re-enters ordinary checker-disjoint verification.
 
 Exits 1 with an {"error": ...} document when there is nothing to remediate:
 the bar did not run, did not fail, or implicated nothing that maps to a
@@ -94,6 +99,10 @@ def main():
         refuse(f"Nothing to remediate: the bar outcome is '{bar.get('outcome')}', not 'fail'.")
 
     reasons = bar.get("reasons") or []
+    reconsiderations = bar.get("candidate_reconsiderations") or []
+    attested = (verify.get("bar_attestation") or {}).get("candidate_reconsiderations") or []
+    if reconsiderations != attested:
+        refuse("Nothing to remediate: candidate reconsiderations do not match the bar attestation.")
     # The verdict associates each implicated brief with its own subset of the
     # reasons, so a re-run reviewer is never fed complaints about another
     # brief's review. A bare-string entry (a degraded verdict shape) falls
@@ -162,7 +171,7 @@ def main():
             "skip_kind": "carried",
         }
 
-    if not briefs and not rerun_leg:
+    if not briefs and not rerun_leg and not reconsiderations:
         refuse(
             "Nothing to remediate mechanically: the bar implicated no dispatched "
             "brief and no reviewer shard failed. Report the bar verdict instead."
@@ -171,6 +180,7 @@ def main():
     remediation_plan = dict(plan)
     remediation_plan["briefs"] = briefs
     remediation_plan["codex_review"] = codex_review
+    remediation_plan["candidate_reconsiderations"] = reconsiderations
     remediation_plan["warnings"] = warnings
 
     print(json.dumps(remediation_plan, indent=2))

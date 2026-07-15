@@ -40,6 +40,10 @@ export const defaults = {
 //     verification_result, disposition_manifest, manifest_sha256,
 //                  // required by bar-only. The service owns policy and the
 //                  // manifest; the bar judges and attests that exact digest.
+//     prior_verification_result, candidate_reconsiderations,
+//                  // optional remediation inputs. The prior exhaustive result
+//                  // is carried forward; only the exact named suppressions are
+//                  // reopened for fresh checking.
 //     coverage_result,   // optional — the mechanical coverage-accounting result
 //                        // ({ status, omissions, … }) or null. THE HARD GATE:
 //                        // a status that is not "complete" blocks convergence
@@ -98,6 +102,8 @@ const barMode = input.bar_mode || 'off'
 const entryPoint = input.entry_point || 'combined'
 const dispositionManifest = input.disposition_manifest || null
 const manifestSHA256 = input.manifest_sha256 || null
+const priorVerificationResult = input.prior_verification_result || null
+const candidateReconsiderations = input.candidate_reconsiderations || []
 if (!['combined', 'verification-only', 'bar-only'].includes(entryPoint)) {
   throw new Error(`review-panel-verify: entry_point must be "combined", "verification-only", or "bar-only", got "${entryPoint}".`)
 }
@@ -115,10 +121,39 @@ if (entryPoint === 'bar-only') {
     throw new Error('review-panel-verify: bar-only entry point requires bar_mode "on".')
   }
 }
+if (priorVerificationResult && (priorVerificationResult.schema_version !== 1 || !Array.isArray(priorVerificationResult.candidates))) {
+  throw new Error('review-panel-verify: prior_verification_result must be an exhaustive verification-only result.')
+}
+if (!Array.isArray(candidateReconsiderations)) {
+  throw new Error('review-panel-verify: candidate_reconsiderations must be an array.')
+}
+if (candidateReconsiderations.length && !priorVerificationResult) {
+  throw new Error('review-panel-verify: candidate reconsiderations require the prior exhaustive verification result.')
+}
+const reservedOrdinals = new Map()
+for (const raw of rawFindings) {
+  if (!Number.isInteger(raw.producer_ordinal) || raw.producer_ordinal < 0) continue
+  const identity = String(raw.producer_identity || raw.producer || '')
+  if (identity !== String(raw.producer || '')) {
+    throw new Error('review-panel-verify: a carried candidate changed producer identity.')
+  }
+  const reserved = reservedOrdinals.get(identity) || new Set()
+  if (reserved.has(raw.producer_ordinal)) {
+    throw new Error(`review-panel-verify: duplicate carried candidate ${identity}:${raw.producer_ordinal}.`)
+  }
+  reserved.add(raw.producer_ordinal)
+  reservedOrdinals.set(identity, reserved)
+}
 const producerOrdinals = new Map()
 const findings = rawFindings.map((finding) => {
   const producerIdentity = String(finding.producer || '')
-  const ordinal = producerOrdinals.get(producerIdentity) || 0
+  let ordinal = finding.producer_identity === producerIdentity && Number.isInteger(finding.producer_ordinal)
+    ? finding.producer_ordinal
+    : producerOrdinals.get(producerIdentity) || 0
+  const reserved = reservedOrdinals.get(producerIdentity) || new Set()
+  while (reserved.has(ordinal) && !(finding.producer_identity === producerIdentity && finding.producer_ordinal === ordinal)) ordinal += 1
+  reserved.add(ordinal)
+  reservedOrdinals.set(producerIdentity, reserved)
   producerOrdinals.set(producerIdentity, ordinal + 1)
   if (finding.assurance && finding.assurance !== 'agent-judgement') {
     throw new Error(`review-panel-verify: unsupported finding assurance "${finding.assurance}".`)
@@ -218,7 +253,7 @@ const CHECK_SCHEMA = {
 const BAR_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['verdict', 'reasons', 'implicated_briefs'],
+  required: ['verdict', 'reasons', 'implicated_briefs', 'candidate_reconsiderations'],
   properties: {
     verdict: { type: 'string', enum: ['pass', 'fail'] },
     reasons: { type: 'array', items: { type: 'string' } },
@@ -240,8 +275,44 @@ const BAR_SCHEMA = {
         },
       },
     },
+    candidate_reconsiderations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['candidate_id', 'reasons'],
+        properties: {
+          candidate_id: { type: 'string', pattern: '^C-[0-9a-f]{64}$' },
+          reasons: { type: 'array', minItems: 1, items: { type: 'string' } },
+        },
+      },
+    },
     notes: { type: 'string' },
   },
+}
+
+function validateBarCandidateReconsiderations(verdict) {
+  const requested = verdict.candidate_reconsiderations || []
+  if (verdict.verdict === 'pass' && requested.length) return false
+  if (!requested.length) return true
+  if (entryPoint !== 'bar-only' || !dispositionManifest || !Array.isArray(dispositionManifest.candidates)) return false
+  const verdictReasons = new Set(verdict.reasons || [])
+  const manifestByID = new Map(dispositionManifest.candidates.map((entry) => [entry?.candidate?.candidate_id, entry]))
+  const verificationByProducer = new Map(
+    verificationResult.candidates.map((entry) => [`${entry?.producer?.id}\u0000${entry?.producer?.ordinal}`, entry]),
+  )
+  const seen = new Set()
+  for (const request of requested) {
+    if (seen.has(request.candidate_id)) return false
+    seen.add(request.candidate_id)
+    const manifestEntry = manifestByID.get(request.candidate_id)
+    if (!manifestEntry || manifestEntry.outcome !== 'suppressed') return false
+    const producer = manifestEntry.candidate?.producer
+    const verificationEntry = verificationByProducer.get(`${producer?.id}\u0000${producer?.ordinal}`)
+    if (!verificationEntry || verificationEntry.outcome !== 'suppressed') return false
+    if (!request.reasons?.length || request.reasons.some((reason) => !String(reason).trim() || !verdictReasons.has(reason))) return false
+  }
+  return true
 }
 
 function checkerPrompt(finding) {
@@ -456,7 +527,7 @@ const survivorByCandidate = new Map(
 const suppressedByCandidate = new Map(
   suppressed.map((entry) => [`${entry.finding.producer_identity}\u0000${entry.finding.producer_ordinal}`, entry]),
 )
-const assembledVerificationResult = {
+const currentVerificationResult = {
   schema_version: 1,
   criteria: plan.briefs.map((brief) => ({ name: brief.name, path: brief.path })),
   candidates: findings.map((candidate) => {
@@ -485,6 +556,37 @@ const assembledVerificationResult = {
       verified_finding: survivor || null,
     }
   }),
+}
+const currentByProducer = new Map(
+  currentVerificationResult.candidates.map((entry) => [`${entry.producer.id}\u0000${entry.producer.ordinal}`, entry]),
+)
+const mergedCandidates = []
+if (priorVerificationResult) {
+  for (const entry of priorVerificationResult.candidates) {
+    const key = `${entry?.producer?.id}\u0000${entry?.producer?.ordinal}`
+    mergedCandidates.push(currentByProducer.get(key) || entry)
+    currentByProducer.delete(key)
+  }
+}
+mergedCandidates.push(...currentByProducer.values())
+const assembledVerificationResult = priorVerificationResult ? {
+  schema_version: 1,
+  criteria: [...(priorVerificationResult.criteria || [])],
+  candidates: mergedCandidates,
+} : currentVerificationResult
+if (priorVerificationResult) {
+  const knownCriteria = new Set(assembledVerificationResult.criteria.map((criterion) => criterion.name))
+  for (const criterion of currentVerificationResult.criteria) {
+    if (!knownCriteria.has(criterion.name)) assembledVerificationResult.criteria.push(criterion)
+  }
+  const checkedKeys = new Set(toCheck.map((finding) => `${finding.producer_identity}\u0000${finding.producer_ordinal}`))
+  for (const request of candidateReconsiderations) {
+    const key = `${request.producer_identity}\u0000${request.producer_ordinal}`
+    const prior = priorVerificationResult.candidates.find((entry) => `${entry?.producer?.id}\u0000${entry?.producer?.ordinal}` === key)
+    if (!prior || prior.outcome !== 'suppressed' || !checkedKeys.has(key)) {
+      throw new Error(`review-panel-verify: reconsidered candidate ${request.candidate_id || key} was not reopened from a prior suppression.`)
+    }
+  }
 }
 const verificationResult = entryPoint === 'bar-only'
   ? input.verification_result
@@ -540,6 +642,7 @@ const bar = {
   // On a fail, the brief names the judge holds responsible — what the
   // remediation round re-dispatches. Empty on a pass or a systemic fail.
   implicated_briefs: [],
+  candidate_reconsiderations: [],
   checked_by: null,
 }
 
@@ -589,6 +692,7 @@ if (barMode === 'on' || (barMode === 'auto' && triggerFired)) {
     phase: 'Bar',
     schema: BAR_SCHEMA,
   }).catch(() => null)
+  if (verdict && !validateBarCandidateReconsiderations(verdict)) verdict = null
   bar.checked_by = verdict ? 'codex' : null
   if (!verdict) {
     verdict = await agent(barPrompt, {
@@ -597,12 +701,14 @@ if (barMode === 'on' || (barMode === 'auto' && triggerFired)) {
       phase: 'Bar',
       schema: BAR_SCHEMA,
     }).catch(() => null)
+    if (verdict && !validateBarCandidateReconsiderations(verdict)) verdict = null
     if (verdict) bar.checked_by = 'claude'
   }
   if (verdict) {
     bar.outcome = verdict.verdict
     bar.reasons = verdict.reasons
     bar.implicated_briefs = verdict.implicated_briefs || []
+    bar.candidate_reconsiderations = verdict.candidate_reconsiderations || []
     if (verdict.notes) bar.notes = verdict.notes
   } else {
     bar.outcome = 'check-failed'
@@ -639,6 +745,7 @@ const barAttestation = entryPoint === 'bar-only' && bar.ran ? {
   verdict: coverageGate.blocks_convergence ? 'unresolved' : bar.outcome === 'pass' ? 'pass' : bar.outcome === 'fail' ? 'fail' : 'unresolved',
   reasons: [...bar.reasons, ...coverageAttestationReasons],
   implicated_briefs: bar.implicated_briefs,
+  candidate_reconsiderations: bar.candidate_reconsiderations,
   checker: {
     family: bar.checked_by || 'unresolved',
     id: bar.checked_by ? `bar-check@${bar.checked_by}` : 'bar-check-unresolved',
@@ -652,6 +759,7 @@ return {
   entry_point: entryPoint,
   verification_result: verificationResult,
   bar_attestation: barAttestation,
+  disposition_manifest: dispositionManifest,
   findings: survivors,
   suppressed_by_checkers: suppressed,
   suppressed_by_validator: suppressedByValidator,

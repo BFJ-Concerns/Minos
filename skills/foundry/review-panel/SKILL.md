@@ -542,13 +542,19 @@ blocked it rather than engineering around it silently.
    SHA-256 digest. The bar does not rerun finding verification or recompute
    policy; it returns `bar_attestation` bound to the supplied digest. A later
    manifest snapshot, including one changed by confirmed durable delivery,
-   requires a fresh bar-only call and fresh attestation.
+   requires a fresh bar-only call and fresh attestation. A failed bar may also
+   name an exact suppressed candidate in `candidate_reconsiderations` when it
+   rejects that candidate's checker decision. The workflow validates each name
+   against the exhaustive result and manifest before attesting it; the name
+   authorises only a fresh disjoint check, never reinstatement by the bar.
 
 5. **Remediate — once, when the bar fails.** When step 4's `bar.outcome` is
    `"fail"`, run one remediation round so the run's work is repaired rather
    than discarded: fresh clean-context reviewers re-review what the judge
    implicated — each handed only the complaints the verdict attached to its
-   brief — and the whole result is re-verified, ending in a fresh bar
+   brief — and exact suppressed candidates whose checker decision the bar
+   rejected re-enter fresh independent verification. The whole result is
+   re-verified, ending in a fresh bar
    judgement that is not handed the first verdict. The round replaces an
    implicated brief's *account* — its reviewer notes and coverage entry,
    which are what the judge condemned — while its round-one findings that
@@ -557,8 +563,10 @@ blocked it rather than engineering around it silently.
    finding-level evidence against independently confirmed work, and a
    re-discovery at the same site collapses at the poster. The round also
    folds in the run's other recoverable waste:
-   reviewer shards that returned nothing are retried, and findings recorded
-   as check-failed are re-offered to the checkers. An implicated **Codex
+   reviewer shards that returned nothing are retried, findings recorded
+   as check-failed are re-offered to the checkers, and every unchallenged
+   suppression remains in the exhaustive successor result unchanged. An
+   implicated **Codex
    leg** is the one exception: its external reviewer takes no re-briefing,
    so its round-one result carries forward and the complaint is reported
    rather than remediated (the plan emits the warning); the leg re-runs only
@@ -574,8 +582,9 @@ blocked it rather than engineering around it silently.
    ```
 
    If it exits with an `error` — the judge implicated nothing that maps to a
-   dispatched brief and no shard failed — there is nothing to mechanically
-   re-run: skip to the report and present the bar verdict as it stands.
+   dispatched brief, named no exact suppressed candidate, and no shard failed —
+   there is nothing to mechanically re-run: skip to the report and present the
+   bar verdict as it stands.
    Otherwise repeat steps 2–4 on the remediation plan, with these
    differences:
 
@@ -603,7 +612,13 @@ blocked it rather than engineering around it silently.
      unchanged, so the round never re-enables checkers the caller disabled.
      Round-one survivors carry their recorded checker verdicts through
      without a fresh check (`verification.carried_forward`); only the
-     round's new findings spend checkers.
+     round's new findings, unresolved candidates, and exact suppressions named
+     by `candidate_reconsiderations` spend checkers. The successor
+     `verification_result` preserves every prior candidate before appending new
+     ones. A service-owned policy caller then rebuilds its complete disposition
+     manifest from that result and runs `bar-only` afresh over the new exact
+     digest; it never reuses the failed attestation or lets a combined report
+     stand in for that service-owned pair.
 
    One round, then stop. If the second bar verdict is also `fail`, do not
    loop again: report both verdicts honestly and let the user decide — a
