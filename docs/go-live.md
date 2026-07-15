@@ -76,6 +76,16 @@ sudo install -d -o root -g root -m 0755 /opt/minos/adaptations/forgejo
 sudo install -o root -g root -m 0755 scripts/adaptations/forgejo/* \
   /opt/minos/adaptations/forgejo/
 
+# Install the separately approved provider adaptation. It must contain the
+# executable discover, read, and create operations documented in
+# docs/finding-destination.md. Do not activate a destination-mode repository
+# until its authenticated read-back conformance proof passes.
+sudo install -d -o root -g root -m 0755 \
+  /opt/minos/adaptations/finding-destination
+sudo install -o root -g root -m 0755 \
+  "$FINDING_DESTINATION_ADAPTATION_SOURCE"/{discover,read,create} \
+  /opt/minos/adaptations/finding-destination/
+
 sudo install -d -o root -g root -m 0755 \
   /opt/minos/run-body /opt/minos/review /opt/minos/lifecycle
 sudo install -o root -g root -m 0755 scripts/run-body/* \
@@ -173,12 +183,22 @@ sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
   "$WEBHOOK_SECRET_SOURCE" /etc/minos/webhook.secret
 sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
   "$FORGE_TOKEN_SOURCE" /etc/minos/forgejo.token
+sudo install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0600 \
+  "$FINDING_DESTINATION_TOKEN_SOURCE" /etc/minos/finding-destination.token
 ```
 
 Edit `/etc/minos/service.toml` and replace
 `REPLACE_WITH_FORGEJO_BASE_URL` with `FORGEJO_BASE`. Keep the receiver bound to
 the LAN interface only; `:8919` is appropriate when the container itself has no
 non-LAN route.
+
+Also replace the finding-destination endpoint and expected-principal
+placeholders with the values proved by the installed adaptation. Before any
+repository profile selects that destination, exercise one disposable occurrence
+through not-found, create, rediscovery, and authenticated full read-back, then
+repeat it to prove discovery/read succeeds without a second create. An adapter
+that cannot provide unique occurrence discovery or authenticated complete reads
+is incompatible; do not weaken the profile to accept acknowledgements.
 
 Do not activate a repository yet. First verify the committed `review-panel` and
 general `root-cause` skills in the checkout, install them under

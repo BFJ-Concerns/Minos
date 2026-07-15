@@ -113,6 +113,10 @@ func canonicalDigest(value any) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
+// CanonicalSHA256 exposes the project's schema-ordered JSON digest to typed
+// behavioural adapters. Callers must pass project-owned structs, never maps.
+func CanonicalSHA256(value any) (string, error) { return canonicalDigest(value) }
+
 func validSHA256(value string) bool {
 	if !sha256Pattern.MatchString(value) || len(value) != sha256.Size*2 {
 		return false

@@ -110,6 +110,22 @@ status_is() {
   [[ "$(status_description "$1")" == "$2" ]]
 }
 
+pr_status_is() {
+  local pr="$1" description="$2" head
+  head="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}" | jq -r '.head.sha')"
+  status_is "$head" "$description"
+}
+
+bar_digests_differ() {
+  local pending="$1" confirmed="$2"
+  [[ "$(jq -r .manifest_sha256 "$pending")" != "$(jq -r .manifest_sha256 "$confirmed")" ]]
+}
+
+worker_calls_have_one_verification_and_two_bars() {
+  local calls="$1"
+  [[ "$(grep -c '^verification$' "$calls")" -eq 1 && "$(grep -c '^bar:' "$calls")" -eq 2 ]]
+}
+
 pr_merged() {
   [[ "$(api GET "/api/v1/repos/${owner}/${repo}/pulls/$1" | jq -r '.merged')" == true ]]
 }
@@ -118,6 +134,16 @@ review_on_head() {
   local pr="$1" head="$2"
   api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" |
     jq -e --arg head "$head" 'any(.[]; .commit_id == $head and (.user.login // .user.username) == "Minos")' >/dev/null
+}
+
+review_has_complete_disposition_record() {
+  local pr="$1" head="$2"
+  api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" |
+    jq -e --arg head "$head" 'any(.[];
+      .commit_id == $head and
+      (.user.login // .user.username) == "Minos" and
+      (.body | contains("<!-- Minos-Disposition: ")) and
+      (.body | test("<!-- Minos: [^\\n]+ -->\\s*$")))' >/dev/null
 }
 
 branch_absent() {
@@ -183,7 +209,7 @@ create_pr() {
     git fetch -q origin main
     git reset -q --hard origin/main
     git checkout -q -b "$branch"
-    if [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
+    if [[ "$branch" == stopped-* || "$branch" == destination-* || "$branch" == material-destination-* || "$branch" == retryable-exit-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
       "$branch" == restart-* || "$branch" == uncertain-* || "$branch" == capacity-* ||
       "$branch" == durable-*-kill-* ]]; then
       sed -i 's/return true/return false/' ready.go
@@ -232,7 +258,7 @@ seed_stopped_history() {
   )
 }
 
-mkdir -p "$work"/{adaptations,bin,config/repos,forgejo/gitea/conf,incidents,logs,runs}
+mkdir -p "$work"/{adaptations,bin,config/repos,destination,forgejo/gitea/conf,incidents,logs,runs}
 cp -R "$root/scripts/adaptations/forgejo/." "$work/adaptations/"
 mv "$work/adaptations/remove-reaction" "$work/adaptations/remove-reaction-real"
 cat >"$work/adaptations/remove-reaction" <<'EOF'
@@ -258,6 +284,65 @@ fi
 exec "$(dirname "$0")/delete-branch-real" "$@"
 EOF
 chmod +x "$work/adaptations/delete-branch"
+cat >"$work/destination/discover" <<'PY'
+#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+
+json.load(sys.stdin)
+root = pathlib.Path(__file__).resolve().parent
+with (root / "operations.log").open("a", encoding="utf-8") as log:
+    log.write("discover\n")
+state = root / "record.json"
+if not state.exists():
+    print(json.dumps({"schema_version": 1, "outcome": "not-found"}))
+else:
+    record = json.loads(state.read_text(encoding="utf-8"))
+    receipt = record["receipt"]
+    print(json.dumps({
+        "schema_version": 1,
+        "outcome": "found",
+        "matches": [{
+            "provider_record_id": "fixture-record-1",
+            "occurrence_id": receipt["occurrence_id"],
+            "payload_sha256": receipt["payload_sha256"],
+        }],
+    }))
+PY
+cat >"$work/destination/create" <<'PY'
+#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+
+request = json.load(sys.stdin)
+root = pathlib.Path(__file__).resolve().parent
+with (root / "operations.log").open("a", encoding="utf-8") as log:
+    log.write("create\n")
+(root / "record.json").write_text(json.dumps(request["record"]), encoding="utf-8")
+print(json.dumps({"schema_version": 1, "outcome": "created", "provider_record_id": "fixture-record-1"}))
+PY
+cat >"$work/destination/read" <<'PY'
+#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+
+json.load(sys.stdin)
+root = pathlib.Path(__file__).resolve().parent
+with (root / "operations.log").open("a", encoding="utf-8") as log:
+    log.write("read\n")
+record = json.loads((root / "record.json").read_text(encoding="utf-8"))
+print(json.dumps({
+    "schema_version": 1,
+    "outcome": "found",
+    "record": record,
+    "authenticated_principal": "minos-e2e",
+    "observed_at": "2026-07-15T12:00:00Z",
+}))
+PY
+chmod +x "$work/destination"/{discover,create,read}
 cat >"$work/adaptations/fault-common.sh" <<'EOF'
 #!/usr/bin/env sh
 # shellcheck source=common.sh
@@ -397,7 +482,13 @@ liveness-threshold = "${liveness_threshold}"
 log = "${work}/logs/sweep.log"
 [scrub]
 vars = ["MINOS_FORGE_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+[finding-destinations.backlog]
+adaptation = "${work}/destination"
+endpoint = "fixture://finding-backlog"
+credential-file = "${work}/destination.token"
+expected-principal = "minos-e2e"
 EOF
+printf 'disposable-destination-token\n' >"$work/destination.token"
 
 cat >"$work/config/repos/local--Minos--subject.toml" <<EOF
 forge = "local"
@@ -497,7 +588,73 @@ snapshot="$($minos forge snapshot)"
 branch="$(jq -r .head_branch <<<"$snapshot")"
 body="$MINOS_RUN_DIR/review.md"
 comments="$MINOS_RUN_DIR/comments.json"
-printf '[]\n' >"$comments"
+manifest="$MINOS_RUN_DIR/disposition-manifest.json"
+bar="$MINOS_RUN_DIR/bar-attestation.json"
+
+prepare_decision() {
+  priority="${1:-}"
+  verification="$MINOS_RUN_DIR/verification-result.json"
+  if [[ -n "$priority" ]]; then
+    line="$(grep -nEm1 'return false|ready := false|const ready = false' "$MINOS_WORKSPACE/ready.go" | cut -d: -f1)"
+    python3 - "$MINOS_WORKSPACE/ready.go" "$line" "$priority" >"$verification" <<'PY'
+import json
+import sys
+
+path, line_raw, priority = sys.argv[1:]
+line = int(line_raw)
+quote = open(path, encoding="utf-8").read().splitlines()[line - 1]
+producer = "ready[1/1]@claude"
+candidate = {
+    "brief": "ready", "file": "ready.go", "line": line, "side": "RIGHT",
+    "priority": priority, "title": "Preserve readiness behaviour",
+    "message": "The changed Ready function now returns false, contradicting its tested contract.",
+    "code_quote": quote, "producer": producer,
+    "producer_identity": producer, "producer_ordinal": 0,
+    "assurance": "agent-judgement",
+}
+verified = dict(candidate)
+verified.update({
+    "checked_by": "codex", "proposed_priority": priority,
+    "verifier_priority": priority, "verification_outcome": "verified",
+    "priority_validation": {"agreement": "agreed", "rationale": "The changed behaviour contradicts the trusted test and brief."},
+})
+print(json.dumps({
+    "schema_version": 1,
+    "criteria": [{"name": "ready", "path": ".review/ready.md"}],
+    "candidates": [{
+        "candidate": candidate,
+        "producer": {"family": "claude", "id": producer, "ordinal": 0},
+        "assurance": "agent-judgement", "outcome": "verified",
+        "proposed_priority": priority, "verifier_priority": priority,
+        "verified_priority": priority,
+        "verification_evidence": {
+            "checker_family": "codex", "checker_id": "check:ready[1/1]@claude:0@codex",
+            "degraded_pairing": False,
+            "rationale": "The changed behaviour contradicts the trusted test and brief.",
+        },
+        "verified_finding": verified,
+    }],
+}))
+PY
+  else
+    printf '%s\n' '{"schema_version":1,"criteria":[],"candidates":[]}' >"$verification"
+  fi
+  "$minos" findings assemble "$verification" >"$manifest"
+  digest="$("$minos" findings inspect "$manifest" | jq -r .manifest_sha256)"
+  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],checker:{family:"codex",id:"fixture-bar",degraded_pairing:false}}' >"$bar"
+  if [[ -n "$priority" ]]; then
+    occurrence="$(jq -r '.findings[0].finding.occurrence_id' "$manifest")"
+    jq -n --arg occurrence "$occurrence" --argjson line "$line" '[{occurrence_id:$occurrence,new_position:$line,old_position:0}]' >"$comments"
+  else
+    printf '[]\n' >"$comments"
+  fi
+}
+
+publish_material_review() {
+  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
+  prepare_decision P1
+  "$minos" forge review "$body" "$comments" "$manifest" "$bar"
+}
 if [[ "$branch" == hard-kill-* && ! -e "$control_root/hard-kill-predecessor-token" ]]; then
   printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-predecessor-token"
   printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-predecessor-ready"
@@ -505,32 +662,27 @@ if [[ "$branch" == hard-kill-* && ! -e "$control_root/hard-kill-predecessor-toke
 elif [[ "$branch" == restart-* ]]; then
   : >"$control_root/restart-ready"
   while [[ ! -e "$control_root/restart-release" ]]; do sleep 1; done
-  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
-  "$minos" forge review material "$body" "$comments"
+  publish_material_review
   "$minos" forge status stopped
 elif [[ "$branch" == uncertain-review-* ]]; then
-  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
-  "$minos" forge review material "$body" "$comments"
+  publish_material_review
   : >"$control_root/uncertain-review-applied"
   while [[ ! -e "$control_root/uncertain-review-release" ]]; do sleep 1; done
   "$minos" forge status stopped
 elif [[ "$branch" == uncertain-status-* ]]; then
-  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
-  "$minos" forge review material "$body" "$comments"
+  publish_material_review
   "$minos" forge status stopped
   : >"$control_root/uncertain-status-applied"
   while [[ ! -e "$control_root/uncertain-status-release" ]]; do sleep 1; done
 elif [[ "$branch" == capacity-* ]]; then
   : >"$control_root/capacity-${MINOS_PR}-ready"
   while [[ ! -e "$control_root/capacity-${MINOS_PR}-release" ]]; do sleep 1; done
-  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
-  "$minos" forge review material "$body" "$comments"
+  publish_material_review
   "$minos" forge status stopped
 elif [[ "$branch" == durable-*-kill-* ]]; then
   durable_state=stopped
   [[ "$branch" != durable-blocked-kill-* ]] || durable_state=blocked
-  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
-  "$minos" forge review material "$body" "$comments"
+  publish_material_review
   "$minos" forge status "$durable_state"
   printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/durable-${durable_state}-kill-ready"
   while :; do sleep 1; done
@@ -543,9 +695,53 @@ elif [[ "$branch" == retryable-exit-* && ! -e "$control_root/retryable-exit-atte
   "$minos" run-guard --config "$MINOS_CONFIG" retryable-exit stale-oauth
   exit 0
 elif [[ "$branch" == retryable-exit-* ]]; then
-  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
-  "$minos" forge review material "$body" "$comments"
+  publish_material_review
   "$minos" forge status stopped
+elif [[ "$branch" == material-destination-* ]]; then
+  publish_material_review
+  cp "$manifest" "$MINOS_RUN_DIR/initial-material-manifest.json"
+  "$minos" findings repair-plan "$manifest" "$bar" >"$MINOS_RUN_DIR/repair-plan.json"
+  old_occurrence="$(jq -r '.findings[0].finding.occurrence_id' "$manifest")"
+  old_lineage="$(jq -r '.findings[0].finding.lineage_id' "$manifest")"
+  printf 'Preserve the failed readiness result for successor lineage proof.\n' >"$MINOS_RUN_DIR/repair-message.txt"
+  "$minos" ws-exec --config "$MINOS_CONFIG" -- sh -lc \
+    "sed -i 's/return false/ready := false\\n\\treturn ready/' ready.go"
+  push_result="$("$minos" forge push "$branch" 'Minos' 'minos@example.invalid' "$MINOS_RUN_DIR/repair-message.txt")"
+  repair_sha="$(jq -r .sha <<<"$push_result")"
+  export MINOS_HEAD_SHA="$repair_sha"
+  git -C "$MINOS_WORKSPACE" diff "$MINOS_TARGET_SHA...$MINOS_HEAD_SHA" >"$MINOS_DIFF"
+  jq --arg repair_sha "$repair_sha" \
+    '{schema_version:1,occurrences:[{context:.context,finding:.findings[0].finding,repair_commit_sha:$repair_sha}]}' \
+    "$MINOS_RUN_DIR/initial-material-manifest.json" >"$MINOS_RUN_DIR/prior-occurrences.json"
+  prepare_decision P1
+  jq --arg lineage "$old_lineage" \
+    '.candidates[0].candidate.lineage_id=$lineage | .candidates[0].verified_finding.lineage_id=$lineage' \
+    "$MINOS_RUN_DIR/verification-result.json" >"$MINOS_RUN_DIR/verification-successor.json"
+  "$minos" findings assemble "$MINOS_RUN_DIR/verification-successor.json" "$MINOS_RUN_DIR/prior-occurrences.json" >"$manifest"
+  digest="$("$minos" findings inspect "$manifest" | jq -r .manifest_sha256)"
+  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],checker:{family:"codex",id:"fixture-bar-successor",degraded_pairing:false}}' >"$bar"
+  new_occurrence="$(jq -r '.findings[0].finding.occurrence_id' "$manifest")"
+  test "$old_occurrence" != "$new_occurrence"
+  printf 'The repaired head still returns false through a local variable.\n' >"$body"
+  "$minos" forge review "$body" "$comments" "$manifest" "$bar"
+  "$minos" forge status stopped
+elif [[ "$branch" == destination-* ]]; then
+  printf 'No material findings. Quiet findings were reconciled with the configured durable destination.\n' >"$body"
+  prepare_decision P2
+  printf '[]\n' >"$comments"
+  cp "$manifest" "$MINOS_RUN_DIR/pending-manifest.json"
+  cp "$bar" "$MINOS_RUN_DIR/pending-bar-attestation.json"
+  printf 'verification\n' >>"$control_root/destination-worker-calls"
+  printf 'bar:%s\n' "$(jq -r .manifest_sha256 "$bar")" >>"$control_root/destination-worker-calls"
+  "$minos" findings deliver "$manifest" "$bar" >"$MINOS_RUN_DIR/confirmed-manifest.json"
+  "$minos" findings deliver "$manifest" "$bar" >"$MINOS_RUN_DIR/reconciled-manifest.json"
+  cmp "$MINOS_RUN_DIR/confirmed-manifest.json" "$MINOS_RUN_DIR/reconciled-manifest.json"
+  cp "$MINOS_RUN_DIR/confirmed-manifest.json" "$manifest"
+  digest="$("$minos" findings inspect "$manifest" | jq -r .manifest_sha256)"
+  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],checker:{family:"codex",id:"fixture-bar-final",degraded_pairing:false}}' >"$bar"
+  printf 'bar:%s\n' "$digest" >>"$control_root/destination-worker-calls"
+  "$minos" forge review "$body" "$comments" "$manifest" "$bar"
+  "$minos" forge status clean
 elif [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ]]; then
   if [[ "$branch" == missed-webhook-* ]]; then
     : >"$control_root/missed-webhook-ready"
@@ -554,14 +750,14 @@ elif [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == 
     printf '%s\n' "$MINOS_ATTEMPT_TOKEN" >"$control_root/hard-kill-successor-ready"
     while [[ ! -e "$control_root/hard-kill-successor-release" ]]; do sleep 1; done
   fi
-  printf 'The changed Ready function now returns false, contradicting its tested contract.\n' >"$body"
-  "$minos" forge review material "$body" "$comments"
+  publish_material_review
   "$minos" forge status stopped
 else
   "$minos" ws-exec --config "$MINOS_CONFIG" -- sh -lc "$MINOS_BUILD_CMD"
   "$minos" ws-exec --config "$MINOS_CONFIG" -- sh -lc "$MINOS_TEST_CMD"
   printf 'No material findings. The complete changed file and its test were read.\n' >"$body"
-  "$minos" forge review converged "$body" "$comments"
+  prepare_decision
+  "$minos" forge review "$body" "$comments" "$manifest" "$bar"
   "$minos" forge status clean
   "$minos" run-guard --config "$MINOS_CONFIG" clearance "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA"
   "$minos" forge merge squash
@@ -598,7 +794,7 @@ receiver_pid="$!"
 wait_until 'receiver ready' grep -q 'receiver listening' "$work/logs/receiver.log"
 
 if [[ -z "$journeys" ]]; then
-  journeys="clean,stopped,retryable-exit"
+  journeys="clean,stopped,retryable-exit,destination,material-destination"
   [[ "$live" != clean ]] || journeys="clean"
   [[ "$live" != stopped ]] || journeys="stopped"
 fi
@@ -610,6 +806,7 @@ if journey_enabled clean; then
   send_opened_hook "$clean_pr"
   wait_until 'clean journey merged' pr_merged "$clean_pr"
   wait_until 'clean journey status merged' status_is "$clean_sha" Merged
+  wait_until 'clean review carries complete disposition record' review_has_complete_disposition_record "$clean_pr" "$clean_sha"
   wait_until 'clean source branch deleted' cleanup_reconciled clean-lifecycle
   wait_until 'clean eyes removed' eyes_absent "$clean_pr"
   wait_until 'clean instrumentation written' instrumented "$clean_pr"
@@ -624,6 +821,7 @@ if journey_enabled stopped; then
   send_opened_hook "$stopped_pr"
   wait_until 'findings journey stopped' status_is "$stopped_sha" 'Review stopped; findings remain'
   wait_until 'findings current-head review published' review_on_head "$stopped_pr" "$stopped_sha"
+  wait_until 'findings review carries complete disposition record' review_has_complete_disposition_record "$stopped_pr" "$stopped_sha"
   if [[ "$live" = stopped ]]; then
     wait_until 'reviewer models admitted' stage_admitted "$stopped_pr" review
     wait_until 'verifier models admitted' stage_admitted "$stopped_pr" verify
@@ -635,6 +833,63 @@ fi
 
 if journey_enabled retryable-exit; then
   run_retryable_exit_journey
+fi
+
+if journey_enabled destination || journey_enabled material-destination; then
+  destination_profile="$work/config/repos/local--Minos--subject.toml"
+  sed -i 's/mode = "publish-through-p3"/mode = "destination"\ndestination = "backlog"\ntarget = "Minos\/subject"/' "$destination_profile"
+fi
+
+if journey_enabled destination; then
+  destination_pr="$(create_pr destination-lifecycle)"
+  destination_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${destination_pr}" | jq -r '.head.sha')"
+  journey_units+=("minos-run-${owner}-${repo}-pr${destination_pr}-${destination_sha:0:12}.service")
+  send_opened_hook "$destination_pr"
+  wait_until 'destination journey converges after authenticated delivery' status_is "$destination_sha" 'Changes approved'
+  wait_until 'destination review carries complete disposition record' review_has_complete_disposition_record "$destination_pr" "$destination_sha"
+  wait_until 'destination journey releases its lease' lease_absent "$destination_pr"
+  destination_attempt="$(attempt_for_pr "$destination_pr")"
+  require 'destination retry creates one durable record' test "$(grep -c '^create$' "$work/destination/operations.log")" -eq 1
+  require 'destination retry begins with discovery and authenticated read-back' \
+    test "$(grep -c '^discover$' "$work/destination/operations.log")" -eq 3
+  require 'destination retry authenticates both complete read-backs' \
+    test "$(grep -c '^read$' "$work/destination/operations.log")" -eq 2
+  require 'destination confirmation preserves the exhaustive candidate set' \
+    jq -e -s '.[0].candidates == .[1].candidates and .[0].findings[0].delivery == "pending" and .[1].findings[0].delivery == "confirmed" and .[1].findings[0].receipt != null' \
+    "$destination_attempt/pending-manifest.json" "$destination_attempt/confirmed-manifest.json"
+  require 'destination final bar re-attests the changed full manifest digest' \
+    bar_digests_differ \
+    "$destination_attempt/pending-bar-attestation.json" "$destination_attempt/bar-attestation.json"
+  require 'destination second bar does not rerun finding verification' \
+    worker_calls_have_one_verification_and_two_bars \
+    "$work/control/destination-worker-calls"
+fi
+
+if journey_enabled material-destination; then
+  material_destination_pr="$(create_pr material-destination-lifecycle)"
+  material_destination_initial_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${material_destination_pr}" | jq -r '.head.sha')"
+  journey_units+=("minos-run-${owner}-${repo}-pr${material_destination_pr}-${material_destination_initial_sha:0:12}.service")
+  send_opened_hook "$material_destination_pr"
+  wait_until 'material destination successor stops on its fresh review' \
+    pr_status_is "$material_destination_pr" 'Review stopped; findings remain'
+  material_destination_final_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${material_destination_pr}" | jq -r '.head.sha')"
+  require 'material destination repair advances the head' \
+    test "$material_destination_initial_sha" != "$material_destination_final_sha"
+  wait_until 'material destination successor review is current' \
+    review_on_head "$material_destination_pr" "$material_destination_final_sha"
+  wait_until 'material destination journey releases its lease' lease_absent "$material_destination_pr"
+  material_destination_attempt="$(attempt_for_pr "$material_destination_pr")"
+  require 'material repair plan consumes the original decision occurrence' \
+    jq -e -s '.[0].findings[0].finding.occurrence_id == .[1].findings[0].occurrence_id' \
+    "$material_destination_attempt/initial-material-manifest.json" "$material_destination_attempt/repair-plan.json"
+  require 'repair successor keeps lineage and receives a new occurrence' \
+    jq -e -s '.[0].findings[0].finding.lineage_id == .[1].findings[0].finding.lineage_id and .[0].findings[0].finding.occurrence_id != .[1].findings[0].finding.occurrence_id' \
+    "$material_destination_attempt/initial-material-manifest.json" "$material_destination_attempt/disposition-manifest.json"
+  require 'repair successor appends head-bound repair evidence' \
+    jq -e --arg prior "$(jq -r '.findings[0].finding.occurrence_id' "$material_destination_attempt/initial-material-manifest.json")" \
+    --arg repair "$material_destination_final_sha" \
+    ".repair_evidence == [{prior_occurrence_id:\$prior,lineage_id:.findings[0].finding.lineage_id,repair_commit_sha:\$repair}]" \
+    "$material_destination_attempt/disposition-manifest.json"
 fi
 
 if journey_enabled missed-webhook; then

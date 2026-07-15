@@ -56,6 +56,23 @@ func TestReviewChangedLineAndAnchorUseHeadLineNumbers(t *testing.T) {
 	}
 }
 
+func TestDiffEvidenceTracksRemovedBaseLinesSeparately(t *testing.T) {
+	diff := filepath.Join(t.TempDir(), "diff.patch")
+	if err := os.WriteFile(diff, []byte(reviewDiffFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := diffChangedEvidenceLines(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed[evidenceLine{path: "unchanged.go", line: 9, side: baseEvidenceLine}] {
+		t.Fatal("removed base line was not accounted")
+	}
+	if !changed[evidenceLine{path: "unchanged.go", line: 10, side: headEvidenceLine}] || changed[evidenceLine{path: "unchanged.go", line: 10, side: baseEvidenceLine}] {
+		t.Fatal("added head line leaked into base-side evidence accounting")
+	}
+}
+
 func TestReviewCommandsRejectPathsOutsideRepository(t *testing.T) {
 	diff := filepath.Join(t.TempDir(), "diff.patch")
 	if err := os.WriteFile(diff, []byte(reviewDiffFixture), 0o644); err != nil {

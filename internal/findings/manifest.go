@@ -1,8 +1,10 @@
 package findings
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 )
@@ -16,6 +18,135 @@ type ManifestContext struct {
 	TargetSHA         string `json:"target_sha"`
 	AttemptToken      int64  `json:"attempt_token"`
 	GoverningIdentity string `json:"governing_identity"`
+}
+
+// MaxDispositionIndexEncodedSize leaves room for the human review and trailing
+// product record within a conservative 64 KiB review-body budget. The size
+// proof below exercises 64 fully receipted occurrences; larger complete sets
+// are still attempted and fail partial rather than being truncated.
+const MaxDispositionIndexEncodedSize = 60 * 1024
+
+type DispositionIndex struct {
+	SchemaVersion  int               `json:"schema_version"`
+	Context        ManifestContext   `json:"context"`
+	Policy         ResolvedPolicy    `json:"policy"`
+	ManifestSHA256 string            `json:"manifest_sha256"`
+	Occurrences    []IndexOccurrence `json:"occurrences"`
+}
+
+type IndexOccurrence struct {
+	OccurrenceID     OccurrenceID           `json:"occurrence_id"`
+	LineageID        LineageID              `json:"lineage_id"`
+	VerifiedPriority Priority               `json:"verified_priority"`
+	Assurance        Assurance              `json:"assurance"`
+	Publication      PublicationDisposition `json:"publication"`
+	Repair           RepairDisposition      `json:"repair"`
+	Delivery         DeliveryState          `json:"delivery"`
+	Destination      string                 `json:"destination,omitempty"`
+	Target           string                 `json:"target,omitempty"`
+	ReceiptID        ReceiptID              `json:"receipt_id,omitempty"`
+	PayloadSHA256    string                 `json:"payload_sha256,omitempty"`
+}
+
+func (manifest DispositionManifest) Index() (DispositionIndex, error) {
+	digest, err := manifest.Digest()
+	if err != nil {
+		return DispositionIndex{}, err
+	}
+	index := DispositionIndex{SchemaVersion: 1, Context: manifest.Context, Policy: manifest.Policy, ManifestSHA256: digest, Occurrences: make([]IndexOccurrence, 0, len(manifest.Findings))}
+	for _, entry := range manifest.Findings {
+		occurrence := IndexOccurrence{
+			OccurrenceID: entry.Finding.OccurrenceID, LineageID: entry.Finding.LineageID,
+			VerifiedPriority: entry.Finding.VerifiedPriority, Assurance: entry.Finding.Assurance,
+			Publication: entry.Publication, Repair: entry.Repair, Delivery: entry.Delivery,
+		}
+		if manifest.Policy.Mode == DestinationMode && !entry.Material {
+			occurrence.Destination = manifest.Policy.Destination
+			occurrence.Target = manifest.Policy.Target
+		}
+		if entry.Receipt != nil {
+			occurrence.ReceiptID = entry.Receipt.ReceiptID
+			occurrence.PayloadSHA256 = entry.Receipt.PayloadSHA256
+		}
+		index.Occurrences = append(index.Occurrences, occurrence)
+	}
+	return index, nil
+}
+
+func (index DispositionIndex) Validate() error {
+	if index.SchemaVersion != 1 || validateContext(index.Context) != nil || index.Policy.Validate() != nil || !validSHA256(index.ManifestSHA256) {
+		return fmt.Errorf("invalid disposition index")
+	}
+	seen := make(map[OccurrenceID]struct{}, len(index.Occurrences))
+	for _, occurrence := range index.Occurrences {
+		if !occurrence.OccurrenceID.Valid() || !occurrence.LineageID.Valid() || !occurrence.VerifiedPriority.Valid() || !occurrence.Assurance.Valid() || !occurrence.Publication.Valid() || !occurrence.Repair.Valid() || !occurrence.Delivery.Valid() {
+			return fmt.Errorf("invalid disposition index occurrence %s", occurrence.OccurrenceID)
+		}
+		if _, duplicate := seen[occurrence.OccurrenceID]; duplicate {
+			return fmt.Errorf("duplicate disposition index occurrence %s", occurrence.OccurrenceID)
+		}
+		seen[occurrence.OccurrenceID] = struct{}{}
+		quietDestination := index.Policy.Mode == DestinationMode && occurrence.Publication == PublicationWithheld
+		if quietDestination {
+			if occurrence.Destination != index.Policy.Destination || occurrence.Target != index.Policy.Target || occurrence.Delivery == DeliveryNotRequired {
+				return fmt.Errorf("destination index occurrence %s lacks complete routing identity", occurrence.OccurrenceID)
+			}
+		} else if occurrence.Destination != "" || occurrence.Target != "" {
+			return fmt.Errorf("non-destination index occurrence %s carries routing identity", occurrence.OccurrenceID)
+		}
+		if occurrence.Delivery == DeliveryConfirmed {
+			if occurrence.Destination == "" || occurrence.Target == "" || !occurrence.ReceiptID.Valid() || !validSHA256(occurrence.PayloadSHA256) {
+				return fmt.Errorf("confirmed index occurrence %s lacks complete delivery evidence", occurrence.OccurrenceID)
+			}
+		} else if occurrence.ReceiptID != "" || occurrence.PayloadSHA256 != "" {
+			return fmt.Errorf("unconfirmed index occurrence %s carries delivery evidence", occurrence.OccurrenceID)
+		}
+	}
+	return nil
+}
+
+func (index DispositionIndex) RecordLine() (string, error) {
+	if err := index.Validate(); err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(index)
+	if err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(data)
+	if len(encoded) > MaxDispositionIndexEncodedSize {
+		return "", fmt.Errorf("complete disposition index is %d bytes, maximum is %d", len(encoded), MaxDispositionIndexEncodedSize)
+	}
+	return "<!-- Minos-Disposition: " + encoded + " -->", nil
+}
+
+func ParseDispositionRecord(line string) (DispositionIndex, error) {
+	const prefix = "<!-- Minos-Disposition: "
+	if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, " -->") {
+		return DispositionIndex{}, fmt.Errorf("invalid disposition index record")
+	}
+	encoded := strings.TrimSuffix(strings.TrimPrefix(line, prefix), " -->")
+	if len(encoded) > MaxDispositionIndexEncodedSize {
+		return DispositionIndex{}, fmt.Errorf("disposition index exceeds maximum size")
+	}
+	data, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return DispositionIndex{}, err
+	}
+	var index DispositionIndex
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&index); err != nil {
+		return DispositionIndex{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return DispositionIndex{}, fmt.Errorf("trailing disposition index JSON")
+	}
+	if err := index.Validate(); err != nil {
+		return DispositionIndex{}, err
+	}
+	return index, nil
 }
 
 func validateContext(context ManifestContext) error {
@@ -135,16 +266,23 @@ func (manifest DispositionManifest) Validate() error {
 		if _, duplicate := candidates[entry.Candidate.CandidateID]; duplicate {
 			return fmt.Errorf("duplicate candidate %s", entry.Candidate.CandidateID)
 		}
-		if !entry.Outcome.Valid() || errProducer(entry.VerificationEvidence.Verifier) != nil || strings.TrimSpace(entry.VerificationEvidence.Rationale) == "" {
+		if !entry.Outcome.Valid() || strings.TrimSpace(entry.VerificationEvidence.Rationale) == "" {
 			return fmt.Errorf("candidate %s has invalid verification outcome or evidence", entry.Candidate.CandidateID)
 		}
 		switch entry.Outcome {
 		case CandidateVerified:
-			if !entry.OccurrenceID.Valid() {
+			if errProducer(entry.VerificationEvidence.Verifier) != nil || !entry.OccurrenceID.Valid() {
 				return fmt.Errorf("verified candidate %s lacks occurrence identity", entry.Candidate.CandidateID)
 			}
 			verifiedCandidates[entry.Candidate.CandidateID] = entry.OccurrenceID
-		case CandidateSuppressed, CandidateVerificationUnresolved:
+		case CandidateSuppressed:
+			if errProducer(entry.VerificationEvidence.Verifier) != nil {
+				return fmt.Errorf("suppressed candidate %s lacks verifier rejection evidence", entry.Candidate.CandidateID)
+			}
+			if entry.OccurrenceID != "" {
+				return fmt.Errorf("non-verified candidate %s has occurrence identity", entry.Candidate.CandidateID)
+			}
+		case CandidateVerificationUnresolved:
 			if entry.OccurrenceID != "" {
 				return fmt.Errorf("non-verified candidate %s has occurrence identity", entry.Candidate.CandidateID)
 			}
@@ -209,6 +347,23 @@ func (manifest DispositionManifest) Validate() error {
 			}
 		}
 	}
+	repairEvidence := make(map[OccurrenceID]struct{}, len(manifest.RepairEvidence))
+	currentLineages := make(map[LineageID]struct{}, len(manifest.Findings))
+	for _, entry := range manifest.Findings {
+		currentLineages[entry.Finding.LineageID] = struct{}{}
+	}
+	for _, evidence := range manifest.RepairEvidence {
+		if !evidence.PriorOccurrenceID.Valid() || !evidence.LineageID.Valid() || strings.TrimSpace(evidence.RepairCommitSHA) == "" {
+			return fmt.Errorf("invalid repair evidence")
+		}
+		if _, duplicate := repairEvidence[evidence.PriorOccurrenceID]; duplicate {
+			return fmt.Errorf("duplicate repair evidence for %s", evidence.PriorOccurrenceID)
+		}
+		repairEvidence[evidence.PriorOccurrenceID] = struct{}{}
+		if _, exists := currentLineages[evidence.LineageID]; !exists {
+			return fmt.Errorf("repair evidence lineage %s has no current finding", evidence.LineageID)
+		}
+	}
 	return nil
 }
 
@@ -259,6 +414,30 @@ func (manifest DispositionManifest) Digest() (string, error) {
 	return canonicalDigest(manifest)
 }
 
+func (manifest *DispositionManifest) ConfirmDelivery(occurrenceID OccurrenceID, receipt DeliveryReceipt) error {
+	if manifest == nil {
+		return fmt.Errorf("disposition manifest is required")
+	}
+	for index := range manifest.Findings {
+		entry := &manifest.Findings[index]
+		if entry.Finding.OccurrenceID != occurrenceID {
+			continue
+		}
+		if entry.Material || entry.Delivery != DeliveryPending || entry.Receipt != nil {
+			return fmt.Errorf("finding %s is not awaiting durable delivery", occurrenceID)
+		}
+		entry.Delivery = DeliveryConfirmed
+		entry.Receipt = &receipt
+		if err := manifest.Validate(); err != nil {
+			entry.Delivery = DeliveryPending
+			entry.Receipt = nil
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("finding %s is absent from the disposition manifest", occurrenceID)
+}
+
 func DecodeManifest(data []byte) (DispositionManifest, error) {
 	var manifest DispositionManifest
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
@@ -266,11 +445,8 @@ func DecodeManifest(data []byte) (DispositionManifest, error) {
 	if err := decoder.Decode(&manifest); err != nil {
 		return DispositionManifest{}, err
 	}
-	if decoder.More() {
-		return DispositionManifest{}, fmt.Errorf("trailing manifest JSON")
-	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err == nil {
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return DispositionManifest{}, fmt.Errorf("trailing manifest JSON")
 	}
 	if err := manifest.Validate(); err != nil {
@@ -329,7 +505,7 @@ func DecodeBarAttestation(data []byte, manifest DispositionManifest) (BarAttesta
 		return BarAttestation{}, err
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err == nil {
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return BarAttestation{}, fmt.Errorf("trailing bar attestation JSON")
 	}
 	if err := attestation.ValidateFor(manifest); err != nil {
@@ -341,6 +517,15 @@ func DecodeBarAttestation(data []byte, manifest DispositionManifest) (BarAttesta
 func (manifest DispositionManifest) HasMaterialFindings() bool {
 	for _, finding := range manifest.Findings {
 		if finding.Material {
+			return true
+		}
+	}
+	return false
+}
+
+func (manifest DispositionManifest) HasConfirmedQuietDelivery() bool {
+	for _, finding := range manifest.Findings {
+		if !finding.Material && finding.Delivery == DeliveryConfirmed {
 			return true
 		}
 	}

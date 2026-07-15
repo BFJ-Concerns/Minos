@@ -19,7 +19,7 @@ func TestStatesAreTheCompleteCommissionedVocabulary(t *testing.T) {
 		{product.Working(), "working", "pending", "Reviewing changes"},
 		{product.Waiting(), "waiting", "pending", "Waiting for checks"},
 		{product.Blocked(), "blocked", "failure", "Changes need attention"},
-		{product.Partial(), "partial", "failure", "Review incomplete"},
+		{product.Partial(), "partial", "failure", "Review needs attention"},
 		{product.Stopped(), "stopped", "failure", "Review stopped; findings remain"},
 		{product.Clean(), "clean", "success", "Changes approved"},
 		{product.CleanLimited(), "clean, limited", "success", "Changes approved; verification limited"},
