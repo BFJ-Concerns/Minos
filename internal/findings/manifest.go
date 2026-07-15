@@ -1,0 +1,368 @@
+package findings
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"strings"
+)
+
+type ManifestContext struct {
+	Forge             string `json:"forge"`
+	Owner             string `json:"owner"`
+	Repo              string `json:"repo"`
+	PullRequest       int64  `json:"pull_request"`
+	HeadSHA           string `json:"head_sha"`
+	TargetSHA         string `json:"target_sha"`
+	AttemptToken      int64  `json:"attempt_token"`
+	GoverningIdentity string `json:"governing_identity"`
+}
+
+func validateContext(context ManifestContext) error {
+	if strings.TrimSpace(context.Forge) == "" || strings.TrimSpace(context.Owner) == "" || strings.TrimSpace(context.Repo) == "" || context.PullRequest <= 0 || strings.TrimSpace(context.HeadSHA) == "" || strings.TrimSpace(context.TargetSHA) == "" || context.AttemptToken <= 0 || strings.TrimSpace(context.GoverningIdentity) == "" {
+		return fmt.Errorf("incomplete manifest context")
+	}
+	return nil
+}
+
+type ResolvedPolicy struct {
+	PublishThreshold Priority        `json:"publish_threshold"`
+	RepairThreshold  Priority        `json:"repair_threshold"`
+	Mode             DispositionMode `json:"mode"`
+	Destination      string          `json:"destination,omitempty"`
+	Target           string          `json:"target,omitempty"`
+}
+
+func (policy ResolvedPolicy) Validate() error {
+	if !policy.PublishThreshold.Valid() || !policy.RepairThreshold.Valid() || !policy.Mode.Valid() {
+		return fmt.Errorf("invalid finding policy")
+	}
+	if !AtOrAbove(policy.PublishThreshold, policy.RepairThreshold) {
+		return fmt.Errorf("repair threshold %s is narrower than publication threshold %s", policy.RepairThreshold, policy.PublishThreshold)
+	}
+	switch policy.Mode {
+	case DestinationMode:
+		if strings.TrimSpace(policy.Destination) == "" || strings.TrimSpace(policy.Target) == "" {
+			return fmt.Errorf("destination mode requires destination and target")
+		}
+	case PublishThroughP3Mode:
+		if policy.Destination != "" || policy.Target != "" {
+			return fmt.Errorf("publish-through-p3 mode forbids destination and target")
+		}
+	}
+	return nil
+}
+
+type DispositionManifest struct {
+	SchemaVersion  int                    `json:"schema_version"`
+	Context        ManifestContext        `json:"context"`
+	Policy         ResolvedPolicy         `json:"policy"`
+	Candidates     []CandidateDisposition `json:"candidates"`
+	Findings       []FindingDisposition   `json:"findings"`
+	RepairEvidence []RepairEvidence       `json:"repair_evidence"`
+}
+
+func NewDispositionManifest(context ManifestContext, policy ResolvedPolicy, candidates []CandidateDisposition, verified []VerifiedFinding) (DispositionManifest, error) {
+	if err := validateContext(context); err != nil {
+		return DispositionManifest{}, err
+	}
+	if err := policy.Validate(); err != nil {
+		return DispositionManifest{}, err
+	}
+	manifest := DispositionManifest{SchemaVersion: 1, Context: context, Policy: policy, Candidates: candidates, Findings: make([]FindingDisposition, 0, len(verified)), RepairEvidence: []RepairEvidence{}}
+	material := false
+	for _, finding := range verified {
+		if AtOrAbove(finding.VerifiedPriority, policy.PublishThreshold) {
+			material = true
+		}
+	}
+	for _, finding := range verified {
+		isMaterial := AtOrAbove(finding.VerifiedPriority, policy.PublishThreshold)
+		eligible := AtOrAbove(finding.VerifiedPriority, policy.RepairThreshold)
+		disposition := FindingDisposition{Finding: finding, Material: isMaterial, RepairEligible: eligible}
+		if policy.Mode == DestinationMode {
+			if isMaterial {
+				disposition.Publication = PublicationPublished
+				disposition.Delivery = DeliveryNotRequired
+			} else {
+				disposition.Publication = PublicationWithheld
+				disposition.Delivery = DeliveryPending
+			}
+		} else {
+			if isMaterial {
+				disposition.Publication = PublicationPublished
+			} else {
+				disposition.Publication = PublicationDisclosed
+			}
+			disposition.Delivery = DeliveryNotRequired
+		}
+		switch {
+		case !eligible:
+			disposition.Repair = RepairNotEligible
+		case !material:
+			disposition.Repair = RepairNotTriggered
+		default:
+			disposition.Repair = RepairSelected
+		}
+		manifest.Findings = append(manifest.Findings, disposition)
+	}
+	if err := manifest.Validate(); err != nil {
+		return DispositionManifest{}, err
+	}
+	return manifest, nil
+}
+
+func (manifest DispositionManifest) Validate() error {
+	if manifest.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported disposition manifest schema %d", manifest.SchemaVersion)
+	}
+	if err := validateContext(manifest.Context); err != nil {
+		return err
+	}
+	if err := manifest.Policy.Validate(); err != nil {
+		return err
+	}
+	candidates := make(map[CandidateID]CandidateDisposition, len(manifest.Candidates))
+	verifiedCandidates := make(map[CandidateID]OccurrenceID)
+	for _, entry := range manifest.Candidates {
+		if err := ValidateCandidate(entry.Candidate); err != nil {
+			return fmt.Errorf("candidate %s: %w", entry.Candidate.CandidateID, err)
+		}
+		expectedID, err := NewCandidateID(manifest.Context.AttemptToken, entry.Candidate.Producer)
+		if err != nil || entry.Candidate.CandidateID != expectedID {
+			return fmt.Errorf("candidate %s identity does not match manifest attempt and producer", entry.Candidate.CandidateID)
+		}
+		if _, duplicate := candidates[entry.Candidate.CandidateID]; duplicate {
+			return fmt.Errorf("duplicate candidate %s", entry.Candidate.CandidateID)
+		}
+		if !entry.Outcome.Valid() || errProducer(entry.VerificationEvidence.Verifier) != nil || strings.TrimSpace(entry.VerificationEvidence.Rationale) == "" {
+			return fmt.Errorf("candidate %s has invalid verification outcome or evidence", entry.Candidate.CandidateID)
+		}
+		switch entry.Outcome {
+		case CandidateVerified:
+			if !entry.OccurrenceID.Valid() {
+				return fmt.Errorf("verified candidate %s lacks occurrence identity", entry.Candidate.CandidateID)
+			}
+			verifiedCandidates[entry.Candidate.CandidateID] = entry.OccurrenceID
+		case CandidateSuppressed, CandidateVerificationUnresolved:
+			if entry.OccurrenceID != "" {
+				return fmt.Errorf("non-verified candidate %s has occurrence identity", entry.Candidate.CandidateID)
+			}
+		}
+		candidates[entry.Candidate.CandidateID] = entry
+	}
+	occurrences := make(map[OccurrenceID]struct{}, len(manifest.Findings))
+	materialPresent := false
+	for _, entry := range manifest.Findings {
+		finding := entry.Finding
+		if err := ValidateVerifiedFinding(finding); err != nil {
+			return fmt.Errorf("verified finding: %w", err)
+		}
+		candidate, exists := candidates[finding.CandidateID]
+		if !exists || candidate.Outcome != CandidateVerified || candidate.OccurrenceID != finding.OccurrenceID {
+			return fmt.Errorf("finding %s has no matching verified candidate", finding.OccurrenceID)
+		}
+		if finding.Anchor != candidate.Candidate.Anchor || !reflect.DeepEqual(finding.Criterion, candidate.Candidate.Criterion) || finding.ProposedPriority != candidate.Candidate.ProposedPriority || finding.Assurance != candidate.Candidate.Assurance || finding.Title != candidate.Candidate.Title || finding.Message != candidate.Candidate.Message || finding.Suggestion != candidate.Candidate.Suggestion || finding.Producer != candidate.Candidate.Producer {
+			return fmt.Errorf("finding %s changed immutable candidate fields", finding.OccurrenceID)
+		}
+		expectedOccurrence, err := NewOccurrenceID(manifest.Context, finding)
+		if err != nil || expectedOccurrence != finding.OccurrenceID {
+			return fmt.Errorf("finding occurrence identity mismatch")
+		}
+		if _, duplicate := occurrences[finding.OccurrenceID]; duplicate {
+			return fmt.Errorf("duplicate occurrence %s", finding.OccurrenceID)
+		}
+		occurrences[finding.OccurrenceID] = struct{}{}
+		wantMaterial := AtOrAbove(finding.VerifiedPriority, manifest.Policy.PublishThreshold)
+		wantEligible := AtOrAbove(finding.VerifiedPriority, manifest.Policy.RepairThreshold)
+		if entry.Material != wantMaterial || entry.RepairEligible != wantEligible {
+			return fmt.Errorf("finding %s has incorrect derived policy fields", finding.OccurrenceID)
+		}
+		if wantMaterial {
+			materialPresent = true
+		}
+		if err := validateDisposition(manifest.Policy, entry); err != nil {
+			return fmt.Errorf("finding %s: %w", finding.OccurrenceID, err)
+		}
+	}
+	if len(occurrences) != len(verifiedCandidates) {
+		return fmt.Errorf("verified candidate/finding set is not exhaustive")
+	}
+	for candidateID, occurrenceID := range verifiedCandidates {
+		if _, ok := occurrences[occurrenceID]; !ok {
+			return fmt.Errorf("verified candidate %s is omitted from findings", candidateID)
+		}
+	}
+	for _, entry := range manifest.Findings {
+		if !entry.RepairEligible && entry.Repair != RepairNotEligible {
+			return fmt.Errorf("ineligible finding has repair disposition %s", entry.Repair)
+		}
+		if entry.RepairEligible && !materialPresent && entry.Repair != RepairNotTriggered {
+			return fmt.Errorf("quiet-only manifest has repair disposition %s", entry.Repair)
+		}
+		if entry.RepairEligible && materialPresent {
+			if entry.Material && entry.Repair != RepairSelected && entry.Repair != RepairRepaired && entry.Repair != RepairBlocked && entry.Repair != RepairFruitless {
+				return fmt.Errorf("material repair has invalid disposition %s", entry.Repair)
+			}
+			if !entry.Material && entry.Repair != RepairSelected && entry.Repair != RepairRepaired && entry.Repair != RepairAnnexeRouted && entry.Repair != RepairDeferred {
+				return fmt.Errorf("quiet selected repair has invalid disposition %s", entry.Repair)
+			}
+		}
+	}
+	return nil
+}
+
+func validateDisposition(policy ResolvedPolicy, entry FindingDisposition) error {
+	if !entry.Publication.Valid() || !entry.Repair.Valid() || !entry.Delivery.Valid() {
+		return fmt.Errorf("unknown disposition value")
+	}
+	wantPublication := PublicationPublished
+	wantDelivery := DeliveryNotRequired
+	if !entry.Material {
+		if policy.Mode == DestinationMode {
+			wantPublication = PublicationWithheld
+			if entry.Delivery != DeliveryConfirmed {
+				wantDelivery = DeliveryPending
+			} else {
+				wantDelivery = DeliveryConfirmed
+			}
+		} else {
+			wantPublication = PublicationDisclosed
+		}
+	}
+	if entry.Publication != wantPublication || entry.Delivery != wantDelivery {
+		return fmt.Errorf("disposition disagrees with policy")
+	}
+	if entry.Delivery == DeliveryConfirmed {
+		if entry.Receipt == nil || entry.Receipt.OccurrenceID != entry.Finding.OccurrenceID || entry.Receipt.Destination != policy.Destination || entry.Receipt.Target != policy.Target {
+			return fmt.Errorf("confirmed delivery lacks matching receipt")
+		}
+		if err := entry.Receipt.Validate(); err != nil {
+			return err
+		}
+	} else if entry.Receipt != nil {
+		return fmt.Errorf("non-confirmed delivery carries receipt")
+	}
+	if entry.Material && (entry.Repair == RepairAnnexeRouted || entry.Repair == RepairDeferred) {
+		return fmt.Errorf("material finding cannot be routed or deferred")
+	}
+	if !entry.Material && (entry.Repair == RepairBlocked || entry.Repair == RepairFruitless) {
+		return fmt.Errorf("quiet finding cannot gain blocking repair disposition")
+	}
+	return nil
+}
+
+func (manifest DispositionManifest) Digest() (string, error) {
+	if err := manifest.Validate(); err != nil {
+		return "", err
+	}
+	return canonicalDigest(manifest)
+}
+
+func DecodeManifest(data []byte) (DispositionManifest, error) {
+	var manifest DispositionManifest
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
+		return DispositionManifest{}, err
+	}
+	if decoder.More() {
+		return DispositionManifest{}, fmt.Errorf("trailing manifest JSON")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		return DispositionManifest{}, fmt.Errorf("trailing manifest JSON")
+	}
+	if err := manifest.Validate(); err != nil {
+		return DispositionManifest{}, err
+	}
+	return manifest, nil
+}
+
+type BarVerdict string
+
+const (
+	BarPass       BarVerdict = "pass"
+	BarFail       BarVerdict = "fail"
+	BarUnresolved BarVerdict = "unresolved"
+)
+
+type BriefReason struct {
+	Brief   string   `json:"brief"`
+	Reasons []string `json:"reasons"`
+}
+
+type BarChecker struct {
+	Family          string `json:"family"`
+	ID              string `json:"id"`
+	DegradedPairing bool   `json:"degraded_pairing"`
+}
+
+type BarAttestation struct {
+	SchemaVersion    int           `json:"schema_version"`
+	ManifestSHA256   string        `json:"manifest_sha256"`
+	Verdict          BarVerdict    `json:"verdict"`
+	Reasons          []string      `json:"reasons"`
+	ImplicatedBriefs []BriefReason `json:"implicated_briefs"`
+	Checker          BarChecker    `json:"checker"`
+}
+
+func (attestation BarAttestation) ValidateFor(manifest DispositionManifest) error {
+	if attestation.SchemaVersion != 1 || !validSHA256(attestation.ManifestSHA256) || (attestation.Verdict != BarPass && attestation.Verdict != BarFail && attestation.Verdict != BarUnresolved) || strings.TrimSpace(attestation.Checker.Family) == "" || strings.TrimSpace(attestation.Checker.ID) == "" {
+		return fmt.Errorf("invalid bar attestation")
+	}
+	digest, err := manifest.Digest()
+	if err != nil {
+		return err
+	}
+	if attestation.ManifestSHA256 != digest {
+		return fmt.Errorf("bar attestation names manifest %s, want %s", attestation.ManifestSHA256, digest)
+	}
+	return nil
+}
+
+func DecodeBarAttestation(data []byte, manifest DispositionManifest) (BarAttestation, error) {
+	var attestation BarAttestation
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&attestation); err != nil {
+		return BarAttestation{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		return BarAttestation{}, fmt.Errorf("trailing bar attestation JSON")
+	}
+	if err := attestation.ValidateFor(manifest); err != nil {
+		return BarAttestation{}, err
+	}
+	return attestation, nil
+}
+
+func (manifest DispositionManifest) HasMaterialFindings() bool {
+	for _, finding := range manifest.Findings {
+		if finding.Material {
+			return true
+		}
+	}
+	return false
+}
+
+func (manifest DispositionManifest) ConvergenceReady(attestation BarAttestation) error {
+	if err := attestation.ValidateFor(manifest); err != nil {
+		return err
+	}
+	if attestation.Verdict != BarPass || manifest.HasMaterialFindings() {
+		return fmt.Errorf("manifest has not converged")
+	}
+	for _, candidate := range manifest.Candidates {
+		if candidate.Outcome == CandidateVerificationUnresolved {
+			return fmt.Errorf("candidate verification unresolved")
+		}
+	}
+	for _, finding := range manifest.Findings {
+		if finding.Delivery == DeliveryPending || !finding.Repair.Terminal() {
+			return fmt.Errorf("finding %s has incomplete disposition", finding.Finding.OccurrenceID)
+		}
+	}
+	return nil
+}
