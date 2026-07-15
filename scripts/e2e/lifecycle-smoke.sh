@@ -116,6 +116,16 @@ pr_status_is() {
   status_is "$head" "$description"
 }
 
+bar_digests_differ() {
+  local pending="$1" confirmed="$2"
+  [[ "$(jq -r .manifest_sha256 "$pending")" != "$(jq -r .manifest_sha256 "$confirmed")" ]]
+}
+
+worker_calls_have_one_verification_and_two_bars() {
+  local calls="$1"
+  [[ "$(grep -c '^verification$' "$calls")" -eq 1 && "$(grep -c '^bar:' "$calls")" -eq 2 ]]
+}
+
 pr_merged() {
   [[ "$(api GET "/api/v1/repos/${owner}/${repo}/pulls/$1" | jq -r '.merged')" == true ]]
 }
@@ -848,10 +858,10 @@ if journey_enabled destination; then
     jq -e -s '.[0].candidates == .[1].candidates and .[0].findings[0].delivery == "pending" and .[1].findings[0].delivery == "confirmed" and .[1].findings[0].receipt != null' \
     "$destination_attempt/pending-manifest.json" "$destination_attempt/confirmed-manifest.json"
   require 'destination final bar re-attests the changed full manifest digest' \
-    sh -c 'test "$(jq -r .manifest_sha256 "$1")" != "$(jq -r .manifest_sha256 "$2")"' sh \
+    bar_digests_differ \
     "$destination_attempt/pending-bar-attestation.json" "$destination_attempt/bar-attestation.json"
   require 'destination second bar does not rerun finding verification' \
-    sh -c 'test "$(grep -c "^verification$" "$1")" -eq 1 && test "$(grep -c "^bar:" "$1")" -eq 2' sh \
+    worker_calls_have_one_verification_and_two_bars \
     "$work/control/destination-worker-calls"
 fi
 
@@ -878,7 +888,7 @@ if journey_enabled material-destination; then
   require 'repair successor appends head-bound repair evidence' \
     jq -e --arg prior "$(jq -r '.findings[0].finding.occurrence_id' "$material_destination_attempt/initial-material-manifest.json")" \
     --arg repair "$material_destination_final_sha" \
-    '.repair_evidence == [{prior_occurrence_id:$prior,lineage_id:.findings[0].finding.lineage_id,repair_commit_sha:$repair}]' \
+    ".repair_evidence == [{prior_occurrence_id:\$prior,lineage_id:.findings[0].finding.lineage_id,repair_commit_sha:\$repair}]" \
     "$material_destination_attempt/disposition-manifest.json"
 fi
 
