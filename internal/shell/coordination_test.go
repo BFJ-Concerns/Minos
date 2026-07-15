@@ -1089,7 +1089,7 @@ printf '%s\n' '{"authenticated_user":"Minos","repository":"owner/subject","pull_
 	if err := os.MkdirAll(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	repoConfig := "forge=\"local\"\nowner=\"owner\"\nrepo=\"subject\"\n[adaptation]\nbuild=\"true\"\ntest=\"true\"\nskill=\"skill\"\n[[eligibility]]\nauthors=[\"*\"]\n"
+	repoConfig := "forge=\"local\"\nowner=\"owner\"\nrepo=\"subject\"\n[adaptation]\nbuild=\"true\"\ntest=\"true\"\nskill=\"skill\"\n[finding-disposition]\nmode=\"publish-through-p3\"\n[[eligibility]]\nauthors=[\"*\"]\n"
 	if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}

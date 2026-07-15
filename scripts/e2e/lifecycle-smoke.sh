@@ -411,6 +411,8 @@ skill = "${root}/skills/foundry/review-panel/SKILL.md"
 run-body = "${work}/run-body"
 [policy]
 auto-merge = true
+[finding-disposition]
+mode = "publish-through-p3"
 [[eligibility]]
 authors = ["*"]
 EOF

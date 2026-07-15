@@ -39,7 +39,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeLog()
-	repos, err := LoadRepoConfigs(cfg.Root)
+	repos, err := LoadConfiguredRepos(cfg)
 	if err != nil {
 		return err
 	}

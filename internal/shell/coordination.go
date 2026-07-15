@@ -107,14 +107,16 @@ func repoAuthorEligible(repo RepoConfig, author string) bool {
 }
 
 func governingIdentity(repo RepoConfig) string {
-	raw := fmt.Sprintf("%s|auto-merge=%t|checks=%s|skill=%s|briefs=%s|body=%s", repo.Path, repo.Policy.AutoMerge, strings.Join(repo.CI.RequiredChecks, ","), repo.Adaptation.Skill, repo.Adaptation.Briefs, repo.Adaptation.RunBody)
+	policy := repo.FindingPolicy()
+	raw := fmt.Sprintf("%s|auto-merge=%t|publish=%s|repair=%s|disposition=%s|destination=%s|target=%s|checks=%s|skill=%s|briefs=%s|body=%s", repo.Path, repo.Policy.AutoMerge, policy.PublishThreshold, policy.RepairThreshold, policy.Mode, policy.Destination, policy.Target, strings.Join(repo.CI.RequiredChecks, ","), repo.Adaptation.Skill, repo.Adaptation.Briefs, repo.Adaptation.RunBody)
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }
 
 func deploymentIdentity(cfg ServiceConfig, repo RepoConfig) string {
 	forge := cfg.Forges[repo.Forge]
-	sum := sha256.Sum256([]byte(repo.Forge + "|" + forge.Adaptation + "|" + forge.APIBase))
+	destination := cfg.FindingDestinations[repo.FindingDisposition.Destination]
+	sum := sha256.Sum256([]byte(repo.Forge + "|" + forge.Adaptation + "|" + forge.APIBase + "|" + destination.Adaptation + "|" + destination.Endpoint + "|" + destination.CredentialFile + "|" + destination.ExpectedPrincipal))
 	return hex.EncodeToString(sum[:])
 }
 

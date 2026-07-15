@@ -19,6 +19,21 @@ run-body = "/opt/minos/run-body/run-body"
 
 [policy]
 auto-merge = false
+# Inclusive fixed P0-P3 boundaries. Omission keeps the shipped P1/P3 defaults.
+publish-threshold = "P1"
+repair-threshold = "P3"
+
+[finding-disposition]
+# Normal production mode: quiet verified findings go to the named authenticated
+# durable destination configured in service.toml.
+mode = "destination"
+destination = "engineering-backlog"
+target = "REPLACE_WITH_FINDING_DESTINATION_TARGET"
+
+# A repository without a destination may instead make the explicit disclosure
+# trade-off below. Replace the table above; do not configure both forms.
+# [finding-disposition]
+# mode = "publish-through-p3"
 
 [[eligibility]]
 authors = ["*"]

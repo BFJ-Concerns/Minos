@@ -87,6 +87,9 @@ build = "true"
 test = "true"
 skill = "skill"
 
+[finding-disposition]
+mode = "publish-through-p3"
+
 [[eligibility]]
 authors = ["*"]
 `

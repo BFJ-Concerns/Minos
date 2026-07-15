@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"bfj/minos/internal/findings"
+
 	"github.com/BurntSushi/toml"
 )
 
@@ -24,8 +26,9 @@ type ServiceConfig struct {
 	Listener struct {
 		Bind string `toml:"bind"`
 	} `toml:"listener"`
-	Forges map[string]ForgeConfig `toml:"forges"`
-	Runs   struct {
+	Forges              map[string]ForgeConfig              `toml:"forges"`
+	FindingDestinations map[string]FindingDestinationConfig `toml:"finding-destinations"`
+	Runs                struct {
 		Dir           string `toml:"dir"`
 		MaxConcurrent int    `toml:"max-concurrent"`
 	} `toml:"runs"`
@@ -46,6 +49,13 @@ type ForgeConfig struct {
 	SignatureHeader   string `toml:"signature-header"`
 }
 
+type FindingDestinationConfig struct {
+	Adaptation        string `toml:"adaptation"`
+	Endpoint          string `toml:"endpoint"`
+	CredentialFile    string `toml:"credential-file"`
+	ExpectedPrincipal string `toml:"expected-principal"`
+}
+
 type RepoConfig struct {
 	Path            string `toml:"-"`
 	serviceBotLogin string
@@ -60,8 +70,15 @@ type RepoConfig struct {
 		RunBody string `toml:"run-body"`
 	} `toml:"adaptation"`
 	Policy struct {
-		AutoMerge bool `toml:"auto-merge"`
+		AutoMerge        bool              `toml:"auto-merge"`
+		PublishThreshold findings.Priority `toml:"publish-threshold"`
+		RepairThreshold  findings.Priority `toml:"repair-threshold"`
 	} `toml:"policy"`
+	FindingDisposition struct {
+		Mode        findings.DispositionMode `toml:"mode"`
+		Destination string                   `toml:"destination"`
+		Target      string                   `toml:"target"`
+	} `toml:"finding-disposition"`
 	CI struct {
 		RequiredChecks []string `toml:"required-checks"`
 	} `toml:"ci"`
@@ -110,12 +127,32 @@ func LoadRepoConfigs(root string) ([]RepoConfig, error) {
 			return nil, err
 		}
 		repo.Path = path
+		resolveRepoDefaults(&repo)
 		if err := validateRepoConfig(repo); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		repos = append(repos, repo)
 	}
 	return repos, nil
+}
+
+func resolveRepoDefaults(repo *RepoConfig) {
+	if !repo.Policy.PublishThreshold.Valid() {
+		repo.Policy.PublishThreshold = findings.P1
+	}
+	if !repo.Policy.RepairThreshold.Valid() {
+		repo.Policy.RepairThreshold = findings.P3
+	}
+}
+
+func (repo RepoConfig) FindingPolicy() findings.ResolvedPolicy {
+	return findings.ResolvedPolicy{
+		PublishThreshold: repo.Policy.PublishThreshold,
+		RepairThreshold:  repo.Policy.RepairThreshold,
+		Mode:             repo.FindingDisposition.Mode,
+		Destination:      repo.FindingDisposition.Destination,
+		Target:           repo.FindingDisposition.Target,
+	}
 }
 
 // decodeStrictTOML keeps configuration typos from quietly turning into zero
@@ -157,6 +194,19 @@ func validateServiceConfig(cfg ServiceConfig) error {
 		requireConfigValue(&missing, prefix+"webhook-secret-file", forge.WebhookSecretFile)
 		requireConfigValue(&missing, prefix+"credential-file", forge.CredentialFile)
 	}
+	destinationNames := make([]string, 0, len(cfg.FindingDestinations))
+	for name := range cfg.FindingDestinations {
+		destinationNames = append(destinationNames, name)
+	}
+	sort.Strings(destinationNames)
+	for _, name := range destinationNames {
+		destination := cfg.FindingDestinations[name]
+		prefix := "finding-destinations." + name + "."
+		requireConfigValue(&missing, prefix+"adaptation", destination.Adaptation)
+		requireConfigValue(&missing, prefix+"endpoint", destination.Endpoint)
+		requireConfigValue(&missing, prefix+"credential-file", destination.CredentialFile)
+		requireConfigValue(&missing, prefix+"expected-principal", destination.ExpectedPrincipal)
+	}
 	requireConfigValue(&missing, "runs.dir", cfg.Runs.Dir)
 	if cfg.Runs.MaxConcurrent <= 0 {
 		missing = append(missing, "runs.max-concurrent")
@@ -189,7 +239,13 @@ func validateRepoConfig(repo RepoConfig) error {
 			missing = append(missing, fmt.Sprintf("eligibility[%d].authors", index))
 		}
 	}
-	return missingConfigError(missing)
+	if err := missingConfigError(missing); err != nil {
+		return err
+	}
+	if err := repo.FindingPolicy().Validate(); err != nil {
+		return fmt.Errorf("finding disposition policy: %w", err)
+	}
+	return nil
 }
 
 func requireConfigValue(missing *[]string, name, value string) {
@@ -205,8 +261,32 @@ func missingConfigError(missing []string) error {
 	return fmt.Errorf("missing required fields: %s", strings.Join(missing, ", "))
 }
 
-func FindRepoConfig(root string, facts Facts) (RepoConfig, error) {
-	repos, err := LoadRepoConfigs(root)
+func LoadConfiguredRepos(cfg ServiceConfig) ([]RepoConfig, error) {
+	repos, err := LoadRepoConfigs(cfg.Root)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]string, len(repos))
+	for _, repo := range repos {
+		identity := repo.Forge + "\x00" + repo.Owner + "\x00" + repo.Repo
+		if previous, duplicate := seen[identity]; duplicate {
+			return nil, fmt.Errorf("duplicate repository profile %s and %s for %s/%s on %s", previous, repo.Path, repo.Owner, repo.Repo, repo.Forge)
+		}
+		seen[identity] = repo.Path
+		if _, ok := cfg.Forges[repo.Forge]; !ok {
+			return nil, fmt.Errorf("%s: unknown forge %q", repo.Path, repo.Forge)
+		}
+		if repo.FindingDisposition.Mode == findings.DestinationMode {
+			if _, ok := cfg.FindingDestinations[repo.FindingDisposition.Destination]; !ok {
+				return nil, fmt.Errorf("%s: unknown finding destination %q", repo.Path, repo.FindingDisposition.Destination)
+			}
+		}
+	}
+	return repos, nil
+}
+
+func FindRepoConfig(cfg ServiceConfig, facts Facts) (RepoConfig, error) {
+	repos, err := LoadConfiguredRepos(cfg)
 	if err != nil {
 		return RepoConfig{}, err
 	}

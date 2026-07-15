@@ -99,7 +99,7 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		return nil
 	}
 	facts.Forge = forgeName
-	repo, err := FindRepoConfig(cfg.Root, facts)
+	repo, err := FindRepoConfig(cfg, facts)
 	if err != nil {
 		if !errors.Is(err, errRepoNotOptedIn) {
 			http.Error(w, "repository configuration unavailable", http.StatusInternalServerError)

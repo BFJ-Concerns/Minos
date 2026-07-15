@@ -169,7 +169,7 @@ func loadForgeCommand(ctx context.Context) (ServiceConfig, RepoConfig, Facts, *l
 		return ServiceConfig{}, RepoConfig{}, Facts{}, nil, 0, nil, forge.Guard{}, err
 	}
 	facts := envFacts(os.Getenv("MINOS_FORGE"))
-	repo, err := FindRepoConfig(cfg.Root, facts)
+	repo, err := FindRepoConfig(cfg, facts)
 	if err != nil {
 		return ServiceConfig{}, RepoConfig{}, Facts{}, nil, 0, nil, forge.Guard{}, err
 	}

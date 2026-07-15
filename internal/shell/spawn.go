@@ -161,6 +161,7 @@ func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, lease ledger.Lease,
 		autoMerge = "true"
 	}
 	forge := cfg.Forges[facts.Forge]
+	policy := repo.FindingPolicy()
 	return []string{
 		"MINOS_RUN_DIR=" + runDir,
 		"MINOS_ATTEMPT_TOKEN=" + strconv.FormatInt(lease.Token, 10),
@@ -182,6 +183,11 @@ func runEnv(cfg ServiceConfig, repo RepoConfig, facts Facts, lease ledger.Lease,
 		"MINOS_BUILD_CMD=" + repo.Adaptation.Build,
 		"MINOS_TEST_CMD=" + repo.Adaptation.Test,
 		"MINOS_AUTO_MERGE=" + autoMerge,
+		"MINOS_PUBLISH_THRESHOLD=" + policy.PublishThreshold.String(),
+		"MINOS_REPAIR_THRESHOLD=" + policy.RepairThreshold.String(),
+		"MINOS_FINDING_DISPOSITION_MODE=" + string(policy.Mode),
+		"MINOS_FINDING_DESTINATION=" + policy.Destination,
+		"MINOS_FINDING_TARGET=" + policy.Target,
 		"MINOS_CONFIG=" + cfg.Root,
 		"MINOS_UNIT=" + lease.Unit,
 		"MINOS_GOVERNING_IDENTITY=" + governingIdentity(repo),
