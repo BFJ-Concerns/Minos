@@ -4,51 +4,19 @@ set -eu
 : "${MINOS_CONFIG:?MINOS_CONFIG is required}"
 : "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 
-config_file="${MINOS_CONFIG%/}/run-body.env"
-if [ ! -r "$config_file" ]; then
-  echo "run-body configuration is not readable: $config_file" >&2
-  exit 2
-fi
-
-# These values are deployment configuration and must reach the accountable
-# session unchanged. Export while sourcing rather than maintaining a second
-# list of fields here.
 set -a
 # shellcheck source=/dev/null
-. "$config_file"
+. "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
-: "${MINOS_ENGINE_LAUNCH_LEAD:?MINOS_ENGINE_LAUNCH_LEAD is required}"
-: "${MINOS_ENSEMBLE_LAUNCH:?MINOS_ENSEMBLE_LAUNCH is required}"
-: "${MINOS_PINS:?MINOS_PINS is required}"
-: "${MINOS_REVIEW_SCRIPTS:?MINOS_REVIEW_SCRIPTS is required}"
-: "${MINOS_WORKER_MODEL_POLICY:?MINOS_WORKER_MODEL_POLICY is required}"
-: "${MINOS_FIX_SKILL:?MINOS_FIX_SKILL is required}"
-: "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
-: "${MINOS_BIN:?MINOS_BIN is required}"
+: "${MINOS_CODEX:?MINOS_CODEX is required}"
 : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
 
-if [ ! -r "$MINOS_LIFECYCLE_INSTRUCTION" ]; then
-  echo "lifecycle instruction is not readable: $MINOS_LIFECYCLE_INSTRUCTION" >&2
-  exit 2
-fi
-if [ ! -r "$MINOS_WORKER_MODEL_POLICY" ]; then
-  echo "worker model policy is not readable: $MINOS_WORKER_MODEL_POLICY" >&2
-  exit 2
-fi
-if [ ! -r "$MINOS_FIX_SKILL" ] || [ ! -r "$MINOS_ROOT_CAUSE_SKILL" ]; then
-  echo "repair skill wiring is not readable" >&2
-  exit 2
-fi
-
-# One fresh accountable lead owns the entire PR journey. Review, repair,
-# re-review, waiting, clearance, and optional merge are decisions inside that
-# session; infrastructure never selects a stage mission.
-mkdir -p "$MINOS_RUN_DIR/sessions"
+mkdir -p "$MINOS_RUN_DIR"
 cd "$MINOS_RUN_DIR"
-exec "$MINOS_BIN" capture-claude \
-  --pins "$MINOS_PINS" \
-  --output "$MINOS_RUN_DIR/sessions/lead.jsonl" \
-  --resolved "$MINOS_RUN_DIR/resolved-lead.json" \
-  --metrics "$MINOS_RUN_DIR/lead-metrics.json" \
-  "$MINOS_ENGINE_LAUNCH_LEAD" <"$MINOS_LIFECYCLE_INSTRUCTION"
+exec "$MINOS_CODEX" exec \
+  --dangerously-bypass-approvals-and-sandbox \
+  --ephemeral \
+  -m "${MINOS_LEAD_MODEL:-gpt-5.6-sol}" \
+  -C "$MINOS_RUN_DIR" \
+  - <"$MINOS_LIFECYCLE_INSTRUCTION"

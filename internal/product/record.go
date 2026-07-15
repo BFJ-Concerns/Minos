@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// Record is a hidden, service-owned lineage record. It may carry identity and
-// re-entry provenance, but never clearance or merge authority.
+// Record binds a review to the head and target it covered.
 var recordLine = regexp.MustCompile(`^<!-- Minos:( [a-z][a-z0-9-]*=[A-Za-z0-9._/@-]+)+ -->$`)
 
 func ParseRecord(line string) (map[string]string, error) {

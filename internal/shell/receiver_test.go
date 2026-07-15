@@ -22,7 +22,7 @@ func TestReceiverAcknowledgesAuthenticatedUnmappedEvent(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusAccepted, response.Body.String())
 	}
-	if response.Body.String() != "unmapped event\n" {
+	if response.Body.String() != "ignored\n" {
 		t.Fatalf("body = %q, want unmapped acknowledgement", response.Body.String())
 	}
 }
@@ -53,7 +53,11 @@ func receiverTestConfig(t *testing.T) ServiceConfig {
 	t.Helper()
 	root := t.TempDir()
 	secretPath := filepath.Join(root, "webhook-secret")
+	tokenPath := filepath.Join(root, "forge-token")
 	if err := os.WriteFile(secretPath, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenPath, []byte("token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	adaptation, err := filepath.Abs(filepath.Join("..", "..", "scripts", "adaptations", "forgejo"))
@@ -65,7 +69,9 @@ func receiverTestConfig(t *testing.T) ServiceConfig {
 		Forges: map[string]ForgeConfig{
 			"local": {
 				Adaptation:        adaptation,
+				APIBase:           "http://forge.invalid",
 				WebhookSecretFile: secretPath,
+				CredentialFile:    tokenPath,
 			},
 		},
 	}

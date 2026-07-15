@@ -1,8 +1,0 @@
-[Unit]
-Description=Check the Minos heartbeat outside deployment %i
-
-[Service]
-Type=oneshot
-Environment=MINOS_HEARTBEAT_MAX_AGE=3m
-EnvironmentFile=/etc/minos-deadman/%i.env
-ExecStart=/usr/local/bin/minos heartbeat-check --path ${MINOS_HEARTBEAT_PATH} --max-age ${MINOS_HEARTBEAT_MAX_AGE}

@@ -1,7 +1,6 @@
 package forge
 
-// ReduceRequiredChecks selects the forge-ordered newest attempt for every
-// required identity, then folds those decisions into the lifecycle gate.
+// ReduceRequiredChecks reports whether the forge's required checks pass.
 func ReduceRequiredChecks(required []CheckIdentity, statuses []Status) CheckDecision {
 	decision := ChecksPass
 	for _, identity := range required {
@@ -32,7 +31,7 @@ func ReduceRequiredChecks(required []CheckIdentity, statuses []Status) CheckDeci
 		case StatusFailure, StatusError, StatusCancelled, StatusTimeout:
 			return ChecksFail
 		default:
-			// An unrecognised state must never become an implicit clearance.
+			// An unrecognised state is not a passing check.
 			return ChecksFail
 		}
 	}

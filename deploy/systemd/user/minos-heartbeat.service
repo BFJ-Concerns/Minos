@@ -1,7 +1,0 @@
-[Unit]
-Description=Publish the Minos external dead-man heartbeat
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/minos heartbeat --path /var/lib/minos/heartbeat.json
-UMask=0027

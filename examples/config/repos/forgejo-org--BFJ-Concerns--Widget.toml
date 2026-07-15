@@ -1,19 +1,11 @@
-forge = "forgejo"
+forge = "forgejo-org"
 owner = "BFJ-Concerns"
 repo = "Widget"
 
 [adaptation]
 build = "cargo build --workspace"
 test = "cargo test --workspace"
-briefs = ".review"
-skill = "/opt/minos/skills/foundry/review-panel/SKILL.md"
 run-body = "/opt/minos/run-body/run-body"
 
 [policy]
 auto-merge = true
-
-[finding-disposition]
-mode = "publish-through-p3"
-
-[[eligibility]]
-authors = ["*"]

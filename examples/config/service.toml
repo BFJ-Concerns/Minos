@@ -13,11 +13,3 @@ signature-header = "X-Forgejo-Signature"
 
 [runs]
 dir = "/var/lib/minos/runs"
-max-concurrent = 3
-
-[sweep]
-liveness-threshold = "60m"
-log = "/var/log/minos/sweep.log"
-
-[scrub]
-vars = ["FORGEJO_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MINOS_FORGE_TOKEN"]
