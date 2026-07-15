@@ -458,6 +458,7 @@ const suppressedByCandidate = new Map(
 )
 const assembledVerificationResult = {
   schema_version: 1,
+  criteria: plan.briefs.map((brief) => ({ name: brief.name, path: brief.path })),
   candidates: findings.map((candidate) => {
     const key = `${candidate.producer_identity}\u0000${candidate.producer_ordinal}`
     const survivor = survivorByCandidate.get(key)
