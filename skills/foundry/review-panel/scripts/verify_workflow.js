@@ -625,11 +625,19 @@ const coverageGate = {
   blocks_convergence: coverageResultShort || coverageArtefactMissing,
 }
 
+const coverageAttestationReasons = coverageGate.blocks_convergence
+  ? [
+      coverageResultShort
+        ? `mechanical coverage accounting is ${coverageGate.result_status || 'incomplete'}`
+        : 'mechanical coverage evidence is incomplete',
+    ]
+  : []
+
 const barAttestation = entryPoint === 'bar-only' && bar.ran ? {
   schema_version: 1,
   manifest_sha256: manifestSHA256,
-  verdict: bar.outcome === 'pass' ? 'pass' : bar.outcome === 'fail' ? 'fail' : 'unresolved',
-  reasons: bar.reasons,
+  verdict: coverageGate.blocks_convergence ? 'unresolved' : bar.outcome === 'pass' ? 'pass' : bar.outcome === 'fail' ? 'fail' : 'unresolved',
+  reasons: [...bar.reasons, ...coverageAttestationReasons],
   implicated_briefs: bar.implicated_briefs,
   checker: {
     family: bar.checked_by || 'unresolved',
