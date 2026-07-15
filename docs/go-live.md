@@ -20,7 +20,7 @@ Prepare these before starting:
 - a new high-entropy webhook secret in a different local file;
 - a short-lived, dedicated repository-administration token for registering the
   hook (do not store this token in `/etc/minos`);
-- the synced, pinned `review-panel` and `root-cause` skills;
+- the committed, pinned `review-panel` and `root-cause` skill bundle;
 - working Claude and Codex logins
   for the deployment user. These are the service's model
   credentials. This repository
@@ -102,7 +102,7 @@ sudo -u "$DEPLOY_USER" env XDG_RUNTIME_DIR="/run/user/$DEPLOY_UID" \
   systemctl --user import-environment PATH
 
 # The fix run's skill is the one service-authored skill, shipped with this
-# repository (unlike the sync-owned skills/foundry tree installed below).
+# repository (unlike the committed Foundry bundle installed below).
 sudo install -d -o root -g root -m 0755 /opt/minos/skills/service/fix
 sudo install -o root -g root -m 0644 skills/service/fix/SKILL.md \
   /opt/minos/skills/service/fix/SKILL.md
@@ -123,14 +123,16 @@ placeholder-rejection machinery remains: the launcher fails before model use
 while a `REPLACE_WITH_…` placeholder remains in the role set.
 
 `worker-models.json` is the separate admission policy for the pins carried by
-the synced Foundry workflows. The Ensemble launcher relocates each durable run
-record under the Minos attempt directory, and the lifecycle admits every
+the committed Foundry workflows. The Ensemble launcher relocates each durable
+run record under the Minos attempt directory, and the lifecycle admits every
 recognised review, verification, bar, and repair `agent.json` against this
 policy before its judgement counts. Other labels carry no lifecycle authority.
-Reconcile this file whenever the synced workflow pins change; it validates
+Reconcile this file whenever the committed workflow pins change; it validates
 served models and does not select them.
 
-After Foundry sync populates `skills/foundry/`, install that sync-owned tree:
+Install the pinned Foundry bundle from the approved Minos commit. Skill-Canon
+Canon owns its authored source; Minos owns which landed casting is mirrored and
+committed. Skill-Canon installation does not populate a Minos checkout.
 
 ```sh
 sudo install -d -o root -g root -m 0755 /opt/minos/skills/foundry
@@ -178,8 +180,8 @@ Edit `/etc/minos/service.toml` and replace
 the LAN interface only; `:8919` is appropriate when the container itself has no
 non-LAN route.
 
-Do not activate a repository yet. First sync the grown `review-panel` and
-general `root-cause` skills into the checkout, install them under
+Do not activate a repository yet. First verify the committed `review-panel` and
+general `root-cause` skills in the checkout, install them under
 `/opt/minos/skills/foundry/`, complete the lifecycle instruction's verify-on-arrival checks,
 obtain operator approval for every model pin, and verify both subscription
 logins as the deployment user:
@@ -513,7 +515,7 @@ loginctl show-user "$DEPLOY_USER" --property=Linger
 ```
 
 At this point the deployment mechanics are live. A real review is ready only
-after the synced skill has passed its interface re-check, the operator-approved
+after the committed skill has passed its interface re-check, the operator-approved
 pins and subscription logins are verified, and a full run has completed against
 a disposable PR.
 
