@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"bfj/minos/internal/findings"
@@ -366,16 +368,14 @@ func stringPointer(value string) *string { return &value }
 
 func mustWorkingDirectory(t *testing.T) string {
 	t.Helper()
-	root, err := os.Getwd()
+	command := exec.Command("git", "rev-parse", "--show-toplevel")
+	root, err := command.Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for filepath.Base(root) != "finding-policy-disposition" {
-		parent := filepath.Dir(root)
-		if parent == root {
-			t.Fatal("could not locate repository root")
-		}
-		root = parent
+	path := strings.TrimSpace(string(root))
+	if path == "" {
+		t.Fatal("git returned an empty repository root")
 	}
-	return root
+	return path
 }

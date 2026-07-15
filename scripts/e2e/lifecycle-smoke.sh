@@ -209,7 +209,7 @@ create_pr() {
     git fetch -q origin main
     git reset -q --hard origin/main
     git checkout -q -b "$branch"
-    if [[ "$branch" == stopped-* || "$branch" == destination-* || "$branch" == material-destination-* || "$branch" == retryable-exit-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
+    if [[ "$branch" == stopped-* || "$branch" == bar-feedback-* || "$branch" == destination-* || "$branch" == material-destination-* || "$branch" == retryable-exit-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
       "$branch" == restart-* || "$branch" == uncertain-* || "$branch" == capacity-* ||
       "$branch" == durable-*-kill-* ]]; then
       sed -i 's/return true/return false/' ready.go
@@ -557,6 +557,7 @@ MINOS_ENSEMBLE_LAUNCH="${root}/scripts/run-body/launch-ensemble"
 MINOS_ENSEMBLE="${work}/bin/ensemble"
 MINOS_PINS="${work}/pins.toml"
 MINOS_REVIEW_SCRIPTS="${root}/scripts/review"
+MINOS_REVIEW_PANEL_SCRIPTS="${root}/skills/foundry/review-panel/scripts"
 MINOS_WORKER_MODEL_POLICY="${work}/worker-models.json"
 MINOS_FIX_SKILL="${root}/skills/service/fix/SKILL.md"
 MINOS_ROOT_CAUSE_SKILL="${root}/skills/foundry/root-cause/SKILL.md"
@@ -641,7 +642,7 @@ PY
   fi
   "$minos" findings assemble "$verification" >"$manifest"
   digest="$("$minos" findings inspect "$manifest" | jq -r .manifest_sha256)"
-  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],checker:{family:"codex",id:"fixture-bar",degraded_pairing:false}}' >"$bar"
+  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],candidate_reconsiderations:[],checker:{family:"codex",id:"fixture-bar",degraded_pairing:false}}' >"$bar"
   if [[ -n "$priority" ]]; then
     occurrence="$(jq -r '.findings[0].finding.occurrence_id' "$manifest")"
     jq -n --arg occurrence "$occurrence" --argjson line "$line" '[{occurrence_id:$occurrence,new_position:$line,old_position:0}]' >"$comments"
@@ -719,12 +720,138 @@ elif [[ "$branch" == material-destination-* ]]; then
     "$MINOS_RUN_DIR/verification-result.json" >"$MINOS_RUN_DIR/verification-successor.json"
   "$minos" findings assemble "$MINOS_RUN_DIR/verification-successor.json" "$MINOS_RUN_DIR/prior-occurrences.json" >"$manifest"
   digest="$("$minos" findings inspect "$manifest" | jq -r .manifest_sha256)"
-  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],checker:{family:"codex",id:"fixture-bar-successor",degraded_pairing:false}}' >"$bar"
+  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],candidate_reconsiderations:[],checker:{family:"codex",id:"fixture-bar-successor",degraded_pairing:false}}' >"$bar"
   new_occurrence="$(jq -r '.findings[0].finding.occurrence_id' "$manifest")"
   test "$old_occurrence" != "$new_occurrence"
   printf 'The repaired head still returns false through a local variable.\n' >"$body"
   "$minos" forge review "$body" "$comments" "$manifest" "$bar"
   "$minos" forge status stopped
+elif [[ "$branch" == bar-feedback-* ]]; then
+  verification="$MINOS_RUN_DIR/verification-result.json"
+  line="$(grep -nEm1 'return false|ready := false|const ready = false' "$MINOS_WORKSPACE/ready.go" | cut -d: -f1)"
+  python3 - "$MINOS_WORKSPACE/ready.go" "$line" >"$verification" <<'PY'
+import json
+import sys
+
+path, line_raw = sys.argv[1:]
+line = int(line_raw)
+quote = open(path, encoding="utf-8").read().splitlines()[line - 1]
+
+def candidate(producer, priority, title, message):
+    return {
+        "brief": "ready", "file": "ready.go", "line": line, "side": "RIGHT",
+        "priority": priority, "title": title, "message": message,
+        "code_quote": quote, "producer": producer,
+        "producer_identity": producer, "producer_ordinal": 0,
+        "assurance": "agent-judgement",
+    }
+
+p2 = candidate(
+    "codex-review@codex-cli", "P2", "Expiry remains observable",
+    "The direct response path can still expose expired content before the background sweep runs.",
+)
+p3 = candidate(
+    "ready[1/1]@claude", "P3", "Spaced validation form remains accepted",
+    "The changed validation claim misses a valid spaced form.",
+)
+p3_verified = dict(p3)
+p3_verified.update({
+    "checked_by": "codex", "proposed_priority": "P3",
+    "verifier_priority": "P3", "verification_outcome": "verified",
+    "priority_validation": {"agreement": "agreed", "rationale": "The minor mismatch is confirmed."},
+})
+print(json.dumps({
+    "schema_version": 1,
+    "criteria": [{"name": "ready", "path": ".review/ready.md"}],
+    "candidates": [
+        {
+            "candidate": p2,
+            "producer": {"family": "codex", "id": p2["producer"], "ordinal": 0},
+            "assurance": "agent-judgement", "outcome": "suppressed",
+            "proposed_priority": "P2", "verifier_priority": None,
+            "verified_priority": None,
+            "verification_evidence": {
+                "checker_family": "claude", "checker_id": "check:codex-review@codex-cli:0@claude",
+                "degraded_pairing": False,
+                "rationale": "The background sweep was incorrectly treated as closing the direct path.",
+            },
+            "verified_finding": None,
+        },
+        {
+            "candidate": p3,
+            "producer": {"family": "claude", "id": p3["producer"], "ordinal": 0},
+            "assurance": "agent-judgement", "outcome": "verified",
+            "proposed_priority": "P3", "verifier_priority": "P3",
+            "verified_priority": "P3",
+            "verification_evidence": {
+                "checker_family": "codex", "checker_id": "check:ready[1/1]@claude:0@codex",
+                "degraded_pairing": False, "rationale": "The minor mismatch is confirmed.",
+            },
+            "verified_finding": p3_verified,
+        },
+    ],
+}))
+PY
+  "$minos" findings assemble "$verification" >"$manifest"
+  cp "$manifest" "$MINOS_RUN_DIR/initial-disposition-manifest.json"
+  initial_digest="$("$minos" findings inspect "$manifest" | jq -r .manifest_sha256)"
+  suppressed_candidate="$(jq -r '.candidates[] | select(.outcome == "suppressed") | .candidate.candidate_id' "$manifest")"
+  reason='The background sweep cadence does not close the direct response path after expiry.'
+  jq -n --arg digest "$initial_digest" --arg candidate "$suppressed_candidate" --arg reason "$reason" \
+    '{schema_version:1,manifest_sha256:$digest,verdict:"fail",reasons:[$reason],implicated_briefs:[],candidate_reconsiderations:[{candidate_id:$candidate,reasons:[$reason]}],checker:{family:"codex",id:"fixture-bar-initial",degraded_pairing:false}}' >"$bar"
+  cp "$bar" "$MINOS_RUN_DIR/initial-bar-attestation.json"
+  jq -n --arg root "$MINOS_WORKSPACE" \
+    '{repo_root:$root,mode:"diff",base_ref:"origin/main",warnings:[],briefs:[],codex_review:{name:"codex-review",title:"Codex Review",kind:"external",skip_reason:null,skip_kind:null}}' \
+    >"$MINOS_RUN_DIR/panel-plan.json"
+  jq -n --slurpfile verification "$verification" --slurpfile manifest "$manifest" --slurpfile attestation "$bar" \
+    '{verification_result:$verification[0],disposition_manifest:$manifest[0],bar_attestation:$attestation[0],bar:{ran:true,outcome:"fail",reasons:$attestation[0].reasons,implicated_briefs:[],candidate_reconsiderations:$attestation[0].candidate_reconsiderations},findings:[$verification[0].candidates[]|select(.outcome=="verified")|.verified_finding],suppressed_by_checkers:[{kind:"rejected",finding:$verification[0].candidates[0].candidate}],coverage:[],skipped:[],failures:[],reviews:[],suppressed_by_validator:[],quote_validation:{checked:2,passed:2,suppressed:0,lines_corrected:0},mode:"diff",pr:{}}' \
+    >"$MINOS_RUN_DIR/initial-bar-report.json"
+  python3 "$MINOS_REVIEW_PANEL_SCRIPTS/plan_remediation.py" \
+    "$MINOS_RUN_DIR/panel-plan.json" "$MINOS_RUN_DIR/initial-bar-report.json" \
+    >"$MINOS_RUN_DIR/remediation-plan.json"
+  printf '%s\n' '{"findings":[],"coverage":[],"skipped":[],"failures":[],"reviews":[],"suppressed_by_validator":[],"quote_validation":{"checked":0,"passed":0,"suppressed":0,"lines_corrected":0}}' \
+    >"$MINOS_RUN_DIR/remediation-validated.json"
+  python3 "$MINOS_REVIEW_PANEL_SCRIPTS/merge_remediation.py" \
+    "$MINOS_RUN_DIR/initial-bar-report.json" "$MINOS_RUN_DIR/remediation-validated.json" \
+    >"$MINOS_RUN_DIR/remediation-merged.json"
+  python3 "$MINOS_REVIEW_PANEL_SCRIPTS/assemble_verify_input.py" \
+    "$MINOS_RUN_DIR/panel-plan.json" "$MINOS_RUN_DIR/remediation-merged.json" \
+    >"$MINOS_RUN_DIR/successor-verification-input.json"
+  jq -e '.findings | length == 2' "$MINOS_RUN_DIR/successor-verification-input.json" >/dev/null
+  jq -e '.candidate_reconsiderations | length == 1' "$MINOS_RUN_DIR/successor-verification-input.json" >/dev/null
+  python3 - "$verification" >"$MINOS_RUN_DIR/verification-successor.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    result = json.load(handle)
+entry = result["candidates"][0]
+candidate = entry["candidate"]
+verified = dict(candidate)
+verified.update({
+    "checked_by": "claude", "proposed_priority": "P2",
+    "verifier_priority": "P2", "verification_outcome": "verified",
+    "priority_validation": {"agreement": "agreed", "rationale": "Fresh inspection confirms the direct expiry window."},
+})
+entry.update({
+    "outcome": "verified", "verifier_priority": "P2", "verified_priority": "P2",
+    "verification_evidence": {
+        "checker_family": "claude", "checker_id": "check:codex-review@codex-cli:0@claude",
+        "degraded_pairing": False, "rationale": "Fresh inspection confirms the direct expiry window.",
+    },
+    "verified_finding": verified,
+})
+print(json.dumps(result))
+PY
+  "$minos" findings assemble "$MINOS_RUN_DIR/verification-successor.json" >"$manifest"
+  successor_digest="$("$minos" findings inspect "$manifest" | jq -r .manifest_sha256)"
+  test "$initial_digest" != "$successor_digest"
+  jq -n --arg digest "$successor_digest" \
+    '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],candidate_reconsiderations:[],checker:{family:"codex",id:"fixture-bar-successor",degraded_pairing:false}}' >"$bar"
+  jq '[.findings[] | {occurrence_id:.finding.occurrence_id,new_position:.finding.anchor.display_line,old_position:0}]' "$manifest" >"$comments"
+  printf 'The consolidated review retains both independently verified documentation concerns after the bar critique was addressed.\n' >"$body"
+  "$minos" forge review "$body" "$comments" "$manifest" "$bar"
+  "$minos" forge status clean
 elif [[ "$branch" == destination-* ]]; then
   printf 'No material findings. Quiet findings were reconciled with the configured durable destination.\n' >"$body"
   prepare_decision P2
@@ -738,7 +865,7 @@ elif [[ "$branch" == destination-* ]]; then
   cmp "$MINOS_RUN_DIR/confirmed-manifest.json" "$MINOS_RUN_DIR/reconciled-manifest.json"
   cp "$MINOS_RUN_DIR/confirmed-manifest.json" "$manifest"
   digest="$("$minos" findings inspect "$manifest" | jq -r .manifest_sha256)"
-  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],checker:{family:"codex",id:"fixture-bar-final",degraded_pairing:false}}' >"$bar"
+  jq -n --arg digest "$digest" '{schema_version:1,manifest_sha256:$digest,verdict:"pass",reasons:[],implicated_briefs:[],candidate_reconsiderations:[],checker:{family:"codex",id:"fixture-bar-final",degraded_pairing:false}}' >"$bar"
   printf 'bar:%s\n' "$digest" >>"$control_root/destination-worker-calls"
   "$minos" forge review "$body" "$comments" "$manifest" "$bar"
   "$minos" forge status clean
@@ -794,7 +921,7 @@ receiver_pid="$!"
 wait_until 'receiver ready' grep -q 'receiver listening' "$work/logs/receiver.log"
 
 if [[ -z "$journeys" ]]; then
-  journeys="clean,stopped,retryable-exit,destination,material-destination"
+  journeys="clean,stopped,retryable-exit,bar-feedback,destination,material-destination"
   [[ "$live" != clean ]] || journeys="clean"
   [[ "$live" != stopped ]] || journeys="stopped"
 fi
@@ -833,6 +960,33 @@ fi
 
 if journey_enabled retryable-exit; then
   run_retryable_exit_journey
+fi
+
+if journey_enabled bar-feedback; then
+  bar_feedback_pr="$(create_pr bar-feedback-lifecycle)"
+  bar_feedback_sha="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${bar_feedback_pr}" | jq -r '.head.sha')"
+  journey_units+=("minos-run-${owner}-${repo}-pr${bar_feedback_pr}-${bar_feedback_sha:0:12}.service")
+  send_opened_hook "$bar_feedback_pr"
+  wait_until 'bar-feedback journey converges after fresh verification and bar' status_is "$bar_feedback_sha" 'Changes approved'
+  wait_until 'bar-feedback consolidated review is current' review_on_head "$bar_feedback_pr" "$bar_feedback_sha"
+  wait_until 'bar-feedback journey releases its lease' lease_absent "$bar_feedback_pr"
+  bar_feedback_attempt="$(attempt_for_pr "$bar_feedback_pr")"
+  require 'bar-feedback initial result has the PR27 suppression shape' \
+    jq -e '[.candidates[].outcome] == ["suppressed","verified"]' \
+    "$bar_feedback_attempt/initial-disposition-manifest.json"
+  require 'bar-feedback successor is exhaustive and retains both findings' \
+    jq -e '.candidates | length == 2 and ([.[].outcome] == ["verified","verified"])' \
+    "$bar_feedback_attempt/disposition-manifest.json"
+  require 'bar-feedback successor preserves exact candidate identities' \
+    jq -e -s '[.[0].candidates[].candidate.candidate_id] == [.[1].candidates[].candidate.candidate_id]' \
+    "$bar_feedback_attempt/initial-disposition-manifest.json" "$bar_feedback_attempt/disposition-manifest.json"
+  require 'bar-feedback prior failed bar cannot stand for the successor' \
+    bar_digests_differ "$bar_feedback_attempt/initial-bar-attestation.json" "$bar_feedback_attempt/bar-attestation.json"
+  require 'bar-feedback successor has a fresh passing attestation' \
+    jq -e '.verdict == "pass" and .candidate_reconsiderations == []' \
+    "$bar_feedback_attempt/bar-attestation.json"
+  require 'bar-feedback current review carries the complete successor index' \
+    review_has_complete_disposition_record "$bar_feedback_pr" "$bar_feedback_sha"
 fi
 
 if journey_enabled destination || journey_enabled material-destination; then

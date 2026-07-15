@@ -468,6 +468,11 @@ type BriefReason struct {
 	Reasons []string `json:"reasons"`
 }
 
+type CandidateReconsideration struct {
+	CandidateID CandidateID `json:"candidate_id"`
+	Reasons     []string    `json:"reasons"`
+}
+
 type BarChecker struct {
 	Family          string `json:"family"`
 	ID              string `json:"id"`
@@ -475,16 +480,17 @@ type BarChecker struct {
 }
 
 type BarAttestation struct {
-	SchemaVersion    int           `json:"schema_version"`
-	ManifestSHA256   string        `json:"manifest_sha256"`
-	Verdict          BarVerdict    `json:"verdict"`
-	Reasons          []string      `json:"reasons"`
-	ImplicatedBriefs []BriefReason `json:"implicated_briefs"`
-	Checker          BarChecker    `json:"checker"`
+	SchemaVersion             int                        `json:"schema_version"`
+	ManifestSHA256            string                     `json:"manifest_sha256"`
+	Verdict                   BarVerdict                 `json:"verdict"`
+	Reasons                   []string                   `json:"reasons"`
+	ImplicatedBriefs          []BriefReason              `json:"implicated_briefs"`
+	CandidateReconsiderations []CandidateReconsideration `json:"candidate_reconsiderations"`
+	Checker                   BarChecker                 `json:"checker"`
 }
 
 func (attestation BarAttestation) ValidateFor(manifest DispositionManifest) error {
-	if attestation.SchemaVersion != 1 || !validSHA256(attestation.ManifestSHA256) || (attestation.Verdict != BarPass && attestation.Verdict != BarFail && attestation.Verdict != BarUnresolved) || strings.TrimSpace(attestation.Checker.Family) == "" || strings.TrimSpace(attestation.Checker.ID) == "" {
+	if attestation.SchemaVersion != 1 || !validSHA256(attestation.ManifestSHA256) || (attestation.Verdict != BarPass && attestation.Verdict != BarFail && attestation.Verdict != BarUnresolved) || strings.TrimSpace(attestation.Checker.Family) == "" || strings.TrimSpace(attestation.Checker.ID) == "" || attestation.CandidateReconsiderations == nil {
 		return fmt.Errorf("invalid bar attestation")
 	}
 	digest, err := manifest.Digest()
@@ -493,6 +499,38 @@ func (attestation BarAttestation) ValidateFor(manifest DispositionManifest) erro
 	}
 	if attestation.ManifestSHA256 != digest {
 		return fmt.Errorf("bar attestation names manifest %s, want %s", attestation.ManifestSHA256, digest)
+	}
+	if len(attestation.CandidateReconsiderations) > 0 && attestation.Verdict != BarFail {
+		return fmt.Errorf("only a failed bar may reconsider a suppressed candidate")
+	}
+	candidates := make(map[CandidateID]CandidateOutcome, len(manifest.Candidates))
+	for _, entry := range manifest.Candidates {
+		candidates[entry.Candidate.CandidateID] = entry.Outcome
+	}
+	reasons := make(map[string]struct{}, len(attestation.Reasons))
+	for _, reason := range attestation.Reasons {
+		reasons[reason] = struct{}{}
+	}
+	seen := make(map[CandidateID]struct{}, len(attestation.CandidateReconsiderations))
+	for _, reconsideration := range attestation.CandidateReconsiderations {
+		if !reconsideration.CandidateID.Valid() || len(reconsideration.Reasons) == 0 {
+			return fmt.Errorf("invalid candidate reconsideration")
+		}
+		if _, duplicate := seen[reconsideration.CandidateID]; duplicate {
+			return fmt.Errorf("duplicate candidate reconsideration %s", reconsideration.CandidateID)
+		}
+		seen[reconsideration.CandidateID] = struct{}{}
+		if candidates[reconsideration.CandidateID] != CandidateSuppressed {
+			return fmt.Errorf("candidate reconsideration %s does not name a suppressed manifest candidate", reconsideration.CandidateID)
+		}
+		for _, reason := range reconsideration.Reasons {
+			if strings.TrimSpace(reason) == "" {
+				return fmt.Errorf("candidate reconsideration %s has an empty reason", reconsideration.CandidateID)
+			}
+			if _, present := reasons[reason]; !present {
+				return fmt.Errorf("candidate reconsideration %s is not bound to a bar reason", reconsideration.CandidateID)
+			}
+		}
 	}
 	return nil
 }

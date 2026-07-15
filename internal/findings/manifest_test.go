@@ -135,6 +135,73 @@ func TestManifestIsExhaustiveAndSuppressionNeverNamesVerifiedFinding(t *testing.
 	}
 }
 
+func TestBarCandidateReconsiderationNamesExactSuppressedCandidate(t *testing.T) {
+	context, candidate, verified := findingFixture(t, P2, P2, 0)
+	verifiedEntry := verifiedCandidate(candidate, verified)
+	entry := verifiedEntry
+	entry.Outcome = CandidateSuppressed
+	entry.OccurrenceID = ""
+	manifest, err := NewDispositionManifest(context, ResolvedPolicy{PublishThreshold: P1, RepairThreshold: P3, Mode: PublishThroughP3Mode}, []CandidateDisposition{entry}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := manifest.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := "The direct consumer remains reachable after expiry."
+	bar := BarAttestation{
+		SchemaVersion: 1, ManifestSHA256: digest, Verdict: BarFail,
+		Reasons: []string{reason}, ImplicatedBriefs: []BriefReason{},
+		CandidateReconsiderations: []CandidateReconsideration{{CandidateID: candidate.CandidateID, Reasons: []string{reason}}},
+		Checker:                   BarChecker{Family: "codex", ID: "bar"},
+	}
+	if err := bar.ValidateFor(manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, verdict := range []BarVerdict{BarPass, BarUnresolved} {
+		invalid := bar
+		invalid.Verdict = verdict
+		if err := invalid.ValidateFor(manifest); err == nil {
+			t.Fatalf("%s bar reopened a suppressed candidate", verdict)
+		}
+	}
+	invalid := bar
+	invalid.CandidateReconsiderations = nil
+	if err := invalid.ValidateFor(manifest); err == nil {
+		t.Fatal("bar attestation omitted the required reconsideration list")
+	}
+	invalid = bar
+	invalid.CandidateReconsiderations = append(invalid.CandidateReconsiderations, invalid.CandidateReconsiderations[0])
+	if err := invalid.ValidateFor(manifest); err == nil {
+		t.Fatal("duplicate candidate reconsideration was accepted")
+	}
+	invalid = bar
+	invalid.CandidateReconsiderations = []CandidateReconsideration{{CandidateID: CandidateID("C-" + strings.Repeat("f", 64)), Reasons: []string{reason}}}
+	if err := invalid.ValidateFor(manifest); err == nil {
+		t.Fatal("unknown candidate reconsideration was accepted")
+	}
+	verifiedManifest, err := NewDispositionManifest(context, ResolvedPolicy{PublishThreshold: P1, RepairThreshold: P3, Mode: PublishThroughP3Mode}, []CandidateDisposition{verifiedEntry}, []VerifiedFinding{verified})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifiedDigest, err := verifiedManifest.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid = bar
+	invalid.ManifestSHA256 = verifiedDigest
+	if err := invalid.ValidateFor(verifiedManifest); err == nil {
+		t.Fatal("verified candidate was accepted for reconsideration")
+	}
+	invalid = bar
+	invalid.CandidateReconsiderations = []CandidateReconsideration{{CandidateID: candidate.CandidateID, Reasons: []string{"A different reason."}}}
+	if err := invalid.ValidateFor(manifest); err == nil {
+		t.Fatal("candidate reconsideration escaped the attested reason set")
+	}
+}
+
 func TestConfirmedDeliveryChangesDigestAndRequiresFreshAttestation(t *testing.T) {
 	context, candidate, verified := findingFixture(t, P2, P2, 0)
 	policy := ResolvedPolicy{PublishThreshold: P1, RepairThreshold: P3, Mode: DestinationMode, Destination: "backlog", Target: "owner/repo"}
@@ -146,7 +213,7 @@ func TestConfirmedDeliveryChangesDigestAndRequiresFreshAttestation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pendingAttestation := BarAttestation{SchemaVersion: 1, ManifestSHA256: pendingDigest, Verdict: BarPass, Reasons: []string{}, ImplicatedBriefs: []BriefReason{}, Checker: BarChecker{Family: "claude", ID: "bar-1"}}
+	pendingAttestation := BarAttestation{SchemaVersion: 1, ManifestSHA256: pendingDigest, Verdict: BarPass, Reasons: []string{}, ImplicatedBriefs: []BriefReason{}, CandidateReconsiderations: []CandidateReconsideration{}, Checker: BarChecker{Family: "claude", ID: "bar-1"}}
 	if err := pendingAttestation.ValidateFor(manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +298,7 @@ func TestUnresolvedCandidateRetainsEvidenceWithoutInventingVerifier(t *testing.T
 	if err != nil || digest == "" {
 		t.Fatalf("unresolved digest=%q err=%v", digest, err)
 	}
-	bar := BarAttestation{SchemaVersion: 1, ManifestSHA256: digest, Verdict: BarPass, Reasons: []string{}, ImplicatedBriefs: []BriefReason{}, Checker: BarChecker{Family: "claude", ID: "bar"}}
+	bar := BarAttestation{SchemaVersion: 1, ManifestSHA256: digest, Verdict: BarPass, Reasons: []string{}, ImplicatedBriefs: []BriefReason{}, CandidateReconsiderations: []CandidateReconsideration{}, Checker: BarChecker{Family: "claude", ID: "bar"}}
 	if err := manifest.ConvergenceReady(bar); err == nil {
 		t.Fatal("unresolved candidate was allowed to converge")
 	}
