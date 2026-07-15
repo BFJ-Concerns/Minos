@@ -150,6 +150,20 @@ func TestRepoFindingPolicyRejectsMissingModeAndNarrowRepair(t *testing.T) {
 	}
 }
 
+func TestRepoFindingPolicyAcceptsExactlyTheInclusiveThresholdMatrix(t *testing.T) {
+	priorities := []findings.Priority{findings.P0, findings.P1, findings.P2, findings.P3}
+	for _, publish := range priorities {
+		for _, repair := range priorities {
+			config := strings.Replace(validRepoConfig, "[finding-disposition]", "[policy]\npublish-threshold = \""+publish.String()+"\"\nrepair-threshold = \""+repair.String()+"\"\n\n[finding-disposition]", 1)
+			_, err := LoadRepoConfigs(writeRepoConfig(t, config))
+			wantValid := findings.AtOrAbove(publish, repair)
+			if (err == nil) != wantValid {
+				t.Errorf("publish=%s repair=%s err=%v want valid=%v", publish, repair, err, wantValid)
+			}
+		}
+	}
+}
+
 func TestDestinationModeRequiresConfiguredDestination(t *testing.T) {
 	service := validServiceConfig + `
 [finding-destinations.backlog]

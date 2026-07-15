@@ -28,26 +28,30 @@ type panelCriterion struct {
 }
 
 type panelFinding struct {
-	Brief              string `json:"brief"`
-	File               string `json:"file"`
-	Line               *int   `json:"line,omitempty"`
-	Side               string `json:"side,omitempty"`
-	Priority           string `json:"priority"`
-	Title              string `json:"title"`
-	Message            string `json:"message"`
-	CodeQuote          string `json:"code_quote"`
-	Suggestion         string `json:"suggestion,omitempty"`
-	Preexisting        bool   `json:"preexisting,omitempty"`
-	LineageID          string `json:"lineage_id,omitempty"`
-	Producer           string `json:"producer,omitempty"`
-	Attribution        string `json:"attribution,omitempty"`
-	ProducerIdentity   string `json:"producer_identity"`
-	ProducerOrdinal    int    `json:"producer_ordinal"`
-	Assurance          string `json:"assurance"`
-	CheckedBy          string `json:"checked_by,omitempty"`
-	ProposedPriority   string `json:"proposed_priority,omitempty"`
-	VerifierPriority   string `json:"verifier_priority,omitempty"`
-	VerificationState  string `json:"verification_outcome,omitempty"`
+	Brief              string   `json:"brief"`
+	ReviewTitle        *string  `json:"review_title,omitempty"`
+	Scope              *string  `json:"scope,omitempty"`
+	Extent             string   `json:"extent,omitempty"`
+	File               string   `json:"file"`
+	Line               *int     `json:"line,omitempty"`
+	Side               string   `json:"side,omitempty"`
+	Priority           string   `json:"priority"`
+	Title              string   `json:"title"`
+	Message            string   `json:"message"`
+	CodeQuote          string   `json:"code_quote"`
+	Suggestion         string   `json:"suggestion,omitempty"`
+	Preexisting        bool     `json:"preexisting,omitempty"`
+	Confidence         *float64 `json:"confidence,omitempty"`
+	LineageID          string   `json:"lineage_id,omitempty"`
+	Producer           string   `json:"producer,omitempty"`
+	Attribution        string   `json:"attribution,omitempty"`
+	ProducerIdentity   string   `json:"producer_identity"`
+	ProducerOrdinal    int      `json:"producer_ordinal"`
+	Assurance          string   `json:"assurance"`
+	CheckedBy          string   `json:"checked_by,omitempty"`
+	ProposedPriority   string   `json:"proposed_priority,omitempty"`
+	VerifierPriority   string   `json:"verifier_priority,omitempty"`
+	VerificationState  string   `json:"verification_outcome,omitempty"`
 	PriorityValidation struct {
 		Agreement string `json:"agreement"`
 		Rationale string `json:"rationale"`
@@ -80,8 +84,9 @@ type panelVerificationResult struct {
 }
 
 type priorOccurrence struct {
-	Context findings.ManifestContext `json:"context"`
-	Finding findings.VerifiedFinding `json:"finding"`
+	Context         findings.ManifestContext `json:"context"`
+	Finding         findings.VerifiedFinding `json:"finding"`
+	RepairCommitSHA string                   `json:"repair_commit_sha,omitempty"`
 }
 
 type priorOccurrenceSet struct {
@@ -101,7 +106,7 @@ type findingCommandContext struct {
 
 func FindingsCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos findings assemble|deliver|inspect [arguments]")
+		return fmt.Errorf("usage: minos findings assemble|deliver|repair-plan|inspect [arguments]")
 	}
 	command, err := loadFindingCommand(ctx)
 	if err != nil {
@@ -127,6 +132,15 @@ func FindingsCommand(ctx context.Context, args []string, stdout io.Writer) error
 			return err
 		}
 		return writeJSON(stdout, manifest)
+	case "repair-plan":
+		if len(args) < 3 || len(args) > 4 {
+			return fmt.Errorf("usage: minos findings repair-plan DECISION_MANIFEST_JSON BAR_ATTESTATION_JSON [DELIVERY_MANIFEST_JSON]")
+		}
+		plan, err := buildRepairPlan(ctx, command, args[1], args[2], optionalArgument(args, 3))
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, plan)
 	case "inspect":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: minos findings inspect MANIFEST_JSON")
@@ -152,6 +166,89 @@ func FindingsCommand(ctx context.Context, args []string, stdout io.Writer) error
 	default:
 		return fmt.Errorf("unknown findings action %q", args[0])
 	}
+}
+
+type repairPlan struct {
+	SchemaVersion          int                        `json:"schema_version"`
+	DecisionManifestSHA256 string                     `json:"decision_manifest_sha256"`
+	DeliveryManifestSHA256 string                     `json:"delivery_manifest_sha256,omitempty"`
+	Findings               []findings.VerifiedFinding `json:"findings"`
+}
+
+func buildRepairPlan(ctx context.Context, command findingCommandContext, decisionPath, attestationPath, deliveryPath string) (repairPlan, error) {
+	decision, err := readOwnedManifest(decisionPath, command)
+	if err != nil {
+		return repairPlan{}, err
+	}
+	attestationData, err := os.ReadFile(attestationPath)
+	if err != nil {
+		return repairPlan{}, err
+	}
+	if _, err := findings.DecodeBarAttestation(attestationData, decision); err != nil {
+		return repairPlan{}, err
+	}
+	if !decision.HasMaterialFindings() || decision.HasConfirmedQuietDelivery() {
+		return repairPlan{}, fmt.Errorf("repair planning requires the original pre-delivery material decision manifest")
+	}
+	if err := requirePublishedManifest(ctx, command, decision); err != nil {
+		return repairPlan{}, err
+	}
+	decisionDigest, err := decision.Digest()
+	if err != nil {
+		return repairPlan{}, err
+	}
+	plan := repairPlan{SchemaVersion: 1, DecisionManifestSHA256: decisionDigest, Findings: []findings.VerifiedFinding{}}
+	needsDelivery := false
+	for _, entry := range decision.Findings {
+		if entry.Delivery == findings.DeliveryPending {
+			needsDelivery = true
+		}
+		if entry.Repair == findings.RepairSelected {
+			plan.Findings = append(plan.Findings, entry.Finding)
+		}
+	}
+	if len(plan.Findings) == 0 {
+		return repairPlan{}, fmt.Errorf("material intervention selected no repair-eligible findings")
+	}
+	if needsDelivery {
+		if deliveryPath == "" {
+			return repairPlan{}, fmt.Errorf("destination-mode material repair requires the confirmed delivery manifest")
+		}
+		delivery, err := readOwnedManifest(deliveryPath, command)
+		if err != nil {
+			return repairPlan{}, err
+		}
+		if err := validateDeliverySnapshot(decision, delivery); err != nil {
+			return repairPlan{}, err
+		}
+		plan.DeliveryManifestSHA256, err = delivery.Digest()
+		if err != nil {
+			return repairPlan{}, err
+		}
+	} else if deliveryPath != "" {
+		return repairPlan{}, fmt.Errorf("repair plan received an unnecessary delivery snapshot")
+	}
+	return plan, nil
+}
+
+func validateDeliverySnapshot(decision, delivery findings.DispositionManifest) error {
+	if !reflect.DeepEqual(decision.Context, delivery.Context) || decision.Policy != delivery.Policy || !reflect.DeepEqual(decision.Candidates, delivery.Candidates) || !reflect.DeepEqual(decision.RepairEvidence, delivery.RepairEvidence) || len(decision.Findings) != len(delivery.Findings) {
+		return fmt.Errorf("delivery snapshot does not preserve the exact material decision input")
+	}
+	for index := range decision.Findings {
+		before, after := decision.Findings[index], delivery.Findings[index]
+		if before.Delivery == findings.DeliveryPending {
+			if after.Delivery != findings.DeliveryConfirmed || after.Receipt == nil {
+				return fmt.Errorf("delivery snapshot lacks confirmation for occurrence %s", before.Finding.OccurrenceID)
+			}
+			after.Delivery = findings.DeliveryPending
+			after.Receipt = nil
+		}
+		if !reflect.DeepEqual(before, after) {
+			return fmt.Errorf("delivery snapshot changed decision fields for occurrence %s", before.Finding.OccurrenceID)
+		}
+	}
+	return nil
 }
 
 func loadFindingCommand(ctx context.Context) (findingCommandContext, error) {
@@ -228,9 +325,13 @@ func assembleDispositionManifest(command findingCommandContext, verificationPath
 	}
 	candidates := make([]findings.CandidateDisposition, 0, len(result.Candidates))
 	verified := make([]findings.VerifiedFinding, 0, len(result.Candidates))
+	repairEvidence := make([]findings.RepairEvidence, 0)
 	excluded := make([]panelCandidate, 0)
 	seenProducer := make(map[string]struct{}, len(result.Candidates))
 	for _, entry := range result.Candidates {
+		if err := validatePanelProducer(entry); err != nil {
+			return findings.DispositionManifest{}, err
+		}
 		if entry.Candidate.Preexisting {
 			excluded = append(excluded, entry)
 			continue
@@ -257,6 +358,13 @@ func assembleDispositionManifest(command findingCommandContext, verificationPath
 			}
 			disposition.OccurrenceID = finding.OccurrenceID
 			verified = append(verified, finding)
+			evidence, ok, err := successorRepairEvidence(finding, prior)
+			if err != nil {
+				return findings.DispositionManifest{}, err
+			}
+			if ok {
+				repairEvidence = append(repairEvidence, evidence)
+			}
 		}
 		candidates = append(candidates, disposition)
 	}
@@ -265,7 +373,26 @@ func assembleDispositionManifest(command findingCommandContext, verificationPath
 			return findings.DispositionManifest{}, err
 		}
 	}
-	return findings.NewDispositionManifest(contextRecord, command.Repo.FindingPolicy(), candidates, verified)
+	manifest, err := findings.NewDispositionManifest(contextRecord, command.Repo.FindingPolicy(), candidates, verified)
+	if err != nil {
+		return findings.DispositionManifest{}, err
+	}
+	manifest.RepairEvidence = repairEvidence
+	if err := manifest.Validate(); err != nil {
+		return findings.DispositionManifest{}, err
+	}
+	return manifest, nil
+}
+
+func validatePanelProducer(entry panelCandidate) error {
+	expectedFamily := "claude"
+	if strings.HasSuffix(entry.Producer.ID, "@codex-cli") {
+		expectedFamily = "codex"
+	}
+	if entry.Producer.Family != expectedFamily || entry.Candidate.Producer != entry.Producer.ID || entry.Candidate.ProducerIdentity != entry.Producer.ID || entry.Candidate.ProducerOrdinal != entry.Producer.Ordinal {
+		return fmt.Errorf("verification candidate producer identity is inconsistent")
+	}
+	return nil
 }
 
 func admitCandidate(command findingCommandContext, contextRecord findings.ManifestContext, criteria map[string]findings.Criterion, changed map[evidenceLine]bool, entry panelCandidate) (findings.CandidateFinding, error) {
@@ -341,12 +468,15 @@ func makeVerifiedFinding(contextRecord findings.ManifestContext, candidate findi
 		return findings.VerifiedFinding{}, err
 	}
 	verifiedRaw := entry.VerifiedFinding
-	if verifiedRaw.File != entry.Candidate.File || verifiedRaw.Line == nil || entry.Candidate.Line == nil || *verifiedRaw.Line != *entry.Candidate.Line || verifiedRaw.CodeQuote != entry.Candidate.CodeQuote || verifiedRaw.Title != candidate.Title || verifiedRaw.Message != candidate.Message || verifiedRaw.Suggestion != candidate.Suggestion || verifiedRaw.ProducerIdentity != candidate.Producer.ID || verifiedRaw.ProducerOrdinal != candidate.Producer.Ordinal || verifiedRaw.Priority != verifiedPriority.String() {
+	if verifiedRaw.Brief != entry.Candidate.Brief || verifiedRaw.File != entry.Candidate.File || verifiedRaw.Line == nil || entry.Candidate.Line == nil || *verifiedRaw.Line != *entry.Candidate.Line || verifiedRaw.Side != entry.Candidate.Side || verifiedRaw.CodeQuote != entry.Candidate.CodeQuote || verifiedRaw.Title != candidate.Title || verifiedRaw.Message != candidate.Message || verifiedRaw.Suggestion != candidate.Suggestion || verifiedRaw.LineageID != entry.Candidate.LineageID || verifiedRaw.Producer != candidate.Producer.ID || verifiedRaw.ProducerIdentity != candidate.Producer.ID || verifiedRaw.ProducerOrdinal != candidate.Producer.Ordinal || verifiedRaw.Priority != verifiedPriority.String() {
 		return findings.VerifiedFinding{}, fmt.Errorf("verified candidate %s changed immutable proposal fields", candidate.CandidateID)
 	}
 	agreement := findings.PriorityAgreed
 	if candidate.ProposedPriority != verifierPriority {
 		agreement = findings.PriorityDisputed
+	}
+	if verifiedRaw.CheckedBy != evidence.Verifier.Family || verifiedRaw.ProposedPriority != candidate.ProposedPriority.String() || verifiedRaw.VerifierPriority != verifierPriority.String() || verifiedRaw.VerificationState != "verified" || verifiedRaw.PriorityValidation.Agreement != string(agreement) || verifiedRaw.PriorityValidation.Rationale != evidence.Rationale {
+		return findings.VerifiedFinding{}, fmt.Errorf("verified candidate %s has inconsistent verification evidence", candidate.CandidateID)
 	}
 	lineage, err := resolveLineage(candidate, entry.Candidate.LineageID, prior, existing)
 	if err != nil {
@@ -381,6 +511,15 @@ func verificationEvidence(entry panelCandidate) (findings.VerificationEvidence, 
 	}
 	if entry.Outcome != findings.CandidateVerificationUnresolved && (strings.TrimSpace(verifier.Family) == "" || strings.TrimSpace(verifier.ID) == "") {
 		return findings.VerificationEvidence{}, fmt.Errorf("candidate %s lacks independent verifier evidence", entry.Producer.ID)
+	}
+	if verifier.Family != "" {
+		if verifier.Family != "codex" && verifier.Family != "claude" {
+			return findings.VerificationEvidence{}, fmt.Errorf("candidate %s has unknown verifier family", entry.Producer.ID)
+		}
+		expectedID := fmt.Sprintf("check:%s:%d@%s", entry.Producer.ID, entry.Producer.Ordinal, verifier.Family)
+		if verifier.ID != expectedID {
+			return findings.VerificationEvidence{}, fmt.Errorf("candidate %s has inconsistent verifier identity", entry.Producer.ID)
+		}
 	}
 	return findings.VerificationEvidence{Verifier: verifier, Rationale: rationale}, nil
 }
@@ -458,10 +597,14 @@ func resolveLineage(candidate findings.CandidateFinding, claim string, prior []p
 	if claim != "" {
 		claimed, err := findings.ParseLineageID(claim)
 		if err == nil {
+			claimMatches := 0
 			for _, occurrence := range prior {
-				if occurrence.Finding.LineageID == claimed {
-					return claimed, nil
+				if occurrence.Finding.LineageID == claimed && strings.TrimSpace(occurrence.RepairCommitSHA) != "" {
+					claimMatches++
 				}
+			}
+			if claimMatches == 1 {
+				return claimed, nil
 			}
 		}
 	}
@@ -471,6 +614,24 @@ func resolveLineage(candidate findings.CandidateFinding, claim string, prior []p
 	}
 	existing[minted] = struct{}{}
 	return findings.ParseLineageID(minted.String())
+}
+
+func successorRepairEvidence(finding findings.VerifiedFinding, prior []priorOccurrence) (findings.RepairEvidence, bool, error) {
+	var matched *priorOccurrence
+	for index := range prior {
+		occurrence := &prior[index]
+		if occurrence.Finding.LineageID != finding.LineageID || strings.TrimSpace(occurrence.RepairCommitSHA) == "" {
+			continue
+		}
+		if matched != nil {
+			return findings.RepairEvidence{}, false, fmt.Errorf("lineage %s has ambiguous repair evidence", finding.LineageID)
+		}
+		matched = occurrence
+	}
+	if matched == nil {
+		return findings.RepairEvidence{}, false, nil
+	}
+	return findings.RepairEvidence{PriorOccurrenceID: matched.Finding.OccurrenceID, LineageID: finding.LineageID, RepairCommitSHA: matched.RepairCommitSHA}, true, nil
 }
 
 func loadPriorOccurrences(path string, command findingCommandContext) ([]priorOccurrence, error) {
@@ -484,6 +645,7 @@ func loadPriorOccurrences(path string, command findingCommandContext) ([]priorOc
 	if set.SchemaVersion != 1 {
 		return nil, fmt.Errorf("unsupported prior occurrence schema %d", set.SchemaVersion)
 	}
+	seenOccurrences := make(map[findings.OccurrenceID]struct{}, len(set.Occurrences))
 	for _, occurrence := range set.Occurrences {
 		if occurrence.Context.Forge != command.Facts.Forge || occurrence.Context.Owner != command.Facts.Owner || occurrence.Context.Repo != command.Facts.Repo || strconv.FormatInt(occurrence.Context.PullRequest, 10) != command.Facts.PR {
 			return nil, fmt.Errorf("prior occurrence is outside the current pull request lineage scope")
@@ -494,6 +656,20 @@ func loadPriorOccurrences(path string, command findingCommandContext) ([]priorOc
 		expected, err := findings.NewOccurrenceID(occurrence.Context, occurrence.Finding)
 		if err != nil || expected != occurrence.Finding.OccurrenceID {
 			return nil, fmt.Errorf("prior occurrence identity does not match its context")
+		}
+		if _, duplicate := seenOccurrences[occurrence.Finding.OccurrenceID]; duplicate {
+			return nil, fmt.Errorf("duplicate prior occurrence %s", occurrence.Finding.OccurrenceID)
+		}
+		seenOccurrences[occurrence.Finding.OccurrenceID] = struct{}{}
+		if occurrence.RepairCommitSHA != "" {
+			if _, err := gitOutput(command.Workspace, "rev-parse", "--verify", occurrence.RepairCommitSHA+"^{commit}"); err != nil {
+				return nil, fmt.Errorf("prior occurrence repair commit is unavailable: %w", err)
+			}
+			ancestor := exec.Command("git", "-C", command.Workspace, "merge-base", "--is-ancestor", occurrence.RepairCommitSHA, command.Lease.ObservedHead)
+			ancestor.Env = []string{"PATH=" + os.Getenv("PATH"), "LANG=C", "LC_ALL=C"}
+			if err := ancestor.Run(); err != nil {
+				return nil, fmt.Errorf("prior occurrence repair commit is not contained in the current head")
+			}
 		}
 	}
 	return set.Occurrences, nil

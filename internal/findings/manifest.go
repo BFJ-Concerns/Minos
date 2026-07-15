@@ -20,6 +20,10 @@ type ManifestContext struct {
 	GoverningIdentity string `json:"governing_identity"`
 }
 
+// MaxDispositionIndexEncodedSize leaves room for the human review and trailing
+// product record within a conservative 64 KiB review-body budget. The size
+// proof below exercises 64 fully receipted occurrences; larger complete sets
+// are still attempted and fail partial rather than being truncated.
 const MaxDispositionIndexEncodedSize = 60 * 1024
 
 type DispositionIndex struct {
@@ -82,6 +86,14 @@ func (index DispositionIndex) Validate() error {
 			return fmt.Errorf("duplicate disposition index occurrence %s", occurrence.OccurrenceID)
 		}
 		seen[occurrence.OccurrenceID] = struct{}{}
+		quietDestination := index.Policy.Mode == DestinationMode && occurrence.Publication == PublicationWithheld
+		if quietDestination {
+			if occurrence.Destination != index.Policy.Destination || occurrence.Target != index.Policy.Target || occurrence.Delivery == DeliveryNotRequired {
+				return fmt.Errorf("destination index occurrence %s lacks complete routing identity", occurrence.OccurrenceID)
+			}
+		} else if occurrence.Destination != "" || occurrence.Target != "" {
+			return fmt.Errorf("non-destination index occurrence %s carries routing identity", occurrence.OccurrenceID)
+		}
 		if occurrence.Delivery == DeliveryConfirmed {
 			if occurrence.Destination == "" || occurrence.Target == "" || !occurrence.ReceiptID.Valid() || !validSHA256(occurrence.PayloadSHA256) {
 				return fmt.Errorf("confirmed index occurrence %s lacks complete delivery evidence", occurrence.OccurrenceID)
@@ -333,6 +345,23 @@ func (manifest DispositionManifest) Validate() error {
 			if !entry.Material && entry.Repair != RepairSelected && entry.Repair != RepairRepaired && entry.Repair != RepairAnnexeRouted && entry.Repair != RepairDeferred {
 				return fmt.Errorf("quiet selected repair has invalid disposition %s", entry.Repair)
 			}
+		}
+	}
+	repairEvidence := make(map[OccurrenceID]struct{}, len(manifest.RepairEvidence))
+	currentLineages := make(map[LineageID]struct{}, len(manifest.Findings))
+	for _, entry := range manifest.Findings {
+		currentLineages[entry.Finding.LineageID] = struct{}{}
+	}
+	for _, evidence := range manifest.RepairEvidence {
+		if !evidence.PriorOccurrenceID.Valid() || !evidence.LineageID.Valid() || strings.TrimSpace(evidence.RepairCommitSHA) == "" {
+			return fmt.Errorf("invalid repair evidence")
+		}
+		if _, duplicate := repairEvidence[evidence.PriorOccurrenceID]; duplicate {
+			return fmt.Errorf("duplicate repair evidence for %s", evidence.PriorOccurrenceID)
+		}
+		repairEvidence[evidence.PriorOccurrenceID] = struct{}{}
+		if _, exists := currentLineages[evidence.LineageID]; !exists {
+			return fmt.Errorf("repair evidence lineage %s has no current finding", evidence.LineageID)
 		}
 	}
 	return nil

@@ -50,9 +50,31 @@ func TestAssembleDispositionManifestRejectsNonUniqueQuote(t *testing.T) {
 	}
 }
 
+func TestAssembleDispositionManifestRejectsInconsistentPanelProducer(t *testing.T) {
+	command, verificationPath := findingAssemblyFixture(t)
+	var result panelVerificationResult
+	readJSONFile(t, verificationPath, &result)
+	result.Candidates[0].Producer.Family = "codex"
+	writeJSONFile(t, verificationPath, result)
+	if _, err := assembleDispositionManifest(command, verificationPath, ""); err == nil {
+		t.Fatal("assembly accepted a producer family inconsistent with the panel identity")
+	}
+}
+
+func TestAssembleDispositionManifestRejectsChangedVerifiedProposalIdentity(t *testing.T) {
+	command, verificationPath := findingAssemblyFixture(t)
+	var result panelVerificationResult
+	readJSONFile(t, verificationPath, &result)
+	result.Candidates[0].VerifiedFinding.Side = "LEFT"
+	writeJSONFile(t, verificationPath, result)
+	if _, err := assembleDispositionManifest(command, verificationPath, ""); err == nil {
+		t.Fatal("assembly accepted a verified finding with changed proposal identity")
+	}
+}
+
 func TestResolveLineageUsesOnlyExactEvidenceOrDiscoverableClaim(t *testing.T) {
 	_, candidate, verified := findingRecordsForLineage(t)
-	prior := []priorOccurrence{{Context: testFindingContext(), Finding: verified}}
+	prior := []priorOccurrence{{Context: testFindingContext(), Finding: verified, RepairCommitSHA: "repair-commit"}}
 	existingID := product.MustParseFindingID(string(verified.LineageID))
 	existing := map[product.FindingID]struct{}{existingID: {}}
 
@@ -77,6 +99,13 @@ func TestResolveLineageUsesOnlyExactEvidenceOrDiscoverableClaim(t *testing.T) {
 	ambiguous, err := resolveLineage(findings.CandidateFinding{Anchor: verified.Anchor, Criterion: verified.Criterion}, "", ambiguousPrior, existing)
 	if err != nil || !ambiguous.Valid() || ambiguous == verified.LineageID {
 		t.Fatalf("ambiguous lineage=%s err=%v", ambiguous, err)
+	}
+	ambiguousClaim, err := resolveLineage(candidate, string(verified.LineageID), ambiguousPrior, existing)
+	if err != nil || !ambiguousClaim.Valid() || ambiguousClaim == verified.LineageID {
+		t.Fatalf("ambiguous claimed lineage=%s err=%v", ambiguousClaim, err)
+	}
+	if _, _, err := successorRepairEvidence(verified, ambiguousPrior); err == nil {
+		t.Fatal("ambiguous repair evidence was accepted")
 	}
 }
 
@@ -177,6 +206,22 @@ func TestMaterialDeliveryRequiresTheExactCompletePublishedIndex(t *testing.T) {
 	if err := requirePublishedManifest(t.Context(), command, manifest); err != nil {
 		t.Fatal(err)
 	}
+	decisionPath, barPath := writeDecisionPair(t, manifest, findings.BarPass)
+	delivery := manifest
+	delivery.Candidates = append([]findings.CandidateDisposition(nil), manifest.Candidates...)
+	delivery.Findings = append([]findings.FindingDisposition(nil), manifest.Findings...)
+	if err := delivery.ConfirmDelivery(delivery.Findings[1].Finding.OccurrenceID, deliveryReceiptFixtureFor(t, delivery, 1)); err != nil {
+		t.Fatal(err)
+	}
+	deliveryPath := filepath.Join(t.TempDir(), "delivery.json")
+	writeJSONFile(t, deliveryPath, delivery)
+	plan, err := buildRepairPlan(t.Context(), command, decisionPath, barPath, deliveryPath)
+	if err != nil || len(plan.Findings) != 2 || plan.DecisionManifestSHA256 == "" || plan.DeliveryManifestSHA256 == "" {
+		t.Fatalf("repair plan=%#v err=%v", plan, err)
+	}
+	if _, err := buildRepairPlan(t.Context(), command, decisionPath, barPath, ""); err == nil {
+		t.Fatal("material repair plan omitted required quiet delivery evidence")
+	}
 	index.Occurrences = index.Occurrences[:1]
 	incompleteLine, err := index.RecordLine()
 	if err != nil {
@@ -185,6 +230,31 @@ func TestMaterialDeliveryRequiresTheExactCompletePublishedIndex(t *testing.T) {
 	writeSnapshot("Incomplete review.\n\n" + incompleteLine)
 	if err := requirePublishedManifest(t.Context(), command, manifest); err == nil {
 		t.Fatal("material delivery accepted an index that omitted a quiet occurrence")
+	}
+}
+
+func TestRepairPlanDeliverySnapshotMayChangeOnlyReceiptState(t *testing.T) {
+	cfg, facts, lease := forgeCommandAttempt(t)
+	repo, err := FindRepoConfig(cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.FindingDisposition.Mode = findings.DestinationMode
+	repo.FindingDisposition.Destination = "backlog"
+	repo.FindingDisposition.Target = "owner/subject"
+	decision := decisionManifestFixture(t, repo, facts, lease.Token, findings.P1, findings.P2)
+	delivery := decision
+	delivery.Candidates = append([]findings.CandidateDisposition(nil), decision.Candidates...)
+	delivery.Findings = append([]findings.FindingDisposition(nil), decision.Findings...)
+	if err := delivery.ConfirmDelivery(delivery.Findings[1].Finding.OccurrenceID, deliveryReceiptFixtureFor(t, delivery, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDeliverySnapshot(decision, delivery); err != nil {
+		t.Fatal(err)
+	}
+	delivery.Findings[0].Repair = findings.RepairRepaired
+	if err := validateDeliverySnapshot(decision, delivery); err == nil {
+		t.Fatal("delivery evidence was allowed to rewrite the repair decision")
 	}
 }
 
@@ -230,8 +300,9 @@ func findingAssemblyFixture(t *testing.T) (findingCommandContext, string) {
 
 	line := 4
 	producerID := "tone[1/1]@claude"
-	checkerFamily, checkerID, rationale := "codex", "check:tone:0@codex", "Impact confirmed."
-	raw := panelFinding{Brief: "tone", File: "example.go", Line: &line, Side: "RIGHT", Priority: "P2", Title: "Return the intended value", Message: "The changed return value is incorrect.", CodeQuote: "return 2", Producer: producerID, ProducerIdentity: producerID, ProducerOrdinal: 0, Assurance: findings.AgentJudgement.String()}
+	checkerFamily, checkerID, rationale := "codex", "check:tone[1/1]@claude:0@codex", "Impact confirmed."
+	reviewTitle, confidence := "Tone", 0.91
+	raw := panelFinding{Brief: "tone", ReviewTitle: &reviewTitle, Extent: "diff", File: "example.go", Line: &line, Side: "RIGHT", Priority: "P2", Title: "Return the intended value", Message: "The changed return value is incorrect.", CodeQuote: "return 2", Confidence: &confidence, Producer: producerID, ProducerIdentity: producerID, ProducerOrdinal: 0, Assurance: findings.AgentJudgement.String()}
 	verified := raw
 	verified.CheckedBy = checkerFamily
 	verified.ProposedPriority = "P2"
@@ -276,6 +347,17 @@ func writeJSONFile(t *testing.T, path string, value any) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readJSONFile(t *testing.T, path string, value any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, value); err != nil {
 		t.Fatal(err)
 	}
 }
