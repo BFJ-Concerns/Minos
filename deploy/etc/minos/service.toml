@@ -14,6 +14,12 @@ webhook-secret-file = "/etc/minos/webhook.secret"
 credential-file = "/etc/minos/forgejo.token"
 signature-header = "X-Forgejo-Signature"
 
+[finding-destinations.engineering-backlog]
+adaptation = "/opt/minos/adaptations/finding-destination"
+endpoint = "REPLACE_WITH_FINDING_DESTINATION_ENDPOINT"
+credential-file = "/etc/minos/finding-destination.token"
+expected-principal = "REPLACE_WITH_FINDING_DESTINATION_PRINCIPAL"
+
 [runs]
 dir = "/var/lib/minos/runs"
 max-concurrent = 3

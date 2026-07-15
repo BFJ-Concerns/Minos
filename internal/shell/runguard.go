@@ -109,7 +109,7 @@ func revalidateAfterCompaction(ctx context.Context, cfg ServiceConfig, facts Fac
 	if !current {
 		return ledger.ErrNotOwner
 	}
-	repo, err := FindRepoConfig(cfg.Root, facts)
+	repo, err := FindRepoConfig(cfg, facts)
 	if err != nil {
 		return err
 	}

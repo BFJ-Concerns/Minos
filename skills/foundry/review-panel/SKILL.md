@@ -1,6 +1,6 @@
 ---
 name: review-panel
-description: The standard code review — use this whenever the user asks for a code review, a security review of the code, a review of their code, changes, branch, or the current branch's PR, or a check before merging; those requests are this skill's job, not something to answer inline. Convenes a panel of clean-context reviewers over bundled aspects (correctness bugs, error handling, comment accuracy, behavioural test coverage, type design, behaviour-preserving simplification, and security — each dispatched only when the diff makes it relevant) together with the repo's own `.review/` briefs where they exist, plus the Codex CLI's built-in diff review as an extra panel member on diff runs; every finding is quote-checked in code and, by default, verified by an independent checker before it posts, and a review-bar judge can assess the assembled review. Also use to review against the project's review briefs, audit the codebase against `.review/`, baseline a new brief, or run an occasion-specific (release, nightly) review. Diff mode (default) posts review comments on the PR and routes pre-existing findings to the project's annexe; full mode audits all in-scope code and reports to chat. Reviews the current branch or its PR only — reviewing an arbitrary PR by number is /review's job. Not for reading, summarising, or addressing existing PR review comments (that is babysit-pr), and not for non-code security work such as threat modelling, architecture, or deployment-posture reviews. Review only — it never applies the fixes it suggests; for authoring and refining the briefs themselves use review-brief.
+description: The standard code review — use this whenever the user asks for a code review, a security review of the code, a review of their code, changes, branch, or the current branch's PR, or a check before merging; those requests are this skill's job, not something to answer inline. Also use to review or audit the code against the project's `.review/` briefs, baseline a new brief, or run an occasion-specific (release, nightly) review. Reviews the current branch or its PR only — an arbitrary PR by number is /review's job. Not for reading, summarising, or addressing existing PR review comments (babysit-pr), not for authoring or refining the briefs (review-brief), and not for non-code security work such as threat modelling, architecture, or deployment-posture reviews. Review only — it never applies the fixes it suggests.
 argument-hint: '[--full] [--base <ref>] [--occasion <name>] [--no-aspects] [--no-briefs] [--no-codex] [--no-verify] [--bar] [name …]'
 allowed-tools:
 - Bash(git rev-parse:*)
@@ -504,8 +504,9 @@ blocked it rather than engineering around it silently.
    degrades to the other, recorded rather than refused). Checkers return
    per-dimension verdicts and the workflow
    applies them in code: a finding failing **evidence**, **applicability**, or
-   **genuine-issue** validity is suppressed as rejected; a dishonest
-   **priority** is reclassified, never suppressed; a failed **attribution**
+   **genuine-issue** validity is suppressed as rejected; a **priority**
+   disagreement preserves both classes and uses the more severe one, never
+   suppressing the finding or silently weakening it; a failed **attribution**
    call marks the finding indeterminate and routes it to the PR (the
    conservative direction). A finding no checker reaches on either engine is
    withheld from posting and recorded as **check-failed** — an infrastructure
@@ -528,6 +529,20 @@ blocked it rather than engineering around it silently.
    says. The gate is inactive (`result_status: null`) only when neither artefact
    was supplied. `inspection_record` rides through to the bar as its depth
    evidence; its content never gates, but its absence beside a result does.
+
+   A service that owns finding policy uses the same workflow in two explicit
+   phases. `entry_point: "verification-only"` with `bar_mode: "off"` returns
+   an exhaustive `verification_result`: every admitted candidate has a stable
+   producer identity and ordinal, `agent-judgement` assurance, proposed and
+   verifier priority, the conservative verified priority, and exactly one of
+   `verified`, `suppressed`, or `verification-unresolved`. The service then
+   constructs and validates its complete disposition manifest. It calls
+   `entry_point: "bar-only"` with `verify: false`, `bar_mode: "on"`, that exact
+   verification result, the complete manifest, and the manifest's lower-case
+   SHA-256 digest. The bar does not rerun finding verification or recompute
+   policy; it returns `bar_attestation` bound to the supplied digest. A later
+   manifest snapshot, including one changed by confirmed durable delivery,
+   requires a fresh bar-only call and fresh attestation.
 
 5. **Remediate — once, when the bar fails.** When step 4's `bar.outcome` is
    `"fail"`, run one remediation round so the run's work is repaired rather
@@ -754,3 +769,14 @@ blocked it rather than engineering around it silently.
   default-branch diff with chat output. When that happens, relay the warning's
   fix — add the section it names — rather than treating the run as PR-less by
   design.
+
+## Probation
+
+**Temporary — sunset 2026-08-15:** this skill was substantially revised on 2026-07-15,
+so treat friction with it as signal rather than noise. A defect in the skill itself — an
+instruction that is wrong or ambiguous, a bundled script, prompt, or binary that is broken,
+anything it tells you to do that you end up working around — is a report this window exists
+to collect: file it with the foundry-request skill once the task allows, or carry it in your
+session report where that skill is not available. A failure of the environment, the task,
+or other tooling is not this skill's defect; handle those as you normally would. If today
+is after 2026-08-15, this note has outstayed its window: tell the user to remove it.

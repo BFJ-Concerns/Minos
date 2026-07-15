@@ -109,6 +109,10 @@ const FINDINGS_SCHEMA = {
           // nonexistent functions, wrong line numbers — from reaching a PR.
           code_quote: { type: 'string' },
           suggestion: { type: 'string' },
+          // Optional non-authoritative cross-review lineage. A service may use
+          // it only after discovering the named prior occurrence and proving a
+          // clear successor relationship; the citation never carries verdict.
+          lineage_id: { type: 'string', pattern: '^F-[0-9A-HJKMNP-TV-Z]{4}$' },
           // Diff mode only: true when the reviewer incidentally noticed an
           // existing violation the change did not introduce. These are reported
           // to the user in chat and never posted to the PR.

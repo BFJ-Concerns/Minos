@@ -92,6 +92,10 @@ You will return your findings as structured output. For each finding give:
   what is wrong and why it violates the brief. This is the body beneath the
   title, so it may run to a couple of short paragraphs.
 - `suggestion` — a concrete fix, or omit if not obvious.
+- `lineage_id` — when the task supplies a discoverable prior `F-XXXX` finding
+  and this evidence is clearly its successor after repair, cite that exact ID.
+  Otherwise omit it. The citation links review history; it does not inherit the
+  prior finding's verdict or priority.
 - `preexisting` — only relevant when the scope instructions describe a diff
   review. Set it `true` for a violation you incidentally noticed that the change
   did not introduce; otherwise omit it. Follow the scope instructions on when to

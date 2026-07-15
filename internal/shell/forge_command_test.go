@@ -22,7 +22,7 @@ func forgeCommandAttempt(t *testing.T) (ServiceConfig, Facts, ledger.Lease) {
 	if err := os.MkdirAll(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	repoConfig := "forge=\"local\"\nowner=\"owner\"\nrepo=\"subject\"\n[adaptation]\nbuild=\"true\"\ntest=\"true\"\nskill=\"skill\"\n[[eligibility]]\nauthors=[\"*\"]\n"
+	repoConfig := "forge=\"local\"\nowner=\"owner\"\nrepo=\"subject\"\n[adaptation]\nbuild=\"true\"\ntest=\"true\"\nskill=\"skill\"\n[finding-disposition]\nmode=\"publish-through-p3\"\n[[eligibility]]\nauthors=[\"*\"]\n"
 	if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestRunGuardRevalidateChecksCurrentOwnershipAndLifecycleIndex(t *testing.T)
 	if err := os.WriteFile(filepath.Join(runDir, "resolved-lead.json"), []byte("[{\"resolved_model\":\"pinned\"}]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	repo, err := FindRepoConfig(cfg.Root, facts)
+	repo, err := FindRepoConfig(cfg, facts)
 	if err != nil {
 		t.Fatal(err)
 	}

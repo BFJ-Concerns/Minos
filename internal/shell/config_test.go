@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bfj/minos/internal/findings"
 )
 
 func TestLoadServiceConfigDuration(t *testing.T) {
@@ -119,6 +121,79 @@ func TestRepoConfigRejectsBlankRequiredCheck(t *testing.T) {
 	}
 }
 
+func TestRepoFindingPolicyDefaultsAndInclusiveThresholds(t *testing.T) {
+	repos, err := LoadRepoConfigs(writeRepoConfig(t, validRepoConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := repos[0].FindingPolicy()
+	if policy.PublishThreshold != findings.P1 || policy.RepairThreshold != findings.P3 || policy.Mode != findings.PublishThroughP3Mode {
+		t.Fatalf("resolved policy=%#v", policy)
+	}
+
+	configured := strings.Replace(validRepoConfig, "[finding-disposition]", "[policy]\npublish-threshold = \"P0\"\nrepair-threshold = \"P2\"\n\n[finding-disposition]", 1)
+	repos, err = LoadRepoConfigs(writeRepoConfig(t, configured))
+	if err != nil || repos[0].Policy.PublishThreshold != findings.P0 || repos[0].Policy.RepairThreshold != findings.P2 {
+		t.Fatalf("configured policy=%#v err=%v", repos, err)
+	}
+}
+
+func TestRepoFindingPolicyRejectsMissingModeAndNarrowRepair(t *testing.T) {
+	missing := strings.Replace(validRepoConfig, "\n[finding-disposition]\nmode = \"publish-through-p3\"\n", "", 1)
+	if _, err := LoadRepoConfigs(writeRepoConfig(t, missing)); err == nil || !strings.Contains(err.Error(), "invalid finding policy") {
+		t.Fatalf("missing mode error=%v", err)
+	}
+
+	narrow := strings.Replace(validRepoConfig, "[finding-disposition]", "[policy]\npublish-threshold = \"P2\"\nrepair-threshold = \"P1\"\n\n[finding-disposition]", 1)
+	if _, err := LoadRepoConfigs(writeRepoConfig(t, narrow)); err == nil || !strings.Contains(err.Error(), "narrower") {
+		t.Fatalf("narrow repair error=%v", err)
+	}
+}
+
+func TestDestinationModeRequiresConfiguredDestination(t *testing.T) {
+	service := validServiceConfig + `
+[finding-destinations.backlog]
+adaptation = "/tmp/destination"
+endpoint = "fixture://backlog"
+credential-file = "/tmp/destination-token"
+expected-principal = "minos-service"
+`
+	root := writeServiceConfig(t, service)
+	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := strings.Replace(validRepoConfig, "mode = \"publish-through-p3\"", "mode = \"destination\"\ndestination = \"backlog\"\ntarget = \"owner/repo\"", 1)
+	if err := os.WriteFile(filepath.Join(root, "repos", "subject.toml"), []byte(repo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServiceConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfiguredRepos(cfg); err != nil {
+		t.Fatalf("configured destination rejected: %v", err)
+	}
+
+	unknown := strings.Replace(repo, "destination = \"backlog\"", "destination = \"missing\"", 1)
+	if err := os.WriteFile(filepath.Join(root, "repos", "subject.toml"), []byte(unknown), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfiguredRepos(cfg); err == nil || !strings.Contains(err.Error(), "unknown finding destination") {
+		t.Fatalf("unknown destination error=%v", err)
+	}
+}
+
+func TestDispositionModesRejectFieldsFromOtherMode(t *testing.T) {
+	fallbackWithDestination := strings.Replace(validRepoConfig, "mode = \"publish-through-p3\"", "mode = \"publish-through-p3\"\ndestination = \"backlog\"\ntarget = \"owner/repo\"", 1)
+	if _, err := LoadRepoConfigs(writeRepoConfig(t, fallbackWithDestination)); err == nil || !strings.Contains(err.Error(), "forbids") {
+		t.Fatalf("fallback fields error=%v", err)
+	}
+	destinationWithoutTarget := strings.Replace(validRepoConfig, "mode = \"publish-through-p3\"", "mode = \"destination\"\ndestination = \"backlog\"", 1)
+	if _, err := LoadRepoConfigs(writeRepoConfig(t, destinationWithoutTarget)); err == nil || !strings.Contains(err.Error(), "requires") {
+		t.Fatalf("destination fields error=%v", err)
+	}
+}
+
 func TestShippedConfigsLoadClean(t *testing.T) {
 	projectRoot := filepath.Join("..", "..")
 	var shipped []ServiceConfig
@@ -208,6 +283,9 @@ repo = "subject"
 build = "go build ./..."
 test = "go test ./..."
 skill = "/tmp/review-skill"
+
+[finding-disposition]
+mode = "publish-through-p3"
 
 [[eligibility]]
 authors = ["*"]

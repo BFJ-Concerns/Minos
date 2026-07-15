@@ -36,6 +36,10 @@ export const defaults = {
 //     quote_validation,                    // the quote gate's counts
 //     verify,      // boolean — run the per-finding checkers (default true)
 //     bar_mode,    // "off" | "on" | "auto" (default "off")
+//     entry_point, // "combined" (default) | "verification-only" | "bar-only"
+//     verification_result, disposition_manifest, manifest_sha256,
+//                  // required by bar-only. The service owns policy and the
+//                  // manifest; the bar judges and attests that exact digest.
 //     coverage_result,   // optional — the mechanical coverage-accounting result
 //                        // ({ status, omissions, … }) or null. THE HARD GATE:
 //                        // a status that is not "complete" blocks convergence
@@ -82,7 +86,7 @@ if (!plan.checker_method_path || !plan.bar_method_path || !plan.template_path) {
   )
 }
 const root = plan.repo_root
-const findings = input.findings || []
+const rawFindings = input.findings || []
 const coverage = input.coverage || []
 const skipped = input.skipped || []
 const failures = input.failures || []
@@ -91,6 +95,41 @@ const suppressedByValidator = input.suppressed_by_validator || []
 const quoteValidation = input.quote_validation || null
 const verify = input.verify !== false
 const barMode = input.bar_mode || 'off'
+const entryPoint = input.entry_point || 'combined'
+const dispositionManifest = input.disposition_manifest || null
+const manifestSHA256 = input.manifest_sha256 || null
+if (!['combined', 'verification-only', 'bar-only'].includes(entryPoint)) {
+  throw new Error(`review-panel-verify: entry_point must be "combined", "verification-only", or "bar-only", got "${entryPoint}".`)
+}
+if (entryPoint === 'verification-only' && barMode !== 'off') {
+  throw new Error('review-panel-verify: verification-only entry point requires bar_mode "off".')
+}
+if (entryPoint === 'bar-only') {
+  if (!dispositionManifest || !/^[0-9a-f]{64}$/.test(String(manifestSHA256))) {
+    throw new Error('review-panel-verify: bar-only entry point requires disposition_manifest and its lower-case SHA-256 digest.')
+  }
+  if (verify) {
+    throw new Error('review-panel-verify: bar-only entry point must set verify=false; finding verification is a separate phase.')
+  }
+  if (barMode !== 'on') {
+    throw new Error('review-panel-verify: bar-only entry point requires bar_mode "on".')
+  }
+}
+const producerOrdinals = new Map()
+const findings = rawFindings.map((finding) => {
+  const producerIdentity = String(finding.producer || '')
+  const ordinal = producerOrdinals.get(producerIdentity) || 0
+  producerOrdinals.set(producerIdentity, ordinal + 1)
+  if (finding.assurance && finding.assurance !== 'agent-judgement') {
+    throw new Error(`review-panel-verify: unsupported finding assurance "${finding.assurance}".`)
+  }
+  return {
+    ...finding,
+    producer_identity: producerIdentity,
+    producer_ordinal: ordinal,
+    assurance: 'agent-judgement',
+  }
+})
 // Two distinct coverage artefacts, never conflated. The accounting RESULT
 // (account-coverage's output, or any equivalent mechanical accounting) is the
 // gate; the inspection RECORD it consumed is the bar's depth evidence. Null for
@@ -313,9 +352,19 @@ const survivors = []
 const suppressed = []
 const reclassified = []
 const attributionIndeterminate = []
+const priorityRanks = { P0: 0, P1: 1, P2: 2, P3: 3 }
+const moreSeverePriority = (left, right) =>
+  priorityRanks[left] <= priorityRanks[right] ? left : right
 // Carried-forward findings survived an earlier round's checkers with any
 // reclassification or attribution marking already applied — pass them through.
-for (const finding of carried) survivors.push(finding)
+for (const finding of carried) {
+  survivors.push({
+    ...finding,
+    proposed_priority: finding.proposed_priority || finding.priority,
+    verifier_priority: finding.verifier_priority || finding.priority,
+    verification_outcome: 'verified',
+  })
+}
 for (const { finding, verdicts, checked_by } of checked) {
   if (checked_by === 'skipped') {
     survivors.push(finding)
@@ -325,6 +374,7 @@ for (const { finding, verdicts, checked_by } of checked) {
     suppressed.push({
       finding,
       kind: 'check-failed',
+      outcome: 'verification-unresolved',
       reason: 'no checker returned a verdict on either engine — the finding is withheld, not rejected',
       checked_by: null,
     })
@@ -337,19 +387,32 @@ for (const { finding, verdicts, checked_by } of checked) {
   ].filter(([dim]) => verdicts[dim].verdict === 'fail')
   if (rejections.length) {
     const [dim, label] = rejections[0]
-    suppressed.push({ finding, kind: 'rejected', reason: `${label}: ${verdicts[dim].note}`, checked_by })
+    suppressed.push({ finding, kind: 'rejected', outcome: 'suppressed', reason: `${label}: ${verdicts[dim].note}`, checked_by })
     continue
   }
-  const out = { ...finding, checked_by }
+  const verifierPriority = verdicts.priority.proposed
+  const verifiedPriority = moreSeverePriority(finding.priority, verifierPriority)
+  const out = {
+    ...finding,
+    checked_by,
+    proposed_priority: finding.priority,
+    verifier_priority: verifierPriority,
+    priority: verifiedPriority,
+    verification_outcome: 'verified',
+    priority_validation: {
+      agreement: finding.priority === verifierPriority ? 'agreed' : 'disputed',
+      rationale: verdicts.priority.note,
+    },
+  }
   if (verdicts.priority.verdict === 'reclassify' && verdicts.priority.proposed !== finding.priority) {
     reclassified.push({
       file: finding.file,
       title: finding.title,
       from: finding.priority,
-      to: verdicts.priority.proposed,
+      verifier_priority: verifierPriority,
+      to: verifiedPriority,
       note: verdicts.priority.note,
     })
-    out.priority = verdicts.priority.proposed
   }
   if (verdicts.attribution.verdict === 'fail') {
     // The introduced-vs-pre-existing call is wrong or unsubstantiated. Route
@@ -387,17 +450,58 @@ const verification = {
   degraded: degradedPairings > 0 || checkFailed > 0,
 }
 
+const survivorByCandidate = new Map(
+  survivors.map((finding) => [`${finding.producer_identity}\u0000${finding.producer_ordinal}`, finding]),
+)
+const suppressedByCandidate = new Map(
+  suppressed.map((entry) => [`${entry.finding.producer_identity}\u0000${entry.finding.producer_ordinal}`, entry]),
+)
+const assembledVerificationResult = {
+  schema_version: 1,
+  criteria: plan.briefs.map((brief) => ({ name: brief.name, path: brief.path })),
+  candidates: findings.map((candidate) => {
+    const key = `${candidate.producer_identity}\u0000${candidate.producer_ordinal}`
+    const survivor = survivorByCandidate.get(key)
+    const suppression = suppressedByCandidate.get(key)
+    const checkerFamily = survivor?.checked_by || suppression?.checked_by || null
+    return {
+      candidate,
+      producer: {
+        family: candidate.producer_identity.endsWith('@codex-cli') ? 'codex' : 'claude',
+        id: candidate.producer_identity,
+        ordinal: candidate.producer_ordinal,
+      },
+      assurance: 'agent-judgement',
+      outcome: survivor ? 'verified' : suppression?.outcome || 'verification-unresolved',
+      proposed_priority: candidate.priority,
+      verifier_priority: survivor?.verifier_priority || null,
+      verified_priority: survivor?.priority || null,
+      verification_evidence: {
+        checker_family: checkerFamily,
+        checker_id: checkerFamily ? `check:${candidate.producer_identity}:${candidate.producer_ordinal}@${checkerFamily}` : null,
+        degraded_pairing: checkerFamily ? checkerFamily !== preferredEngine(candidate) : true,
+        rationale: suppression?.reason || survivor?.priority_validation?.rationale || null,
+      },
+      verified_finding: survivor || null,
+    }
+  }),
+}
+const verificationResult = entryPoint === 'bar-only'
+  ? input.verification_result
+  : assembledVerificationResult
+if (entryPoint === 'bar-only' && (!verificationResult || verificationResult.schema_version !== 1 || !Array.isArray(verificationResult.candidates))) {
+  throw new Error('review-panel-verify: bar-only entry point requires the verification_result produced by verification-only.')
+}
+
 // The bar trigger, computed from the assembled state — never from a reviewer's
 // say-so: the review would otherwise converge clean (zero blocking
 // change-introduced findings), or some criterion was skipped, failed, or only
 // partially covered. The trigger is always computed and reported; bar_mode
 // decides whether the judge actually runs.
 phase('Bar')
-const blocking = survivors.filter(
-  (f) => f.preexisting !== true && (f.priority === 'P0' || f.priority === 'P1'),
-)
 const triggerReasons = []
-if (blocking.length === 0) triggerReasons.push('zero blocking change-introduced findings')
+if (entryPoint === 'bar-only') triggerReasons.push('bar-only attestation requested for a service-validated disposition manifest')
+else if (survivors.length === 0) triggerReasons.push('zero independently verified findings')
 const notRun = coverage.filter((c) => c.status === 'not-run')
 const partial = coverage.filter((c) => c.status === 'partial' || c.status === 'none')
 if (notRun.length) triggerReasons.push(`${notRun.length} criterion/criteria not run`)
@@ -443,6 +547,9 @@ if (barMode === 'on' || (barMode === 'auto' && triggerFired)) {
   bar.ran = true
   const material = {
     findings: survivors,
+    verification_result: verificationResult,
+    disposition_manifest: dispositionManifest,
+    manifest_sha256: manifestSHA256,
     coverage,
     // Both coverage artefacts reach the judge, unconflated. The accounting
     // RESULT lets it see a panel-vs-result contradiction (declared full, found
@@ -518,9 +625,33 @@ const coverageGate = {
   blocks_convergence: coverageResultShort || coverageArtefactMissing,
 }
 
+const coverageAttestationReasons = coverageGate.blocks_convergence
+  ? [
+      coverageResultShort
+        ? `mechanical coverage accounting is ${coverageGate.result_status || 'incomplete'}`
+        : 'mechanical coverage evidence is incomplete',
+    ]
+  : []
+
+const barAttestation = entryPoint === 'bar-only' && bar.ran ? {
+  schema_version: 1,
+  manifest_sha256: manifestSHA256,
+  verdict: coverageGate.blocks_convergence ? 'unresolved' : bar.outcome === 'pass' ? 'pass' : bar.outcome === 'fail' ? 'fail' : 'unresolved',
+  reasons: [...bar.reasons, ...coverageAttestationReasons],
+  implicated_briefs: bar.implicated_briefs,
+  checker: {
+    family: bar.checked_by || 'unresolved',
+    id: bar.checked_by ? `bar-check@${bar.checked_by}` : 'bar-check-unresolved',
+    degraded_pairing: bar.checked_by === 'claude' || bar.outcome === 'check-failed',
+  },
+} : null
+
 // The single, complete report for the run: posting and the chat summary read
 // this one object, so nothing has to be re-joined across stage files.
 return {
+  entry_point: entryPoint,
+  verification_result: verificationResult,
+  bar_attestation: barAttestation,
   findings: survivors,
   suppressed_by_checkers: suppressed,
   suppressed_by_validator: suppressedByValidator,
