@@ -25,6 +25,19 @@ type changedLine struct {
 	line int
 }
 
+type evidenceLineSide uint8
+
+const (
+	headEvidenceLine evidenceLineSide = iota + 1
+	baseEvidenceLine
+)
+
+type evidenceLine struct {
+	path string
+	line int
+	side evidenceLineSide
+}
+
 func ReviewCommand(args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: minos review changed-line|anchor|dedupe")
@@ -95,33 +108,51 @@ func positiveLine(raw string) (int, error) {
 }
 
 func diffChangedLines(path string) (map[changedLine]bool, error) {
+	evidence, err := diffChangedEvidenceLines(path)
+	if err != nil {
+		return nil, err
+	}
+	changed := make(map[changedLine]bool)
+	for line := range evidence {
+		if line.side == headEvidenceLine {
+			changed[changedLine{path: line.path, line: line.line}] = true
+		}
+	}
+	return changed, nil
+}
+
+func diffChangedEvidenceLines(path string) (map[evidenceLine]bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	changed := make(map[changedLine]bool)
+	changed := make(map[evidenceLine]bool)
 	scanner := bufio.NewScanner(file)
 	// Generated files can contain very long lines. We only inspect the first
 	// byte of content lines, but Scanner still needs room to consume them.
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	newPath := ""
-	newLine := 0
+	oldPath, newPath := "", ""
+	oldLine, newLine := 0, 0
 	inHunk := false
 	for scanner.Scan() {
 		line := scanner.Text()
-		if inHunk && newPath != "" && line != "" {
+		if inHunk && (newPath != "" || oldPath != "") && line != "" {
 			switch line[0] {
 			case '+':
-				changed[changedLine{path: newPath, line: newLine}] = true
+				changed[evidenceLine{path: newPath, line: newLine, side: headEvidenceLine}] = true
 				newLine++
 				continue
 			case ' ':
+				oldLine++
 				newLine++
 				continue
 			case '-':
-				// A deletion has no head-side line to anchor.
+				if oldPath != "" {
+					changed[evidenceLine{path: oldPath, line: oldLine, side: baseEvidenceLine}] = true
+				}
+				oldLine++
 				continue
 			case '\\':
 				// "No newline at end of file" does not consume a line.
@@ -129,6 +160,14 @@ func diffChangedLines(path string) (map[changedLine]bool, error) {
 			default:
 				inHunk = false
 			}
+		}
+		if strings.HasPrefix(line, "--- ") {
+			oldPath, err = parseDiffPath(strings.TrimPrefix(line, "--- "), "a/")
+			if err != nil {
+				return nil, err
+			}
+			inHunk = false
+			continue
 		}
 		if strings.HasPrefix(line, "+++ ") {
 			newPath, err = parseDiffPath(strings.TrimPrefix(line, "+++ "), "b/")
@@ -139,6 +178,7 @@ func diffChangedLines(path string) (map[changedLine]bool, error) {
 			continue
 		}
 		if match := hunkHeader.FindStringSubmatch(line); match != nil {
+			oldLine, _ = strconv.Atoi(match[1])
 			newLine, _ = strconv.Atoi(match[2])
 			inHunk = true
 			continue

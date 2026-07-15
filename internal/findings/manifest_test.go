@@ -115,8 +115,9 @@ func TestConfirmedDeliveryChangesDigestAndRequiresFreshAttestation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest.Findings[0].Delivery = DeliveryConfirmed
-	manifest.Findings[0].Receipt = &DeliveryReceipt{SchemaVersion: 1, ReceiptID: receiptID, Destination: policy.Destination, Target: policy.Target, OccurrenceID: verified.OccurrenceID, PayloadSHA256: payloadDigest}
+	if err := manifest.ConfirmDelivery(verified.OccurrenceID, DeliveryReceipt{SchemaVersion: 1, ReceiptID: receiptID, Destination: policy.Destination, Target: policy.Target, OccurrenceID: verified.OccurrenceID, PayloadSHA256: payloadDigest}); err != nil {
+		t.Fatal(err)
+	}
 	confirmedDigest, err := manifest.Digest()
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +144,76 @@ func TestFallbackDisclosureNeverChangesMateriality(t *testing.T) {
 	entry := manifest.Findings[0]
 	if entry.Material || entry.Publication != PublicationDisclosed || entry.Delivery != DeliveryNotRequired || entry.Repair != RepairNotTriggered {
 		t.Fatalf("fallback disposition=%#v", entry)
+	}
+}
+
+func TestDispositionIndexRoundTripsEveryOccurrenceAndReceipt(t *testing.T) {
+	context, candidate, verified := findingFixture(t, P2, P2, 0)
+	policy := ResolvedPolicy{PublishThreshold: P1, RepairThreshold: P3, Mode: DestinationMode, Destination: "backlog", Target: "owner/repo"}
+	manifest, err := NewDispositionManifest(context, policy, []CandidateDisposition{verifiedCandidate(candidate, verified)}, []VerifiedFinding{verified})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadDigest := strings.Repeat("a", 64)
+	receiptID, err := NewReceiptID(policy.Destination, policy.Target, verified.OccurrenceID, payloadDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.ConfirmDelivery(verified.OccurrenceID, DeliveryReceipt{SchemaVersion: 1, ReceiptID: receiptID, Destination: policy.Destination, Target: policy.Target, OccurrenceID: verified.OccurrenceID, PayloadSHA256: payloadDigest}); err != nil {
+		t.Fatal(err)
+	}
+	index, err := manifest.Index()
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := index.RecordLine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseDispositionRecord(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Occurrences) != 1 || parsed.Occurrences[0].OccurrenceID != verified.OccurrenceID || parsed.Occurrences[0].ReceiptID != receiptID || parsed.Occurrences[0].PayloadSHA256 != payloadDigest || parsed.ManifestSHA256 == "" {
+		t.Fatalf("parsed index=%#v", parsed)
+	}
+}
+
+func TestUnresolvedCandidateRetainsEvidenceWithoutInventingVerifier(t *testing.T) {
+	context, candidate, _ := findingFixture(t, P2, P2, 0)
+	entry := CandidateDisposition{Candidate: candidate, Outcome: CandidateVerificationUnresolved, VerificationEvidence: VerificationEvidence{Rationale: "No independent checker returned a determinate verdict."}}
+	manifest, err := NewDispositionManifest(context, ResolvedPolicy{PublishThreshold: P1, RepairThreshold: P3, Mode: PublishThroughP3Mode}, []CandidateDisposition{entry}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := manifest.Digest()
+	if err != nil || digest == "" {
+		t.Fatalf("unresolved digest=%q err=%v", digest, err)
+	}
+	bar := BarAttestation{SchemaVersion: 1, ManifestSHA256: digest, Verdict: BarPass, Reasons: []string{}, ImplicatedBriefs: []BriefReason{}, Checker: BarChecker{Family: "claude", ID: "bar"}}
+	if err := manifest.ConvergenceReady(bar); err == nil {
+		t.Fatal("unresolved candidate was allowed to converge")
+	}
+}
+
+func TestDispositionIndexRejectsIncompleteOrDuplicateRecords(t *testing.T) {
+	context, candidate, verified := findingFixture(t, P2, P2, 0)
+	manifest, err := NewDispositionManifest(context, ResolvedPolicy{PublishThreshold: P1, RepairThreshold: P3, Mode: PublishThroughP3Mode}, []CandidateDisposition{verifiedCandidate(candidate, verified)}, []VerifiedFinding{verified})
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := manifest.Index()
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.Occurrences = append(index.Occurrences, index.Occurrences[0])
+	if _, err := index.RecordLine(); err == nil {
+		t.Fatal("duplicate occurrence was accepted in compact index")
+	}
+	index.Occurrences = index.Occurrences[:1]
+	index.Occurrences[0].Delivery = DeliveryConfirmed
+	if _, err := index.RecordLine(); err == nil {
+		t.Fatal("confirmed index occurrence without receipt evidence was accepted")
 	}
 }
 

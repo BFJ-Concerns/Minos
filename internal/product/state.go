@@ -30,8 +30,8 @@ var (
 		meaning: "substantive findings, permissions, or policy require outside action",
 	}
 	partial = State{
-		name: "partial", forgeState: "failure", description: "Review incomplete",
-		meaning: "coverage was not adequate for clearance",
+		name: "partial", forgeState: "failure", description: "Review needs attention",
+		meaning: "coverage, verification, disposition, or review-bar uncertainty prevented clearance",
 	}
 	stopped = State{
 		name: "stopped", forgeState: "failure", description: "Review stopped; findings remain",
