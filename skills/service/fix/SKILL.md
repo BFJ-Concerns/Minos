@@ -1,6 +1,6 @@
 ---
 name: minos-fix
-description: Repair verified material findings inside an active Minos lifecycle. Use when the accountable lead assigns a fresh repair worker one or more independently verified current-head findings; the worker diagnoses and edits the prepared workspace, validates the repair, and returns evidence for the lead to push and re-review. Not a standalone fix run and not a general review skill.
+description: Repair the policy-selected verified finding set inside an active Minos lifecycle after at least one material finding triggers intervention. Use when the accountable lead assigns a fresh repair worker the typed output of minos findings repair-plan; the worker diagnoses and edits the prepared workspace, validates the repair, and returns evidence for the lead to push and re-review. Not a standalone fix run and not a general review skill.
 allowed-tools:
 - Bash
 - Read
@@ -12,8 +12,10 @@ allowed-tools:
 
 # Minos repair step
 
-Repair the verified material findings assigned by the accountable lifecycle
-lead. Work only in the prepared workspace and return the repair to that lead;
+Repair the verified findings in the service-generated assignment. At least one
+is material, while the configured wider repair threshold may also select quiet
+findings; do not narrow or widen that typed set. Work only in the prepared
+workspace and return the repair to the accountable lifecycle lead;
 the lifecycle remains one session and the lead owns every forge mutation.
 
 ## Inputs
@@ -21,8 +23,9 @@ the lifecycle remains one session and the lead owns every forge mutation.
 The assignment names:
 
 - the current head and target revisions;
-- each verified finding, its stable finding identity, priority, exact anchor,
-  trigger, and verifier evidence;
+- each verified finding, its candidate, occurrence and lineage identity,
+  producer and verifier priorities, assurance, exact anchor, criterion, and
+  verifier evidence;
 - the prepared workspace;
 - the trusted build and test commands; and
 - the scratch path for the full repair artefact.

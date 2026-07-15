@@ -45,12 +45,24 @@ the executable seams; do not call the adaptation scripts directly.
 - `"$MINOS_BIN" forge status STATE` publishes one named product state. Valid names are
   exactly `queued`, `working`, `waiting`, `blocked`, `partial`, `stopped`,
   `clean`, `clean, limited`, and `merged`; quote `"clean, limited"` in a shell.
-- `"$MINOS_BIN" forge review RESULT BODY_FILE COMMENTS_JSON` publishes the current
-  head's consolidated review. `RESULT` is `converged`, `material`, or
-  `incomplete`; append `permission-policy` only for an outside
-  permission/policy block. The command maps the verdict and adds the hidden,
-  authenticated product record. Supply comments as a JSON array of anchored
-  review comments.
+- `"$MINOS_BIN" findings assemble VERIFICATION_JSON [PRIOR_OCCURRENCES_JSON]`
+  admits mechanically valid candidates, resolves lineage, applies the configured
+  thresholds, and writes the complete pre-delivery disposition manifest.
+- `"$MINOS_BIN" findings deliver MANIFEST_JSON BAR_ATTESTATION_JSON` reconciles
+  every required quiet destination record through discover/read/create and
+  authenticated full read-back, then writes the complete confirmed snapshot.
+  It never blind-repeats an uncertain create.
+- `"$MINOS_BIN" findings repair-plan DECISION_MANIFEST_JSON
+  BAR_ATTESTATION_JSON [DELIVERY_MANIFEST_JSON]` returns the mechanically selected
+  repair set. A material destination head requires its confirmed delivery
+  snapshot here, but the original pre-delivery pair remains the decision input.
+- `"$MINOS_BIN" forge review BODY_FILE COMMENTS_JSON MANIFEST_JSON
+  BAR_ATTESTATION_JSON [permission-policy]` publishes the current head's
+  consolidated review. The command derives materiality, verdict, comment set,
+  disposition index, and block kind from the exact manifest/attestation pair;
+  the optional final argument is only for an outside permission/policy block.
+  Supply comment positions keyed by occurrence ID, never finding prose or a
+  caller-selected publication set.
 - `"$MINOS_BIN" forge push BRANCH AUTHOR_NAME AUTHOR_EMAIL MESSAGE_FILE` performs the
   guarded non-force push and advances the owned ledger pair on success. Read
   the returned JSON `sha`, set `MINOS_HEAD_SHA` to it for later commands, and
@@ -397,11 +409,13 @@ Bridge it to the service like this:
   Supply the briefs path and the occasion the run carries.
 - **Keep the standard aspects on and never skip verification.** A PR with no
   `.review/` briefs is still a full review — the standard aspects are the other
-  half of the standard. Every candidate finding clears independent verification
-  before it may post: a verifying agent, from a different model family where the
-  deployment has one, confirms with cited evidence that the finding is real,
-  anchored to a changed line, and worth a reader's time. A finding no verifier
-  confirms is suppressed into deployment evidence, never posted.
+  half of the standard. Every mechanically admitted candidate receives exactly
+  one independent verification outcome. A verifier from a different model
+  family where available confirms with cited evidence that the finding is real,
+  anchored to changed immutable evidence, and worth a reader's time. Only a
+  substantive verifier rejection produces `suppressed`; an absent, invalid, or
+  uncertain verifier produces `verification-unresolved` and prevents
+  convergence. Neither state invents a verified occurrence.
 - **Take PR context from the run environment**, not from the skill's own forge
   discovery: the prepared workspace, the diff, and the current PR facts are the
   complete head-scoped input, so the skill's `gh`/forge lookup path does not run.
@@ -487,7 +501,25 @@ agent conducting agents, and you notice, adapt, retry, or degrade when a worker
 fails. The versioned Ensemble workflows pin the role assignments and the
 producer/verifier disjointness — you do not hand-roll that fan-out.
 
-### 5. The review-bar critique loop
+### 5. Assemble disposition and run the review-bar critique loop
+
+First run `verify_workflow.js` with `entry_point: "verification-only"`,
+`verify: true`, and `bar_mode: "off"`. Preserve its exhaustive
+`verification_result`; do not filter it to material findings. Pass that exact
+result to `minos findings assemble`, which binds candidate identity to the
+attempt token, occurrence identity to the owned repository/head/target and
+immutable evidence, criteria to the trusted target, and policy to the current
+strict repository profile. The command, not the lead, derives publication,
+repair eligibility, materiality, and destination state. A mechanically invalid
+raw proposal stays in attempt evidence and never becomes a candidate.
+
+Run `verify_workflow.js` again through its `bar-only` entry point with
+`verify: false`, `bar_mode: "on"`, the unchanged `verification_result`, the
+complete manifest, and the manifest's lower-case SHA-256 digest. This invocation
+does not rerun finding verification. Extract and strictly preserve its
+`bar_attestation`; it is usable only with the exact manifest digest it names.
+The panel converts mechanically incomplete coverage evidence to an unresolved
+attestation even if the judge's prose verdict was favourable.
 
 The quality bar itself is checkable by a second opinion. The review-bar check —
 an independent agent, cross-family where available, judging the assembled review
@@ -506,13 +538,25 @@ The order is fixed. Assemble a draft review; the bar examines it; then:
 - A finding the bar shows to be unsupported is pruned.
 - Coverage the bar shows to be shallow is deepened, or the review is marked
   partial.
-- Only then do you publish the head's one consolidated review, with its verdict
-  fixed by meaning: a complete, bar-passed review with zero material findings
-  uses the forge's approving verdict (including when non-material findings remain
-  or prerequisite CI is still pending); a review with material findings uses
-  request-changes; partial coverage or an unresolved bar critique uses a
-  non-approving comment verdict. Waiting before a review is ready posts no empty
-  review. The verdict's forge spelling is the product-surface seam's.
+- Only then do you publish or deliver according to the typed manifest:
+  - **Material head:** call `forge review` with the original pre-delivery
+    manifest/attestation pair before destination or repair work. Its complete
+    index may honestly record quiet delivery as pending. Then call `findings
+    deliver` when quiet destination entries exist. The confirmed snapshot is
+    delivery evidence only: never run a replacement material decision bar over
+    it, and keep using the original pair for publication and `repair-plan`.
+  - **No-material destination head:** a passing initial bar permits `findings
+    deliver`. Delivery changes the complete manifest digest, so run `bar-only`
+    a second time over the confirmed snapshot with the same exhaustive
+    verification result. Only this fresh confirmed pair may be supplied to
+    `forge review` for an approving verdict.
+  - **Publish-through-P3 head:** there is no destination and no second bar.
+    Supply the initial pair to `forge review`; quiet findings are disclosed but
+    remain non-material and non-blocking.
+  A failed or unresolved bar still permits the policy-selected substantive
+  publication through the non-approving incomplete verdict. It never permits
+  a clean-head destination delivery or convergence. Waiting before a review is
+  ready posts no empty review.
 
 The review body is written for the repository's people, in ordinary reviewer
 language: it carries the substantive assessment of the change — what was
@@ -552,11 +596,16 @@ otherwise-converged review to publish as approving with limited verification;
 otherwise it stops without convergence. A pin mismatch never qualifies for that
 escape.
 
-### 6. Repair verified material findings
+### 6. Repair the mechanically selected finding set
 
-A finding is **material** when it is verified and at a priority the repository's
-policy fixes before merge (P0–P1 in the shipped default). Verified material
-findings cause repair when the head is writable. The priority meanings are fixed
+A finding is **material** when its conservative verified priority is at or above
+the repository's publication threshold (`P1` in the shipped default). The
+presence of any material finding triggers intervention; the repair set is every
+verified finding at or above the independently configured repair threshold
+(`P3` in the shipped default). The lead never widens, narrows, or toggles either
+set. Obtain the assignment only from `minos findings repair-plan`; in destination
+mode this command also proves every quiet record was authenticated before repair
+starts. The priority meanings are fixed
 by the pinned review contract (P0 immediately exploitable or catastrophic; P1
 concrete material impact; P2 verified but without that impact; P3 minor polish);
 a repository chooses its material threshold but may not redefine the classes. A
@@ -578,8 +627,11 @@ finding's producer and its checker are disjoint, but it knows nothing of who
 authored the repair, so the repair-author exclusion across the repaired head's
 review *and* verification is yours to hold.
 
-The service repair procedure is `$MINOS_FIX_SKILL` and the general diagnostic
-procedure is `$MINOS_ROOT_CAUSE_SKILL`. Read both before convening the first
+The repair worker receives the selected entries exactly as returned, including
+candidate, occurrence and lineage identity, both priority judgements, assurance,
+criterion, and immutable anchor. The service repair procedure is
+`$MINOS_FIX_SKILL` and the general diagnostic procedure is
+`$MINOS_ROOT_CAUSE_SKILL`. Read both before convening the first
 repair worker; do not search for substitutes or improvise their contracts. Run
 repairs through Ensemble with `repair:` labels, then admit the new records with
 `admit-workflow-models --stage repair` before using or pushing their output.
@@ -597,6 +649,11 @@ repairs through Ensemble with `repair:` labels, then admit the new records with
   repair delta and the prior material findings get extra attention, but they
   never narrow the review boundary: every currently changed file, applicable
   brief, and relevant call site is in scope again.
+- Supply the prior occurrence and repairing commit to the next assembly. Reuse
+  lineage only for one exact path/side/quote/criterion match, or for an explicit
+  discoverable `lineage_id` citation that is a clear successor after that repair.
+  The new manifest records `repair_evidence` pointing to the old occurrence and
+  repair commit; it never rewrites the old review or declares the defect closed.
 
 A verified material finding on a head the service cannot write still posts as a
 substantive finding, and the PR ends blocked rather than pretending a repair
@@ -611,6 +668,11 @@ inspection record the bar judged deep enough), and either a passed review-bar
 check or the explicit checker-unavailable limited policy. You record it as the
 service's approving review on that head. A blocking coverage
 gate settles **partial**, never convergence, whatever the bar concluded.
+In destination mode it additionally requires every quiet delivery to be
+confirmed by authenticated read-back and the final confirmed manifest digest to
+be named by a fresh passing bar attestation. A pending manifest and its earlier
+attestation can never approve. A material head can never converge on that head;
+its confirmed delivery snapshot is evidence, not a second decision input.
 
 Termination is your judgement, not a counter — there is no pass ceiling and no
 lifecycle clock counting the chase down. (The reconciliation sweep's liveness
@@ -746,10 +808,14 @@ The rendered PR carries the service's product only — findings, repair commits,
 the submitted verdict, the eyes reaction, and the single `Minos` status. It never
 carries raw head-SHA tuples, run or stage names, model or engine identities,
 review/fix/finish taxonomy, or operational diagnostics. Model provenance lives
-only in deployment evidence, never in commit trailers or the review. Where a
-machine needs bookkeeping (finding deduplication, binding a finding to its head)
-use a hidden identity that cannot carry clearance — never a rendered marker that
-leaks process to people.
+only in deployment evidence, never in commit trailers or the review. The
+service writes one complete hidden disposition index immediately before the
+existing product record. It carries every occurrence and disposition axis, with
+destination receipt keys when confirmed, but no quiet prose. The index aids
+discovery and never proves delivery by itself: a successor authenticates the
+named durable record through destination discover/read. Never truncate or split
+the index; an over-sized complete record is an integrity failure and leaves the
+review partial. Neither hidden record carries clearance.
 
 ## Product states and the review vocabulary (product-surface seam)
 

@@ -75,6 +75,13 @@ Keys use lower-case letters, digits, and hyphens. Values are restricted to
 letters, digits, `.`, `_`, `/`, `@`, and `-`. Unknown keys are ignored by
 consumers.
 
+Each service review also carries one complete base64url disposition index
+immediately before that trailing product record. It names every verified
+occurrence, lineage, priority, assurance, publication, repair, and delivery
+state. Destination receipts appear only after authenticated read-back. The
+index is a discovery aid and never grants clearance or proves delivery by
+itself.
+
 ## Run-Body Contract
 
 Every spawned run receives:
@@ -133,3 +140,8 @@ units, and the ordered operator procedure in [`docs/go-live.md`](docs/go-live.md
 `scripts/e2e/deployment-smoke.sh` rehearses the receiver, an authenticated
 synthetic delivery, the sweep, and unit-file validation without contacting a
 real forge.
+
+Destination-mode repositories use the strict discover/read/create adaptation
+contract in [`docs/finding-destination.md`](docs/finding-destination.md). A
+quiet finding is complete only after authenticated full-record read-back; the
+forge index and local attempt files are discovery aids, not delivery proof.
