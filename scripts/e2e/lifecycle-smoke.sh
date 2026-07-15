@@ -193,7 +193,7 @@ create_pr() {
     git fetch -q origin main
     git reset -q --hard origin/main
     git checkout -q -b "$branch"
-    if [[ "$branch" == stopped-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
+    if [[ "$branch" == stopped-* || "$branch" == retryable-exit-* || "$branch" == missed-webhook-* || "$branch" == hard-kill-* ||
       "$branch" == restart-* || "$branch" == uncertain-* || "$branch" == capacity-* ||
       "$branch" == durable-*-kill-* ]]; then
       sed -i 's/return true/return false/' ready.go
