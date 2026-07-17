@@ -394,56 +394,57 @@ test("a large per-file full-extent brief is split; a whole-tree brief within lim
   assert.equal(wholeTreeUnits.length, 1);
 });
 
-test("a whole-tree brief with too many files is reported not run, never passed", async () => {
+// One weighted reading-volume budget, not a hard file cliff: content bytes plus
+// a per-file navigation overhead, refused only when the combined volume exceeds
+// the budget. The prior counterexample — 61 trivially small files — must run,
+// while a genuinely large tree and a few huge files must both refuse.
+test("the 61-tiny-files counterexample runs under the weighted reading budget", async () => {
   const { result, calls } = await runScript(
     ARGS,
-    briefScopeResponder("extent: full\nsweep: whole-tree", 90, 50_000)
+    briefScopeResponder("extent: full\nsweep: whole-tree", 61, 610)
+  );
+  const report = result.briefs.find((b) => b.brief === ".review/pkg/style.md");
+  assert.equal(report.status, "run");
+  assert.equal(
+    calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length,
+    1
+  );
+  assert.equal(result.verdictsComplete, true);
+});
+
+test("a genuinely large many-file whole-tree scope is reported not run on weighted volume", async () => {
+  const { result, calls } = await runScript(
+    ARGS,
+    briefScopeResponder("extent: full\nsweep: whole-tree", 250, 25_000)
   );
   const report = result.briefs.find((b) => b.brief === ".review/pkg/style.md");
   assert.equal(report.status, "not-run");
-  assert.equal(report.scopeSize, 90);
-  assert.equal(report.scopeBytes, 50_000);
-  assert.match(report.reason, /90 files/);
-  // Both measured values and both limits are reported, so the not-run reason is
-  // legible without re-deriving them.
-  assert.match(report.reason, /50000 non-binary bytes/);
-  assert.match(report.reason, /limits 60 files, 200000 bytes/);
-  // Not dispatched, and never silently treated as passed: it withholds
-  // verdict-completeness so the lead cannot publish a clean result over it.
+  assert.equal(report.scopeSize, 250);
+  assert.equal(report.scopeBytes, 25_000);
+  // Content is tiny, but 250 files' navigation overhead alone overruns the
+  // budget: 25000 + 250 × 2000 = 525000 > 400000.
+  assert.equal(report.readingVolume, 525_000);
+  assert.match(report.reason, /weighted reading volume of 525000 bytes/);
+  assert.match(report.reason, /400000-byte budget/);
   assert.equal(calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length, 0);
   assert.equal(result.verdictsComplete, false);
   assert.ok(result.incomplete.some((line) => line.includes("not run")));
 });
 
-// File count alone is not defensible: many tiny files can sit well within one
-// reviewer's reach, while a few huge ones overflow it. The dual measure runs the
-// first and refuses the second.
-test("a whole-tree brief of many tiny files runs; a few huge files is refused on byte volume", async () => {
-  const manyTiny = await runScript(
-    ARGS,
-    briefScopeResponder("extent: full\nsweep: whole-tree", 55, 40_000)
-  );
-  const tinyReport = manyTiny.result.briefs.find((b) => b.brief === ".review/pkg/style.md");
-  assert.equal(tinyReport.status, "run");
-  assert.equal(
-    manyTiny.result.reviewers.filter((r) => r.label.startsWith("brief-")).length,
-    1
-  );
-
-  const fewHuge = await runScript(
+test("a few huge files is reported not run on weighted volume", async () => {
+  const { result, calls } = await runScript(
     ARGS,
     briefScopeResponder("extent: full\nsweep: whole-tree", 5, 500_000)
   );
-  const hugeReport = fewHuge.result.briefs.find((b) => b.brief === ".review/pkg/style.md");
-  assert.equal(hugeReport.status, "not-run");
-  assert.equal(hugeReport.scopeSize, 5);
-  assert.equal(hugeReport.scopeBytes, 500_000);
-  assert.match(hugeReport.reason, /500000 non-binary bytes/);
-  assert.equal(
-    fewHuge.calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length,
-    0
-  );
-  assert.equal(fewHuge.result.verdictsComplete, false);
+  const report = result.briefs.find((b) => b.brief === ".review/pkg/style.md");
+  assert.equal(report.status, "not-run");
+  assert.equal(report.scopeSize, 5);
+  assert.equal(report.scopeBytes, 500_000);
+  // 500000 + 5 × 2000 = 510000 > 400000.
+  assert.equal(report.readingVolume, 510_000);
+  assert.match(report.reason, /500000 non-binary bytes/);
+  assert.equal(calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length, 0);
+  assert.equal(result.verdictsComplete, false);
 });
 
 // A scope that cannot be measured must not be reviewed blind: whether the
@@ -468,6 +469,40 @@ test("a whole-tree brief absent from the returned inventory is reported not run"
     ARGS,
     responder({
       scout: scoutFixture({ briefs: [brief(".review/pkg/style.md", "extent: full\nsweep: whole-tree")] }),
+      scopes: { scopes: [{ scope: "other", files: ["other/a.go"], bytes: 10 }] },
+      review: (label) =>
+        label.startsWith("brief-") ? { applicable: true, reason: "audited", findings: [] } : { findings: [] },
+    })
+  );
+  const report = result.briefs.find((b) => b.brief === ".review/pkg/style.md");
+  assert.equal(report.status, "not-run");
+  assert.match(report.reason, /measured scope unavailable/);
+  assert.equal(calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length, 0);
+  assert.equal(result.verdictsComplete, false);
+});
+
+// A per-file full brief plans off the same inventory (to shard), so an
+// unmeasured scope must fail closed for it too — not silently collapse to one
+// unsharded pass over an unknown scope.
+test("a per-file full brief whose scope inventory returns no result is reported not run", async () => {
+  const { result, calls } = await runScript(ARGS, (label) => {
+    if (label === "scout")
+      return scoutFixture({ briefs: [brief(".review/pkg/style.md", "extent: full")] });
+    if (label === "scope-files") return null;
+    return { findings: [], selfReportedModel: "gpt-5.6-sol" };
+  });
+  const report = result.briefs.find((b) => b.brief === ".review/pkg/style.md");
+  assert.equal(report.status, "not-run");
+  assert.match(report.reason, /measured scope unavailable/);
+  assert.equal(calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length, 0);
+  assert.equal(result.verdictsComplete, false);
+});
+
+test("a per-file full brief absent from the returned inventory is reported not run", async () => {
+  const { result, calls } = await runScript(
+    ARGS,
+    responder({
+      scout: scoutFixture({ briefs: [brief(".review/pkg/style.md", "extent: full")] }),
       scopes: { scopes: [{ scope: "other", files: ["other/a.go"], bytes: 10 }] },
       review: (label) =>
         label.startsWith("brief-") ? { applicable: true, reason: "audited", findings: [] } : { findings: [] },

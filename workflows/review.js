@@ -137,14 +137,26 @@ const PER_FILE_CHUNK = 40;
 // what one reviewer can genuinely hold it would skim rather than judge, so the
 // brief is reported not run — with the measured scope — rather than run badly.
 //
-// Reviewer context budget (deliberately conservative and legible, no framework):
-// take a working reading budget of about 200k characters of source for one
-// reviewer to hold and reason across at once, and stay well under it. File count
-// alone is not a defensible measure — 61 tiny files and 5 generated megabytes
-// fail it in opposite, wrong directions — so we measure BOTH the file count and
-// the scope's non-binary byte volume, and refuse when either exceeds its limit.
-const WHOLE_TREE_FILE_LIMIT = 60;
-const WHOLE_TREE_BYTE_LIMIT = 200_000;
+// Reviewer reading budget (deliberately conservative and legible, no framework):
+// one measure, not two thresholds. Neither raw file count nor raw byte volume
+// alone is defensible — a hard file cap refuses 61 trivially small files, and
+// bytes alone ignore that each extra file costs navigation. So we weight the
+// two into a single reading volume: the scope's non-binary bytes plus a modest
+// per-file overhead standing for the file's name, structure and its place in
+// the cross-file relationships a whole-tree judgement rests on. Refuse only when
+// that combined volume exceeds one budget.
+//
+// PER_FILE_OVERHEAD_BYTES ≈ the span of a short file's shape (path, imports,
+// signatures) a reviewer must hold just to navigate it. READING_BUDGET_BYTES is
+// a conservative working ceiling on the total the one reviewer holds at once.
+// So 61 tiny files (≈0.12 MB weighted) run, while a few huge files or a
+// genuinely large tree (both well past the budget) are reported not run.
+const PER_FILE_OVERHEAD_BYTES = 2_000;
+const WHOLE_TREE_READING_BUDGET_BYTES = 400_000;
+
+function weightedReadingVolume(fileCount, nonBinaryBytes) {
+  return nonBinaryBytes + fileCount * PER_FILE_OVERHEAD_BYTES;
+}
 
 // `scope` is the resolved review scope: the brief's subfolder when it matches a
 // real repository directory, or null (repo-wide) when it does not — never the
@@ -418,37 +430,33 @@ if (fullExtentBriefs.length > 0) {
     const invScope = scope || ".";
     const where = invScope === "." ? "the whole repository" : `${invScope}/`;
     const entry = scopes && scopes.scopes.find((s) => s.scope === invScope);
-    // No inventory means the scope could not be measured. A whole-tree brief may
-    // not be run over an unmeasured scope — that would be skimming blind — so it
-    // is reported not run and no reviewer is dispatched. (A per-file full brief
-    // with no inventory simply has no files to chunk and runs as a single pass.)
+    // No inventory means the scope could not be measured. EVERY full-extent brief
+    // plans off this inventory — whole-tree to size the single reviewer, per-file
+    // to shard — so an unmeasured scope is reported not run and no reviewer is
+    // dispatched, rather than run blind over an unknown scope (a per-file brief
+    // would otherwise silently collapse to one unsharded pass).
     if (!entry) {
-      if (front.sweep === "whole-tree") {
-        briefReports.push({
-          brief: brief.path,
-          title: briefTitle(brief.path, front),
-          status: "not-run",
-          reason: `measured scope unavailable: the file inventory for ${where} returned no result, so the whole-tree scope could not be sized; reported not run rather than skimmed`,
-          ...(warning ? { warning } : {}),
-        });
-        continue;
-      }
-      briefUnits.push(...planBriefReviewers(brief, front, scope, warning, []));
+      briefReports.push({
+        brief: brief.path,
+        title: briefTitle(brief.path, front),
+        status: "not-run",
+        reason: `measured scope unavailable: the file inventory for ${where} returned no result, so the scope could not be sized; reported not run rather than reviewed blind`,
+        ...(warning ? { warning } : {}),
+      });
       continue;
     }
     const scopeFiles = entry.files;
     const scopeBytes = typeof entry.bytes === "number" ? entry.bytes : 0;
-    if (
-      front.sweep === "whole-tree" &&
-      (scopeFiles.length > WHOLE_TREE_FILE_LIMIT || scopeBytes > WHOLE_TREE_BYTE_LIMIT)
-    ) {
+    const readingVolume = weightedReadingVolume(scopeFiles.length, scopeBytes);
+    if (front.sweep === "whole-tree" && readingVolume > WHOLE_TREE_READING_BUDGET_BYTES) {
       briefReports.push({
         brief: brief.path,
         title: briefTitle(brief.path, front),
         status: "not-run",
         scopeSize: scopeFiles.length,
         scopeBytes,
-        reason: `whole-tree brief needs one reviewer to hold its entire scope at once, but ${where} measures ${scopeFiles.length} files / ${scopeBytes} non-binary bytes (limits ${WHOLE_TREE_FILE_LIMIT} files, ${WHOLE_TREE_BYTE_LIMIT} bytes); reported not run rather than skimmed`,
+        readingVolume,
+        reason: `whole-tree brief needs one reviewer to hold its entire scope at once, but ${where} measures ${scopeFiles.length} files / ${scopeBytes} non-binary bytes — a weighted reading volume of ${readingVolume} bytes (${scopeBytes} + ${scopeFiles.length} × ${PER_FILE_OVERHEAD_BYTES} per-file overhead), past the ${WHOLE_TREE_READING_BUDGET_BYTES}-byte budget; reported not run rather than skimmed`,
         ...(warning ? { warning } : {}),
       });
       continue;
