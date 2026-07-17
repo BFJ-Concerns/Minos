@@ -55,6 +55,10 @@ function scoutFixture({ files = [{ path: "internal/x.go", added: 30, deleted: 30
 
 // A responder built from per-label-prefix handlers, with sane defaults:
 // reviewers report one finding each, verifiers confirm on the right family.
+// Both legs self-report a model: a reviewer's default self-report matches its
+// own pinned family (aspect `-gpt` legs GPT, everything else Claude), so a
+// fixture that doesn't care about proposer family need not set it — and a leg
+// that means to lie sets selfReportedModel explicitly.
 function responder({ scout = scoutFixture(), scopes, review, verify } = {}) {
   return (label, prompt, opts) => {
     if (label === "scout") return scout;
@@ -65,13 +69,17 @@ function responder({ scout = scoutFixture(), scopes, review, verify } = {}) {
         ? verify(label, prompt, opts, expected)
         : { confirmed: true, reason: "reproduced", selfReportedModel: expected };
     }
-    return review
+    const reviewerModel = label.endsWith("-gpt") ? "gpt-5.6-sol" : "claude-opus-4-8";
+    const result = review
       ? review(label, prompt, opts)
       : {
           findings: [
             { title: `finding from ${label}`, priority: "high", path: "internal/x.go", line: 3, explanation: "e" },
           ],
         };
+    if (result && typeof result === "object" && result.selfReportedModel === undefined)
+      return { ...result, selfReportedModel: reviewerModel };
+    return result;
   };
 }
 
@@ -140,6 +148,59 @@ test("a wrong-family self-report is no verdict and the run is incomplete", async
     assert.match(finding.verification, /fallen back/);
   }
   assert.ok(result.incomplete.some((line) => line.includes("no verdict")));
+});
+
+// Cross-family independence binds the proposer as well as the verifier: a
+// review leg that silently fell back to the GPT session and self-reports GPT
+// while pinned to Claude cannot yield a publishable verdict, even if its
+// verifier is a genuine other-family check.
+test("a Claude review leg that self-reports GPT yields no verdict and an incomplete run", async () => {
+  const { result } = await runScript(
+    ARGS,
+    responder({
+      review: (label) => ({
+        findings: [
+          { title: `f ${label}`, priority: "high", path: "internal/x.go", line: 3, explanation: "e" },
+        ],
+        selfReportedModel: label.endsWith("-claude") ? "gpt-5.6-sol" : undefined,
+      }),
+    })
+  );
+  const fellBack = result.findings.filter((f) => f.review.configuredFamily === "claude");
+  assert.ok(fellBack.length > 0);
+  for (const finding of fellBack) {
+    assert.equal(finding.verdict, "no-verdict");
+    assert.match(finding.verification, /reviewer self-reported gpt-5\.6-sol/);
+    assert.equal(finding.review.selfReportedModel, "gpt-5.6-sol");
+  }
+  assert.equal(result.verdictsComplete, false);
+  assert.ok(result.incomplete.some((line) => line.includes("no verdict")));
+});
+
+// The result must carry, per finding, everything the lead needs for the
+// external actual-model check on BOTH legs — label, configured/expected family,
+// pinned model and self-report — so a lying or absent self-report is detectable
+// against the Workflow run record.
+test("each finding exposes both legs' families and pins for the lead's actual-model check", async () => {
+  const { result } = await runScript(ARGS, responder());
+  assert.ok(result.findings.length > 0);
+  for (const finding of result.findings) {
+    assert.ok(finding.review, "finding carries its review leg");
+    assert.equal(finding.review.label, finding.source);
+    assert.ok(["gpt", "claude"].includes(finding.review.configuredFamily));
+    assert.equal(
+      finding.review.pinnedModel,
+      finding.review.configuredFamily === "gpt" ? "gpt-5.6-sol" : "claude-opus-4-8"
+    );
+    assert.equal(typeof finding.review.selfReportedModel, "string");
+    assert.notEqual(finding.verify.expectedFamily, finding.review.configuredFamily);
+    assert.equal(
+      finding.verify.pinnedModel,
+      finding.verify.expectedFamily === "gpt" ? "gpt-5.6-sol" : "claude-opus-4-8"
+    );
+  }
+  assert.match(result.modelCheck, /review leg/);
+  assert.match(result.modelCheck, /verify leg/);
 });
 
 test("a missing verifier result is no verdict, never not-confirmed", async () => {
@@ -274,8 +335,8 @@ test("a diff-extent scoped brief is skipped without dispatch when nothing in sco
   assert.equal(calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length, 0);
 });
 
-test("a brief whose subfolder matches no repo directory runs repo-wide", async () => {
-  const { result } = await runScript(
+test("a brief whose subfolder matches no repo directory runs repo-wide, never citing the ghost scope, and warns", async () => {
+  const { result, calls } = await runScript(
     ARGS,
     responder({
       scout: scoutFixture({
@@ -286,7 +347,15 @@ test("a brief whose subfolder matches no repo directory runs repo-wide", async (
         label.startsWith("brief-") ? { applicable: true, reason: "ran", findings: [] } : { findings: [] },
     })
   );
-  assert.equal(result.briefs[0].status, "run");
+  const report = result.briefs.find((b) => b.brief === ".review/ghost/limits.md");
+  assert.equal(report.status, "run");
+  assert.match(report.warning, /matches no repository directory/);
+  // The reviewer is actually prompted repo-wide — the nonexistent scope path is
+  // not preserved in the prompt (which would silently narrow the review to a
+  // directory that does not exist).
+  const briefCall = calls.find((c) => (c.opts.label || "").startsWith("brief-"));
+  assert.ok(briefCall);
+  assert.doesNotMatch(briefCall.prompt, /ghost/);
 });
 
 test("a full-extent brief runs even when nothing in its scope changed", async () => {
@@ -307,10 +376,10 @@ test("a full-extent brief runs even when nothing in its scope changed", async ()
 
 const filesNamed = (n) => Array.from({ length: n }, (_, i) => `pkg/f${i}.go`);
 
-const briefScopeResponder = (frontmatter, fileCount) =>
+const briefScopeResponder = (frontmatter, fileCount, bytes = 0) =>
   responder({
     scout: scoutFixture({ briefs: [brief(".review/pkg/style.md", frontmatter)] }),
-    scopes: { scopes: [{ scope: "pkg", files: filesNamed(fileCount) }] },
+    scopes: { scopes: [{ scope: "pkg", files: filesNamed(fileCount), bytes }] },
     review: (label) =>
       label.startsWith("brief-") ? { applicable: true, reason: "audited", findings: [] } : { findings: [] },
   });
@@ -325,20 +394,90 @@ test("a large per-file full-extent brief is split; a whole-tree brief within lim
   assert.equal(wholeTreeUnits.length, 1);
 });
 
-test("a whole-tree brief larger than one reviewer can hold is reported not run, never passed", async () => {
+test("a whole-tree brief with too many files is reported not run, never passed", async () => {
   const { result, calls } = await runScript(
     ARGS,
-    briefScopeResponder("extent: full\nsweep: whole-tree", 90)
+    briefScopeResponder("extent: full\nsweep: whole-tree", 90, 50_000)
   );
   const report = result.briefs.find((b) => b.brief === ".review/pkg/style.md");
   assert.equal(report.status, "not-run");
   assert.equal(report.scopeSize, 90);
+  assert.equal(report.scopeBytes, 50_000);
   assert.match(report.reason, /90 files/);
+  // Both measured values and both limits are reported, so the not-run reason is
+  // legible without re-deriving them.
+  assert.match(report.reason, /50000 non-binary bytes/);
+  assert.match(report.reason, /limits 60 files, 200000 bytes/);
   // Not dispatched, and never silently treated as passed: it withholds
   // verdict-completeness so the lead cannot publish a clean result over it.
   assert.equal(calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length, 0);
   assert.equal(result.verdictsComplete, false);
   assert.ok(result.incomplete.some((line) => line.includes("not run")));
+});
+
+// File count alone is not defensible: many tiny files can sit well within one
+// reviewer's reach, while a few huge ones overflow it. The dual measure runs the
+// first and refuses the second.
+test("a whole-tree brief of many tiny files runs; a few huge files is refused on byte volume", async () => {
+  const manyTiny = await runScript(
+    ARGS,
+    briefScopeResponder("extent: full\nsweep: whole-tree", 55, 40_000)
+  );
+  const tinyReport = manyTiny.result.briefs.find((b) => b.brief === ".review/pkg/style.md");
+  assert.equal(tinyReport.status, "run");
+  assert.equal(
+    manyTiny.result.reviewers.filter((r) => r.label.startsWith("brief-")).length,
+    1
+  );
+
+  const fewHuge = await runScript(
+    ARGS,
+    briefScopeResponder("extent: full\nsweep: whole-tree", 5, 500_000)
+  );
+  const hugeReport = fewHuge.result.briefs.find((b) => b.brief === ".review/pkg/style.md");
+  assert.equal(hugeReport.status, "not-run");
+  assert.equal(hugeReport.scopeSize, 5);
+  assert.equal(hugeReport.scopeBytes, 500_000);
+  assert.match(hugeReport.reason, /500000 non-binary bytes/);
+  assert.equal(
+    fewHuge.calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length,
+    0
+  );
+  assert.equal(fewHuge.result.verdictsComplete, false);
+});
+
+// A scope that cannot be measured must not be reviewed blind: whether the
+// inventory agent returns nothing at all, or returns without the brief's scope,
+// the whole-tree brief is reported not run and no reviewer is dispatched.
+test("a whole-tree brief whose scope inventory returns no result is reported not run", async () => {
+  const { result, calls } = await runScript(ARGS, (label) => {
+    if (label === "scout")
+      return scoutFixture({ briefs: [brief(".review/pkg/style.md", "extent: full\nsweep: whole-tree")] });
+    if (label === "scope-files") return null;
+    return { findings: [], selfReportedModel: "gpt-5.6-sol" };
+  });
+  const report = result.briefs.find((b) => b.brief === ".review/pkg/style.md");
+  assert.equal(report.status, "not-run");
+  assert.match(report.reason, /measured scope unavailable/);
+  assert.equal(calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length, 0);
+  assert.equal(result.verdictsComplete, false);
+});
+
+test("a whole-tree brief absent from the returned inventory is reported not run", async () => {
+  const { result, calls } = await runScript(
+    ARGS,
+    responder({
+      scout: scoutFixture({ briefs: [brief(".review/pkg/style.md", "extent: full\nsweep: whole-tree")] }),
+      scopes: { scopes: [{ scope: "other", files: ["other/a.go"], bytes: 10 }] },
+      review: (label) =>
+        label.startsWith("brief-") ? { applicable: true, reason: "audited", findings: [] } : { findings: [] },
+    })
+  );
+  const report = result.briefs.find((b) => b.brief === ".review/pkg/style.md");
+  assert.equal(report.status, "not-run");
+  assert.match(report.reason, /measured scope unavailable/);
+  assert.equal(calls.filter((c) => (c.opts.label || "").startsWith("brief-")).length, 0);
+  assert.equal(result.verdictsComplete, false);
 });
 
 test("brief findings are verified by the other family and fail closed too", async () => {

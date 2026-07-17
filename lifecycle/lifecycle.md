@@ -25,16 +25,22 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    from the workspace. It supplies independent reviewers, the repository's
    `.review/` briefs, and cross-family verification; use its findings rather
    than recreating its review by hand. The result's `verdictsComplete` reflects
-   only what the script could see from inside the run — each verifier's own
-   `selfReportedModel`, which is corroboration, not proof. The Workflow tool
-   silently substitutes the session model when a pinned id cannot be served, so
-   before you trust any verdict, confirm in the Workflow run/progress record
-   that each verify leg's actual model is in the family its finding's
-   `verify.expectedFamily` names. A verify leg on the wrong family, or with no
-   result, is **no verdict**; a `.review/` brief the result reports as
-   `not-run` is a concern left unevaluated. The run is complete only when
-   `verdictsComplete` is true **and** that actual-model check passes for every
-   leg — until both hold, treat the run as incomplete whatever the result says.
+   only what the script could see from inside the run — each leg's own
+   `selfReportedModel`, which is corroboration, not proof. Cross-family
+   independence binds **both** legs behind a finding: the reviewer that proposed
+   it and the verifier that checked it must have actually run on different
+   families. The Workflow tool silently substitutes the GPT session model when a
+   pinned id cannot be served, so before you trust any verdict, confirm in the
+   Workflow run/progress record the actual model of both legs — the review leg
+   (`review.{label,configuredFamily,pinnedModel}`) and its verify leg
+   (`verify.{label,expectedFamily,pinnedModel}`). Treat a finding's verdict as
+   complete only when both legs' actual families are confirmed and differ: a
+   review leg that fell back to the GPT session, a verify leg on the wrong
+   family, or either with no result, is **no verdict**. A `.review/` brief the
+   result reports as `not-run` is a concern left unevaluated. The run is
+   complete only when `verdictsComplete` is true **and** that actual-model check
+   passes for every review and verify leg — until both hold, treat the run as
+   incomplete whatever the result says.
 5. Fix confirmed material problems you can fix. Commit and push the repair to
    the pull-request branch, then repeat the build, tests, and the whole review
    workflow on the new head. Loop until a fresh review confirms nothing further

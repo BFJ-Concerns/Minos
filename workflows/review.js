@@ -134,12 +134,22 @@ const PER_FILE_CHUNK = 40;
 
 // A whole-tree brief needs one reviewer holding its entire scope at once (its
 // verdict is about the relationship between files), so it is never split. Past
-// this many files that single reviewer would skim rather than judge, so the
-// brief is reported not run — with the measured size — rather than run badly.
+// what one reviewer can genuinely hold it would skim rather than judge, so the
+// brief is reported not run — with the measured scope — rather than run badly.
+//
+// Reviewer context budget (deliberately conservative and legible, no framework):
+// take a working reading budget of about 200k characters of source for one
+// reviewer to hold and reason across at once, and stay well under it. File count
+// alone is not a defensible measure — 61 tiny files and 5 generated megabytes
+// fail it in opposite, wrong directions — so we measure BOTH the file count and
+// the scope's non-binary byte volume, and refuse when either exceeds its limit.
 const WHOLE_TREE_FILE_LIMIT = 60;
+const WHOLE_TREE_BYTE_LIMIT = 200_000;
 
-function planBriefReviewers(brief, front, scopeFiles) {
-  const scope = briefScope(brief.path);
+// `scope` is the resolved review scope: the brief's subfolder when it matches a
+// real repository directory, or null (repo-wide) when it does not — never the
+// nonexistent path. `warning` carries the ghost-scope note into the report.
+function planBriefReviewers(brief, front, scope, warning, scopeFiles) {
   const title = briefTitle(brief.path, front);
   const base = {
     kind: "brief",
@@ -148,6 +158,7 @@ function planBriefReviewers(brief, front, scopeFiles) {
     family: "claude",
     extent: front.extent,
     scope,
+    ...(warning ? { warning } : {}),
   };
   if (front.extent === "full" && front.sweep === "per-file" && scopeFiles.length > PER_FILE_CHUNK) {
     const chunks = Math.ceil(scopeFiles.length / PER_FILE_CHUNK);
@@ -175,21 +186,29 @@ const findingShape = {
   },
 };
 
+// Reviewers self-report their model too: cross-family independence binds the
+// proposer's actual family as much as the verifier's, so a review leg that
+// silently fell back to the session model must be catchable. Self-report is
+// corroboration only — the lead confirms actual models against the run record.
 const aspectReviewSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["findings"],
-  properties: { findings: { type: "array", items: findingShape } },
+  required: ["findings", "selfReportedModel"],
+  properties: {
+    findings: { type: "array", items: findingShape },
+    selfReportedModel: { type: "string" },
+  },
 };
 
 const briefReviewSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["applicable", "reason", "findings"],
+  required: ["applicable", "reason", "findings", "selfReportedModel"],
   properties: {
     applicable: { type: "boolean" },
     reason: { type: "string" },
     findings: { type: "array", items: findingShape },
+    selfReportedModel: { type: "string" },
   },
 };
 
@@ -237,10 +256,11 @@ const scopeFilesSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["scope", "files"],
+        required: ["scope", "files", "bytes"],
         properties: {
           scope: { type: "string" },
           files: { type: "array", items: { type: "string" } },
+          bytes: { type: "integer", minimum: 0 },
         },
       },
     },
@@ -259,17 +279,33 @@ const verdictSchema = {
 };
 
 // --- verdict assembly: fail closed ---
-// Self-report is corroboration only — a fallen-back agent inherits the session
-// model and may sincerely self-report the wrong family. A wrong or unreadable
-// self-report downgrades the verdict here; positive confirmation is the lead's,
-// against the actual models the workflow run record names per label.
-function verdictFor(check, expectedFamily) {
+// The cross-family join binds BOTH actual families: a finding is only a
+// publishable verdict when its proposer and its verifier really ran on
+// different families. Self-report is corroboration only — a fallen-back agent
+// inherits the GPT session model and may sincerely self-report the wrong
+// family — so a self-report that contradicts the pinned family downgrades the
+// verdict to no-verdict here, and positive confirmation stays the lead's job,
+// against the actual models the Workflow run record names per label. A reviewer
+// (proposer) fallback cannot yield a publishable verdict any more than a
+// verifier fallback can.
+function verdictFor(reviewFamily, reviewerReportedModel, check, expectedFamily) {
+  const proposer = familyOf(reviewerReportedModel);
+  if (proposer !== reviewFamily)
+    return {
+      verdict: "no-verdict",
+      verification: `reviewer self-reported ${reviewerReportedModel || "no model"}, not its pinned ${reviewFamily} family — treated as fallen back; a reviewer fallback cannot yield a publishable verdict`,
+    };
   if (!check) return { verdict: "no-verdict", verification: "verifier returned no result" };
-  const reported = familyOf(check.selfReportedModel);
-  if (reported !== expectedFamily)
+  const verifier = familyOf(check.selfReportedModel);
+  if (verifier !== expectedFamily)
     return {
       verdict: "no-verdict",
       verification: `verifier self-reported ${check.selfReportedModel || "no model"}, not the pinned ${expectedFamily} family — treated as fallen back`,
+    };
+  if (proposer === verifier)
+    return {
+      verdict: "no-verdict",
+      verification: `proposer and verifier both self-reported the ${proposer} family — no cross-family check`,
     };
   return {
     verdict: check.confirmed === true ? "confirmed" : "not-confirmed",
@@ -299,7 +335,7 @@ function assembleResult({ target, head, occasion, reviewerStates, briefReports, 
     verdictsComplete: incomplete.length === 0,
     incomplete,
     modelCheck:
-      "verdictsComplete rests on verifier self-reports, which are corroboration only. Before any clean status or approval, confirm in the Workflow run/progress record that each verify leg's actual model matches its finding's expectedFamily; a wrong-family or unnamed actual model makes that verdict no-verdict and the run incomplete regardless of verdictsComplete.",
+      "verdictsComplete rests on self-reports, which are corroboration only. Before any clean status or approval, confirm in the Workflow run/progress record the actual model of BOTH legs behind each finding: the review leg (finding.review.{label,configuredFamily,pinnedModel}) and its verify leg (finding.verify.{label,expectedFamily,pinnedModel}). A finding is a publishable verdict only when the two legs' actual families are both confirmed and differ; a review leg that fell back to the GPT session model, or a verify leg on the wrong or unnamed family, makes that verdict no-verdict and the run incomplete regardless of verdictsComplete.",
     reviewers: reviewerStates,
     briefs: briefReports,
     findings,
@@ -356,33 +392,68 @@ for (const brief of scout.briefs) {
     briefReports.push({ brief: brief.path, title: briefTitle(brief.path, front), ...skip });
     continue;
   }
-  if (front.extent === "full") fullExtentBriefs.push({ brief, front });
-  else briefUnits.push(...planBriefReviewers(brief, front, []));
+  // A subfolder scope that matches no real repository directory is a ghost: the
+  // brief still runs, but repo-wide, and the effective scope becomes null so the
+  // nonexistent path never reaches the reviewer prompt. The warning carries the
+  // fact into the report.
+  const rawScope = briefScope(brief.path);
+  const scopeMissing = Boolean(rawScope) && brief.scopeExists === false;
+  const scope = scopeMissing ? null : rawScope;
+  const warning = scopeMissing
+    ? `brief scope ${rawScope}/ matches no repository directory; ran repo-wide instead`
+    : null;
+  if (front.extent === "full") fullExtentBriefs.push({ brief, front, scope, warning });
+  else briefUnits.push(...planBriefReviewers(brief, front, scope, warning, []));
 }
 
 if (fullExtentBriefs.length > 0) {
-  const wanted = fullExtentBriefs.map(({ brief }) => briefScope(brief.path) || ".");
+  const wanted = [...new Set(fullExtentBriefs.map(({ scope }) => scope || "."))];
   const scopes = await agent(
-    `In the current repository, for each of these scopes, list the tracked files with \`git ls-files\`: ${wanted.join(", ")}. ` +
-      `A scope of "." means the whole repository. Return each scope with its file list exactly as git reports it.`,
+    `In the current repository, inventory the tracked files for each of these scopes with \`git ls-files\`: ${wanted.join(", ")}. ` +
+      `A scope of "." means the whole repository. For each scope return its file list exactly as git reports it, and \`bytes\`: the summed size of those files that are not binary (skip binary files, count their text bytes). ` +
+      `Report only what git and the filesystem actually say.`,
     { schema: scopeFilesSchema, model: SCOUT_MODEL, effort: "low", label: "scope-files", phase: "Scout" }
   );
-  for (const { brief, front } of fullExtentBriefs) {
-    const scope = briefScope(brief.path) || ".";
-    const entry = scopes && scopes.scopes.find((s) => s.scope === scope);
-    const scopeFiles = entry ? entry.files : [];
-    if (front.sweep === "whole-tree" && scopeFiles.length > WHOLE_TREE_FILE_LIMIT) {
-      const where = scope === "." ? "the whole repository" : `${scope}/`;
+  for (const { brief, front, scope, warning } of fullExtentBriefs) {
+    const invScope = scope || ".";
+    const where = invScope === "." ? "the whole repository" : `${invScope}/`;
+    const entry = scopes && scopes.scopes.find((s) => s.scope === invScope);
+    // No inventory means the scope could not be measured. A whole-tree brief may
+    // not be run over an unmeasured scope — that would be skimming blind — so it
+    // is reported not run and no reviewer is dispatched. (A per-file full brief
+    // with no inventory simply has no files to chunk and runs as a single pass.)
+    if (!entry) {
+      if (front.sweep === "whole-tree") {
+        briefReports.push({
+          brief: brief.path,
+          title: briefTitle(brief.path, front),
+          status: "not-run",
+          reason: `measured scope unavailable: the file inventory for ${where} returned no result, so the whole-tree scope could not be sized; reported not run rather than skimmed`,
+          ...(warning ? { warning } : {}),
+        });
+        continue;
+      }
+      briefUnits.push(...planBriefReviewers(brief, front, scope, warning, []));
+      continue;
+    }
+    const scopeFiles = entry.files;
+    const scopeBytes = typeof entry.bytes === "number" ? entry.bytes : 0;
+    if (
+      front.sweep === "whole-tree" &&
+      (scopeFiles.length > WHOLE_TREE_FILE_LIMIT || scopeBytes > WHOLE_TREE_BYTE_LIMIT)
+    ) {
       briefReports.push({
         brief: brief.path,
         title: briefTitle(brief.path, front),
         status: "not-run",
         scopeSize: scopeFiles.length,
-        reason: `whole-tree brief needs one reviewer to hold its entire scope at once, but ${where} has ${scopeFiles.length} files (limit ${WHOLE_TREE_FILE_LIMIT}); reported not run rather than skimmed`,
+        scopeBytes,
+        reason: `whole-tree brief needs one reviewer to hold its entire scope at once, but ${where} measures ${scopeFiles.length} files / ${scopeBytes} non-binary bytes (limits ${WHOLE_TREE_FILE_LIMIT} files, ${WHOLE_TREE_BYTE_LIMIT} bytes); reported not run rather than skimmed`,
+        ...(warning ? { warning } : {}),
       });
       continue;
     }
-    briefUnits.push(...planBriefReviewers(brief, front, scopeFiles));
+    briefUnits.push(...planBriefReviewers(brief, front, scope, warning, scopeFiles));
   }
 }
 
@@ -394,7 +465,7 @@ function reviewerPrompt(unit) {
   if (unit.kind === "aspect")
     return (
       common +
-      `Report only defects introduced by this change. ${unit.focus} Return {findings:[{title,priority,path,line,explanation}]}.`
+      `Report only defects introduced by this change. ${unit.focus} Return {findings:[{title,priority,path,line,explanation}],selfReportedModel:<the exact model id you are running as>}.`
     );
   const body = briefContent.get(unit.brief) || "";
   const where =
@@ -408,7 +479,7 @@ function reviewerPrompt(unit) {
     `You are one reviewer applying a standing review brief from the repository's .review/ directory. ${where}\n\n` +
     `The brief:\n\n${body}\n\n` +
     common +
-    `Return {applicable:boolean,reason:string,findings:[{title,priority,path,line,explanation}]}.`
+    `Return {applicable:boolean,reason:string,findings:[{title,priority,path,line,explanation}],selfReportedModel:<the exact model id you are running as>}.`
   );
 }
 
@@ -450,18 +521,25 @@ for (let i = 0; i < units.length; i++) {
   const unit = units[i];
   const outcome = unitResults[i];
   const review = outcome && outcome.review;
-  reviewerStates.push({ label: unit.label, family: unit.family, status: review ? "done" : "no-result" });
+  const warn = unit.kind === "brief" && unit.warning ? { warning: unit.warning } : {};
+  reviewerStates.push({
+    label: unit.label,
+    family: unit.family,
+    pinnedModel: modelForFamily(unit.family),
+    selfReportedModel: review ? review.selfReportedModel ?? null : null,
+    status: review ? "done" : "no-result",
+  });
   if (!review) {
     if (unit.kind === "brief")
-      briefReports.push({ brief: unit.brief, title: unit.title, status: "skipped", reason: "reviewer returned no result" });
+      briefReports.push({ brief: unit.brief, title: unit.title, status: "skipped", reason: "reviewer returned no result", ...warn });
     continue;
   }
   if (unit.kind === "brief") {
     if (review.applicable === false) {
-      briefReports.push({ brief: unit.brief, title: unit.title, status: "skipped", reason: review.reason });
+      briefReports.push({ brief: unit.brief, title: unit.title, status: "skipped", reason: review.reason, ...warn });
       continue;
     }
-    briefReports.push({ brief: unit.brief, title: unit.title, status: "run", reason: review.reason });
+    briefReports.push({ brief: unit.brief, title: unit.title, status: "run", reason: review.reason, ...warn });
   }
   const expectedFamily = unit.family === "gpt" ? "claude" : "gpt";
   review.findings.forEach((finding, j) => {
@@ -469,7 +547,13 @@ for (let i = 0; i < units.length; i++) {
     findings.push({
       ...finding,
       source: unit.kind === "brief" ? unit.title : unit.label,
-      ...verdictFor(check, expectedFamily),
+      ...verdictFor(unit.family, review.selfReportedModel, check, expectedFamily),
+      review: {
+        label: unit.label,
+        configuredFamily: unit.family,
+        pinnedModel: modelForFamily(unit.family),
+        selfReportedModel: review.selfReportedModel ?? null,
+      },
       verify: {
         label: `${unit.label}-verify-${j + 1}-${expectedFamily}`,
         expectedFamily,
