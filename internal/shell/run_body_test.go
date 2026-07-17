@@ -13,9 +13,114 @@ import (
 )
 
 func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, nil)
+
+	configDir := filepath.Join(fixture.runDir, "claude-config")
+	info, err := os.Stat(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("CLAUDE_CONFIG_DIR mode = %o, want 700", info.Mode().Perm())
+	}
+	assertContainsFile(t, filepath.Join(configDir, "skills", "root-cause", "SKILL.md"), "# Root Cause")
+	assertContainsFile(t, fixture.record+".argv", "--bg")
+	assertContainsFile(t, fixture.record+".argv", "--model")
+	assertContainsFile(t, fixture.record+".argv", "gpt-5.6-sol")
+	assertContainsFile(t, fixture.record+".argv", "Follow the Minos lifecycle exactly.")
+	assertContainsFile(t, fixture.record+".calls", "agents")
+	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+
+	for _, value := range []string{
+		"CLAUDE_CONFIG_DIR=" + configDir,
+		"ANTHROPIC_AUTH_TOKEN=fake-proxy-token",
+		"ANTHROPIC_BASE_URL=http://proxy.test:8317",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL=gpt-5.6-luna",
+		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1",
+		"CLAUDE_CODE_MAX_CONTEXT_TOKENS=265000",
+		"CLAUDE_CODE_AUTO_COMPACT_WINDOW=265000",
+		"FORCE_COLOR=0",
+		"PWD=" + fixture.runDir,
+		"MINOS_RUN_DIR=" + fixture.runDir,
+		"MINOS_CONFIG=" + fixture.configRoot,
+		"MINOS_FORGE=forgejo",
+		"MINOS_WORKSPACE=" + filepath.Join(fixture.runDir, "workspace"),
+		"MINOS_OWNER=owner",
+		"MINOS_REPO_NAME=repository",
+		"MINOS_PR=17",
+		"MINOS_LIFECYCLE_INSTRUCTION=" + fixture.instructionPath,
+		"MINOS_REVIEW_WORKFLOW=/opt/minos/workflows/review.js",
+		"MINOS_BIN=/usr/local/bin/minos",
+		"MINOS_HEAD_SHA=head-sha",
+		"MINOS_TARGET_SHA=target-sha",
+		"MINOS_BASE_REF=main",
+		"MINOS_HEAD_BRANCH=feature",
+		"MINOS_API_BASE=http://forge.test",
+		"MINOS_CREDENTIAL_FILE=/etc/minos/forge.token",
+		"MINOS_BUILD_CMD=make build",
+		"MINOS_TEST_CMD=make test",
+		"MINOS_AUTO_MERGE=true",
+	} {
+		assertContainsFile(t, fixture.record+".env", value)
+	}
+	stdin, err := os.ReadFile(fixture.record + ".stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stdin) != 0 {
+		t.Fatalf("Claude stdin = %q, want empty because instruction is the background prompt", stdin)
+	}
+
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyRecognisesRealClaudeTerminalStates(t *testing.T) {
+	for _, state := range []string{"done", "blocked", "failed", "stopped"} {
+		t.Run(state, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			fixture.run(t, map[string]string{"MINOS_TEST_TERMINAL_STATE": state})
+			assertContainsFile(t, fixture.record+".terminal", `"status":null`)
+			assertContainsFile(t, fixture.record+".terminal", `"state":"`+state+`"`)
+			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+func TestRunBodyRetriesTransientAgentQuery(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, map[string]string{"MINOS_TEST_FAIL_AGENTS_ONCE": "1"})
+
+	calls, err := os.ReadFile(fixture.record + ".calls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "agents failed\nagents\nstop abcdef12\n" {
+		t.Fatalf("Claude calls = %q, want one failed query followed by recovery and stop", calls)
+	}
+	assertContainsFile(t, fixture.record+".attempts", "2")
+	fixture.assertProcessesStopped(t)
+}
+
+type runBodyFixture struct {
+	root            string
+	configRoot      string
+	runDir          string
+	record          string
+	instructionPath string
+	claudeStub      string
+}
+
+func newRunBodyFixture(t *testing.T) runBodyFixture {
+	t.Helper()
 	root := t.TempDir()
-	configRoot := filepath.Join(root, "config")
-	runDir := filepath.Join(root, "run")
+	fixture := runBodyFixture{
+		root: root, configRoot: filepath.Join(root, "config"),
+		runDir: filepath.Join(root, "run"), record: filepath.Join(root, "claude-record"),
+		instructionPath: filepath.Join(root, "lifecycle.md"),
+		claudeStub:      filepath.Join(root, "claude"),
+	}
 	skillSource := filepath.Join(root, "root-cause")
 	if err := os.MkdirAll(filepath.Join(skillSource, "references"), 0o755); err != nil {
 		t.Fatal(err)
@@ -26,18 +131,14 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillSource, "references", "proof.md"), []byte("proof\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	instructionPath := filepath.Join(root, "lifecycle.md")
-	if err := os.WriteFile(instructionPath, []byte("Follow the Minos lifecycle exactly.\n"), 0o644); err != nil {
+	if err := os.WriteFile(fixture.instructionPath, []byte("Follow the Minos lifecycle exactly.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	credentialPath := filepath.Join(root, "anthropic.token")
 	if err := os.WriteFile(credentialPath, []byte("fake-proxy-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	record := filepath.Join(root, "claude-record")
-	claudeStub := filepath.Join(root, "claude")
-	writeScript(t, claudeStub, `#!/usr/bin/env sh
+	writeScript(t, fixture.claudeStub, `#!/usr/bin/env sh
 set -eu
 record="${MINOS_TEST_RECORD:?}"
 case "$1" in
@@ -56,8 +157,20 @@ case "$1" in
     printf 'Agent backgrounded: abcdef12\n'
     ;;
   agents)
+    attempts=0
+    if [ -f "$record.attempts" ]; then
+      IFS= read -r attempts <"$record.attempts"
+    fi
+    attempts=$((attempts + 1))
+    printf '%s\n' "$attempts" >"$record.attempts"
+    if [ "${MINOS_TEST_FAIL_AGENTS_ONCE:-}" = "1" ] && [ "$attempts" -eq 1 ]; then
+      printf 'agents failed\n' >>"$record.calls"
+      exit 1
+    fi
     printf 'agents\n' >>"$record.calls"
-    printf '%s\n' '[{"id":"abcdef12","sessionId":"session-one","status":"idle","state":"done"}]'
+    terminal_state="${MINOS_TEST_TERMINAL_STATE:-done}"
+    printf '[{"id":"abcdef12","sessionId":"session-one","status":null,"state":"%s"}]\n' "$terminal_state" |
+      tee "$record.terminal"
     ;;
   stop)
     printf 'stop %s\n' "$2" >>"$record.calls"
@@ -71,13 +184,13 @@ case "$1" in
     ;;
 esac
 `)
-	t.Cleanup(func() { killRecordedProcesses(record + ".pids") })
+	t.Cleanup(func() { killRecordedProcesses(fixture.record + ".pids") })
 
-	if err := os.MkdirAll(configRoot, 0o755); err != nil {
+	if err := os.MkdirAll(fixture.configRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	runBodyEnv := map[string]string{
-		"MINOS_CLAUDE":                               claudeStub,
+		"MINOS_CLAUDE":                               fixture.claudeStub,
 		"MINOS_LEAD_MODEL":                           "gpt-5.6-sol",
 		"MINOS_ANTHROPIC_CREDENTIAL_FILE":            credentialPath,
 		"ANTHROPIC_BASE_URL":                         "http://proxy.test:8317",
@@ -85,7 +198,7 @@ esac
 		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":             "265000",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "265000",
-		"MINOS_LIFECYCLE_INSTRUCTION":                instructionPath,
+		"MINOS_LIFECYCLE_INSTRUCTION":                fixture.instructionPath,
 		"MINOS_REVIEW_WORKFLOW":                      "/opt/minos/workflows/review.js",
 		"MINOS_ROOT_CAUSE_SKILL":                     skillSource,
 		"MINOS_BIN":                                  "/usr/local/bin/minos",
@@ -94,15 +207,19 @@ esac
 	for name, value := range runBodyEnv {
 		fmt.Fprintf(&config, "%s=%s\n", name, strconv.Quote(value))
 	}
-	if err := os.WriteFile(filepath.Join(configRoot, "run-body.env"), []byte(config.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fixture.configRoot, "run-body.env"), []byte(config.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return fixture
+}
 
+func (f runBodyFixture) run(t *testing.T, extraEnv map[string]string) {
+	t.Helper()
 	runEnv := map[string]string{
-		"MINOS_RUN_DIR":             runDir,
-		"MINOS_CONFIG":              configRoot,
+		"MINOS_RUN_DIR":             f.runDir,
+		"MINOS_CONFIG":              f.configRoot,
 		"MINOS_FORGE":               "forgejo",
-		"MINOS_WORKSPACE":           filepath.Join(runDir, "workspace"),
+		"MINOS_WORKSPACE":           filepath.Join(f.runDir, "workspace"),
 		"MINOS_OWNER":               "owner",
 		"MINOS_REPO_NAME":           "repository",
 		"MINOS_PR":                  "17",
@@ -116,8 +233,11 @@ esac
 		"MINOS_TEST_CMD":            "make test",
 		"MINOS_AUTO_MERGE":          "true",
 		"MINOS_RUN_BODY":            "/opt/minos/run-body/run-body",
-		"MINOS_TEST_RECORD":         record,
+		"MINOS_TEST_RECORD":         f.record,
 		"MINOS_CLAUDE_POLL_SECONDS": "0",
+	}
+	for name, value := range extraEnv {
+		runEnv[name] = value
 	}
 	script := filepath.Join("..", "..", "scripts", "run-body", "run-body")
 	cmd := exec.Command(script)
@@ -129,64 +249,11 @@ esac
 	if err != nil {
 		t.Fatalf("run-body failed: %v\n%s", err, out)
 	}
+}
 
-	configDir := filepath.Join(runDir, "claude-config")
-	info, err := os.Stat(configDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o700 {
-		t.Fatalf("CLAUDE_CONFIG_DIR mode = %o, want 700", info.Mode().Perm())
-	}
-	assertContainsFile(t, filepath.Join(configDir, "skills", "root-cause", "SKILL.md"), "# Root Cause")
-	assertContainsFile(t, record+".argv", "--bg")
-	assertContainsFile(t, record+".argv", "--model")
-	assertContainsFile(t, record+".argv", "gpt-5.6-sol")
-	assertContainsFile(t, record+".argv", "Follow the Minos lifecycle exactly.")
-	assertContainsFile(t, record+".calls", "agents")
-	assertContainsFile(t, record+".calls", "stop abcdef12")
-
-	for _, value := range []string{
-		"CLAUDE_CONFIG_DIR=" + configDir,
-		"ANTHROPIC_AUTH_TOKEN=fake-proxy-token",
-		"ANTHROPIC_BASE_URL=http://proxy.test:8317",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL=gpt-5.6-luna",
-		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1",
-		"CLAUDE_CODE_MAX_CONTEXT_TOKENS=265000",
-		"CLAUDE_CODE_AUTO_COMPACT_WINDOW=265000",
-		"FORCE_COLOR=0",
-		"PWD=" + runDir,
-		"MINOS_RUN_DIR=" + runDir,
-		"MINOS_CONFIG=" + configRoot,
-		"MINOS_FORGE=forgejo",
-		"MINOS_WORKSPACE=" + filepath.Join(runDir, "workspace"),
-		"MINOS_OWNER=owner",
-		"MINOS_REPO_NAME=repository",
-		"MINOS_PR=17",
-		"MINOS_LIFECYCLE_INSTRUCTION=" + instructionPath,
-		"MINOS_REVIEW_WORKFLOW=/opt/minos/workflows/review.js",
-		"MINOS_BIN=/usr/local/bin/minos",
-		"MINOS_HEAD_SHA=head-sha",
-		"MINOS_TARGET_SHA=target-sha",
-		"MINOS_BASE_REF=main",
-		"MINOS_HEAD_BRANCH=feature",
-		"MINOS_API_BASE=http://forge.test",
-		"MINOS_CREDENTIAL_FILE=/etc/minos/forge.token",
-		"MINOS_BUILD_CMD=make build",
-		"MINOS_TEST_CMD=make test",
-		"MINOS_AUTO_MERGE=true",
-	} {
-		assertContainsFile(t, record+".env", value)
-	}
-	stdin, err := os.ReadFile(record + ".stdin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(stdin) != 0 {
-		t.Fatalf("Claude stdin = %q, want empty because instruction is the background prompt", stdin)
-	}
-
-	pids := recordedPIDs(t, record+".pids")
+func (f runBodyFixture) assertProcessesStopped(t *testing.T) {
+	t.Helper()
+	pids := recordedPIDs(t, f.record+".pids")
 	deadline := time.Now().Add(2 * time.Second)
 	for processesExist(pids) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)

@@ -62,12 +62,16 @@ if [ -z "$session_id" ]; then
 fi
 
 while :; do
-  agents="$("$MINOS_CLAUDE" agents --json --all)"
-  if printf '%s' "$agents" | jq -e --arg id "$session_id" '
-    (if type == "array" then . else .agents end)[] |
-    select(.id == $id and .status == "idle" and (.state == "done" or .state == "blocked"))
-  ' >/dev/null; then
-    break
+  if agents="$("$MINOS_CLAUDE" agents --json --all)"; then
+    if printf '%s' "$agents" | jq -e --arg id "$session_id" '
+      (if type == "array" then . else .agents end)[] |
+      select(
+        .id == $id and
+        (.state == "done" or .state == "blocked" or .state == "failed" or .state == "stopped")
+      )
+    ' >/dev/null; then
+      break
+    fi
   fi
   sleep "${MINOS_CLAUDE_POLL_SECONDS:-3}"
 done
