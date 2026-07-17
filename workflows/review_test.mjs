@@ -552,18 +552,45 @@ test("brief findings are verified by the other family and fail closed too", asyn
 // from silently disappearing from the instruction.
 // A single predicate over an instruction document. It isolates the build/test
 // step (step 3, bounded before step 4) so a clause cannot drift in from an
-// unrelated step, requires each command variable to carry its *own* non-empty
-// exact-string obligation inside that block alongside the shared
-// no-substitute / to-completion / empty-skip clauses, and separately requires
-// *both* command variables to appear before the review-workflow step. It
+// unrelated step, then requires *each* command variable to carry all four
+// obligations — exact command string, no repository-native substitute, run to
+// completion before review, and empty-means-unconfigured-skip — inside that
+// variable's own bounded sentence, so a document cannot satisfy the check with
+// prose that scopes those obligations to one command only. It separately
+// requires both command variables to precede the review-workflow step. It
 // returns the list of failed checks, so a compliant document yields [].
 //
-// Phrase regexes run against a whitespace-flattened copy of the bounded block
-// so a Markdown line wrap between two words never causes a false failure (the
+// Phrase regexes run against a whitespace-flattened copy of the bounded step so
+// a Markdown line wrap between two words never causes a false failure (the
 // pitfall the recommission verifier hit while calibrating), while staying tight
-// — no broad `.*` spanning unrelated clauses. The optional backtick (`` `? ``)
-// tolerates the Markdown code-span around each variable without loosening the
-// match.
+// — no broad `.*` spanning unrelated clauses.
+const COMMAND_VARS = ["$MINOS_BUILD_CMD", "$MINOS_TEST_CMD"];
+
+// The obligations every configured command must carry, checked within that
+// command's own bounded sentence. `[a-z]+` in the empty-skip clause matches the
+// command kind ("build"/"test") without spanning into a neighbouring clause.
+const COMMAND_CLAUSES = [
+  ["exact command string", /is non-empty, run that exact command string/],
+  ["no repository-native substitute", /never a repository-native guess or substitute/],
+  ["run to completion before review", /to completion before any review/],
+  ["empty means unconfigured, skip it", /empty, no [a-z]+ command is configured, so skip it/],
+];
+
+// The bounded sentence introduced by "When `$VAR`", up to the next command's
+// sentence or the end of the step — so each variable's obligations are read in
+// isolation from the other's.
+function commandSentence(step3, variable) {
+  const start = step3.indexOf("When `" + variable + "`");
+  if (start === -1) return "";
+  let end = step3.length;
+  for (const other of COMMAND_VARS) {
+    if (other === variable) continue;
+    const otherStart = step3.indexOf("When `" + other + "`");
+    if (otherStart > start && otherStart < end) end = otherStart;
+  }
+  return step3.slice(start, end);
+}
+
 function lifecycleCommandBindingFailures(text) {
   const failures = [];
 
@@ -575,55 +602,43 @@ function lifecycleCommandBindingFailures(text) {
   }
   const step3 = stepMatch[1].replace(/\s+/g, " ");
 
-  const clauses = [
-    ["build variable named in step 3", /\$MINOS_BUILD_CMD/],
-    ["test variable named in step 3", /\$MINOS_TEST_CMD/],
-    [
-      "build exact-string obligation",
-      /\$MINOS_BUILD_CMD`? is non-empty, run that exact command string/,
-    ],
-    [
-      "test exact-string obligation",
-      /\$MINOS_TEST_CMD`? is non-empty, run that exact command string/,
-    ],
-    ["no repository-native substitute", /never a repository-native guess or substitute/],
-    ["run to completion before review", /run to completion before any review/],
-    [
-      "empty variable is unconfigured and skipped",
-      /When a variable is empty, no command of that kind is configured: skip it/,
-    ],
-  ];
-  for (const [name, re] of clauses) {
-    if (!re.test(step3)) failures.push(name);
+  // Each command variable must carry every obligation in its own sentence.
+  for (const variable of COMMAND_VARS) {
+    const sentence = commandSentence(step3, variable);
+    if (!sentence) {
+      failures.push(`${variable}: no bounded obligation sentence in step 3`);
+      continue;
+    }
+    for (const [name, re] of COMMAND_CLAUSES) {
+      if (!re.test(sentence)) failures.push(`${variable}: missing ${name}`);
+    }
   }
 
   // Both command variables must precede the review-workflow step, compared
   // across the whole document — not only within the bounded block.
   const workflowIdx = text.indexOf("$MINOS_REVIEW_WORKFLOW");
-  const buildIdx = text.indexOf("$MINOS_BUILD_CMD");
-  const testIdx = text.indexOf("$MINOS_TEST_CMD");
   if (workflowIdx === -1) failures.push("review-workflow step not found");
-  if (buildIdx === -1 || buildIdx >= workflowIdx)
-    failures.push("build variable not before the review-workflow step");
-  if (testIdx === -1 || testIdx >= workflowIdx)
-    failures.push("test variable not before the review-workflow step");
+  for (const variable of COMMAND_VARS) {
+    const idx = text.indexOf(variable);
+    if (idx === -1 || workflowIdx === -1 || idx >= workflowIdx)
+      failures.push(`${variable}: not before the review-workflow step`);
+  }
 
   return failures;
 }
 
-test("the lifecycle binds each configured command, before review, to $MINOS_BUILD_CMD and $MINOS_TEST_CMD", () => {
+test("the lifecycle binds every build/test obligation to each of $MINOS_BUILD_CMD and $MINOS_TEST_CMD, before review", () => {
   assert.deepEqual(
     lifecycleCommandBindingFailures(lifecycle),
     [],
-    "step 3 must name both command variables, give each its own exact-string obligation, keep the no-substitute / to-completion / empty-skip clauses, and place both variables before the review-workflow step"
+    "each command variable must carry its exact-string, no-substitute, to-completion-before-review and empty-skip obligation in its own step-3 sentence, and both must precede the review-workflow step"
   );
 });
 
 test("relocating $MINOS_TEST_CMD after the review workflow fails the binding predicate", () => {
-  // Mirror the composed verifier's false-green demonstration: keep the build
-  // obligation and every shared phrase inside step 3, but move the test
-  // variable to *after* the review-workflow step. The old assertions passed
-  // this construction; the bounded, both-variable predicate must reject it.
+  // Mirror the composed verifier's first false-green demonstration: keep the
+  // build obligation inside step 3, but move the test variable to *after* the
+  // review-workflow step. The predicate must reject it on ordering.
   const adversarial = lifecycle
     .replace(/\$MINOS_TEST_CMD/g, "$MINOS_QA_CMD")
     .replace(
@@ -637,7 +652,35 @@ test("relocating $MINOS_TEST_CMD after the review workflow fails the binding pre
   );
   const failures = lifecycleCommandBindingFailures(adversarial);
   assert.ok(
-    failures.includes("test variable not before the review-workflow step"),
+    failures.includes("$MINOS_TEST_CMD: not before the review-workflow step"),
     `predicate must catch the relocated test obligation; got: ${failures.join(", ")}`
+  );
+});
+
+test("scoping no-substitute/completion/empty-skip to $MINOS_BUILD_CMD only fails the binding predicate", () => {
+  // Mirror the composed verifier's second false-green demonstration: retain both
+  // variable names, both exact-string obligations and both orderings, but strip
+  // the no-substitute / to-completion / empty-skip clauses from the *test*
+  // command's sentence — i.e. state those three obligations for build only. The
+  // per-command predicate must reject it.
+  const buildOnly = lifecycle.replace(
+    /When `\$MINOS_TEST_CMD` is non-empty,[\s\S]*?inventing one\./,
+    "When `$MINOS_TEST_CMD` is non-empty, run that exact command string."
+  );
+  const flat = buildOnly.replace(/\s+/g, " ");
+  // The mutation must keep the test name, its exact obligation and its ordering,
+  // so the only thing lost is the three clauses' binding to the test command.
+  assert.ok(
+    /\$MINOS_TEST_CMD` is non-empty, run that exact command string/.test(flat),
+    "test exact-string obligation must survive the mutation"
+  );
+  assert.ok(
+    buildOnly.indexOf("$MINOS_TEST_CMD") < buildOnly.indexOf("$MINOS_REVIEW_WORKFLOW"),
+    "test ordering must survive the mutation"
+  );
+  const failures = lifecycleCommandBindingFailures(buildOnly);
+  assert.ok(
+    failures.some((f) => f.startsWith("$MINOS_TEST_CMD: missing")),
+    `predicate must catch obligations dropped from the test command; got: ${failures.join(", ")}`
   );
 });
