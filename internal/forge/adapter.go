@@ -42,6 +42,19 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	return snapshot, nil
 }
 
+func (a *Adapter) Claim(ctx context.Context, repository Repository, pullRequest int64) WriteResult {
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "claim",
+		Arguments: []string{
+			repository.Owner,
+			repository.Name,
+			strconv.FormatInt(pullRequest, 10),
+			a.serviceLogin,
+		},
+	})
+	return decodeWriteResult(out, err)
+}
+
 func (a *Adapter) SetProductStatus(ctx context.Context, guard Guard, state product.State) WriteResult {
 	if !state.Valid() {
 		return WriteResult{Outcome: WriteRejected, Reason: "invalid product state"}
