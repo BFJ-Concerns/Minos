@@ -16,10 +16,14 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    observed pull-request head. Stop without publishing if the head or target
    has moved.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
-3. Read the repository guidance and the complete target-to-head diff. Where the
-   repository configures build and test commands, run those commands exactly as
-   configured — not substitutes of your own — and let them run to completion
-   before any review starts.
+3. Read the repository guidance and the complete target-to-head diff. The
+   repository's configured build and test commands are already resolved for you
+   in `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD`. When `$MINOS_BUILD_CMD` is
+   non-empty, run that exact command string; when `$MINOS_TEST_CMD` is non-empty,
+   run that exact command string — each exactly as configured, never a
+   repository-native guess or substitute of your own — and let each run to
+   completion before any review starts. When a variable is empty, no command of
+   that kind is configured: skip it rather than inventing one.
 4. Run the review workflow at `$MINOS_REVIEW_WORKFLOW` with your Workflow tool,
    passing `args` of `{"target": "$MINOS_TARGET_SHA", "head": "$MINOS_HEAD_SHA"}`,
    from the workspace. It supplies independent reviewers, the repository's

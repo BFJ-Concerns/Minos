@@ -11,6 +11,10 @@ const source = await readFile(
   fileURLToPath(new URL("./review.js", import.meta.url)),
   "utf8"
 );
+const lifecycle = await readFile(
+  fileURLToPath(new URL("../lifecycle/lifecycle.md", import.meta.url)),
+  "utf8"
+);
 const body = source.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction(
@@ -536,4 +540,39 @@ test("brief findings are verified by the other family and fail closed too", asyn
   assert.equal(briefFinding.verify.expectedFamily, "gpt");
   assert.equal(briefFinding.verdict, "no-verdict");
   assert.equal(result.verdictsComplete, false);
+});
+
+// --- lifecycle instruction: build/test hand-off ---
+// The Go launcher resolves the repository's configured commands into
+// $MINOS_BUILD_CMD and $MINOS_TEST_CMD (internal/shell/spawn.go). The lead can
+// only run those exact commands if the instruction binds the obligation to
+// those named variables — not to a vague "commands the repository configures"
+// the lead would otherwise satisfy with a repository-native guess. These guards
+// keep the two variable names and the exact-to-completion-before-review ordering
+// from silently disappearing from the instruction.
+// Match phrases against a whitespace-normalised copy so a Markdown line wrap
+// between two words never fails an assertion (the pitfall the recommission
+// verifier itself hit while calibrating).
+const lifecycleFlat = lifecycle.replace(/\s+/g, " ");
+
+test("the lifecycle binds the build/test obligation to $MINOS_BUILD_CMD and $MINOS_TEST_CMD", () => {
+  assert.match(lifecycle, /\$MINOS_BUILD_CMD/, "names the build-command variable");
+  assert.match(lifecycle, /\$MINOS_TEST_CMD/, "names the test-command variable");
+  // The exact command string, not a substitute of the lead's own.
+  assert.match(lifecycleFlat, /exact command string/);
+  assert.match(lifecycleFlat, /never a repository-native guess or substitute/);
+  // The sensible no-command case is preserved: an empty variable is skipped.
+  assert.match(lifecycleFlat, /empty.*skip/i);
+});
+
+test("the lifecycle runs the configured commands to completion before the review workflow", () => {
+  assert.match(lifecycleFlat, /to completion before any review/);
+  // Ordering must hold: the build/test hand-off precedes the review-workflow step.
+  const buildIdx = lifecycle.indexOf("$MINOS_BUILD_CMD");
+  const workflowIdx = lifecycle.indexOf("$MINOS_REVIEW_WORKFLOW");
+  assert.ok(buildIdx !== -1 && workflowIdx !== -1);
+  assert.ok(
+    buildIdx < workflowIdx,
+    "the configured-command obligation must come before the review-workflow step"
+  );
 });
