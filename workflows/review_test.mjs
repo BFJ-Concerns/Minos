@@ -550,29 +550,94 @@ test("brief findings are verified by the other family and fail closed too", asyn
 // the lead would otherwise satisfy with a repository-native guess. These guards
 // keep the two variable names and the exact-to-completion-before-review ordering
 // from silently disappearing from the instruction.
-// Match phrases against a whitespace-normalised copy so a Markdown line wrap
-// between two words never fails an assertion (the pitfall the recommission
-// verifier itself hit while calibrating).
-const lifecycleFlat = lifecycle.replace(/\s+/g, " ");
+// A single predicate over an instruction document. It isolates the build/test
+// step (step 3, bounded before step 4) so a clause cannot drift in from an
+// unrelated step, requires each command variable to carry its *own* non-empty
+// exact-string obligation inside that block alongside the shared
+// no-substitute / to-completion / empty-skip clauses, and separately requires
+// *both* command variables to appear before the review-workflow step. It
+// returns the list of failed checks, so a compliant document yields [].
+//
+// Phrase regexes run against a whitespace-flattened copy of the bounded block
+// so a Markdown line wrap between two words never causes a false failure (the
+// pitfall the recommission verifier hit while calibrating), while staying tight
+// — no broad `.*` spanning unrelated clauses. The optional backtick (`` `? ``)
+// tolerates the Markdown code-span around each variable without loosening the
+// match.
+function lifecycleCommandBindingFailures(text) {
+  const failures = [];
 
-test("the lifecycle binds the build/test obligation to $MINOS_BUILD_CMD and $MINOS_TEST_CMD", () => {
-  assert.match(lifecycle, /\$MINOS_BUILD_CMD/, "names the build-command variable");
-  assert.match(lifecycle, /\$MINOS_TEST_CMD/, "names the test-command variable");
-  // The exact command string, not a substitute of the lead's own.
-  assert.match(lifecycleFlat, /exact command string/);
-  assert.match(lifecycleFlat, /never a repository-native guess or substitute/);
-  // The sensible no-command case is preserved: an empty variable is skipped.
-  assert.match(lifecycleFlat, /empty.*skip/i);
+  // Step 3 body, bounded strictly before the "4." step marker.
+  const stepMatch = text.match(/\n3\. ([\s\S]*?)\n4\. /);
+  if (!stepMatch) {
+    failures.push("step 3 not found bounded before step 4");
+    return failures;
+  }
+  const step3 = stepMatch[1].replace(/\s+/g, " ");
+
+  const clauses = [
+    ["build variable named in step 3", /\$MINOS_BUILD_CMD/],
+    ["test variable named in step 3", /\$MINOS_TEST_CMD/],
+    [
+      "build exact-string obligation",
+      /\$MINOS_BUILD_CMD`? is non-empty, run that exact command string/,
+    ],
+    [
+      "test exact-string obligation",
+      /\$MINOS_TEST_CMD`? is non-empty, run that exact command string/,
+    ],
+    ["no repository-native substitute", /never a repository-native guess or substitute/],
+    ["run to completion before review", /run to completion before any review/],
+    [
+      "empty variable is unconfigured and skipped",
+      /When a variable is empty, no command of that kind is configured: skip it/,
+    ],
+  ];
+  for (const [name, re] of clauses) {
+    if (!re.test(step3)) failures.push(name);
+  }
+
+  // Both command variables must precede the review-workflow step, compared
+  // across the whole document — not only within the bounded block.
+  const workflowIdx = text.indexOf("$MINOS_REVIEW_WORKFLOW");
+  const buildIdx = text.indexOf("$MINOS_BUILD_CMD");
+  const testIdx = text.indexOf("$MINOS_TEST_CMD");
+  if (workflowIdx === -1) failures.push("review-workflow step not found");
+  if (buildIdx === -1 || buildIdx >= workflowIdx)
+    failures.push("build variable not before the review-workflow step");
+  if (testIdx === -1 || testIdx >= workflowIdx)
+    failures.push("test variable not before the review-workflow step");
+
+  return failures;
+}
+
+test("the lifecycle binds each configured command, before review, to $MINOS_BUILD_CMD and $MINOS_TEST_CMD", () => {
+  assert.deepEqual(
+    lifecycleCommandBindingFailures(lifecycle),
+    [],
+    "step 3 must name both command variables, give each its own exact-string obligation, keep the no-substitute / to-completion / empty-skip clauses, and place both variables before the review-workflow step"
+  );
 });
 
-test("the lifecycle runs the configured commands to completion before the review workflow", () => {
-  assert.match(lifecycleFlat, /to completion before any review/);
-  // Ordering must hold: the build/test hand-off precedes the review-workflow step.
-  const buildIdx = lifecycle.indexOf("$MINOS_BUILD_CMD");
-  const workflowIdx = lifecycle.indexOf("$MINOS_REVIEW_WORKFLOW");
-  assert.ok(buildIdx !== -1 && workflowIdx !== -1);
+test("relocating $MINOS_TEST_CMD after the review workflow fails the binding predicate", () => {
+  // Mirror the composed verifier's false-green demonstration: keep the build
+  // obligation and every shared phrase inside step 3, but move the test
+  // variable to *after* the review-workflow step. The old assertions passed
+  // this construction; the bounded, both-variable predicate must reject it.
+  const adversarial = lifecycle
+    .replace(/\$MINOS_TEST_CMD/g, "$MINOS_QA_CMD")
+    .replace(
+      /(\n4\. Run the review workflow at `\$MINOS_REVIEW_WORKFLOW`[^\n]*)/,
+      "$1\n   Then, when `$MINOS_TEST_CMD` is non-empty, run that exact command string."
+    );
+  // Sanity-check the mutation actually placed the test variable after the step.
   assert.ok(
-    buildIdx < workflowIdx,
-    "the configured-command obligation must come before the review-workflow step"
+    adversarial.indexOf("$MINOS_TEST_CMD") > adversarial.indexOf("$MINOS_REVIEW_WORKFLOW"),
+    "the adversarial document must place $MINOS_TEST_CMD after the workflow step"
+  );
+  const failures = lifecycleCommandBindingFailures(adversarial);
+  assert.ok(
+    failures.includes("test variable not before the review-workflow step"),
+    `predicate must catch the relocated test obligation; got: ${failures.join(", ")}`
   );
 });
