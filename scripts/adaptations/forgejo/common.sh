@@ -117,3 +117,39 @@ guard_open_pull_request() {
   fi
   return 0
 }
+
+# guard_merged_pull_request protects cleanup which necessarily happens after
+# the target branch has advanced. The merged pull request still binds the
+# repository, source head and authenticated writer exactly.
+guard_merged_pull_request() {
+  guard_owner="$1"
+  guard_repo="$2"
+  guard_pr="$3"
+  guard_expected_head="$4"
+  guard_expected_login="$5"
+  guard_reason=""
+
+  guard_user_json="$(api GET "/api/v1/user")" || return 2
+  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r '.login // .username // ""')"
+  if [ "$guard_actual_login" != "$guard_expected_login" ]; then
+    guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
+    return 1
+  fi
+
+  guard_pr_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
+  if ! printf '%s' "$guard_pr_json" | jq -e \
+    --arg repository "${guard_owner}/${guard_repo}" \
+    --arg head "$guard_expected_head" \
+    --argjson pr "$guard_pr" '
+      .number == $pr and
+      .base.repo.full_name == $repository and
+      .head.sha == $head and
+      (.merged // false)
+    ' >/dev/null; then
+  # Callers report this shared rejection reason after the sourced helper returns.
+  # shellcheck disable=SC2034
+    guard_reason="merged pull request identity no longer matches"
+    return 1
+  fi
+  return 0
+}

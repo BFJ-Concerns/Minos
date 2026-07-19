@@ -109,6 +109,49 @@ func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestFinishingWritesUseGuardedPullRequestIdentity(t *testing.T) {
+	guard := Guard{
+		Repository: Repository{Owner: "owner", Name: "repo"}, PullRequest: 17,
+		HeadSHA: "head-sha", TargetSHA: "target-sha",
+	}
+	tests := []struct {
+		name      string
+		operation string
+		argument  string
+		invoke    func(*Adapter) WriteResult
+	}{
+		{"remove reaction", "guarded-remove-reaction", "eyes", func(adapter *Adapter) WriteResult {
+			return adapter.RemoveReaction(t.Context(), guard, "eyes")
+		}},
+		{"remove label", "guarded-remove-label", "Flaky Test", func(adapter *Adapter) WriteResult {
+			return adapter.RemoveLabel(t.Context(), guard, "Flaky Test")
+		}},
+		{"delete source branch", "guarded-delete-source-branch", "feature", func(adapter *Adapter) WriteResult {
+			return adapter.DeleteSourceBranch(t.Context(), guard, "feature")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &recordingRunner{outputs: [][]byte{[]byte(`{"outcome":"applied"}`)}, errors: []error{nil}}
+			adapter, err := NewAdapter(runner, "Minos")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := test.invoke(adapter); result.Outcome != WriteApplied {
+				t.Fatalf("result = %#v", result)
+			}
+			request := runner.requests[0]
+			if request.Operation != test.operation {
+				t.Fatalf("operation = %q, want %q", request.Operation, test.operation)
+			}
+			want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos", test.argument}
+			if !slices.Equal(request.Arguments, want) {
+				t.Fatalf("arguments = %v, want %v", request.Arguments, want)
+			}
+		})
+	}
+}
+
 type recordingRunner struct {
 	requests []RunRequest
 	outputs  [][]byte

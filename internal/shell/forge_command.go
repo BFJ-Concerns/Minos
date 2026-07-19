@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|reaction|merge")
+		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
 	adapter, guard, err := leadForge()
 	if err != nil {
@@ -82,12 +82,30 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
 		return emitForgeResult(stdout, "reaction", adapter.AddReaction(ctx, guard, args[3]))
+	case "reaction-remove":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge reaction-remove HEAD TARGET CONTENT")
+		}
+		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
+		return emitForgeResult(stdout, "reaction-remove", adapter.RemoveReaction(ctx, guard, args[3]))
+	case "label-remove":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge label-remove HEAD TARGET LABEL")
+		}
+		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
+		return emitForgeResult(stdout, "label-remove", adapter.RemoveLabel(ctx, guard, args[3]))
 	case "merge":
 		if len(args) != 4 {
 			return fmt.Errorf("usage: minos forge merge HEAD TARGET METHOD")
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
 		return emitForgeResult(stdout, "merge", adapter.Merge(ctx, guard, forge.MergeMethod(args[3])))
+	case "delete-source-branch":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge delete-source-branch HEAD TARGET BRANCH")
+		}
+		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
+		return emitForgeResult(stdout, "delete-source-branch", adapter.DeleteSourceBranch(ctx, guard, args[3]))
 	default:
 		return fmt.Errorf("unknown forge action %q", args[0])
 	}

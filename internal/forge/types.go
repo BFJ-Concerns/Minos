@@ -77,8 +77,11 @@ type Snapshot struct {
 	DefaultBranch       string          `json:"default_branch"`
 	SourceProtected     bool            `json:"source_protected"`
 	CanMerge            bool            `json:"can_merge"`
+	TargetSyncMethod    string          `json:"target_sync_method"`
 	RequiredChecks      []CheckIdentity `json:"required_checks"`
+	FailedChecks        []CheckIdentity `json:"failed_checks"`
 	Statuses            []Status        `json:"statuses"`
+	Labels              []string        `json:"labels"`
 	Reviews             []Review        `json:"reviews"`
 	AllowedMergeMethods []MergeMethod   `json:"allowed_merge_methods"`
 
@@ -117,8 +120,8 @@ type reviewWritePayload struct {
 }
 
 type CheckIdentity struct {
-	Provider string
-	Context  string
+	Provider string `json:"provider"`
+	Context  string `json:"context"`
 }
 
 type CheckDecision string

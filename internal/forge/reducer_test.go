@@ -76,3 +76,23 @@ func TestReduceRequiredChecks(t *testing.T) {
 		})
 	}
 }
+
+func TestFailedRequiredChecksIncludesOnlyExplicitRedState(t *testing.T) {
+	required := []CheckIdentity{
+		{Provider: ForgejoProvider, Context: "failed"},
+		{Provider: ForgejoProvider, Context: "pending"},
+		{Provider: ForgejoProvider, Context: "ambiguous"},
+		{Provider: ForgejoProvider, Context: "unknown"},
+	}
+	statuses := []Status{
+		{ID: 4, Provider: ForgejoProvider, Context: "failed", State: StatusFailure},
+		{ID: 3, Provider: ForgejoProvider, Context: "pending", State: StatusPending},
+		{ID: 2, Provider: ForgejoProvider, Context: "ambiguous", State: StatusFailure},
+		{ID: 2, Provider: ForgejoProvider, Context: "ambiguous", State: StatusFailure},
+		{ID: 1, Provider: ForgejoProvider, Context: "unknown", State: StatusState("mystery")},
+	}
+	failed := FailedRequiredChecks(required, statuses)
+	if len(failed) != 1 || failed[0].Context != "failed" {
+		t.Fatalf("failed checks = %#v", failed)
+	}
+}

@@ -19,8 +19,9 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    the work in the repository's own checked-in guidance. Then run
    `"$MINOS_BIN" forge snapshot` and claim the pull request with `"$MINOS_BIN"
    forge claim` (it assigns the Minos account and adds the 👀 reaction; it is
-   safe to repeat). Stop without publishing if the snapshot now shows that the
-   head or target has moved since setup.
+   safe to repeat). If the snapshot now shows that the head or target has moved
+   since setup, remove 👀 against that fresh head and target and stop without
+   publishing.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you
@@ -61,8 +62,9 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
 
    Only a final workflow result whose `status` is `complete` is publishable. A
    missing result or missing or wrong-family run-record evidence leaves it
-   `incomplete`. In either `incomplete` or `infrastructure-failure`, publish no review and set
-   `"$MINOS_BIN" forge status HEAD TARGET incomplete`.
+   `incomplete`. In either `incomplete` or `infrastructure-failure`, publish no
+   review, set `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the
+   👀 with `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, and stop.
 5. Save each complete review result and run
    `"${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs" REVIEW_RESULT LOOP_RECORD` to
    build the action input. Run the Workflow at
@@ -139,8 +141,9 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    concern remains `skipped` in the returned run record and is never published
    on the pull request. A `not-run` concern, missing result, or incomplete
    actual-model evidence makes this stage incomplete: publish no brief review,
-   add no 👍, and set `"$MINOS_BIN" forge status CURRENT_HEAD
-   "$MINOS_TARGET_SHA" incomplete`.
+   add no 👍, set `"$MINOS_BIN" forge status CURRENT_HEAD
+   "$MINOS_TARGET_SHA" incomplete`, remove the 👀 with `"$MINOS_BIN" forge
+   reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`, and stop.
 
    On a complete result, materialise `briefReview.body` and
    `briefReview.comments` when `briefReview` is present, then post exactly one
@@ -161,21 +164,78 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    current head. Run `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD` exactly as
    configured and to completion when each is non-empty; do not substitute or
    invent commands. If the single wave leaves `confirmedUnfixed` entries, or
-   integration, build or tests fail, add no 👍 and set attention or incomplete
-   to reflect the actual result. If all fixes were integrated and the exact
-   configured build and tests pass, the brief stage has passed: add the 👍 on
+   integration, build or tests fail, add no 👍, set attention or incomplete to
+   reflect the actual result, remove the 👀, and stop. If all fixes were
+   integrated and the exact configured build and tests pass, the brief stage
+   has passed: add the 👍 on
    the fresh head. Do not run another review loop. Thus both a no-findings pass
    and a findings-fixed-and-verified pass end in the same idempotent 👍 signal.
 
-8. If required checks are still red as you finish, or the pull request carries
-   the `Flaky Tests` label, dispatch a root-cause agent: a Claude Code session
-   with the `root-cause` skill on `gpt-5.6-sol` at high effort, to diagnose,
-   fix what it proves, and push. Its push moves the head, so this run does not
-   merge; the new head gets its own fresh attempt.
-9. If `$MINOS_AUTO_MERGE` is `true`, the run is complete, the pull request is
-   clean, required checks pass, and the forge reports it mergeable, use an
-   allowed method with `"$MINOS_BIN" forge merge HEAD TARGET METHOD`, then set
-   `merged`. Never merge a head that moved after your review.
+8. Enter finishing only after both review stages are done and the current result
+   is clean. If the result is attention, remove the 👀 with `"$MINOS_BIN" forge
+   reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes` and stop instead.
+
+   Save a fresh `"$MINOS_BIN" forge snapshot` JSON object. It is the sole forge
+   state used throughout finishing. Run
+   `"${MINOS_SETUP_WORKSPACE%/*}/sync-target"
+   "$MINOS_WORKSPACE" HEAD_BRANCH TARGET_BRANCH HEAD TARGET
+   TARGET_SYNC_METHOD` with its `head_branch`, `target_branch`, `head_sha`,
+   `target_sha`, and `target_sync_method`. The script fetches and validates
+   both named branches, follows the forge's merge-or-rebase update style, and
+   uses a lease-bound single push. An unchanged target is a no-op. On a real
+   conflict, resolve only the merge or rebase conflict in the lead workspace,
+   complete that Git operation, then run the same script again so it performs
+   the guarded push. This is target reconciliation, not a new implementation:
+   do not dispatch another review. After a sync, take a fresh snapshot, require
+   its head to equal the script's pushed head and its target to remain the
+   fetched target, then run the exact configured build and test commands to
+   completion when each is non-empty. A failed sync, build, or test is an
+   incomplete terminal outcome: set `incomplete`, remove 👀, and stop.
+
+   Required checks, labels and merge readiness all come from that same trusted
+   snapshot. When waiting for checks or forge readiness, write the complete
+   snapshot to a file and run `"${MINOS_SETUP_WORKSPACE%/*}/watch-snapshot"
+   SNAPSHOT_FILE 600`.
+   The watcher repeatedly obtains the same `minos forge snapshot` object used
+   everywhere else and wakes only when its `head_sha`, `target_sha`, `statuses`,
+   or `labels` differ. Its JSON result contains the exact fresh snapshot to use
+   for the next decision. On its roughly ten-minute `timeout`, use the returned
+   fresh snapshot as well; do not infer state from elapsed time, poll the forge
+   separately, or sleep blind. If the target moved, return to target sync. If
+   an unexpected head moved, remove 👀 against the fresh head and target and
+   stop without publishing a result for unverified code.
+
+   A required check is genuinely red only when `failed_checks` names its latest
+   unambiguous failure, error, cancellation, or timeout. When `failed_checks` is
+   non-empty, or `labels` contains the exact `Flaky Test` name, dispatch one
+   recorded Claude Code fix session named for root cause, explicitly using the
+   installed `root-cause` skill on `anthropic-gpt-5.6-sol` at high effort. Give
+   it the failing check details and workspace; it diagnoses, fixes only what it
+   proves, commits, and pushes. Wait for its head change through the snapshot
+   watcher. On the returned fresh head, run the exact configured build and test
+   commands as for any fix. If those pass and the flake is fixed, remove the
+   exact label with `"$MINOS_BIN" forge label-remove FRESH_HEAD FRESH_TARGET
+   "Flaky Test"`; this guarded command reads the labels back and is safe to
+   repeat. The pushed head has not had a fresh whole review, so set `incomplete`,
+   remove 👀, and stop; reconciliation starts its fresh attempt. If no pushed
+   head appears or verification fails, leave the label, set `incomplete`, remove
+   👀, and stop. A non-passing `check_decision` with no explicit
+   `failed_checks` is incomplete forge state, not a root-cause dispatch.
+9. If `$MINOS_AUTO_MERGE` is not `true`, the clean run is complete without a
+   merge: remove 👀 and stop. If it is `true`, keep using the watcher until the
+   trusted snapshot has `check_decision` `pass`, reports both `mergeable` and
+   `can_merge`, and still names the verified finishing head and target. Select
+   one of its `allowed_merge_methods` and call `"$MINOS_BIN" forge merge HEAD
+   TARGET METHOD`. The guarded merge binds the exact head and is idempotent.
+   Then set `merged`. For a non-empty, unprotected source branch whose
+   `head_repository` equals `target_repository`, call `"$MINOS_BIN" forge
+   delete-source-branch HEAD TARGET HEAD_BRANCH`; its merged-pull guard and
+   read-back make repeat deletion safe. Never try to delete a fork branch, a
+   protected branch, or a virtual pull ref. Finally remove 👀 with
+   `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`. Merged,
+   request-changes, clean-without-auto-merge, and every incomplete outcome the
+   run reaches end 👀-absent; a crash alone leaves it for the next idempotent
+   claim.
 
 Use your judgement. Retry an ordinary transient failure when that is sensible;
 otherwise report the actual state and stop. Never turn a failure into a new

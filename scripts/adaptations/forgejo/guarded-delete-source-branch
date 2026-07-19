@@ -1,0 +1,57 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; branch="$7"
+: "$target"
+
+if [ -z "$branch" ]; then
+  write_result rejected "source branch is required"
+  exit 0
+fi
+case "$branch" in
+  refs/pull/*/head) write_result rejected "virtual pull refs cannot be deleted"; exit 0 ;;
+esac
+
+if guard_merged_pull_request "$owner" "$repo" "$pr" "$head" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "merged pull request guard could not be confirmed"; fi
+  exit 0
+fi
+
+if ! printf '%s' "$guard_pr_json" | jq -e --arg repository "${owner}/${repo}" --arg branch "$branch" '
+  .head.repo.full_name == $repository and .head.ref == $branch
+' >/dev/null; then
+  write_result rejected "source branch is not a writable same-repository branch"
+  exit 0
+fi
+
+branch_path="/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$branch")"
+if ! api_with_status GET "$branch_path"; then
+  write_result uncertain "source branch state could not be read"
+  exit 0
+fi
+if [ "$api_status_code" = "404" ]; then
+  write_result applied "source branch already absent"
+  exit 0
+fi
+if [ "$api_status_code" != "200" ]; then
+  write_result uncertain "source branch state returned HTTP ${api_status_code}"
+  exit 0
+fi
+if [ "$(printf '%s' "$api_status_body" | jq -r '.protected // false')" = "true" ]; then
+  write_result rejected "source branch is protected"
+  exit 0
+fi
+
+api DELETE "$branch_path" >/dev/null 2>&1 || true
+if ! api_with_status GET "$branch_path"; then
+  write_result uncertain "source branch deletion could not be confirmed"
+elif [ "$api_status_code" = "404" ]; then
+  write_result applied
+else
+  write_result uncertain "source branch deletion could not be discovered"
+fi

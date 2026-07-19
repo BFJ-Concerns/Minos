@@ -80,11 +80,13 @@ jq -nc \
     default_branch: $repository.default_branch,
     source_protected: $source_protected,
     can_merge: ($base.user_can_merge // false),
+    target_sync_method: (if ($repository.default_update_style // "merge") == "rebase" then "rebase" else "merge" end),
     required_checks: [($base.status_check_contexts // [])[] | {provider:$provider, context:.}],
     statuses: [$statuses[] |
       if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
         {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // ""), protection_satisfied:false}
       end] | sort_by(.id) | reverse,
+    labels: [($pr.labels // [])[] | .name] | sort,
     reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // "")}],
     allowed_merge_methods: ([
       if ($repository.allow_merge_commits // false) then "merge" else empty end,

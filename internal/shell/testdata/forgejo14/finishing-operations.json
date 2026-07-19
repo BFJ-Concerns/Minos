@@ -1,0 +1,27 @@
+{
+  "source": "Forgejo v14.0.0 tagged OpenAPI",
+  "merge": {
+    "method": "POST",
+    "path": "/api/v1/repos/{owner}/{repo}/pulls/{index}/merge",
+    "request": {"Do": "merge", "head_commit_id": "HEAD"},
+    "success_status": 200
+  },
+  "label_removal": {
+    "method": "DELETE",
+    "path": "/api/v1/repos/{owner}/{repo}/issues/{index}/labels/{identifier}",
+    "identifier": "Flaky Test",
+    "success_status": 204
+  },
+  "reaction_removal": {
+    "method": "DELETE",
+    "path": "/api/v1/repos/{owner}/{repo}/issues/{index}/reactions",
+    "request": {"content": "eyes"},
+    "success_status": 200
+  },
+  "branch_deletion": {
+    "method": "DELETE",
+    "path": "/api/v1/repos/{owner}/{repo}/branches/{branch}",
+    "branch": "journey-one",
+    "success_status": 204
+  }
+}

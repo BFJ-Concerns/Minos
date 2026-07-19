@@ -327,6 +327,134 @@ func TestForgeReactionUsesForgejo14ShapeAndReadBackIdempotency(t *testing.T) {
 	}
 }
 
+func TestSnapshotCarriesSortedLabelsAndForgeTargetSyncMethod(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["labels"] = []any{
+			map[string]any{"id": float64(2), "name": "Flaky Test"},
+			map[string]any{"id": float64(1), "name": "Needs Work"},
+		}
+	})
+	cfg, _, facts := state.service(t)
+	snapshot, err := currentSnapshot(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(snapshot.Labels, []string{"Flaky Test", "Needs Work"}) {
+		t.Fatalf("labels = %v", snapshot.Labels)
+	}
+	if snapshot.TargetSyncMethod != "merge" {
+		t.Fatalf("target sync method = %q, want forge-configured merge", snapshot.TargetSyncMethod)
+	}
+	state.mu.Lock()
+	state.repository["default_update_style"] = "rebase"
+	state.mu.Unlock()
+	snapshot, err = currentSnapshot(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.TargetSyncMethod != "rebase" {
+		t.Fatalf("target sync method = %q, want forge-configured rebase", snapshot.TargetSyncMethod)
+	}
+}
+
+func TestForgeTerminalCleanupWritesAreGuardedIdempotentAndReadBack(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["labels"] = []any{map[string]any{"id": float64(7), "name": "Flaky Test"}}
+	})
+	state.reactions = []string{"eyes"}
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	head, target := state.headSHA(), state.targetSHA()
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"label-remove", head, target, "Flaky Test"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("label removal attempt %d: %v", attempt+1, err)
+		}
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"merge", head, target, "merge"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("merge attempt %d: %v", attempt+1, err)
+		}
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"reaction-remove", head, target, "eyes"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("reaction removal attempt %d: %v", attempt+1, err)
+		}
+		if err := ForgeCommand(t.Context(), []string{"delete-source-branch", head, target, "journey-one"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("branch deletion attempt %d: %v", attempt+1, err)
+		}
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	labels, _ := state.pullRequest["labels"].([]any)
+	if len(labels) != 0 || state.labelDeleteWrites != 1 {
+		t.Fatalf("labels = %#v, delete writes = %d", labels, state.labelDeleteWrites)
+	}
+	if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
+		t.Fatalf("reactions = %v, delete writes = %d", state.reactions, state.reactionDeleteWrites)
+	}
+	if state.mergeWrites != 1 || state.sourceBranchExists || state.branchDeleteWrites != 1 {
+		t.Fatalf("merge writes = %d, source exists = %t, branch deletes = %d", state.mergeWrites, state.sourceBranchExists, state.branchDeleteWrites)
+	}
+}
+
+func TestForgeRemovesEyesIdempotentlyFromAnOpenTerminalPullRequest(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.reactions = []string{"eyes"}
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"reaction-remove", state.headSHA(), state.targetSHA(), "eyes"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("reaction removal attempt %d: %v", attempt+1, err)
+		}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
+		t.Fatalf("reactions = %v, delete writes = %d", state.reactions, state.reactionDeleteWrites)
+	}
+}
+
+func TestForgePreservesForkSourceBranch(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["full_name"] = "contributor/subject"
+		pullRequest["merged"] = true
+		pullRequest["state"] = "closed"
+	})
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	err := ForgeCommand(t.Context(), []string{"delete-source-branch", state.headSHA(), state.targetSHA(), "journey-one"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("fork deletion error = %v", err)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.sourceBranchExists || state.branchDeleteWrites != 0 {
+		t.Fatalf("fork source exists = %t, delete writes = %d", state.sourceBranchExists, state.branchDeleteWrites)
+	}
+}
+
 func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *testing.T) {
 	var apiShape struct {
 		Request  map[string]any   `json:"request"`
@@ -552,6 +680,11 @@ type forgejoFixtureState struct {
 	assignmentWrites         int
 	obsoleteAssignmentWrites int
 	reactionWrites           int
+	reactionDeleteWrites     int
+	labelDeleteWrites        int
+	mergeWrites              int
+	branchDeleteWrites       int
+	sourceBranchExists       bool
 	statusWrites             int
 	reviewWrites             int
 	reviewPayloads           []map[string]any
@@ -577,7 +710,7 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 	}
 	state := &forgejoFixtureState{
 		t: t, pullRequest: event.PullRequest, repository: event.Repository,
-		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any),
+		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any), sourceBranchExists: true,
 	}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
@@ -713,11 +846,36 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			"commit": map[string]any{"id": base["sha"]}, "protected": false,
 			"user_can_merge": true, "status_check_contexts": []string{},
 		})
+	case r.Method == http.MethodDelete && strings.Contains(path, "/branches/"):
+		if !s.sourceBranchExists {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		s.sourceBranchExists = false
+		s.branchDeleteWrites++
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodGet && strings.Contains(path, "/branches/"):
 		if strings.Contains(path, "refs/pull/") {
 			s.virtualRefLookups++
 		}
+		if !s.sourceBranchExists {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		writeFixtureJSON(s.t, w, map[string]any{"protected": false})
+	case r.Method == http.MethodPost && path == pullPath+"/merge":
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		if payload["head_commit_id"] != s.pullRequest["head"].(map[string]any)["sha"] {
+			http.Error(w, "head mismatch", http.StatusConflict)
+			return
+		}
+		s.pullRequest["merged"] = true
+		s.pullRequest["state"] = "closed"
+		s.mergeWrites++
+		writeFixtureJSON(s.t, w, map[string]any{})
 	case r.Method == http.MethodGet && strings.Contains(path, "/commits/") && strings.HasSuffix(path, "/statuses"):
 		commit := strings.TrimSuffix(strings.SplitN(path, "/commits/", 2)[1], "/statuses")
 		s.statusReadCommits = append(s.statusReadCommits, commit)
@@ -827,6 +985,36 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			"created_at": "2026-07-19T12:00:00Z",
 			"user":       map[string]any{"login": "Minos"},
 		})
+	case r.Method == http.MethodDelete && path == issuePath+"/reactions":
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		for index, content := range s.reactions {
+			if content == payload.Content {
+				s.reactions = append(s.reactions[:index], s.reactions[index+1:]...)
+				break
+			}
+		}
+		s.reactionDeleteWrites++
+		writeFixtureJSON(s.t, w, map[string]any{})
+	case r.Method == http.MethodGet && path == issuePath+"/labels":
+		writeFixtureJSON(s.t, w, s.pullRequest["labels"])
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, issuePath+"/labels/"):
+		name := strings.TrimPrefix(path, issuePath+"/labels/")
+		labels, _ := s.pullRequest["labels"].([]any)
+		kept := make([]any, 0, len(labels))
+		for _, raw := range labels {
+			label := raw.(map[string]any)
+			if label["name"] != name {
+				kept = append(kept, raw)
+			}
+		}
+		s.pullRequest["labels"] = kept
+		s.labelDeleteWrites++
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, fmt.Sprintf("unexpected fixture request %s %s", r.Method, path), http.StatusNotFound)
 	}

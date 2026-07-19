@@ -38,6 +38,27 @@ func ReduceRequiredChecks(required []CheckIdentity, statuses []Status) CheckDeci
 	return decision
 }
 
+// FailedRequiredChecks returns only checks whose newest unambiguous forge
+// status is explicitly red. Missing, pending, unknown or ambiguous state still
+// blocks a passing decision, but does not pretend there is a failure to fix.
+func FailedRequiredChecks(required []CheckIdentity, statuses []Status) []CheckIdentity {
+	failed := make([]CheckIdentity, 0)
+	for _, identity := range required {
+		if identity.Provider == ForgejoProvider && identity.Context == OwnedStatusContext {
+			continue
+		}
+		latest, ambiguous, found := latestStatus(identity, statuses)
+		if ambiguous || !found {
+			continue
+		}
+		switch latest.State {
+		case StatusFailure, StatusError, StatusCancelled, StatusTimeout:
+			failed = append(failed, identity)
+		}
+	}
+	return failed
+}
+
 func latestStatus(identity CheckIdentity, statuses []Status) (Status, bool, bool) {
 	var latest Status
 	found := false
