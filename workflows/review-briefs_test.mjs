@@ -120,6 +120,19 @@ test("relevance excludes a concern conservatively and records a skip without rev
   assert.deepEqual(calls.map((call) => call.options.label), ["brief-relevance"]);
 });
 
+test("a missing relevance decision is not-run and withholds the review group", async () => {
+  const input = args({ briefs: [brief(".review/error-tone.md", "title: Error Tone\nrelevance: Changes error messages or error paths.")] });
+  const { result, calls } = await run(input, (label) => {
+    if (label === "brief-relevance") return { decisions: [] };
+    throw new Error(`unexpected agent ${label}`);
+  });
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.briefs[0].status, "not-run");
+  assert.match(result.briefs[0].reason, /relevance judgement returned no decision/);
+  assert.equal(result.briefReview, null);
+  assert.deepEqual(calls.map((call) => call.options.label), ["brief-relevance"]);
+});
+
 test("positive relevance dispatches exactly the applicable concern", async () => {
   const relevant = brief(".review/error-tone.md", "title: Error Tone\nrelevance: Changes error messages or error paths.");
   const excluded = brief(".review/docs-tone.md", "title: Docs Tone\noccasion: release");
@@ -128,6 +141,21 @@ test("positive relevance dispatches exactly the applicable concern", async () =>
   assert.deepEqual(result.dispatches.map((entry) => entry.brief), [".review/error-tone.md"]);
   assert.equal(calls.filter((call) => call.options.label.startsWith("repository-")).length, 1);
   assert.equal(result.briefs.find((entry) => entry.brief === excluded.path).status, "skipped");
+});
+
+test("project guidance reaches relevance, repository specialist, and verifier prompts after the stage split", async () => {
+  const marker = "MINOS_ESTATE_BRIEF_GUIDANCE_VERMILION_719";
+  const input = args({
+    briefs: [brief(".review/error-tone.md", "title: Error Tone\nrelevance: Changes error messages or error paths.")],
+    guidance: { grounding: "annexe", path: "/annexe/README.md", content: marker },
+  });
+  const { calls } = await runRecorded(input, responder({ specialist: { findings: [finding()] } }));
+  const relevant = calls.filter((call) =>
+    call.options.label === "brief-relevance" ||
+    call.options.label.startsWith("repository-") ||
+    call.options.label.startsWith("verify-brief-"));
+  assert.equal(relevant.length, 3);
+  assert.ok(relevant.every((call) => call.prompt.includes(marker)));
 });
 
 test("brief paths keep specialist labels unique when display titles collide", async () => {
