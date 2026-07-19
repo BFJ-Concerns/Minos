@@ -266,7 +266,22 @@ test("the enumerator reads briefs and inventories from the reviewed repository",
 test("lifecycle gives the reaction to absent, clean, and fixed-and-tested brief journeys without an all-clear comment", () => {
   assert.match(lifecycle, /hasReviewDirectory` is false[\s\S]*forge reaction[\s\S]*\+1/);
   assert.match(lifecycle, /`fixRequired` is false[\s\S]*forge reaction[\s\S]*\+1/);
-  assert.match(lifecycle, /all fixes were integrated[\s\S]*build and tests pass[\s\S]*add the 👍/);
+  assert.match(lifecycle, /all fixes were[\s\S]*integrated[\s\S]*build and tests pass[\s\S]*add the 👍/);
   assert.match(lifecycle, /Do not run another review loop/);
   assert.match(lifecycle, /never publish an all-clear comment/);
+});
+
+test("finishing uses one trusted snapshot for sync, bounded waiting, checks, labels, and merge", () => {
+  assert.match(lifecycle, /sync-target[\s\S]*do not dispatch another review/);
+  assert.match(lifecycle, /watch-snapshot[\s\S]*head_sha[\s\S]*target_sha[\s\S]*statuses[\s\S]*labels/);
+  assert.match(lifecycle, /timeout[\s\S]*returned[\s\S]*fresh snapshot/);
+  assert.match(lifecycle, /failed_checks[\s\S]*exact `Flaky Test`[\s\S]*root-cause[\s\S]*anthropic-gpt-5\.6-sol[\s\S]*high effort/);
+  assert.match(lifecycle, /label-remove[\s\S]*Flaky Test/);
+});
+
+test("terminal finishing merges the exact head, cleans writable branches, preserves forks, and removes eyes", () => {
+  assert.match(lifecycle, /forge merge HEAD[\s\S]*guarded merge binds the exact head/);
+  assert.match(lifecycle, /delete-source-branch[\s\S]*Never try to delete a fork branch/);
+  assert.match(lifecycle, /Merged,[\s\S]*request-changes[\s\S]*incomplete[\s\S]*end 👀-absent/);
+  assert.match(lifecycle, /reaction-remove[\s\S]*eyes/);
 });

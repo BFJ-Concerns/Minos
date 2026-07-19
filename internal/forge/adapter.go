@@ -39,6 +39,7 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 		return Snapshot{}, err
 	}
 	snapshot.CheckDecision = ReduceRequiredChecks(snapshot.RequiredChecks, snapshot.Statuses)
+	snapshot.FailedChecks = FailedRequiredChecks(snapshot.RequiredChecks, snapshot.Statuses)
 	return snapshot, nil
 }
 
@@ -90,8 +91,41 @@ func (a *Adapter) AddReaction(ctx context.Context, guard Guard, content string) 
 	return decodeWriteResult(out, err)
 }
 
+func (a *Adapter) RemoveReaction(ctx context.Context, guard Guard, content string) WriteResult {
+	if strings.TrimSpace(content) == "" {
+		return WriteResult{Outcome: WriteRejected, Reason: "reaction content is required"}
+	}
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-remove-reaction",
+		Arguments: append(a.guardArguments(guard), content),
+	})
+	return decodeWriteResult(out, err)
+}
+
+func (a *Adapter) RemoveLabel(ctx context.Context, guard Guard, label string) WriteResult {
+	if strings.TrimSpace(label) == "" {
+		return WriteResult{Outcome: WriteRejected, Reason: "label is required"}
+	}
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-remove-label",
+		Arguments: append(a.guardArguments(guard), label),
+	})
+	return decodeWriteResult(out, err)
+}
+
 func (a *Adapter) Merge(ctx context.Context, guard Guard, method MergeMethod) WriteResult {
 	out, err := a.runner.Run(ctx, RunRequest{Operation: "guarded-merge", Arguments: append(a.guardArguments(guard), string(method))})
+	return decodeWriteResult(out, err)
+}
+
+func (a *Adapter) DeleteSourceBranch(ctx context.Context, guard Guard, branch string) WriteResult {
+	if strings.TrimSpace(branch) == "" {
+		return WriteResult{Outcome: WriteRejected, Reason: "source branch is required"}
+	}
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-delete-source-branch",
+		Arguments: append(a.guardArguments(guard), branch),
+	})
 	return decodeWriteResult(out, err)
 }
 

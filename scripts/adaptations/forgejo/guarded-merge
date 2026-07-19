@@ -9,6 +9,17 @@ case "$method" in
   *) write_result rejected "unsupported merge method: $method"; exit 0 ;;
 esac
 
+if guard_merged_pull_request "$owner" "$repo" "$pr" "$head" "$login"; then
+  write_result applied "pull request already merged"
+  exit 0
+else
+  merged_status=$?
+  if [ "$merged_status" -eq 2 ]; then
+    write_result uncertain "merged pull request state could not be confirmed"
+    exit 0
+  fi
+fi
+
 if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
   :
 else
