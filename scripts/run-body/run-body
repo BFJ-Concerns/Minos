@@ -9,14 +9,86 @@ set -a
 . "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
-: "${MINOS_CODEX:?MINOS_CODEX is required}"
+: "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
+: "${MINOS_ANTHROPIC_CREDENTIAL_FILE:?MINOS_ANTHROPIC_CREDENTIAL_FILE is required}"
+: "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL is required}"
 : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
+: "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
+: "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required}"
+: "${MINOS_ORIENTATION:?MINOS_ORIENTATION is required}"
+: "${MINOS_GIT_AUTHOR_NAME:?MINOS_GIT_AUTHOR_NAME is required}"
+: "${MINOS_GIT_AUTHOR_EMAIL:?MINOS_GIT_AUTHOR_EMAIL is required}"
+
+if ! IFS= read -r ANTHROPIC_AUTH_TOKEN <"$MINOS_ANTHROPIC_CREDENTIAL_FILE" &&
+  [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+  echo "run-body: proxy credential file is empty" >&2
+  exit 1
+fi
+export ANTHROPIC_AUTH_TOKEN
+FORCE_COLOR=0
+export FORCE_COLOR
+GIT_AUTHOR_NAME="$MINOS_GIT_AUTHOR_NAME"
+GIT_AUTHOR_EMAIL="$MINOS_GIT_AUTHOR_EMAIL"
+GIT_COMMITTER_NAME="$MINOS_GIT_AUTHOR_NAME"
+GIT_COMMITTER_EMAIL="$MINOS_GIT_AUTHOR_EMAIL"
+export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
 mkdir -p "$MINOS_RUN_DIR"
 cd "$MINOS_RUN_DIR"
-exec "$MINOS_CODEX" exec \
-  --dangerously-bypass-approvals-and-sandbox \
-  --ephemeral \
-  -m "${MINOS_LEAD_MODEL:-gpt-5.6-sol}" \
-  -C "$MINOS_RUN_DIR" \
-  - <"$MINOS_LIFECYCLE_INSTRUCTION"
+
+"$MINOS_SETUP_WORKSPACE"
+
+CLAUDE_CONFIG_DIR="${MINOS_RUN_DIR%/}/claude-config"
+export CLAUDE_CONFIG_DIR
+mkdir -p "$CLAUDE_CONFIG_DIR"
+chmod 700 "$CLAUDE_CONFIG_DIR"
+printf '%s\n' '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true}' \
+  >"$CLAUDE_CONFIG_DIR/.claude.json"
+chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
+mkdir -p "$CLAUDE_CONFIG_DIR/skills"
+cp -R "$MINOS_ROOT_CAUSE_SKILL" "$CLAUDE_CONFIG_DIR/skills/root-cause"
+
+session_id=""
+stop_session() {
+  if [ -n "$session_id" ]; then
+    "$MINOS_CLAUDE" stop "$session_id" >/dev/null 2>&1 || true
+  fi
+}
+trap stop_session 0
+trap 'exit 129' 1
+trap 'exit 130' 2
+trap 'exit 143' 15
+
+instruction="$(cat "$MINOS_LIFECYCLE_INSTRUCTION")"
+session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
+launch_output="$("$MINOS_CLAUDE" \
+  --bg \
+  --name "$session_name" \
+  --dangerously-skip-permissions \
+  --model "${MINOS_LEAD_MODEL:-anthropic-gpt-5.6-sol}" \
+  "$instruction" 2>&1)"
+printf '%s\n' "$launch_output"
+
+session_id="$(printf '%s\n' "$launch_output" | sed -nE 's/.*[Bb]ackgrounded[^[:xdigit:]]*([[:xdigit:]]{6,}).*/\1/p' | head -n 1)"
+if [ -z "$session_id" ]; then
+  echo "run-body: Claude did not report a background session ID" >&2
+  exit 1
+fi
+
+while :; do
+  if agents="$("$MINOS_CLAUDE" agents --json --all)"; then
+    if printf '%s' "$agents" | jq -e --arg id "$session_id" '
+      (if type == "array" then . else .agents end)[] |
+      select(
+        .id == $id and
+        (.state == "done" or .state == "blocked" or .state == "failed" or .state == "stopped")
+      )
+    ' >/dev/null; then
+      break
+    fi
+  fi
+  sleep "${MINOS_CLAUDE_POLL_SECONDS:-3}"
+done
+
+stop_session
+session_id=""

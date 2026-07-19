@@ -1,0 +1,97 @@
+#!/usr/bin/env sh
+set -eu
+
+: "${MINOS_API_BASE:?MINOS_API_BASE is required}"
+: "${MINOS_CREDENTIAL_FILE:?MINOS_CREDENTIAL_FILE is required}"
+: "${MINOS_OWNER:?MINOS_OWNER is required}"
+: "${MINOS_REPO_NAME:?MINOS_REPO_NAME is required}"
+: "${MINOS_PR:?MINOS_PR is required}"
+: "${MINOS_HEAD_SHA:?MINOS_HEAD_SHA is required}"
+: "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
+: "${MINOS_ORIENTATION:?MINOS_ORIENTATION is required}"
+: "${MINOS_GIT_AUTHOR_NAME:?MINOS_GIT_AUTHOR_NAME is required}"
+: "${MINOS_GIT_AUTHOR_EMAIL:?MINOS_GIT_AUTHOR_EMAIL is required}"
+
+if [ -e "$MINOS_WORKSPACE" ]; then
+  echo "setup-workspace: workspace already exists: $MINOS_WORKSPACE" >&2
+  exit 1
+fi
+
+if ! IFS= read -r forge_token <"$MINOS_CREDENTIAL_FILE" || [ -z "$forge_token" ]; then
+  echo "setup-workspace: forge credential file is empty" >&2
+  exit 1
+fi
+
+response_file="${MINOS_ORIENTATION}.response"
+trap 'rm -f "$response_file"' 0
+
+forge_get() {
+  api_path="$1"
+  if ! response_status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+    -H "Authorization: token ${forge_token}" \
+    -H "Accept: application/json" \
+    "${MINOS_API_BASE%/}${api_path}")"; then
+    echo "setup-workspace: forge request failed: $api_path" >&2
+    exit 1
+  fi
+}
+
+forge_get "/api/v1/repos/${MINOS_OWNER}/${MINOS_REPO_NAME}/pulls/${MINOS_PR}"
+if [ "$response_status" != "200" ]; then
+  echo "setup-workspace: pull request lookup returned HTTP $response_status" >&2
+  exit 1
+fi
+
+observed_head="$(jq -r '.head.sha // ""' "$response_file")"
+if [ "$observed_head" != "$MINOS_HEAD_SHA" ]; then
+  echo "setup-workspace: pull-request head moved from $MINOS_HEAD_SHA to ${observed_head:-unknown}" >&2
+  exit 1
+fi
+repository_url="$(jq -r '.head.repo.clone_url // ""' "$response_file")"
+if [ -z "$repository_url" ]; then
+  echo "setup-workspace: pull request omitted the source repository clone URL" >&2
+  exit 1
+fi
+
+git -c "http.extraHeader=Authorization: token ${forge_token}" clone --no-checkout "$repository_url" "$MINOS_WORKSPACE"
+git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
+checked_out_head="$(git -C "$MINOS_WORKSPACE" rev-parse HEAD)"
+if [ "$checked_out_head" != "$MINOS_HEAD_SHA" ]; then
+  echo "setup-workspace: checked out $checked_out_head, expected $MINOS_HEAD_SHA" >&2
+  exit 1
+fi
+git -C "$MINOS_WORKSPACE" config user.name "$MINOS_GIT_AUTHOR_NAME"
+git -C "$MINOS_WORKSPACE" config user.email "$MINOS_GIT_AUTHOR_EMAIL"
+git -C "$MINOS_WORKSPACE" config http.extraHeader "Authorization: token ${forge_token}"
+
+annexe_name="${MINOS_REPO_NAME}-Annexe"
+annexe_path="$(dirname "$MINOS_WORKSPACE")/${annexe_name}"
+forge_get "/api/v1/repos/${MINOS_OWNER}/${annexe_name}"
+case "$response_status" in
+  200)
+    annexe_url="$(jq -r '.clone_url // ""' "$response_file")"
+    if [ -z "$annexe_url" ]; then
+      echo "setup-workspace: annexe metadata omitted its clone URL" >&2
+      exit 1
+    fi
+    git -c "http.extraHeader=Authorization: token ${forge_token}" clone "$annexe_url" "$annexe_path"
+    jq -n \
+      --arg repository "$MINOS_WORKSPACE" \
+      --arg head "$checked_out_head" \
+      --arg annexe "$annexe_path" \
+      --arg guidance "$annexe_path/README.md" \
+      '{repository:$repository,head:$head,grounding:"annexe",annexe:$annexe,guidance:$guidance}' \
+      >"$MINOS_ORIENTATION"
+    ;;
+  404)
+    jq -n \
+      --arg repository "$MINOS_WORKSPACE" \
+      --arg head "$checked_out_head" \
+      '{repository:$repository,head:$head,grounding:"repository",reason:"annexe-not-found"}' \
+      >"$MINOS_ORIENTATION"
+    ;;
+  *)
+    echo "setup-workspace: annexe lookup returned HTTP $response_status" >&2
+    exit 1
+    ;;
+esac

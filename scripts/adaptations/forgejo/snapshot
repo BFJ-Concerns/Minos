@@ -39,6 +39,9 @@ done
 
 head_repo="$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name // ""')"
 head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
+case "$head_branch" in
+  refs/pull/*/head) head_branch="" ;;
+esac
 source_protected=false
 if [ "$head_repo" = "${owner}/${repo}" ] && [ -n "$head_branch" ]; then
   if source_json="$(api GET "/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$head_branch")" 2>/dev/null)"; then
@@ -56,6 +59,7 @@ jq -nc \
   --argjson base "$base_json" \
   --argjson statuses "$statuses" \
   --argjson reviews "$reviews" \
+  --arg head_branch "$head_branch" \
   --arg provider "forgejo" \
   --argjson source_protected "$source_protected" '
   {
@@ -68,7 +72,7 @@ jq -nc \
     author: ($pr.user.login // $pr.user.username // ""),
     mergeable: ($pr.mergeable // false),
     head_sha: $pr.head.sha,
-    head_branch: ($pr.head.ref // ""),
+    head_branch: $head_branch,
     head_repository: ($pr.head.repo.full_name // ""),
     target_sha: ($base.commit.id // $base.commit.sha // ""),
     target_branch: $pr.base.ref,
