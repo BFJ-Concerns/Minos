@@ -5,7 +5,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
@@ -38,8 +41,23 @@ async function runScript(args, respond) {
   return { result, calls };
 }
 
-function enumeratedArgs(target = "aaa111", head = "bbb222") {
-  return JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8" }));
+function enumeratedArgs(
+  target = "aaa111",
+  head = "bbb222",
+  { grounding = "annexe", guidanceName = "README.md", guidanceContent = "MINOS_TEST_COMMISSION_INDIGO" } = {},
+) {
+  const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace);
+  const guidancePath = join(workspace, guidanceName);
+  writeFileSync(guidancePath, guidanceContent);
+  const orientationPath = join(root, "orientation.json");
+  writeFileSync(orientationPath, JSON.stringify({ repository: workspace, grounding, guidance: guidancePath }));
+  return JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath },
+    stdio: ["ignore", "pipe", "pipe"],
+  }));
 }
 
 const ARGS = enumeratedArgs();
@@ -293,6 +311,55 @@ test("the deterministic enumerator binds a distinctive Markdown value and path i
   assert.ok(call.prompt.includes(`Read and follow the Markdown role brief at ${correctnessBrief.readPath}.`));
   assert.match(call.prompt, /MINOS_CORRECTNESS_EVIDENCE_V1/);
   assert.match(call.prompt, /Assigned scope: internal\/x\.go/);
+});
+
+test("annexe commission content reaches exploration, specialists, repository concerns, and verifiers", async () => {
+  const marker = "MINOS_ESTATE_COMMISSION_CINNABAR_719";
+  const args = enumeratedArgs("aaa111", "bbb222", { guidanceContent: marker });
+  const exploration = explorationFixture({
+    briefs: [repositoryBrief(".review/error-tone.md", "title: Error Tone")],
+  });
+  const { calls } = await runRecorded(args, responder({ exploration }));
+  const relevant = calls.filter((call) =>
+    call.opts.label === "exploration" ||
+    call.opts.label?.startsWith("specialist-") ||
+    call.opts.label?.startsWith("repository-") ||
+    call.opts.label?.startsWith("verify-"));
+  assert.ok(relevant.length >= 4);
+  assert.ok(relevant.every((call) => call.prompt.includes(marker)));
+});
+
+test("repository fallback guidance reaches the recorded specialist consumer", async () => {
+  const marker = "MINOS_REPOSITORY_GUIDANCE_OCHRE_719";
+  const args = enumeratedArgs("aaa111", "bbb222", {
+    grounding: "repository",
+    guidanceName: "AGENTS.md",
+    guidanceContent: marker,
+  });
+  const { calls } = await runRecorded(args, responder());
+  const specialist = calls.find((call) => call.opts.label === "specialist-1-correctness-gpt");
+  assert.ok(specialist);
+  assert.match(specialist.prompt, /grounding="repository"/);
+  assert.ok(specialist.prompt.includes(marker));
+});
+
+test("the deterministic review input rejects empty and whitespace-only guidance", () => {
+  for (const guidanceContent of ["", " \n\t"]) {
+    assert.throws(
+      () => enumeratedArgs("aaa111", "bbb222", { guidanceContent }),
+      /guidance document is empty/,
+    );
+  }
+});
+
+test("direct review input with empty guidance fails before agent dispatch", async () => {
+  const { result, calls } = await runScript(
+    { ...ARGS, guidance: { ...ARGS.guidance, content: " \n\t" } },
+    responder(),
+  );
+  assert.equal(result.status, "incomplete");
+  assert.deepEqual(result.incomplete, ["deterministic input omitted reviewed-project guidance"]);
+  assert.equal(calls.length, 0);
 });
 
 test("both confidences travel with confirmed findings and low combined confidence flags the run record", async () => {
@@ -577,6 +644,16 @@ test("the lifecycle uses deterministic brief input, same-run resume, and workflo
   assert.match(lifecycle, /workflowProgress/);
   assert.match(lifecycle, /status.*`complete`/s);
   assert.doesNotMatch(lifecycle, /selfReportedModel/);
+});
+
+test("the lifecycle binds classification, forge-state idempotency, single-writer integration, and fresh review", () => {
+  assert.match(lifecycle, /fix-inputs\.mjs/);
+  assert.match(lifecycle, /fix\.js/);
+  assert.match(lifecycle, /reads the forge review and its comment collection first/);
+  assert.match(lifecycle, /integrate-wave/);
+  assert.match(lifecycle, /performs exactly one push/);
+  assert.match(lifecycle, /whole review Workflow on the new head/);
+  assert.match(lifecycle, /publish-overflow\.mjs/);
 });
 
 test("project guidance assigns proposal and verification judgement to workflow agents, not the lead", () => {

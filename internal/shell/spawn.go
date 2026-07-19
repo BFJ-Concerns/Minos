@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -44,25 +45,32 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return "", err
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
+	maximumRounds := ""
+	if repo.Review.MaximumRounds > 0 {
+		maximumRounds = strconv.Itoa(repo.Review.MaximumRounds)
+	}
 	env := map[string]string{
-		"MINOS_RUN_DIR":         runDir,
-		"MINOS_CONFIG":          cfg.Root,
-		"MINOS_FORGE":           facts.Forge,
-		"MINOS_WORKSPACE":       filepath.Join(runDir, "workspace"),
-		"MINOS_ORIENTATION":     filepath.Join(runDir, "orientation.json"),
-		"MINOS_OWNER":           facts.Owner,
-		"MINOS_REPO_NAME":       facts.Repo,
-		"MINOS_PR":              facts.PR,
-		"MINOS_HEAD_SHA":        facts.HeadSHA,
-		"MINOS_TARGET_SHA":      facts.BaseSHA,
-		"MINOS_BASE_REF":        facts.BaseRef,
-		"MINOS_HEAD_BRANCH":     facts.HeadRef,
-		"MINOS_API_BASE":        forgeConfig.APIBase,
-		"MINOS_CREDENTIAL_FILE": forgeConfig.CredentialFile,
-		"MINOS_BUILD_CMD":       repo.Adaptation.Build,
-		"MINOS_TEST_CMD":        repo.Adaptation.Test,
-		"MINOS_RUN_BODY":        repo.Adaptation.RunBody,
-		"MINOS_AUTO_MERGE":      fmt.Sprintf("%t", repo.Policy.AutoMerge),
+		"MINOS_RUN_DIR":          runDir,
+		"MINOS_CONFIG":           cfg.Root,
+		"MINOS_FORGE":            facts.Forge,
+		"MINOS_WORKSPACE":        filepath.Join(runDir, "workspace"),
+		"MINOS_ORIENTATION":      filepath.Join(runDir, "orientation.json"),
+		"MINOS_OWNER":            facts.Owner,
+		"MINOS_REPO_NAME":        facts.Repo,
+		"MINOS_PR":               facts.PR,
+		"MINOS_HEAD_SHA":         facts.HeadSHA,
+		"MINOS_TARGET_SHA":       facts.BaseSHA,
+		"MINOS_BASE_REF":         facts.BaseRef,
+		"MINOS_HEAD_BRANCH":      facts.HeadRef,
+		"MINOS_API_BASE":         forgeConfig.APIBase,
+		"MINOS_CREDENTIAL_FILE":  forgeConfig.CredentialFile,
+		"MINOS_BUILD_CMD":        repo.Adaptation.Build,
+		"MINOS_TEST_CMD":         repo.Adaptation.Test,
+		"MINOS_RUN_BODY":         repo.Adaptation.RunBody,
+		"MINOS_AUTO_MERGE":       fmt.Sprintf("%t", repo.Policy.AutoMerge),
+		"MINOS_REVIEW_THRESHOLD": repo.Review.Threshold,
+		"MINOS_FIX_CLUSTER_CAP":  strconv.Itoa(repo.Review.ClusterCap),
+		"MINOS_MAX_ROUNDS":       maximumRounds,
 	}
 	exe, err := os.Executable()
 	if err != nil {

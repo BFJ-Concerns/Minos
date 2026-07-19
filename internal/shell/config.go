@@ -50,6 +50,11 @@ type RepoConfig struct {
 	Policy struct {
 		AutoMerge bool `toml:"auto-merge"`
 	} `toml:"policy"`
+	Review struct {
+		Threshold     string `toml:"threshold"`
+		ClusterCap    int    `toml:"cluster-cap"`
+		MaximumRounds int    `toml:"maximum-rounds"`
+	} `toml:"review"`
 }
 
 func LoadServiceConfig(root string) (ServiceConfig, error) {
@@ -84,12 +89,36 @@ func LoadRepoConfigs(root string) ([]RepoConfig, error) {
 			return nil, err
 		}
 		repo.Path = path
+		if repo.Review.Threshold == "" {
+			repo.Review.Threshold = "High"
+		}
+		if repo.Review.ClusterCap == 0 {
+			repo.Review.ClusterCap = 5
+		}
 		if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
 			return nil, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
+		}
+		if !validReviewThreshold(repo.Review.Threshold) {
+			return nil, fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", path)
+		}
+		if repo.Review.ClusterCap < 1 {
+			return nil, fmt.Errorf("%s: review.cluster-cap must be positive", path)
+		}
+		if repo.Review.MaximumRounds < 0 {
+			return nil, fmt.Errorf("%s: review.maximum-rounds cannot be negative", path)
 		}
 		repos = append(repos, repo)
 	}
 	return repos, nil
+}
+
+func validReviewThreshold(value string) bool {
+	switch value {
+	case "Critical", "High", "Medium", "Low":
+		return true
+	default:
+		return false
+	}
 }
 
 func FindRepoConfig(cfg ServiceConfig, facts Facts) (RepoConfig, error) {

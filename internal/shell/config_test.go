@@ -41,3 +41,48 @@ func TestLoadServiceConfigRejectsUnknownKeys(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestLoadRepoConfigDefaultsReviewLoopKnobs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
+	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repos, err := LoadRepoConfigs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || repos[0].Review.Threshold != "High" || repos[0].Review.ClusterCap != 5 || repos[0].Review.MaximumRounds != 0 {
+		t.Fatalf("review defaults = %+v", repos)
+	}
+}
+
+func TestLoadRepoConfigValidatesReviewLoopKnobs(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		review string
+		want   string
+	}{
+		{name: "threshold", review: "threshold = \"Urgent\"", want: "review.threshold"},
+		{name: "cluster cap", review: "cluster-cap = -1", want: "review.cluster-cap"},
+		{name: "maximum rounds", review: "maximum-rounds = -1", want: "review.maximum-rounds"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\n[adaptation]\nrun-body = \"/tmp/run-body\"\n[review]\n" + test.review + "\n"
+			if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadRepoConfigs(root)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}

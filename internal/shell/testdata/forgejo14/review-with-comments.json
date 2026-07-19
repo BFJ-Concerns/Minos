@@ -1,0 +1,36 @@
+{
+  "openapi_source": "https://codeberg.org/forgejo/forgejo/raw/tag/v14.0.0/templates/swagger/v1_json.tmpl",
+  "request": {
+    "event": "COMMENT",
+    "body": "Confirmed findings in the reviewed code.",
+    "commit_id": "head-sha",
+    "comments": [
+      {
+        "path": "internal/state.go",
+        "body": "The transition accepts an invalid state.",
+        "new_position": 41
+      }
+    ]
+  },
+  "review": {
+    "id": 73,
+    "state": "COMMENT",
+    "commit_id": "head-sha",
+    "body": "Confirmed findings in the reviewed code.",
+    "user": {
+      "login": "Minos"
+    }
+  },
+  "comments": [
+    {
+      "id": 91,
+      "pull_request_review_id": 73,
+      "path": "internal/state.go",
+      "body": "The transition accepts an invalid state.",
+      "position": 41,
+      "original_position": 0,
+      "commit_id": "head-sha",
+      "original_commit_id": "head-sha"
+    }
+  ]
+}

@@ -10,9 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"bfj/minos/internal/product"
 )
 
 func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
@@ -282,6 +285,168 @@ func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
 	}
 }
 
+func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *testing.T) {
+	var apiShape struct {
+		Request  map[string]any   `json:"request"`
+		Review   map[string]any   `json:"review"`
+		Comments []map[string]any `json:"comments"`
+	}
+	data, err := os.ReadFile(filepath.Join("testdata", "forgejo14", "review-with-comments.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &apiShape); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		preseed bool
+	}{
+		{name: "post then rerun"},
+		{name: "crashed post already visible", preseed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, _, _ := state.service(t)
+			writeServiceConfig(t, cfg)
+			t.Setenv("MINOS_CONFIG", cfg.Root)
+			t.Setenv("MINOS_FORGE", "forgejo")
+			t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+			t.Setenv("MINOS_REPO_NAME", "subject")
+			t.Setenv("MINOS_PR", "1")
+
+			head := state.headSHA()
+			target := state.targetSHA()
+			body := apiShape.Request["body"].(string)
+			record, err := product.FormatRecord(map[string]string{"head": head, "target": target})
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectedBody := body + "\n\n" + record
+			if test.preseed {
+				review := mapsClone(apiShape.Review)
+				review["commit_id"] = head
+				review["body"] = expectedBody
+				state.setReviewWithComments(review, apiShape.Comments)
+			}
+
+			bodyPath := filepath.Join(t.TempDir(), "body.md")
+			commentsPath := filepath.Join(t.TempDir(), "comments.json")
+			if err := os.WriteFile(bodyPath, []byte(body+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			comments, err := json.Marshal(apiShape.Request["comments"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(commentsPath, comments, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			attempts := 2
+			if test.preseed {
+				attempts = 1
+			}
+			for attempt := 0; attempt < attempts; attempt++ {
+				if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
+					t.Fatalf("review attempt %d: %v", attempt+1, err)
+				}
+			}
+
+			writes, payload := state.reviewWriteFacts()
+			wantWrites := 1
+			if test.preseed {
+				wantWrites = 0
+			}
+			if writes != wantWrites {
+				t.Fatalf("review writes = %d, want %d", writes, wantWrites)
+			}
+			if !test.preseed {
+				if payload["commit_id"] != head || payload["event"] != "COMMENT" || payload["body"] != expectedBody {
+					t.Fatalf("review payload = %#v", payload)
+				}
+				postedComments := payload["comments"].([]any)
+				comment := postedComments[0].(map[string]any)
+				if comment["path"] != "internal/state.go" || comment["new_position"] != float64(41) {
+					t.Fatalf("review comment = %#v", comment)
+				}
+			}
+		})
+	}
+
+	t.Run("review without inline comments is also idempotent", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, _, _ := state.service(t)
+		writeServiceConfig(t, cfg)
+		t.Setenv("MINOS_CONFIG", cfg.Root)
+		t.Setenv("MINOS_FORGE", "forgejo")
+		t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+		t.Setenv("MINOS_REPO_NAME", "subject")
+		t.Setenv("MINOS_PR", "1")
+		bodyPath := filepath.Join(t.TempDir(), "body.md")
+		if err := os.WriteFile(bodyPath, []byte("The reviewed code is clean.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := ForgeCommand(t.Context(), []string{"review", state.headSHA(), state.targetSHA(), "approve", bodyPath}, &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if writes, _ := state.reviewWriteFacts(); writes != 1 {
+			t.Fatalf("review writes = %d, want one", writes)
+		}
+	})
+
+	t.Run("confirmed-unfixed request changes reach the guarded review consumer once", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, _, _ := state.service(t)
+		writeServiceConfig(t, cfg)
+		t.Setenv("MINOS_CONFIG", cfg.Root)
+		t.Setenv("MINOS_FORGE", "forgejo")
+		t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+		t.Setenv("MINOS_REPO_NAME", "subject")
+		t.Setenv("MINOS_PR", "1")
+
+		bodyPath := filepath.Join(t.TempDir(), "body.md")
+		commentsPath := filepath.Join(t.TempDir(), "comments.json")
+		if err := os.WriteFile(bodyPath, []byte("Confirmed code findings remain unresolved.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		comments, err := json.Marshal(apiShape.Request["comments"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(commentsPath, comments, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := ForgeCommand(t.Context(), []string{"review", state.headSHA(), state.targetSHA(), "request-changes", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
+				t.Fatalf("request-changes attempt %d: %v", attempt+1, err)
+			}
+		}
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != state.headSHA() {
+			t.Fatalf("request-changes writes = %d, payload = %#v", writes, payload)
+		}
+		postedComments := payload["comments"].([]any)
+		comment := postedComments[0].(map[string]any)
+		if comment["path"] != "internal/state.go" || comment["new_position"] != float64(41) {
+			t.Fatalf("request-changes comment = %#v", comment)
+		}
+	})
+}
+
+func mapsClone(source map[string]any) map[string]any {
+	clone := make(map[string]any, len(source))
+	for key, value := range source {
+		clone[key] = value
+	}
+	return clone
+}
+
 type forgejoFixtureState struct {
 	t              *testing.T
 	pullRequest    map[string]any
@@ -299,6 +464,9 @@ type forgejoFixtureState struct {
 	obsoleteAssignmentWrites int
 	reactionWrites           int
 	statusWrites             int
+	reviewWrites             int
+	reviewPayloads           []map[string]any
+	reviewComments           map[int64][]map[string]any
 	statusReadCommits        []string
 	virtualRefLookups        int
 	annexeCloneURL           string
@@ -320,7 +488,7 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 	}
 	state := &forgejoFixtureState{
 		t: t, pullRequest: event.PullRequest, repository: event.Repository,
-		adaptationPath: adaptationPath,
+		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any),
 	}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
@@ -377,6 +545,23 @@ func (s *forgejoFixtureState) setReviews(reviews []map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reviews = reviews
+}
+
+func (s *forgejoFixtureState) setReviewWithComments(review map[string]any, comments []map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviews = []map[string]any{review}
+	id := int64(review["id"].(float64))
+	s.reviewComments[id] = comments
+}
+
+func (s *forgejoFixtureState) reviewWriteFacts() (int, map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.reviewPayloads) == 0 {
+		return s.reviewWrites, nil
+	}
+	return s.reviewWrites, s.reviewPayloads[len(s.reviewPayloads)-1]
 }
 
 func (s *forgejoFixtureState) setStatuses(statuses []map[string]any) {
@@ -473,6 +658,41 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, payload)
 	case r.Method == http.MethodGet && path == pullPath+"/reviews":
 		writeFixtureJSON(s.t, w, s.reviews)
+	case r.Method == http.MethodPost && path == pullPath+"/reviews":
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		nextID := int64(len(s.reviews) + 1)
+		review := map[string]any{
+			"id": nextID, "state": payload["event"], "commit_id": payload["commit_id"],
+			"body": payload["body"], "user": map[string]any{"login": "Minos"},
+		}
+		var comments []map[string]any
+		if requestedComments, ok := payload["comments"].([]any); ok {
+			for index, raw := range requestedComments {
+				comment := mapsClone(raw.(map[string]any))
+				comment["id"] = index + 1
+				comment["pull_request_review_id"] = nextID
+				comment["position"] = comment["new_position"]
+				comment["original_position"] = float64(0)
+				delete(comment, "new_position")
+				comments = append(comments, comment)
+			}
+		}
+		s.reviews = append(s.reviews, review)
+		s.reviewComments[nextID] = comments
+		s.reviewWrites++
+		s.reviewPayloads = append(s.reviewPayloads, payload)
+		writeFixtureJSON(s.t, w, review)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, pullPath+"/reviews/") && strings.HasSuffix(path, "/comments"):
+		trimmed := strings.TrimSuffix(strings.TrimPrefix(path, pullPath+"/reviews/"), "/comments")
+		id, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid review id", http.StatusBadRequest)
+			return
+		}
+		writeFixtureJSON(s.t, w, s.reviewComments[id])
 	case r.Method == http.MethodGet && path == issuePath:
 		assignees := make([]map[string]any, 0, len(s.assignees))
 		for _, login := range s.assignees {

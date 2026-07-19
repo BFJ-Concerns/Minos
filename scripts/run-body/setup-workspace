@@ -36,6 +36,10 @@ forge_get() {
   fi
 }
 
+guidance_has_content() {
+  [ -f "$1" ] && grep -q '[^[:space:]]' "$1"
+}
+
 forge_get "/api/v1/repos/${MINOS_OWNER}/${MINOS_REPO_NAME}/pulls/${MINOS_PR}"
 if [ "$response_status" != "200" ]; then
   echo "setup-workspace: pull request lookup returned HTTP $response_status" >&2
@@ -75,19 +79,39 @@ case "$response_status" in
       exit 1
     fi
     git -c "http.extraHeader=Authorization: token ${forge_token}" clone "$annexe_url" "$annexe_path"
+    git -C "$annexe_path" config user.name "$MINOS_GIT_AUTHOR_NAME"
+    git -C "$annexe_path" config user.email "$MINOS_GIT_AUTHOR_EMAIL"
+    git -C "$annexe_path" config http.extraHeader "Authorization: token ${forge_token}"
+    annexe_guidance="$annexe_path/README.md"
+    if ! guidance_has_content "$annexe_guidance"; then
+      echo "setup-workspace: annexe README.md guidance is missing or empty" >&2
+      exit 1
+    fi
     jq -n \
       --arg repository "$MINOS_WORKSPACE" \
       --arg head "$checked_out_head" \
       --arg annexe "$annexe_path" \
-      --arg guidance "$annexe_path/README.md" \
+      --arg guidance "$annexe_guidance" \
       '{repository:$repository,head:$head,grounding:"annexe",annexe:$annexe,guidance:$guidance}' \
       >"$MINOS_ORIENTATION"
     ;;
   404)
+    repository_guidance=""
+    for candidate in AGENTS.md CLAUDE.md README.md; do
+      if guidance_has_content "$MINOS_WORKSPACE/$candidate"; then
+        repository_guidance="$MINOS_WORKSPACE/$candidate"
+        break
+      fi
+    done
+    if [ -z "$repository_guidance" ]; then
+      echo "setup-workspace: repository fallback has no non-empty checked-in guidance" >&2
+      exit 1
+    fi
     jq -n \
       --arg repository "$MINOS_WORKSPACE" \
       --arg head "$checked_out_head" \
-      '{repository:$repository,head:$head,grounding:"repository",reason:"annexe-not-found"}' \
+      --arg guidance "$repository_guidance" \
+      '{repository:$repository,head:$head,grounding:"repository",guidance:$guidance,reason:"annexe-not-found"}' \
       >"$MINOS_ORIENTATION"
     ;;
   *)
