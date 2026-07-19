@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 var unitSafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
@@ -24,7 +25,18 @@ const (
 
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnOutcome, error) {
 	unit := UnitName(facts)
-	if _, err := commandCombinedOutput(ctx, "systemctl", "--user", "is-active", "--quiet", unit); err == nil {
+	unlock, err := lockAdmission(cfg.Runs.Dir)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
+	out, err := commandCombinedOutput(ctx, "systemctl", "--user", "list-units",
+		"--type=service", "--state=activating,active", "--no-legend", "--plain", "--full", "--no-pager", "minos-*.service")
+	if err != nil {
+		return "", fmt.Errorf("inspect active Minos units: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if strings.TrimSpace(string(out)) != "" {
 		return SpawnSuppressed, nil
 	}
 	runDir, err := os.MkdirTemp(cfg.Runs.Dir, unit+"-")
@@ -67,7 +79,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		args = append(args, "--setenv", key+"="+value)
 	}
 	args = append(args, exe, "run", "--config", cfg.Root)
-	out, err := commandCombinedOutput(ctx, "systemd-run", args...)
+	out, err = commandCombinedOutput(ctx, "systemd-run", args...)
 	if err != nil {
 		_ = os.RemoveAll(runDir)
 		if strings.Contains(string(out), "already exists") {
@@ -76,6 +88,21 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return "", fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return SpawnStarted, nil
+}
+
+func lockAdmission(runsDir string) (func(), error) {
+	lock, err := os.OpenFile(filepath.Join(runsDir, ".admission.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open admission lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("lock admission: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+	}, nil
 }
 
 func UnitName(facts Facts) string {
