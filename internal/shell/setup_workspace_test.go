@@ -64,9 +64,12 @@ func TestSetupWorkspaceRecordsRepositoryGuidanceFallbackWithoutAnnexe(t *testing
 }
 
 type orientationState struct {
-	Grounding string `json:"grounding"`
-	Guidance  string `json:"guidance"`
-	Reason    string `json:"reason"`
+	Repository string `json:"repository"`
+	Head       string `json:"head"`
+	Grounding  string `json:"grounding"`
+	Annexe     string `json:"annexe"`
+	Guidance   string `json:"guidance"`
+	Reason     string `json:"reason"`
 }
 
 func readOrientation(t *testing.T, path string) orientationState {

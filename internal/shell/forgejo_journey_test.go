@@ -299,7 +299,9 @@ type forgejoFixtureState struct {
 	obsoleteAssignmentWrites int
 	reactionWrites           int
 	statusWrites             int
+	statusReadCommits        []string
 	virtualRefLookups        int
+	annexeCloneURL           string
 }
 
 func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
@@ -383,6 +385,18 @@ func (s *forgejoFixtureState) setStatuses(statuses []map[string]any) {
 	s.statuses = statuses
 }
 
+func (s *forgejoFixtureState) setAnnexeCloneURL(cloneURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.annexeCloneURL = cloneURL
+}
+
+func (s *forgejoFixtureState) statusReadFacts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.statusReadCommits...)
+}
+
 func (s *forgejoFixtureState) statusWriteFacts() (int, any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -411,6 +425,12 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, map[string]any{"login": "Minos"})
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject":
 		writeFixtureJSON(s.t, w, s.repository)
+	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject-Annexe":
+		if s.annexeCloneURL == "" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.annexeCloneURL})
 	case r.Method == http.MethodGet && path == pullPath:
 		writeFixtureJSON(s.t, w, s.pullRequest)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/branches/main"):
@@ -425,6 +445,8 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"protected": false})
 	case r.Method == http.MethodGet && strings.Contains(path, "/commits/") && strings.HasSuffix(path, "/statuses"):
+		commit := strings.TrimSuffix(strings.SplitN(path, "/commits/", 2)[1], "/statuses")
+		s.statusReadCommits = append(s.statusReadCommits, commit)
 		writeFixtureJSON(s.t, w, s.statuses)
 	case r.Method == http.MethodPost && strings.Contains(path, "/statuses/"):
 		var payload map[string]any
