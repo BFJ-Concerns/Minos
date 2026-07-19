@@ -83,7 +83,7 @@ jq -nc \
     required_checks: [($base.status_check_contexts // [])[] | {provider:$provider, context:.}],
     statuses: [$statuses[] |
       if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
-        {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), protection_satisfied:false}
+        {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // ""), protection_satisfied:false}
       end] | sort_by(.id) | reverse,
     reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // "")}],
     allowed_merge_methods: ([

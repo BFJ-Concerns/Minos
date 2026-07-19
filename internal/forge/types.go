@@ -47,6 +47,7 @@ type Status struct {
 	State               StatusState `json:"state"`
 	Creator             string      `json:"creator"`
 	Description         string      `json:"description"`
+	TargetURL           string      `json:"target_url"`
 	ProtectionSatisfied bool        `json:"protection_satisfied"`
 }
 

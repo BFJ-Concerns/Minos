@@ -43,7 +43,7 @@ if ! printf '%s' "$issue_json" | jq -e --arg login "$login" '
   [.assignees[]? | .login // .username // ""] | index($login) != null
 ' >/dev/null; then
   payload="$(jq -nc --arg login "$login" '{assignees:[$login]}')"
-  api POST "${issue_path}/assignees" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+  api PATCH "$issue_path" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
     write_result uncertain "pull request assignment could not be written"
     exit 0
   }

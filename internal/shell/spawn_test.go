@@ -2,9 +2,9 @@ package shell
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -15,10 +15,12 @@ func TestSpawnRunReportsSuppressedForActiveUnit(t *testing.T) {
 	var commands []string
 	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
 		commands = append(commands, name)
-		return nil, nil
+		return []byte("minos-other-repo-pr9.service loaded active running Minos lead\n"), nil
 	}
 
-	outcome, err := SpawnRun(t.Context(), ServiceConfig{}, RepoConfig{}, Facts{Owner: "owner", Repo: "repo", PR: "1"})
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = t.TempDir()
+	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, Facts{Owner: "owner", Repo: "repo", PR: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +40,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		switch name {
 		case "systemctl":
-			return nil, errors.New("inactive")
+			return nil, nil
 		case "systemd-run":
 			systemdArgs = append([]string(nil), args...)
 			return nil, nil
@@ -107,6 +109,71 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		return strings.HasPrefix(arg, "MINOS_ORIENTATION=")
 	}) {
 		t.Fatalf("systemd-run arguments omit MINOS_ORIENTATION: %v", systemdArgs)
+	}
+}
+
+func TestSpawnRunSerialisesConcurrentAdmissionAgainstSystemdFacts(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+
+	var mu sync.Mutex
+	active := false
+	starts := 0
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch name {
+		case "systemctl":
+			if active {
+				return []byte("minos-owner-repo-pr1.service loaded active running Minos lead\n"), nil
+			}
+			return nil, nil
+		case "systemd-run":
+			active = true
+			starts++
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command %q", name)
+			return nil, nil
+		}
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+	repo := RepoConfig{}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+
+	results := make(chan SpawnOutcome, 2)
+	errors := make(chan error, 2)
+	var group sync.WaitGroup
+	for _, pr := range []string{"1", "2"} {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			outcome, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: pr})
+			results <- outcome
+			errors <- err
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var outcomes []SpawnOutcome
+	for outcome := range results {
+		outcomes = append(outcomes, outcome)
+	}
+	slices.Sort(outcomes)
+	if !slices.Equal(outcomes, []SpawnOutcome{SpawnStarted, SpawnSuppressed}) {
+		t.Fatalf("outcomes = %v, want one start and one suppression", outcomes)
+	}
+	if starts != 1 {
+		t.Fatalf("systemd starts = %d, want one", starts)
 	}
 }
 
