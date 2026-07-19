@@ -146,6 +146,36 @@ test("the configured maximum rounds stops another fix dispatch", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("single-wave mode dispatches every brief finding once and requests build and tests without re-review", async () => {
+  const findings = [
+    finding("material", "High", "a.go", 1),
+    finding("minor", "Low", "b.go", 2),
+  ];
+  const { result, calls } = await run(args(findings, { singleWave: true, clusterCap: 1 }));
+  assert.equal(result.classification, "single-wave");
+  assert.equal(calls.length, 2);
+  assert.ok(result.dispatches.every((entry) => entry.attempt === 1));
+  assert.equal(result.repairsComplete, true);
+  assert.equal(result.buildAndTestsRequired, true);
+  assert.equal(result.rerunReview, false);
+  assert.equal(result.sweepReview, null);
+  assert.equal(result.fixReview, null);
+});
+
+test("a failed single-wave brief fix is not retried and cannot pass the stage", async () => {
+  const original = finding("transition", "High", "internal/state.go", 41);
+  const { result, calls } = await run(args([original], { singleWave: true }), (_label, prompt) => ({
+    commit: "",
+    fixes: assignedFindings(prompt).map((item) => ({ findingKey: item.key, status: "failed", writeUp: "could not repair" })),
+  }));
+  assert.equal(calls.length, 1);
+  assert.equal(result.dispatches.length, 1);
+  assert.equal(result.confirmedUnfixed.length, 1);
+  assert.equal(result.confirmedUnfixed[0].attempts, 1);
+  assert.equal(result.repairsComplete, false);
+  assert.equal(result.rerunReview, false);
+});
+
 test("published review prose discusses code without process or round labels", async () => {
   const { result } = await run(args([finding("transition", "High", "state.go", 4)]));
   const prose = JSON.stringify([result.sweepReview, result.fixReview]);
@@ -212,4 +242,19 @@ test("the deterministic fix input carries configured loop knobs and the run reco
   assert.equal(input.maximumRounds, 8);
   assert.equal(input.runRecord.round, 3);
   assert.equal(input.guidance.content, "COMMISSION_VIOLET_719");
+});
+
+test("the deterministic fix input selects single-wave mode explicitly", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-single-wave-"));
+  const guidancePath = join(root, "README.md");
+  const orientationPath = join(root, "orientation.json");
+  const reviewPath = join(root, "review.json");
+  writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
+  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
+  writeFileSync(reviewPath, JSON.stringify({ status: "complete", confirmedFindings: [] }));
+  const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, "--single-wave"], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root },
+  }));
+  assert.equal(input.singleWave, true);
 });

@@ -80,6 +80,35 @@ func TestClaimUsesServiceIdentity(t *testing.T) {
 	}
 }
 
+func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
+	runner := &recordingRunner{
+		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
+		errors:  []error{nil},
+	}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := Guard{
+		Repository:  Repository{Owner: "owner", Name: "repo"},
+		PullRequest: 17,
+		HeadSHA:     "head-sha",
+		TargetSHA:   "target-sha",
+	}
+	result := adapter.AddReaction(t.Context(), guard, "+1")
+	if result.Outcome != WriteApplied {
+		t.Fatalf("result = %#v", result)
+	}
+	request := runner.requests[0]
+	if request.Operation != "guarded-add-reaction" {
+		t.Fatalf("operation = %q, want guarded-add-reaction", request.Operation)
+	}
+	want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos", "+1"}
+	if !slices.Equal(request.Arguments, want) {
+		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
+	}
+}
+
 type recordingRunner struct {
 	requests []RunRequest
 	outputs  [][]byte

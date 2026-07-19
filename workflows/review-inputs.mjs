@@ -35,7 +35,6 @@ if (!target || !head) {
     "workflows/review-briefs/security.md",
     "workflows/review-briefs/testing.md",
     "workflows/review-briefs/design.md",
-    "workflows/review-briefs/repository.md",
     "workflows/review-briefs/verifier.md",
   ];
   const instructionBriefs = paths.map((path) => ({

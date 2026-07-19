@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|merge")
+		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|reaction|merge")
 	}
 	adapter, guard, err := leadForge()
 	if err != nil {
@@ -76,6 +76,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			}
 		}
 		return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text, comments))
+	case "reaction":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge reaction HEAD TARGET CONTENT")
+		}
+		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
+		return emitForgeResult(stdout, "reaction", adapter.AddReaction(ctx, guard, args[3]))
 	case "merge":
 		if len(args) != 4 {
 			return fmt.Errorf("usage: minos forge merge HEAD TARGET METHOD")

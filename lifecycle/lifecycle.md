@@ -41,10 +41,10 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    supplies that content together with the shipped role briefs. Do not ask an
    agent to reproduce it or hand-author its `guidance` or `instructionBriefs`
    entries. The workflow binds that project guidance into exploration, every
-   specialist and every verifier; it supplies the review plan, bounded
-   specialists, repository `.review/` concerns and opposite-family
-   verification. Consume its verdict rather than proposing or verifying
-   findings yourself.
+   specialist and every verifier; it supplies the review plan, Minos's bounded
+   specialists and opposite-family verification. Repository `.review/`
+   concerns do not run in this loop. Consume the workflow's verdict rather than
+   proposing or verifying findings yourself.
 
    Actual served models exist in the Workflow tool's run record outside the
    script. After the first pass, add that result's `workflowProgress` array
@@ -60,9 +60,8 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    rather than an ordinary `incomplete` verdict.
 
    Only a final workflow result whose `status` is `complete` is publishable. A
-   `.review/` concern reported as `not-run`, a missing result, or missing or
-   wrong-family run-record evidence leaves it `incomplete`. In either
-   `incomplete` or `infrastructure-failure`, publish no review and set
+   missing result or missing or wrong-family run-record evidence leaves it
+   `incomplete`. In either `incomplete` or `infrastructure-failure`, publish no review and set
    `"$MINOS_BIN" forge status HEAD TARGET incomplete`.
 5. Save each complete review result and run
    `"${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs" REVIEW_RESULT LOOP_RECORD` to
@@ -117,12 +116,63 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    Review prose talks only about the code, never about Minos, its process or a
    round number. Operational conditions — head moved, forge unreadable, review
    not reached — are always carried by the `Minos` status, never by a review.
-7. If required checks are still red as you finish, or the pull request carries
+7. Once the main loop has reached its terminal classification, build the
+   repository-brief input from disk with `node
+   "${MINOS_REVIEW_WORKFLOW%/*}/review-brief-inputs.mjs"
+   "$MINOS_TARGET_SHA" CURRENT_HEAD`. This deterministic
+   enumeration supplies every `.review/` Markdown brief and its content, the
+   changed paths, and the tracked-file inventory used for full-extent sharding
+   and weighted whole-tree limits. Do not hand-author or agent-enumerate these
+   values.
+
+   When `hasReviewDirectory` is false, run no brief Workflow and add the clean
+   signal immediately with `"$MINOS_BIN" forge reaction CURRENT_HEAD
+   "$MINOS_TARGET_SHA" +1`. This guarded write reads the forge reactions before
+   and after writing, so it is safe to repeat. It posts no comment.
+
+   When `.review/` exists, run the Workflow at
+   `"${MINOS_REVIEW_WORKFLOW%/*}/review-briefs.js"` with the enumerated object as
+   `args`. Handle its `workflowProgress`, `scriptPath`, `resumeFromRunId`,
+   attempts and terminal conditions exactly like the main review Workflow. Its
+   scripted gates apply extent, sweep and occasion; its relevance judgement
+   skips a concern only when the diff clearly gives it nothing to do. A skipped
+   concern remains `skipped` in the returned run record and is never published
+   on the pull request. A `not-run` concern, missing result, or incomplete
+   actual-model evidence makes this stage incomplete: publish no brief review,
+   add no 👍, and set `"$MINOS_BIN" forge status CURRENT_HEAD
+   "$MINOS_TARGET_SHA" incomplete`.
+
+   On a complete result, materialise `briefReview.body` and
+   `briefReview.comments` when `briefReview` is present, then post exactly one
+   distinct review group with `"$MINOS_BIN" forge review CURRENT_HEAD
+   "$MINOS_TARGET_SHA" comment BODY_FILE COMMENTS_FILE`. The guarded review
+   command makes that group idempotent. Do not publish a review when there are
+   no confirmed brief findings, and never publish an all-clear comment.
+
+   When `fixRequired` is false, the brief stage has passed: add the 👍 with
+   `"$MINOS_BIN" forge reaction CURRENT_HEAD "$MINOS_TARGET_SHA" +1` and
+   continue to finishing. When `fixRequired` is true, save the complete brief
+   result and run `"${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs"
+   BRIEF_RESULT --single-wave`; run the existing `fix.js` Workflow with that
+   input. This mode dispatches every confirmed brief finding exactly once and
+   never requests a second brief review or fix wave. If its
+   `integration.commits` is non-empty, integrate them through `integrate-wave`
+   exactly as in the main loop, then take a fresh forge snapshot and use its
+   current head. Run `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD` exactly as
+   configured and to completion when each is non-empty; do not substitute or
+   invent commands. If the single wave leaves `confirmedUnfixed` entries, or
+   integration, build or tests fail, add no 👍 and set attention or incomplete
+   to reflect the actual result. If all fixes were integrated and the exact
+   configured build and tests pass, the brief stage has passed: add the 👍 on
+   the fresh head. Do not run another review loop. Thus both a no-findings pass
+   and a findings-fixed-and-verified pass end in the same idempotent 👍 signal.
+
+8. If required checks are still red as you finish, or the pull request carries
    the `Flaky Tests` label, dispatch a root-cause agent: a Claude Code session
    with the `root-cause` skill on `gpt-5.6-sol` at high effort, to diagnose,
    fix what it proves, and push. Its push moves the head, so this run does not
    merge; the new head gets its own fresh attempt.
-8. If `$MINOS_AUTO_MERGE` is `true`, the run is complete, the pull request is
+9. If `$MINOS_AUTO_MERGE` is `true`, the run is complete, the pull request is
    clean, required checks pass, and the forge reports it mergeable, use an
    allowed method with `"$MINOS_BIN" forge merge HEAD TARGET METHOD`, then set
    `merged`. Never merge a head that moved after your review.
