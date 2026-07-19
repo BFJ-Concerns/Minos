@@ -92,8 +92,6 @@ function responder({ exploration = explorationFixture(), scopes, specialist, ver
     if (label.startsWith("verify-"))
       return verify ? verify(label, prompt, opts) : { verdict: "upheld", confidence: 91, reason: "reproduced" };
     if (specialist) return specialist(label, prompt, opts);
-    if (label.startsWith("repository-"))
-      return { applicable: true, reason: "the concern applies", findings: [finding()] };
     return { findings: [finding()] };
   };
 }
@@ -121,7 +119,7 @@ async function runRecorded(args, respond, { overrides = {}, extra = {} } = {}) {
 }
 
 function reviewCalls(calls) {
-  return calls.filter((call) => call.opts.label?.startsWith("specialist-") || call.opts.label?.startsWith("repository-"));
+  return calls.filter((call) => call.opts.label?.startsWith("specialist-"));
 }
 
 test("right-family run-record evidence completes the workflow", async () => {
