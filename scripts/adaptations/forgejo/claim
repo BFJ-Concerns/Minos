@@ -1,0 +1,87 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+login="$4"
+
+user_json="$(api GET "/api/v1/user")" || {
+  write_result uncertain "authenticated forge identity could not be read"
+  exit 0
+}
+actual_login="$(printf '%s' "$user_json" | jq -r '.login // .username // ""')"
+if [ "$actual_login" != "$login" ]; then
+  write_result rejected "authenticated forge identity is ${actual_login:-missing}, expected $login"
+  exit 0
+fi
+
+pr_json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}")" || {
+  write_result uncertain "pull request state could not be read"
+  exit 0
+}
+if ! printf '%s' "$pr_json" | jq -e \
+  --arg repository "${owner}/${repo}" \
+  --argjson pr "$pr" '
+  .number == $pr and
+  .base.repo.full_name == $repository and
+  .state == "open" and
+  (.merged // false | not)
+' >/dev/null; then
+  write_result rejected "pull request is no longer open"
+  exit 0
+fi
+
+issue_path="/api/v1/repos/${owner}/${repo}/issues/${pr}"
+issue_json="$(api GET "$issue_path")" || {
+  write_result uncertain "pull request issue state could not be read"
+  exit 0
+}
+if ! printf '%s' "$issue_json" | jq -e --arg login "$login" '
+  [.assignees[]? | .login // .username // ""] | index($login) != null
+' >/dev/null; then
+  payload="$(jq -nc --arg login "$login" '{assignees:[$login]}')"
+  api POST "${issue_path}/assignees" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+    write_result uncertain "pull request assignment could not be written"
+    exit 0
+  }
+fi
+
+reactions_path="${issue_path}/reactions"
+reactions_json="$(api GET "$reactions_path")" || {
+  write_result uncertain "pull request reactions could not be read"
+  exit 0
+}
+if ! printf '%s' "$reactions_json" | jq -e --arg login "$login" '
+  any(.[]?; (.content == "eyes") and ((.user.login // .user.username // "") == $login))
+' >/dev/null; then
+  api POST "$reactions_path" -H "Content-Type: application/json" --data '{"content":"eyes"}' >/dev/null || {
+    write_result uncertain "eyes reaction could not be written"
+    exit 0
+  }
+fi
+
+issue_json="$(api GET "$issue_path")" || {
+  write_result uncertain "pull request assignment could not be confirmed"
+  exit 0
+}
+reactions_json="$(api GET "$reactions_path")" || {
+  write_result uncertain "eyes reaction could not be confirmed"
+  exit 0
+}
+if ! printf '%s' "$issue_json" | jq -e --arg login "$login" '
+  [.assignees[]? | .login // .username // ""] | index($login) != null
+' >/dev/null; then
+  write_result uncertain "pull request assignment was not confirmed"
+  exit 0
+fi
+if ! printf '%s' "$reactions_json" | jq -e --arg login "$login" '
+  any(.[]?; (.content == "eyes") and ((.user.login // .user.username // "") == $login))
+' >/dev/null; then
+  write_result uncertain "eyes reaction was not confirmed"
+  exit 0
+fi
+
+write_result applied

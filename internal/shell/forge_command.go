@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|status|review|merge")
+		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|merge")
 	}
 	adapter, guard, err := leadForge()
 	if err != nil {
@@ -33,6 +33,11 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(snapshot)
+	case "claim":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: minos forge claim")
+		}
+		return emitForgeResult(stdout, "claim", adapter.Claim(ctx, guard.Repository, guard.PullRequest))
 	case "status":
 		if len(args) != 4 {
 			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|clean|merged")

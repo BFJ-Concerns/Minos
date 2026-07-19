@@ -11,16 +11,25 @@ import (
 )
 
 var unitSafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
-var systemdRunCommand = exec.CommandContext
+var commandCombinedOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
 
-func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) error {
+type SpawnOutcome string
+
+const (
+	SpawnStarted    SpawnOutcome = "started"
+	SpawnSuppressed SpawnOutcome = "suppressed"
+)
+
+func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnOutcome, error) {
 	unit := UnitName(facts)
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "is-active", "--quiet", unit).Run(); err == nil {
-		return nil
+	if _, err := commandCombinedOutput(ctx, "systemctl", "--user", "is-active", "--quiet", unit); err == nil {
+		return SpawnSuppressed, nil
 	}
 	runDir, err := os.MkdirTemp(cfg.Runs.Dir, unit+"-")
 	if err != nil {
-		return err
+		return "", err
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
 	env := map[string]string{
@@ -36,22 +45,27 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	exe, err := os.Executable()
 	if err != nil {
 		_ = os.RemoveAll(runDir)
-		return err
+		return "", err
 	}
-	args := []string{"--user", "--collect", "--unit", unit, "--property=KillMode=control-group"}
+	args := []string{
+		"--user", "--collect", "--unit", unit,
+		"--property=ExitType=cgroup",
+		"--property=KillMode=control-group",
+		"--property=RuntimeMaxSec=12h",
+	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)
 	}
 	args = append(args, exe, "run", "--config", cfg.Root)
-	out, err := systemdRunCommand(ctx, "systemd-run", args...).CombinedOutput()
+	out, err := commandCombinedOutput(ctx, "systemd-run", args...)
 	if err != nil {
 		_ = os.RemoveAll(runDir)
 		if strings.Contains(string(out), "already exists") {
-			return nil
+			return SpawnSuppressed, nil
 		}
-		return fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return SpawnStarted, nil
 }
 
 func UnitName(facts Facts) string {

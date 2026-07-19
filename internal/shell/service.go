@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
 )
 
 func currentSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (forge.Snapshot, error) {
@@ -21,32 +20,12 @@ func currentSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (forge
 }
 
 func alreadyReviewed(snapshot forge.Snapshot, botLogin string) bool {
-	reviewed := false
 	for _, review := range snapshot.Reviews {
-		if review.User != botLogin || review.CommitID != snapshot.HeadSHA {
-			continue
-		}
-		record, ok := product.TrailingRecord(review.Body)
-		if ok && record["head"] == snapshot.HeadSHA && record["target"] == snapshot.TargetSHA {
-			reviewed = true
-			break
+		if review.User == botLogin && review.CommitID == snapshot.HeadSHA {
+			return true
 		}
 	}
-	if !reviewed {
-		return false
-	}
-
-	var latest forge.Status
-	for _, status := range snapshot.Statuses {
-		if status.Provider == forge.ForgejoProvider && status.Context == forge.OwnedStatusContext && status.Creator == botLogin && status.ID > latest.ID {
-			latest = status
-		}
-	}
-	return statusMatches(latest, product.Attention()) || statusMatches(latest, product.Clean())
-}
-
-func statusMatches(status forge.Status, state product.State) bool {
-	return status.ID > 0 && status.State == forge.StatusState(state.ForgeState()) && status.Description == state.Description()
+	return false
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (string, error) {
@@ -61,8 +40,9 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	facts.BaseSHA = snapshot.TargetSHA
 	facts.BaseRef = snapshot.TargetBranch
 	facts.HeadRef = snapshot.HeadBranch
-	if err := SpawnRun(ctx, cfg, repo, facts); err != nil {
+	outcome, err := SpawnRun(ctx, cfg, repo, facts)
+	if err != nil {
 		return "", err
 	}
-	return "started", nil
+	return string(outcome), nil
 }

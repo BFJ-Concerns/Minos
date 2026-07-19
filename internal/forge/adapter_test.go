@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,6 +22,29 @@ func TestSetProductStatusRejectsInvalidState(t *testing.T) {
 	}
 	if len(runner.requests) != 0 {
 		t.Fatal("invalid state reached forge runner")
+	}
+}
+
+func TestClaimUsesServiceIdentity(t *testing.T) {
+	runner := &recordingRunner{
+		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
+		errors:  []error{nil},
+	}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := adapter.Claim(t.Context(), Repository{Owner: "owner", Name: "repo"}, 17)
+	if result.Outcome != WriteApplied {
+		t.Fatalf("result = %#v", result)
+	}
+	request := runner.requests[0]
+	if request.Operation != "claim" {
+		t.Fatalf("operation = %q, want claim", request.Operation)
+	}
+	want := []string{"owner", "repo", "17", "Minos"}
+	if !slices.Equal(request.Arguments, want) {
+		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
 	}
 }
 
