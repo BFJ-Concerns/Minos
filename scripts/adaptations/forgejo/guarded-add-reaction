@@ -1,0 +1,57 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; content="$7"
+
+if [ -z "$content" ]; then
+  write_result rejected "reaction content is required"
+  exit 0
+fi
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+reactions_path="/api/v1/repos/${owner}/${repo}/issues/${pr}/reactions"
+reaction_present() {
+  page=1
+  previous=''
+  while :; do
+    current="$(api GET "${reactions_path}?limit=50&page=${page}" 2>/dev/null)" || return 2
+    [ "$current" != "$previous" ] || return 1
+    if printf '%s' "$current" | jq -e --arg content "$content" --arg login "$login" '
+      any(.[]?; .content == $content and (.user.login // .user.username // "") == $login)
+    ' >/dev/null; then
+      return 0
+    fi
+    [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || return 1
+    previous="$current"
+    page=$((page + 1))
+  done
+}
+
+if reaction_present; then
+  write_result applied "reaction already present"
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "reaction read-back could not be confirmed"
+    exit 0
+  fi
+fi
+
+payload="$(jq -nc --arg content "$content" '{content:$content}')"
+api POST "$reactions_path" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+
+if reaction_present; then
+  write_result applied
+else
+  write_result uncertain "reaction write could not be discovered"
+fi

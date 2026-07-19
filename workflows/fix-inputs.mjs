@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const reviewPath = process.argv[2];
 const recordPath = process.argv[3];
+const singleWave = process.argv.includes("--single-wave");
 if (!reviewPath) {
-  process.stderr.write("usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD]\n");
+  process.stderr.write("usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave]\n");
   process.exitCode = 2;
 } else {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -34,6 +35,7 @@ if (!reviewPath) {
     clusterCap: Number.parseInt(process.env.MINOS_FIX_CLUSTER_CAP || "5", 10),
     maximumRounds,
     runRecord,
+    singleWave,
     workspace: process.env.MINOS_WORKSPACE || orientation.repository,
     guidance: {
       grounding: orientation.grounding || "repository",

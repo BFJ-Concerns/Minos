@@ -1,7 +1,7 @@
 export const meta = {
   name: "minos-review",
   description:
-    "Planned pull-request review with bounded specialists, repository briefs, and cross-family verification",
+    "Planned pull-request review with bounded specialists and cross-family verification",
   phases: [
     { title: "Explore", detail: "produce a scoped, schema-validated review plan" },
     { title: "Specialise", detail: "run the planned concern specialists" },
@@ -19,7 +19,6 @@ const ROLE_BRIEFS = {
   security: "workflows/review-briefs/security.md",
   testing: "workflows/review-briefs/testing.md",
   design: "workflows/review-briefs/design.md",
-  repository: "workflows/review-briefs/repository.md",
   verifier: "workflows/review-briefs/verifier.md",
 };
 
@@ -31,20 +30,16 @@ const SPECIALIST_FAMILY = {
 };
 
 // These caps are the workflow's stage budgets. With two findings permitted per
-// specialist, no valid run can dispatch more than 32 agents in total.
+// specialist, no valid run can dispatch more than 20 agents in total.
 const STAGE_BUDGETS = {
-  exploration: 2,
-  specialists: 10,
-  verification: 20,
-  total: 32,
+  exploration: 1,
+  specialists: 6,
+  verification: 12,
+  total: 19,
 };
 const MAX_PLANNED_SPECIALISTS = 6;
-const MAX_REPOSITORY_SPECIALISTS = STAGE_BUDGETS.specialists - MAX_PLANNED_SPECIALISTS;
 const MAX_FINDINGS_PER_SPECIALIST = 2;
 const LOW_COMBINED_CONFIDENCE = 70;
-const PER_FILE_CHUNK = 40;
-const PER_FILE_OVERHEAD_BYTES = 2_000;
-const WHOLE_TREE_READING_BUDGET_BYTES = 400_000;
 
 function familyOf(modelId) {
   if (typeof modelId !== "string" || modelId === "") return "unknown";
@@ -57,62 +52,6 @@ function familyOf(modelId) {
 
 function modelForFamily(family) {
   return family === "gpt" ? GPT_SPECIALIST_MODEL : CLAUDE_MODEL;
-}
-
-function slug(value) {
-  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
-}
-
-function parseFrontmatter(content) {
-  const meta = { title: null, extent: "diff", sweep: "per-file", occasion: [] };
-  if (typeof content !== "string") return meta;
-  const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
-  if (!match) return meta;
-  for (const line of match[1].split("\n")) {
-    const kv = line.match(/^(\w+):\s*(.*)$/);
-    if (!kv) continue;
-    const key = kv[1].toLowerCase();
-    let value = kv[2];
-    if (key !== "title") value = value.replace(/#.*$/, "");
-    value = value.trim();
-    if (key === "title") meta.title = value;
-    if (key === "extent" && value === "full") meta.extent = "full";
-    if (key === "sweep" && value === "whole-tree") meta.sweep = "whole-tree";
-    if (key === "occasion")
-      meta.occasion = value.split(",").map((token) => token.trim()).filter(Boolean);
-  }
-  return meta;
-}
-
-function briefTitle(path, front) {
-  if (front.title) return front.title;
-  const stem = path.replace(/^.*\//, "").replace(/\.md$/, "");
-  return stem.split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
-}
-
-function briefScope(path) {
-  const inner = path.replace(/^\.review\//, "");
-  return inner.includes("/") ? inner.replace(/\/[^/]*$/, "") : null;
-}
-
-function briefDisposition(brief, front, occasion, changedPaths) {
-  if (front.occasion.length > 0) {
-    if (!occasion)
-      return { status: "skipped", reason: `brief applies on occasion ${front.occasion.join(", ")}; this run names none` };
-    if (!front.occasion.includes(occasion))
-      return { status: "skipped", reason: `brief applies on occasion ${front.occasion.join(", ")}, not ${occasion}` };
-  }
-  const scope = briefScope(brief.path);
-  if (front.extent === "diff" && scope && brief.scopeExists !== false) {
-    const inScope = changedPaths.some((path) => path === scope || path.startsWith(scope + "/"));
-    if (!inScope)
-      return { status: "skipped", reason: `nothing changed under its scope ${scope}/` };
-  }
-  return null;
-}
-
-function weightedReadingVolume(fileCount, nonBinaryBytes) {
-  return nonBinaryBytes + fileCount * PER_FILE_OVERHEAD_BYTES;
 }
 
 function roleBriefsFromInput(input) {
@@ -191,40 +130,6 @@ function clampPlan(plan, files) {
   return { requested, dispatched, clamps };
 }
 
-function repositoryUnit(brief, front, scope, warning, files, suffix) {
-  const title = briefTitle(brief.path, front);
-  return {
-    kind: "repository",
-    concern: title,
-    title,
-    brief: brief.path,
-    extent: front.extent,
-    scope,
-    files,
-    family: "claude",
-    roleBrief: ROLE_BRIEFS.repository,
-    label: `repository-${slug(title)}${suffix ? `-${suffix}` : ""}-claude`,
-    ...(warning ? { warning } : {}),
-  };
-}
-
-function planRepositoryUnits(brief, front, scope, warning, scopeFiles) {
-  if (front.extent === "full" && front.sweep === "per-file" && scopeFiles.length > PER_FILE_CHUNK) {
-    const chunks = Math.ceil(scopeFiles.length / PER_FILE_CHUNK);
-    return Array.from({ length: chunks }, (_, index) =>
-      repositoryUnit(
-        brief,
-        front,
-        scope,
-        warning,
-        scopeFiles.slice(index * PER_FILE_CHUNK, (index + 1) * PER_FILE_CHUNK),
-        index + 1
-      )
-    );
-  }
-  return [repositoryUnit(brief, front, scope, warning, [], null)];
-}
-
 const findingShape = {
   type: "object",
   additionalProperties: false,
@@ -248,21 +153,10 @@ const specialistSchema = {
   },
 };
 
-const repositorySpecialistSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["applicable", "reason", "findings"],
-  properties: {
-    applicable: { type: "boolean" },
-    reason: { type: "string" },
-    findings: { type: "array", maxItems: MAX_FINDINGS_PER_SPECIALIST, items: findingShape },
-  },
-};
-
 const explorationSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["files", "plan", "briefs"],
+  required: ["files", "plan"],
   properties: {
     files: {
       type: "array",
@@ -288,40 +182,6 @@ const explorationSchema = {
           concern: { type: "string" },
           scope: { type: "array", minItems: 1, items: { type: "string" } },
           specialistType: { type: "string", enum: ["correctness", "security", "testing", "design"] },
-        },
-      },
-    },
-    briefs: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["path", "content", "scopeExists"],
-        properties: {
-          path: { type: "string" },
-          content: { type: "string" },
-          scopeExists: { type: "boolean" },
-        },
-      },
-    },
-  },
-};
-
-const scopeFilesSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["scopes"],
-  properties: {
-    scopes: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["scope", "files", "bytes"],
-        properties: {
-          scope: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          bytes: { type: "integer", minimum: 0 },
         },
       },
     },
@@ -405,7 +265,6 @@ function emptyResult(target, head, occasion, fault) {
     infrastructureFailure: null,
     plan: { requested: [], dispatched: [], clamps: [] },
     reviewers: [],
-    briefs: [],
     findings: [],
     confirmedFindings: [],
     operatorAttention: [],
@@ -452,7 +311,7 @@ const exploration = await agent(
     roleBriefs,
     projectGuidance,
     ROLE_BRIEFS.exploration,
-    `Review ${target}...${head}. Return the change inventory, a partitioned review plan, and the repository's .review/ Markdown briefs in the requested schema.`
+    `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.`
   ),
   { schema: explorationSchema, model: GPT_EXPLORER_MODEL, effort: "high", label: "exploration", phase: "Explore" }
 );
@@ -469,115 +328,24 @@ if (!exploration) {
 }
 
 const planned = clampPlan(exploration.plan, exploration.files);
-const changedPaths = exploration.files.map((file) => file.path);
-const briefReports = [];
-const repositoryUnits = [];
-const fullExtentBriefs = [];
-
-for (const brief of exploration.briefs) {
-  const front = parseFrontmatter(brief.content);
-  const skip = briefDisposition(brief, front, occasion, changedPaths);
-  if (skip) {
-    briefReports.push({ brief: brief.path, title: briefTitle(brief.path, front), ...skip });
-    continue;
-  }
-  const rawScope = briefScope(brief.path);
-  const scopeMissing = Boolean(rawScope) && brief.scopeExists === false;
-  const scope = scopeMissing ? null : rawScope;
-  const warning = scopeMissing
-    ? `brief scope ${rawScope}/ matches no repository directory; ran repo-wide instead`
-    : null;
-  if (front.extent === "full") fullExtentBriefs.push({ brief, front, scope, warning });
-  else repositoryUnits.push(...planRepositoryUnits(brief, front, scope, warning, []));
-}
-
-if (fullExtentBriefs.length > 0) {
-  const wanted = [...new Set(fullExtentBriefs.map(({ scope }) => scope || "."))];
-  addLeg("scope-files", "exploration", "gpt", GPT_EXPLORER_MODEL);
-  const scopes = await agent(
-    rolePrompt(
-      roleBriefs,
-      projectGuidance,
-      ROLE_BRIEFS.exploration,
-      `Inventory tracked files and summed non-binary bytes for these scopes: ${wanted.join(", ")}. A scope of "." means the whole repository.`
-    ),
-    { schema: scopeFilesSchema, model: GPT_EXPLORER_MODEL, effort: "low", label: "scope-files", phase: "Explore" }
-  );
-  for (const { brief, front, scope, warning } of fullExtentBriefs) {
-    const inventoryScope = scope || ".";
-    const where = inventoryScope === "." ? "the whole repository" : `${inventoryScope}/`;
-    const entry = scopes && scopes.scopes.find((candidate) => candidate.scope === inventoryScope);
-    if (!entry) {
-      briefReports.push({
-        brief: brief.path,
-        title: briefTitle(brief.path, front),
-        status: "not-run",
-        reason: `measured scope unavailable: the file inventory for ${where} returned no result`,
-        ...(warning ? { warning } : {}),
-      });
-      continue;
-    }
-    const readingVolume = weightedReadingVolume(entry.files.length, entry.bytes);
-    if (front.sweep === "whole-tree" && readingVolume > WHOLE_TREE_READING_BUDGET_BYTES) {
-      briefReports.push({
-        brief: brief.path,
-        title: briefTitle(brief.path, front),
-        status: "not-run",
-        scopeSize: entry.files.length,
-        scopeBytes: entry.bytes,
-        readingVolume,
-        reason: `whole-tree brief needs one specialist, but ${where} has a weighted reading volume of ${readingVolume} bytes (${entry.bytes} non-binary bytes plus ${entry.files.length} file entries), past the ${WHOLE_TREE_READING_BUDGET_BYTES}-byte budget`,
-        ...(warning ? { warning } : {}),
-      });
-      continue;
-    }
-    repositoryUnits.push(...planRepositoryUnits(brief, front, scope, warning, entry.files));
-  }
-}
-
-if (repositoryUnits.length > MAX_REPOSITORY_SPECIALISTS) {
-  const omitted = repositoryUnits.slice(MAX_REPOSITORY_SPECIALISTS);
-  for (const unit of omitted)
-    briefReports.push({
-      brief: unit.brief,
-      title: unit.title,
-      status: "not-run",
-      reason: `repository specialists exceeded the stage budget of ${MAX_REPOSITORY_SPECIALISTS}`,
-      ...(unit.warning ? { warning: unit.warning } : {}),
-    });
-}
-
-const specialistUnits = [...planned.dispatched, ...repositoryUnits.slice(0, MAX_REPOSITORY_SPECIALISTS)];
+const specialistUnits = planned.dispatched;
 phase("Specialise");
 for (const unit of specialistUnits)
   addLeg(unit.label, "specialist", unit.family, modelForFamily(unit.family));
 
 function specialistPrompt(unit) {
-  if (unit.kind === "planned") {
-    return rolePrompt(
-      roleBriefs,
-      projectGuidance,
-      unit.roleBrief,
-      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
-    );
-  }
-  const files = unit.files && unit.files.length > 0 ? `\nAssigned files: ${unit.files.join(", ")}` : "";
-  const scope = unit.scope ? `${unit.scope}/` : "the whole repository";
   return rolePrompt(
     roleBriefs,
     projectGuidance,
     unit.roleBrief,
-    `Read the reviewed repository's concern brief at ${unit.brief}. Assigned scope: ${scope}.${files}\n` +
-      (unit.extent === "full"
-        ? "Audit the assigned scope regardless of what the diff changed."
-        : `Judge only what ${target}...${head} changed in the assigned scope.`)
+    `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
   );
 }
 
 const specialistResults = await parallel(
   specialistUnits.map((unit) => () =>
     agent(specialistPrompt(unit), {
-      schema: unit.kind === "repository" ? repositorySpecialistSchema : specialistSchema,
+      schema: specialistSchema,
       model: modelForFamily(unit.family),
       effort: "high",
       label: unit.label,
@@ -600,36 +368,7 @@ specialistUnits.forEach((unit, unitIndex) => {
     pinnedModel: modelForFamily(unit.family),
     status: result ? "done" : "no-result",
   });
-  if (!result) {
-    if (unit.kind === "repository")
-      briefReports.push({
-        brief: unit.brief,
-        title: unit.title,
-        status: "not-run",
-        reason: "specialist returned no result",
-        ...(unit.warning ? { warning: unit.warning } : {}),
-      });
-    return;
-  }
-  if (unit.kind === "repository") {
-    if (!result.applicable) {
-      briefReports.push({
-        brief: unit.brief,
-        title: unit.title,
-        status: "skipped",
-        reason: result.reason,
-        ...(unit.warning ? { warning: unit.warning } : {}),
-      });
-      return;
-    }
-    briefReports.push({
-      brief: unit.brief,
-      title: unit.title,
-      status: "run",
-      reason: result.reason,
-      ...(unit.warning ? { warning: unit.warning } : {}),
-    });
-  }
+  if (!result) return;
   result.findings.slice(0, MAX_FINDINGS_PER_SPECIALIST).forEach((finding, findingIndex) => {
     proposed.push({ unit, unitIndex, finding, findingIndex });
   });
@@ -685,7 +424,7 @@ const findings = proposed.map((item, index) => {
   const operatorAttention = verdict === "confirmed" && combinedConfidence < LOW_COMBINED_CONFIDENCE;
   return {
     id: `${item.unit.label}:${item.findingIndex + 1}`,
-    source: item.unit.kind === "repository" ? item.unit.title : item.unit.concern,
+    source: item.unit.concern,
     ...item.finding,
     verifierConfidence: check ? check.confidence : null,
     combinedConfidence,
@@ -700,8 +439,6 @@ const findings = proposed.map((item, index) => {
 const incomplete = [];
 for (const state of reviewerStates)
   if (state.status === "no-result") incomplete.push(`specialist ${state.label} returned no result`);
-for (const report of briefReports)
-  if (report.status === "not-run") incomplete.push(`brief "${report.title}" was not run (${report.reason})`);
 for (const evidence of modelEvidence)
   if (!evidence.confirmed)
     incomplete.push(`actual model for ${evidence.label} was not confirmed as ${evidence.expectedFamily}`);
@@ -744,7 +481,6 @@ return {
     clamps: planned.clamps,
   },
   reviewers: reviewerStates,
-  briefs: briefReports,
   findings,
   confirmedFindings,
   operatorAttention,
@@ -752,7 +488,7 @@ return {
   modelEvidence,
   accounting: {
     budgets: {
-      exploration: { maximum: STAGE_BUDGETS.exploration, used: fullExtentBriefs.length > 0 ? 2 : 1 },
+      exploration: { maximum: STAGE_BUDGETS.exploration, used: 1 },
       specialists: { maximum: STAGE_BUDGETS.specialists, used: specialistUnits.length },
       verification: { maximum: STAGE_BUDGETS.verification, used: proposed.length },
       total: { maximum: STAGE_BUDGETS.total, used },

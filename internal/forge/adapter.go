@@ -79,6 +79,17 @@ func (a *Adapter) PostReview(ctx context.Context, guard Guard, verdict ReviewVer
 	return decodeWriteResult(out, runErr)
 }
 
+func (a *Adapter) AddReaction(ctx context.Context, guard Guard, content string) WriteResult {
+	if strings.TrimSpace(content) == "" {
+		return WriteResult{Outcome: WriteRejected, Reason: "reaction content is required"}
+	}
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-add-reaction",
+		Arguments: append(a.guardArguments(guard), content),
+	})
+	return decodeWriteResult(out, err)
+}
+
 func (a *Adapter) Merge(ctx context.Context, guard Guard, method MergeMethod) WriteResult {
 	out, err := a.runner.Run(ctx, RunRequest{Operation: "guarded-merge", Arguments: append(a.guardArguments(guard), string(method))})
 	return decodeWriteResult(out, err)

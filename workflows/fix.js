@@ -84,7 +84,7 @@ function fixPrompt(input, cluster, attempt) {
     `Judge repairs against the reviewed project's guidance.\n\n` +
     `<project-guidance grounding="${input.guidance.grounding}" path="${input.guidance.path}">\n` +
     `${input.guidance.content}\n</project-guidance>\n\n` +
-    `Workspace: ${input.workspace}\nAttempt: ${attempt} of 2\n` +
+    `Workspace: ${input.workspace}\nAttempt: ${attempt} of ${input.singleWave ? 1 : 2}\n` +
     `Assigned files: ${cluster.files.join(", ")}\n` +
     `Confirmed findings: ${JSON.stringify(cluster.findings)}\n` +
     `Return one result for every findingKey. Commit completed repairs, return the commit SHA, and do not push.`
@@ -147,6 +147,72 @@ const round = (Number.isInteger(prior.round) && prior.round >= 0 ? prior.round :
 const priorUnfixed = Array.isArray(prior.confirmedUnfixed) ? prior.confirmedUnfixed : [];
 const unfixedByKey = new Map(priorUnfixed.map((entry) => [entry.key, entry]));
 const findings = input.review.confirmedFindings.map(preparedFinding);
+
+if (input.singleWave === true) {
+  const clusters = clustersFor(findings, clusterCap);
+  const dispatches = clusters.map((cluster) => ({
+    label: `brief-${cluster.id}`,
+    attempt: 1,
+    files: cluster.files,
+    findingKeys: cluster.findings.map((finding) => finding.key),
+  }));
+  phase("Fix");
+  const results = await parallel(clusters.map((cluster, index) => () =>
+    agent(fixPrompt(input, cluster, 1), {
+      schema: fixResultSchema,
+      model: "claude-opus-4-8",
+      effort: "high",
+      label: dispatches[index].label,
+      phase: "Fix",
+  })));
+  const commits = [];
+  const confirmedUnfixed = [];
+  clusters.forEach((cluster, index) => {
+    const result = results[index];
+    const returned = new Map(Array.isArray(result && result.fixes)
+      ? result.fixes.map((entry) => [entry.findingKey, entry])
+      : []);
+    let usedCommit = false;
+    for (const finding of cluster.findings) {
+      const entry = returned.get(finding.key);
+      if (result && result.commit && entry && entry.status === "fixed" && entry.writeUp) {
+        usedCommit = true;
+      } else {
+        confirmedUnfixed.push({
+          key: finding.key,
+          finding,
+          attempts: 1,
+          reason: entry && entry.writeUp ? entry.writeUp : "brief fix failed",
+        });
+      }
+    }
+    if (usedCommit) commits.push(result.commit);
+  });
+  const uniqueCommits = [...new Set(commits)];
+  return {
+    status: "complete",
+    classification: "single-wave",
+    threshold: "Low",
+    round: 1,
+    dispatches,
+    sweepReview: null,
+    fixReview: null,
+    requestChangesReview: null,
+    integration: {
+      commits: uniqueCommits,
+      pushCount: uniqueCommits.length > 0 ? 1 : 0,
+      author: { name: "Minos", email: "minos@example.invalid" },
+    },
+    confirmedUnfixed,
+    overflow: [],
+    requestChanges: confirmedUnfixed,
+    repairsComplete: confirmedUnfixed.length === 0,
+    buildAndTestsRequired: uniqueCommits.length > 0,
+    rerunReview: false,
+    runRecord: { round: 1, confirmedUnfixed },
+  };
+}
+
 const newAboveThreshold = findings.filter((finding) =>
   SEVERITY[finding.severity] >= SEVERITY[threshold] && !unfixedByKey.has(finding.key));
 const maximumReached = maximumRounds !== null && round > maximumRounds;

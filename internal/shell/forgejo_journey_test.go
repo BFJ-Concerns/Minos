@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"bfj/minos/internal/forge"
 	"bfj/minos/internal/product"
 )
 
@@ -285,6 +286,47 @@ func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
 	}
 }
 
+func TestForgeReactionUsesForgejo14ShapeAndReadBackIdempotency(t *testing.T) {
+	var apiShape struct {
+		Request  map[string]any `json:"request"`
+		Response map[string]any `json:"response"`
+	}
+	data, err := os.ReadFile(filepath.Join("testdata", "forgejo14", "reaction.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &apiShape); err != nil {
+		t.Fatal(err)
+	}
+	state := newForgejoFixtureState(t)
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	content := apiShape.Request["content"].(string)
+	if apiShape.Response["content"] != content || apiShape.Response["user"].(map[string]any)["login"] != "Minos" {
+		t.Fatalf("reaction fixture does not preserve the Forgejo response shape: %#v", apiShape)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"reaction", state.headSHA(), state.targetSHA(), content}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("reaction attempt %d: %v", attempt, err)
+		}
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !slices.Contains(state.reactions, "+1") || state.reactionWrites != 1 {
+		t.Fatalf("reactions = %v, writes = %d, want one +1 write", state.reactions, state.reactionWrites)
+	}
+	if state.reviewWrites != 0 {
+		t.Fatalf("reaction journey posted %d reviews, want none", state.reviewWrites)
+	}
+}
+
 func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *testing.T) {
 	var apiShape struct {
 		Request  map[string]any   `json:"request"`
@@ -437,6 +479,53 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			t.Fatalf("request-changes comment = %#v", comment)
 		}
 	})
+}
+
+func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	directory := t.TempDir()
+	sweepBody := filepath.Join(directory, "sweep.md")
+	briefBody := filepath.Join(directory, "brief.md")
+	commentsPath := filepath.Join(directory, "comments.json")
+	if err := os.WriteFile(sweepBody, []byte("Main sweep findings.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(briefBody, []byte("Repository review brief findings.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	comments := []forge.ReviewComment{{Path: "internal/state.go", Body: "Brief concern.", NewPosition: 41}}
+	encoded, err := json.Marshal(comments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(commentsPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	head, target := state.headSHA(), state.targetSHA()
+	if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", sweepBody}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", briefBody, commentsPath}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("brief review attempt %d: %v", attempt, err)
+		}
+	}
+	writes, payload := state.reviewWriteFacts()
+	if writes != 2 {
+		t.Fatalf("review writes = %d, want one sweep group and one brief group", writes)
+	}
+	if !strings.HasPrefix(payload["body"].(string), "Repository review brief findings.") {
+		t.Fatalf("last review body = %q, want distinct brief group", payload["body"])
+	}
 }
 
 func mapsClone(source map[string]any) map[string]any {
@@ -733,7 +822,11 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			s.reactions = append(s.reactions, payload.Content)
 		}
 		s.reactionWrites++
-		writeFixtureJSON(s.t, w, map[string]any{})
+		writeFixtureJSON(s.t, w, map[string]any{
+			"content":    payload.Content,
+			"created_at": "2026-07-19T12:00:00Z",
+			"user":       map[string]any{"login": "Minos"},
+		})
 	default:
 		http.Error(w, fmt.Sprintf("unexpected fixture request %s %s", r.Method, path), http.StatusNotFound)
 	}

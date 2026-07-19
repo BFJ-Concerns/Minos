@@ -69,9 +69,8 @@ function unit(id = "logic", specialistType = "correctness", scope = ["internal/x
 function explorationFixture({
   files = [{ path: "internal/x.go", added: 30, deleted: 30 }],
   plan = [unit()],
-  briefs = [],
 } = {}) {
-  return { files, plan, briefs };
+  return { files, plan };
 }
 
 function finding(overrides = {}) {
@@ -93,8 +92,6 @@ function responder({ exploration = explorationFixture(), scopes, specialist, ver
     if (label.startsWith("verify-"))
       return verify ? verify(label, prompt, opts) : { verdict: "upheld", confidence: 91, reason: "reproduced" };
     if (specialist) return specialist(label, prompt, opts);
-    if (label.startsWith("repository-"))
-      return { applicable: true, reason: "the concern applies", findings: [finding()] };
     return { findings: [finding()] };
   };
 }
@@ -122,7 +119,7 @@ async function runRecorded(args, respond, { overrides = {}, extra = {} } = {}) {
 }
 
 function reviewCalls(calls) {
-  return calls.filter((call) => call.opts.label?.startsWith("specialist-") || call.opts.label?.startsWith("repository-"));
+  return calls.filter((call) => call.opts.label?.startsWith("specialist-"));
 }
 
 test("right-family run-record evidence completes the workflow", async () => {
@@ -313,19 +310,15 @@ test("the deterministic enumerator binds a distinctive Markdown value and path i
   assert.match(call.prompt, /Assigned scope: internal\/x\.go/);
 });
 
-test("annexe commission content reaches exploration, specialists, repository concerns, and verifiers", async () => {
+test("annexe commission content reaches exploration, specialists, and verifiers", async () => {
   const marker = "MINOS_ESTATE_COMMISSION_CINNABAR_719";
   const args = enumeratedArgs("aaa111", "bbb222", { guidanceContent: marker });
-  const exploration = explorationFixture({
-    briefs: [repositoryBrief(".review/error-tone.md", "title: Error Tone")],
-  });
-  const { calls } = await runRecorded(args, responder({ exploration }));
+  const { calls } = await runRecorded(args, responder());
   const relevant = calls.filter((call) =>
     call.opts.label === "exploration" ||
     call.opts.label?.startsWith("specialist-") ||
-    call.opts.label?.startsWith("repository-") ||
     call.opts.label?.startsWith("verify-"));
-  assert.ok(relevant.length >= 4);
+  assert.ok(relevant.length >= 3);
   assert.ok(relevant.every((call) => call.prompt.includes(marker)));
 });
 
@@ -431,145 +424,6 @@ test("stage and total agent budgets bound every dispatched call", async () => {
   assert.ok(result.accounting.budgets.verification.used <= result.accounting.budgets.verification.maximum);
   assert.ok(result.accounting.budgets.total.used <= result.accounting.budgets.total.maximum);
   assert.equal(calls.length, result.accounting.budgets.total.used);
-});
-
-function repositoryBrief(path, frontmatter, { scopeExists = true } = {}) {
-  const front = frontmatter ? `---\n${frontmatter}\n---\n` : "";
-  return { path, content: `${front}Judge the concern.`, scopeExists };
-}
-
-test("a repository brief the diff gives nothing to judge is reported skipped, never passed", async () => {
-  const exploration = explorationFixture({ briefs: [repositoryBrief(".review/error-tone.md", "title: Error Tone")] });
-  const respond = responder({
-    exploration,
-    specialist: (label) => label.startsWith("repository-")
-      ? { applicable: false, reason: "version-only bump", findings: [] }
-      : { findings: [] },
-  });
-  const { result } = await runRecorded(ARGS, respond);
-  const report = result.briefs.find((entry) => entry.brief === ".review/error-tone.md");
-  assert.equal(report.status, "skipped");
-  assert.match(report.reason, /version-only/);
-});
-
-test("an occasion-gated repository brief runs only for its named occasion", async () => {
-  const brief = repositoryBrief(".review/release.md", "occasion: release");
-  const respond = responder({ exploration: explorationFixture({ briefs: [brief] }), specialist: () => ({ findings: [] }) });
-  const without = await runScript(ARGS, respond);
-  assert.equal(without.result.briefs[0].status, "skipped");
-  const matched = await runScript({ ...ARGS, occasion: "release" }, respond);
-  assert.ok(matched.calls.some((call) => call.opts.label?.startsWith("repository-")));
-});
-
-test("a diff-extent scoped repository brief is skipped without dispatch when its scope did not change", async () => {
-  const exploration = explorationFixture({
-    files: [{ path: "cmd/main.go", added: 2, deleted: 1 }],
-    briefs: [repositoryBrief(".review/internal/api/limits.md", null)],
-  });
-  const { result, calls } = await runScript(ARGS, responder({ exploration, specialist: () => ({ findings: [] }) }));
-  assert.equal(result.briefs[0].status, "skipped");
-  assert.equal(calls.filter((call) => call.opts.label?.startsWith("repository-")).length, 0);
-});
-
-test("a nonexistent repository-brief scope runs repo-wide and records a warning", async () => {
-  const exploration = explorationFixture({
-    briefs: [repositoryBrief(".review/ghost/limits.md", null, { scopeExists: false })],
-  });
-  const respond = responder({ exploration, specialist: (label) => label.startsWith("repository-")
-    ? { applicable: true, reason: "audited", findings: [] }
-    : { findings: [] } });
-  const { result, calls } = await runRecorded(ARGS, respond);
-  const report = result.briefs.find((entry) => entry.brief === ".review/ghost/limits.md");
-  const call = calls.find((entry) => entry.opts.label?.startsWith("repository-"));
-  assert.equal(report.status, "run");
-  assert.match(report.warning, /matches no repository directory/);
-  assert.match(call.prompt, /Assigned scope: the whole repository/);
-});
-
-test("a full-extent repository brief runs even when its scope did not change", async () => {
-  const exploration = explorationFixture({
-    files: [{ path: "cmd/main.go", added: 2, deleted: 1 }],
-    briefs: [repositoryBrief(".review/internal/api/registry.md", "extent: full")],
-  });
-  const respond = responder({
-    exploration,
-    scopes: { scopes: [{ scope: "internal/api", files: ["internal/api/a.go"], bytes: 100 }] },
-    specialist: (label) => label.startsWith("repository-")
-      ? { applicable: true, reason: "audited", findings: [] }
-      : { findings: [] },
-  });
-  const { result } = await runRecorded(ARGS, respond);
-  assert.equal(result.briefs.find((entry) => entry.brief.endsWith("registry.md")).status, "run");
-});
-
-const filesNamed = (count) => Array.from({ length: count }, (_, index) => `pkg/f${index}.go`);
-
-function fullBriefResponder(frontmatter, fileCount, bytes = 0) {
-  return responder({
-    exploration: explorationFixture({ briefs: [repositoryBrief(".review/pkg/style.md", frontmatter)] }),
-    scopes: { scopes: [{ scope: "pkg", files: filesNamed(fileCount), bytes }] },
-    specialist: (label) => label.startsWith("repository-")
-      ? { applicable: true, reason: "audited", findings: [] }
-      : { findings: [] },
-  });
-}
-
-test("a large per-file full brief is split while a whole-tree brief remains one assignment", async () => {
-  const perFile = await runScript(ARGS, fullBriefResponder("extent: full", 90));
-  assert.equal(perFile.calls.filter((call) => call.opts.label?.startsWith("repository-")).length, 3);
-  const wholeTree = await runScript(ARGS, fullBriefResponder("extent: full\nsweep: whole-tree", 90));
-  assert.equal(wholeTree.calls.filter((call) => call.opts.label?.startsWith("repository-")).length, 1);
-});
-
-test("the 61-tiny-files whole-tree counterexample runs under the weighted reading budget", async () => {
-  const { result, calls } = await runRecorded(ARGS, fullBriefResponder("extent: full\nsweep: whole-tree", 61, 610));
-  assert.equal(result.briefs.find((entry) => entry.brief.endsWith("style.md")).status, "run");
-  assert.equal(calls.filter((call) => call.opts.label?.startsWith("repository-")).length, 1);
-});
-
-test("genuinely large and few-huge whole-tree scopes are both reported not run", async () => {
-  const many = await runScript(ARGS, fullBriefResponder("extent: full\nsweep: whole-tree", 250, 25_000));
-  const huge = await runScript(ARGS, fullBriefResponder("extent: full\nsweep: whole-tree", 5, 500_000));
-  const manyReport = many.result.briefs.find((entry) => entry.brief.endsWith("style.md"));
-  const hugeReport = huge.result.briefs.find((entry) => entry.brief.endsWith("style.md"));
-  assert.equal(manyReport.status, "not-run");
-  assert.equal(manyReport.readingVolume, 525_000);
-  assert.equal(hugeReport.status, "not-run");
-  assert.equal(hugeReport.readingVolume, 510_000);
-});
-
-test("a full repository brief with no returned inventory is not run", async () => {
-  const respond = responder({
-    exploration: explorationFixture({ briefs: [repositoryBrief(".review/pkg/style.md", "extent: full")] }),
-    scopes: () => null,
-    specialist: () => ({ findings: [] }),
-  });
-  const { result } = await runScript(ARGS, respond);
-  assert.equal(result.briefs.find((entry) => entry.brief.endsWith("style.md")).status, "not-run");
-});
-
-test("a full repository brief absent from the returned inventory is not run", async () => {
-  const respond = responder({
-    exploration: explorationFixture({ briefs: [repositoryBrief(".review/pkg/style.md", "extent: full")] }),
-    scopes: { scopes: [{ scope: "other", files: ["other/a.go"], bytes: 10 }] },
-    specialist: () => ({ findings: [] }),
-  });
-  const { result } = await runScript(ARGS, respond);
-  assert.equal(result.briefs.find((entry) => entry.brief.endsWith("style.md")).status, "not-run");
-});
-
-test("repository-brief findings use the same opposite-family verifier and fail-closed model join", async () => {
-  const exploration = explorationFixture({ briefs: [repositoryBrief(".review/error-tone.md", "title: Error Tone")] });
-  const first = await runScript(ARGS, responder({ exploration }));
-  const repoFinding = first.result.findings.find((entry) => entry.source === "Error Tone");
-  assert.ok(repoFinding);
-  assert.equal(repoFinding.verify.expectedFamily, "gpt");
-  const runRecord = runRecordFor(first.result, {
-    [repoFinding.verify.label]: { fallbackModel: "claude-opus-4-8" },
-  });
-  const { result } = await runScript({ ...ARGS, runRecord }, responder({ exploration }));
-  assert.equal(result.findings.find((entry) => entry.source === "Error Tone").verdict, "no-verdict");
-  assert.equal(result.status, "incomplete");
 });
 
 // The launcher resolves these two commands independently. Keep each command's

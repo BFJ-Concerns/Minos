@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -350,6 +351,68 @@ func TestRebuildEstateIncompleteStatusUsesGuardedTargetBoundForgePath(t *testing
 	state.mu.Unlock()
 	if writesAfterRejection != 1 {
 		t.Fatalf("stale target changed status write count to %d, want one", writesAfterRejection)
+	}
+}
+
+func TestRebuildEstateReviewCompletionReactionJourneys(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		findingsFix bool
+	}{
+		{name: "clean brief stage"},
+		{name: "brief findings fixed on a fresh head", findingsFix: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, _, facts := state.service(t)
+			writeServiceConfig(t, cfg)
+			t.Setenv("MINOS_CONFIG", cfg.Root)
+			t.Setenv("MINOS_FORGE", facts.Forge)
+			t.Setenv("MINOS_OWNER", facts.Owner)
+			t.Setenv("MINOS_REPO_NAME", facts.Repo)
+			t.Setenv("MINOS_PR", facts.PR)
+
+			target := state.targetSHA()
+			head := state.headSHA()
+			wantReviews := 0
+			if test.findingsFix {
+				directory := t.TempDir()
+				bodyPath := filepath.Join(directory, "brief.md")
+				commentsPath := filepath.Join(directory, "comments.json")
+				if err := os.WriteFile(bodyPath, []byte("Repository review brief findings.\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(commentsPath, []byte(`[{"path":"internal/state.go","body":"Brief concern.","new_position":41}]`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
+					t.Fatal(err)
+				}
+				wantReviews = 1
+				state.changePullRequest(func(pullRequest map[string]any) {
+					pullRequest["head"].(map[string]any)["sha"] = "feedfacefeedfacefeedfacefeedfacefeedface"
+				})
+				head = state.headSHA()
+			}
+
+			for attempt := 1; attempt <= 2; attempt++ {
+				if err := ForgeCommand(t.Context(), []string{"reaction", head, target, "+1"}, &bytes.Buffer{}); err != nil {
+					t.Fatalf("reaction attempt %d: %v", attempt, err)
+				}
+			}
+
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if state.reactionWrites != 1 || !slices.Contains(state.reactions, "+1") {
+				t.Fatalf("reactions = %v, writes = %d, want one +1 write", state.reactions, state.reactionWrites)
+			}
+			if state.reviewWrites != wantReviews {
+				t.Fatalf("review writes = %d, want %d", state.reviewWrites, wantReviews)
+			}
+			if test.findingsFix && state.reviewPayloads[0]["commit_id"] == head {
+				t.Fatalf("brief findings review and completion reaction both used %q; want reaction on the fresh repaired head", head)
+			}
+		})
 	}
 }
 
