@@ -29,11 +29,51 @@ body="$(printf '%s' "$input" | jq -r '.body')"
 payload="$(printf '%s' "$input" | jq --arg head "$head" '
   {event:(if .state == "APPROVE" then "APPROVED" else .state end), body, commit_id:$head,
    comments:[.comments[]? | {path, body, new_position}]}')"
+
+review_presence() {
+  reviews='[]'
+  previous=''
+  page=1
+  while :; do
+    current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=50&page=${page}" 2>/dev/null)" || return 2
+    [ "$current" != "$previous" ] || break
+    [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
+    reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')"
+    previous="$current"
+    page=$((page + 1))
+  done
+  ids="$(printf '%s' "$reviews" | jq -r --arg head "$head" --arg state "$forge_state" --arg body "$body" --arg login "$login" '
+    .[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login) | .id')"
+  [ -n "$ids" ] || return 1
+  for id in $ids; do
+    comments="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${id}/comments" 2>/dev/null)" || return 2
+    if jq -ne --argjson requested "$input" --argjson actual "$comments" '
+      (($requested.comments // []) | map({path, body, position:(.new_position // 0), original_position:(.old_position // 0)}) | sort_by(.path, .position, .original_position, .body)) ==
+      (($actual // []) | map({path, body, position:(.position // 0), original_position:(.original_position // 0)}) | sort_by(.path, .position, .original_position, .body))' >/dev/null; then
+      return 0
+    fi
+  done
+  return 3
+}
+
+if review_presence; then
+  write_result applied "review already present"
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "review read-back could not be confirmed"
+    exit 0
+  fi
+  if [ "$presence" -eq 3 ]; then
+    write_result uncertain "matching review has different inline comments"
+    exit 0
+  fi
+fi
+
 api POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
 
-if reviews="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" 2>/dev/null)" &&
-  printf '%s' "$reviews" | jq -e --arg head "$head" --arg state "$forge_state" --arg body "$body" --arg login "$login" '
-    any(.[]; .commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login)' >/dev/null; then
+if review_presence; then
   write_result applied
 else
   write_result uncertain "review write could not be discovered"

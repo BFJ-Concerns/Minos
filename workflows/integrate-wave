@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: workflows/integrate-wave WORKSPACE COMMITS_FILE" >&2
+  exit 2
+fi
+
+workspace="$1"
+commits_file="$2"
+: "${MINOS_HEAD_BRANCH:?MINOS_HEAD_BRANCH is required}"
+expected_name="${MINOS_GIT_AUTHOR_NAME:-Minos}"
+expected_email="${MINOS_GIT_AUTHOR_EMAIL:-minos@example.invalid}"
+
+if ! jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' "$commits_file" >/dev/null; then
+  echo "integrate-wave: commits file must contain a non-empty JSON string array" >&2
+  exit 1
+fi
+
+for commit in $(jq -r '.[]' "$commits_file"); do
+  if ! git -C "$workspace" cat-file -e "${commit}^{commit}"; then
+    echo "integrate-wave: unknown commit $commit" >&2
+    exit 1
+  fi
+  author_name="$(git -C "$workspace" show -s --format=%an "$commit")"
+  author_email="$(git -C "$workspace" show -s --format=%ae "$commit")"
+  if [ "$author_name" != "$expected_name" ] || [ "$author_email" != "$expected_email" ]; then
+    echo "integrate-wave: commit $commit is authored by ${author_name} <${author_email}>" >&2
+    exit 1
+  fi
+  git -C "$workspace" cherry-pick "$commit"
+done
+
+git -C "$workspace" push origin "HEAD:refs/heads/${MINOS_HEAD_BRANCH}"

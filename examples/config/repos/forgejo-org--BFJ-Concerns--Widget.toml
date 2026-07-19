@@ -9,3 +9,7 @@ run-body = "/opt/minos/run-body/run-body"
 
 [policy]
 auto-merge = true
+
+[review]
+threshold = "High"
+cluster-cap = 5
