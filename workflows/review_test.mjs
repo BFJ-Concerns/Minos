@@ -144,6 +144,47 @@ test("agent self-report is neither requested nor carried as model evidence", asy
   assert.ok(result.findings.every((entry) => !("selfReportedModel" in entry.review)));
 });
 
+test("an absent run record and an empty progress record both fail closed", async () => {
+  const absent = await runScript(ARGS, responder());
+  assert.equal(absent.result.status, "incomplete");
+  assert.equal(absent.result.complete, false);
+  assert.ok(absent.result.modelEvidence.every((evidence) => evidence.confirmed === false));
+
+  const empty = await runScript(
+    { ...ARGS, runRecord: { workflowProgress: [] } },
+    responder()
+  );
+  assert.equal(empty.result.status, "incomplete");
+  assert.equal(empty.result.complete, false);
+  assert.ok(empty.result.modelEvidence.every((evidence) => evidence.state === "absent"));
+  assert.ok(empty.result.findings.every((entry) => entry.verdict === "no-verdict"));
+});
+
+test("model-less done legs and non-terminal right-model legs fail closed", async () => {
+  const first = await runScript(ARGS, responder());
+  const specialist = first.result.requiredModelEvidence.find((leg) => leg.role === "specialist");
+
+  const modelLess = runRecordFor(first.result, {
+    [specialist.label]: { model: undefined },
+  });
+  const missingModel = await runScript({ ...ARGS, runRecord: modelLess }, responder());
+  const missingEvidence = missingModel.result.modelEvidence.find((entry) => entry.label === specialist.label);
+  assert.equal(missingModel.result.status, "incomplete");
+  assert.equal(missingEvidence.actualModel, null);
+  assert.equal(missingEvidence.actualFamily, "unknown");
+  assert.equal(missingEvidence.confirmed, false);
+
+  const running = runRecordFor(first.result, {
+    [specialist.label]: { state: "running" },
+  });
+  const notDone = await runScript({ ...ARGS, runRecord: running }, responder());
+  const runningEvidence = notDone.result.modelEvidence.find((entry) => entry.label === specialist.label);
+  assert.equal(notDone.result.status, "incomplete");
+  assert.equal(runningEvidence.state, "running");
+  assert.equal(runningEvidence.actualModel, null);
+  assert.equal(runningEvidence.confirmed, false);
+});
+
 test("a wrong-family actual fallback yields no verdict and an incomplete run", async () => {
   const first = await runScript(ARGS, responder());
   const specialistLabel = first.result.requiredModelEvidence.find((leg) => leg.role === "specialist").label;
