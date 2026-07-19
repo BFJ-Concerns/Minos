@@ -33,7 +33,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	defer unlock()
 
 	out, err := commandCombinedOutput(ctx, "systemctl", "--user", "list-units",
-		"--type=service", "--state=activating,active", "--no-legend", "--plain", "--full", "--no-pager", "minos-*.service")
+		"--type=service", "--state=activating,active", "--no-legend", "--plain", "--full", "--no-pager", "minos-run-*.service")
 	if err != nil {
 		return "", fmt.Errorf("inspect active Minos units: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -113,8 +113,10 @@ func lockAdmission(runsDir string) (func(), error) {
 	}, nil
 }
 
+// UnitName carries the minos-run- prefix so the admission check's unit glob
+// matches only run units, never the long-lived receiver or sweep services.
 func UnitName(facts Facts) string {
-	return unitSafe.ReplaceAllString(fmt.Sprintf("minos-%s-%s-pr%s", facts.Owner, facts.Repo, facts.PR), "-")
+	return unitSafe.ReplaceAllString(fmt.Sprintf("minos-run-%s-%s-pr%s", facts.Owner, facts.Repo, facts.PR), "-")
 }
 
 func runBodyPath() string { return filepath.Clean(os.Getenv("MINOS_RUN_BODY")) }

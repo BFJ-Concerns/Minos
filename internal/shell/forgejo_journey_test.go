@@ -170,7 +170,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		var commands []string
 		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
 			commands = append(commands, name)
-			return []byte("minos-other-repo-pr9.service loaded active running Minos lead\n"), nil
+			return []byte("minos-run-other-repo-pr9.service loaded active running Minos lead\n"), nil
 		}
 
 		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
