@@ -125,6 +125,25 @@ func TestSyncTargetNoOpCleanAndConflictJourneys(t *testing.T) {
 		}
 	})
 
+	t.Run("a concurrent source move loses the exact-head push lease", func(t *testing.T) {
+		remote, workspace := createSyncFixture(t, true, false)
+		head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+		target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+		hook := filepath.Join(workspace, ".git", "hooks", "pre-push")
+		body := "#!/bin/sh\ngit --git-dir='" + remote + "' update-ref refs/heads/feature '" + target + "'\n"
+		if err := os.WriteFile(hook, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		output, err := runSyncTarget(workspace, head, target, "merge")
+		if err == nil {
+			t.Fatalf("sync unexpectedly overwrote the concurrent source move:\n%s", output)
+		}
+		if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != target {
+			t.Fatalf("remote source = %q, want concurrent value %q", got, target)
+		}
+	})
+
 	t.Run("lead can resolve a real conflict and resume the scripted push", func(t *testing.T) {
 		remote, workspace := createSyncFixture(t, true, true)
 		installPushCounter(t, remote)

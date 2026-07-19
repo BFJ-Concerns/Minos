@@ -416,6 +416,65 @@ func TestRebuildEstateReviewCompletionReactionJourneys(t *testing.T) {
 	}
 }
 
+func TestRebuildEstateAllRunReachedTerminalOutcomesBindEyesCleanup(t *testing.T) {
+	lifecyclePath := filepath.Join("..", "..", "lifecycle", "lifecycle.md")
+	lifecycle, err := os.ReadFile(lifecyclePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name        string
+		instruction string
+		merged      bool
+		remove      bool
+	}{
+		{name: "merged", instruction: "Merged,", merged: true, remove: true},
+		{name: "request changes", instruction: "request-changes", remove: true},
+		{name: "clean without auto merge", instruction: "clean-without-auto-merge", remove: true},
+		{name: "incomplete", instruction: "every incomplete outcome", remove: true},
+		{name: "crash", instruction: "a crash alone leaves it", remove: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if !strings.Contains(string(lifecycle), test.instruction) {
+				t.Fatalf("lifecycle omits terminal outcome instruction %q", test.instruction)
+			}
+			state := newForgejoFixtureState(t)
+			state.reactions = []string{"eyes"}
+			if test.merged {
+				state.changePullRequest(func(pullRequest map[string]any) {
+					pullRequest["merged"] = true
+					pullRequest["state"] = "closed"
+				})
+			}
+			cfg, _, facts := state.service(t)
+			writeServiceConfig(t, cfg)
+			t.Setenv("MINOS_CONFIG", cfg.Root)
+			t.Setenv("MINOS_FORGE", facts.Forge)
+			t.Setenv("MINOS_OWNER", facts.Owner)
+			t.Setenv("MINOS_REPO_NAME", facts.Repo)
+			t.Setenv("MINOS_PR", facts.PR)
+
+			if test.remove {
+				for attempt := 1; attempt <= 2; attempt++ {
+					if err := ForgeCommand(t.Context(), []string{"reaction-remove", state.headSHA(), state.targetSHA(), "eyes"}, &bytes.Buffer{}); err != nil {
+						t.Fatalf("reaction removal attempt %d: %v", attempt, err)
+					}
+				}
+			}
+
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if test.remove {
+				if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
+					t.Fatalf("reactions = %v, delete writes = %d, want eyes absent after one write", state.reactions, state.reactionDeleteWrites)
+				}
+			} else if !slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 0 {
+				t.Fatalf("crash cleanup changed reactions = %v, delete writes = %d", state.reactions, state.reactionDeleteWrites)
+			}
+		})
+	}
+}
+
 func writeEstateRunBodyConfig(t *testing.T, configRoot string) string {
 	t.Helper()
 	root := t.TempDir()
