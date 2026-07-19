@@ -397,6 +397,46 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			t.Fatalf("review writes = %d, want one", writes)
 		}
 	})
+
+	t.Run("confirmed-unfixed request changes reach the guarded review consumer once", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, _, _ := state.service(t)
+		writeServiceConfig(t, cfg)
+		t.Setenv("MINOS_CONFIG", cfg.Root)
+		t.Setenv("MINOS_FORGE", "forgejo")
+		t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+		t.Setenv("MINOS_REPO_NAME", "subject")
+		t.Setenv("MINOS_PR", "1")
+
+		bodyPath := filepath.Join(t.TempDir(), "body.md")
+		commentsPath := filepath.Join(t.TempDir(), "comments.json")
+		if err := os.WriteFile(bodyPath, []byte("Confirmed code findings remain unresolved.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		comments, err := json.Marshal(apiShape.Request["comments"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(commentsPath, comments, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := ForgeCommand(t.Context(), []string{"review", state.headSHA(), state.targetSHA(), "request-changes", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
+				t.Fatalf("request-changes attempt %d: %v", attempt+1, err)
+			}
+		}
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != state.headSHA() {
+			t.Fatalf("request-changes writes = %d, payload = %#v", writes, payload)
+		}
+		postedComments := payload["comments"].([]any)
+		comment := postedComments[0].(map[string]any)
+		if comment["path"] != "internal/state.go" || comment["new_position"] != float64(41) {
+			t.Fatalf("request-changes comment = %#v", comment)
+		}
+	})
 }
 
 func mapsClone(source map[string]any) map[string]any {
