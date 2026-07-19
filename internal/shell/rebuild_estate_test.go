@@ -294,6 +294,65 @@ func TestRebuildEstateTerminalRecoveryBindsPullRequestHeadTargetAndStatus(t *tes
 	}
 }
 
+func TestRebuildEstateIncompleteStatusUsesGuardedTargetBoundForgePath(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
+
+	head := state.headSHA()
+	target := state.targetSHA()
+	var stdout strings.Builder
+	if err := ForgeCommand(t.Context(), []string{"status", head, target, "incomplete"}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"outcome":"applied"`) {
+		t.Fatalf("incomplete status output = %q, want applied", stdout.String())
+	}
+
+	state.mu.Lock()
+	writes := state.statusWrites
+	if len(state.statuses) == 0 {
+		state.mu.Unlock()
+		t.Fatal("incomplete status write was not recorded")
+	}
+	written := make(map[string]any, len(state.statuses[0]))
+	for key, value := range state.statuses[0] {
+		written[key] = value
+	}
+	state.mu.Unlock()
+	if writes != 1 || written["state"] != "error" || written["context"] != "Minos" ||
+		written["description"] != "Review incomplete" ||
+		written["target_url"] != statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+			Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
+		}) {
+		t.Fatalf("incomplete status writes = %d, payload = %#v", writes, written)
+	}
+	creator, ok := written["creator"].(map[string]any)
+	if !ok || creator["login"] != "Minos" {
+		t.Fatalf("incomplete status creator = %#v, want Minos", written["creator"])
+	}
+
+	stdout.Reset()
+	err := ForgeCommand(t.Context(), []string{"status", head, target + "-stale", "incomplete"}, &stdout)
+	if err == nil {
+		t.Fatal("stale target accepted an incomplete status")
+	}
+	if !strings.Contains(err.Error(), "status rejected") || !strings.Contains(stdout.String(), `"outcome":"rejected"`) {
+		t.Fatalf("stale-target result = %q, error = %v; want guarded rejection", stdout.String(), err)
+	}
+	state.mu.Lock()
+	writesAfterRejection := state.statusWrites
+	state.mu.Unlock()
+	if writesAfterRejection != 1 {
+		t.Fatalf("stale target changed status write count to %d, want one", writesAfterRejection)
+	}
+}
+
 func writeEstateRunBodyConfig(t *testing.T, configRoot string) string {
 	t.Helper()
 	root := t.TempDir()

@@ -7,8 +7,8 @@ without an internal containment layer.
 
 ## Product boundary
 
-- Keep one accountable lead from claim through review, repair, fresh review
-  and optional merge.
+- Keep one accountable lead from claim through workflow orchestration, repair,
+  fresh review and optional merge.
 - Keep the review workflow, a Claude Code Workflow script the lead runs in its
   own session. Independent reviewers propose findings over the whole
   pull-request diff and a different model family verifies them; the workflow
@@ -19,8 +19,10 @@ without an internal containment layer.
   the run incomplete: no review is published and no clean status is set. This
   is a product correctness rule inside the ordinary flow, not a procedure
   check on Minos itself.
-- Verify the pull request and proposed findings. Do not add machinery that
-  verifies whether Minos followed its own procedure.
+- The workflow's reviewers propose findings and its opposite-family verifiers
+  judge them. The lead consumes the workflow verdict; it does not duplicate
+  either judgement. Do not add machinery that verifies whether Minos followed
+  its own procedure.
 - The forge carries the durable result through the current head, review and
   `Minos` status. Scratch data may disappear with the run.
 - Webhooks and the sweep both reconcile current forge state. The systemd unit

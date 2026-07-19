@@ -11,14 +11,16 @@ The forge root is `$MINOS_API_BASE`, and `$MINOS_CREDENTIAL_FILE` contains the
 token. Work in `$MINOS_RUN_DIR/workspace`.
 
 1. The setup script has cloned the repository at the observed pull-request head
-   into `$MINOS_WORKSPACE` and recorded its orientation in
+   into `$MINOS_WORKSPACE`, refused setup if that head moved while cloning, and
+   recorded its orientation in
    `$MINOS_ORIENTATION`. Read that record. When its `grounding` is `annexe`,
    read the commission in the recorded annexe README as the driving statement
    of the project; when it is `repository`, no sibling annexe exists, so ground
    the work in the repository's own checked-in guidance. Then run
    `"$MINOS_BIN" forge snapshot` and claim the pull request with `"$MINOS_BIN"
    forge claim` (it assigns the Minos account and adds the 👀 reaction; it is
-   safe to repeat). Stop without publishing if the head or target has moved.
+   safe to repeat). Stop without publishing if the snapshot now shows that the
+   head or target has moved since setup.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you
@@ -30,27 +32,34 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    command string exactly as configured — never a repository-native guess or
    substitute of your own — to completion before any review starts; when it is
    empty, no test command is configured, so skip it rather than inventing one.
-4. Run the review workflow at `$MINOS_REVIEW_WORKFLOW` with your Workflow tool,
-   passing `args` of `{"target": "$MINOS_TARGET_SHA", "head": "$MINOS_HEAD_SHA"}`,
-   from the workspace. It supplies independent reviewers, the repository's
-   `.review/` briefs, and cross-family verification; use its findings rather
-   than recreating its review by hand. The result's `verdictsComplete` reflects
-   only what the script could see from inside the run — each leg's own
-   `selfReportedModel`, which is corroboration, not proof. Cross-family
-   independence binds **both** legs behind a finding: the reviewer that proposed
-   it and the verifier that checked it must have actually run on different
-   families. The Workflow tool silently substitutes the GPT session model when a
-   pinned id cannot be served, so before you trust any verdict, confirm in the
-   Workflow run/progress record the actual model of both legs — the review leg
-   (`review.{label,configuredFamily,pinnedModel}`) and its verify leg
-   (`verify.{label,expectedFamily,pinnedModel}`). Treat a finding's verdict as
-   complete only when both legs' actual families are confirmed and differ: a
-   review leg that fell back to the GPT session, a verify leg on the wrong
-   family, or either with no result, is **no verdict**. A `.review/` brief the
-   result reports as `not-run` is a concern left unevaluated. The run is
-   complete only when `verdictsComplete` is true **and** that actual-model check
-   passes for every review and verify leg — until both hold, treat the run as
-   incomplete whatever the result says.
+4. Build the workflow input from disk with `node
+   "${MINOS_REVIEW_WORKFLOW%/*}/review-inputs.mjs" "$MINOS_TARGET_SHA"
+   "$MINOS_HEAD_SHA"`. Pass the emitted JSON object as `args` when running the
+   Workflow at `$MINOS_REVIEW_WORKFLOW` from the workspace. This enumeration is
+   the deterministic file-reading seam: do not ask an agent to reproduce it or
+   hand-author its `instructionBriefs` entries. The workflow supplies the
+   review plan, bounded specialists, repository `.review/` concerns and
+   opposite-family verification; consume its verdict rather than proposing or
+   verifying findings yourself.
+
+   Actual served models exist in the Workflow tool's run record outside the
+   script. After the first pass, add that result's `workflowProgress` array
+   unchanged at `args.runRecord.workflowProgress`, then resume the same Workflow
+   with its `scriptPath` and `resumeFromRunId`. Do not translate model names or
+   judge their families yourself. The script reuses completed exact calls and
+   checks the run-record models against its pins. Repeat this data hand-off if a
+   resumed failed call produced newer progress. If an attempt stalls, cancel it
+   before requesting its replacement; never start a parallel replacement.
+   Preserve failed attempts in `args.runRecord.attempts`. When the Workflow was
+   cancelled or exhausted memory, carry that terminal condition in
+   `args.runRecord.terminal` so the result reports `infrastructure-failure`
+   rather than an ordinary `incomplete` verdict.
+
+   Only a final workflow result whose `status` is `complete` is publishable. A
+   `.review/` concern reported as `not-run`, a missing result, or missing or
+   wrong-family run-record evidence leaves it `incomplete`. In either
+   `incomplete` or `infrastructure-failure`, publish no review and set
+   `"$MINOS_BIN" forge status HEAD TARGET incomplete`.
 5. Fix confirmed material problems you can fix. Commit and push the repair to
    the pull-request branch, then repeat the build, tests, and the whole review
    workflow on the new head. Loop until a fresh review confirms nothing further
