@@ -22,10 +22,12 @@ if (!target || !head) {
   if (!guidanceStat.isFile()) throw new Error("guidance path is not a regular file");
   if (guidanceStat.size > maximumGuidanceBytes)
     throw new Error(`guidance exceeds ${maximumGuidanceBytes} bytes`);
+  const guidanceContent = readFileSync(guidancePath, "utf8");
+  if (guidanceContent.trim() === "") throw new Error("guidance document is empty");
   const guidance = {
     grounding: typeof orientation.grounding === "string" ? orientation.grounding : "repository",
     path: guidancePath,
-    content: readFileSync(guidancePath, "utf8"),
+    content: guidanceContent,
   };
   const paths = [
     "workflows/review-briefs/exploration.md",

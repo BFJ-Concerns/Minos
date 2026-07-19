@@ -158,6 +158,34 @@ test("incomplete review input dispatches no fix agents", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("direct fix input with empty guidance dispatches no fix agents", async () => {
+  const { result, calls } = await run(args([], {
+    guidance: { grounding: "annexe", path: "/run/subject-Annexe/README.md", content: " \n\t" },
+  }));
+  assert.equal(result.status, "incomplete");
+  assert.equal(calls.length, 0);
+});
+
+test("the deterministic fix input rejects empty and whitespace-only guidance", () => {
+  for (const guidanceContent of ["", " \n\t"]) {
+    const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-empty-"));
+    const guidancePath = join(root, "README.md");
+    const orientationPath = join(root, "orientation.json");
+    const reviewPath = join(root, "review.json");
+    writeFileSync(guidancePath, guidanceContent);
+    writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
+    writeFileSync(reviewPath, JSON.stringify({ status: "complete", confirmedFindings: [] }));
+    assert.throws(
+      () => execFileSync(process.execPath, [inputScriptPath, reviewPath], {
+        encoding: "utf8",
+        env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root },
+        stdio: ["ignore", "pipe", "pipe"],
+      }),
+      /guidance document is empty/,
+    );
+  }
+});
+
 test("the deterministic fix input carries configured loop knobs and the run record", () => {
   const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-"));
   const guidancePath = join(root, "README.md");

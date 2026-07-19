@@ -73,14 +73,59 @@ func TestSetupWorkspaceRecordsRepositoryGuidanceFallbackWithoutAnnexe(t *testing
 	}
 }
 
-func TestSetupWorkspaceRejectsAnnexeWithoutReadmeGuidance(t *testing.T) {
-	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
-	annexe := createGitRepositoryAtHead(t, "NOTES.md", "# Notes\n")
-	server := newSetupForge(t, head, repository, annexe)
+func TestSetupWorkspaceSkipsBlankRepositoryGuidanceFallback(t *testing.T) {
+	repository, _ := createGitRepository(t, "AGENTS.md", " \n\t")
+	if err := os.WriteFile(filepath.Join(repository, "CLAUDE.md"), []byte("MINOS_REPOSITORY_GUIDANCE_SIENNA_719\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repository, "add", "CLAUDE.md")
+	runGit(t, repository, "commit", "-m", "fixture guidance")
+	head := gitOutput(t, repository, "rev-parse", "HEAD")
+	server := newSetupForge(t, head, repository, "")
+
+	runDir := t.TempDir()
+	orientation := filepath.Join(runDir, "orientation.json")
+	runSetupWorkspace(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head)
+
+	state := readOrientation(t, orientation)
+	if state.Guidance != filepath.Join(runDir, "workspace", "CLAUDE.md") {
+		t.Fatalf("orientation guidance = %q, want non-empty repository CLAUDE.md", state.Guidance)
+	}
+	assertContainsFile(t, state.Guidance, "MINOS_REPOSITORY_GUIDANCE_SIENNA_719")
+}
+
+func TestSetupWorkspaceRejectsAnnexeWithoutSubstantiveReadmeGuidance(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		contents string
+	}{
+		{name: "missing", file: "NOTES.md", contents: "# Notes\n"},
+		{name: "empty", file: "README.md", contents: ""},
+		{name: "whitespace only", file: "README.md", contents: " \n\t"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
+			annexe := createGitRepositoryAtHead(t, test.file, test.contents)
+			server := newSetupForge(t, head, repository, annexe)
+			runDir := t.TempDir()
+			cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "annexe README.md guidance is missing or empty") {
+				t.Fatalf("setup-workspace error = %v, output = %q", err, output)
+			}
+		})
+	}
+}
+
+func TestSetupWorkspaceRejectsEmptyRepositoryGuidanceFallback(t *testing.T) {
+	repository, head := createGitRepository(t, "AGENTS.md", " \n\t")
+	server := newSetupForge(t, head, repository, "")
 	runDir := t.TempDir()
 	cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
 	output, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "annexe omitted README.md guidance") {
+	if err == nil || !strings.Contains(string(output), "repository fallback has no non-empty checked-in guidance") {
 		t.Fatalf("setup-workspace error = %v, output = %q", err, output)
 	}
 }

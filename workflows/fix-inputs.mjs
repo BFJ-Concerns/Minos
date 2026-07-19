@@ -19,6 +19,8 @@ if (!reviewPath) {
   const guidanceStat = statSync(guidancePath);
   if (!guidanceStat.isFile() || guidanceStat.size > 262_144)
     throw new Error("guidance must be one regular README-sized document");
+  const guidanceContent = readFileSync(guidancePath, "utf8");
+  if (guidanceContent.trim() === "") throw new Error("guidance document is empty");
   const briefPath = "workflows/review-briefs/fixer.md";
   const maximumRounds = process.env.MINOS_MAX_ROUNDS
     ? Number.parseInt(process.env.MINOS_MAX_ROUNDS, 10)
@@ -36,7 +38,7 @@ if (!reviewPath) {
     guidance: {
       grounding: orientation.grounding || "repository",
       path: guidancePath,
-      content: readFileSync(guidancePath, "utf8"),
+      content: guidanceContent,
     },
     fixerBrief: {
       path: briefPath,

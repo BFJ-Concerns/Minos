@@ -140,6 +140,7 @@ function projectGuidanceFromInput(input) {
     typeof guidance.path !== "string" ||
     guidance.path === "" ||
     typeof guidance.content !== "string" ||
+    guidance.content.trim() === "" ||
     typeof guidance.grounding !== "string"
   ) return null;
   return guidance;

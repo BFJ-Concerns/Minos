@@ -56,6 +56,7 @@ function enumeratedArgs(
   return JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], {
     encoding: "utf8",
     env: { ...process.env, MINOS_ORIENTATION: orientationPath },
+    stdio: ["ignore", "pipe", "pipe"],
   }));
 }
 
@@ -340,6 +341,25 @@ test("repository fallback guidance reaches the recorded specialist consumer", as
   assert.ok(specialist);
   assert.match(specialist.prompt, /grounding="repository"/);
   assert.ok(specialist.prompt.includes(marker));
+});
+
+test("the deterministic review input rejects empty and whitespace-only guidance", () => {
+  for (const guidanceContent of ["", " \n\t"]) {
+    assert.throws(
+      () => enumeratedArgs("aaa111", "bbb222", { guidanceContent }),
+      /guidance document is empty/,
+    );
+  }
+});
+
+test("direct review input with empty guidance fails before agent dispatch", async () => {
+  const { result, calls } = await runScript(
+    { ...ARGS, guidance: { ...ARGS.guidance, content: " \n\t" } },
+    responder(),
+  );
+  assert.equal(result.status, "incomplete");
+  assert.deepEqual(result.incomplete, ["deterministic input omitted reviewed-project guidance"]);
+  assert.equal(calls.length, 0);
 });
 
 test("both confidences travel with confirmed findings and low combined confidence flags the run record", async () => {

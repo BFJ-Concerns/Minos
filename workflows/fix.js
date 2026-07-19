@@ -103,6 +103,7 @@ function validInput(input) {
     input.guidance &&
     typeof input.guidance.path === "string" &&
     typeof input.guidance.content === "string" &&
+    input.guidance.content.trim() !== "" &&
     typeof input.workspace === "string" &&
     input.workspace !== ""
   );

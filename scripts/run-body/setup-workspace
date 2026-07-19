@@ -36,6 +36,10 @@ forge_get() {
   fi
 }
 
+guidance_has_content() {
+  [ -f "$1" ] && grep -q '[^[:space:]]' "$1"
+}
+
 forge_get "/api/v1/repos/${MINOS_OWNER}/${MINOS_REPO_NAME}/pulls/${MINOS_PR}"
 if [ "$response_status" != "200" ]; then
   echo "setup-workspace: pull request lookup returned HTTP $response_status" >&2
@@ -79,8 +83,8 @@ case "$response_status" in
     git -C "$annexe_path" config user.email "$MINOS_GIT_AUTHOR_EMAIL"
     git -C "$annexe_path" config http.extraHeader "Authorization: token ${forge_token}"
     annexe_guidance="$annexe_path/README.md"
-    if [ ! -f "$annexe_guidance" ]; then
-      echo "setup-workspace: annexe omitted README.md guidance" >&2
+    if ! guidance_has_content "$annexe_guidance"; then
+      echo "setup-workspace: annexe README.md guidance is missing or empty" >&2
       exit 1
     fi
     jq -n \
@@ -94,13 +98,13 @@ case "$response_status" in
   404)
     repository_guidance=""
     for candidate in AGENTS.md CLAUDE.md README.md; do
-      if [ -f "$MINOS_WORKSPACE/$candidate" ]; then
+      if guidance_has_content "$MINOS_WORKSPACE/$candidate"; then
         repository_guidance="$MINOS_WORKSPACE/$candidate"
         break
       fi
     done
     if [ -z "$repository_guidance" ]; then
-      echo "setup-workspace: repository fallback has no checked-in guidance" >&2
+      echo "setup-workspace: repository fallback has no non-empty checked-in guidance" >&2
       exit 1
     fi
     jq -n \
