@@ -103,6 +103,11 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	}) {
 		t.Fatalf("systemd-run arguments omit MINOS_WORKSPACE: %v", systemdArgs)
 	}
+	if !slices.ContainsFunc(systemdArgs, func(arg string) bool {
+		return strings.HasPrefix(arg, "MINOS_ORIENTATION=")
+	}) {
+		t.Fatalf("systemd-run arguments omit MINOS_ORIENTATION: %v", systemdArgs)
+	}
 }
 
 func assertArgument(t *testing.T, arguments []string, want string) {
