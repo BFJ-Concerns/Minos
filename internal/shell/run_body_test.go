@@ -25,9 +25,12 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		t.Fatalf("CLAUDE_CONFIG_DIR mode = %o, want 700", info.Mode().Perm())
 	}
 	assertContainsFile(t, filepath.Join(configDir, "skills", "root-cause", "SKILL.md"), "# Root Cause")
+	assertContainsFile(t, filepath.Join(configDir, ".claude.json"), `"hasCompletedOnboarding":true`)
+	assertContainsFile(t, filepath.Join(configDir, ".claude.json"), `"bypassPermissionsModeAccepted":true`)
+	assertContainsFile(t, fixture.record+".setup", "setup invoked")
 	assertContainsFile(t, fixture.record+".argv", "--bg")
 	assertContainsFile(t, fixture.record+".argv", "--model")
-	assertContainsFile(t, fixture.record+".argv", "gpt-5.6-sol")
+	assertContainsFile(t, fixture.record+".argv", "anthropic-gpt-5.6-sol")
 	assertContainsFile(t, fixture.record+".argv", "Follow the Minos lifecycle exactly.")
 	assertContainsFile(t, fixture.record+".calls", "agents")
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
@@ -36,7 +39,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		"CLAUDE_CONFIG_DIR=" + configDir,
 		"ANTHROPIC_AUTH_TOKEN=fake-proxy-token",
 		"ANTHROPIC_BASE_URL=http://proxy.test:8317",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL=gpt-5.6-luna",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic-gpt-5.6-terra",
 		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS=265000",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW=265000",
@@ -46,6 +49,13 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		"MINOS_CONFIG=" + fixture.configRoot,
 		"MINOS_FORGE=forgejo",
 		"MINOS_WORKSPACE=" + filepath.Join(fixture.runDir, "workspace"),
+		"MINOS_ORIENTATION=" + filepath.Join(fixture.runDir, "orientation.json"),
+		"MINOS_GIT_AUTHOR_NAME=Minos",
+		"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
+		"GIT_AUTHOR_NAME=Minos",
+		"GIT_AUTHOR_EMAIL=minos@example.invalid",
+		"GIT_COMMITTER_NAME=Minos",
+		"GIT_COMMITTER_EMAIL=minos@example.invalid",
 		"MINOS_OWNER=owner",
 		"MINOS_REPO_NAME=repository",
 		"MINOS_PR=17",
@@ -110,6 +120,7 @@ type runBodyFixture struct {
 	record          string
 	instructionPath string
 	claudeStub      string
+	setupStub       string
 }
 
 func newRunBodyFixture(t *testing.T) runBodyFixture {
@@ -120,6 +131,7 @@ func newRunBodyFixture(t *testing.T) runBodyFixture {
 		runDir: filepath.Join(root, "run"), record: filepath.Join(root, "claude-record"),
 		instructionPath: filepath.Join(root, "lifecycle.md"),
 		claudeStub:      filepath.Join(root, "claude"),
+		setupStub:       filepath.Join(root, "setup-workspace"),
 	}
 	skillSource := filepath.Join(root, "root-cause")
 	if err := os.MkdirAll(filepath.Join(skillSource, "references"), 0o755); err != nil {
@@ -184,6 +196,12 @@ case "$1" in
     ;;
 esac
 `)
+	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
+set -eu
+mkdir -p "$MINOS_WORKSPACE"
+printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
+printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
+`)
 	t.Cleanup(func() { killRecordedProcesses(fixture.record + ".pids") })
 
 	if err := os.MkdirAll(fixture.configRoot, 0o755); err != nil {
@@ -191,16 +209,19 @@ esac
 	}
 	runBodyEnv := map[string]string{
 		"MINOS_CLAUDE":                               fixture.claudeStub,
-		"MINOS_LEAD_MODEL":                           "gpt-5.6-sol",
+		"MINOS_LEAD_MODEL":                           "anthropic-gpt-5.6-sol",
+		"MINOS_GIT_AUTHOR_NAME":                      "Minos",
+		"MINOS_GIT_AUTHOR_EMAIL":                     "minos@example.invalid",
 		"MINOS_ANTHROPIC_CREDENTIAL_FILE":            credentialPath,
 		"ANTHROPIC_BASE_URL":                         "http://proxy.test:8317",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL":              "gpt-5.6-luna",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":              "anthropic-gpt-5.6-terra",
 		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":             "265000",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "265000",
 		"MINOS_LIFECYCLE_INSTRUCTION":                fixture.instructionPath,
 		"MINOS_REVIEW_WORKFLOW":                      "/opt/minos/workflows/review.js",
 		"MINOS_ROOT_CAUSE_SKILL":                     skillSource,
+		"MINOS_SETUP_WORKSPACE":                      fixture.setupStub,
 		"MINOS_BIN":                                  "/usr/local/bin/minos",
 	}
 	var config strings.Builder
@@ -220,6 +241,7 @@ func (f runBodyFixture) run(t *testing.T, extraEnv map[string]string) {
 		"MINOS_CONFIG":              f.configRoot,
 		"MINOS_FORGE":               "forgejo",
 		"MINOS_WORKSPACE":           filepath.Join(f.runDir, "workspace"),
+		"MINOS_ORIENTATION":         filepath.Join(f.runDir, "orientation.json"),
 		"MINOS_OWNER":               "owner",
 		"MINOS_REPO_NAME":           "repository",
 		"MINOS_PR":                  "17",

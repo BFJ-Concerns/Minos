@@ -10,11 +10,15 @@ is `$MINOS_HEAD_SHA`; the target is `$MINOS_TARGET_SHA` on `$MINOS_BASE_REF`.
 The forge root is `$MINOS_API_BASE`, and `$MINOS_CREDENTIAL_FILE` contains the
 token. Work in `$MINOS_RUN_DIR/workspace`.
 
-1. Run `"$MINOS_BIN" forge snapshot`, then claim the pull request with
-   `"$MINOS_BIN" forge claim` (it assigns the Minos account and adds the 👀
-   reaction; it is safe to repeat). Clone the repository and check out the
-   observed pull-request head. Stop without publishing if the head or target
-   has moved.
+1. The setup script has cloned the repository at the observed pull-request head
+   into `$MINOS_WORKSPACE` and recorded its orientation in
+   `$MINOS_ORIENTATION`. Read that record. When its `grounding` is `annexe`,
+   read the commission in the recorded annexe README as the driving statement
+   of the project; when it is `repository`, no sibling annexe exists, so ground
+   the work in the repository's own checked-in guidance. Then run
+   `"$MINOS_BIN" forge snapshot` and claim the pull request with `"$MINOS_BIN"
+   forge claim` (it assigns the Minos account and adds the 👀 reaction; it is
+   safe to repeat). Stop without publishing if the head or target has moved.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you
