@@ -171,6 +171,8 @@ func TestSyncTargetNoOpCleanAndConflictJourneys(t *testing.T) {
 func createSyncFixture(t *testing.T, moveTarget, conflict bool) (string, string) {
 	t.Helper()
 	remote, seed := createBareFixtureRemote(t, "shared.txt", "base\n")
+	runGit(t, seed, "config", "user.name", "Fixture")
+	runGit(t, seed, "config", "user.email", "fixture@example.invalid")
 	runGit(t, seed, "checkout", "-b", "feature")
 	if conflict {
 		if err := os.WriteFile(filepath.Join(seed, "shared.txt"), []byte("feature\n"), 0o644); err != nil {
