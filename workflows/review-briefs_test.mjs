@@ -224,6 +224,39 @@ test("brief findings cross to GPT verification and form their own review group",
   assert.equal(result.fixRequired, true);
 });
 
+test("Claude model-id decoration is confirmed by family", async () => {
+  const first = await run(args());
+  const specialist = first.result.requiredModelEvidence.find((leg) => leg.role === "specialist");
+  const decoratedModel = `${specialist.pinnedModel}[1m]`;
+  const { result } = await run({ ...args(), runRecord: runRecordFor(first.result, { [specialist.label]: { model: decoratedModel } }) });
+  const evidence = result.modelEvidence.find((leg) => leg.label === specialist.label);
+  assert.equal(result.status, "complete");
+  assert.equal(evidence.actualModel, decoratedModel);
+  assert.equal(evidence.confirmed, true);
+});
+
+test("opposite-family fallback model makes the brief review incomplete", async () => {
+  const first = await run(args());
+  const specialist = first.result.requiredModelEvidence.find((leg) => leg.role === "specialist");
+  const { result } = await run({ ...args(), runRecord: runRecordFor(first.result, { [specialist.label]: { fallbackModel: "gpt-5.6-sol" } }) });
+  const evidence = result.modelEvidence.find((leg) => leg.label === specialist.label);
+  assert.equal(result.status, "incomplete");
+  assert.equal(evidence.actualModel, "gpt-5.6-sol");
+  assert.equal(evidence.confirmed, false);
+  assert.deepEqual(result.incomplete, [`actual model for ${specialist.label} was not confirmed as claude`]);
+});
+
+test("same-family fallback model confirms the verifier leg", async () => {
+  const respond = responder({ specialist: { findings: [finding()] } });
+  const first = await run(args(), respond);
+  const verifier = first.result.requiredModelEvidence.find((leg) => leg.role === "verifier");
+  const { result } = await run({ ...args(), runRecord: runRecordFor(first.result, { [verifier.label]: { fallbackModel: "gpt-5.6-sol" } }) }, respond);
+  const evidence = result.modelEvidence.find((leg) => leg.label === verifier.label);
+  assert.equal(result.status, "complete");
+  assert.equal(evidence.actualModel, "gpt-5.6-sol");
+  assert.equal(evidence.confirmed, true);
+});
+
 test("wrong-family verifier evidence withholds the brief review", async () => {
   const respond = responder({ specialist: { findings: [finding()] } });
   const first = await run(args(), respond);
