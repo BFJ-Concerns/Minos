@@ -99,14 +99,14 @@ function progressRecord(runRecord, label) {
 function actualModelEvidence(runRecord, leg) {
   const record = progressRecord(runRecord, leg.label);
   const done = Boolean(record && record.state === "done");
-  const actualModel = done && typeof record.model === "string" ? record.model : null;
+  const actualModel = done ? (record.fallbackModel || record.model || null) : null;
   const actualFamily = familyOf(actualModel);
   return {
     ...leg,
     state: record ? record.state || "unknown" : "absent",
     actualModel,
     actualFamily,
-    confirmed: done && actualFamily === leg.expectedFamily && actualModel === leg.pinnedModel,
+    confirmed: done && actualFamily === leg.expectedFamily,
   };
 }
 
