@@ -197,20 +197,36 @@ test("full per-file scopes shard while whole-tree scopes remain one assignment",
   assert.equal(whole.result.dispatches.length, 1);
 });
 
-test("weighted whole-tree budget runs tiny trees and fails closed on genuinely large scopes", async () => {
-  const tiny = await runRecorded(args({
+test("weighted whole-tree budget admits the observed live estate and fails closed beyond its cap", async () => {
+  const liveBoundary = await runRecorded(args({
     briefs: [brief(".review/pkg/style.md", "extent: full\nsweep: whole-tree")],
-    trackedFiles: tracked(61, 610),
+    trackedFiles: tracked(1, 592_566),
   }), responder());
-  assert.equal(tiny.result.briefs[0].status, "run");
+  assert.equal(liveBoundary.result.dispatches.length, 1);
+  assert.equal(liveBoundary.result.briefs[0].status, "run");
+  assert.equal(liveBoundary.result.status, "complete");
 
-  const many = await run(args({
+  const overCap = await run(args({
     briefs: [brief(".review/pkg/style.md", "extent: full\nsweep: whole-tree")],
-    trackedFiles: tracked(250, 25_000),
+    trackedFiles: tracked(1, 648_001),
   }), responder());
-  assert.equal(many.result.briefs[0].status, "not-run");
-  assert.equal(many.result.briefs[0].readingVolume, 525_000);
-  assert.equal(many.result.status, "incomplete");
+  assert.equal(overCap.result.briefs[0].status, "not-run");
+  assert.equal(overCap.result.briefs[0].readingVolume, 650_001);
+  assert.equal(overCap.result.status, "incomplete");
+});
+
+test("specialist budget admits the observed live estate and fails closed beyond its cap", async () => {
+  const briefs = Array.from({ length: 17 }, (_, index) => brief(`.review/concern-${index + 1}.md`));
+  const liveBoundary = await runRecorded(args({ briefs: briefs.slice(0, 13) }), responder());
+  assert.equal(liveBoundary.result.dispatches.length, 13);
+  assert.ok(liveBoundary.result.briefs.every((entry) => entry.status === "run"));
+  assert.equal(liveBoundary.result.status, "complete");
+
+  const overCap = await run(args({ briefs }), responder());
+  assert.equal(overCap.result.dispatches.length, 16);
+  assert.equal(overCap.result.briefs.find((entry) => entry.brief === ".review/concern-17.md").status, "not-run");
+  assert.match(overCap.result.briefs.find((entry) => entry.brief === ".review/concern-17.md").reason, /stage budget of 16/);
+  assert.equal(overCap.result.status, "incomplete");
 });
 
 test("brief findings cross to GPT verification and form their own review group", async () => {
