@@ -113,6 +113,25 @@ func TestRunBodyRetriesTransientAgentQuery(t *testing.T) {
 	fixture.assertProcessesStopped(t)
 }
 
+func TestProcessStatusIsZombie(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   bool
+	}{
+		{name: "zombie", status: "Name:\tsleep\nState:\tZ (zombie)\n", want: true},
+		{name: "running", status: "Name:\tsleep\nState:\tR (running)\n", want: false},
+		{name: "missing state", status: "Name:\tsleep\n", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := processStatusIsZombie([]byte(test.status)); got != test.want {
+				t.Fatalf("processStatusIsZombie() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 type runBodyFixture struct {
 	root            string
 	configRoot      string
@@ -304,8 +323,29 @@ func recordedPIDs(t *testing.T, path string) []int {
 
 func processesExist(pids []int) bool {
 	for _, pid := range pids {
-		if err := syscall.Kill(pid, 0); err == nil {
+		if processExists(pid) {
 			return true
+		}
+	}
+	return false
+}
+
+func processExists(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return false
+	}
+	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return true
+	}
+	return !processStatusIsZombie(status)
+}
+
+func processStatusIsZombie(status []byte) bool {
+	for _, line := range strings.Split(string(status), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "State:" {
+			return fields[1] == "Z"
 		}
 	}
 	return false
