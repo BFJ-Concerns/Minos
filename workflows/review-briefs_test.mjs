@@ -216,16 +216,16 @@ test("weighted whole-tree budget admits the observed live estate and fails close
 });
 
 test("specialist budget admits the observed live estate and fails closed beyond its cap", async () => {
-  const briefs = Array.from({ length: 17 }, (_, index) => brief(`.review/concern-${index + 1}.md`));
-  const liveBoundary = await runRecorded(args({ briefs: briefs.slice(0, 13) }), responder());
-  assert.equal(liveBoundary.result.dispatches.length, 13);
+  const briefs = Array.from({ length: 25 }, (_, index) => brief(`.review/concern-${index + 1}.md`));
+  const liveBoundary = await runRecorded(args({ briefs: briefs.slice(0, 20) }), responder());
+  assert.equal(liveBoundary.result.dispatches.length, 20);
   assert.ok(liveBoundary.result.briefs.every((entry) => entry.status === "run"));
   assert.equal(liveBoundary.result.status, "complete");
 
   const overCap = await run(args({ briefs }), responder());
-  assert.equal(overCap.result.dispatches.length, 16);
-  assert.equal(overCap.result.briefs.find((entry) => entry.brief === ".review/concern-17.md").status, "not-run");
-  assert.match(overCap.result.briefs.find((entry) => entry.brief === ".review/concern-17.md").reason, /stage budget of 16/);
+  assert.equal(overCap.result.dispatches.length, 24);
+  assert.equal(overCap.result.briefs.find((entry) => entry.brief === ".review/concern-25.md").status, "not-run");
+  assert.match(overCap.result.briefs.find((entry) => entry.brief === ".review/concern-25.md").reason, /stage budget of 24/);
   assert.equal(overCap.result.status, "incomplete");
 });
 
