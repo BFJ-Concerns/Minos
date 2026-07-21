@@ -33,7 +33,13 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    command string exactly as configured — never a repository-native guess or
    substitute of your own — to completion before any review starts; when it is
    empty, no test command is configured, so skip it rather than inventing one.
-4. Build the workflow input from disk with `node
+4. Run every Workflow in this lifecycle directly from this accountable lead
+   session and consume its returned verdict and run record here. Never delegate
+   a Workflow call or its invocation to Agent or any subagent; those sessions
+   may not expose Workflow, and responsibility for orchestration remains with
+   the lead.
+
+   Build the workflow input from disk with `node
    "${MINOS_REVIEW_WORKFLOW%/*}/review-inputs.mjs" "$MINOS_TARGET_SHA"
    "$MINOS_HEAD_SHA"`. Pass the emitted JSON object as `args` when running the
    Workflow at `$MINOS_REVIEW_WORKFLOW` from the workspace. This enumeration is
@@ -118,25 +124,30 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    Review prose talks only about the code, never about Minos, its process or a
    round number. Operational conditions — head moved, forge unreadable, review
    not reached — are always carried by the `Minos` status, never by a review.
-7. Once the main loop has reached its terminal classification, build the
-   repository-brief input from disk with `node
+7. Once the main loop has reached its terminal classification, generate the
+   repository-brief Workflow script from disk with `node
    "${MINOS_REVIEW_WORKFLOW%/*}/review-brief-inputs.mjs"
-   "$MINOS_TARGET_SHA" CURRENT_HEAD`. This deterministic
-   enumeration supplies every `.review/` Markdown brief and its content, the
-   changed paths, and the tracked-file inventory used for full-extent sharding
-   and weighted whole-tree limits. Do not hand-author or agent-enumerate these
-   values.
+   "$MINOS_TARGET_SHA" CURRENT_HEAD --workflow-script
+   "$MINOS_RUN_DIR/review-briefs.js"`. The command emits only a small descriptor
+   containing `hasReviewDirectory` and the generated `scriptPath`; the script
+   embeds the exact deterministic input without carrying it through a
+   model-generated Workflow argument. That input contains every `.review/`
+   Markdown brief and its content, the changed paths, and the tracked-file
+   inventory used for full-extent sharding and weighted whole-tree limits. Do
+   not read, copy, hand-author or agent-enumerate the embedded values.
 
    When `hasReviewDirectory` is false, run no brief Workflow and add the clean
    signal immediately with `"$MINOS_BIN" forge reaction CURRENT_HEAD
    "$MINOS_TARGET_SHA" +1`. This guarded write reads the forge reactions before
    and after writing, so it is safe to repeat. It posts no comment.
 
-   When `.review/` exists, run the Workflow at
-   `"${MINOS_REVIEW_WORKFLOW%/*}/review-briefs.js"` with the enumerated object as
-   `args`. Handle its `workflowProgress`, `scriptPath`, `resumeFromRunId`,
-   attempts and terminal conditions exactly like the main review Workflow. Its
-   scripted gates apply extent, sweep and occasion; its relevance judgement
+   When `.review/` exists, call Workflow directly from this lead session with
+   the descriptor's generated `scriptPath` and an empty `args` object. Handle
+   its `workflowProgress`, `scriptPath`, `resumeFromRunId`, attempts and terminal
+   conditions exactly like the main review Workflow, passing only the
+   run-record fields back through `args.runRecord` on resume. Use the same
+   generated script for every resume in this run. Its scripted gates apply
+   extent, sweep and occasion; its relevance judgement
    skips a concern only when the diff clearly gives it nothing to do. A skipped
    concern remains `skipped` in the returned run record and is never published
    on the pull request. A `not-run` concern, missing result, or incomplete

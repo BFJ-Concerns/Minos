@@ -1,16 +1,29 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const target = process.argv[2];
-const head = process.argv[3];
-const occasion = process.argv[4] || null;
+const [target, head, ...rest] = process.argv.slice(2);
+let occasion = null;
+let workflowScriptOutput = null;
+let argumentError = !target || !head;
+for (let index = 0; index < rest.length; index += 1) {
+  const value = rest[index];
+  if (value === "--workflow-script") {
+    if (workflowScriptOutput || !rest[index + 1]) {
+      argumentError = true;
+      break;
+    }
+    workflowScriptOutput = rest[index + 1];
+    index += 1;
+  } else if (occasion === null) occasion = value;
+  else argumentError = true;
+}
 
-if (!target || !head) {
-  process.stderr.write("usage: node workflows/review-brief-inputs.mjs TARGET HEAD [OCCASION]\n");
+if (argumentError) {
+  process.stderr.write("usage: node workflows/review-brief-inputs.mjs TARGET HEAD [OCCASION] [--workflow-script OUTPUT]\n");
   process.exitCode = 2;
 } else {
   const workflowRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -83,7 +96,7 @@ if (!target || !head) {
     content: readFileSync(resolve(workflowRoot, path), "utf8"),
   }));
 
-  process.stdout.write(JSON.stringify({
+  const workflowInput = {
     target,
     head,
     occasion,
@@ -98,5 +111,21 @@ if (!target || !head) {
       content: guidanceContent,
     },
     instructionBriefs,
-  }) + "\n");
+  };
+
+  if (!workflowScriptOutput) process.stdout.write(JSON.stringify(workflowInput) + "\n");
+  else {
+    const workflowSourcePath = resolve(workflowRoot, "workflows/review-briefs.js");
+    const workflowSource = readFileSync(workflowSourcePath, "utf8");
+    const inputSeam = "const input = args && typeof args === \"object\" ? args : null;";
+    if (workflowSource.split(inputSeam).length !== 2)
+      throw new Error("review-briefs.js deterministic input seam changed");
+    const embeddedInput =
+      `const deterministicInput = ${JSON.stringify(workflowInput)};\n` +
+      "const suppliedRunRecord = args && typeof args === \"object\" ? args.runRecord : null;\n" +
+      "const input = suppliedRunRecord ? { ...deterministicInput, runRecord: suppliedRunRecord } : deterministicInput;";
+    const scriptPath = resolve(workflowScriptOutput);
+    writeFileSync(scriptPath, workflowSource.replace(inputSeam, embeddedInput));
+    process.stdout.write(JSON.stringify({ hasReviewDirectory, scriptPath }) + "\n");
+  }
 }
