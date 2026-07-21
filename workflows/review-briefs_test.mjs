@@ -197,20 +197,36 @@ test("full per-file scopes shard while whole-tree scopes remain one assignment",
   assert.equal(whole.result.dispatches.length, 1);
 });
 
-test("weighted whole-tree budget runs tiny trees and fails closed on genuinely large scopes", async () => {
-  const tiny = await runRecorded(args({
+test("weighted whole-tree budget admits the observed live estate and fails closed beyond its cap", async () => {
+  const liveBoundary = await runRecorded(args({
     briefs: [brief(".review/pkg/style.md", "extent: full\nsweep: whole-tree")],
-    trackedFiles: tracked(61, 610),
+    trackedFiles: tracked(1, 592_566),
   }), responder());
-  assert.equal(tiny.result.briefs[0].status, "run");
+  assert.equal(liveBoundary.result.dispatches.length, 1);
+  assert.equal(liveBoundary.result.briefs[0].status, "run");
+  assert.equal(liveBoundary.result.status, "complete");
 
-  const many = await run(args({
+  const overCap = await run(args({
     briefs: [brief(".review/pkg/style.md", "extent: full\nsweep: whole-tree")],
-    trackedFiles: tracked(250, 25_000),
+    trackedFiles: tracked(1, 648_001),
   }), responder());
-  assert.equal(many.result.briefs[0].status, "not-run");
-  assert.equal(many.result.briefs[0].readingVolume, 525_000);
-  assert.equal(many.result.status, "incomplete");
+  assert.equal(overCap.result.briefs[0].status, "not-run");
+  assert.equal(overCap.result.briefs[0].readingVolume, 650_001);
+  assert.equal(overCap.result.status, "incomplete");
+});
+
+test("specialist budget admits the observed live estate and fails closed beyond its cap", async () => {
+  const briefs = Array.from({ length: 25 }, (_, index) => brief(`.review/concern-${index + 1}.md`));
+  const liveBoundary = await runRecorded(args({ briefs: briefs.slice(0, 20) }), responder());
+  assert.equal(liveBoundary.result.dispatches.length, 20);
+  assert.ok(liveBoundary.result.briefs.every((entry) => entry.status === "run"));
+  assert.equal(liveBoundary.result.status, "complete");
+
+  const overCap = await run(args({ briefs }), responder());
+  assert.equal(overCap.result.dispatches.length, 24);
+  assert.equal(overCap.result.briefs.find((entry) => entry.brief === ".review/concern-25.md").status, "not-run");
+  assert.match(overCap.result.briefs.find((entry) => entry.brief === ".review/concern-25.md").reason, /stage budget of 24/);
+  assert.equal(overCap.result.status, "incomplete");
 });
 
 test("brief findings cross to GPT verification and form their own review group", async () => {
@@ -294,6 +310,85 @@ test("the enumerator reads briefs and inventories from the reviewed repository",
   assert.match(enumerated.briefs[0].content, /relevance: Error-path changes/);
   assert.ok(enumerated.changedPaths.includes("code.txt"));
   assert.ok(enumerated.trackedFiles.some((entry) => entry.path === "code.txt" && entry.bytes > 0));
+});
+
+test("a generated Workflow script carries boundary-scale deterministic input and resume progress", async () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-brief-workflow-input-"));
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "config", "user.name", "Fixture"]);
+  execFileSync("git", ["-C", root, "config", "user.email", "fixture@example.test"]);
+  const largeGuidance = `GUIDANCE_BOUNDARY_MARKER_${"g".repeat(110_000)}`;
+  const largeBrief = `BRIEF_BOUNDARY_MARKER_${"b".repeat(60_000)}`;
+  writeFileSync(join(root, "AGENTS.md"), largeGuidance);
+  writeFileSync(join(root, "code.txt"), "before\n");
+  execFileSync("git", ["-C", root, "add", "."]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "base"]);
+  const target = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  mkdirSync(join(root, ".review"));
+  writeFileSync(join(root, ".review", "boundary.md"), largeBrief);
+  writeFileSync(join(root, "code.txt"), "after\n");
+  execFileSync("git", ["-C", root, "add", "."]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "head"]);
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const orientationPath = join(root, "orientation.json");
+  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "repository", guidance: join(root, "AGENTS.md") }));
+  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root };
+  const deterministicJson = execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env }).trim();
+  assert.ok(Buffer.byteLength(deterministicJson) > 147_189);
+
+  const generatedPath = join(root, "review-briefs.generated.js");
+  const descriptor = JSON.parse(execFileSync(
+    process.execPath,
+    [inputScriptPath, target, head, "--workflow-script", generatedPath],
+    { encoding: "utf8", env },
+  ));
+  assert.deepEqual(descriptor, { hasReviewDirectory: true, scriptPath: generatedPath });
+  assert.ok(Buffer.byteLength(JSON.stringify(descriptor)) < 1_024);
+  const generatedSource = readFileSync(generatedPath, "utf8");
+  assert.ok(generatedSource.includes(`const deterministicInput = ${deterministicJson};`));
+
+  const generatedBody = generatedSource.replace(/^export const meta =/m, "const meta =");
+  const generatedScript = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", generatedBody);
+  const calls = [];
+  const agent = async (prompt, options) => {
+    calls.push({ prompt, options });
+    return { findings: [] };
+  };
+  const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk()));
+  const first = await generatedScript(agent, parallel, async () => [], () => {}, () => {}, {});
+  const specialist = first.requiredModelEvidence.find((leg) => leg.role === "specialist");
+  const runRecord = {
+    workflowProgress: [{
+      type: "workflow_agent",
+      index: 1,
+      label: specialist.label,
+      state: "done",
+      model: specialist.pinnedModel,
+      attempt: 2,
+      lastAttemptReason: "resumed after interruption",
+    }],
+    attempts: [{ attempt: 1, reason: "interrupted" }],
+  };
+  const resumed = await generatedScript(agent, parallel, async () => [], () => {}, () => {}, { runRecord });
+  assert.equal(resumed.status, "complete");
+  assert.equal(resumed.modelEvidence[0].actualModel, specialist.pinnedModel);
+  assert.equal(resumed.modelEvidence[0].confirmed, true);
+  assert.deepEqual(resumed.accounting.attempts.attempts, runRecord.attempts);
+  assert.deepEqual(resumed.accounting.attempts.legs, [{
+    label: specialist.label,
+    state: "done",
+    attempt: 2,
+    lastAttemptReason: "resumed after interruption",
+  }]);
+  assert.ok(calls.every((call) => call.prompt.includes(largeGuidance)));
+  assert.ok(calls.every((call) => call.prompt.includes(largeBrief)));
+});
+
+test("lifecycle keeps generated brief Workflow invocation in the accountable lead session", () => {
+  assert.match(lifecycle, /Run every Workflow[\s\S]*directly from this accountable lead[\s\S]*Never delegate[\s\S]*Agent or any subagent/);
+  assert.match(lifecycle, /review-brief-inputs\.mjs[\s\S]*--workflow-script[\s\S]*small descriptor[\s\S]*exact deterministic input/);
+  assert.match(lifecycle, /call Workflow directly from this lead session[\s\S]*empty `args` object/);
+  assert.match(lifecycle, /passing only the[\s\S]*run-record fields back through `args\.runRecord` on resume/);
 });
 
 test("lifecycle gives the reaction to absent, clean, and fixed-and-tested brief journeys without an all-clear comment", () => {

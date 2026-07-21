@@ -11,11 +11,11 @@ export const meta = {
 const GPT_MODEL = "anthropic-gpt-5.6-sol";
 const GPT_PLANNER_MODEL = "anthropic-gpt-5.6-terra";
 const CLAUDE_MODEL = "claude-opus-4-8";
-const MAX_SPECIALISTS = 10;
+const MAX_SPECIALISTS = 24;
 const MAX_FINDINGS_PER_SPECIALIST = 2;
 const PER_FILE_CHUNK = 40;
 const PER_FILE_OVERHEAD_BYTES = 2_000;
-const WHOLE_TREE_READING_BUDGET_BYTES = 400_000;
+const WHOLE_TREE_READING_BUDGET_BYTES = 650_000;
 const LOW_COMBINED_CONFIDENCE = 70;
 
 function familyOf(modelId) {
