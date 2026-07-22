@@ -9,11 +9,12 @@ without an internal containment layer.
 
 - Keep one accountable lead from claim through workflow orchestration, repair,
   fresh review and optional merge.
-- Keep the review workflow, a Claude Code Workflow script the lead runs in its
-  own session. Independent reviewers propose findings over the whole
-  pull-request diff and a different model family verifies them; the workflow
-  scales its breadth to the diff and honours the reviewed repository's
-  `.review/` briefs, reporting a skipped concern as skipped, never as passed.
+- Keep the review workflow as an Ensemble workflow that the Opus lead invokes
+  through the installed launcher and adjudication wrapper. Independent
+  reviewers propose findings over the whole pull-request diff and a different
+  model family verifies them; the workflow scales its breadth to the diff and
+  honours the reviewed repository's `.review/` briefs, reporting a skipped
+  concern as skipped, never as passed.
 - A verifier whose actual model family cannot be positively confirmed as the
   pinned one yields no verdict, and a finding without a complete verdict makes
   the run incomplete: no review is published and no clean status is set. This

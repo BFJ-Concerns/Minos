@@ -107,16 +107,20 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	assertContainsFile(t, record+".grounding", "cinnabar-orbit-719")
 	assertContainsFile(t, record+".acceptance", `"hasCompletedOnboarding":true`)
 	assertContainsFile(t, record+".acceptance", `"bypassPermissionsModeAccepted":true`)
+	assertContainsFile(t, record+".auth", "claude-auth-present")
+	assertContainsFile(t, record+".auth", "codex-auth-present")
 	assertContainsFile(t, record+".argv", "read the commission in the recorded annexe README")
+	runHome := filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "home")
 	for _, value := range []string{
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic-gpt-5.6-terra",
-		"CLAUDE_CODE_MAX_CONTEXT_TOKENS=265000",
+		"HOME=" + runHome,
+		"CLAUDE_CONFIG_DIR=" + filepath.Join(runHome, ".claude"),
+		"CODEX_HOME=" + filepath.Join(runHome, ".codex"),
 		"GIT_AUTHOR_NAME=Minos",
 		"GIT_AUTHOR_EMAIL=minos@example.invalid",
 	} {
 		assertContainsFile(t, record+".env", value)
 	}
-	assertContainsFile(t, record+".argv", "anthropic-gpt-5.6-sol")
+	assertContainsFile(t, record+".argv", "claude-opus-4-8")
 
 	if err := os.WriteFile(filepath.Join(workspace, "estate-repair.txt"), []byte("repair\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -489,6 +493,9 @@ case "$1" in
     for argument in "$@"; do printf '%s\n' "$argument" >>"$record.argv"; done
     env | sort >"$record.env"
     cp "$CLAUDE_CONFIG_DIR/.claude.json" "$record.acceptance"
+    test -f "$CLAUDE_CONFIG_DIR/.credentials.json"
+    test -f "$CODEX_HOME/auth.json"
+    printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
     guidance="$(jq -r '.guidance' "$MINOS_ORIENTATION")"
     cat "$guidance" >"$record.grounding"
     printf 'Agent backgrounded: abcdef12\n'
@@ -505,8 +512,18 @@ case "$1" in
     ;;
 esac
 `)
-	proxyCredential := filepath.Join(root, "proxy.token")
-	if err := os.WriteFile(proxyCredential, []byte("fake-proxy-token\n"), 0o600); err != nil {
+	claudeSeed := filepath.Join(root, "claude-seed")
+	codexSeed := filepath.Join(root, "codex-seed")
+	if err := os.MkdirAll(claudeSeed, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(codexSeed, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeSeed, ".credentials.json"), []byte("fixture Claude subscription state\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexSeed, "auth.json"), []byte("fixture Codex ChatGPT state\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	skill := filepath.Join(root, "root-cause")
@@ -525,22 +542,19 @@ esac
 		t.Fatal(err)
 	}
 	values := map[string]string{
-		"MINOS_CLAUDE":                               claude,
-		"MINOS_LEAD_MODEL":                           "anthropic-gpt-5.6-sol",
-		"MINOS_GIT_AUTHOR_NAME":                      "Minos",
-		"MINOS_GIT_AUTHOR_EMAIL":                     "minos@example.invalid",
-		"MINOS_ANTHROPIC_CREDENTIAL_FILE":            proxyCredential,
-		"ANTHROPIC_BASE_URL":                         "http://proxy.test:8317",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL":              "anthropic-gpt-5.6-terra",
-		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
-		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":             "265000",
-		"MINOS_LIFECYCLE_INSTRUCTION":                instruction,
-		"MINOS_REVIEW_WORKFLOW":                      "/opt/minos/workflows/review.js",
-		"MINOS_ROOT_CAUSE_SKILL":                     skill,
-		"MINOS_SETUP_WORKSPACE":                      setup,
-		"MINOS_BIN":                                  "/usr/local/bin/minos",
-		"MINOS_CLAUDE_POLL_SECONDS":                  "0",
-		"MINOS_TEST_RECORD":                          record,
+		"MINOS_CLAUDE":                claude,
+		"MINOS_LEAD_MODEL":            "claude-opus-4-8",
+		"MINOS_GIT_AUTHOR_NAME":       "Minos",
+		"MINOS_GIT_AUTHOR_EMAIL":      "minos@example.invalid",
+		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,
+		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
+		"MINOS_LIFECYCLE_INSTRUCTION": instruction,
+		"MINOS_REVIEW_WORKFLOW":       "/opt/minos/workflows/adjudicated-review",
+		"MINOS_ROOT_CAUSE_SKILL":      skill,
+		"MINOS_SETUP_WORKSPACE":       setup,
+		"MINOS_BIN":                   "/usr/local/bin/minos",
+		"MINOS_CLAUDE_POLL_SECONDS":   "0",
+		"MINOS_TEST_RECORD":           record,
 	}
 	var config strings.Builder
 	for name, value := range values {

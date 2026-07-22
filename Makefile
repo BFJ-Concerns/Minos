@@ -2,7 +2,7 @@
 
 check:
 	@test -z "$$(gofmt -l $$(find cmd internal -name '*.go' -type f))"
-	@for script in scripts/adaptations/forgejo/* scripts/run-body/*; do sh -n "$$script" || exit 1; done
+	@for script in scripts/install-review-runtime scripts/adaptations/forgejo/* scripts/run-body/*; do sh -n "$$script" || exit 1; done
 	go vet ./...
 	go test ./...
 	node --test workflows/*_test.mjs

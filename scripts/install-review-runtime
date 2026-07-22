@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+set -eu
+
+destination_root="${1:?usage: install-review-runtime DESTINATION_ROOT}"
+script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+source_root="$(dirname "$script_dir")"
+
+install -d -m 755 "$destination_root/runtime" "$destination_root/workflows"
+install -m 644 "$source_root/runtime/ensemble.mjs" "$destination_root/runtime/ensemble.mjs"
+install -m 644 "$source_root/runtime/ensemble.mjs.sha256" "$destination_root/runtime/ensemble.mjs.sha256"
+install -m 644 "$source_root/runtime/ensemble.source-version" "$destination_root/runtime/ensemble.source-version"
+
+(
+  cd "$destination_root/runtime"
+  sha256sum -c ensemble.mjs.sha256
+)
+
+find "$destination_root/workflows" -type f -name '*_test.mjs' -exec rm -f {} +
+
+find "$source_root/workflows" -type f ! -name '*_test.mjs' -print |
+  while IFS= read -r source; do
+    relative_path="${source#"$source_root/workflows/"}"
+    destination="$destination_root/workflows/$relative_path"
+    install -d -m 755 "$(dirname "$destination")"
+    if [ -x "$source" ]; then
+      mode=755
+    else
+      mode=644
+    fi
+    install -m "$mode" "$source" "$destination"
+  done

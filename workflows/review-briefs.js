@@ -3,28 +3,15 @@ export const meta = {
   description: "Run applicable repository review briefs after the main review loop",
   phases: [
     { title: "Relevance", detail: "select the briefs this change gives work to" },
-    { title: "Review", detail: "run bounded repository-concern specialists" },
+    { title: "Review", detail: "run repository-concern specialists" },
     { title: "Verify", detail: "opposite-family verification of each proposed finding" },
   ],
 };
 
-const GPT_MODEL = "anthropic-gpt-5.6-sol";
-const GPT_PLANNER_MODEL = "anthropic-gpt-5.6-terra";
+const GPT_MODEL = "gpt-5.6-sol";
+const GPT_PLANNER_MODEL = "gpt-5.6-terra";
 const CLAUDE_MODEL = "claude-opus-4-8";
-const MAX_SPECIALISTS = 24;
-const MAX_FINDINGS_PER_SPECIALIST = 2;
 const PER_FILE_CHUNK = 40;
-const PER_FILE_OVERHEAD_BYTES = 2_000;
-const WHOLE_TREE_READING_BUDGET_BYTES = 650_000;
-const LOW_COMBINED_CONFIDENCE = 70;
-
-function familyOf(modelId) {
-  if (typeof modelId !== "string" || modelId === "") return "unknown";
-  const id = modelId.toLowerCase();
-  if (id.includes("gpt-")) return "gpt";
-  if (id.includes("claude") || ["haiku", "sonnet", "opus", "fable"].includes(id)) return "claude";
-  return "unknown";
-}
 
 function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
@@ -69,6 +56,18 @@ function deterministicDisposition(brief, front, occasion, changedPaths) {
     if (!inScope)
       return { status: "skipped", skipKind: "empty", reason: `nothing changed under its scope ${brief.scope}/` };
   }
+  if (
+    front.extent === "diff" &&
+    front.occasion.length === 0 &&
+    !front.relevance &&
+    !brief.scope
+  ) {
+    return {
+      status: "skipped",
+      skipKind: "no-condition",
+      reason: "brief has no relevance, occasion, path scope, or full-extent condition",
+    };
+  }
   return null;
 }
 
@@ -91,68 +90,19 @@ function groundedPrompt(instruction, guidance, assignment) {
     assignment;
 }
 
-function progressRecord(runRecord, label) {
-  const records = runRecord && Array.isArray(runRecord.workflowProgress) ? runRecord.workflowProgress : [];
-  return records.find((record) => record && record.label === label) || null;
-}
-
-function actualModelEvidence(runRecord, leg) {
-  const record = progressRecord(runRecord, leg.label);
-  const done = Boolean(record && record.state === "done");
-  const actualModel = done ? (record.fallbackModel || record.model || null) : null;
-  const actualFamily = familyOf(actualModel);
+function emptyEnvelope(input) {
   return {
-    ...leg,
-    state: record ? record.state || "unknown" : "absent",
-    actualModel,
-    actualFamily,
-    confirmed: done && actualFamily === leg.expectedFamily,
-  };
-}
-
-function infrastructureFailure(runRecord) {
-  const terminal = runRecord && runRecord.terminal;
-  if (!terminal) return null;
-  const text = typeof terminal === "string" ? terminal : JSON.stringify(terminal);
-  if (/out[- ]of[- ]memory|\boom\b/i.test(text)) return { kind: "oom", detail: terminal };
-  if (/cancel/i.test(text)) return { kind: "cancelled", detail: terminal };
-  return { kind: "terminal", detail: terminal };
-}
-
-function attemptAccounting(runRecord) {
-  const attempts = runRecord && Array.isArray(runRecord.attempts) ? runRecord.attempts : [];
-  const progress = runRecord && Array.isArray(runRecord.workflowProgress) ? runRecord.workflowProgress : [];
-  return {
-    attempts,
-    legs: progress.map((record) => ({
-      label: record.label || null,
-      state: record.state || "unknown",
-      attempt: Number.isInteger(record.attempt) ? record.attempt : 1,
-      lastAttemptReason: record.lastAttemptReason || null,
-    })),
-  };
-}
-
-function emptyResult(input, fault) {
-  return {
-    reviewed: { target: input && input.target || null, head: input && input.head || null, occasion: input && input.occasion || null },
-    stage: input && input.hasReviewDirectory === false ? "absent" : "present",
-    status: fault ? "incomplete" : "complete",
-    complete: !fault,
-    verdictsComplete: !fault,
-    incomplete: fault ? [fault] : [],
-    infrastructureFailure: null,
+    reviewed: {
+      target: input && typeof input.target === "string" ? input.target : null,
+      head: input && typeof input.head === "string" ? input.head : null,
+      occasion: input && typeof input.occasion === "string" ? input.occasion : null,
+    },
+    stage: "absent",
+    requiredModelEvidence: [],
+    proposedFindings: [],
     briefs: [],
     dispatches: [],
     reviewers: [],
-    findings: [],
-    confirmedFindings: [],
-    operatorAttention: [],
-    briefReview: null,
-    fixRequired: false,
-    requiredModelEvidence: [],
-    modelEvidence: [],
-    accounting: { specialists: 0, verification: 0, total: 0, attempts: { attempts: [], legs: [] } },
   };
 }
 
@@ -173,8 +123,19 @@ const findingShape = {
 const specialistSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["findings"],
-  properties: { findings: { type: "array", maxItems: MAX_FINDINGS_PER_SPECIALIST, items: findingShape } },
+  required: ["applicability", "findings"],
+  properties: {
+    applicability: {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "reason"],
+      properties: {
+        status: { type: "string", enum: ["applicable", "inapplicable"] },
+        reason: { type: "string" },
+      },
+    },
+    findings: { type: "array", items: findingShape },
+  },
 };
 
 const verifierSchema = {
@@ -209,20 +170,20 @@ const relevanceSchema = {
   },
 };
 
-const input = args && typeof args === "object" ? args : null;
+const input = args && typeof args === "object" && !Array.isArray(args) ? args : null;
 if (!input || typeof input.target !== "string" || typeof input.head !== "string")
-  return emptyResult(input, "brief workflow needs args {target, head, workspace, briefs, changedPaths, trackedFiles, guidance, instructionBriefs}");
-if (input.hasReviewDirectory === false) return emptyResult(input, null);
+  throw new Error("brief workflow needs args {target, head, workspace, briefs, changedPaths, trackedFiles, guidance, instructionBriefs}");
+if (input.hasReviewDirectory === false) return emptyEnvelope(input);
 if (!Array.isArray(input.briefs) || !Array.isArray(input.changedPaths) || !Array.isArray(input.trackedFiles))
-  return emptyResult(input, "deterministic brief enumeration is incomplete");
+  throw new Error("deterministic brief enumeration is incomplete");
 
 const instructions = instructionBriefsFromInput(input);
 const repositoryInstruction = instructions.get("workflows/review-briefs/repository.md");
 const verifierInstruction = instructions.get("workflows/review-briefs/verifier.md");
 const guidance = guidanceFromInput(input);
 if (!repositoryInstruction || !verifierInstruction)
-  return emptyResult(input, "deterministic input omitted shipped repository or verifier brief");
-if (!guidance) return emptyResult(input, "deterministic input omitted reviewed-project guidance");
+  throw new Error("deterministic input omitted shipped repository or verifier brief");
+if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
 
 const legs = [];
 const addLeg = (label, role, expectedFamily, pinnedModel) => {
@@ -248,10 +209,17 @@ if (relevanceCandidates.length > 0) {
   const relevanceResult = await agent(
     `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
       `Judge which repository concerns ${input.target}...${input.head} gives work to. Inspect the actual diff when paths alone do not settle it. ` +
-      `The default is to run: mark a concern inapplicable only when the diff clearly gives it nothing to do; when in doubt, run it. ` +
-      `Return one decision for each entry and use its brief path unchanged.\nChanged paths: ${JSON.stringify(input.changedPaths)}\n` +
+      `Mark a concern inapplicable only when the diff clearly gives it nothing to judge. Return one decision for every entry and preserve each brief path.\n` +
+      `Changed paths: ${JSON.stringify(input.changedPaths)}\n` +
       `Concerns: ${JSON.stringify(relevanceCandidates.map(({ brief, front }) => ({ brief: brief.path, relevance: front.relevance })))}`,
-    { schema: relevanceSchema, model: GPT_PLANNER_MODEL, effort: "high", label: "brief-relevance", phase: "Relevance" },
+    {
+      engine: "codex",
+      schema: relevanceSchema,
+      model: GPT_PLANNER_MODEL,
+      effort: "high",
+      label: "brief-relevance",
+      phase: "Relevance",
+    },
   );
   for (const decision of relevanceResult && Array.isArray(relevanceResult.decisions) ? relevanceResult.decisions : [])
     if (relevanceCandidates.some(({ brief }) => brief.path === decision.brief) && !relevanceDecisions.has(decision.brief))
@@ -293,40 +261,22 @@ function makeUnit(candidate, files, suffix, warning) {
   };
 }
 
-const units = [];
+const dispatched = [];
 for (const candidate of runnable) {
-  const { brief, front, base } = candidate;
+  const { brief, front } = candidate;
   const warning = brief.scope && !brief.scopeExists
     ? `brief scope ${brief.scope}/ matches no repository directory; ran repo-wide instead`
     : null;
   if (front.extent !== "full") {
-    units.push(makeUnit(candidate, [], null, warning));
+    dispatched.push(makeUnit(candidate, [], null, warning));
     continue;
   }
   const inventory = scopeInventory(warning ? null : brief.scope);
-  const bytes = inventory.reduce((total, entry) => total + entry.bytes, 0);
-  const readingVolume = bytes + inventory.length * PER_FILE_OVERHEAD_BYTES;
-  if (front.sweep === "whole-tree" && readingVolume > WHOLE_TREE_READING_BUDGET_BYTES) {
-    reports.set(brief.path, {
-      ...base,
-      status: "not-run",
-      scopeSize: inventory.length,
-      scopeBytes: bytes,
-      readingVolume,
-      reason: `whole-tree brief needs one specialist, but its scope has a weighted reading volume of ${readingVolume} bytes (${bytes} non-binary bytes plus ${inventory.length} file entries), past the ${WHOLE_TREE_READING_BUDGET_BYTES}-byte budget`,
-      ...(warning ? { warning } : {}),
-    });
-    continue;
-  }
   if (front.sweep === "per-file" && inventory.length > PER_FILE_CHUNK) {
     for (let index = 0; index < inventory.length; index += PER_FILE_CHUNK)
-      units.push(makeUnit(candidate, inventory.slice(index, index + PER_FILE_CHUNK).map((entry) => entry.path), index / PER_FILE_CHUNK + 1, warning));
-  } else units.push(makeUnit(candidate, inventory.map((entry) => entry.path), null, warning));
+      dispatched.push(makeUnit(candidate, inventory.slice(index, index + PER_FILE_CHUNK).map((entry) => entry.path), index / PER_FILE_CHUNK + 1, warning));
+  } else dispatched.push(makeUnit(candidate, inventory.map((entry) => entry.path), null, warning));
 }
-
-for (const unit of units.slice(MAX_SPECIALISTS))
-  reports.set(unit.brief, { brief: unit.brief, title: unit.title, status: "not-run", reason: `repository specialists exceeded the stage budget of ${MAX_SPECIALISTS}` });
-const dispatched = units.slice(0, MAX_SPECIALISTS);
 
 phase("Review");
 for (const unit of dispatched) addLeg(unit.label, "specialist", "claude", CLAUDE_MODEL);
@@ -339,20 +289,59 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
     `<repository-brief path="${unit.brief}">\n${unit.briefContent}\n</repository-brief>\n\n` +
       `Assigned scope: ${scope}.${files}\n` +
       (unit.extent === "full" ? "Audit the assigned scope regardless of what the diff changed." : `Judge only what ${input.target}...${input.head} changed in the assigned scope.`),
-  ), { schema: specialistSchema, model: CLAUDE_MODEL, effort: "high", label: unit.label, phase: "Review" });
+  ), {
+    engine: "claude",
+    schema: specialistSchema,
+    model: CLAUDE_MODEL,
+    effort: "high",
+    label: unit.label,
+    phase: "Review",
+  });
 }));
 
 const reviewerStates = [];
 const proposed = [];
+const inapplicable = [];
 dispatched.forEach((unit, unitIndex) => {
   const result = specialistResults[unitIndex];
-  reviewerStates.push({ label: unit.label, role: "specialist", brief: unit.brief, family: "claude", pinnedModel: CLAUDE_MODEL, status: result ? "done" : "no-result" });
+  reviewerStates.push({
+    label: unit.label,
+    role: "specialist",
+    brief: unit.brief,
+    family: "claude",
+    pinnedModel: CLAUDE_MODEL,
+    status: result ? "done" : "no-result",
+  });
   if (!result) {
-    reports.set(unit.brief, { brief: unit.brief, title: unit.title, status: "not-run", reason: "specialist returned no result", ...(unit.warning ? { warning: unit.warning } : {}) });
+    reports.set(unit.brief, {
+      brief: unit.brief,
+      title: unit.title,
+      status: "not-run",
+      reason: "specialist returned no result",
+      ...(unit.warning ? { warning: unit.warning } : {}),
+    });
     return;
   }
-  if (!reports.has(unit.brief)) reports.set(unit.brief, { brief: unit.brief, title: unit.title, status: "run", reason: "applicable concern reviewed", ...(unit.warning ? { warning: unit.warning } : {}) });
-  result.findings.slice(0, MAX_FINDINGS_PER_SPECIALIST).forEach((finding, findingIndex) => proposed.push({ unit, unitIndex, finding, findingIndex }));
+  if (result.applicability.status === "inapplicable") {
+    inapplicable.push({
+      brief: unit.brief,
+      title: unit.title,
+      status: "skipped",
+      skipKind: "inapplicable",
+      reason: result.applicability.reason,
+    });
+    return;
+  }
+  if (!reports.has(unit.brief))
+    reports.set(unit.brief, {
+      brief: unit.brief,
+      title: unit.title,
+      status: "run",
+      reason: "applicable concern reviewed",
+      ...(unit.warning ? { warning: unit.warning } : {}),
+    });
+  result.findings.forEach((finding, findingIndex) =>
+    proposed.push({ unit, unitIndex, finding, findingIndex }));
 });
 
 phase("Verify");
@@ -367,80 +356,31 @@ const verifierResults = await parallel(proposed.map((item) => () => agent(
     `Try to disprove this repository-brief finding against ${input.target}...${input.head} and the cited code.\n` +
       `Concern: ${item.unit.title}\nProposing specialist: ${item.unit.label}\nFinding data: ${JSON.stringify(item.finding)}`,
   ),
-  { schema: verifierSchema, model: GPT_MODEL, effort: "high", label: item.verifyLabel, phase: "Verify" },
+  {
+    engine: "codex",
+    schema: verifierSchema,
+    model: GPT_MODEL,
+    effort: "high",
+    label: item.verifyLabel,
+    phase: "Verify",
+  },
 )));
 
-const modelEvidence = legs.map((leg) => actualModelEvidence(input.runRecord, leg));
-const evidenceByLabel = new Map(modelEvidence.map((evidence) => [evidence.label, evidence]));
-const findings = proposed.map((item, index) => {
-  const check = verifierResults[index];
-  const reviewEvidence = evidenceByLabel.get(item.unit.label);
-  const verifyEvidence = evidenceByLabel.get(item.verifyLabel);
-  let verdict = "no-verdict";
-  let verification = "verifier returned no result";
-  if (check && reviewEvidence.confirmed && verifyEvidence.confirmed) {
-    verdict = check.verdict === "upheld" ? "confirmed" : "refuted";
-    verification = check.reason;
-  } else if (check) {
-    const failed = [reviewEvidence, verifyEvidence].filter((evidence) => !evidence.confirmed);
-    verification = `actual-model evidence did not confirm ${failed.map((evidence) => `${evidence.label} as ${evidence.expectedFamily}`).join(" and ")}`;
-  }
-  const combinedConfidence = check ? Math.round((item.finding.confidence + check.confidence) / 2) : null;
-  return {
-    id: `${item.unit.label}:${item.findingIndex + 1}`,
-    source: item.unit.title,
-    ...item.finding,
-    verifierConfidence: check ? check.confidence : null,
-    combinedConfidence,
-    operatorAttention: verdict === "confirmed" && combinedConfidence < LOW_COMBINED_CONFIDENCE,
-    verdict,
-    verification,
-    review: reviewEvidence,
-    verify: verifyEvidence,
-  };
-});
-
-const incomplete = [];
-for (const report of reports.values()) if (report.status === "not-run") incomplete.push(`brief "${report.title}" was not run (${report.reason})`);
-for (const state of reviewerStates) if (state.status === "no-result") incomplete.push(`specialist ${state.label} returned no result`);
-for (const evidence of modelEvidence) if (!evidence.confirmed) incomplete.push(`actual model for ${evidence.label} was not confirmed as ${evidence.expectedFamily}`);
-for (const finding of findings) if (finding.verdict === "no-verdict") incomplete.push(`finding "${finding.title}" has no complete verdict (${finding.verification})`);
-const infrastructure = infrastructureFailure(input.runRecord);
-const complete = incomplete.length === 0 && !infrastructure;
-const confirmedFindings = findings.filter((finding) => finding.verdict === "confirmed");
-const comments = confirmedFindings.map((finding) => ({
-  path: finding.path,
-  body: `**${finding.source}: ${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}. Reviewer confidence: ${finding.confidence}. Verifier confidence: ${finding.verifierConfidence}.`,
-  new_position: finding.line,
+const proposedFindings = proposed.map((item, index) => ({
+  id: `${item.unit.label}:${item.findingIndex + 1}`,
+  source: item.unit.title,
+  ...item.finding,
+  proposingLabel: item.unit.label,
+  verifyLabel: item.verifyLabel,
+  rawVerifier: verifierResults[index] || null,
 }));
 
 return {
   reviewed: { target: input.target, head: input.head, occasion: input.occasion || null },
   stage: "present",
-  status: infrastructure ? "infrastructure-failure" : complete ? "complete" : "incomplete",
-  complete,
-  verdictsComplete: complete,
-  incomplete,
-  infrastructureFailure: infrastructure,
-  briefs: [...reports.values()],
+  requiredModelEvidence: legs,
+  proposedFindings,
+  briefs: [...reports.values(), ...inapplicable],
   dispatches: dispatched.map(({ brief, title, label, extent, scope, files }) => ({ brief, title, label, extent, scope, files })),
   reviewers: reviewerStates,
-  findings,
-  confirmedFindings,
-  operatorAttention: confirmedFindings.filter((finding) => finding.operatorAttention).map((finding) => ({
-    finding: finding.id,
-    title: finding.title,
-    combinedConfidence: finding.combinedConfidence,
-    threshold: LOW_COMBINED_CONFIDENCE,
-  })),
-  briefReview: complete && comments.length > 0 ? { verdict: "comment", body: "Repository review brief findings.", comments } : null,
-  fixRequired: complete && confirmedFindings.length > 0,
-  requiredModelEvidence: legs,
-  modelEvidence,
-  accounting: {
-    specialists: dispatched.length,
-    verification: proposed.length,
-    total: legs.length,
-    attempts: attemptAccounting(input.runRecord),
-  },
 };

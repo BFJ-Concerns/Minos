@@ -7,6 +7,7 @@ export const meta = {
 const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 const DEFAULT_THRESHOLD = "High";
 const DEFAULT_CLUSTER_CAP = 5;
+const FIX_MODEL = "gpt-5.6-sol";
 
 const fixResultSchema = {
   type: "object",
@@ -159,9 +160,11 @@ if (input.singleWave === true) {
   phase("Fix");
   const results = await parallel(clusters.map((cluster, index) => () =>
     agent(fixPrompt(input, cluster, 1), {
+      engine: "codex",
       schema: fixResultSchema,
-      model: "claude-opus-4-8",
+      model: FIX_MODEL,
       effort: "high",
+      isolation: "worktree",
       label: dispatches[index].label,
       phase: "Fix",
   })));
@@ -257,9 +260,11 @@ for (const cluster of clusters)
   dispatches.push({ label: cluster.id, attempt: 1, files: cluster.files, findingKeys: cluster.findings.map((finding) => finding.key) });
 const firstResults = await parallel(clusters.map((cluster) => () =>
   agent(fixPrompt(input, cluster, 1), {
+    engine: "codex",
     schema: fixResultSchema,
-    model: "claude-opus-4-8",
+    model: FIX_MODEL,
     effort: "high",
+    isolation: "worktree",
     label: cluster.id,
     phase: "Fix",
   })));
@@ -287,9 +292,11 @@ for (const cluster of retryClusters)
   dispatches.push({ label: cluster.id, attempt: 2, files: cluster.files, findingKeys: cluster.findings.map((finding) => finding.key) });
 const retryResults = await parallel(retryClusters.map((cluster) => () =>
   agent(fixPrompt(input, cluster, 2), {
+    engine: "codex",
     schema: fixResultSchema,
-    model: "claude-opus-4-8",
+    model: FIX_MODEL,
     effort: "high",
+    isolation: "worktree",
     label: cluster.id,
     phase: "Fix",
   })));
