@@ -2,6 +2,8 @@ package shell
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -101,10 +103,18 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		assertArgument(t, systemdArgs, "--setenv")
 		assertArgument(t, systemdArgs, value)
 	}
-	if !slices.ContainsFunc(systemdArgs, func(arg string) bool {
-		return strings.HasPrefix(arg, "MINOS_RUN_DIR=")
-	}) {
+	var runDir string
+	for _, arg := range systemdArgs {
+		if strings.HasPrefix(arg, "MINOS_RUN_DIR=") {
+			runDir = strings.TrimPrefix(arg, "MINOS_RUN_DIR=")
+			break
+		}
+	}
+	if runDir == "" {
 		t.Fatalf("systemd-run arguments omit MINOS_RUN_DIR: %v", systemdArgs)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, runOwnerMarker)); err != nil {
+		t.Fatalf("run ownership marker was not created: %v", err)
 	}
 	if !slices.ContainsFunc(systemdArgs, func(arg string) bool {
 		return strings.HasPrefix(arg, "MINOS_WORKSPACE=")
