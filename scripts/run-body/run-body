@@ -9,9 +9,13 @@ set -a
 . "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
+unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL
+unset CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS
+unset CLAUDE_CODE_AUTO_COMPACT_WINDOW MINOS_ANTHROPIC_CREDENTIAL_FILE
+
 : "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
-: "${MINOS_ANTHROPIC_CREDENTIAL_FILE:?MINOS_ANTHROPIC_CREDENTIAL_FILE is required}"
-: "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL is required}"
+: "${MINOS_CLAUDE_CONFIG_SEED:?MINOS_CLAUDE_CONFIG_SEED is required}"
+: "${MINOS_CODEX_CONFIG_SEED:?MINOS_CODEX_CONFIG_SEED is required}"
 : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
 : "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
 : "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required}"
@@ -19,12 +23,6 @@ set +a
 : "${MINOS_GIT_AUTHOR_NAME:?MINOS_GIT_AUTHOR_NAME is required}"
 : "${MINOS_GIT_AUTHOR_EMAIL:?MINOS_GIT_AUTHOR_EMAIL is required}"
 
-if ! IFS= read -r ANTHROPIC_AUTH_TOKEN <"$MINOS_ANTHROPIC_CREDENTIAL_FILE" &&
-  [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
-  echo "run-body: proxy credential file is empty" >&2
-  exit 1
-fi
-export ANTHROPIC_AUTH_TOKEN
 FORCE_COLOR=0
 export FORCE_COLOR
 GIT_AUTHOR_NAME="$MINOS_GIT_AUTHOR_NAME"
@@ -36,17 +34,22 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 mkdir -p "$MINOS_RUN_DIR"
 cd "$MINOS_RUN_DIR"
 
-"$MINOS_SETUP_WORKSPACE"
-
-CLAUDE_CONFIG_DIR="${MINOS_RUN_DIR%/}/claude-config"
-export CLAUDE_CONFIG_DIR
-mkdir -p "$CLAUDE_CONFIG_DIR"
-chmod 700 "$CLAUDE_CONFIG_DIR"
+HOME="${MINOS_RUN_DIR%/}/home"
+CLAUDE_CONFIG_DIR="$HOME/.claude"
+CODEX_HOME="$HOME/.codex"
+export HOME CLAUDE_CONFIG_DIR CODEX_HOME
+mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME"
+chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME"
+cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
+cp -R "${MINOS_CODEX_CONFIG_SEED%/}/." "$CODEX_HOME/"
+chmod -R go-rwx "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
 printf '%s\n' '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true}' \
   >"$CLAUDE_CONFIG_DIR/.claude.json"
 chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
-mkdir -p "$CLAUDE_CONFIG_DIR/skills"
-cp -R "$MINOS_ROOT_CAUSE_SKILL" "$CLAUDE_CONFIG_DIR/skills/root-cause"
+mkdir -p "$CLAUDE_CONFIG_DIR/skills/root-cause"
+cp -R "${MINOS_ROOT_CAUSE_SKILL%/}/." "$CLAUDE_CONFIG_DIR/skills/root-cause/"
+
+"$MINOS_SETUP_WORKSPACE"
 
 session_id=""
 stop_session() {
@@ -65,7 +68,7 @@ launch_output="$("$MINOS_CLAUDE" \
   --bg \
   --name "$session_name" \
   --dangerously-skip-permissions \
-  --model "${MINOS_LEAD_MODEL:-anthropic-gpt-5.6-sol}" \
+  --model "${MINOS_LEAD_MODEL:-claude-opus-4-8}" \
   "$instruction" 2>&1)"
 printf '%s\n' "$launch_output"
 

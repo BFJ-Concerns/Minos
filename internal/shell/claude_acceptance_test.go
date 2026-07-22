@@ -1,102 +1,201 @@
 package shell
 
 import (
-	"context"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestRealClaudeRequiresSeededBypassAcceptance(t *testing.T) {
-	claude, err := exec.LookPath("claude")
-	if err != nil {
-		t.Skip("claude CLI is not installed")
+func TestVendoredEnsembleDiscoversClaudeTranscriptFromExplicitSeed(t *testing.T) {
+	seed := os.Getenv("MINOS_TEST_CLAUDE_CONFIG_SEED")
+	if seed == "" {
+		t.Skip("live transcript probe not exercised: MINOS_TEST_CLAUDE_CONFIG_SEED is not set")
+	}
+	seed = filepath.Clean(seed)
+	if !filepath.IsAbs(seed) {
+		t.Fatal("MINOS_TEST_CLAUDE_CONFIG_SEED must be an absolute path")
+	}
+	refuseOperatorToolHome(t, seed)
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("live transcript probe not exercised: claude CLI is not installed")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("live transcript probe not exercised: node is not installed")
 	}
 
-	unseeded := filepath.Join(t.TempDir(), "claude-config")
-	if err := os.Mkdir(unseeded, 0o700); err != nil {
-		t.Fatal(err)
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	claudeConfig := filepath.Join(home, ".claude")
+	codexConfig := filepath.Join(home, ".codex")
+	projectsDir := filepath.Join(claudeConfig, "projects")
+	for _, path := range []string{claudeConfig, codexConfig, projectsDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	output, err := runAcceptanceProbe(t, claude, unseeded)
-	if err == nil {
-		t.Fatalf("unseeded Claude config accepted bypass mode:\n%s", output)
-	}
-	if !strings.Contains(output, "requires accepting the disclaimer first") {
-		t.Fatalf("unseeded Claude failure did not report the bypass disclaimer:\n%s", output)
-	}
-
-	seeded := filepath.Join(t.TempDir(), "claude-config")
-	if err := os.Mkdir(seeded, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	copySeedDirectory(t, seed, claudeConfig)
 	state := []byte("{\"hasCompletedOnboarding\":true,\"bypassPermissionsModeAccepted\":true}\n")
-	if err := os.WriteFile(filepath.Join(seeded, ".claude.json"), state, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(claudeConfig, ".claude.json"), state, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	output, err = runAcceptanceProbe(t, claude, seeded)
+
+	workflow := filepath.Join(root, "transcript-probe.js")
+	source := `export const meta = {
+  name: "minos-transcript-discovery-probe",
+  description: "Confirm that a Claude worker result is recovered from its transcript"
+};
+
+const answer = await agent(
+  "Reply with exactly MINOS_TRANSCRIPT_PROBE_OK and no other text.",
+  { engine: "claude", model: "claude-opus-4-8", label: "transcript-probe" }
+);
+return { answer };
+`
+	if err := os.WriteFile(workflow, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := filepath.Abs(filepath.Join("..", "..", "runtime", "ensemble.mjs"))
 	if err != nil {
-		t.Fatalf("seeded Claude config refused bypass mode: %v\n%s", err, output)
+		t.Fatal(err)
 	}
-	sessionID := regexp.MustCompile(`(?i)backgrounded[^[:xdigit:]]*([[:xdigit:]]{6,})`).FindStringSubmatch(output)
-	if len(sessionID) != 2 {
-		t.Fatalf("seeded Claude config passed the disclaimer but did not report a session ID:\n%s", output)
+	recordDir := filepath.Join(root, "records")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(t.Context(), "node", bundle, workflow)
+	cmd.Dir = root
+	cmd.Env = transcriptProbeEnvironment(home, recordDir)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("vendored Ensemble transcript probe failed: %v\n%s", err, stderr.String())
 	}
-	stopAcceptanceProbe(t, claude, seeded, sessionID[1])
+	var result struct {
+		Answer string `json:"answer"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode transcript probe result: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	if result.Answer != "MINOS_TRANSCRIPT_PROBE_OK" {
+		t.Fatalf("transcript probe answer = %q, want exact marker", result.Answer)
+	}
+
+	foundTranscript := false
+	if err := filepath.WalkDir(projectsDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			foundTranscript = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !foundTranscript {
+		t.Fatalf("Claude result returned but no transcript appeared beneath %s", projectsDir)
+	}
 }
 
-func runAcceptanceProbe(t *testing.T, claude, configDir string) (string, error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, claude,
-		"--bg",
-		"--dangerously-skip-permissions",
-		"--model", "anthropic-gpt-5.6-sol",
-		"Acceptance bootstrap probe; do not perform any work.",
-	)
-	cmd.Env = acceptanceProbeEnvironment(configDir)
-	output, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("Claude acceptance probe timed out:\n%s", output)
+func transcriptProbeEnvironment(home, recordDir string) []string {
+	blocked := func(name string) bool {
+		if name == "HOME" || name == "CLAUDE_CONFIG_DIR" || name == "CODEX_HOME" {
+			return true
+		}
+		for _, prefix := range []string{"ANTHROPIC_", "CLAUDE_CODE_", "ENSEMBLE_", "XDG_"} {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+		return false
 	}
-	return string(output), err
-}
-
-func stopAcceptanceProbe(t *testing.T, claude, configDir, sessionID string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, claude, "stop", sessionID)
-	cmd.Env = acceptanceProbeEnvironment(configDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("stop Claude acceptance probe: %v\n%s", err, output)
-	}
-}
-
-func acceptanceProbeEnvironment(configDir string) []string {
-	names := map[string]bool{
-		"CLAUDE_CONFIG_DIR":                        true,
-		"ANTHROPIC_API_KEY":                        true,
-		"ANTHROPIC_AUTH_TOKEN":                     true,
-		"ANTHROPIC_BASE_URL":                       true,
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": true,
-	}
-	environment := make([]string, 0, len(os.Environ())+5)
+	environment := make([]string, 0, len(os.Environ())+7)
 	for _, value := range os.Environ() {
 		name, _, _ := strings.Cut(value, "=")
-		if !names[name] {
+		if !blocked(name) {
 			environment = append(environment, value)
 		}
 	}
 	return append(environment,
-		"CLAUDE_CONFIG_DIR="+configDir,
-		"ANTHROPIC_API_KEY=minos-acceptance-probe",
-		"ANTHROPIC_AUTH_TOKEN=minos-acceptance-probe",
-		"ANTHROPIC_BASE_URL=http://127.0.0.1:1",
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+		"HOME="+home,
+		"CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude"),
+		"CODEX_HOME="+filepath.Join(home, ".codex"),
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"ENSEMBLE_RUN_RECORD=on",
+		"ENSEMBLE_RUN_RECORD_DIR="+recordDir,
 	)
+}
+
+func refuseOperatorToolHome(t *testing.T, seed string) {
+	t.Helper()
+	info, err := os.Lstat(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("live transcript seed root must not be a symlink: %s", seed)
+	}
+	operatorHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedSeed := resolvedPath(seed)
+	for _, forbidden := range []string{
+		filepath.Join(operatorHome, ".claude"),
+		filepath.Join(operatorHome, ".codex"),
+	} {
+		if pathIsWithin(resolvedSeed, filepath.Clean(forbidden)) {
+			t.Fatalf("live transcript seed must not use the operator tool home: %s", seed)
+		}
+	}
+}
+
+func resolvedPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
+func pathIsWithin(path, root string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func copySeedDirectory(t *testing.T, source, destination string) {
+	t.Helper()
+	err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("test seed contains unsupported symlink: %s", path)
+		}
+		target := filepath.Join(destination, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
