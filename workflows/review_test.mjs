@@ -229,5 +229,8 @@ test("the lifecycle uses one adjudicated review call and bare Ensemble fix calls
   assert.match(lifecycle, /invoke the adjudication wrapper once[\s\S]*review\.js[\s\S]*--json-args/);
   assert.match(lifecycle, /node \/opt\/minos\/runtime\/ensemble\.mjs[\s\S]*--json-args[\s\S]*fix\.js/);
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
-  assert.match(lifecycle, /G2 is unresolved[\s\S]*Do not invent either value/);
+  assert.match(
+    lifecycle,
+    /Dispatch a fix agent with the vendored[\s\S]*root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*diagnoses the failure, fixes[\s\S]*only what it proves, commits, and pushes/,
+  );
 });

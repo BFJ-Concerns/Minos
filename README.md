@@ -34,5 +34,6 @@ vendored Ensemble launcher and passes the result to
 `workflows/run-record-adjudicator.mjs`. The workflow decision logic and
 adjudication are exercised by `node --test workflows/*_test.mjs`.
 
-> **TODO (G1):** The final lead-guidance mechanism remains uncommissioned; see
-> the G1 deployment note in [`docs/go-live.md`](docs/go-live.md).
+The lead is guided by [`lifecycle/lifecycle.md`](lifecycle/lifecycle.md),
+editable markdown fed to its session as standing launch instructions via
+`MINOS_LIFECYCLE_INSTRUCTION`, not a literal installed skill.

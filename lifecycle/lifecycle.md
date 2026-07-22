@@ -246,20 +246,19 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    A required check is genuinely red only when `failed_checks` names its latest
    unambiguous failure, error, cancellation, or timeout. When `failed_checks` is
    non-empty, or `labels` contains the exact `Flaky Test` name, the finishing
-   root-cause helper is required. **G2 is unresolved: its native engine and
-   model have not been commissioned. Do not invent either value.** Until G2 is
-   resolved, set `incomplete`, remove 👀, and stop with the failing check
-   details. Once G2 is resolved, the helper diagnoses, fixes only what it
-   proves, commits, and pushes. Wait for its head change through the snapshot
-   watcher. On the returned fresh head, run the exact configured build and test
-   commands as for any fix. If those pass and the flake is fixed, remove the
-   exact label with `"$MINOS_BIN" forge label-remove FRESH_HEAD FRESH_TARGET
-   "Flaky Test"`; this guarded command reads the labels back and is safe to
-   repeat. The pushed head has not had a fresh whole review, so set `incomplete`,
-   remove 👀, and stop; reconciliation starts its fresh attempt. If no pushed
-   head appears or verification fails, leave the label, set `incomplete`, remove
-   👀, and stop. A non-passing `check_decision` with no explicit
-   `failed_checks` is incomplete forge state, not a root-cause dispatch.
+   root-cause helper is required. Dispatch a fix agent with the vendored
+   root-cause skill on `codex` / `gpt-5.6-sol`. It diagnoses the failure, fixes
+   only what it proves, commits, and pushes. Wait for its head change through
+   the snapshot watcher. On the returned fresh head, run the exact configured
+   build and test commands as for any fix. If those pass and the flake is fixed,
+   remove the exact label with `"$MINOS_BIN" forge label-remove FRESH_HEAD
+   FRESH_TARGET "Flaky Test"`; this guarded command reads the labels back and is
+   safe to repeat. The pushed head has not had a fresh whole review, so set
+   `incomplete`, remove 👀, and stop; reconciliation starts its fresh attempt.
+   If no pushed head appears or verification fails, leave the label, set
+   `incomplete`, remove 👀, and stop. A non-passing `check_decision` with no
+   explicit `failed_checks` is incomplete forge state, not a root-cause
+   dispatch.
 9. If `$MINOS_AUTO_MERGE` is not `true`, the clean run is complete without a
    merge: remove 👀 and stop. If it is `true`, keep using the watcher until the
    trusted snapshot has `check_decision` `pass`, reports both `mergeable` and

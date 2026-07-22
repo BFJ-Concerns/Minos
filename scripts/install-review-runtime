@@ -15,5 +15,17 @@ install -m 644 "$source_root/runtime/ensemble.source-version" "$destination_root
   sha256sum -c ensemble.mjs.sha256
 )
 
-install -m 755 "$source_root/workflows/adjudicated-review" "$destination_root/workflows/adjudicated-review"
-install -m 644 "$source_root/workflows/run-record-adjudicator.mjs" "$destination_root/workflows/run-record-adjudicator.mjs"
+find "$destination_root/workflows" -type f -name '*_test.mjs' -exec rm -f {} +
+
+find "$source_root/workflows" -type f ! -name '*_test.mjs' -print |
+  while IFS= read -r source; do
+    relative_path="${source#"$source_root/workflows/"}"
+    destination="$destination_root/workflows/$relative_path"
+    install -d -m 755 "$(dirname "$destination")"
+    if [ -x "$source" ]; then
+      mode=755
+    else
+      mode=644
+    fi
+    install -m "$mode" "$source" "$destination"
+  done

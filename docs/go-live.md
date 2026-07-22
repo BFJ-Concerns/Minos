@@ -9,19 +9,12 @@ machine itself is the containment boundary.
    `/opt/minos/adaptations/forgejo`, `scripts/run-body/run-body` under
    `/opt/minos/run-body`, `lifecycle` under `/opt/minos/lifecycle`, and
    `skills/foundry/root-cause` under `/opt/minos/skills/foundry/root-cause`.
-3. Copy the whole `workflows/` directory into `/opt/minos/workflows`. This step
-   installs the workflow scripts and their input builders, including
-   `review.js`, `review-briefs.js` and `fix.js`; the runtime installer in the
-   next step does not install them.
-4. Run `scripts/install-review-runtime /opt/minos`. This separate step installs
-   the vendored Ensemble launcher as `/opt/minos/runtime/ensemble.mjs`, installs
-   its provenance files, verifies the launcher against
-   `ensemble.mjs.sha256`, and (re)installs `adjudicated-review` plus
-   `run-record-adjudicator.mjs` under `/opt/minos/workflows`. Both steps 3 and 4
-   are required for a runnable review runtime: `MINOS_REVIEW_WORKFLOW` points to
-   the wrapper at `/opt/minos/workflows/adjudicated-review`, which invokes the
-   workflow scripts installed in step 3.
-5. Copy `deploy/etc/minos` to `/etc/minos`, replace the placeholder values,
+3. Run `scripts/install-review-runtime /opt/minos`. It installs the complete
+   test-free review runtime under `/opt/minos`: the vendored Ensemble launcher
+   and its provenance files, the adjudication wrapper and adapter, and every
+   non-test workflow file. It also verifies the launcher against
+   `ensemble.mjs.sha256`.
+4. Copy `deploy/etc/minos` to `/etc/minos`, replace the placeholder values,
    and add one repository TOML file per opted-in repository. In `run-body.env`:
 
    - set `MINOS_CLAUDE` to the installed Claude executable;
@@ -39,15 +32,15 @@ machine itself is the containment boundary.
    workers therefore inherit both engines' configured authentication without an
    interactive login or a proxy.
 
-   > **TODO (G1):** Decide whether the lead is guided by a literal installed
-   > `SKILL.md` or by `lifecycle.md` as its launch prompt. The current
-   > `MINOS_LIFECYCLE_INSTRUCTION` path must remain configured, but do not treat
-   > either guidance mechanism as the final contract until this is commissioned.
+   `MINOS_LIFECYCLE_INSTRUCTION` points to the vendored `lifecycle.md`: editable
+   markdown fed to the lead session as its standing instructions and launch
+   prompt. A review-panel-style walkthrough is the model, not a literal
+   installed skill.
 
    Create the webhook secret and forge token files separately.
-6. Install and enable `minos-receiver.service` and `minos-sweep.timer` from
+5. Install and enable `minos-receiver.service` and `minos-sweep.timer` from
    `deploy/systemd/user` for the deployment user.
-7. Configure the forge webhook to post to `/hooks/forgejo` using the matching
+6. Configure the forge webhook to post to `/hooks/forgejo` using the matching
    secret.
 
 Each run launches the `claude-opus-4-8` lead through `claude --bg`. The lead
@@ -59,10 +52,11 @@ use the same launcher directly. The foreground run body waits for the exact
 background session to finish and stops it. The transient systemd unit bounds a
 wedged run at 12 hours.
 
-> **TODO (G2):** The finishing root-cause helper's native engine and model have
-> not been commissioned. Do not invent either value. Until G2 is resolved, a
-> run that requires the helper stops incomplete as described in
-> `lifecycle/lifecycle.md`.
+When a required check is genuinely red or the pull request carries the
+`Flaky Test` label, the lead dispatches a fix agent with the vendored root-cause
+skill on the same `codex` / `gpt-5.6-sol` pin as the other fix agents. It
+diagnoses the failure, fixes only what it proves, and pushes the result for
+fresh build and test verification.
 
 The receiver handles new events immediately. The sweep periodically starts any
 open, non-draft pull request whose current head has no Minos review.
