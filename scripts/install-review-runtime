@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+
+destination_root="${1:?usage: install-review-runtime DESTINATION_ROOT}"
+script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+source_root="$(dirname "$script_dir")"
+
+install -d -m 755 "$destination_root/runtime" "$destination_root/workflows"
+install -m 644 "$source_root/runtime/ensemble.mjs" "$destination_root/runtime/ensemble.mjs"
+install -m 644 "$source_root/runtime/ensemble.mjs.sha256" "$destination_root/runtime/ensemble.mjs.sha256"
+install -m 644 "$source_root/runtime/ensemble.source-version" "$destination_root/runtime/ensemble.source-version"
+
+(
+  cd "$destination_root/runtime"
+  sha256sum -c ensemble.mjs.sha256
+)
+
+install -m 755 "$source_root/workflows/adjudicated-review" "$destination_root/workflows/adjudicated-review"
+install -m 644 "$source_root/workflows/run-record-adjudicator.mjs" "$destination_root/workflows/run-record-adjudicator.mjs"
