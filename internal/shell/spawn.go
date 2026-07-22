@@ -22,6 +22,7 @@ type SpawnOutcome string
 const (
 	SpawnStarted    SpawnOutcome = "started"
 	SpawnSuppressed SpawnOutcome = "suppressed"
+	runOwnerMarker               = ".runwrap-owner"
 )
 
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnOutcome, error) {
@@ -43,6 +44,10 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	runDir, err := os.MkdirTemp(cfg.Runs.Dir, unit+"-")
 	if err != nil {
 		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(runDir, runOwnerMarker), nil, 0o600); err != nil {
+		_ = os.RemoveAll(runDir)
+		return "", fmt.Errorf("create run ownership marker: %w", err)
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
 	maximumRounds := ""
