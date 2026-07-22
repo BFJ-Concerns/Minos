@@ -175,15 +175,19 @@ test("the review plan dispatches every requested specialist and retains the corr
   assert.deepEqual(specialistCalls(calls).map((call) => call.opts.label), result.dispatches.map((entry) => entry.label));
 });
 
-test("the unresolved G3 output bound stays local to two findings per specialist", async () => {
-  const { result } = await runScript(ARGS, responder({
+test("every specialist finding reaches opposite-family verification beyond the former bound", async () => {
+  const { result, calls } = await runScript(ARGS, responder({
     specialist: () => specialistResult([
       finding({ title: "one" }),
       finding({ title: "two", line: 4 }),
-      finding({ title: "three", line: 5 }),
+      finding({ title: "three survives", severity: "Medium", line: 5 }),
+      finding({ title: "four survives", severity: "Low", line: 6 }),
     ]),
   }));
-  assert.deepEqual(result.proposedFindings.map((entry) => entry.title), ["one", "two"]);
+  assert.deepEqual(result.proposedFindings.map((entry) => entry.title), ["one", "two", "three survives", "four survives"]);
+  const beyondBoundVerifier = calls.find((call) => call.opts.label === "verify-1-4-claude");
+  assert.ok(beyondBoundVerifier);
+  assert.match(beyondBoundVerifier.prompt, /"title":"four survives"/);
 });
 
 test("the deterministic input binds shipped role prose and project guidance into every judgement leg", async () => {

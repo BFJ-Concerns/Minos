@@ -11,8 +11,6 @@ export const meta = {
 const GPT_MODEL = "gpt-5.6-sol";
 const GPT_PLANNER_MODEL = "gpt-5.6-terra";
 const CLAUDE_MODEL = "claude-opus-4-8";
-// G3 surface 1 of 4: the operator has not yet ruled whether this output bound is a cap or budget.
-const MAX_FINDINGS_PER_SPECIALIST = 2;
 const PER_FILE_CHUNK = 40;
 
 function slug(value) {
@@ -136,8 +134,7 @@ const specialistSchema = {
         reason: { type: "string" },
       },
     },
-    // G3 surface 2 of 4: schema output bound.
-    findings: { type: "array", maxItems: MAX_FINDINGS_PER_SPECIALIST, items: findingShape },
+    findings: { type: "array", items: findingShape },
   },
 };
 
@@ -343,8 +340,7 @@ dispatched.forEach((unit, unitIndex) => {
       reason: "applicable concern reviewed",
       ...(unit.warning ? { warning: unit.warning } : {}),
     });
-  // G3 surface 3 of 4: defensive post-processing bound.
-  result.findings.slice(0, MAX_FINDINGS_PER_SPECIALIST).forEach((finding, findingIndex) =>
+  result.findings.forEach((finding, findingIndex) =>
     proposed.push({ unit, unitIndex, finding, findingIndex }));
 });
 

@@ -28,9 +28,6 @@ const SPECIALIST_FAMILY = {
   design: "claude",
 };
 
-// G3 surface 1 of 4: the operator has not yet ruled whether this output bound is a cap or budget.
-const MAX_FINDINGS_PER_SPECIALIST = 2;
-
 function modelForFamily(family) {
   return family === "gpt" ? GPT_SPECIALIST_MODEL : CLAUDE_MODEL;
 }
@@ -142,8 +139,7 @@ const specialistSchema = {
   required: ["applicability", "findings"],
   properties: {
     applicability: applicabilityShape,
-    // G3 surface 2 of 4: schema output bound.
-    findings: { type: "array", maxItems: MAX_FINDINGS_PER_SPECIALIST, items: findingShape },
+    findings: { type: "array", items: findingShape },
   },
 };
 
@@ -299,8 +295,7 @@ specialistUnits.forEach((unit, unitIndex) => {
     });
     return;
   }
-  // G3 surface 3 of 4: defensive post-processing bound.
-  result.findings.slice(0, MAX_FINDINGS_PER_SPECIALIST).forEach((finding, findingIndex) => {
+  result.findings.forEach((finding, findingIndex) => {
     proposed.push({ unit, unitIndex, finding, findingIndex });
   });
 });

@@ -175,6 +175,21 @@ test("an applicable finding emits opposite-family routing and raw verifier outpu
   assert.equal(result.requiredModelEvidence.length, 3);
 });
 
+test("every repository-brief finding reaches verification beyond the former bound", async () => {
+  const { result, calls } = await run(args(), responder({
+    specialist: () => specialistResult([
+      finding({ title: "one" }),
+      finding({ title: "two", line: 8 }),
+      finding({ title: "three survives", severity: "Medium", line: 9 }),
+      finding({ title: "four survives", severity: "Low", line: 10 }),
+    ]),
+  }));
+  assert.deepEqual(result.proposedFindings.map((entry) => entry.title), ["one", "two", "three survives", "four survives"]);
+  const beyondBoundVerifier = calls.find((call) => call.opts.label === "verify-brief-1-4-gpt");
+  assert.ok(beyondBoundVerifier);
+  assert.match(beyondBoundVerifier.prompt, /"title":"four survives"/);
+});
+
 test("a missing specialist result is a not-run disposition with a required archive leg", async () => {
   const { result } = await run(args(), responder({ specialist: () => null }));
   assert.equal(result.briefs.find((entry) => entry.status === "not-run").reason, "specialist returned no result");
