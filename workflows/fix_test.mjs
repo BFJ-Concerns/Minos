@@ -67,6 +67,11 @@ test("a High plus two Lows is working, posts all findings, and dispatches all fi
   assert.equal(result.sweepReview.comments.length, 3);
   assert.equal(calls.length, 1);
   assert.equal(result.dispatches.length, 1);
+  assert.deepEqual(
+    { engine: calls[0].options.engine, model: calls[0].options.model, isolation: calls[0].options.isolation },
+    { engine: "codex", model: "gpt-5.6-sol", isolation: "worktree" },
+  );
+  assert.equal("fallbackModel" in calls[0].options, false);
 });
 
 test("a sweep containing only Lows is terminal and dispatches or posts nothing", async () => {

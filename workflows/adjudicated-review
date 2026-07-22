@@ -1,0 +1,82 @@
+#!/usr/bin/env node
+
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
+
+import { adjudicate } from "./run-record-adjudicator.mjs";
+
+const LAUNCHER = "/opt/minos/runtime/ensemble.mjs";
+
+function incomplete(reason, envelope = null) {
+  const reviewed = envelope && envelope.reviewed && typeof envelope.reviewed === "object"
+    ? envelope.reviewed
+    : { target: null, head: null, occasion: null };
+  return {
+    status: "incomplete",
+    complete: false,
+    reviewed,
+    incomplete: [reason],
+    infrastructureFailure: null,
+    confirmedFindings: [],
+    operatorAttention: [],
+    reviewBody: null,
+    skipped: [],
+    fixRequired: false,
+    modelEvidence: [],
+  };
+}
+
+function launchEnsemble(args, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, options);
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { process.stderr.write(chunk); });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(signal ? `ensemble launcher ended on ${signal}` : `ensemble launcher exited ${code}`));
+    });
+  });
+}
+
+const [workflowScript, flag, jsonArgs, ...extra] = process.argv.slice(2);
+let verdict;
+let recordDir;
+let envelope = null;
+try {
+  if (!workflowScript || flag !== "--json-args" || !jsonArgs || !jsonArgs.startsWith("@") || extra.length > 0)
+    throw new Error("usage: adjudicated-review <workflow-script-abs-path> --json-args @<argsfile>");
+  if (!isAbsolute(workflowScript)) throw new Error("workflow script path must be absolute");
+  recordDir = mkdtempSync(join(tmpdir(), "minos-ensemble-record-"));
+  const stdout = await launchEnsemble([LAUNCHER, "--json-args", jsonArgs, workflowScript], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      ENSEMBLE_RUN_RECORD: "on",
+      ENSEMBLE_RUN_RECORD_DIR: recordDir,
+    },
+  });
+  const lines = stdout.split(/\r?\n/).filter((line) => line !== "");
+  if (lines.length !== 1) throw new Error(`ensemble launcher emitted ${lines.length} stdout lines; expected one envelope`);
+  envelope = JSON.parse(lines[0]);
+  verdict = await adjudicate({ envelope, recordDir });
+} catch (error) {
+  process.stderr.write(`adjudicated-review: ${error.message}\n`);
+  verdict = incomplete(error.message, envelope);
+} finally {
+  if (recordDir) {
+    try {
+      rmSync(recordDir, { recursive: true, force: true });
+    } catch (error) {
+      process.stderr.write(`adjudicated-review: could not remove run-record directory: ${error.message}\n`);
+      verdict = incomplete(`run-record directory cleanup failed: ${error.message}`, envelope);
+    }
+  }
+}
+
+process.stdout.write(`${JSON.stringify(verdict)}\n`);
