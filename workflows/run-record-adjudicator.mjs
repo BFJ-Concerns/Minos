@@ -268,9 +268,11 @@ export async function adjudicate({ envelope, recordDir }) {
     const rawVerifier = proposed.rawVerifier;
     let verification = "verifier returned no result";
     let verdict = "no-verdict";
-    if (!reviewEvidence || !reviewEvidence.confirmed || !verifyEvidence || !verifyEvidence.confirmed) {
+    if (!reviewEvidence || !reviewEvidence.confirmed || !verifyEvidence || !verifyEvidence.confirmed || reviewEvidence.resolvedFamily === verifyEvidence.resolvedFamily) {
       const failed = [reviewEvidence, verifyEvidence].filter((entry) => !entry || !entry.confirmed);
-      verification = `served-model evidence did not confirm ${failed.map((entry) => entry ? entry.label : "a referenced leg").join(" and ")}`;
+      verification = failed.length > 0
+        ? `served-model evidence did not confirm ${failed.map((entry) => entry ? entry.label : "a referenced leg").join(" and ")}`
+        : "proposer and verifier resolved to the same model family";
     } else if (
       !rawVerifier ||
       (rawVerifier.verdict !== "upheld" && rawVerifier.verdict !== "refuted") ||

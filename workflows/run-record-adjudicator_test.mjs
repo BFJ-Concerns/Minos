@@ -79,6 +79,50 @@ test("fixture archive with every distinctive served family produces a complete a
   );
 });
 
+test("a refuted verifier completes the run without publishing a finding", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const refutedEnvelope = {
+    ...envelope,
+    proposedFindings: [{
+      ...envelope.proposedFindings[0],
+      rawVerifier: { verdict: "refuted", confidence: 94, reason: "The invalid state is not reachable." },
+    }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: refutedEnvelope, recordDir: fixtureArchiveDir });
+
+  assert.equal(adapterVerdict.status, "complete");
+  assert.equal(adapterVerdict.complete, true);
+  assert.deepEqual(adapterVerdict.confirmedFindings, []);
+  assert.equal(adapterVerdict.reviewBody, null);
+  assert.equal(adapterVerdict.fixRequired, false);
+});
+
+test("operator attention follows the combined-confidence threshold", async (t) => {
+  const lowFixtureArchiveDir = fixtureArchive(t);
+  const lowConfidenceEnvelope = {
+    ...envelope,
+    proposedFindings: [{
+      ...envelope.proposedFindings[0],
+      confidence: 40,
+      rawVerifier: { verdict: "upheld", confidence: 50, reason: "The invalid state is reachable." },
+    }],
+  };
+  const lowVerdict = await adjudicate({ envelope: lowConfidenceEnvelope, recordDir: lowFixtureArchiveDir });
+
+  assert.equal(lowVerdict.status, "complete");
+  assert.deepEqual(lowVerdict.operatorAttention, [{
+    finding: "specialist-1:1",
+    title: "Distinct failure",
+    combinedConfidence: 45,
+    threshold: 70,
+  }]);
+
+  const highFixtureArchiveDir = fixtureArchive(t);
+  const highVerdict = await adjudicate({ envelope, recordDir: highFixtureArchiveDir });
+  assert.equal(highVerdict.status, "complete");
+  assert.deepEqual(highVerdict.operatorAttention, []);
+});
+
 test("fixture archive with a wrong served family fails closed despite the correct requested model", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
@@ -141,6 +185,42 @@ test("an upheld verifier on an unconfirmed specialist leg yields no verdict and 
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
   assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /no complete verdict/);
+});
+
+test("one served leg cannot act as both proposer and verifier", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const sameLegEnvelope = {
+    ...envelope,
+    proposedFindings: [{ ...envelope.proposedFindings[0], verifyLabel: "specialist-1" }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: sameLegEnvelope, recordDir: fixtureArchiveDir });
+
+  assert.equal(adapterVerdict.status, "incomplete");
+  assert.deepEqual(adapterVerdict.confirmedFindings, []);
+  assert.equal(adapterVerdict.reviewBody, null);
+  assert.match(adapterVerdict.incomplete.join("\n"), /same model family/);
+});
+
+test("distinct proposer and verifier legs served by the same family yield no verdict", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t, {
+    records: {
+      exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
+      "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
+      "verify-1": { status: "complete", resolved_model: "gpt-5.6-sol-verifier" },
+    },
+  });
+  const sameFamilyEnvelope = {
+    ...envelope,
+    requiredModelEvidence: envelope.requiredModelEvidence.map((leg) => leg.label === "verify-1"
+      ? { ...leg, expectedFamily: "gpt", pinnedModel: "gpt-5.6-sol" }
+      : leg),
+  };
+  const adapterVerdict = await adjudicate({ envelope: sameFamilyEnvelope, recordDir: fixtureArchiveDir });
+
+  assert.equal(adapterVerdict.status, "incomplete");
+  assert.deepEqual(adapterVerdict.confirmedFindings, []);
+  assert.equal(adapterVerdict.reviewBody, null);
+  assert.match(adapterVerdict.incomplete.join("\n"), /same model family/);
 });
 
 test("an unconfirmed unpaired exploration leg makes the whole verdict incomplete", async (t) => {
