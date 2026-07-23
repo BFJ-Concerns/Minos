@@ -3,6 +3,7 @@ export const meta = {
   description: "Run applicable repository review briefs after the main review loop",
   phases: [
     { title: "Relevance", detail: "select the briefs this change gives work to" },
+    { title: "Partition", detail: "divide broad brief scopes into coherent review units" },
     { title: "Review", detail: "run repository-concern specialists" },
     { title: "Verify", detail: "opposite-family verification of each proposed finding" },
   ],
@@ -11,7 +12,6 @@ export const meta = {
 const GPT_MODEL = "gpt-5.6-sol";
 const GPT_PLANNER_MODEL = "gpt-5.6-terra";
 const CLAUDE_MODEL = "claude-opus-4-8";
-const PER_FILE_CHUNK = 40;
 
 function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
@@ -45,30 +45,36 @@ function briefTitle(path, front) {
 }
 
 function deterministicDisposition(brief, front, occasion, changedPaths) {
-  if (front.occasion.length > 0) {
+  const hasOccasion = front.occasion.length > 0;
+  const hasRelevance = Boolean(front.relevance);
+  const hasPathScope = typeof brief.scope === "string" && brief.scope !== "";
+  if (!hasOccasion && !hasRelevance && !hasPathScope) {
+    return {
+      status: "skipped",
+      skipKind: "no-trigger",
+      reason: "brief declares no relevance, occasion, or path-scope trigger",
+    };
+  }
+  // Occasion is a veto: a brief that names occasions runs only on a run that
+  // names a matching one, whatever else it declares — it selects which runs the
+  // brief applies to. A brief naming no occasion is unrestricted by occasion.
+  if (hasOccasion) {
     if (!occasion)
       return { status: "skipped", skipKind: "occasion", reason: `brief applies on occasion ${front.occasion.join(", ")}; this run names none` };
     if (!front.occasion.includes(occasion))
       return { status: "skipped", skipKind: "occasion", reason: `brief applies on occasion ${front.occasion.join(", ")}, not ${occasion}` };
+    // A matched occasion is itself a satisfied trigger; a path-scope or relevance
+    // it also carries only refines width, it does not further gate a brief the
+    // occasion has already opted in.
+    return { triggered: true };
   }
-  if (front.extent === "diff" && brief.scope && brief.scopeExists) {
-    const inScope = changedPaths.some((path) => path === brief.scope || path.startsWith(brief.scope + "/"));
-    if (!inScope)
-      return { status: "skipped", skipKind: "empty", reason: `nothing changed under its scope ${brief.scope}/` };
-  }
-  if (
-    front.extent === "diff" &&
-    front.occasion.length === 0 &&
-    !front.relevance &&
-    !brief.scope
-  ) {
-    return {
-      status: "skipped",
-      skipKind: "no-condition",
-      reason: "brief has no relevance, occasion, path scope, or full-extent condition",
-    };
-  }
-  return null;
+  // No occasion declared: run on a satisfied positive trigger — a touched
+  // path-scope, or a relevance condition judged in the relevance phase.
+  const scopeSatisfied =
+    hasPathScope && changedPaths.some((path) => path === brief.scope || path.startsWith(brief.scope + "/"));
+  if (scopeSatisfied) return { triggered: true };
+  if (hasRelevance) return { triggered: false };
+  return { status: "skipped", skipKind: "empty", reason: `nothing changed under scope ${brief.scope}/` };
 }
 
 function instructionBriefsFromInput(input) {
@@ -170,6 +176,53 @@ const relevanceSchema = {
   },
 };
 
+const partitionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["units"],
+  properties: {
+    units: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "concern", "files"],
+        properties: {
+          id: { type: "string" },
+          concern: { type: "string" },
+          files: { type: "array", minItems: 1, items: { type: "string" } },
+        },
+      },
+    },
+  },
+};
+
+function normalisePartition(plan, inventory) {
+  const known = new Set(inventory.map((entry) => entry.path));
+  const assigned = new Set();
+  const units = [];
+  for (const unit of plan.units) {
+    const files = [];
+    for (const path of unit.files) {
+      if (known.has(path) && !assigned.has(path)) {
+        assigned.add(path);
+        files.push(path);
+      }
+    }
+    if (files.length > 0) units.push({ id: unit.id, concern: unit.concern, files });
+  }
+  const missing = inventory.map((entry) => entry.path).filter((path) => !assigned.has(path));
+  if (missing.length > 0) {
+    units.push({
+      id: "unassigned-files",
+      concern: "Files omitted from the proposed partition",
+      files: missing,
+    });
+  }
+  return units;
+}
+
 const input = args && typeof args === "object" && !Array.isArray(args) ? args : null;
 if (!input || typeof input.target !== "string" || typeof input.head !== "string")
   throw new Error("brief workflow needs args {target, head, workspace, briefs, changedPaths, trackedFiles, guidance, instructionBriefs}");
@@ -196,12 +249,14 @@ const candidates = [];
 for (const brief of input.briefs) {
   const front = parseFrontmatter(brief.content);
   const base = { brief: brief.path, title: briefTitle(brief.path, front) };
-  const skip = deterministicDisposition(brief, front, input.occasion || null, input.changedPaths);
-  if (skip) reports.set(brief.path, { ...base, ...skip });
-  else candidates.push({ brief, front, base });
+  const disposition = deterministicDisposition(brief, front, input.occasion || null, input.changedPaths);
+  if (disposition.status === "skipped") reports.set(brief.path, { ...base, ...disposition });
+  else candidates.push({ brief, front, base, triggered: disposition.triggered });
 }
 
-const relevanceCandidates = candidates.filter(({ front }) => front.extent === "diff" && front.relevance);
+// Only briefs not already settled by a deterministic trigger need the judged
+// relevance evaluation; a triggered brief runs regardless of relevance.
+const relevanceCandidates = candidates.filter((candidate) => candidate.front.relevance && !candidate.triggered);
 const relevanceDecisions = new Map();
 if (relevanceCandidates.length > 0) {
   phase("Relevance");
@@ -228,8 +283,8 @@ if (relevanceCandidates.length > 0) {
 
 const runnable = [];
 for (const candidate of candidates) {
-  const { brief, front, base } = candidate;
-  if (front.extent === "diff" && front.relevance) {
+  const { brief, front, base, triggered } = candidate;
+  if (!triggered && front.relevance) {
     const decision = relevanceDecisions.get(brief.path);
     if (!decision) {
       reports.set(brief.path, { ...base, status: "not-run", reason: "relevance judgement returned no decision" });
@@ -247,7 +302,7 @@ function scopeInventory(scope) {
   return input.trackedFiles.filter((entry) => !scope || entry.path === scope || entry.path.startsWith(scope + "/"));
 }
 
-function makeUnit(candidate, files, suffix, warning) {
+function makeUnit(candidate, files, suffix, warning, concern) {
   const { brief, front, base } = candidate;
   return {
     brief: brief.path,
@@ -256,9 +311,60 @@ function makeUnit(candidate, files, suffix, warning) {
     extent: front.extent,
     scope: warning ? null : brief.scope,
     files,
+    concern,
     warning,
     label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-claude`,
   };
+}
+
+const partitionRequests = runnable.map((candidate, index) => {
+  const { brief, front } = candidate;
+  const warning = brief.scope && !brief.scopeExists
+    ? `brief scope ${brief.scope}/ matches no repository directory; ran repo-wide instead`
+    : null;
+  const inventory = front.extent === "full" ? scopeInventory(warning ? null : brief.scope) : [];
+  if (front.extent !== "full" || front.sweep !== "per-file" || inventory.length === 0) return null;
+  return {
+    candidate,
+    inventory,
+    warning,
+    label: `brief-partition-${index + 1}-${slug(brief.path)}-gpt`,
+  };
+}).filter(Boolean);
+
+const partitions = new Map();
+if (partitionRequests.length > 0) {
+  phase("Partition");
+  for (const request of partitionRequests)
+    addLeg(request.label, "partition", "gpt", GPT_PLANNER_MODEL);
+  const partitionResults = await parallel(partitionRequests.map((request) => () => agent(
+      `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
+      `<repository-brief path="${request.candidate.brief.path}">\n${request.candidate.brief.content}\n</repository-brief>\n\n` +
+      `Create a lossless partition of the assigned file inventory into coherent review units for this brief. Group paths by module, directory, or concern, whichever reflects the repository's actual structure. ` +
+      `Let that structure determine the unit count. Assign every listed path to exactly one unit; include no unlisted paths. Return at least one unit. Use no skills for this planning judgement.\n` +
+      `Assigned file inventory: ${JSON.stringify(request.inventory.map((entry) => entry.path))}`,
+    {
+      engine: "codex",
+      schema: partitionSchema,
+      model: GPT_PLANNER_MODEL,
+      effort: "high",
+      label: request.label,
+      phase: "Partition",
+    },
+  )));
+  partitionRequests.forEach((request, index) => {
+    const result = partitionResults[index];
+    if (!result || !Array.isArray(result.units)) {
+      reports.set(request.candidate.brief.path, {
+        ...request.candidate.base,
+        status: "not-run",
+        reason: "partition exploration returned no usable result",
+        ...(request.warning ? { warning: request.warning } : {}),
+      });
+      return;
+    }
+    partitions.set(request.candidate.brief.path, normalisePartition(result, request.inventory));
+  });
 }
 
 const dispatched = [];
@@ -268,14 +374,18 @@ for (const candidate of runnable) {
     ? `brief scope ${brief.scope}/ matches no repository directory; ran repo-wide instead`
     : null;
   if (front.extent !== "full") {
-    dispatched.push(makeUnit(candidate, [], null, warning));
+    dispatched.push(makeUnit(candidate, [], null, warning, null));
     continue;
   }
   const inventory = scopeInventory(warning ? null : brief.scope);
-  if (front.sweep === "per-file" && inventory.length > PER_FILE_CHUNK) {
-    for (let index = 0; index < inventory.length; index += PER_FILE_CHUNK)
-      dispatched.push(makeUnit(candidate, inventory.slice(index, index + PER_FILE_CHUNK).map((entry) => entry.path), index / PER_FILE_CHUNK + 1, warning));
-  } else dispatched.push(makeUnit(candidate, inventory.map((entry) => entry.path), null, warning));
+  if (front.sweep === "per-file" && inventory.length > 0) {
+    const partition = partitions.get(brief.path);
+    if (!partition) continue;
+    partition.forEach((unit, index) =>
+      dispatched.push(makeUnit(candidate, unit.files, index + 1, warning, unit.concern)));
+  } else {
+    dispatched.push(makeUnit(candidate, inventory.map((entry) => entry.path), null, warning, null));
+  }
 }
 
 phase("Review");
@@ -283,11 +393,12 @@ for (const unit of dispatched) addLeg(unit.label, "specialist", "claude", CLAUDE
 const specialistResults = await parallel(dispatched.map((unit) => () => {
   const scope = unit.scope ? `${unit.scope}/` : "the whole repository";
   const files = unit.files.length > 0 ? `\nAssigned files: ${unit.files.join(", ")}` : "";
+  const concern = unit.concern ? `\nAssigned review unit: ${unit.concern}` : "";
   return agent(groundedPrompt(
     repositoryInstruction,
     guidance,
     `<repository-brief path="${unit.brief}">\n${unit.briefContent}\n</repository-brief>\n\n` +
-      `Assigned scope: ${scope}.${files}\n` +
+      `Assigned scope: ${scope}.${concern}${files}\n` +
       (unit.extent === "full" ? "Audit the assigned scope regardless of what the diff changed." : `Judge only what ${input.target}...${input.head} changed in the assigned scope.`),
   ), {
     engine: "claude",
