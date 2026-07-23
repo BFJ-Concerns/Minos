@@ -10,6 +10,18 @@ is `$MINOS_HEAD_SHA`; the target is `$MINOS_TARGET_SHA` on `$MINOS_BASE_REF`.
 The forge root is `$MINOS_API_BASE`, and `$MINOS_CREDENTIAL_FILE` contains the
 token. Work in `$MINOS_RUN_DIR/workspace`.
 
+Whenever you stop at a terminal outcome that is not a clean, converged pass,
+append one line to `$MINOS_FAILURE_LOG` before you stop — and before any cleanup
+or reaction removal. This covers **every** non-clean exit you make, not only the
+ones that set a status: a stop that sets `incomplete` or `attention`, and equally
+a setup or finishing head/target move, a failed build or test, an unparseable
+workflow result, or any other unrecovered error that ends the run short of a
+clean pass. Record the pull request and head, the stage that failed, and the
+concrete cause — what the workflow verdict, a failed command, or a dispatched
+helper actually reported, not a restatement of the status. This line is the
+operator's durable record of why a run did not converge — the only trace once the
+run's scratch is gone — so write the real reason.
+
 1. The setup script has cloned the repository at the observed pull-request head
    into `$MINOS_WORKSPACE`, refused setup if that head moved while cloning, and
    recorded its orientation in
@@ -35,7 +47,21 @@ token. Work in `$MINOS_RUN_DIR/workspace`.
    empty, no test command is configured, so skip it rather than inventing one.
 4. Run every Ensemble workflow in this lifecycle from this accountable lead
    session. Never delegate its invocation to an agent or subagent;
-   responsibility for orchestration remains with the lead.
+   responsibility for orchestration remains with the lead. Launch each such
+   workflow as a **background** command — never in the foreground, where a stage
+   that runs longer than the session's ten-minute command limit is killed
+   mid-run (exit 143), its agents wasted and its scratch orphaned. This governs
+   every Ensemble command block below — the main review, the fix waves, the
+   brief review, the brief fix: each block shows the command and where its
+   verdict is redirected, but you always run it as a background task, not as the
+   foreground command it is written as. Redirect the verdict to the named result
+   file and diagnostics to a `.log` beside it, launch it in the background, and
+   wait for the background **process itself to exit** — not merely for the
+   result file to appear, which redirection creates immediately and half-written.
+   Only once the process has exited is the result file complete: then read it and
+   parse it as JSON before you trust the verdict. A result file that does not
+   parse, or a background task that exits non-zero, is an infrastructure failure
+   — treat it as an incomplete stop, never as a verdict.
 
    Build the main review input from disk and write it to a file:
 
