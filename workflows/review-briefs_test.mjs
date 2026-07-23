@@ -55,12 +55,17 @@ function args(overrides = {}) {
   };
 }
 
-function responder({ relevance, specialist, verify } = {}) {
+function responder({ relevance, partition, specialist, verify } = {}) {
   return (label, prompt, opts) => {
     if (label === "brief-relevance") {
       if (relevance) return relevance(label, prompt, opts);
       const concerns = JSON.parse(prompt.match(/Concerns: (\[[^\n]+\])/)[1]);
       return { decisions: concerns.map((entry) => ({ brief: entry.brief, applicable: true, reason: "relevant" })) };
+    }
+    if (label.startsWith("brief-partition-")) {
+      if (partition) return partition(label, prompt, opts);
+      const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
+      return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
     }
     if (label.startsWith("verify-"))
       return verify ? verify(label, prompt, opts) : { verdict: "upheld", confidence: 92, reason: "confirmed" };
@@ -88,51 +93,132 @@ test("an absent .review directory emits a complete-stage envelope with no legs",
   assert.equal(calls.length, 0);
 });
 
-test("a root brief with no run condition is skipped without dispatch", async () => {
-  const candidate = brief(".review/no-condition.md", "# No condition\nJudge something.");
+test("a bare full-extent brief with no trigger is skipped without dispatch", async () => {
+  const candidate = brief(".review/no-trigger.md", "---\nextent: full\n---\nJudge something.");
   const { result, calls } = await run(args({ briefs: [candidate] }));
   assert.equal(calls.length, 0);
   assert.deepEqual(result.briefs, [{
     brief: candidate.path,
-    title: "No Condition",
+    title: "No Trigger",
     status: "skipped",
-    skipKind: "no-condition",
-    reason: "brief has no relevance, occasion, path scope, or full-extent condition",
+    skipKind: "no-trigger",
+    reason: "brief declares no relevance, occasion, or path-scope trigger",
   }]);
 });
 
-test("relevance remains an explicit Terra leg and can skip a concern", async () => {
-  const candidate = brief(".review/errors.md", "---\nrelevance: Error-path changes.\n---\nJudge errors.");
-  const { result, calls } = await run(args({ briefs: [candidate] }), responder({
+test("relevance gates full-extent briefs and remains an explicit Terra leg", async () => {
+  const candidate = brief(".review/errors.md", "---\nextent: full\nsweep: whole-tree\nrelevance: Error-path changes.\n---\nJudge errors.");
+  const met = await run(args({ briefs: [candidate] }), responder({ specialist: () => specialistResult([]) }));
+  assert.equal(met.result.dispatches.length, 1);
+  assert.equal(met.result.briefs[0].status, "run");
+  assert.deepEqual([met.calls[0].opts.engine, met.calls[0].opts.model], ["codex", "gpt-5.6-terra"]);
+
+  const missed = await run(args({ briefs: [candidate] }), responder({
     relevance: () => ({ decisions: [{ brief: candidate.path, applicable: false, reason: "no error path changed" }] }),
   }));
-  assert.deepEqual(result.requiredModelEvidence, [{
+  assert.deepEqual(missed.result.requiredModelEvidence, [{
     label: "brief-relevance",
     role: "relevance",
     expectedFamily: "gpt",
     pinnedModel: "gpt-5.6-terra",
   }]);
-  assert.equal(result.briefs[0].skipKind, "relevance");
-  assert.deepEqual([calls[0].opts.engine, calls[0].opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.equal(missed.result.briefs[0].skipKind, "relevance");
+  assert.equal(missed.calls.length, 1);
 });
 
-test("occasion, nested path scope, and full extent are positive run signals", async () => {
-  const candidates = [
-    brief(".review/occasion.md", "---\noccasion: release\n---\nJudge release.") ,
-    brief(".review/pkg/scoped.md", "# Scoped\nJudge package."),
-    brief(".review/full.md", "---\nextent: full\nsweep: whole-tree\n---\nJudge repository."),
+test("occasion remains a deterministic run gate", async () => {
+  const candidate = brief(".review/occasion.md", "---\noccasion: release\n---\nJudge release.");
+  const matched = await run(args({ briefs: [candidate], occasion: "release" }), responder({ specialist: () => specialistResult([]) }));
+  assert.equal(matched.result.dispatches.length, 1);
+  assert.equal(matched.result.briefs[0].status, "run");
+
+  for (const occasion of [null, "deployment"]) {
+    const missed = await run(args({ briefs: [candidate], occasion }));
+    assert.equal(missed.calls.length, 0);
+    assert.equal(missed.result.briefs[0].skipKind, "occasion");
+  }
+});
+
+test("path scope gates full-extent width independently of extent", async () => {
+  const candidate = brief(".review/pkg/scoped.md", "---\nextent: full\nsweep: whole-tree\n---\nJudge package.");
+  const matched = await run(args({ briefs: [candidate], changedPaths: ["pkg/x.go"] }), responder({ specialist: () => specialistResult([]) }));
+  assert.equal(matched.result.dispatches.length, 1);
+  assert.equal(matched.result.briefs[0].status, "run");
+
+  const missed = await run(args({ briefs: [candidate], changedPaths: ["cmd/main.go"] }));
+  assert.equal(missed.calls.length, 0);
+  assert.equal(missed.result.briefs[0].skipKind, "empty");
+});
+
+test("per-file partitioning follows repository structure and clamps to a lossless plan", async () => {
+  const trackedFiles = [
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/api/f${index}.go`, bytes: 10 })),
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/ui/f${index}.go`, bytes: 10 })),
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `cmd/tool/f${index}.go`, bytes: 10 })),
   ];
-  const { result } = await run(args({ briefs: candidates, occasion: "release" }), responder({ specialist: () => specialistResult([]) }));
-  assert.equal(result.dispatches.length, 3);
-  assert.ok(result.briefs.every((entry) => entry.status === "run"));
+  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every file.");
+  const apiFiles = trackedFiles.filter((entry) => entry.path.startsWith("pkg/api/")).map((entry) => entry.path);
+  const uiFiles = trackedFiles.filter((entry) => entry.path.startsWith("pkg/ui/")).map((entry) => entry.path);
+  const toolFiles = trackedFiles.filter((entry) => entry.path.startsWith("cmd/tool/")).map((entry) => entry.path);
+  const { result, calls } = await run(
+    args({ briefs: [candidate], trackedFiles, occasion: "release" }),
+    responder({
+      partition: () => ({
+        units: [
+          { id: "api", concern: "API module", files: [...apiFiles, "pkg/ui/f0.go", "not-tracked.go"] },
+          { id: "ui", concern: "UI module", files: uiFiles },
+          { id: "tool", concern: "Command module", files: toolFiles.slice(0, -1) },
+        ],
+      }),
+      specialist: () => specialistResult([]),
+    }),
+  );
+  assert.equal(result.dispatches.length, 4);
+  assert.notEqual(result.dispatches.length, Math.ceil(trackedFiles.length / 40));
+  assert.deepEqual(
+    result.dispatches.flatMap((entry) => entry.files).sort(),
+    trackedFiles.map((entry) => entry.path).sort(),
+  );
+  assert.equal(new Set(result.dispatches.flatMap((entry) => entry.files)).size, trackedFiles.length);
+  const partitionCall = calls.find((call) => call.opts.label?.startsWith("brief-partition-"));
+  assert.ok(partitionCall);
+  assert.deepEqual([partitionCall.opts.engine, partitionCall.opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.match(partitionCall.prompt, /Judge every file/);
+  assert.match(partitionCall.prompt, /pkg\/api\/f0\.go/);
 });
 
-test("per-file chunking is lossless beyond forty files", async () => {
-  const trackedFiles = Array.from({ length: 90 }, (_, index) => ({ path: `pkg/f${index}.go`, bytes: 10 }));
-  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\n---\nJudge every file.");
-  const { result } = await run(args({ briefs: [candidate], trackedFiles }), responder({ specialist: () => specialistResult([]) }));
-  assert.deepEqual(result.dispatches.map((entry) => entry.files.length), [40, 40, 10]);
-  assert.equal(result.dispatches.flatMap((entry) => entry.files).length, 90);
+test("adaptive partitioning dispatches every coherent unit without a breadth cap", async () => {
+  const trackedFiles = Array.from({ length: 25 }, (_, index) => ({ path: `module-${index}/file.go`, bytes: 10 }));
+  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every module.");
+  const { result, calls } = await run(
+    args({ briefs: [candidate], trackedFiles, occasion: "release" }),
+    responder({
+      partition: () => ({
+        units: trackedFiles.map((entry, index) => ({
+          id: `module-${index}`,
+          concern: `Module ${index}`,
+          files: [entry.path],
+        })),
+      }),
+      specialist: () => specialistResult([]),
+    }),
+  );
+  assert.equal(result.dispatches.length, 25);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("repository-")).length, 25);
+});
+
+test("a missing partition result leaves the brief not-run", async () => {
+  const trackedFiles = [{ path: "pkg/a.go", bytes: 10 }, { path: "pkg/b.go", bytes: 10 }];
+  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every file.");
+  const { result, calls } = await run(
+    args({ briefs: [candidate], trackedFiles, occasion: "release" }),
+    responder({ partition: () => null }),
+  );
+  assert.equal(result.dispatches.length, 0);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("repository-")).length, 0);
+  assert.equal(result.briefs[0].status, "not-run");
+  assert.equal(result.briefs[0].reason, "partition exploration returned no usable result");
+  assert.ok(result.requiredModelEvidence.some((leg) => leg.role === "partition"));
 });
 
 test("all repository specialists dispatch beyond the former twenty-four limit", async () => {
@@ -146,8 +232,8 @@ test("all repository specialists dispatch beyond the former twenty-four limit", 
 
 test("a large whole-tree brief dispatches instead of becoming not-run", async () => {
   const trackedFiles = Array.from({ length: 400 }, (_, index) => ({ path: `pkg/f${index}.go`, bytes: 4_000 }));
-  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: whole-tree\n---\nJudge repository.");
-  const { result } = await run(args({ briefs: [candidate], trackedFiles }), responder({ specialist: () => specialistResult([]) }));
+  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: whole-tree\noccasion: release\n---\nJudge repository.");
+  const { result } = await run(args({ briefs: [candidate], trackedFiles, occasion: "release" }), responder({ specialist: () => specialistResult([]) }));
   assert.equal(result.dispatches.length, 1);
   assert.equal(result.dispatches[0].files.length, 400);
   assert.equal(result.briefs[0].status, "run");
@@ -172,7 +258,35 @@ test("an applicable finding emits opposite-family routing and raw verifier outpu
   assert.deepEqual([specialist.opts.engine, specialist.opts.model], ["claude", "claude-opus-4-8"]);
   assert.deepEqual([verifier.opts.engine, verifier.opts.model], ["codex", "gpt-5.6-sol"]);
   assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 92, reason: "confirmed" });
-  assert.equal(result.requiredModelEvidence.length, 3);
+  // The fixture brief sits under pkg/ and pkg/x.go changed, so its path-scope
+  // trigger fires and relevance is moot: a specialist and its verifier only.
+  assert.equal(result.requiredModelEvidence.length, 2);
+});
+
+test("a matched occasion runs a scoped brief even when its scope is untouched", async () => {
+  const candidate = brief(".review/deploy/checklist.md", "---\noccasion: release\n---\nJudge deploy readiness.");
+  const matched = await run(args({ briefs: [candidate], occasion: "release", changedPaths: ["pkg/x.go"] }), responder({ specialist: () => specialistResult([]) }));
+  assert.equal(matched.result.dispatches.length, 1);
+  assert.equal(matched.result.briefs[0].status, "run");
+});
+
+test("an unnamed occasion vetoes a brief even when its scope is touched", async () => {
+  const candidate = brief(".review/deploy/checklist.md", "---\noccasion: release\n---\nJudge deploy readiness.");
+  const vetoed = await run(args({ briefs: [candidate], occasion: null, changedPaths: ["deploy/x.yaml"] }));
+  assert.equal(vetoed.calls.length, 0);
+  assert.equal(vetoed.result.briefs[0].skipKind, "occasion");
+});
+
+test("a met relevance runs a scoped brief even when its scope is untouched", async () => {
+  const candidate = brief(".review/pkg/errors.md", "---\nrelevance: Error-path changes.\n---\nJudge errors.");
+  const ran = await run(args({ briefs: [candidate], changedPaths: ["cmd/main.go"] }), responder({ specialist: () => specialistResult([]) }));
+  assert.equal(ran.result.dispatches.length, 1);
+  assert.equal(ran.result.briefs[0].status, "run");
+
+  const skipped = await run(args({ briefs: [candidate], changedPaths: ["cmd/main.go"] }), responder({
+    relevance: () => ({ decisions: [{ brief: candidate.path, applicable: false, reason: "no error path changed" }] }),
+  }));
+  assert.equal(skipped.result.briefs[0].skipKind, "relevance");
 });
 
 test("every repository-brief finding reaches verification beyond the former bound", async () => {
