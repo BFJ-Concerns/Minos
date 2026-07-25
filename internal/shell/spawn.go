@@ -84,7 +84,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	args := []string{
 		"--user", "--collect", "--unit", unit,
-		"--property=ExitType=cgroup",
+		"--property=ExitType=main",
 		"--property=KillMode=control-group",
 		"--property=RuntimeMaxSec=12h",
 	}

@@ -272,19 +272,40 @@ run's scratch is gone — so write the real reason.
    A required check is genuinely red only when `failed_checks` names its latest
    unambiguous failure, error, cancellation, or timeout. When `failed_checks` is
    non-empty, or `labels` contains the exact `Flaky Test` name, the finishing
-   root-cause helper is required. Dispatch a fix agent with the vendored
-   root-cause skill on `codex` / `gpt-5.6-sol`. It diagnoses the failure, fixes
-   only what it proves, commits, and pushes. Wait for its head change through
-   the snapshot watcher. On the returned fresh head, run the exact configured
-   build and test commands as for any fix. If those pass and the flake is fixed,
+   root-cause helper is required. Record which condition triggered it: a
+   non-empty `failed_checks` array is the red-check path; only an empty
+   `failed_checks` array with the exact label is the label-only path.
+
+   Write `rootcause.js` as a bare Ensemble workflow that dispatches one agent
+   with the vendored root-cause skill on `codex` / `gpt-5.6-sol`, using
+   `effort: "high"` and `isolation: "worktree"`. Give the agent a schema that
+   returns its diagnosis and a `commit` string. Direct it to read and follow
+   `$MINOS_ROOT_CAUSE_SKILL/SKILL.md`, diagnose the supplied failure, fix only
+   what it proves, commit a repair with the configured Minos identity, return
+   that commit, and never push. An empty `commit` means the isolated helper made
+   no mutation to integrate. Invoke the workflow through the bare Ensemble
+   launcher.
+
+   When the helper returns a non-empty commit, write that one commit as a JSON
+   array and integrate it through `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
+   "$MINOS_WORKSPACE" COMMITS_FILE`. Wait for the pushed head through the
+   snapshot watcher, then run the exact configured build and test commands on
+   the returned fresh head as for any fix. If those pass and the flake is fixed,
    remove the exact label with `"$MINOS_BIN" forge label-remove FRESH_HEAD
    FRESH_TARGET "Flaky Test"`; this guarded command reads the labels back and is
-   safe to repeat. The pushed head has not had a fresh whole review, so set
-   `incomplete`, remove 👀, and stop; reconciliation starts its fresh attempt.
-   If no pushed head appears or verification fails, leave the label, set
-   `incomplete`, remove 👀, and stop. A non-passing `check_decision` with no
-   explicit `failed_checks` is incomplete forge state, not a root-cause
-   dispatch.
+   safe to repeat. Whether integration or verification passes or fails, a
+   helper-mutated head has not had a fresh whole review: set `incomplete`,
+   remove 👀, and stop. Never continue a helper-mutated head to step 9 or merge
+   it in this attempt.
+
+   When the helper returns no commit and no pushed head appears, it has made no
+   mutation. On the red-check path, leave the label when present, set
+   `incomplete`, remove 👀, and stop exactly as before. Only on the label-only
+   path may the unchanged verified head and target continue to step 9 with the
+   `Flaky Test` label retained. This clean continuation writes nothing to
+   `$MINOS_FAILURE_LOG`; the retained label is the durable record that the
+   flake remains unproven. A non-passing `check_decision` with no explicit
+   `failed_checks` is incomplete forge state, not a root-cause dispatch.
 9. If `$MINOS_AUTO_MERGE` is not `true`, the clean run is complete without a
    merge: remove 👀 and stop. If it is `true`, keep using the watcher until the
    trusted snapshot has `check_decision` `pass`, reports both `mergeable` and

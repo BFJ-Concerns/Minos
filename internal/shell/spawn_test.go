@@ -77,7 +77,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	if outcome != SpawnStarted {
 		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
 	}
-	assertArgument(t, systemdArgs, "--property=ExitType=cgroup")
+	assertArgument(t, systemdArgs, "--property=ExitType=main")
 	assertArgument(t, systemdArgs, "--property=KillMode=control-group")
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=12h")
 	for _, value := range []string{

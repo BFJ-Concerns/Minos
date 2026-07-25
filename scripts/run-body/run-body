@@ -1,7 +1,46 @@
 #!/usr/bin/env sh
 set -eu
 
+prelaunch=true
+failure_stage="configuration"
+failure_cause="run-body exited before loading its configuration"
+session_id=""
+
+stop_session() {
+  if [ -n "$session_id" ]; then
+    "$MINOS_CLAUDE" stop "$session_id" >/dev/null 2>&1 || true
+  fi
+}
+
+append_prelaunch_failure() {
+  [ -n "${MINOS_FAILURE_LOG:-}" ] || return 0
+
+  failure_directory="$(dirname "$MINOS_FAILURE_LOG")"
+  mkdir -p "$failure_directory" 2>/dev/null || true
+  timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" || timestamp="unknown"
+  pull_request="${MINOS_OWNER:-unknown}/${MINOS_REPO_NAME:-unknown}#${MINOS_PR:-unknown}"
+  if ! printf 'timestamp=%s pull_request=%s head=%s stage=%s cause=%s\n' \
+    "$timestamp" "$pull_request" "${MINOS_HEAD_SHA:-unknown}" \
+    "$failure_stage" "$failure_cause" >>"$MINOS_FAILURE_LOG"; then
+    echo "run-body: MINOS_FAILURE_LOG ($MINOS_FAILURE_LOG) is not writable" >&2
+  fi
+}
+
+on_exit() {
+  status="$1"
+  trap - 0
+  set +e
+  if [ "$prelaunch" = true ] && [ "$status" -ne 0 ]; then
+    append_prelaunch_failure
+  fi
+  stop_session
+  exit "$status"
+}
+trap 'on_exit $?' 0
+
+failure_cause="MINOS_CONFIG is required"
 : "${MINOS_CONFIG:?MINOS_CONFIG is required}"
+failure_cause="MINOS_RUN_DIR is required"
 : "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 
 unset_gateway_environment() {
@@ -14,19 +53,23 @@ unset_gateway_environment
 
 set -a
 # shellcheck source=/dev/null
+failure_cause="could not load ${MINOS_CONFIG%/}/run-body.env"
 . "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
 if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
+  failure_cause="ANTHROPIC_BASE_URL is required in gateway mode"
   : "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL is required in gateway mode}"
   if [ ! -f "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ] ||
     [ ! -r "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ]; then
+    failure_cause="gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is missing or unreadable"
     echo "run-body: gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is missing or unreadable" >&2
     exit 1
   fi
   ANTHROPIC_AUTH_TOKEN=""
   IFS= read -r ANTHROPIC_AUTH_TOKEN <"$MINOS_ANTHROPIC_CREDENTIAL_FILE" || true
   if [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
+    failure_cause="gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is empty"
     echo "run-body: gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is empty" >&2
     exit 1
   fi
@@ -35,14 +78,23 @@ else
   unset_gateway_environment
 fi
 
+failure_cause="MINOS_CLAUDE is required"
 : "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
+failure_cause="MINOS_CLAUDE_CONFIG_SEED is required"
 : "${MINOS_CLAUDE_CONFIG_SEED:?MINOS_CLAUDE_CONFIG_SEED is required}"
+failure_cause="MINOS_CODEX_CONFIG_SEED is required"
 : "${MINOS_CODEX_CONFIG_SEED:?MINOS_CODEX_CONFIG_SEED is required}"
+failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
 : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
+failure_cause="MINOS_ROOT_CAUSE_SKILL is required"
 : "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
+failure_cause="MINOS_SETUP_WORKSPACE is required"
 : "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required}"
+failure_cause="MINOS_ORIENTATION is required"
 : "${MINOS_ORIENTATION:?MINOS_ORIENTATION is required}"
+failure_cause="MINOS_GIT_AUTHOR_NAME is required"
 : "${MINOS_GIT_AUTHOR_NAME:?MINOS_GIT_AUTHOR_NAME is required}"
+failure_cause="MINOS_GIT_AUTHOR_EMAIL is required"
 : "${MINOS_GIT_AUTHOR_EMAIL:?MINOS_GIT_AUTHOR_EMAIL is required}"
 
 FORCE_COLOR=0
@@ -53,10 +105,15 @@ GIT_COMMITTER_NAME="$MINOS_GIT_AUTHOR_NAME"
 GIT_COMMITTER_EMAIL="$MINOS_GIT_AUTHOR_EMAIL"
 export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
+failure_stage="run-directory"
+failure_cause="could not create run directory $MINOS_RUN_DIR"
 mkdir -p "$MINOS_RUN_DIR"
+failure_cause="could not enter run directory $MINOS_RUN_DIR"
 cd "$MINOS_RUN_DIR"
 
 if [ -n "${MINOS_FAILURE_LOG:-}" ]; then
+  failure_stage="failure-log"
+  failure_cause="MINOS_FAILURE_LOG ($MINOS_FAILURE_LOG) is not writable"
   mkdir -p "$(dirname "$MINOS_FAILURE_LOG")" 2>/dev/null || true
   : >>"$MINOS_FAILURE_LOG" || {
     echo "run-body: MINOS_FAILURE_LOG ($MINOS_FAILURE_LOG) is not writable" >&2
@@ -68,45 +125,63 @@ HOME="${MINOS_RUN_DIR%/}/home"
 CLAUDE_CONFIG_DIR="$HOME/.claude"
 CODEX_HOME="$HOME/.codex"
 export HOME CLAUDE_CONFIG_DIR CODEX_HOME
+failure_stage="runtime-home"
+failure_cause="could not create isolated Claude and Codex configuration directories"
 mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME"
+failure_cause="could not secure isolated Claude and Codex configuration directories"
 chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME"
+failure_stage="claude-seed"
+failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
 cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
+failure_stage="codex-seed"
+failure_cause="could not copy Codex configuration seed from $MINOS_CODEX_CONFIG_SEED"
 cp -R "${MINOS_CODEX_CONFIG_SEED%/}/." "$CODEX_HOME/"
+failure_stage="runtime-home"
+failure_cause="could not secure copied Claude and Codex configuration"
 chmod -R go-rwx "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
+failure_stage="claude-seed"
+failure_cause="could not write Claude onboarding acceptance"
 printf '%s\n' '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true}' \
   >"$CLAUDE_CONFIG_DIR/.claude.json"
+failure_cause="could not secure Claude onboarding acceptance"
 chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
+failure_stage="root-cause-skill"
+failure_cause="could not create the vendored root-cause skill directory"
 mkdir -p "$CLAUDE_CONFIG_DIR/skills/root-cause"
+failure_cause="could not copy the vendored root-cause skill from $MINOS_ROOT_CAUSE_SKILL"
 cp -R "${MINOS_ROOT_CAUSE_SKILL%/}/." "$CLAUDE_CONFIG_DIR/skills/root-cause/"
 
+failure_stage="workspace-setup"
+failure_cause="workspace setup failed"
 "$MINOS_SETUP_WORKSPACE"
 
-session_id=""
-stop_session() {
-  if [ -n "$session_id" ]; then
-    "$MINOS_CLAUDE" stop "$session_id" >/dev/null 2>&1 || true
-  fi
-}
-trap stop_session 0
 trap 'exit 129' 1
 trap 'exit 130' 2
 trap 'exit 143' 15
 
+failure_stage="lifecycle-instruction"
+failure_cause="could not read lifecycle instruction $MINOS_LIFECYCLE_INSTRUCTION"
 instruction="$(cat "$MINOS_LIFECYCLE_INSTRUCTION")"
 session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
+failure_stage="lead-launch"
+failure_cause="Claude lead launch failed"
 launch_output="$("$MINOS_CLAUDE" \
   --bg \
   --name "$session_name" \
   --dangerously-skip-permissions \
   --model "${MINOS_LEAD_MODEL:-claude-opus-5}" \
   "$instruction" 2>&1)"
+failure_cause="could not write Claude lead launch output"
 printf '%s\n' "$launch_output"
 
+failure_cause="could not parse Claude background session ID"
 session_id="$(printf '%s\n' "$launch_output" | sed -nE 's/.*[Bb]ackgrounded[^[:xdigit:]]*([[:xdigit:]]{6,}).*/\1/p' | head -n 1)"
 if [ -z "$session_id" ]; then
+  failure_cause="Claude did not report a background session ID"
   echo "run-body: Claude did not report a background session ID" >&2
   exit 1
 fi
+prelaunch=false
 
 while :; do
   if agents="$("$MINOS_CLAUDE" agents --json --all)"; then
