@@ -231,6 +231,23 @@ test("the lifecycle uses one adjudicated review call and bare Ensemble fix calls
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,
-    /Dispatch a fix agent with the vendored[\s\S]*root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*diagnoses the failure, fixes[\s\S]*only what it proves, commits, and pushes/,
+    /rootcause\.js[\s\S]*root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*commit a repair[\s\S]*never push/,
+  );
+  assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
+});
+
+test("only an unchanged label-only helper failure may reach the merge path", () => {
+  const finishing = lifecycle.slice(lifecycle.indexOf("8. Enter finishing"), lifecycle.indexOf("9. If"));
+  assert.match(
+    finishing,
+    /red-check path[\s\S]*label-only path/,
+  );
+  assert.match(
+    finishing,
+    /helper-mutated head has not had a fresh whole review[\s\S]*set `incomplete`[\s\S]*Never continue a helper-mutated head to step 9 or merge/,
+  );
+  assert.match(
+    finishing,
+    /helper returns no commit and no pushed head appears[\s\S]*made no[\s\S]*mutation[\s\S]*red-check path[\s\S]*set[\s\S]*`incomplete`[\s\S]*Only on the label-only[\s\S]*unchanged verified head and target continue to step 9/,
   );
 });

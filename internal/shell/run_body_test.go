@@ -105,6 +105,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if len(stdin) != 0 {
 		t.Fatalf("Claude stdin = %q, want empty because instruction is the background prompt", stdin)
 	}
+	assertFileEmpty(t, fixture.failureLog)
 
 	fixture.assertProcessesStopped(t)
 }
@@ -192,7 +193,144 @@ func TestRunBodyRejectsInvalidGatewayConfigurationBeforeLaunchingClaude(t *testi
 			if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
 				t.Fatalf("Claude launch record exists after gateway configuration failure: %v", err)
 			}
+			assertFailureLine(t, fixture.failureLog, "stage=configuration", "cause=", test.wantError)
 		})
+	}
+}
+
+func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*testing.T, runBodyFixture) map[string]string
+		wantStage string
+		wantCause string
+	}{
+		{
+			name: "missing bootstrap variable with known failure log",
+			configure: func(_ *testing.T, fixture runBodyFixture) map[string]string {
+				return map[string]string{
+					"MINOS_CONFIG":      "",
+					"MINOS_FAILURE_LOG": fixture.failureLog,
+				}
+			},
+			wantStage: "configuration",
+			wantCause: "MINOS_CONFIG is required",
+		},
+		{
+			name: "run-body configuration source",
+			configure: func(_ *testing.T, fixture runBodyFixture) map[string]string {
+				return map[string]string{
+					"MINOS_CONFIG":      filepath.Join(fixture.root, "missing-config"),
+					"MINOS_FAILURE_LOG": fixture.failureLog,
+				}
+			},
+			wantStage: "configuration",
+			wantCause: "could not load",
+		},
+		{
+			name: "missing required variable",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				fixture.appendConfig(t, map[string]string{"MINOS_CODEX_CONFIG_SEED": ""})
+				return nil
+			},
+			wantStage: "configuration",
+			wantCause: "MINOS_CODEX_CONFIG_SEED is required",
+		},
+		{
+			name: "Claude seed copy",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				fixture.appendConfig(t, map[string]string{
+					"MINOS_CLAUDE_CONFIG_SEED": filepath.Join(fixture.root, "missing-claude-seed"),
+				})
+				return nil
+			},
+			wantStage: "claude-seed",
+			wantCause: "could not copy Claude configuration seed",
+		},
+		{
+			name: "Codex seed copy",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				fixture.appendConfig(t, map[string]string{
+					"MINOS_CODEX_CONFIG_SEED": filepath.Join(fixture.root, "missing-codex-seed"),
+				})
+				return nil
+			},
+			wantStage: "codex-seed",
+			wantCause: "could not copy Codex configuration seed",
+		},
+		{
+			name: "root-cause skill copy",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				fixture.appendConfig(t, map[string]string{
+					"MINOS_ROOT_CAUSE_SKILL": filepath.Join(fixture.root, "missing-root-cause"),
+				})
+				return nil
+			},
+			wantStage: "root-cause-skill",
+			wantCause: "could not copy the vendored root-cause skill",
+		},
+		{
+			name: "workspace setup",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				failingSetup := filepath.Join(fixture.root, "failing-setup")
+				writeScript(t, failingSetup, "#!/usr/bin/env sh\nexit 19\n")
+				fixture.appendConfig(t, map[string]string{"MINOS_SETUP_WORKSPACE": failingSetup})
+				return nil
+			},
+			wantStage: "workspace-setup",
+			wantCause: "workspace setup failed",
+		},
+		{
+			name: "lifecycle instruction read",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				fixture.appendConfig(t, map[string]string{
+					"MINOS_LIFECYCLE_INSTRUCTION": filepath.Join(fixture.root, "missing-lifecycle.md"),
+				})
+				return nil
+			},
+			wantStage: "lifecycle-instruction",
+			wantCause: "could not read lifecycle instruction",
+		},
+		{
+			name: "Claude launch",
+			configure: func(_ *testing.T, _ runBodyFixture) map[string]string {
+				return map[string]string{"MINOS_TEST_CLAUDE_LAUNCH_FAIL": "1"}
+			},
+			wantStage: "lead-launch",
+			wantCause: "Claude lead launch failed",
+		},
+		{
+			name: "missing Claude session ID",
+			configure: func(_ *testing.T, _ runBodyFixture) map[string]string {
+				return map[string]string{"MINOS_TEST_NO_SESSION_ID": "1"}
+			},
+			wantStage: "lead-launch",
+			wantCause: "Claude did not report a background session ID",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			output, err := fixture.execute(test.configure(t, fixture))
+			if err == nil {
+				t.Fatalf("run-body succeeded despite pre-launch failure\n%s", output)
+			}
+			assertFailureLine(t, fixture.failureLog, "stage="+test.wantStage, "cause="+test.wantCause)
+		})
+	}
+}
+
+func TestRunBodyFailsLoudlyWhenFailureLogIsUnwritable(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.appendConfig(t, map[string]string{"MINOS_FAILURE_LOG": fixture.root})
+
+	output, err := fixture.execute(nil)
+	if err == nil {
+		t.Fatalf("run-body succeeded with an unwritable failure log\n%s", output)
+	}
+	if !strings.Contains(string(output), "MINOS_FAILURE_LOG ("+fixture.root+") is not writable") {
+		t.Fatalf("run-body did not report the unwritable failure log\n%s", output)
 	}
 }
 
@@ -319,6 +457,7 @@ type runBodyFixture struct {
 	configRoot        string
 	runDir            string
 	record            string
+	failureLog        string
 	instructionPath   string
 	claudeStub        string
 	setupStub         string
@@ -332,6 +471,7 @@ func newRunBodyFixture(t *testing.T) runBodyFixture {
 	fixture := runBodyFixture{
 		root: root, configRoot: filepath.Join(root, "config"),
 		runDir: filepath.Join(root, "run"), record: filepath.Join(root, "claude-record"),
+		failureLog:      filepath.Join(root, "failures.log"),
 		instructionPath: filepath.Join(root, "lifecycle.md"),
 		claudeStub:      filepath.Join(root, "claude"),
 		setupStub:       filepath.Join(root, "setup-workspace"),
@@ -381,6 +521,14 @@ set -eu
 record="${MINOS_TEST_RECORD:?}"
 case "$1" in
   --bg)
+    if [ "${MINOS_TEST_CLAUDE_LAUNCH_FAIL:-}" = "1" ]; then
+      printf 'launch failed\n' >&2
+      exit 23
+    fi
+    if [ "${MINOS_TEST_NO_SESSION_ID:-}" = "1" ]; then
+      printf 'Claude accepted the launch without returning an id\n'
+      exit 0
+    fi
     : >"$record.argv"
     for argument in "$@"; do
       printf '%s\n' "$argument" >>"$record.argv"
@@ -449,6 +597,7 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 		"MINOS_ROOT_CAUSE_SKILL":      skillSource,
 		"MINOS_SETUP_WORKSPACE":       fixture.setupStub,
 		"MINOS_BIN":                   "/usr/local/bin/minos",
+		"MINOS_FAILURE_LOG":           fixture.failureLog,
 	}
 	var config strings.Builder
 	for name, value := range runBodyEnv {
@@ -536,6 +685,38 @@ func assertRegularFile(t *testing.T, path string) {
 	}
 	if !info.Mode().IsRegular() {
 		t.Fatalf("%s is not a regular file", path)
+	}
+}
+
+func assertFileEmpty(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("%s = %q, want empty", path, data)
+	}
+}
+
+func assertFailureLine(t *testing.T, path string, fragments ...string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimSpace(string(data))
+	if line == "" || strings.Contains(line, "\n") {
+		t.Fatalf("%s = %q, want exactly one failure line", path, data)
+	}
+	for _, fragment := range append([]string{
+		"timestamp=",
+		"pull_request=owner/repository#17",
+		"head=head-sha",
+	}, fragments...) {
+		if !strings.Contains(line, fragment) {
+			t.Errorf("%s = %q, want fragment %q", path, line, fragment)
+		}
 	}
 }
 

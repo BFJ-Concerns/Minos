@@ -38,12 +38,28 @@ fi
 web_base="${MINOS_API_BASE%/api/v1}"
 target_url="${web_base%/}/${owner}/${repo}/pulls/${pr}#minos-target-${target}"
 payload="$(jq -nc --arg state "$state" --arg context "$context" --arg description "$description" --arg target_url "$target_url" '{state:$state,context:$context,description:$description,target_url:$target_url}')"
-api POST "/api/v1/repos/${owner}/${repo}/statuses/${head}" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
 
-if statuses="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${head}/statuses" 2>/dev/null)" &&
+status_present() {
+  statuses="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${head}/statuses" 2>/dev/null)" || return 2
   printf '%s' "$statuses" | jq -e --arg context "$context" --arg state "$state" --arg description "$description" --arg target_url "$target_url" --arg login "$login" '
     [.[] | select(.context == $context)] | max_by(.id) |
-    (.status // .state) == $state and (.description // "") == $description and (.target_url // "") == $target_url and (.creator.login // .creator.username // "") == $login' >/dev/null; then
+    (.status // .state) == $state and (.description // "") == $description and (.target_url // "") == $target_url and (.creator.login // .creator.username // "") == $login' >/dev/null
+}
+
+if status_present; then
+  write_result applied "status already present"
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "status read-back could not be confirmed"
+    exit 0
+  fi
+fi
+
+api POST "/api/v1/repos/${owner}/${repo}/statuses/${head}" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+
+if status_present; then
   write_result applied
 else
   write_result uncertain "status write could not be discovered"

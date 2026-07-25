@@ -686,12 +686,18 @@ type forgejoFixtureState struct {
 	branchDeleteWrites       int
 	sourceBranchExists       bool
 	statusWrites             int
+	statusPostRequests       []statusPostRequest
 	reviewWrites             int
 	reviewPayloads           []map[string]any
 	reviewComments           map[int64][]map[string]any
 	statusReadCommits        []string
 	virtualRefLookups        int
 	annexeCloneURL           string
+}
+
+type statusPostRequest struct {
+	Head    string
+	Payload map[string]any
 }
 
 func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
@@ -814,6 +820,16 @@ func (s *forgejoFixtureState) statusWriteFacts() (int, any) {
 	return s.statusWrites, target
 }
 
+func (s *forgejoFixtureState) statusPostFacts() []statusPostRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	posts := make([]statusPostRequest, 0, len(s.statusPostRequests))
+	for _, request := range s.statusPostRequests {
+		posts = append(posts, statusPostRequest{Head: request.Head, Payload: mapsClone(request.Payload)})
+	}
+	return posts
+}
+
 func (s *forgejoFixtureState) virtualBranchReads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -902,6 +918,8 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		payload["creator"] = map[string]any{"login": "Minos"}
 		s.statuses = append([]map[string]any{payload}, s.statuses...)
 		s.statusWrites++
+		head := strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/statuses/")
+		s.statusPostRequests = append(s.statusPostRequests, statusPostRequest{Head: head, Payload: mapsClone(payload)})
 		writeFixtureJSON(s.t, w, payload)
 	case r.Method == http.MethodGet && path == pullPath+"/reviews":
 		writeFixtureJSON(s.t, w, s.reviews)
