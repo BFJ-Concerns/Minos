@@ -63,6 +63,8 @@ machine itself is the containment boundary.
    same inherited environment; Codex continues to use its own `CODEX_HOME`
    authentication.
 
+   Each seed directory must contain only seed content readable by the run user.
+
    `MINOS_LIFECYCLE_INSTRUCTION` points to the vendored `lifecycle.md`: editable
    markdown fed to the lead session as its standing instructions and launch
    prompt. A review-panel-style walkthrough is the model, not a literal
