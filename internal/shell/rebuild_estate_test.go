@@ -563,6 +563,7 @@ case "$1" in
     printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
     guidance="$(jq -r '.guidance' "$MINOS_ORIENTATION")"
     cat "$guidance" >"$record.grounding"
+    printf 'clean\n' >"$MINOS_RUN_DIR/lead-complete"
     printf 'Agent backgrounded: abcdef12\n'
     ;;
   agents)

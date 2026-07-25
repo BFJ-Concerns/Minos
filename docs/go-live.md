@@ -37,6 +37,10 @@ machine itself is the containment boundary.
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
      `MINOS_ROOT_CAUSE_SKILL` and the other installed paths match the deployment.
 
+   `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
+   3600-second no-output backstop. Keep the lifecycle's fallback wake shorter
+   than this value.
+
    Choose one Claude authentication mode in `run-body.env`:
 
    - For direct subscription authentication, leave
@@ -76,15 +80,18 @@ machine itself is the containment boundary.
 6. Configure the forge webhook to post to `/hooks/forgejo` using the matching
    secret.
 
-Each run launches the `claude-opus-5` lead through `claude --bg`. The lead
-invokes review and repository-brief workflows through
+Each run launches the `claude-opus-5` lead through `claude --bg`. `run-body`
+keeps resumable `done` and `blocked` turns alive; it stops the session only
+after Claude reports `failed` or `stopped`, the lead writes its clean terminal
+marker, or the background-job timeline has produced no output for the silence
+timeout. The lead invokes review and repository-brief workflows through
 `/opt/minos/workflows/adjudicated-review`; the wrapper runs the selected script
 with `/opt/minos/runtime/ensemble.mjs` and asks the sibling run-record adapter to
 confirm every required leg ran to completion and every finding carries a
 verdict. Fix workflows
 use the same launcher directly. The foreground run body waits for the exact
-background session to finish and stops it. The transient systemd unit bounds a
-wedged run at 12 hours.
+background session and stops it at one of those terminal conditions. The
+transient systemd unit bounds a wedged run at 12 hours.
 
 When a required check is genuinely red or the pull request carries the
 `Flaky Test` label, the lead dispatches a fix agent with the vendored root-cause
