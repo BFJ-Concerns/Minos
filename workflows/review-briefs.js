@@ -239,8 +239,8 @@ if (!repositoryInstruction || !verifierInstruction)
 if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
 
 const legs = [];
-const addLeg = (label, role, expectedFamily, pinnedModel) => {
-  const leg = { label, role, expectedFamily, pinnedModel };
+const addLeg = (label, role, pinnedModel) => {
+  const leg = { label, role, pinnedModel };
   legs.push(leg);
   return leg;
 };
@@ -260,7 +260,7 @@ const relevanceCandidates = candidates.filter((candidate) => candidate.front.rel
 const relevanceDecisions = new Map();
 if (relevanceCandidates.length > 0) {
   phase("Relevance");
-  addLeg("brief-relevance", "relevance", "gpt", GPT_PLANNER_MODEL);
+  addLeg("brief-relevance", "relevance", GPT_PLANNER_MODEL);
   const relevanceResult = await agent(
     `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
       `Judge which repository concerns ${input.target}...${input.head} gives work to. Inspect the actual diff when paths alone do not settle it. ` +
@@ -336,7 +336,7 @@ const partitions = new Map();
 if (partitionRequests.length > 0) {
   phase("Partition");
   for (const request of partitionRequests)
-    addLeg(request.label, "partition", "gpt", GPT_PLANNER_MODEL);
+    addLeg(request.label, "partition", GPT_PLANNER_MODEL);
   const partitionResults = await parallel(partitionRequests.map((request) => () => agent(
       `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
       `<repository-brief path="${request.candidate.brief.path}">\n${request.candidate.brief.content}\n</repository-brief>\n\n` +
@@ -389,7 +389,7 @@ for (const candidate of runnable) {
 }
 
 phase("Review");
-for (const unit of dispatched) addLeg(unit.label, "specialist", "claude", CLAUDE_MODEL);
+for (const unit of dispatched) addLeg(unit.label, "specialist", CLAUDE_MODEL);
 const specialistResults = await parallel(dispatched.map((unit) => () => {
   const scope = unit.scope ? `${unit.scope}/` : "the whole repository";
   const files = unit.files.length > 0 ? `\nAssigned files: ${unit.files.join(", ")}` : "";
@@ -458,7 +458,7 @@ dispatched.forEach((unit, unitIndex) => {
 phase("Verify");
 for (const item of proposed) {
   item.verifyLabel = `verify-brief-${item.unitIndex + 1}-${item.findingIndex + 1}-gpt`;
-  addLeg(item.verifyLabel, "verifier", "gpt", GPT_MODEL);
+  addLeg(item.verifyLabel, "verifier", GPT_MODEL);
 }
 const verifierResults = await parallel(proposed.map((item) => () => agent(
   groundedPrompt(

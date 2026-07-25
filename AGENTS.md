@@ -15,11 +15,11 @@ without an internal containment layer.
   model family verifies them; the workflow scales its breadth to the diff and
   honours the reviewed repository's `.review/` briefs, reporting a skipped
   concern as skipped, never as passed.
-- A verifier whose actual model family cannot be positively confirmed as the
-  pinned one yields no verdict, and a finding without a complete verdict makes
-  the run incomplete: no review is published and no clean status is set. This
-  is a product correctness rule inside the ordinary flow, not a procedure
-  check on Minos itself.
+- The workflow's explicit engine dispatch guarantees the opposite-family
+  pairing. A leg that does not complete or a finding without a complete
+  verifier verdict makes the run incomplete: no review is published and no
+  clean status is set. This is a product correctness rule inside the ordinary
+  flow, not a procedure check on Minos itself.
 - The workflow's reviewers propose findings and its opposite-family verifiers
   judge them. The lead consumes the workflow verdict; it does not duplicate
   either judgement. Do not add machinery that verifies whether Minos followed
