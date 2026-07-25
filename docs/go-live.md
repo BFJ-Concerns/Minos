@@ -18,7 +18,7 @@ machine itself is the containment boundary.
    and add one repository TOML file per opted-in repository. In `run-body.env`:
 
    - set `MINOS_CLAUDE` to the installed Claude executable;
-   - keep `MINOS_LEAD_MODEL` pinned to `claude-opus-4-8`;
+   - keep `MINOS_LEAD_MODEL` pinned to `claude-opus-5`;
    - set `MINOS_CLAUDE_CONFIG_SEED` to a directory containing known-good,
      non-interactive Claude subscription state;
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
@@ -43,7 +43,7 @@ machine itself is the containment boundary.
 6. Configure the forge webhook to post to `/hooks/forgejo` using the matching
    secret.
 
-Each run launches the `claude-opus-4-8` lead through `claude --bg`. The lead
+Each run launches the `claude-opus-5` lead through `claude --bg`. The lead
 invokes review and repository-brief workflows through
 `/opt/minos/workflows/adjudicated-review`; the wrapper runs the selected script
 with `/opt/minos/runtime/ensemble.mjs` and asks the sibling run-record adapter to

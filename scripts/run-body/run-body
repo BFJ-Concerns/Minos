@@ -76,7 +76,7 @@ launch_output="$("$MINOS_CLAUDE" \
   --bg \
   --name "$session_name" \
   --dangerously-skip-permissions \
-  --model "${MINOS_LEAD_MODEL:-claude-opus-4-8}" \
+  --model "${MINOS_LEAD_MODEL:-claude-opus-5}" \
   "$instruction" 2>&1)"
 printf '%s\n' "$launch_output"
 

@@ -11,7 +11,7 @@ export const meta = {
 
 const GPT_MODEL = "gpt-5.6-sol";
 const GPT_PLANNER_MODEL = "gpt-5.6-terra";
-const CLAUDE_MODEL = "claude-opus-4-8";
+const CLAUDE_MODEL = "claude-opus-5";
 
 function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";

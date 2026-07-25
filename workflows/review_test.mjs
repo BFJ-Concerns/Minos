@@ -109,8 +109,8 @@ test("the script emits an envelope with every routed leg and raw verifier output
     [
       { role: "exploration", expectedFamily: "gpt", pinnedModel: "gpt-5.6-terra" },
       { role: "specialist", expectedFamily: "gpt", pinnedModel: "gpt-5.6-sol" },
-      { role: "specialist", expectedFamily: "claude", pinnedModel: "claude-opus-4-8" },
-      { role: "verifier", expectedFamily: "claude", pinnedModel: "claude-opus-4-8" },
+      { role: "specialist", expectedFamily: "claude", pinnedModel: "claude-opus-5" },
+      { role: "verifier", expectedFamily: "claude", pinnedModel: "claude-opus-5" },
       { role: "verifier", expectedFamily: "gpt", pinnedModel: "gpt-5.6-sol" },
     ],
   );
@@ -126,8 +126,8 @@ test("each finding is verified by the family opposite its specialist", async () 
   const correctnessVerifier = calls.find((call) => call.opts.label === "verify-1-1-claude");
   const securityVerifier = calls.find((call) => call.opts.label === "verify-2-1-gpt");
   assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-5.6-sol"]);
-  assert.deepEqual([security.opts.engine, security.opts.model], ["claude", "claude-opus-4-8"]);
-  assert.deepEqual([correctnessVerifier.opts.engine, correctnessVerifier.opts.model], ["claude", "claude-opus-4-8"]);
+  assert.deepEqual([security.opts.engine, security.opts.model], ["claude", "claude-opus-5"]);
+  assert.deepEqual([correctnessVerifier.opts.engine, correctnessVerifier.opts.model], ["claude", "claude-opus-5"]);
   assert.deepEqual([securityVerifier.opts.engine, securityVerifier.opts.model], ["codex", "gpt-5.6-sol"]);
 });
 

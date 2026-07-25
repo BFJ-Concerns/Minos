@@ -43,7 +43,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	assertContainsFile(t, fixture.record+".setup", "setup invoked")
 	assertContainsFile(t, fixture.record+".argv", "--bg")
 	assertContainsFile(t, fixture.record+".argv", "--model")
-	assertContainsFile(t, fixture.record+".argv", "claude-opus-4-8")
+	assertContainsFile(t, fixture.record+".argv", "claude-opus-5")
 	assertContainsFile(t, fixture.record+".argv", "Follow the Minos lifecycle exactly.")
 	assertContainsFile(t, fixture.record+".calls", "agents")
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
@@ -352,7 +352,7 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 	}
 	runBodyEnv := map[string]string{
 		"MINOS_CLAUDE":                fixture.claudeStub,
-		"MINOS_LEAD_MODEL":            "claude-opus-4-8",
+		"MINOS_LEAD_MODEL":            "claude-opus-5",
 		"MINOS_GIT_AUTHOR_NAME":       "Minos",
 		"MINOS_GIT_AUTHOR_EMAIL":      "minos@example.invalid",
 		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,
