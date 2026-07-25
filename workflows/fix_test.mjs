@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isFixWavePlan, prepareFixWave } from "./fix-wave-plan.mjs";
+
 const scriptPath = fileURLToPath(new URL("./fix.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./fix-inputs.mjs", import.meta.url));
 const source = await readFile(scriptPath, "utf8");
@@ -52,7 +54,10 @@ async function run(input, respond = (label, prompt) => ({
     return respond(options.label, prompt, options);
   };
   const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
-  const result = await script(agent, parallel, async () => [], () => {}, () => {}, input);
+  const plan = isFixWavePlan(input) ? input : prepareFixWave(input);
+  if (plan.status !== "complete" || plan.classification === "terminal")
+    return { result: plan, calls };
+  const result = await script(agent, parallel, async () => [], () => {}, () => {}, plan);
   return { result, calls };
 }
 
@@ -83,6 +88,22 @@ test("a sweep containing only Lows is terminal and dispatches or posts nothing",
   assert.equal(result.dispatches.length, 0);
   assert.equal(result.overflow.length, 2);
   assert.equal(calls.length, 0);
+});
+
+test("the effectful dispatcher refuses a terminal preparation", async () => {
+  const plan = prepareFixWave(args([finding("wording", "Low", "a.go", 4)]));
+  const calls = [];
+  const result = await script(
+    async () => { calls.push("called"); },
+    async (thunks) => Promise.all(thunks.map((thunk) => thunk())),
+    async () => [],
+    () => {},
+    () => {},
+    plan,
+  );
+  assert.equal(result.status, "incomplete");
+  assert.match(result.reason, /working or single-wave preparation/);
+  assert.deepEqual(calls, []);
 });
 
 test("same-file findings stay together while small disjoint clusters pack only to the cap", async () => {
@@ -128,8 +149,11 @@ test("a twice-failed finding becomes confirmed-unfixed and is never redispatched
 
   const next = await run(args([original], { runRecord: first.result.runRecord }));
   assert.equal(next.result.classification, "terminal");
+  assert.equal(next.result.round, 2);
+  assert.notEqual(next.result.fingerprint, first.result.fingerprint);
   assert.equal(next.result.dispatches.length, 0);
   assert.equal(next.result.requestChanges.length, 1);
+  assert.equal(next.result.runRecord.confirmedUnfixed[0].attempts, 2);
   assert.equal(next.result.requestChangesReview.verdict, "request-changes");
   assert.deepEqual(next.result.requestChangesReview.comments[0], {
     path: "internal/state.go",
@@ -229,7 +253,11 @@ test("the deterministic fix input carries configured loop knobs and the run reco
   const recordPath = join(root, "record.json");
   writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
   writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
-  writeFileSync(reviewPath, JSON.stringify({ status: "complete", confirmedFindings: [] }));
+  writeFileSync(reviewPath, JSON.stringify({
+    status: "complete",
+    reviewed: { target: "target111", head: "head222" },
+    confirmedFindings: [],
+  }));
   writeFileSync(recordPath, JSON.stringify({ round: 3, confirmedUnfixed: [] }));
   const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, recordPath], {
     encoding: "utf8",
@@ -256,10 +284,16 @@ test("the deterministic fix input selects single-wave mode explicitly", () => {
   const reviewPath = join(root, "review.json");
   writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
   writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
-  writeFileSync(reviewPath, JSON.stringify({ status: "complete", confirmedFindings: [] }));
+  writeFileSync(reviewPath, JSON.stringify({
+    status: "complete",
+    reviewed: { target: "target111", head: "head222" },
+    confirmedFindings: [],
+  }));
   const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, "--single-wave"], {
     encoding: "utf8",
     env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root },
   }));
-  assert.equal(input.singleWave, true);
+  assert.equal(input.kind, "minos-fix-wave-plan-v1");
+  assert.equal(input.classification, "single-wave");
+  assert.equal(input.input.workspace, root);
 });

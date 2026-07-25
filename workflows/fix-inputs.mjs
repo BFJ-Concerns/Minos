@@ -4,6 +4,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { prepareFixWave } from "./fix-wave-plan.mjs";
+
 const reviewPath = process.argv[2];
 const recordPath = process.argv[3];
 const singleWave = process.argv.includes("--single-wave");
@@ -48,5 +50,5 @@ if (!reviewPath) {
       content: readFileSync(resolve(repositoryRoot, briefPath), "utf8"),
     },
   };
-  process.stdout.write(JSON.stringify(result) + "\n");
+  process.stdout.write(JSON.stringify(singleWave ? prepareFixWave(result) : result) + "\n");
 }
