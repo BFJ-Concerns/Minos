@@ -358,6 +358,71 @@ func TestRebuildEstateIncompleteStatusUsesGuardedTargetBoundForgePath(t *testing
 	}
 }
 
+func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_PR", facts.PR)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+
+	head := state.headSHA()
+	target := state.targetSHA()
+	for _, desired := range []string{"working", "working", "attention"} {
+		var stdout strings.Builder
+		if err := ForgeCommand(t.Context(), []string{"status", head, target, desired}, &stdout); err != nil {
+			t.Fatalf("status %q: %v\n%s", desired, err, stdout.String())
+		}
+	}
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["base"].(map[string]any)["sha"] = "new-target"
+	})
+	newTarget := state.targetSHA()
+	var stdout strings.Builder
+	if err := ForgeCommand(t.Context(), []string{"status", head, newTarget, "attention"}, &stdout); err != nil {
+		t.Fatalf("status with new target: %v\n%s", err, stdout.String())
+	}
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["sha"] = "new-head"
+	})
+	newHead := state.headSHA()
+	state.setStatuses(nil)
+	stdout.Reset()
+	if err := ForgeCommand(t.Context(), []string{"status", newHead, newTarget, "attention"}, &stdout); err != nil {
+		t.Fatalf("status with new head: %v\n%s", err, stdout.String())
+	}
+
+	posts := state.statusPostFacts()
+	if len(posts) != 4 {
+		t.Fatalf("forge received %d status posts, want exactly four: %#v", len(posts), posts)
+	}
+	wantTarget := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
+	})
+	wantNewTarget := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: newTarget,
+	})
+	for index, want := range []struct {
+		head        string
+		target      string
+		state       string
+		description string
+	}{
+		{head: head, target: wantTarget, state: "pending", description: "Reviewing changes"},
+		{head: head, target: wantTarget, state: "failure", description: "Changes need attention"},
+		{head: head, target: wantNewTarget, state: "failure", description: "Changes need attention"},
+		{head: newHead, target: wantNewTarget, state: "failure", description: "Changes need attention"},
+	} {
+		post := posts[index]
+		if post.Head != want.head || post.Payload["state"] != want.state || post.Payload["description"] != want.description ||
+			post.Payload["context"] != "Minos" || post.Payload["target_url"] != want.target {
+			t.Fatalf("forge status post %d = %#v, want %#v", index+1, post, want)
+		}
+	}
+}
+
 func TestRebuildEstateReviewCompletionReactionJourneys(t *testing.T) {
 	for _, test := range []struct {
 		name        string
