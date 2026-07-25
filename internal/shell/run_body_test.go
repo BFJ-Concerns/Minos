@@ -407,6 +407,27 @@ func TestRunBodyRejectsInvalidSilenceTimeout(t *testing.T) {
 	)
 }
 
+// A digit string too large for shell integer arithmetic used to pass
+// validation and then make the backstop comparison error on every poll, which
+// removed the backstop entirely rather than lengthening it — a fat-fingered
+// value in run-body.env would leave a hung run to the systemd limit with no
+// other signal.
+func TestRunBodyRejectsOutOfRangeSilenceTimeout(t *testing.T) {
+	for _, value := range []string{"99999999999999999999", "604801"} {
+		t.Run(value, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": value})
+			if err == nil {
+				t.Fatalf("run-body accepted an out-of-range silence timeout\n%s", output)
+			}
+			if !strings.Contains(string(output), "MINOS_LEAD_SILENCE_TIMEOUT") {
+				t.Fatalf("run-body did not report the out-of-range silence timeout\n%s", output)
+			}
+			assertFailureLine(t, fixture.failureLog, "stage=configuration")
+		})
+	}
+}
+
 func TestRunBodyResetsSilenceTimeoutWhenLeadProducesOutput(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	fixture.run(t, map[string]string{

@@ -173,6 +173,17 @@ case "$silence_timeout" in
     exit 1
     ;;
 esac
+# A digit string too large for shell integer arithmetic makes the backstop
+# comparison error out on every poll, silently removing the backstop rather
+# than lengthening it. Cap it at a week, which is far beyond the systemd unit's
+# own 12-hour bound.
+if [ "$silence_timeout" -gt 604800 ] 2>/dev/null; then
+  echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT must not exceed 604800 seconds" >&2
+  exit 1
+elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
+  echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT is out of range" >&2
+  exit 1
+fi
 failure_stage="lead-launch"
 failure_cause="Claude lead launch failed"
 launch_output="$("$MINOS_CLAUDE" \
