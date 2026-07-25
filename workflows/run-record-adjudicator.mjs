@@ -3,15 +3,6 @@ import { join } from "node:path";
 
 const LOW_COMBINED_CONFIDENCE = 70;
 
-function familyOf(modelId) {
-  if (typeof modelId !== "string" || modelId === "") return "unknown";
-  const id = modelId.toLowerCase();
-  if (id.includes("gpt-")) return "gpt";
-  if (id.includes("claude") || ["haiku", "sonnet", "opus", "fable"].includes(id))
-    return "claude";
-  return "unknown";
-}
-
 async function jsonAt(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
@@ -60,7 +51,6 @@ function validLeg(leg) {
     leg &&
     typeof leg.label === "string" && leg.label !== "" &&
     typeof leg.role === "string" && leg.role !== "" &&
-    (leg.expectedFamily === "gpt" || leg.expectedFamily === "claude") &&
     typeof leg.pinnedModel === "string" && leg.pinnedModel !== ""
   );
 }
@@ -216,12 +206,9 @@ export async function adjudicate({ envelope, recordDir }) {
       return {
         label: leg && typeof leg.label === "string" ? leg.label : null,
         role: leg && typeof leg.role === "string" ? leg.role : null,
-        expectedFamily: leg && typeof leg.expectedFamily === "string" ? leg.expectedFamily : null,
         pinnedModel: leg && typeof leg.pinnedModel === "string" ? leg.pinnedModel : null,
         resolvedModel: null,
-        resolvedFamily: "unknown",
         status: "absent",
-        confirmed: false,
       };
     }
     if (requiredLabels.has(leg.label)) incomplete.push(`required model-evidence label ${leg.label} occurs more than once`);
@@ -230,29 +217,15 @@ export async function adjudicate({ envelope, recordDir }) {
     const resolvedModel = record && typeof record.resolved_model === "string" && record.resolved_model !== ""
       ? record.resolved_model
       : null;
-    const resolvedFamily = familyOf(resolvedModel);
     const status = record && typeof record.status === "string" ? record.status : "absent";
-    const confirmed = Boolean(
-      record &&
-      status === "complete" &&
-      resolvedModel &&
-      resolvedFamily === leg.expectedFamily &&
-      !duplicateLabels.has(leg.label)
-    );
     if (!record) incomplete.push(`agent record for ${leg.label} is absent or ambiguous`);
     else if (status !== "complete") incomplete.push(`agent ${leg.label} has status ${status}; expected complete`);
-    else if (!resolvedModel) incomplete.push(`agent ${leg.label} has no resolved_model evidence`);
-    else if (resolvedFamily !== leg.expectedFamily)
-      incomplete.push(`agent ${leg.label} resolved to ${resolvedFamily}, expected ${leg.expectedFamily}`);
     return {
       label: leg.label,
       role: leg.role,
-      expectedFamily: leg.expectedFamily,
       pinnedModel: leg.pinnedModel,
       resolvedModel,
-      resolvedFamily,
       status,
-      confirmed,
     };
   });
 
@@ -268,11 +241,9 @@ export async function adjudicate({ envelope, recordDir }) {
     const rawVerifier = proposed.rawVerifier;
     let verification = "verifier returned no result";
     let verdict = "no-verdict";
-    if (!reviewEvidence || !reviewEvidence.confirmed || !verifyEvidence || !verifyEvidence.confirmed || reviewEvidence.resolvedFamily === verifyEvidence.resolvedFamily) {
-      const failed = [reviewEvidence, verifyEvidence].filter((entry) => !entry || !entry.confirmed);
-      verification = failed.length > 0
-        ? `served-model evidence did not confirm ${failed.map((entry) => entry ? entry.label : "a referenced leg").join(" and ")}`
-        : "proposer and verifier resolved to the same model family";
+    if (!reviewEvidence || reviewEvidence.status !== "complete" || !verifyEvidence || verifyEvidence.status !== "complete") {
+      const failed = [reviewEvidence, verifyEvidence].filter((entry) => !entry || entry.status !== "complete");
+      verification = `leg completion did not confirm ${failed.map((entry) => entry ? entry.label : "a referenced leg").join(" and ")}`;
     } else if (
       !rawVerifier ||
       (rawVerifier.verdict !== "upheld" && rawVerifier.verdict !== "refuted") ||

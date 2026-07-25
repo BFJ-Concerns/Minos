@@ -105,13 +105,13 @@ test("the script emits an envelope with every routed leg and raw verifier output
   assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 91, reason: "reproduced" });
   assert.ok(result.proposedFindings.every((entry) => entry.proposingLabel && entry.verifyLabel));
   assert.deepEqual(
-    result.requiredModelEvidence.map(({ role, expectedFamily, pinnedModel }) => ({ role, expectedFamily, pinnedModel })),
+    result.requiredModelEvidence.map(({ role, pinnedModel }) => ({ role, pinnedModel })),
     [
-      { role: "exploration", expectedFamily: "gpt", pinnedModel: "gpt-5.6-terra" },
-      { role: "specialist", expectedFamily: "gpt", pinnedModel: "gpt-5.6-sol" },
-      { role: "specialist", expectedFamily: "claude", pinnedModel: "claude-opus-5" },
-      { role: "verifier", expectedFamily: "claude", pinnedModel: "claude-opus-5" },
-      { role: "verifier", expectedFamily: "gpt", pinnedModel: "gpt-5.6-sol" },
+      { role: "exploration", pinnedModel: "gpt-5.6-terra" },
+      { role: "specialist", pinnedModel: "gpt-5.6-sol" },
+      { role: "specialist", pinnedModel: "claude-opus-5" },
+      { role: "verifier", pinnedModel: "claude-opus-5" },
+      { role: "verifier", pinnedModel: "gpt-5.6-sol" },
     ],
   );
   assert.ok(calls.every((call) => call.opts.engine === "codex" || call.opts.engine === "claude"));
@@ -219,7 +219,6 @@ test("an exploration null still emits its required leg for archive adjudication"
   assert.deepEqual(result.requiredModelEvidence, [{
     label: "exploration",
     role: "exploration",
-    expectedFamily: "gpt",
     pinnedModel: "gpt-5.6-terra",
   }]);
   assert.equal(result.reviewers[0].status, "no-result");

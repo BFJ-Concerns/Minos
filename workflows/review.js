@@ -204,14 +204,14 @@ const projectGuidance = projectGuidanceFromInput(input);
 if (!projectGuidance) throw new Error("deterministic input omitted reviewed-project guidance");
 
 const legs = [];
-function addLeg(label, role, expectedFamily, pinnedModel) {
-  const leg = { label, role, expectedFamily, pinnedModel };
+function addLeg(label, role, pinnedModel) {
+  const leg = { label, role, pinnedModel };
   legs.push(leg);
   return leg;
 }
 
 phase("Explore");
-addLeg("exploration", "exploration", "gpt", GPT_EXPLORER_MODEL);
+addLeg("exploration", "exploration", GPT_EXPLORER_MODEL);
 const exploration = await agent(
   rolePrompt(
     roleBriefs,
@@ -245,7 +245,7 @@ const planned = normalisePlan(exploration.plan, exploration.files);
 const specialistUnits = planned.dispatched;
 phase("Specialise");
 for (const unit of specialistUnits)
-  addLeg(unit.label, "specialist", unit.family, modelForFamily(unit.family));
+  addLeg(unit.label, "specialist", modelForFamily(unit.family));
 
 function specialistPrompt(unit) {
   return rolePrompt(
@@ -302,10 +302,10 @@ specialistUnits.forEach((unit, unitIndex) => {
 
 phase("Verify");
 for (const item of proposed) {
-  const expectedFamily = item.unit.family === "gpt" ? "claude" : "gpt";
-  item.verifyLabel = `verify-${item.unitIndex + 1}-${item.findingIndex + 1}-${expectedFamily}`;
-  item.expectedFamily = expectedFamily;
-  addLeg(item.verifyLabel, "verifier", expectedFamily, modelForFamily(expectedFamily));
+  const verifierFamily = item.unit.family === "gpt" ? "claude" : "gpt";
+  item.verifyLabel = `verify-${item.unitIndex + 1}-${item.findingIndex + 1}-${verifierFamily}`;
+  item.verifierFamily = verifierFamily;
+  addLeg(item.verifyLabel, "verifier", modelForFamily(verifierFamily));
 }
 
 const verifierResults = await parallel(
@@ -319,9 +319,9 @@ const verifierResults = await parallel(
           `Proposing specialist: ${item.unit.label}\nFinding data: ${JSON.stringify(item.finding)}`
       ),
       {
-        engine: engineForFamily(item.expectedFamily),
+        engine: engineForFamily(item.verifierFamily),
         schema: verifierSchema,
-        model: modelForFamily(item.expectedFamily),
+        model: modelForFamily(item.verifierFamily),
         effort: "high",
         label: item.verifyLabel,
         phase: "Verify",

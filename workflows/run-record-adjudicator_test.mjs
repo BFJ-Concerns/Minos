@@ -7,9 +7,9 @@ import test from "node:test";
 import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const legs = [
-  { label: "exploration", role: "exploration", expectedFamily: "gpt", pinnedModel: "gpt-5.6-terra" },
-  { label: "specialist-1", role: "specialist", expectedFamily: "gpt", pinnedModel: "gpt-5.6-sol" },
-  { label: "verify-1", role: "verifier", expectedFamily: "claude", pinnedModel: "claude-opus-5" },
+  { label: "exploration", role: "exploration", pinnedModel: "gpt-5.6-terra" },
+  { label: "specialist-1", role: "specialist", pinnedModel: "gpt-5.6-sol" },
+  { label: "verify-1", role: "verifier", pinnedModel: "claude-opus-5" },
 ];
 
 const envelope = {
@@ -41,6 +41,7 @@ function fixtureArchive(t, {
     "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
     "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
   },
+  duplicateRecords = [],
   manifests = 1,
   agentsDirectory = true,
 } = {}) {
@@ -50,7 +51,7 @@ function fixtureArchive(t, {
     const archive = join(recordDir, "runs", "cwd", `namespace-${run}`, `run-${run}`);
     mkdirSync(agentsDirectory ? join(archive, "agents") : archive, { recursive: true });
     writeFileSync(join(archive, "manifest.json"), JSON.stringify({ kind: "run_manifest", status: manifestStatus }));
-    Object.entries(records).forEach(([label, record], index) => {
+    [...Object.entries(records), ...duplicateRecords].forEach(([label, record], index) => {
       const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
       mkdirSync(directory, { recursive: true });
       writeFileSync(join(directory, "agent.json"), JSON.stringify({ label, ...record }));
@@ -59,7 +60,7 @@ function fixtureArchive(t, {
   return recordDir;
 }
 
-test("fixture archive with every distinctive served family produces a complete adapter verdict", async (t) => {
+test("complete legs and a complete verifier result produce a complete adapter verdict", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t);
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
 
@@ -70,11 +71,11 @@ test("fixture archive with every distinctive served family produces a complete a
   assert.equal(adapterVerdict.reviewBody.body, "Repository review brief findings.");
   assert.equal(adapterVerdict.fixRequired, true);
   assert.deepEqual(
-    adapterVerdict.modelEvidence.map(({ label, resolvedModel, confirmed }) => ({ label, resolvedModel, confirmed })),
+    adapterVerdict.modelEvidence.map(({ label, resolvedModel, status }) => ({ label, resolvedModel, status })),
     [
-      { label: "exploration", resolvedModel: "gpt-5.6-terra-served", confirmed: true },
-      { label: "specialist-1", resolvedModel: "gpt-5.6-sol-served", confirmed: true },
-      { label: "verify-1", resolvedModel: "claude-opus-5", confirmed: true },
+      { label: "exploration", resolvedModel: "gpt-5.6-terra-served", status: "complete" },
+      { label: "specialist-1", resolvedModel: "gpt-5.6-sol-served", status: "complete" },
+      { label: "verify-1", resolvedModel: "claude-opus-5", status: "complete" },
     ],
   );
 });
@@ -123,34 +124,35 @@ test("operator attention follows the combined-confidence threshold", async (t) =
   assert.deepEqual(highVerdict.operatorAttention, []);
 });
 
-test("fixture archive with a wrong served family fails closed despite the correct requested model", async (t) => {
+test("an unexpected resolved_model family does not withhold a complete verdict", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
-      exploration: { status: "complete", model: "gpt-5.6-terra", resolved_model: "gpt-5.6-terra-served" },
-      "specialist-1": { status: "complete", model: "gpt-5.6-sol", resolved_model: "claude-opus-4-8-fallback" },
-      "verify-1": { status: "complete", model: "claude-opus-5", resolved_model: "claude-opus-5" },
-    },
-  });
-  const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
-
-  assert.equal(adapterVerdict.status, "incomplete");
-  assert.equal(adapterVerdict.modelEvidence.find((entry) => entry.label === "specialist-1").confirmed, false);
-  assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
-  assert.equal(adapterVerdict.fixRequired, false);
-});
-
-test("null resolved_model fails closed", async (t) => {
-  const fixtureArchiveDir = fixtureArchive(t, {
-    records: {
-      exploration: { status: "complete", resolved_model: "gpt-5.6-terra" },
-      "specialist-1": { status: "complete", resolved_model: null },
+      exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
+      "specialist-1": { status: "complete", resolved_model: "claude-opus-5" },
       "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
-  assert.equal(adapterVerdict.status, "incomplete");
-  assert.match(adapterVerdict.incomplete.join("\n"), /specialist-1 has no resolved_model/);
+
+  assert.equal(adapterVerdict.status, "complete");
+  assert.equal(adapterVerdict.complete, true);
+  assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
+  assert.equal(adapterVerdict.modelEvidence.find((entry) => entry.label === "specialist-1").resolvedModel, "claude-opus-5");
+});
+
+test("missing resolved_model does not withhold a complete verdict", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t, {
+    records: {
+      exploration: { status: "complete" },
+      "specialist-1": { status: "complete" },
+      "verify-1": { status: "complete" },
+    },
+  });
+  const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
+  assert.equal(adapterVerdict.status, "complete");
+  assert.equal(adapterVerdict.complete, true);
+  assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
+  assert.ok(adapterVerdict.modelEvidence.every((entry) => entry.resolvedModel === null));
 });
 
 for (const manifestStatus of ["failed", "timed-out"]) {
@@ -172,7 +174,7 @@ for (const manifests of [0, 2]) {
   });
 }
 
-test("an upheld verifier on an unconfirmed specialist leg yields no verdict and publishes nothing", async (t) => {
+test("a non-complete leg makes the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
       exploration: { status: "complete", resolved_model: "gpt-5.6-terra" },
@@ -184,57 +186,66 @@ test("an upheld verifier on an unconfirmed specialist leg yields no verdict and 
   assert.equal(adapterVerdict.status, "incomplete");
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
   assert.equal(adapterVerdict.reviewBody, null);
+  assert.match(adapterVerdict.incomplete.join("\n"), /specialist-1 has status failed; expected complete/);
   assert.match(adapterVerdict.incomplete.join("\n"), /no complete verdict/);
 });
 
-test("one served leg cannot act as both proposer and verifier", async (t) => {
-  const fixtureArchiveDir = fixtureArchive(t);
-  const sameLegEnvelope = {
-    ...envelope,
-    proposedFindings: [{ ...envelope.proposedFindings[0], verifyLabel: "specialist-1" }],
-  };
-  const adapterVerdict = await adjudicate({ envelope: sameLegEnvelope, recordDir: fixtureArchiveDir });
-
-  assert.equal(adapterVerdict.status, "incomplete");
-  assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
-  assert.match(adapterVerdict.incomplete.join("\n"), /same model family/);
-});
-
-test("distinct proposer and verifier legs served by the same family yield no verdict", async (t) => {
+test("an absent required agent record makes the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
       exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
-      "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
-      "verify-1": { status: "complete", resolved_model: "gpt-5.6-sol-verifier" },
-    },
-  });
-  const sameFamilyEnvelope = {
-    ...envelope,
-    requiredModelEvidence: envelope.requiredModelEvidence.map((leg) => leg.label === "verify-1"
-      ? { ...leg, expectedFamily: "gpt", pinnedModel: "gpt-5.6-sol" }
-      : leg),
-  };
-  const adapterVerdict = await adjudicate({ envelope: sameFamilyEnvelope, recordDir: fixtureArchiveDir });
-
-  assert.equal(adapterVerdict.status, "incomplete");
-  assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
-  assert.match(adapterVerdict.incomplete.join("\n"), /same model family/);
-});
-
-test("an unconfirmed unpaired exploration leg makes the whole verdict incomplete", async (t) => {
-  const fixtureArchiveDir = fixtureArchive(t, {
-    records: {
-      exploration: { status: "complete", resolved_model: "claude-opus-4-8" },
-      "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol" },
       "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");
-  assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.match(adapterVerdict.incomplete.join("\n"), /exploration resolved to claude, expected gpt/);
+  assert.match(adapterVerdict.incomplete.join("\n"), /agent record for specialist-1 is absent or ambiguous/);
+});
+
+test("ambiguous agent records make the run incomplete", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t, {
+    duplicateRecords: [["specialist-1", { status: "complete", resolved_model: "gpt-5.6-sol-served" }]],
+  });
+  const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
+  assert.equal(adapterVerdict.status, "incomplete");
+  assert.match(adapterVerdict.incomplete.join("\n"), /agent label specialist-1 occurs more than once/);
+  assert.match(adapterVerdict.incomplete.join("\n"), /agent record for specialist-1 is absent or ambiguous/);
+});
+
+test("duplicate required labels make the run incomplete", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const duplicateLegEnvelope = {
+    ...envelope,
+    requiredModelEvidence: [...envelope.requiredModelEvidence, envelope.requiredModelEvidence[1]],
+  };
+  const adapterVerdict = await adjudicate({ envelope: duplicateLegEnvelope, recordDir: fixtureArchiveDir });
+  assert.equal(adapterVerdict.status, "incomplete");
+  assert.match(adapterVerdict.incomplete.join("\n"), /required model-evidence label specialist-1 occurs more than once/);
+});
+
+test("a missing verifier result makes the run incomplete", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const missingVerifierEnvelope = {
+    ...envelope,
+    proposedFindings: [{ ...envelope.proposedFindings[0], rawVerifier: null }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: missingVerifierEnvelope, recordDir: fixtureArchiveDir });
+  assert.equal(adapterVerdict.status, "incomplete");
+  assert.match(adapterVerdict.incomplete.join("\n"), /verifier returned no valid result/);
+});
+
+test("an invalid verifier result makes the run incomplete", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const invalidVerifierEnvelope = {
+    ...envelope,
+    proposedFindings: [{
+      ...envelope.proposedFindings[0],
+      rawVerifier: { verdict: "maybe", confidence: 94, reason: "No verdict." },
+    }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: invalidVerifierEnvelope, recordDir: fixtureArchiveDir });
+  assert.equal(adapterVerdict.status, "incomplete");
+  assert.match(adapterVerdict.incomplete.join("\n"), /verifier returned no valid result/);
 });
 
 test("a malformed proposed finding cannot become publishable", async (t) => {

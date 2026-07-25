@@ -119,7 +119,6 @@ test("relevance gates full-extent briefs and remains an explicit Terra leg", asy
   assert.deepEqual(missed.result.requiredModelEvidence, [{
     label: "brief-relevance",
     role: "relevance",
-    expectedFamily: "gpt",
     pinnedModel: "gpt-5.6-terra",
   }]);
   assert.equal(missed.result.briefs[0].skipKind, "relevance");

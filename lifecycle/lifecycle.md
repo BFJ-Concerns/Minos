@@ -88,15 +88,15 @@ run's scratch is gone — so write the real reason.
 
    The workflow binds the project guidance into exploration, every specialist,
    and every verifier. It returns a pre-adjudication envelope. The wrapper owns
-   an isolated Ensemble run-record directory, checks every leg's actual served
-   model family from `resolved_model`, and returns the adjudicated verdict. Do
-   not read the archive, translate model names, judge families, resume the
-   workflow, or duplicate its findings yourself.
+   an isolated Ensemble run-record directory, checks that every leg completed
+   and every finding has a complete verifier verdict, and returns the
+   adjudicated verdict. Do not read the archive, judge the workflow's engine
+   pairing, resume the workflow, or duplicate its findings yourself.
 
    Only a verdict whose `status` is `complete` is publishable. A missing result,
-   incomplete run, or missing or wrong-family served-model evidence yields
-   `incomplete` or `infrastructure-failure`. In either case, publish no review,
-   set `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
+   incomplete leg, or missing or invalid verifier result yields `incomplete` or
+   `infrastructure-failure`. In either case, publish no review, set
+   `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, and stop.
 5. Save each complete review verdict and build the action input:
 
@@ -193,11 +193,11 @@ run's scratch is gone — so write the real reason.
    nothing applicable records that disposition separately from findings, so it
    never reaches a verifier or becomes a published defect. Every skip remains
    in the verdict's `skipped` array and is never published on the pull request.
-   A `not-run` concern, missing result, or incomplete served-model evidence
-   makes this stage incomplete: publish no brief review, add no 👍, set
-   `"$MINOS_BIN" forge status CURRENT_HEAD "$MINOS_TARGET_SHA" incomplete`,
-   remove the 👀 with `"$MINOS_BIN" forge reaction-remove CURRENT_HEAD
-   "$MINOS_TARGET_SHA" eyes`, and stop.
+   A `not-run` concern, missing result, incomplete leg, or missing or invalid
+   verifier result makes this stage incomplete: publish no brief review, add no
+   👍, set `"$MINOS_BIN" forge status CURRENT_HEAD "$MINOS_TARGET_SHA"
+   incomplete`, remove the 👀 with `"$MINOS_BIN" forge reaction-remove
+   CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`, and stop.
 
    On a complete verdict, materialise `reviewBody.body` and
    `reviewBody.comments` when `reviewBody` is present, then post exactly one

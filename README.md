@@ -6,13 +6,12 @@ pull request, clones the repository, runs its build and tests as configured, and
 invokes the shipped review workflows through the installed Ensemble CLI and
 adjudication wrapper. Independent reviewers cover the whole diff, with breadth
 scaled to the diff and the repository's `.review/` briefs honoured; the opposite
-model family verifies every proposed finding. The adapter checks each leg's
-actual served-model evidence from the Ensemble run record before returning a
-verdict to the lead. A verification leg that cannot be confirmed on its pinned
-family yields no verdict and makes the run incomplete: an incomplete run
-publishes no review and sets no clean status. The lead repairs confirmed
-problems, reviews the new head again, publishes the result to the forge, and may
-merge when repository policy permits it.
+model family verifies every proposed finding. Explicit Ensemble engine dispatch
+guarantees that pairing. The adapter checks that every leg completed and every
+finding has a complete verifier verdict before returning a result to the lead.
+An incomplete run publishes no review and sets no clean status. The lead
+repairs confirmed problems, reviews the new head again, publishes the result to
+the forge, and may merge when repository policy permits it.
 
 The implementation deliberately has no lifecycle database, stage machine,
 heartbeat, incident system, preflight framework, model-admission gate, coverage
