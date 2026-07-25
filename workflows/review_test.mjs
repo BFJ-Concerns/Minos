@@ -224,9 +224,10 @@ test("an exploration null still emits its required leg for archive adjudication"
   assert.equal(result.reviewers[0].status, "no-result");
 });
 
-test("the lifecycle uses one adjudicated review call and bare Ensemble fix calls", () => {
+test("the lifecycle uses one adjudicated review call and publication-owned fix waves", () => {
   assert.match(lifecycle, /invoke the adjudication wrapper once[\s\S]*review\.js[\s\S]*--json-args/);
-  assert.match(lifecycle, /node \/opt\/minos\/runtime\/ensemble\.mjs[\s\S]*--json-args[\s\S]*fix\.js/);
+  assert.match(lifecycle, /publish-before-fix[\s\S]*fix-args\.json[\s\S]*HEAD TARGET/);
+  assert.match(lifecycle, /starts the effectful `fix\.js`[\s\S]*only after[\s\S]*`outcome: "applied"`/);
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,

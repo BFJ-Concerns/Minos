@@ -106,37 +106,42 @@ run's scratch is gone — so write the real reason.
      > "$MINOS_RUN_DIR/fix-args.json"
    ```
 
-   Run `fix.js` through the bare Ensemble launcher; fixes do not cross the
-   review adjudication boundary:
+   Invoke the publication-before-fix operation once for this round:
 
    ```sh
-   node /opt/minos/runtime/ensemble.mjs \
-     --json-args @"$MINOS_RUN_DIR/fix-args.json" \
-     "${MINOS_REVIEW_WORKFLOW%/*}/fix.js" \
+   "${MINOS_REVIEW_WORKFLOW%/*}/publish-before-fix" \
+     "$MINOS_RUN_DIR/fix-args.json" HEAD TARGET \
      > "$MINOS_RUN_DIR/fix-result.json"
    ```
 
-   Its returned `runRecord` is the run-scoped loop record, including the round
-   count and confirmed-unfixed findings. Start with an absent record and replace
-   the scratch record after every classification. The configured threshold,
-   cluster cap and optional maximum rounds arrive through
+   This one production operation prepares an immutable wave without agents. A
+   `working` preparation materialises the exact sweep review, publishes it
+   through the guarded forge command, and starts the effectful `fix.js`
+   dispatcher only after the command returns `outcome: "applied"`. An exact
+   pre-existing review is applied and may continue; every other publication
+   result returns `incomplete` without starting the dispatcher. On an
+   incomplete result, set `"$MINOS_BIN" forge status HEAD TARGET incomplete`,
+   remove the 👀 with `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`,
+   and stop.
+
+   The operation's returned `runRecord` is the run-scoped loop record, including
+   the round count and confirmed-unfixed findings. Start with an absent record
+   and replace the scratch record after every complete classification. Pass it
+   back through `fix-inputs.mjs` when the build, tests and whole review re-enter
+   this step on the next head; the operation is invoked once per round. The
+   configured threshold, cluster cap and optional maximum rounds arrive through
    `$MINOS_REVIEW_THRESHOLD`, `$MINOS_FIX_CLUSTER_CAP`, and
    `$MINOS_MAX_ROUNDS`.
 
    A `working` classification means at least one newly actionable confirmed
-   finding is at or above the threshold. Materialise `sweepReview.body` and
-   `sweepReview.comments` exactly and call `"$MINOS_BIN" forge review HEAD
-   TARGET comment BODY_FILE COMMENTS_FILE`. This posts all confirmed findings
+   finding is at or above the threshold and its sweep review was confirmed
+   present before dispatch. The prepared wave contains every confirmed finding
    in the sweep, including those below threshold, as one review with inline
-   path/line comments. It is safe to repeat after a crash: the guarded command
-   reads the forge review and its comment collection first and does not post an
-   exact review twice.
-
-   The fix workflow clusters the findings by overlapping files up to the
-   configured cap and dispatches the clusters. Fix agents use the bootstrapped
-   repository in isolated Codex worktrees, commit with the configured Minos
-   identity, and never push. A failed finding receives one retry; after two
-   failures it remains in the
+   path/line comments. Its effectful dispatcher uses the prepared clusters,
+   grouped by overlapping files up to the configured cap. Fix agents use the
+   bootstrapped repository in isolated Codex worktrees, commit with the
+   configured Minos identity, and never push. A failed finding receives one
+   retry; after two failures it remains in the
    loop record as confirmed-unfixed and later sweeps do not dispatch it again.
    When `integration.commits` is non-empty, write that array unchanged to a
    file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
