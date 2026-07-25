@@ -43,7 +43,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	assertContainsFile(t, fixture.record+".setup", "setup invoked")
 	assertContainsFile(t, fixture.record+".argv", "--bg")
 	assertContainsFile(t, fixture.record+".argv", "--model")
-	assertContainsFile(t, fixture.record+".argv", "claude-opus-4-8")
+	assertContainsFile(t, fixture.record+".argv", "claude-opus-5")
 	assertContainsFile(t, fixture.record+".argv", "Follow the Minos lifecycle exactly.")
 	assertContainsFile(t, fixture.record+".calls", "agents")
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
@@ -107,6 +107,93 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	}
 
 	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	credentialFile := filepath.Join(fixture.root, "gateway.token")
+	if err := os.WriteFile(credentialFile, []byte("gateway-token-from-configured-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.appendConfig(t, map[string]string{
+		"MINOS_ANTHROPIC_CREDENTIAL_FILE":            credentialFile,
+		"ANTHROPIC_BASE_URL":                         "http://configured-gateway.test:8317",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":              "configured-haiku-model",
+		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":             "196000",
+		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "180000",
+	})
+
+	fixture.run(t, nil)
+
+	assertEnvironmentValues(t, fixture.record+".env", map[string]string{
+		"MINOS_ANTHROPIC_CREDENTIAL_FILE":            credentialFile,
+		"ANTHROPIC_AUTH_TOKEN":                       "gateway-token-from-configured-file",
+		"ANTHROPIC_BASE_URL":                         "http://configured-gateway.test:8317",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":              "configured-haiku-model",
+		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":             "196000",
+		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "180000",
+	})
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyRejectsInvalidGatewayConfigurationBeforeLaunchingClaude(t *testing.T) {
+	tests := []struct {
+		name             string
+		createCredential bool
+		credential       string
+		includeBaseURL   bool
+		wantError        string
+	}{
+		{
+			name:           "missing credential file",
+			includeBaseURL: true,
+			wantError:      "is missing or unreadable",
+		},
+		{
+			name:             "empty credential file",
+			createCredential: true,
+			includeBaseURL:   true,
+			wantError:        "is empty",
+		},
+		{
+			name:             "missing base URL",
+			createCredential: true,
+			credential:       "configured-token\n",
+			wantError:        "ANTHROPIC_BASE_URL is required in gateway mode",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			credentialFile := filepath.Join(fixture.root, "gateway.token")
+			if test.createCredential {
+				if err := os.WriteFile(credentialFile, []byte(test.credential), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			config := map[string]string{
+				"MINOS_ANTHROPIC_CREDENTIAL_FILE": credentialFile,
+			}
+			if test.includeBaseURL {
+				config["ANTHROPIC_BASE_URL"] = "http://configured-gateway.test:8317"
+			}
+			fixture.appendConfig(t, config)
+
+			output, err := fixture.execute(nil)
+			if err == nil {
+				t.Fatalf("run-body succeeded with invalid gateway configuration\n%s", output)
+			}
+			if !strings.Contains(string(output), test.wantError) {
+				t.Fatalf("run-body error does not contain %q\n%s", test.wantError, output)
+			}
+			if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("Claude launch record exists after gateway configuration failure: %v", err)
+			}
+		})
+	}
 }
 
 func TestRunBodyRecognisesRealClaudeTerminalStates(t *testing.T) {
@@ -352,7 +439,7 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 	}
 	runBodyEnv := map[string]string{
 		"MINOS_CLAUDE":                fixture.claudeStub,
-		"MINOS_LEAD_MODEL":            "claude-opus-4-8",
+		"MINOS_LEAD_MODEL":            "claude-opus-5",
 		"MINOS_GIT_AUTHOR_NAME":       "Minos",
 		"MINOS_GIT_AUTHOR_EMAIL":      "minos@example.invalid",
 		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,
@@ -373,8 +460,33 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 	return fixture
 }
 
+func (f runBodyFixture) appendConfig(t *testing.T, values map[string]string) {
+	t.Helper()
+	configPath := filepath.Join(f.configRoot, "run-body.env")
+	config, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range values {
+		if _, err := fmt.Fprintf(config, "%s=%s\n", name, strconv.Quote(value)); err != nil {
+			_ = config.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := config.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f runBodyFixture) run(t *testing.T, extraEnv map[string]string) {
 	t.Helper()
+	out, err := f.execute(extraEnv)
+	if err != nil {
+		t.Fatalf("run-body failed: %v\n%s", err, out)
+	}
+}
+
+func (f runBodyFixture) execute(extraEnv map[string]string) ([]byte, error) {
 	runEnv := map[string]string{
 		"MINOS_RUN_DIR":                 f.runDir,
 		"MINOS_CONFIG":                  f.configRoot,
@@ -413,10 +525,7 @@ func (f runBodyFixture) run(t *testing.T, extraEnv map[string]string) {
 	script := filepath.Join("..", "..", "scripts", "run-body", "run-body")
 	cmd := exec.Command(script)
 	cmd.Env = environmentWithOverrides(runEnv)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run-body failed: %v\n%s", err, out)
-	}
+	return cmd.CombinedOutput()
 }
 
 func assertRegularFile(t *testing.T, path string) {
@@ -454,6 +563,26 @@ func assertFileOmitsEnvironmentNames(t *testing.T, path string, names []string) 
 			if strings.HasPrefix(line, prefix) {
 				t.Fatalf("%s contains retired environment name %s", path, name)
 			}
+		}
+	}
+}
+
+func assertEnvironmentValues(t *testing.T, path string, want map[string]string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		name, value, found := strings.Cut(line, "=")
+		if found {
+			got[name] = value
+		}
+	}
+	for name, value := range want {
+		if got[name] != value {
+			t.Errorf("%s = %q, want %q", name, got[name], value)
 		}
 	}
 }

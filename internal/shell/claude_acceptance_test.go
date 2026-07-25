@@ -53,7 +53,7 @@ func TestVendoredEnsembleDiscoversClaudeTranscriptFromExplicitSeed(t *testing.T)
 
 const answer = await agent(
   "Reply with exactly MINOS_TRANSCRIPT_PROBE_OK and no other text.",
-  { engine: "claude", model: "claude-opus-4-8", label: "transcript-probe" }
+  { engine: "claude", model: "claude-opus-5", label: "transcript-probe" }
 );
 return { answer };
 `

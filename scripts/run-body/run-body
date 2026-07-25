@@ -4,14 +4,36 @@ set -eu
 : "${MINOS_CONFIG:?MINOS_CONFIG is required}"
 : "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 
+unset_gateway_environment() {
+  unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL
+  unset CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  unset CLAUDE_CODE_AUTO_COMPACT_WINDOW MINOS_ANTHROPIC_CREDENTIAL_FILE
+}
+
+unset_gateway_environment
+
 set -a
 # shellcheck source=/dev/null
 . "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
-unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL
-unset CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS
-unset CLAUDE_CODE_AUTO_COMPACT_WINDOW MINOS_ANTHROPIC_CREDENTIAL_FILE
+if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
+  : "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL is required in gateway mode}"
+  if [ ! -f "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ] ||
+    [ ! -r "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ]; then
+    echo "run-body: gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is missing or unreadable" >&2
+    exit 1
+  fi
+  ANTHROPIC_AUTH_TOKEN=""
+  IFS= read -r ANTHROPIC_AUTH_TOKEN <"$MINOS_ANTHROPIC_CREDENTIAL_FILE" || true
+  if [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
+    echo "run-body: gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is empty" >&2
+    exit 1
+  fi
+  export ANTHROPIC_AUTH_TOKEN
+else
+  unset_gateway_environment
+fi
 
 : "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
 : "${MINOS_CLAUDE_CONFIG_SEED:?MINOS_CLAUDE_CONFIG_SEED is required}"
@@ -33,6 +55,14 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
 mkdir -p "$MINOS_RUN_DIR"
 cd "$MINOS_RUN_DIR"
+
+if [ -n "${MINOS_FAILURE_LOG:-}" ]; then
+  mkdir -p "$(dirname "$MINOS_FAILURE_LOG")" 2>/dev/null || true
+  : >>"$MINOS_FAILURE_LOG" || {
+    echo "run-body: MINOS_FAILURE_LOG ($MINOS_FAILURE_LOG) is not writable" >&2
+    exit 1
+  }
+fi
 
 HOME="${MINOS_RUN_DIR%/}/home"
 CLAUDE_CONFIG_DIR="$HOME/.claude"
@@ -68,7 +98,7 @@ launch_output="$("$MINOS_CLAUDE" \
   --bg \
   --name "$session_name" \
   --dangerously-skip-permissions \
-  --model "${MINOS_LEAD_MODEL:-claude-opus-4-8}" \
+  --model "${MINOS_LEAD_MODEL:-claude-opus-5}" \
   "$instruction" 2>&1)"
 printf '%s\n' "$launch_output"
 

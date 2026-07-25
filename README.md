@@ -1,7 +1,7 @@
 # Minos
 
 Minos reviews and repairs pull requests. A webhook or periodic sweep starts one
-Claude Code lead on `claude-opus-4-8` on a disposable box. The lead claims the
+Claude Code lead on `claude-opus-5` on a disposable box. The lead claims the
 pull request, clones the repository, runs its build and tests as configured, and
 invokes the shipped review workflows through the installed Ensemble CLI and
 adjudication wrapper. Independent reviewers cover the whole diff, with breadth

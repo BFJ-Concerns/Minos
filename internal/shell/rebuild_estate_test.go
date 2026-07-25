@@ -120,7 +120,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	} {
 		assertContainsFile(t, record+".env", value)
 	}
-	assertContainsFile(t, record+".argv", "claude-opus-4-8")
+	assertContainsFile(t, record+".argv", "claude-opus-5")
 
 	if err := os.WriteFile(filepath.Join(workspace, "estate-repair.txt"), []byte("repair\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -543,7 +543,7 @@ esac
 	}
 	values := map[string]string{
 		"MINOS_CLAUDE":                claude,
-		"MINOS_LEAD_MODEL":            "claude-opus-4-8",
+		"MINOS_LEAD_MODEL":            "claude-opus-5",
 		"MINOS_GIT_AUTHOR_NAME":       "Minos",
 		"MINOS_GIT_AUTHOR_EMAIL":      "minos@example.invalid",
 		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,

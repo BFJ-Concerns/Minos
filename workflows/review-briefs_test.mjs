@@ -255,7 +255,7 @@ test("an applicable finding emits opposite-family routing and raw verifier outpu
   const { result, calls } = await run(args());
   const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
   const verifier = calls.find((call) => call.opts.label?.startsWith("verify-"));
-  assert.deepEqual([specialist.opts.engine, specialist.opts.model], ["claude", "claude-opus-4-8"]);
+  assert.deepEqual([specialist.opts.engine, specialist.opts.model], ["claude", "claude-opus-5"]);
   assert.deepEqual([verifier.opts.engine, verifier.opts.model], ["codex", "gpt-5.6-sol"]);
   assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 92, reason: "confirmed" });
   // The fixture brief sits under pkg/ and pkg/x.go changed, so its path-scope

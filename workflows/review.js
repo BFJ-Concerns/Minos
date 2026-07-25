@@ -10,7 +10,7 @@ export const meta = {
 
 const GPT_SPECIALIST_MODEL = "gpt-5.6-sol";
 const GPT_EXPLORER_MODEL = "gpt-5.6-terra";
-const CLAUDE_MODEL = "claude-opus-4-8";
+const CLAUDE_MODEL = "claude-opus-5";
 
 const ROLE_BRIEFS = {
   exploration: "workflows/review-briefs/exploration.md",

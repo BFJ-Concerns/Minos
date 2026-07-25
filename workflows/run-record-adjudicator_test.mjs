@@ -9,7 +9,7 @@ import { adjudicate } from "./run-record-adjudicator.mjs";
 const legs = [
   { label: "exploration", role: "exploration", expectedFamily: "gpt", pinnedModel: "gpt-5.6-terra" },
   { label: "specialist-1", role: "specialist", expectedFamily: "gpt", pinnedModel: "gpt-5.6-sol" },
-  { label: "verify-1", role: "verifier", expectedFamily: "claude", pinnedModel: "claude-opus-4-8" },
+  { label: "verify-1", role: "verifier", expectedFamily: "claude", pinnedModel: "claude-opus-5" },
 ];
 
 const envelope = {
@@ -39,7 +39,7 @@ function fixtureArchive(t, {
   records = {
     exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
     "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
-    "verify-1": { status: "complete", resolved_model: "claude-opus-4-8-20260315" },
+    "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
   },
   manifests = 1,
   agentsDirectory = true,
@@ -74,7 +74,7 @@ test("fixture archive with every distinctive served family produces a complete a
     [
       { label: "exploration", resolvedModel: "gpt-5.6-terra-served", confirmed: true },
       { label: "specialist-1", resolvedModel: "gpt-5.6-sol-served", confirmed: true },
-      { label: "verify-1", resolvedModel: "claude-opus-4-8-20260315", confirmed: true },
+      { label: "verify-1", resolvedModel: "claude-opus-5", confirmed: true },
     ],
   );
 });
@@ -128,7 +128,7 @@ test("fixture archive with a wrong served family fails closed despite the correc
     records: {
       exploration: { status: "complete", model: "gpt-5.6-terra", resolved_model: "gpt-5.6-terra-served" },
       "specialist-1": { status: "complete", model: "gpt-5.6-sol", resolved_model: "claude-opus-4-8-fallback" },
-      "verify-1": { status: "complete", model: "claude-opus-4-8", resolved_model: "claude-opus-4-8-20260315" },
+      "verify-1": { status: "complete", model: "claude-opus-5", resolved_model: "claude-opus-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
@@ -145,7 +145,7 @@ test("null resolved_model fails closed", async (t) => {
     records: {
       exploration: { status: "complete", resolved_model: "gpt-5.6-terra" },
       "specialist-1": { status: "complete", resolved_model: null },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-4-8" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
@@ -177,7 +177,7 @@ test("an upheld verifier on an unconfirmed specialist leg yields no verdict and 
     records: {
       exploration: { status: "complete", resolved_model: "gpt-5.6-terra" },
       "specialist-1": { status: "failed", resolved_model: "gpt-5.6-sol" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-4-8" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
@@ -228,7 +228,7 @@ test("an unconfirmed unpaired exploration leg makes the whole verdict incomplete
     records: {
       exploration: { status: "complete", resolved_model: "claude-opus-4-8" },
       "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-4-8" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
