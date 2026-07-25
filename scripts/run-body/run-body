@@ -228,7 +228,13 @@ while :; do
     break
   fi
 
-  # 3. The background job timeline is the harness's observable output stream.
+  # 3. The background job timeline records the lead's turn boundaries — not a
+  #    continuous output stream, so this measures turn cadence rather than
+  #    liveness, and a single turn longer than the timeout looks silent. The
+  #    lifecycle's fallback wake (well under the default) is what keeps a live
+  #    waiting lead writing inside the window. Sibling state.json moves with
+  #    harness bookkeeping and is deliberately not watched: it would let a dead
+  #    lead reset its own deadline.
   output_signature="$(stat -c '%Y:%s' "$lead_timeline" 2>/dev/null || true)"
   if [ -n "$output_signature" ] && [ "$output_signature" != "$last_output_signature" ]; then
     last_output_signature="$output_signature"

@@ -67,10 +67,17 @@ or wake still pending.
    diagnostics to the same basename with `.log` instead of `.json`, then submit
    the complete command as one background Bash task. Record its task ID and use
    its completion notification as the primary watcher on process exit. Before
-   ending the turn, always call `ScheduleWakeup` with a 600–900-second delay
-   and a prompt naming the task to re-check. If that wake fires first, inspect
-   the task when useful, confirm whether it is still running and re-arm the
-   fallback before ending the turn again. You may additionally create a
+   ending the turn, always call `ScheduleWakeup` with a delay of 1200 seconds
+   or more and a prompt naming the task to re-check. The completion
+   notification is the fast path, so this wake exists only to bound the
+   silence if that notification never arrives — a shorter delay polls for work
+   the harness already reports and costs a full context re-read each time. If
+   the wake fires first, inspect the task when useful, confirm whether it is
+   still running and re-arm the fallback before ending the turn again. Keep
+   every such delay comfortably below `MINOS_LEAD_SILENCE_TIMEOUT`
+   (3600 seconds by default): the supervisor treats a lead with no observed
+   turn activity for that long as ended, so a fallback at or beyond it would
+   let a live waiting lead be stopped. You may additionally create a
    session-only inspection timer with `CronCreate` when progress merits a
    closer look, but it supplements rather than replaces the process-exit
    watcher and fallback wake. When the task completion notification arrives,
