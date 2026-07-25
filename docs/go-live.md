@@ -20,7 +20,7 @@ machine itself is the containment boundary.
    - set `MINOS_CLAUDE` to the installed Claude executable;
    - keep `MINOS_LEAD_MODEL` pinned to `claude-opus-5`;
    - set `MINOS_CLAUDE_CONFIG_SEED` to a directory containing known-good,
-     non-interactive Claude subscription state;
+     non-interactive Claude configuration;
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
      non-interactive Codex ChatGPT authentication state, whose `config.toml`
      carries
@@ -37,11 +37,31 @@ machine itself is the containment boundary.
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
      `MINOS_ROOT_CAUSE_SKILL` and the other installed paths match the deployment.
 
+   Choose one Claude authentication mode in `run-body.env`:
+
+   - For direct subscription authentication, leave
+     `MINOS_ANTHROPIC_CREDENTIAL_FILE` unset. The Claude seed must contain the
+     subscription state. Before launching the lead, `run-body` removes ambient
+     `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+     `ANTHROPIC_DEFAULT_HAIKU_MODEL`,
+     `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`,
+     `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and
+     `MINOS_ANTHROPIC_CREDENTIAL_FILE`.
+   - For gateway authentication, set `MINOS_ANTHROPIC_CREDENTIAL_FILE` to a
+     readable file whose first line is the gateway token, and set
+     `ANTHROPIC_BASE_URL` to the gateway URL. Keep any gateway-specific Claude
+     settings, such as `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, in
+     `run-body.env`. `run-body` exports the file token as
+     `ANTHROPIC_AUTH_TOKEN`; a missing base URL or missing, unreadable or empty
+     credential file stops the run before Claude launches.
+
    Provision both seed directories when the disposable box is launched. Each
    run copies their contents into its private `HOME`: Claude state goes to
    `$HOME/.claude` and Codex state to `$HOME/.codex`. The lead and Ensemble
    workers therefore inherit both engines' configured authentication without an
-   interactive login or a proxy.
+   interactive login. Gateway settings reach the Claude workers through the
+   same inherited environment; Codex continues to use its own `CODEX_HOME`
+   authentication.
 
    `MINOS_LIFECYCLE_INSTRUCTION` points to the vendored `lifecycle.md`: editable
    markdown fed to the lead session as its standing instructions and launch

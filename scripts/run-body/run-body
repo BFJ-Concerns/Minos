@@ -4,14 +4,36 @@ set -eu
 : "${MINOS_CONFIG:?MINOS_CONFIG is required}"
 : "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 
+unset_gateway_environment() {
+  unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL
+  unset CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  unset CLAUDE_CODE_AUTO_COMPACT_WINDOW MINOS_ANTHROPIC_CREDENTIAL_FILE
+}
+
+unset_gateway_environment
+
 set -a
 # shellcheck source=/dev/null
 . "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
-unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL
-unset CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS
-unset CLAUDE_CODE_AUTO_COMPACT_WINDOW MINOS_ANTHROPIC_CREDENTIAL_FILE
+if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
+  : "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL is required in gateway mode}"
+  if [ ! -f "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ] ||
+    [ ! -r "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ]; then
+    echo "run-body: gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is missing or unreadable" >&2
+    exit 1
+  fi
+  ANTHROPIC_AUTH_TOKEN=""
+  IFS= read -r ANTHROPIC_AUTH_TOKEN <"$MINOS_ANTHROPIC_CREDENTIAL_FILE" || true
+  if [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
+    echo "run-body: gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is empty" >&2
+    exit 1
+  fi
+  export ANTHROPIC_AUTH_TOKEN
+else
+  unset_gateway_environment
+fi
 
 : "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
 : "${MINOS_CLAUDE_CONFIG_SEED:?MINOS_CLAUDE_CONFIG_SEED is required}"
