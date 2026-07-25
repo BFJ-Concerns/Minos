@@ -80,7 +80,8 @@ Each run launches the `claude-opus-5` lead through `claude --bg`. The lead
 invokes review and repository-brief workflows through
 `/opt/minos/workflows/adjudicated-review`; the wrapper runs the selected script
 with `/opt/minos/runtime/ensemble.mjs` and asks the sibling run-record adapter to
-confirm the actual served model family for every required leg. Fix workflows
+confirm every required leg ran to completion and every finding carries a
+verdict. Fix workflows
 use the same launcher directly. The foreground run body waits for the exact
 background session to finish and stops it. The transient systemd unit bounds a
 wedged run at 12 hours.
