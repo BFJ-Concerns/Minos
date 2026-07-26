@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
@@ -150,6 +151,84 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	}
 	if result != "started" || len(starts) != 2 || !strings.Contains(activeUnit, "pr2") {
 		t.Fatalf("second admission after release = %q, active = %q, starts = %d", result, activeUnit, len(starts))
+	}
+}
+
+func TestRebuildEstateStopsNonCleanLeadWithoutHoldingItForSilence(t *testing.T) {
+	codeRepository, head := createGitRepository(t, "AGENTS.md", "NON_CLEAN_TERMINAL_SENTINEL_719\n")
+	annexeRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n")
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["sha"] = head
+		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
+		pullRequest["base"].(map[string]any)["sha"] = head
+		pullRequest["base"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
+	})
+	state.setAnnexeCloneURL(annexeRepository)
+
+	cfg, repo, facts := state.service(t)
+	runBody, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.Adaptation.RunBody = runBody
+	record := writeEstateRunBodyConfig(t, cfg.Root)
+	writeServiceConfig(t, cfg)
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var startArguments []string
+	commandCombinedOutput = func(_ context.Context, name string, arguments ...string) ([]byte, error) {
+		switch name {
+		case "systemctl":
+			return nil, nil
+		case "systemd-run":
+			startArguments = append([]string(nil), arguments...)
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command %q", name)
+			return nil, nil
+		}
+	}
+
+	result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "started" || len(startArguments) == 0 {
+		t.Fatalf("admission = %q, systemd arguments = %v; want recorded start", result, startArguments)
+	}
+
+	environment := systemdEnvironment(t, startArguments)
+	environment["MINOS_TEST_NON_CLEAN_FINISH"] = "1"
+	environment["MINOS_LEAD_SILENCE_TIMEOUT"] = "1"
+	environment["MINOS_FAILURE_LOG"] = filepath.Join(environment["MINOS_RUN_DIR"], "failures.log")
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runBody)
+	cmd.Env = environmentWithOverrides(environment)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("non-clean run body reached the outer timeout: %v\n%s", ctx.Err(), output)
+	}
+	if err != nil {
+		t.Fatalf("non-clean run body failed: %v\n%s", err, output)
+	}
+
+	assertContainsFile(t, filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete"), "non-clean")
+	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=brief-fix cause=repairs-incomplete")
+	assertContainsFile(t, record+".terminal", `"state":"done"`)
+	assertContainsFile(t, record+".calls", "stop abcdef12")
+	attemptsData, err := os.ReadFile(record + ".attempts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := strconv.Atoi(strings.TrimSpace(string(attemptsData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("agent terminal observations = %d, want one before stopping the non-clean lead", attempts)
 	}
 }
 
@@ -568,11 +647,21 @@ case "$1" in
     printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
     guidance="$(jq -r '.guidance' "$MINOS_ORIENTATION")"
     cat "$guidance" >"$record.grounding"
-    printf 'clean\n' >"$MINOS_RUN_DIR/lead-complete"
+    if [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
+      printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=brief-fix cause=repairs-incomplete\n' \
+        >>"$MINOS_FAILURE_LOG"
+      printf 'non-clean\n' >"$MINOS_RUN_DIR/lead-complete"
+    else
+      printf 'clean\n' >"$MINOS_RUN_DIR/lead-complete"
+    fi
     printf 'Agent backgrounded: abcdef12\n'
     ;;
   agents)
-    printf '%s\n' '[{"id":"abcdef12","state":"done"}]'
+    attempts=0
+    [ ! -f "$record.attempts" ] || IFS= read -r attempts <"$record.attempts"
+    attempts=$((attempts + 1))
+    printf '%s\n' "$attempts" >"$record.attempts"
+    printf '%s\n' '[{"id":"abcdef12","state":"done"}]' | tee "$record.terminal"
     ;;
   stop)
     printf 'stop %s\n' "$2" >>"$record.calls"
