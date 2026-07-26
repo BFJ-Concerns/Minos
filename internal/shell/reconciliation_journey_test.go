@@ -386,6 +386,58 @@ func TestSyncTargetUsesThePublicationTreeAndRefusesAReconciledCheckout(t *testin
 	}
 }
 
+func TestSyncTargetReusesAnAcceptedSetupResolutionWithoutPublishingSetupMerge(t *testing.T) {
+	repository, head, target := createDivergedSetupRepository(t, true)
+	server := newSetupForge(t, head, repository, "")
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	runSetupWorkspaceForTarget(t, server.URL, runDir, workspace, head, target)
+	statePath := filepath.Join(runDir, "reconciliation.json")
+
+	if err := os.WriteFile(filepath.Join(workspace, "shared.txt"), []byte("feature and target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", "shared.txt")
+	complete := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "complete-reconciliation"), workspace)
+	complete.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir, "MINOS_BASE_REF=main")
+	if output, err := complete.CombinedOutput(); err != nil {
+		t.Fatalf("complete setup reconciliation: %v\n%s", err, output)
+	}
+	state := readReconciliationState(t, statePath)
+
+	first := exec.Command(
+		filepath.Join("..", "..", "scripts", "run-body", "sync-target"),
+		workspace, "feature", "main", head, target, "merge",
+	)
+	first.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir)
+	firstOutput, err := first.CombinedOutput()
+	if err == nil || !strings.Contains(string(firstOutput), `"outcome":"conflict"`) {
+		t.Fatalf("first finishing sync = %v\n%s", err, firstOutput)
+	}
+	publication := *state.Publication
+	if got := gitOutput(t, publication, "show", ":shared.txt"); got != "feature and target" {
+		t.Fatalf("rerere staged resolution = %q", got)
+	}
+	runGit(t, publication, "commit", "-m", "Merge target branch")
+
+	second := exec.Command(
+		filepath.Join("..", "..", "scripts", "run-body", "sync-target"),
+		workspace, "feature", "main", head, target, "merge",
+	)
+	second.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir)
+	secondOutput, err := second.CombinedOutput()
+	if err != nil || !strings.Contains(string(secondOutput), `"outcome":"synced"`) {
+		t.Fatalf("resumed finishing sync = %v\n%s", err, secondOutput)
+	}
+	published := gitOutput(t, repository, "rev-parse", "feature")
+	if got := gitOutput(t, repository, "show", "feature:shared.txt"); got != "feature and target" {
+		t.Fatalf("published rerere resolution = %q", got)
+	}
+	if err := exec.Command("git", "-C", repository, "merge-base", "--is-ancestor", *state.Merge, published).Run(); err == nil {
+		t.Fatal("finishing sync published the setup reconciliation merge")
+	}
+}
+
 func runSetupWorkspaceForTarget(t *testing.T, apiBase, runDir, workspace, head, target string) {
 	t.Helper()
 	cmd := setupWorkspaceCommandForTarget(

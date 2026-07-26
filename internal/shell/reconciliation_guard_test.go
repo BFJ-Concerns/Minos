@@ -104,3 +104,27 @@ func TestPrePushGuardCoversLinkedWorktreesAndFailsClosedOnInvalidRecords(t *test
 		t.Fatalf("invalid record was not fail-closed: %v\n%s", err, output)
 	}
 }
+
+func TestPrePushGuardAllowsPushesBeforeAnyReconciliationIsRecorded(t *testing.T) {
+	remote, workspace := createBareFixtureRemote(t, "base.txt", "base\n")
+	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	guard, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", "pre-push-guard"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commonDir, "hooks", "pre-push"), guard, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runGit(t, workspace, "push", "origin", "HEAD:refs/heads/no-record")
+	if err := os.WriteFile(filepath.Join(commonDir, "minos-unpushable"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "push", "origin", "HEAD:refs/heads/empty-record")
+	head := gitOutput(t, workspace, "rev-parse", "HEAD")
+	for _, branch := range []string{"no-record", "empty-record"} {
+		if got := gitOutput(t, remote, "rev-parse", "refs/heads/"+branch); got != head {
+			t.Fatalf("%s = %q, want %q", branch, got, head)
+		}
+	}
+}

@@ -25,9 +25,11 @@ required. Empty configured commands require nothing. Prefer verification:
 working tools that satisfy the repository must not be churned.
 
 Respect explicit repository pins. Install per-checkout dependencies through
-the repository's locked mechanism. Install a missing global toolchain only
-when the configured commands and repository evidence require it. Do not make
-speculative or language-specific installations.
+the repository's locked mechanism. When no repository pin exists and a global
+toolchain must be installed, select its current stable release; do not upgrade
+an already working toolchain merely to chase current. Install a missing global
+toolchain only when the configured commands and repository evidence require
+it. Do not make speculative or language-specific installations.
 
 Never modify a repository file, regenerate a lockfile, invent or run build or
 test commands, commit, or push. If the environment cannot be made ready, report
