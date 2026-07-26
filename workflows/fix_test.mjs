@@ -222,29 +222,41 @@ test("single-wave mode dispatches every brief finding once and requests build an
   assert.equal(result.sweepReview, null);
 });
 
-test("a fix worker actually performs the configured build and test verification it is assigned", async () => {
-  const actions = [];
-  const original = finding("transition", "High", "internal/state.go", 41);
-  const { result, calls } = await run(
-    args([original], { singleWave: true }),
-    (label, prompt) => {
-      actions.push(...verificationActionsUnderstoodByWorker(prompt));
-      const verified = actions.includes("build") && actions.includes("tests");
-      return {
-        commit: verified ? `${label}-verified-commit` : "",
-        fixes: assignedFindings(prompt).map((item) => ({
-          findingKey: item.key,
-          status: verified ? "fixed" : "failed",
-          writeUp: verified ? "Repair passed configured build and tests." : "Verification was not assigned.",
-        })),
-      };
-    },
-  );
+test("a fix worker performs exactly the configured verification it is assigned", async (t) => {
+  for (const shape of [
+    { name: "build and tests", verification: { build: "make build", tests: "make test" }, expected: ["build", "tests"] },
+    { name: "build only", verification: { build: "make build", tests: "" }, expected: ["build"] },
+    { name: "tests only", verification: { build: "", tests: "make test" }, expected: ["tests"] },
+    { name: "nothing configured", verification: { build: "", tests: "" }, expected: [] },
+  ]) {
+    await t.test(shape.name, async () => {
+      const actions = [];
+      const original = finding("transition", "High", "internal/state.go", 41);
+      const { result, calls } = await run(
+        args([original], { singleWave: true, verification: shape.verification }),
+        (label, prompt) => {
+          actions.push(...verificationActionsUnderstoodByWorker(prompt));
+          const assignmentUnderstood = actions.length === shape.expected.length &&
+            actions.every((action, index) => action === shape.expected[index]);
+          return {
+            commit: assignmentUnderstood ? `${label}-verified-commit` : "",
+            fixes: assignedFindings(prompt).map((item) => ({
+              findingKey: item.key,
+              status: assignmentUnderstood ? "fixed" : "failed",
+              writeUp: assignmentUnderstood
+                ? "Repair completed every configured verification action."
+                : "Configured verification assignment was not understood.",
+            })),
+          };
+        },
+      );
 
-  assert.deepEqual(actions, ["build", "tests"]);
-  assert.equal(calls.length, 1);
-  assert.equal(result.repairsComplete, true);
-  assert.deepEqual(result.integration.commits, ["brief-fix-cluster-1-verified-commit"]);
+      assert.deepEqual(actions, shape.expected);
+      assert.equal(calls.length, 1);
+      assert.equal(result.repairsComplete, true);
+      assert.deepEqual(result.integration.commits, ["brief-fix-cluster-1-verified-commit"]);
+    });
+  }
 });
 
 test("a failed single-wave brief fix is not retried and cannot pass the stage", async () => {
