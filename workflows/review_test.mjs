@@ -308,6 +308,6 @@ test("only an unchanged label-only helper failure may reach the merge path", () 
   );
   assert.match(
     finishing,
-    /helper returns no commit and no pushed head appears[\s\S]*made no[\s\S]*mutation[\s\S]*red-check path[\s\S]*set[\s\S]*`incomplete`[\s\S]*Only on the label-only[\s\S]*unchanged verified head and target continue to step 9/,
+    /helper returns no commit and no pushed head appears[\s\S]*made no[\s\S]*mutation[\s\S]*red-check path[\s\S]*set[\s\S]*`incomplete`[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
   );
 });

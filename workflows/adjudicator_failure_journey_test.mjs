@@ -222,8 +222,8 @@ test("the executable adjudicator carries the launch contract through to a publis
   assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
   assert.deepEqual(verdict.reviewBody.comments.map((comment) => ({
     path: comment.path,
-    new_position: comment.new_position,
-  })), [{ path: "internal/review.go", new_position: 42 }]);
+    line: comment.line,
+  })), [{ path: "internal/review.go", line: 42 }]);
   assert.match(result.stderr, /\[workflow\] complete/);
 });
 

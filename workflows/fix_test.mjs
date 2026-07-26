@@ -202,7 +202,7 @@ test("fix write-ups keep the finding path and line", async () => {
   assert.deepEqual(result.fixReview.comments, [{
     path: "internal/state.go",
     body: "Repaired transition.",
-    new_position: 41,
+    line: 41,
   }]);
 });
 
@@ -227,7 +227,7 @@ test("a twice-failed finding becomes confirmed-unfixed and is never redispatched
   assert.deepEqual(next.result.requestChangesReview.comments[0], {
     path: "internal/state.go",
     body: "**transition**\n\ntransition breaks the contract\n\nSeverity: High. Confidence: 90.",
-    new_position: 41,
+    line: 41,
   });
   assert.equal(next.calls.length, 0);
 });

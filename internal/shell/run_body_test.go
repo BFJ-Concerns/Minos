@@ -338,28 +338,68 @@ func TestRunBodyKeepsWaitingLeadsAlive(t *testing.T) {
 	for _, state := range []string{"done", "blocked"} {
 		t.Run(state, func(t *testing.T) {
 			fixture := newRunBodyFixture(t)
+			if err := os.WriteFile(
+				fixture.failureLog,
+				[]byte("timestamp=fixture stage=review cause=recorded-before-terminal-work\n"),
+				0o644,
+			); err != nil {
+				t.Fatal(err)
+			}
 			fixture.run(t, map[string]string{
-				"MINOS_TEST_PENDING_STATE": state,
-				"MINOS_TEST_WAIT_POLLS":    "3",
+				"MINOS_TEST_PENDING_STATE":   state,
+				"MINOS_TEST_WAIT_POLLS":      "3",
+				"MINOS_LEAD_SILENCE_TIMEOUT": "5",
+				"MINOS_CLAUDE_POLL_SECONDS":  "0",
 			})
 			assertContainsFile(t, fixture.record+".terminal", `"status":null`)
 			assertContainsFile(t, fixture.record+".waiting-states", state)
 			assertContainsFile(t, fixture.record+".survived", "3")
+			assertContainsFile(t, fixture.failureLog, "recorded-before-terminal-work")
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 			fixture.assertProcessesStopped(t)
 		})
 	}
 }
 
-func TestRunBodyStopsLeadAfterCleanMarker(t *testing.T) {
+func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
+	for _, outcome := range []string{"clean", "non-clean"} {
+		t.Run(outcome, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			fixture.run(t, map[string]string{
+				"MINOS_TEST_TERMINAL_STATE":    "done",
+				"MINOS_TEST_COMPLETION_MARKER": outcome,
+				"MINOS_LEAD_SILENCE_TIMEOUT":   "1",
+				"MINOS_CLAUDE_POLL_SECONDS":    "0",
+			})
+
+			assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), outcome)
+			assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
+			attemptsData, err := os.ReadFile(fixture.record + ".attempts")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempts := strings.TrimSpace(string(attemptsData)); attempts != "1" {
+				t.Fatalf("Claude agent queries = %s, want exactly 1", attempts)
+			}
+			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+func TestRunBodyIgnoresUnrecognisedCompletionMarker(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	fixture.run(t, map[string]string{
-		"MINOS_TEST_TERMINAL_STATE":     "done",
-		"MINOS_TEST_WRITE_CLEAN_MARKER": "1",
+		"MINOS_TEST_COMPLETION_MARKER": "unclean",
+		"MINOS_TEST_PENDING_STATE":     "done",
+		"MINOS_TEST_WAIT_POLLS":        "3",
+		"MINOS_LEAD_SILENCE_TIMEOUT":   "5",
+		"MINOS_CLAUDE_POLL_SECONDS":    "0",
 	})
 
-	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "clean")
-	assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
+	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "unclean")
+	assertContainsFile(t, fixture.record+".survived", "3")
+	assertContainsFile(t, fixture.record+".terminal", `"state":"failed"`)
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 	fixture.assertProcessesStopped(t)
 }
@@ -666,8 +706,8 @@ case "$1" in
     sleep 300 </dev/null >/dev/null 2>&1 &
     task_pid=$!
     printf '%s\n%s\n' "$lead_pid" "$task_pid" >"$record.pids"
-    if [ "${MINOS_TEST_WRITE_CLEAN_MARKER:-}" = "1" ]; then
-      printf 'clean\n' >"$MINOS_RUN_DIR/lead-complete"
+    if [ -n "${MINOS_TEST_COMPLETION_MARKER:-}" ]; then
+      printf '%s\n' "$MINOS_TEST_COMPLETION_MARKER" >"$MINOS_RUN_DIR/lead-complete"
     fi
     printf 'Agent backgrounded: abcdef12\n'
     ;;

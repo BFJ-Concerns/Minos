@@ -67,14 +67,26 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		text := strings.TrimRight(string(body), "\r\n") + "\n\n" + record
 		var comments []forge.ReviewComment
+		addendum := ""
 		if len(args) == 6 {
-			comments, err = readReviewComments(args[5])
-			if err != nil {
-				return err
+			requested, readErr := readRequestedComments(args[5])
+			if readErr != nil {
+				return readErr
+			}
+			var diagnostic string
+			comments, addendum, diagnostic = anchorReviewComments(
+				ctx,
+				os.Getenv("MINOS_WORKSPACE"),
+				guard.TargetSHA,
+				guard.HeadSHA,
+				requested,
+			)
+			if diagnostic != "" {
+				fmt.Fprintf(os.Stderr, "forge review: %s\n", diagnostic)
 			}
 		}
+		text := strings.TrimRight(string(body), "\r\n") + addendum + "\n\n" + record
 		return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text, comments))
 	case "reaction":
 		if len(args) != 4 {
@@ -109,29 +121,6 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	default:
 		return fmt.Errorf("unknown forge action %q", args[0])
 	}
-}
-
-func readReviewComments(path string) ([]forge.ReviewComment, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	decoder := json.NewDecoder(file)
-	decoder.DisallowUnknownFields()
-	var comments []forge.ReviewComment
-	if err := decoder.Decode(&comments); err != nil {
-		return nil, fmt.Errorf("decode review comments: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("decode review comments: trailing JSON content")
-	}
-	for index, comment := range comments {
-		if comment.Path == "" || comment.Body == "" || comment.NewPosition < 1 || comment.OldPosition != 0 {
-			return nil, fmt.Errorf("review comment %d needs path, body and a positive new_position", index+1)
-		}
-	}
-	return comments, nil
 }
 
 func leadForge() (*forge.Adapter, forge.Guard, error) {
