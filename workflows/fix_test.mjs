@@ -69,7 +69,7 @@ function verificationActionsUnderstoodByWorker(prompt) {
     const isWorkerDirective = /^(?:before [^,]+,\s*)?(?:you (?:must|need to|are required to)\s+)?(?:run|execute)\b/i.test(instruction);
     if (!isWorkerDirective || !/\bconfigured\b/i.test(instruction)) continue;
     const encodedCommand = instruction.match(/("(?:\\.|[^"])*")\s*[.!?]?$/);
-    if (!encodedCommand || JSON.parse(encodedCommand[1]) === "") continue;
+    if (!encodedCommand || JSON.parse(encodedCommand[1]).trim() === "") continue;
     if (/\bbuild\b/i.test(instruction)) actions.add("build");
     if (/\btests?\b/i.test(instruction)) actions.add("tests");
   }
@@ -92,7 +92,7 @@ test("the recording worker reads obligations from directive meaning and command 
   ), []);
   assert.deepEqual(verificationActionsUnderstoodByWorker(
     `Run the configured build command before returning: "   "\n`,
-  ), ["build"]);
+  ), []);
 });
 
 test("a High plus two Lows is working, posts all findings, and dispatches all fixes", async () => {
@@ -230,7 +230,7 @@ test("a fix worker performs exactly the configured verification it is assigned",
     { name: "build only", verification: { build: "make build", tests: "" }, expected: ["build"] },
     { name: "tests only", verification: { build: "", tests: "make test" }, expected: ["tests"] },
     { name: "nothing configured", verification: { build: "", tests: "" }, expected: [] },
-    { name: "whitespace-only build", verification: { build: "   ", tests: "" }, expected: ["build"] },
+    { name: "whitespace-only build", verification: { build: "   ", tests: "" }, expected: [] },
   ]) {
     await t.test(shape.name, async () => {
       const actions = [];
