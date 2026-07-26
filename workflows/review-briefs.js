@@ -48,6 +48,12 @@ function deterministicDisposition(brief, front, occasion, changedPaths) {
   const hasOccasion = front.occasion.length > 0;
   const hasRelevance = Boolean(front.relevance);
   const hasPathScope = typeof brief.scope === "string" && brief.scope !== "";
+  const misconfiguration = hasPathScope && brief.scopeExists === false
+    ? {
+        skipKind: "misconfigured-scope",
+        reason: `brief scope ${brief.scope}/ matches no repository directory`,
+      }
+    : null;
   if (!hasOccasion && !hasRelevance && !hasPathScope) {
     return {
       status: "skipped",
@@ -60,20 +66,31 @@ function deterministicDisposition(brief, front, occasion, changedPaths) {
   // brief applies to. A brief naming no occasion is unrestricted by occasion.
   if (hasOccasion) {
     if (!occasion)
-      return { status: "skipped", skipKind: "occasion", reason: `brief applies on occasion ${front.occasion.join(", ")}; this run names none` };
+      return {
+        status: "skipped",
+        skipKind: "occasion",
+        reason: `brief applies on occasion ${front.occasion.join(", ")}; this run names none`,
+        misconfiguration,
+      };
     if (!front.occasion.includes(occasion))
-      return { status: "skipped", skipKind: "occasion", reason: `brief applies on occasion ${front.occasion.join(", ")}, not ${occasion}` };
+      return {
+        status: "skipped",
+        skipKind: "occasion",
+        reason: `brief applies on occasion ${front.occasion.join(", ")}, not ${occasion}`,
+        misconfiguration,
+      };
     // A matched occasion is itself a satisfied trigger; a path-scope or relevance
     // it also carries only refines width, it does not further gate a brief the
     // occasion has already opted in.
-    return { triggered: true };
+    return { triggered: true, misconfiguration };
   }
   // No occasion declared: run on a satisfied positive trigger — a touched
   // path-scope, or a relevance condition judged in the relevance phase.
   const scopeSatisfied =
     hasPathScope && changedPaths.some((path) => path === brief.scope || path.startsWith(brief.scope + "/"));
-  if (scopeSatisfied) return { triggered: true };
-  if (hasRelevance) return { triggered: false };
+  if (scopeSatisfied) return { triggered: true, misconfiguration };
+  if (hasRelevance) return { triggered: false, misconfiguration };
+  if (misconfiguration) return { status: "skipped", ...misconfiguration };
   return { status: "skipped", skipKind: "empty", reason: `nothing changed under scope ${brief.scope}/` };
 }
 
@@ -106,6 +123,7 @@ function emptyEnvelope(input) {
     stage: "absent",
     requiredModelEvidence: [],
     proposedFindings: [],
+    outOfScopeObservations: [],
     briefs: [],
     dispatches: [],
     reviewers: [],
@@ -120,6 +138,18 @@ const findingShape = {
     title: { type: "string" },
     severity: { type: "string", enum: ["Critical", "High", "Medium", "Low"] },
     confidence: { type: "integer", minimum: 0, maximum: 100 },
+    path: { type: "string" },
+    line: { type: "integer", minimum: 1 },
+    explanation: { type: "string" },
+  },
+};
+
+const outOfScopeObservationShape = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "path", "line", "explanation"],
+  properties: {
+    title: { type: "string" },
     path: { type: "string" },
     line: { type: "integer", minimum: 1 },
     explanation: { type: "string" },
@@ -141,6 +171,7 @@ const specialistSchema = {
       },
     },
     findings: { type: "array", items: findingShape },
+    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
   },
 };
 
@@ -245,13 +276,22 @@ const addLeg = (label, role, pinnedModel) => {
   return leg;
 };
 const reports = new Map();
+const misconfigurations = [];
 const candidates = [];
 for (const brief of input.briefs) {
   const front = parseFrontmatter(brief.content);
   const base = { brief: brief.path, title: briefTitle(brief.path, front) };
   const disposition = deterministicDisposition(brief, front, input.occasion || null, input.changedPaths);
-  if (disposition.status === "skipped") reports.set(brief.path, { ...base, ...disposition });
-  else candidates.push({ brief, front, base, triggered: disposition.triggered });
+  const { misconfiguration, ...recordedDisposition } = disposition;
+  if (disposition.status === "skipped") reports.set(brief.path, { ...base, ...recordedDisposition });
+  else
+    candidates.push({ brief, front, base, triggered: disposition.triggered });
+  if (misconfiguration)
+    misconfigurations.push({
+      ...base,
+      status: "skipped",
+      ...misconfiguration,
+    });
 }
 
 // Only briefs not already settled by a deterministic trigger need the judged
@@ -302,32 +342,27 @@ function scopeInventory(scope) {
   return input.trackedFiles.filter((entry) => !scope || entry.path === scope || entry.path.startsWith(scope + "/"));
 }
 
-function makeUnit(candidate, files, suffix, warning, concern) {
+function makeUnit(candidate, files, suffix, concern) {
   const { brief, front, base } = candidate;
   return {
     brief: brief.path,
     briefContent: brief.content,
     title: base.title,
     extent: front.extent,
-    scope: warning ? null : brief.scope,
+    scope: brief.scope,
     files,
     concern,
-    warning,
     label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-claude`,
   };
 }
 
 const partitionRequests = runnable.map((candidate, index) => {
   const { brief, front } = candidate;
-  const warning = brief.scope && !brief.scopeExists
-    ? `brief scope ${brief.scope}/ matches no repository directory; ran repo-wide instead`
-    : null;
-  const inventory = front.extent === "full" ? scopeInventory(warning ? null : brief.scope) : [];
+  const inventory = front.extent === "full" ? scopeInventory(brief.scope) : [];
   if (front.extent !== "full" || front.sweep !== "per-file" || inventory.length === 0) return null;
   return {
     candidate,
     inventory,
-    warning,
     label: `brief-partition-${index + 1}-${slug(brief.path)}-gpt`,
   };
 }).filter(Boolean);
@@ -359,7 +394,6 @@ if (partitionRequests.length > 0) {
         ...request.candidate.base,
         status: "not-run",
         reason: "partition exploration returned no usable result",
-        ...(request.warning ? { warning: request.warning } : {}),
       });
       return;
     }
@@ -370,21 +404,18 @@ if (partitionRequests.length > 0) {
 const dispatched = [];
 for (const candidate of runnable) {
   const { brief, front } = candidate;
-  const warning = brief.scope && !brief.scopeExists
-    ? `brief scope ${brief.scope}/ matches no repository directory; ran repo-wide instead`
-    : null;
   if (front.extent !== "full") {
-    dispatched.push(makeUnit(candidate, [], null, warning, null));
+    dispatched.push(makeUnit(candidate, [], null, null));
     continue;
   }
-  const inventory = scopeInventory(warning ? null : brief.scope);
+  const inventory = scopeInventory(brief.scope);
   if (front.sweep === "per-file" && inventory.length > 0) {
     const partition = partitions.get(brief.path);
     if (!partition) continue;
     partition.forEach((unit, index) =>
-      dispatched.push(makeUnit(candidate, unit.files, index + 1, warning, unit.concern)));
+      dispatched.push(makeUnit(candidate, unit.files, index + 1, unit.concern)));
   } else {
-    dispatched.push(makeUnit(candidate, inventory.map((entry) => entry.path), null, warning, null));
+    dispatched.push(makeUnit(candidate, inventory.map((entry) => entry.path), null, null));
   }
 }
 
@@ -412,6 +443,7 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
 
 const reviewerStates = [];
 const proposed = [];
+const outOfScopeObservations = [];
 const inapplicable = [];
 dispatched.forEach((unit, unitIndex) => {
   const result = specialistResults[unitIndex];
@@ -429,10 +461,21 @@ dispatched.forEach((unit, unitIndex) => {
       title: unit.title,
       status: "not-run",
       reason: "specialist returned no result",
-      ...(unit.warning ? { warning: unit.warning } : {}),
     });
     return;
   }
+  const observations = Array.isArray(result.outOfScopeObservations)
+    ? result.outOfScopeObservations
+    : [];
+  observations.forEach((observation, observationIndex) => {
+    outOfScopeObservations.push({
+      id: `${unit.label}:observation:${observationIndex + 1}`,
+      source: unit.title,
+      ...observation,
+      observingLabel: unit.label,
+      verified: false,
+    });
+  });
   if (result.applicability.status === "inapplicable") {
     inapplicable.push({
       brief: unit.brief,
@@ -449,7 +492,6 @@ dispatched.forEach((unit, unitIndex) => {
       title: unit.title,
       status: "run",
       reason: "applicable concern reviewed",
-      ...(unit.warning ? { warning: unit.warning } : {}),
     });
   result.findings.forEach((finding, findingIndex) =>
     proposed.push({ unit, unitIndex, finding, findingIndex }));
@@ -491,7 +533,8 @@ return {
   stage: "present",
   requiredModelEvidence: legs,
   proposedFindings,
-  briefs: [...reports.values(), ...inapplicable],
+  outOfScopeObservations,
+  briefs: [...reports.values(), ...misconfigurations, ...inapplicable],
   dispatches: dispatched.map(({ brief, title, label, extent, scope, files }) => ({ brief, title, label, extent, scope, files })),
   reviewers: reviewerStates,
 };

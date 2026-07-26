@@ -121,6 +121,11 @@ or wake still pending.
    adjudicated verdict. Do not read the archive, judge the workflow's engine
    pairing, resume the workflow, or duplicate its findings yourself.
 
+   Any adjudicated verdict may also contain `outOfScopeObservations`. These are
+   unverified observations, not findings, and carry no verifier verdict. Keep
+   them in the saved verdict, but do not publish them through this lifecycle;
+   their publication is owned separately.
+
    Only a verdict whose `status` is `complete` is publishable. A missing result,
    incomplete leg, or missing or invalid verifier result yields `incomplete` or
    `infrastructure-failure`. In either case, publish no review, set
