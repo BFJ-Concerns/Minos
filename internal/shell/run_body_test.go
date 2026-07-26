@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -468,26 +469,38 @@ func TestRunBodyRejectsOutOfRangeSilenceTimeout(t *testing.T) {
 	}
 }
 
-func TestRunBodyResetsSilenceTimeoutWhenLeadProducesOutput(t *testing.T) {
+func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	fixture.run(t, map[string]string{
+	fixture.runWithin(t, 6*time.Second, map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":  "done",
-		"MINOS_TEST_OUTPUT_POLLS":    "6",
+		"MINOS_TEST_WORK_WRITES":     "20",
+		"MINOS_TEST_WORK_INTERVAL":   "0.1",
 		"MINOS_LEAD_SILENCE_TIMEOUT": "1",
 		"MINOS_CLAUDE_POLL_SECONDS":  "0.25",
 	})
 
-	attemptsData, err := os.ReadFile(fixture.record + ".attempts")
+	workData, err := os.ReadFile(filepath.Join(fixture.runDir, "workspace", "lead-work.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempts, err := strconv.Atoi(strings.TrimSpace(string(attemptsData)))
-	if err != nil {
-		t.Fatal(err)
+	if writes := strings.Count(string(workData), "\n"); writes != 20 {
+		t.Fatalf("lead work writes = %d, want 20 before the silence deadline stops the lead", writes)
 	}
-	if attempts < 7 {
-		t.Fatalf("Claude agent queries = %d, want at least 7 after timeline output reset the silence deadline", attempts)
-	}
+	assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
+	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyDoesNotTreatSupervisorPollingAsLeadActivity(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.runWithin(t, 4*time.Second, map[string]string{
+		"MINOS_TEST_TERMINAL_STATE":   "done",
+		"MINOS_TEST_POLL_HOME_WRITES": "1",
+		"MINOS_LEAD_SILENCE_TIMEOUT":  "1",
+		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
+	})
+
+	assertContainsFile(t, filepath.Join(fixture.runDir, "home", ".claude", "daemon.status.json"), "poll")
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 	fixture.assertProcessesStopped(t)
 }
@@ -706,6 +719,17 @@ case "$1" in
     sleep 300 </dev/null >/dev/null 2>&1 &
     task_pid=$!
     printf '%s\n%s\n' "$lead_pid" "$task_pid" >"$record.pids"
+    if [ "${MINOS_TEST_WORK_WRITES:-0}" -gt 0 ]; then
+      (
+        write=1
+        while [ "$write" -le "$MINOS_TEST_WORK_WRITES" ]; do
+          sleep "${MINOS_TEST_WORK_INTERVAL:-0.25}"
+          printf 'work %s\n' "$write" >>"$MINOS_WORKSPACE/lead-work.log"
+          write=$((write + 1))
+        done
+      ) </dev/null >/dev/null 2>&1 &
+      printf '%s\n' "$!" >>"$record.pids"
+    fi
     if [ -n "${MINOS_TEST_COMPLETION_MARKER:-}" ]; then
       printf '%s\n' "$MINOS_TEST_COMPLETION_MARKER" >"$MINOS_RUN_DIR/lead-complete"
     fi
@@ -723,6 +747,9 @@ case "$1" in
       exit 1
     fi
     printf 'agents\n' >>"$record.calls"
+    if [ "${MINOS_TEST_POLL_HOME_WRITES:-}" = "1" ]; then
+      printf 'poll %s\n' "$attempts" >"$CLAUDE_CONFIG_DIR/daemon.status.json"
+    fi
     while IFS= read -r pid; do
       kill -0 "$pid"
     done <"$record.pids"
@@ -732,13 +759,6 @@ case "$1" in
     if [ "$attempts" -le "$wait_polls" ]; then
       terminal_state="${MINOS_TEST_PENDING_STATE:?}"
       printf '%s\n' "$terminal_state" >>"$record.waiting-states"
-    fi
-    output_polls="${MINOS_TEST_OUTPUT_POLLS:-0}"
-    if [ "$attempts" -le "$output_polls" ]; then
-      timeline="$CLAUDE_CONFIG_DIR/jobs/abcdef12/timeline.jsonl"
-      mkdir -p "$(dirname "$timeline")"
-      printf '{"at":%s,"state":"working","detail":"fixture output","text":"fixture output"}\n' \
-        "$attempts" >>"$timeline"
     fi
     printf '[{"id":"abcdef12","sessionId":"session-one","status":null,"state":"%s"}]\n' "$terminal_state" |
       tee "$record.terminal"
@@ -816,7 +836,24 @@ func (f runBodyFixture) run(t *testing.T, extraEnv map[string]string) {
 	}
 }
 
+func (f runBodyFixture) runWithin(t *testing.T, timeout time.Duration, extraEnv map[string]string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := f.executeContext(ctx, extraEnv)
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("run-body did not finish within %s\n%s", timeout, out)
+	}
+	if err != nil {
+		t.Fatalf("run-body failed: %v\n%s", err, out)
+	}
+}
+
 func (f runBodyFixture) execute(extraEnv map[string]string) ([]byte, error) {
+	return f.executeContext(context.Background(), extraEnv)
+}
+
+func (f runBodyFixture) executeContext(ctx context.Context, extraEnv map[string]string) ([]byte, error) {
 	runEnv := map[string]string{
 		"MINOS_RUN_DIR":                 f.runDir,
 		"MINOS_CONFIG":                  f.configRoot,
@@ -853,7 +890,7 @@ func (f runBodyFixture) execute(extraEnv map[string]string) ([]byte, error) {
 		runEnv[name] = value
 	}
 	script := filepath.Join("..", "..", "scripts", "run-body", "run-body")
-	cmd := exec.Command(script)
+	cmd := exec.CommandContext(ctx, script)
 	cmd.Env = environmentWithOverrides(runEnv)
 	return cmd.CombinedOutput()
 }

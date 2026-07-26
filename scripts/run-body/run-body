@@ -203,9 +203,8 @@ if [ -z "$session_id" ]; then
   exit 1
 fi
 prelaunch=false
-lead_timeline="$CLAUDE_CONFIG_DIR/jobs/$session_id/timeline.jsonl"
-last_output_signature=""
-last_output_at="$(date +%s)"
+last_activity_signature=""
+last_activity_at="$(date +%s)"
 
 while :; do
   agent_state=""
@@ -229,20 +228,22 @@ while :; do
     break
   fi
 
-  # 3. The background job timeline records the lead's turn boundaries — not a
-  #    continuous output stream, so this measures turn cadence rather than
-  #    liveness, and a single turn longer than the timeout looks silent. The
-  #    lifecycle's fallback wake (well under the default) is what keeps a live
-  #    waiting lead writing inside the window. Sibling state.json moves with
-  #    harness bookkeeping and is deliberately not watched: it would let a dead
-  #    lead reset its own deadline.
-  output_signature="$(stat -c '%Y:%s' "$lead_timeline" 2>/dev/null || true)"
-  if [ -n "$output_signature" ] && [ "$output_signature" != "$last_output_signature" ]; then
-    last_output_signature="$output_signature"
-    last_output_at="$(date +%s)"
+  # 3. Work by the lead and its subprocesses changes the run tree outside the
+  #    isolated home. Exclude home because both this supervisor's roster poll
+  #    and Claude's daemon can update config, job state, caches and updater
+  #    downloads there without useful lead work.
+  activity_signature="$(
+    find "$MINOS_RUN_DIR" -path "$HOME" -prune -o -printf '%T@:%i:%s\n' 2>/dev/null |
+      LC_ALL=C sort -rn |
+      head -n 1
+  )"
+  if [ -n "$activity_signature" ] &&
+    [ "$activity_signature" != "$last_activity_signature" ]; then
+    last_activity_signature="$activity_signature"
+    last_activity_at="$(date +%s)"
   fi
   now="$(date +%s)"
-  if [ $((now - last_output_at)) -ge "$silence_timeout" ]; then
+  if [ $((now - last_activity_at)) -ge "$silence_timeout" ]; then
     break
   fi
   sleep "${MINOS_CLAUDE_POLL_SECONDS:-3}"
