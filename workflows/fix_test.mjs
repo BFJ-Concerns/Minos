@@ -229,9 +229,42 @@ test("published review prose discusses code without process or round labels", as
 });
 
 test("incomplete review input dispatches no fix agents", async () => {
-  const { result, calls } = await run(args([], { review: { status: "incomplete", confirmedFindings: [] } }));
+  const { result, calls } = await run(args([], {
+    review: { status: "incomplete", reason: "verifier result is missing", confirmedFindings: [] },
+  }));
   assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, "fix preparation needs a complete review: verifier result is missing");
   assert.equal(calls.length, 0);
+});
+
+test("a malformed brief review keeps its diagnostic through effectful dispatch", async () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-malformed-"));
+  const guidancePath = join(root, "README.md");
+  const orientationPath = join(root, "orientation.json");
+  const reviewPath = join(root, "review.json");
+  writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
+  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
+  writeFileSync(reviewPath, JSON.stringify({
+    status: "complete",
+    reviewed: { target: "target111" },
+    confirmedFindings: [],
+  }));
+  const plan = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, "--single-wave"], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root },
+  }));
+  const calls = [];
+  const result = await script(
+    async () => { calls.push("called"); },
+    async (thunks) => Promise.all(thunks.map((thunk) => thunk())),
+    async () => [],
+    () => {},
+    () => {},
+    plan,
+  );
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, "fix preparation review needs reviewed.head as a non-empty string");
+  assert.deepEqual(calls, []);
 });
 
 test("direct fix input with empty guidance dispatches no fix agents", async () => {

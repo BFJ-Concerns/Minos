@@ -93,7 +93,12 @@ function validPlan(plan) {
 
 const plan = args && typeof args === "object" ? args : null;
 if (!validPlan(plan))
-  return failedResult(plan, "fix dispatch needs a complete working or single-wave preparation");
+  return failedResult(
+    plan,
+    plan && plan.status === "incomplete" && typeof plan.reason === "string" && plan.reason !== ""
+      ? plan.reason
+      : "fix dispatch needs a complete working or single-wave preparation",
+  );
 
 phase("Fix");
 
