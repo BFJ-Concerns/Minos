@@ -1,0 +1,86 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: complete-reconciliation WORKSPACE" >&2
+  exit 2
+fi
+
+workspace="$1"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+: "${MINOS_BASE_REF:?MINOS_BASE_REF is required}"
+state_file="${MINOS_RUN_DIR}/reconciliation.json"
+
+if [ ! -f "$state_file" ]; then
+  echo "complete-reconciliation: reconciliation state is missing: $state_file" >&2
+  exit 1
+fi
+if [ "$(jq -r '.outcome // ""' "$state_file")" != "conflict" ]; then
+  echo "complete-reconciliation: reconciliation state is not conflicted" >&2
+  exit 1
+fi
+if [ -n "$(git -C "$workspace" diff --name-only --diff-filter=U)" ]; then
+  echo "complete-reconciliation: unmerged paths remain" >&2
+  exit 1
+fi
+if ! git -C "$workspace" diff --quiet; then
+  echo "complete-reconciliation: unstaged tracked changes remain" >&2
+  exit 1
+fi
+if git -C "$workspace" diff --cached --quiet; then
+  echo "complete-reconciliation: no staged resolution is present" >&2
+  exit 1
+fi
+
+auto_merge_tree="$(jq -r '.autoMergeTree // ""' "$state_file")"
+if [ -z "$auto_merge_tree" ] ||
+  ! git -C "$workspace" cat-file -e "${auto_merge_tree}^{tree}" 2>/dev/null; then
+  echo "complete-reconciliation: reconciliation state omitted a valid autoMergeTree" >&2
+  exit 1
+fi
+index_path="$(git -C "$workspace" rev-parse --path-format=absolute --git-path index)"
+normalised_index="$(mktemp)"
+cleanup_index() {
+  rm -f "$normalised_index"
+}
+trap cleanup_index EXIT HUP INT TERM
+cp "$index_path" "$normalised_index"
+jq -r '.conflicts[]' "$state_file" |
+  while IFS= read -r conflict_path; do
+    GIT_INDEX_FILE="$normalised_index" \
+      git -C "$workspace" update-index --force-remove -- "$conflict_path"
+  done
+staged_outside_conflicts="$(GIT_INDEX_FILE="$normalised_index" git -C "$workspace" write-tree)"
+cleanup_index
+trap - EXIT HUP INT TERM
+if [ "$staged_outside_conflicts" != "$auto_merge_tree" ]; then
+  echo "complete-reconciliation: staged paths outside recorded conflicts differ from Git's auto-merge result" >&2
+  exit 1
+fi
+
+base_sha="$(jq -r '.baseHead // ""' "$state_file")"
+if [ -z "$base_sha" ]; then
+  echo "complete-reconciliation: reconciliation state omitted baseHead" >&2
+  exit 1
+fi
+message="Minos local reconciliation: merge ${MINOS_BASE_REF} into ${base_sha} — never pushed"
+git -C "$workspace" commit -m "$message" >/dev/null
+reconciliation_sha="$(git -C "$workspace" rev-parse HEAD)"
+
+common_dir="$(git -C "$workspace" rev-parse --path-format=absolute --git-common-dir)"
+unpushable_file="${common_dir}/minos-unpushable"
+if [ -e "$unpushable_file" ] && { [ ! -f "$unpushable_file" ] || [ ! -r "$unpushable_file" ]; }; then
+  echo "complete-reconciliation: reconciliation record is present but unreadable: $unpushable_file" >&2
+  exit 1
+fi
+if [ ! -f "$unpushable_file" ] || ! grep -Fxq "$reconciliation_sha" "$unpushable_file"; then
+  printf '%s\n' "$reconciliation_sha" >>"$unpushable_file"
+fi
+git -C "$workspace" update-ref refs/minos/reconciled "$reconciliation_sha"
+
+state_tmp="${state_file}.tmp"
+jq --arg merge "$reconciliation_sha" \
+  '. + {outcome:"reconciled",merge:$merge}' \
+  "$state_file" >"$state_tmp"
+mv "$state_tmp" "$state_file"
+jq -nc --arg merge "$reconciliation_sha" '{outcome:"reconciled",merge:$merge}'

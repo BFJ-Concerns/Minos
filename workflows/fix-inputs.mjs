@@ -39,6 +39,10 @@ if (!reviewPath) {
     runRecord,
     singleWave,
     workspace: process.env.MINOS_WORKSPACE || orientation.repository,
+    verification: {
+      build: process.env.MINOS_BUILD_CMD || "",
+      tests: process.env.MINOS_TEST_CMD || "",
+    },
     guidance: {
       grounding: orientation.grounding || "repository",
       path: guidancePath,

@@ -33,8 +33,14 @@ function writeUpComment(finding, writeUp) {
   return { path: finding.path, body: writeUp, new_position: finding.line };
 }
 
+function verificationInstruction(kind, command) {
+  if (typeof command !== "string" || command.trim() === "") return "";
+  return `Run this configured ${kind} command before returning: ${JSON.stringify(command)}\n`;
+}
+
 function fixPrompt(plan, cluster, attempt) {
   const brief = plan.input.fixerBrief;
+  const verification = plan.input.verification || { build: "", tests: "" };
   return (
     `Read and follow the Markdown fix brief at ${brief.readPath}.\n\n` +
     `<fix-brief path="${brief.path}">\n${brief.content}\n</fix-brief>\n\n` +
@@ -45,6 +51,8 @@ function fixPrompt(plan, cluster, attempt) {
     `Wave fingerprint: ${plan.fingerprint}\n` +
     `Assigned files: ${cluster.files.join(", ")}\n` +
     `Confirmed findings: ${JSON.stringify(cluster.findings)}\n` +
+    verificationInstruction("build", verification.build) +
+    verificationInstruction("test", verification.tests) +
     `Return one result for every findingKey. Commit completed repairs, return the commit SHA, and do not push.`
   );
 }
@@ -89,7 +97,12 @@ function validPlan(plan) {
 
 const plan = args && typeof args === "object" ? args : null;
 if (!validPlan(plan))
-  return failedResult(plan, "fix dispatch needs a complete working or single-wave preparation");
+  return failedResult(
+    plan,
+    plan && plan.status === "incomplete" && typeof plan.reason === "string" && plan.reason !== ""
+      ? plan.reason
+      : "fix dispatch needs a complete working or single-wave preparation",
+  );
 
 phase("Fix");
 
@@ -105,6 +118,7 @@ if (plan.classification === "single-wave") {
       phase: "Fix",
     })));
   const commits = [];
+  const fixed = [];
   const confirmedUnfixed = [];
   plan.clusters.forEach((cluster, index) => {
     const result = results[index];
@@ -116,6 +130,7 @@ if (plan.classification === "single-wave") {
       const entry = returned.get(finding.key);
       if (result && result.commit && entry && entry.status === "fixed" && entry.writeUp) {
         usedCommit = true;
+        fixed.push({ finding, writeUp: entry.writeUp });
       } else {
         confirmedUnfixed.push({
           key: finding.key,
@@ -136,7 +151,11 @@ if (plan.classification === "single-wave") {
     fingerprint: plan.fingerprint,
     dispatches: plan.dispatches,
     sweepReview: null,
-    fixReview: null,
+    fixReview: fixed.length > 0 ? {
+      verdict: "comment",
+      body: "Implemented repairs for confirmed findings.",
+      comments: fixed.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
+    } : null,
     requestChangesReview: null,
     integration: {
       commits: uniqueCommits,

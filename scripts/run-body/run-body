@@ -222,9 +222,10 @@ while :; do
     break
   fi
 
-  # 2. The lead has declared that its clean terminal obligations are complete.
+  # 2. The lead has declared that all terminal obligations are complete. The
+  #    result is scratch; the forge and failure log carry the durable outcome.
   if [ -f "$completion_marker" ] &&
-    grep -qx 'clean' "$completion_marker" 2>/dev/null; then
+    grep -Eqx 'clean|non-clean' "$completion_marker" 2>/dev/null; then
     break
   fi
 

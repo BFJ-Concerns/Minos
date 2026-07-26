@@ -47,25 +47,32 @@ function clustersFor(findings, cap) {
   return packed.map((cluster, index) => ({ id: `fix-cluster-${index + 1}`, ...cluster }));
 }
 
-function validInput(input) {
-  return Boolean(
-    input &&
-    input.review &&
-    input.review.status === "complete" &&
-    input.review.reviewed &&
-    typeof input.review.reviewed.head === "string" &&
-    typeof input.review.reviewed.target === "string" &&
-    Array.isArray(input.review.confirmedFindings) &&
-    input.fixerBrief &&
-    typeof input.fixerBrief.readPath === "string" &&
-    typeof input.fixerBrief.content === "string" &&
-    input.guidance &&
-    typeof input.guidance.path === "string" &&
-    typeof input.guidance.content === "string" &&
-    input.guidance.content.trim() !== "" &&
-    typeof input.workspace === "string" &&
-    input.workspace !== ""
-  );
+function invalidInputReason(input) {
+  if (!input || typeof input !== "object") return "fix preparation needs an input object";
+  if (!input.review || typeof input.review !== "object") return "fix preparation needs a review result";
+  if (input.review.status !== "complete") {
+    const detail = typeof input.review.reason === "string" && input.review.reason.trim() !== ""
+      ? `: ${input.review.reason}`
+      : "";
+    return `fix preparation needs a complete review${detail}`;
+  }
+  if (!input.review.reviewed || typeof input.review.reviewed !== "object")
+    return "fix preparation review is missing reviewed head and target";
+  if (typeof input.review.reviewed.head !== "string" || input.review.reviewed.head.trim() === "")
+    return "fix preparation review needs reviewed.head as a non-empty string";
+  if (typeof input.review.reviewed.target !== "string" || input.review.reviewed.target.trim() === "")
+    return "fix preparation review needs reviewed.target as a non-empty string";
+  if (!Array.isArray(input.review.confirmedFindings))
+    return "fix preparation review needs confirmedFindings as an array";
+  if (!input.fixerBrief || typeof input.fixerBrief.readPath !== "string" ||
+      typeof input.fixerBrief.content !== "string")
+    return "fix preparation needs a fixer brief";
+  if (!input.guidance || typeof input.guidance.path !== "string" ||
+      typeof input.guidance.content !== "string" || input.guidance.content.trim() === "")
+    return "fix preparation needs non-empty project guidance";
+  if (typeof input.workspace !== "string" || input.workspace.trim() === "")
+    return "fix preparation needs a workspace";
+  return null;
 }
 
 function failedPlan(input, reason) {
@@ -126,8 +133,9 @@ export function isFixWavePlan(value) {
 }
 
 export function prepareFixWave(input) {
-  if (!validInput(input))
-    return deepFreeze(failedPlan(input, "fix preparation needs a complete review, fixer brief, project guidance, and workspace"));
+  const inputFailure = invalidInputReason(input);
+  if (inputFailure)
+    return deepFreeze(failedPlan(input, inputFailure));
 
   const threshold = input.threshold === undefined ? DEFAULT_THRESHOLD : input.threshold;
   const clusterCap = input.clusterCap === undefined ? DEFAULT_CLUSTER_CAP : input.clusterCap;
@@ -142,6 +150,10 @@ export function prepareFixWave(input) {
     return deepFreeze(failedPlan(input, "maximum rounds must be a positive integer when set"));
 
   const prior = input.runRecord && typeof input.runRecord === "object" ? input.runRecord : {};
+  const verification = {
+    build: typeof input.verification?.build === "string" ? input.verification.build : "",
+    tests: typeof input.verification?.tests === "string" ? input.verification.tests : "",
+  };
   const priorUnfixed = Array.isArray(prior.confirmedUnfixed)
     ? prior.confirmedUnfixed.map((entry) => ({
       ...entry,
@@ -163,6 +175,7 @@ export function prepareFixWave(input) {
       fingerprint,
       input: {
         workspace: input.workspace,
+        verification,
         guidance: { ...input.guidance },
         fixerBrief: { ...input.fixerBrief },
       },
@@ -239,6 +252,7 @@ export function prepareFixWave(input) {
     fingerprint,
     input: {
       workspace: input.workspace,
+      verification,
       guidance: { ...input.guidance },
       fixerBrief: { ...input.fixerBrief },
     },
