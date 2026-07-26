@@ -351,6 +351,49 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
+  await t.test("fix dispatch runs from the recorded publication worktree", async () => {
+    const runDir = mkdtempSync(join(tmpdir(), "minos-publication-cwd-"));
+    const publication = join(runDir, "publication");
+    writeFileSync(
+      join(runDir, "reconciliation.json"),
+      JSON.stringify({ publication }),
+      { mode: 0o600 },
+    );
+    let dispatchedFrom = null;
+    const result = await publishBeforeFix({
+      input: input(),
+      head: HEAD,
+      target: TARGET,
+      minosBin,
+      launcher: "/unused/ensemble.mjs",
+      workflowScript: fixScriptPath,
+      cwd: "/run/workspace",
+      env: { ...process.env, MINOS_RUN_DIR: runDir },
+      runForge: async () => ({
+        code: 0,
+        signal: null,
+        stdout: '{"outcome":"applied"}\n',
+        stderr: "",
+      }),
+      runDispatch: async ({ cwd }) => {
+        dispatchedFrom = cwd;
+        return {
+          code: 0,
+          signal: null,
+          stdout: `${JSON.stringify({
+            status: "complete",
+            classification: "working",
+            integration: { commits: [], pushCount: 0 },
+          })}\n`,
+          stderr: "",
+        };
+      },
+      diagnostics: () => {},
+    });
+    assert.equal(result.status, "complete");
+    assert.equal(dispatchedFrom, publication);
+  });
+
   await t.test("terminal preparation refuses publication and dispatch", async () => {
     const events = [];
     let forgeCalls = 0;

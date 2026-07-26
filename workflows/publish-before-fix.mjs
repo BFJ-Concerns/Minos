@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -119,9 +119,12 @@ export async function publishBeforeFix({
     onEvent(`forge-review-confirmed:${plan.fingerprint}`);
     onEvent(`fix-dispatch-started:${plan.fingerprint}`);
 
+    const dispatchCwd = env.MINOS_RUN_DIR
+      ? JSON.parse(readFileSync(join(env.MINOS_RUN_DIR, "reconciliation.json"), "utf8")).publication || cwd
+      : cwd;
     let dispatchResult;
     try {
-      dispatchResult = await runDispatch({ launcher, workflowScript, planPath, plan, cwd, env });
+      dispatchResult = await runDispatch({ launcher, workflowScript, planPath, plan, cwd: dispatchCwd, env });
     } catch (error) {
       return publicationFailure(plan, `fix dispatcher failed to start: ${error.message}`, publication);
     }

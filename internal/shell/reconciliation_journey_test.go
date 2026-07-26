@@ -197,6 +197,177 @@ func TestSetupWorkspaceRefusesMovedTargetAndReconcilesForkWithoutPublication(t *
 	})
 }
 
+func TestIntegrateWavePublishesOnlyTheHeadLineageAndReconcilesTheReadingTree(t *testing.T) {
+	repository, head, target := createDivergedSetupRepository(t, false)
+	server := newSetupForge(t, head, repository, "")
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	runSetupWorkspaceForTarget(t, server.URL, runDir, workspace, head, target)
+	before := readReconciliationState(t, filepath.Join(runDir, "reconciliation.json"))
+
+	publication := *before.Publication
+	agentWorktree := filepath.Join(t.TempDir(), "agent")
+	runGit(t, publication, "worktree", "add", "--detach", agentWorktree, "HEAD")
+	if err := os.WriteFile(filepath.Join(agentWorktree, "repair.txt"), []byte("repair\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, agentWorktree, "add", "repair.txt")
+	runGit(t, agentWorktree, "-c", "user.name=Minos", "-c", "user.email=minos@example.invalid", "commit", "-m", "fix: repair")
+	repair := gitOutput(t, agentWorktree, "rev-parse", "HEAD")
+	commits := writeJSONFixture(t, []string{repair})
+
+	setupScript, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "setup-workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrate := exec.Command(filepath.Join("..", "..", "workflows", "integrate-wave"), workspace, commits)
+	integrate.Env = append(os.Environ(),
+		"MINOS_RUN_DIR="+runDir,
+		"MINOS_SETUP_WORKSPACE="+setupScript,
+		"MINOS_BASE_REF=main",
+		"MINOS_HEAD_BRANCH=feature",
+		"MINOS_GIT_AUTHOR_NAME=Minos",
+		"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
+	)
+	output, err := integrate.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), `"outcome":"reconciled"`) {
+		t.Fatalf("integrate-wave: %v\n%s", err, output)
+	}
+
+	publishedHead := gitOutput(t, repository, "rev-parse", "refs/heads/feature")
+	if err := exec.Command("git", "-C", repository, "merge-base", "--is-ancestor", *before.Merge, publishedHead).Run(); err == nil {
+		t.Fatal("published fix lineage contains the local reconciliation merge")
+	}
+	if got := gitOutput(t, repository, "show", "refs/heads/feature:repair.txt"); got != "repair" {
+		t.Fatalf("published repair = %q", got)
+	}
+	after := readReconciliationState(t, filepath.Join(runDir, "reconciliation.json"))
+	if after.Merge == nil || *after.Merge == *before.Merge || after.BaseHead != publishedHead {
+		t.Fatalf("round reconciliation state = %+v; previous merge = %s", after, *before.Merge)
+	}
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != *after.Merge {
+		t.Fatalf("reading tree head = %q, want %q", got, *after.Merge)
+	}
+	parents := strings.Fields(gitOutput(t, workspace, "show", "-s", "--format=%P", "HEAD"))
+	if len(parents) != 2 || parents[0] != publishedHead || parents[1] != target {
+		t.Fatalf("round reconciliation parents = %v, want [%s %s]", parents, publishedHead, target)
+	}
+}
+
+func TestIntegrateWaveReportsANewRoundConflictAfterPublishingTheFix(t *testing.T) {
+	repository, head, target := createDivergedSetupRepository(t, false)
+	server := newSetupForge(t, head, repository, "")
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	runSetupWorkspaceForTarget(t, server.URL, runDir, workspace, head, target)
+	state := readReconciliationState(t, filepath.Join(runDir, "reconciliation.json"))
+
+	agentWorktree := filepath.Join(t.TempDir(), "agent")
+	runGit(t, *state.Publication, "worktree", "add", "--detach", agentWorktree, "HEAD")
+	if err := os.WriteFile(filepath.Join(agentWorktree, "target.txt"), []byte("fix-side addition\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, agentWorktree, "add", "target.txt")
+	runGit(t, agentWorktree, "-c", "user.name=Minos", "-c", "user.email=minos@example.invalid", "commit", "-m", "fix: collide with target")
+	repair := gitOutput(t, agentWorktree, "rev-parse", "HEAD")
+	commits := writeJSONFixture(t, []string{repair})
+	setupScript, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "setup-workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrate := exec.Command(filepath.Join("..", "..", "workflows", "integrate-wave"), workspace, commits)
+	integrate.Env = append(os.Environ(),
+		"MINOS_RUN_DIR="+runDir,
+		"MINOS_SETUP_WORKSPACE="+setupScript,
+		"MINOS_BASE_REF=main",
+		"MINOS_HEAD_BRANCH=feature",
+		"MINOS_GIT_AUTHOR_NAME=Minos",
+		"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
+	)
+	output, err := integrate.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), `"outcome":"reconcile-conflict"`) ||
+		!strings.Contains(string(output), `"target.txt"`) {
+		t.Fatalf("round conflict result = %v\n%s", err, output)
+	}
+	if got := gitOutput(t, repository, "show", "refs/heads/feature:target.txt"); got != "fix-side addition" {
+		t.Fatalf("fix was not published before round conflict: %q", got)
+	}
+	after := readReconciliationState(t, filepath.Join(runDir, "reconciliation.json"))
+	if after.Outcome != "conflict" || len(after.Conflicts) != 1 || after.Conflicts[0] != "target.txt" {
+		t.Fatalf("round conflict state = %+v", after)
+	}
+}
+
+func TestSyncTargetUsesThePublicationTreeAndRefusesAReconciledCheckout(t *testing.T) {
+	repository, head, target := createDivergedSetupRepository(t, false)
+	server := newSetupForge(t, head, repository, "")
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	runSetupWorkspaceForTarget(t, server.URL, runDir, workspace, head, target)
+	statePath := filepath.Join(runDir, "reconciliation.json")
+	state := readReconciliationState(t, statePath)
+
+	if err := os.WriteFile(filepath.Join(repository, "later-target.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repository, "add", "later-target.txt")
+	runGit(t, repository, "commit", "-m", "move target")
+	currentTarget := gitOutput(t, repository, "rev-parse", "main")
+
+	sync := exec.Command(
+		filepath.Join("..", "..", "scripts", "run-body", "sync-target"),
+		workspace, "feature", "main", head, currentTarget, "merge",
+	)
+	sync.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir)
+	output, err := sync.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), `"outcome":"synced"`) {
+		t.Fatalf("redirected sync-target: %v\n%s", err, output)
+	}
+	published := gitOutput(t, repository, "rev-parse", "feature")
+	if err := exec.Command("git", "-C", repository, "merge-base", "--is-ancestor", *state.Merge, published).Run(); err == nil {
+		t.Fatal("finishing sync published the setup reconciliation merge")
+	}
+	if err := exec.Command("git", "-C", repository, "merge-base", "--is-ancestor", currentTarget, published).Run(); err != nil {
+		t.Fatal("finishing sync did not publish the current target")
+	}
+
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(stateData, &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["publication"] = nil
+	stateData, err = json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, stateData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refusal := exec.Command(
+		filepath.Join("..", "..", "scripts", "run-body", "sync-target"),
+		workspace, "feature", "main", published, currentTarget, "merge",
+	)
+	refusal.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir)
+	refusalOutput, err := refusal.CombinedOutput()
+	if err == nil || !strings.Contains(string(refusalOutput), "this checkout carries local reconciliation commit") {
+		t.Fatalf("reconciled-checkout refusal = %v\n%s", err, refusalOutput)
+	}
+}
+
+func runSetupWorkspaceForTarget(t *testing.T, apiBase, runDir, workspace, head, target string) {
+	t.Helper()
+	cmd := setupWorkspaceCommandForTarget(
+		t, apiBase, runDir, workspace, filepath.Join(runDir, "orientation.json"), head, target,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("setup-workspace: %v\n%s", err, output)
+	}
+}
+
 func createDivergedSetupRepository(t *testing.T, conflict bool) (string, string, string) {
 	t.Helper()
 	repository, _ := createGitRepository(t, "shared.txt", "base\n")
