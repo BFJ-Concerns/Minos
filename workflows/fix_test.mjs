@@ -142,6 +142,7 @@ test("fix assignments carry only the configured build and test obligations", asy
       tests: true,
     },
     { verification: { build: "", tests: "" }, build: false, tests: false },
+    { verification: { build: "   ", tests: "\t " }, build: false, tests: false, whitespaceOnly: true },
     { verification: undefined, build: false, tests: false },
   ];
   for (const expected of cases) {
@@ -157,6 +158,7 @@ test("fix assignments carry only the configured build and test obligations", asy
     );
     if (!expected.build) assert.doesNotMatch(prompt, /configured build/i);
     if (!expected.tests) assert.doesNotMatch(prompt, /configured test/i);
+    if (expected.whitespaceOnly) assert.doesNotMatch(prompt, /\b(?:build|test|configured)\b/i);
   }
 });
 

@@ -34,7 +34,7 @@ function writeUpComment(finding, writeUp) {
 }
 
 function verificationInstruction(kind, command) {
-  if (!command) return "";
+  if (typeof command !== "string" || command.trim() === "") return "";
   return `Run this configured ${kind} command before returning: ${JSON.stringify(command)}\n`;
 }
 
