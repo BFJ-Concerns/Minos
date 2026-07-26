@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 import { adjudicate } from "./run-record-adjudicator.mjs";
+import { attachOutOfScopeObservations } from "./out-of-scope-observations.mjs";
 
 const LAUNCHER = "/opt/minos/runtime/ensemble.mjs";
 
@@ -13,7 +14,7 @@ function incomplete(reason, envelope = null) {
   const reviewed = envelope && envelope.reviewed && typeof envelope.reviewed === "object"
     ? envelope.reviewed
     : { target: null, head: null, occasion: null };
-  return {
+  return attachOutOfScopeObservations({
     status: "incomplete",
     complete: false,
     reviewed,
@@ -25,7 +26,7 @@ function incomplete(reason, envelope = null) {
     skipped: [],
     fixRequired: false,
     modelEvidence: [],
-  };
+  }, envelope);
 }
 
 function launchEnsemble(args, options) {
@@ -64,7 +65,10 @@ try {
   const lines = stdout.split(/\r?\n/).filter((line) => line !== "");
   if (lines.length !== 1) throw new Error(`ensemble launcher emitted ${lines.length} stdout lines; expected one envelope`);
   envelope = JSON.parse(lines[0]);
-  verdict = await adjudicate({ envelope, recordDir });
+  verdict = attachOutOfScopeObservations(
+    await adjudicate({ envelope, recordDir }),
+    envelope,
+  );
 } catch (error) {
   process.stderr.write(`adjudicated-review: ${error.message}\n`);
   verdict = incomplete(error.message, envelope);

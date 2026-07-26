@@ -8,10 +8,11 @@ failure or integration paths the tests do not exercise. A missing test is a find
 only when it permits a concrete defect or contract regression to survive.
 
 If you notice a real defect outside those bounds, do not return it as a finding.
-Treat it as an unverified observation for routing to the reviewed project's annexe
-`ISSUES.md`, or to the pull request when the project has no annexe. State plainly
-that the observation was not verified. A failure to record it is presentation
-failure and must not fail the review.
+Return it in `outOfScopeObservations` for routing to the reviewed project's
+annexe `ISSUES.md`, or to the pull request when the project has no annexe. Give
+its title, path, line and explanation, and state plainly in the explanation that
+it was not verified. A failure to record it is presentation failure and must not
+fail the review.
 
 If the assigned concern and scope contain nothing to judge, return
 `applicability.status` as `inapplicable`, explain why, and return no findings.

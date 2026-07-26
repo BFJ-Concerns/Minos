@@ -75,8 +75,22 @@ function finding(overrides = {}) {
   };
 }
 
-function specialistResult(findings = [finding()], applicability = { status: "applicable", reason: "the assigned change exercises the concern" }) {
-  return { applicability, findings };
+function observation(overrides = {}) {
+  return {
+    title: "pre-existing defect",
+    path: "internal/legacy.go",
+    line: 9,
+    explanation: "Unverified observation: the unchanged branch admits an invalid state.",
+    ...overrides,
+  };
+}
+
+function specialistResult(
+  findings = [finding()],
+  applicability = { status: "applicable", reason: "the assigned change exercises the concern" },
+  outOfScopeObservations = [],
+) {
+  return { applicability, findings, outOfScopeObservations };
 }
 
 function responder({ exploration = explorationFixture(), specialist, verify } = {}) {
@@ -98,7 +112,8 @@ test("the script emits an envelope with every routed leg and raw verifier output
   const { result, calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
 
   assert.deepEqual(Object.keys(result).sort(), [
-    "briefs", "dispatches", "proposedFindings", "requiredModelEvidence", "reviewed", "reviewers", "stage",
+    "briefs", "dispatches", "outOfScopeObservations", "proposedFindings",
+    "requiredModelEvidence", "reviewed", "reviewers", "stage",
   ]);
   assert.equal(result.stage, "present");
   assert.equal(result.proposedFindings.length, 2);
@@ -116,6 +131,31 @@ test("the script emits an envelope with every routed leg and raw verifier output
   );
   assert.ok(calls.every((call) => call.opts.engine === "codex" || call.opts.engine === "claude"));
   assert.ok(calls.every((call) => !("fallbackModel" in call.opts)));
+});
+
+test("an out-of-scope observation leaves the specialist without entering finding verification", async () => {
+  const { result, calls } = await runScript(ARGS, responder({
+    specialist: () => specialistResult([], undefined, [observation()]),
+  }));
+
+  assert.deepEqual(result.proposedFindings, []);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+  assert.deepEqual(result.outOfScopeObservations, [{
+    id: "specialist-1-correctness-gpt:observation:1",
+    source: "correctness concern logic",
+    title: "pre-existing defect",
+    path: "internal/legacy.go",
+    line: 9,
+    explanation: "Unverified observation: the unchanged branch admits an invalid state.",
+    observingLabel: "specialist-1-correctness-gpt",
+    verified: false,
+  }]);
+  const schema = specialistCalls(calls)[0].opts.schema;
+  assert.ok(schema.required.includes("outOfScopeObservations"));
+  assert.deepEqual(
+    schema.properties.outOfScopeObservations.items.required,
+    ["title", "path", "line", "explanation"],
+  );
 });
 
 test("each finding is verified by the family opposite its specialist", async () => {

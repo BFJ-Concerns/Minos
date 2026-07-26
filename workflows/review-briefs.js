@@ -123,6 +123,7 @@ function emptyEnvelope(input) {
     stage: "absent",
     requiredModelEvidence: [],
     proposedFindings: [],
+    outOfScopeObservations: [],
     briefs: [],
     dispatches: [],
     reviewers: [],
@@ -143,10 +144,22 @@ const findingShape = {
   },
 };
 
+const outOfScopeObservationShape = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "path", "line", "explanation"],
+  properties: {
+    title: { type: "string" },
+    path: { type: "string" },
+    line: { type: "integer", minimum: 1 },
+    explanation: { type: "string" },
+  },
+};
+
 const specialistSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["applicability", "findings"],
+  required: ["applicability", "findings", "outOfScopeObservations"],
   properties: {
     applicability: {
       type: "object",
@@ -158,6 +171,7 @@ const specialistSchema = {
       },
     },
     findings: { type: "array", items: findingShape },
+    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
   },
 };
 
@@ -429,6 +443,7 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
 
 const reviewerStates = [];
 const proposed = [];
+const outOfScopeObservations = [];
 const inapplicable = [];
 dispatched.forEach((unit, unitIndex) => {
   const result = specialistResults[unitIndex];
@@ -449,6 +464,18 @@ dispatched.forEach((unit, unitIndex) => {
     });
     return;
   }
+  const observations = Array.isArray(result.outOfScopeObservations)
+    ? result.outOfScopeObservations
+    : [];
+  observations.forEach((observation, observationIndex) => {
+    outOfScopeObservations.push({
+      id: `${unit.label}:observation:${observationIndex + 1}`,
+      source: unit.title,
+      ...observation,
+      observingLabel: unit.label,
+      verified: false,
+    });
+  });
   if (result.applicability.status === "inapplicable") {
     inapplicable.push({
       brief: unit.brief,
@@ -506,6 +533,7 @@ return {
   stage: "present",
   requiredModelEvidence: legs,
   proposedFindings,
+  outOfScopeObservations,
   briefs: [...reports.values(), ...misconfigurations, ...inapplicable],
   dispatches: dispatched.map(({ brief, title, label, extent, scope, files }) => ({ brief, title, label, extent, scope, files })),
   reviewers: reviewerStates,

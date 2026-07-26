@@ -10,10 +10,12 @@ Otherwise return `applicable` and report any grounded findings.
 
 The assigned scope and extent are your bounds. A whole-scope brief may therefore
 find a defect anywhere in its declared scope. If you notice a real defect outside
-your bounds, do not return it as a finding. Treat it as an unverified observation
-for routing to the reviewed project's annexe `ISSUES.md`, or to the pull request
-when the project has no annexe. State plainly that the observation was not verified.
-A failure to record it is presentation failure and must not fail the review.
+your bounds, do not return it as a finding. Return it in
+`outOfScopeObservations` for routing to the reviewed project's annexe
+`ISSUES.md`, or to the pull request when the project has no annexe. Give its
+title, path, line and explanation, and state plainly in the explanation that it
+was not verified. A failure to record it is presentation failure and must not
+fail the review.
 
 Do not load skills, start another workflow, consult historical sessions, search the
 web, or inspect unrelated worktrees. Severity is Critical, High, Medium, or Low;

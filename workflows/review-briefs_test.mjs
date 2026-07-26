@@ -32,8 +32,22 @@ function finding(overrides = {}) {
   };
 }
 
-function specialistResult(findings = [finding()], applicability = { status: "applicable", reason: "the concern applies" }) {
-  return { applicability, findings };
+function observation(overrides = {}) {
+  return {
+    title: "pre-existing repository defect",
+    path: "pkg/legacy.go",
+    line: 11,
+    explanation: "Unverified observation: unchanged code violates the repository concern.",
+    ...overrides,
+  };
+}
+
+function specialistResult(
+  findings = [finding()],
+  applicability = { status: "applicable", reason: "the concern applies" },
+  outOfScopeObservations = [],
+) {
+  return { applicability, findings, outOfScopeObservations };
 }
 
 function args(overrides = {}) {
@@ -322,6 +336,31 @@ test("an applicable finding emits opposite-family routing and raw verifier outpu
   // The fixture brief sits under pkg/ and pkg/x.go changed, so its path-scope
   // trigger fires and relevance is moot: a specialist and its verifier only.
   assert.equal(result.requiredModelEvidence.length, 2);
+});
+
+test("a repository observation is returned separately and never reaches verification", async () => {
+  const { result, calls } = await run(args(), responder({
+    specialist: () => specialistResult([], undefined, [observation()]),
+  }));
+
+  assert.deepEqual(result.proposedFindings, []);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+  assert.deepEqual(result.outOfScopeObservations, [{
+    id: "repository-review-pkg-errors-md-claude:observation:1",
+    source: "Errors",
+    title: "pre-existing repository defect",
+    path: "pkg/legacy.go",
+    line: 11,
+    explanation: "Unverified observation: unchanged code violates the repository concern.",
+    observingLabel: "repository-review-pkg-errors-md-claude",
+    verified: false,
+  }]);
+  const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
+  assert.ok(specialist.opts.schema.required.includes("outOfScopeObservations"));
+  assert.deepEqual(
+    specialist.opts.schema.properties.outOfScopeObservations.items.required,
+    ["title", "path", "line", "explanation"],
+  );
 });
 
 test("a matched occasion runs a scoped brief even when its scope is untouched", async () => {

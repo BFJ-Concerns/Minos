@@ -7,10 +7,11 @@ authorisation, validation, secret handling, injection surfaces, and failure path
 Report concrete defects introduced by the change, not generic hardening advice.
 
 If you notice a real defect outside those bounds, do not return it as a finding.
-Treat it as an unverified observation for routing to the reviewed project's annexe
-`ISSUES.md`, or to the pull request when the project has no annexe. State plainly
-that the observation was not verified. A failure to record it is presentation
-failure and must not fail the review.
+Return it in `outOfScopeObservations` for routing to the reviewed project's
+annexe `ISSUES.md`, or to the pull request when the project has no annexe. Give
+its title, path, line and explanation, and state plainly in the explanation that
+it was not verified. A failure to record it is presentation failure and must not
+fail the review.
 
 If the assigned concern and scope contain nothing to judge, return
 `applicability.status` as `inapplicable`, explain why, and return no findings.
