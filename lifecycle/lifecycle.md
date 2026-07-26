@@ -30,10 +30,10 @@ and cleanup are complete.
 
 Whenever you stop after a clean, converged pass, run
 `printf 'clean\n' > "$MINOS_RUN_DIR/lead-complete"`. This is an absolute
-terminal obligation, symmetric with the non-clean marker. Run it only after all
-final forge writes and cleanup have succeeded, as your last action before ending
-the turn; the supervisor treats it as proof that there is no work or wake still
-pending.
+terminal obligation, symmetric with the non-clean path's failure record and
+terminal marker. Run it only after all final forge writes and cleanup have
+succeeded, as your last action before ending the turn; the supervisor treats it
+as proof that there is no work or wake still pending.
 
 1. The setup script has cloned the repository at the observed pull-request head
    into `$MINOS_WORKSPACE`, refused setup if that head moved while cloning, and
@@ -45,8 +45,9 @@ pending.
    `"$MINOS_BIN" forge snapshot` and claim the pull request with `"$MINOS_BIN"
    forge claim` (it assigns the Minos account and adds the 👀 reaction; it is
    safe to repeat). If the snapshot now shows that the head or target has moved
-   since setup, remove 👀 against that fresh head and target and stop without
-   publishing.
+   since setup, append the concrete move to `$MINOS_FAILURE_LOG`, remove 👀
+   against that fresh head and target, write the non-clean terminal marker, and
+   stop without publishing.
 
    Read `$MINOS_RUN_DIR/reconciliation.json`. Setup has fetched the target from
    the base repository, verified its observed SHA and pinned it at
@@ -76,7 +77,8 @@ pending.
    non-zero process exit, invalid JSON, a result whose `status` is not
    `complete`, or `environment.ready: false` is an incomplete terminal
    outcome. Append the returned `reason` or `environment.cause` to
-   `$MINOS_FAILURE_LOG`, set `incomplete`, remove 👀, and stop.
+   `$MINOS_FAILURE_LOG`, set `incomplete`, remove 👀, write the non-clean
+   terminal marker, and stop.
 
    When `reconciliation.attempted` is true, check the resolution content rather
    than recreating its process. Run
@@ -103,9 +105,10 @@ pending.
    ```
 
    Apply the same process-exit and result checks to the retry, then inspect its
-   bounded resolution diff. A second unacceptable resolution ends the run
-   incomplete with the specific objection recorded. Once every resolution
-   stands, run
+   bounded resolution diff. A second unacceptable resolution is an incomplete
+   terminal outcome: append the specific objection to `$MINOS_FAILURE_LOG`, set
+   `incomplete`, remove 👀, write the non-clean terminal marker, and stop. Once
+   every resolution stands, run
    `"${MINOS_SETUP_WORKSPACE%/*}/complete-reconciliation"
    "$MINOS_WORKSPACE"`.
 
@@ -202,9 +205,11 @@ pending.
 
    Only a verdict whose `status` is `complete` is publishable. A missing result,
    incomplete leg, or missing or invalid verifier result yields `incomplete` or
-   `infrastructure-failure`. In either case, publish no review, set
+   `infrastructure-failure`. In either case, append the concrete cause to
+   `$MINOS_FAILURE_LOG`, publish no review, set
    `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
-   `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, and stop.
+   `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
+   terminal marker, and stop.
 5. Save each complete review verdict and build the action input:
 
    ```sh
@@ -227,9 +232,10 @@ pending.
    dispatcher only after the command returns `outcome: "applied"`. An exact
    pre-existing review is applied and may continue; every other publication
    result returns `incomplete` without starting the dispatcher. On an
-   incomplete result, set `"$MINOS_BIN" forge status HEAD TARGET incomplete`,
-   remove the 👀 with `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`,
-   and stop.
+   incomplete result, append its concrete reason to `$MINOS_FAILURE_LOG`, set
+   `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
+   `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
+   terminal marker, and stop.
 
    The operation's returned `runRecord` is the run-scoped loop record, including
    the round count and confirmed-unfixed findings. Start with an absent record
@@ -307,9 +313,10 @@ pending.
    in the verdict's `skipped` array and is never published on the pull request.
    A `not-run` concern, missing result, incomplete leg, or missing or invalid
    verifier result makes this stage incomplete: publish no brief review, add no
-   👍, set `"$MINOS_BIN" forge status CURRENT_HEAD "$MINOS_TARGET_SHA"
-   incomplete`, remove the 👀 with `"$MINOS_BIN" forge reaction-remove
-   CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`, and stop.
+   👍, append the concrete cause to `$MINOS_FAILURE_LOG`, set `"$MINOS_BIN"
+   forge status CURRENT_HEAD "$MINOS_TARGET_SHA" incomplete`, remove the 👀
+   with `"$MINOS_BIN" forge reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA"
+   eyes`, write the non-clean terminal marker, and stop.
 
    On a complete verdict, materialise `reviewBody.body` and
    `reviewBody.comments` when `reviewBody` is present, then post exactly one
@@ -342,15 +349,18 @@ pending.
    `$MINOS_TEST_CMD` exactly as configured and to completion when each is
    non-empty; do not substitute or invent commands. If the single wave leaves
    `confirmedUnfixed` entries, or integration, build or tests fail, add no 👍,
-   set attention or incomplete to reflect the actual result, remove the 👀, and
-   stop. If all fixes were integrated and the exact configured build and tests
-   pass, the brief stage has passed: add the 👍 on the fresh head. Do not run
-   another review loop. Thus both a no-findings pass
+   append the concrete cause to `$MINOS_FAILURE_LOG`, set attention or
+   incomplete to reflect the actual result, remove the 👀, write the non-clean
+   terminal marker, and stop. If all fixes were integrated and the exact
+   configured build and tests pass, the brief stage has passed: add the 👍 on
+   the fresh head. Do not run another review loop. Thus both a no-findings pass
    and a findings-fixed-and-verified pass end in the same idempotent 👍 signal.
 
 8. Enter finishing only after both review stages are done and the current result
-   is clean. If the result is attention, remove the 👀 with `"$MINOS_BIN" forge
-   reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes` and stop instead.
+   is clean. If the result is attention, append its concrete cause to
+   `$MINOS_FAILURE_LOG`, remove the 👀 with `"$MINOS_BIN" forge reaction-remove
+   CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`, write the non-clean terminal marker,
+   and stop instead.
 
    Save a fresh `"$MINOS_BIN" forge snapshot` JSON object. It is the sole forge
    state used throughout finishing. Run
@@ -367,7 +377,9 @@ pending.
    its head to equal the script's pushed head and its target to remain the
    fetched target, then run the exact configured build and test commands to
    completion when each is non-empty. A failed sync, build, or test is an
-   incomplete terminal outcome: set `incomplete`, remove 👀, and stop.
+   incomplete terminal outcome: append the concrete cause to
+   `$MINOS_FAILURE_LOG`, set `incomplete`, remove 👀, write the non-clean
+   terminal marker, and stop.
 
    Required checks, labels and merge readiness all come from that same trusted
    snapshot. When waiting for checks or forge readiness, write the complete
@@ -379,8 +391,9 @@ pending.
    for the next decision. On its roughly ten-minute `timeout`, use the returned
    fresh snapshot as well; do not infer state from elapsed time, poll the forge
    separately, or sleep blind. If the target moved, return to target sync. If
-   an unexpected head moved, remove 👀 against the fresh head and target and
-   stop without publishing a result for unverified code.
+   an unexpected head moved, append the concrete move to `$MINOS_FAILURE_LOG`,
+   remove 👀 against the fresh head and target, write the non-clean terminal
+   marker, and stop without publishing a result for unverified code.
 
    A required check is genuinely red only when `failed_checks` names its latest
    unambiguous failure, error, cancellation, or timeout. When `failed_checks` is
@@ -407,16 +420,19 @@ pending.
    remove the exact label with `"$MINOS_BIN" forge label-remove FRESH_HEAD
    FRESH_TARGET "Flaky Test"`; this guarded command reads the labels back and is
    safe to repeat. Whether integration or verification passes or fails, a
-   helper-mutated head has not had a fresh whole review: set `incomplete`,
-   remove 👀, and stop. Never continue a helper-mutated head to step 9 or merge
-   it in this attempt.
+   helper-mutated head has not had a fresh whole review: append the concrete
+   result to `$MINOS_FAILURE_LOG`, set `incomplete`, remove 👀, write the
+   non-clean terminal marker, and stop.
+   Never continue a helper-mutated head to step 9 or merge it in this attempt.
 
    When the helper returns no commit and no pushed head appears, it has made no
    mutation. On the red-check path, leave the label when present, set
-   `incomplete`, remove 👀, and stop exactly as before. Only on the label-only
-   path may the unchanged verified head and target continue to step 9 with the
-   `Flaky Test` label retained. This clean continuation writes nothing to
-   `$MINOS_FAILURE_LOG`; the retained label is the durable record that the
+   `incomplete`, append the concrete failed-check cause to
+   `$MINOS_FAILURE_LOG`, remove 👀, write the non-clean terminal marker, and
+   stop exactly as before.
+   Only on the label-only path may the unchanged verified head and target continue to step 9
+   with the `Flaky Test` label retained. This clean continuation writes nothing
+   to `$MINOS_FAILURE_LOG`; the retained label is the durable record that the
    flake remains unproven. A non-passing `check_decision` with no explicit
    `failed_checks` is incomplete forge state, not a root-cause dispatch.
 9. If `$MINOS_AUTO_MERGE` is not `true`, the clean run is complete without a
@@ -437,5 +453,7 @@ pending.
    claim.
 
 Use your judgement. Retry an ordinary transient failure when that is sensible;
-otherwise report the actual state and stop. Never turn a failure into a new
-process, checklist, gate, or framework.
+otherwise report the actual state, append the concrete cause to
+`$MINOS_FAILURE_LOG`, finish all final forge writes and cleanup, write the
+non-clean terminal marker, and stop. Never turn a failure into a new process,
+checklist, gate, or framework.

@@ -379,6 +379,23 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 	}
 }
 
+func TestRunBodyIgnoresUnrecognisedCompletionMarker(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, map[string]string{
+		"MINOS_TEST_COMPLETION_MARKER": "unclean",
+		"MINOS_TEST_PENDING_STATE":     "done",
+		"MINOS_TEST_WAIT_POLLS":        "3",
+		"MINOS_LEAD_SILENCE_TIMEOUT":   "5",
+		"MINOS_CLAUDE_POLL_SECONDS":    "0",
+	})
+
+	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "unclean")
+	assertContainsFile(t, fixture.record+".survived", "3")
+	assertContainsFile(t, fixture.record+".terminal", `"state":"failed"`)
+	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	fixture.assertProcessesStopped(t)
+}
+
 func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 	for _, state := range []string{"failed", "stopped"} {
 		t.Run(state, func(t *testing.T) {
