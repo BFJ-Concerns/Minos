@@ -64,33 +64,35 @@ async function run(input, respond = (label, prompt) => ({
 
 function verificationActionsUnderstoodByWorker(prompt) {
   const actions = new Set();
-  let assignedConfiguredVerification = false;
   for (const sentence of prompt.split(/(?<=[.!?])\s+|\n+/)) {
     const instruction = sentence.trim();
     const isWorkerDirective = /^(?:before [^,]+,\s*)?(?:you (?:must|need to|are required to)\s+)?(?:run|execute)\b/i.test(instruction);
-    if (isWorkerDirective && /\bconfigured\b/i.test(instruction))
-      assignedConfiguredVerification = true;
+    if (!isWorkerDirective || !/\bconfigured\b/i.test(instruction)) continue;
+    const encodedCommand = instruction.match(/("(?:\\.|[^"])*")\s*[.!?]?$/);
+    if (!encodedCommand || JSON.parse(encodedCommand[1]) === "") continue;
+    if (/\bbuild\b/i.test(instruction)) actions.add("build");
+    if (/\btests?\b/i.test(instruction)) actions.add("tests");
   }
-  if (!assignedConfiguredVerification) return [];
-  const configuredCommand = (kind) => {
-    const match = prompt.match(new RegExp(`^Configured ${kind} command:\\s*(\"(?:\\\\.|[^\"])*\")\\s*$`, "mi"));
-    if (!match) return "";
-    return JSON.parse(match[1]).trim();
-  };
-  if (configuredCommand("build") !== "") actions.add("build");
-  if (configuredCommand("test") !== "") actions.add("tests");
   return [...actions];
 }
 
-test("the recording worker treats only non-empty configured commands as obligations", () => {
-  const prompt = (build, tests) =>
-    `Before returning, run the configured build and tests, skipping either when its command is empty rather than inventing a substitute.\n` +
-    `Configured build command: ${JSON.stringify(build)}\n` +
-    `Configured test command: ${JSON.stringify(tests)}\n`;
-  assert.deepEqual(verificationActionsUnderstoodByWorker(prompt("make build", "make test")), ["build", "tests"]);
-  assert.deepEqual(verificationActionsUnderstoodByWorker(prompt("make build", "")), ["build"]);
-  assert.deepEqual(verificationActionsUnderstoodByWorker(prompt("", "make test")), ["tests"]);
-  assert.deepEqual(verificationActionsUnderstoodByWorker(prompt("", "")), []);
+test("the recording worker reads obligations from directive meaning and command presence", () => {
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    `Run this configured build command before returning: "make build"\n` +
+    `Execute the configured test command prior to completion: "make test"\n`,
+  ), ["build", "tests"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    `Execute the configured build check before returning: "make build"\n`,
+  ), ["build"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    `Run the configured tests prior to completion: "make test"\n`,
+  ), ["tests"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    "Return one result for every findingKey.\n",
+  ), []);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    `Run the configured build command before returning: "   "\n`,
+  ), ["build"]);
 });
 
 test("a High plus two Lows is working, posts all findings, and dispatches all fixes", async () => {
@@ -228,6 +230,7 @@ test("a fix worker performs exactly the configured verification it is assigned",
     { name: "build only", verification: { build: "make build", tests: "" }, expected: ["build"] },
     { name: "tests only", verification: { build: "", tests: "make test" }, expected: ["tests"] },
     { name: "nothing configured", verification: { build: "", tests: "" }, expected: [] },
+    { name: "whitespace-only build", verification: { build: "   ", tests: "" }, expected: ["build"] },
   ]) {
     await t.test(shape.name, async () => {
       const actions = [];
