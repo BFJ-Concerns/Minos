@@ -331,14 +331,15 @@ or wake still pending.
    requests a second brief review or fix wave. If its
    `integration.commits` is non-empty, integrate them through `integrate-wave`
    exactly as in the main loop, then take a fresh forge snapshot and use its
-   current head. Run `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD` exactly as
-   configured and to completion when each is non-empty; do not substitute or
-   invent commands. If the single wave leaves `confirmedUnfixed` entries, or
-   integration, build or tests fail, add no 👍, set attention or incomplete to
-   reflect the actual result, remove the 👀, and stop. If all fixes were
-   integrated and the exact configured build and tests pass, the brief stage
-   has passed: add the 👍 on the fresh head. Do not run another review loop.
-   Thus both a no-findings pass
+   current head. When `fixReview` is present, materialise its body and comments
+   and post one `comment` review on that fresh head. Run `$MINOS_BUILD_CMD` and
+   `$MINOS_TEST_CMD` exactly as configured and to completion when each is
+   non-empty; do not substitute or invent commands. If the single wave leaves
+   `confirmedUnfixed` entries, or integration, build or tests fail, add no 👍,
+   set attention or incomplete to reflect the actual result, remove the 👀, and
+   stop. If all fixes were integrated and the exact configured build and tests
+   pass, the brief stage has passed: add the 👍 on the fresh head. Do not run
+   another review loop. Thus both a no-findings pass
    and a findings-fixed-and-verified pass end in the same idempotent 👍 signal.
 
 8. Enter finishing only after both review stages are done and the current result
