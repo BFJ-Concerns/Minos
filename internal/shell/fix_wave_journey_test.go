@@ -105,19 +105,20 @@ func TestPublishOverflowPushesAnnexeOnceAndEmitsRepositoryFallback(t *testing.T)
 			Destination string `json:"destination"`
 			Body        string `json:"body"`
 			Comments    []struct {
-				Path        string `json:"path"`
-				Body        string `json:"body"`
-				NewPosition int    `json:"new_position"`
+				Path string `json:"path"`
+				Body string `json:"body"`
+				Line int    `json:"line"`
 			} `json:"comments"`
 		}
 		if err := json.Unmarshal([]byte(runOverflowPublisher(t, orientation, findings)), &payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Destination != "pull-request" || len(payload.Comments) != 1 || payload.Comments[0].Path != "internal/state.go" || payload.Comments[0].NewPosition != 41 {
+		if payload.Destination != "pull-request" || len(payload.Comments) != 1 || payload.Comments[0].Path != "internal/state.go" || payload.Comments[0].Line != 41 {
 			t.Fatalf("fallback payload = %+v", payload)
 		}
 
 		state := newForgejoFixtureState(t)
+		head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
 		cfg, _, _ := state.service(t)
 		writeServiceConfig(t, cfg)
 		t.Setenv("MINOS_CONFIG", cfg.Root)
@@ -137,7 +138,7 @@ func TestPublishOverflowPushesAnnexeOnceAndEmitsRepositoryFallback(t *testing.T)
 		if err := os.WriteFile(commentsPath, commentsData, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := ForgeCommand(t.Context(), []string{"review", state.headSHA(), state.targetSHA(), "comment", bodyPath, commentsPath}, &strings.Builder{}); err != nil {
+		if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", bodyPath, commentsPath}, &strings.Builder{}); err != nil {
 			t.Fatal(err)
 		}
 		if writes, posted := state.reviewWriteFacts(); writes != 1 || posted["event"] != "COMMENT" {

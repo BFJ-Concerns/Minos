@@ -68,6 +68,11 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
   assert.equal(adapterVerdict.reviewBody.comments.length, 1);
+  assert.deepEqual(
+    adapterVerdict.reviewBody.comments.map(({ path, line }) => ({ path, line })),
+    [{ path: "internal/review.go", line: 42 }],
+  );
+  assert.equal("new_position" in adapterVerdict.reviewBody.comments[0], false);
   assert.equal(adapterVerdict.reviewBody.body, "Repository review brief findings.");
   assert.equal(adapterVerdict.fixRequired, true);
   assert.deepEqual(

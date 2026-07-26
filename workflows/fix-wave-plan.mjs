@@ -21,7 +21,7 @@ function findingComment(finding) {
   return {
     path: finding.path,
     body: `**${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}. Confidence: ${finding.confidence}.`,
-    new_position: finding.line,
+    line: finding.line,
   };
 }
 

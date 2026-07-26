@@ -435,6 +435,9 @@ func TestRebuildEstateReviewCompletionReactionJourneys(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
+			if test.findingsFix {
+				installAnchoredWorkspace(t, state, "internal/state.go", 41)
+			}
 			cfg, _, facts := state.service(t)
 			writeServiceConfig(t, cfg)
 			t.Setenv("MINOS_CONFIG", cfg.Root)
@@ -453,7 +456,7 @@ func TestRebuildEstateReviewCompletionReactionJourneys(t *testing.T) {
 				if err := os.WriteFile(bodyPath, []byte("Repository review brief findings.\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(commentsPath, []byte(`[{"path":"internal/state.go","body":"Brief concern.","new_position":41}]`), 0o600); err != nil {
+				if err := os.WriteFile(commentsPath, []byte(`[{"path":"internal/state.go","body":"Brief concern.","line":41}]`), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {

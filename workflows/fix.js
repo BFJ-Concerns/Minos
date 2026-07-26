@@ -30,7 +30,7 @@ const fixResultSchema = {
 };
 
 function writeUpComment(finding, writeUp) {
-  return { path: finding.path, body: writeUp, new_position: finding.line };
+  return { path: finding.path, body: writeUp, line: finding.line };
 }
 
 function verificationInstruction(kind, command) {

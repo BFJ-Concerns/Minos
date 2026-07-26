@@ -117,7 +117,7 @@ function findingComment(finding) {
       `**${finding.source}: ${finding.title}**\n\n${finding.explanation}\n\n` +
       `Severity: ${finding.severity}. Reviewer confidence: ${finding.confidence}. ` +
       `Verifier confidence: ${finding.verifierConfidence}.`,
-    new_position: finding.line,
+    line: finding.line,
   };
 }
 

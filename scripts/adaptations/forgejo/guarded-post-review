@@ -47,9 +47,11 @@ review_presence() {
   [ -n "$ids" ] || return 1
   for id in $ids; do
     comments="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${id}/comments" 2>/dev/null)" || return 2
+    # Forgejo may rewrite an anchored comment's stored blame position. Path
+    # and body are the durable content Minos owns; geometry is forge-owned.
     if jq -ne --argjson requested "$input" --argjson actual "$comments" '
-      (($requested.comments // []) | map({path, body, position:(.new_position // 0), original_position:(.old_position // 0)}) | sort_by(.path, .position, .original_position, .body)) ==
-      (($actual // []) | map({path, body, position:(.position // 0), original_position:(.original_position // 0)}) | sort_by(.path, .position, .original_position, .body))' >/dev/null; then
+      (($requested.comments // []) | map({path, body}) | sort_by(.path, .body)) ==
+      (($actual // []) | map({path, body}) | sort_by(.path, .body))' >/dev/null; then
       return 0
     fi
   done

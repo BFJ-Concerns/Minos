@@ -15,7 +15,6 @@ import (
 	"sync"
 	"testing"
 
-	"bfj/minos/internal/forge"
 	"bfj/minos/internal/product"
 )
 
@@ -478,6 +477,7 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
+			head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
 			cfg, _, _ := state.service(t)
 			writeServiceConfig(t, cfg)
 			t.Setenv("MINOS_CONFIG", cfg.Root)
@@ -486,8 +486,6 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			t.Setenv("MINOS_REPO_NAME", "subject")
 			t.Setenv("MINOS_PR", "1")
 
-			head := state.headSHA()
-			target := state.targetSHA()
 			body := apiShape.Request["body"].(string)
 			record, err := product.FormatRecord(map[string]string{"head": head, "target": target})
 			if err != nil {
@@ -506,7 +504,9 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			if err := os.WriteFile(bodyPath, []byte(body+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			comments, err := json.Marshal(apiShape.Request["comments"])
+			comments, err := json.Marshal([]requestedReviewComment{{
+				Path: "internal/state.go", Line: 41, Body: "The transition accepts an invalid state.",
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -570,6 +570,7 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 
 	t.Run("confirmed-unfixed request changes reach the guarded review consumer once", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
+		head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
 		cfg, _, _ := state.service(t)
 		writeServiceConfig(t, cfg)
 		t.Setenv("MINOS_CONFIG", cfg.Root)
@@ -583,7 +584,9 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 		if err := os.WriteFile(bodyPath, []byte("Confirmed code findings remain unresolved.\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		comments, err := json.Marshal(apiShape.Request["comments"])
+		comments, err := json.Marshal([]requestedReviewComment{{
+			Path: "internal/state.go", Line: 41, Body: "The transition accepts an invalid state.",
+		}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -592,13 +595,13 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 		}
 
 		for attempt := 0; attempt < 2; attempt++ {
-			if err := ForgeCommand(t.Context(), []string{"review", state.headSHA(), state.targetSHA(), "request-changes", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
+			if err := ForgeCommand(t.Context(), []string{"review", head, target, "request-changes", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
 				t.Fatalf("request-changes attempt %d: %v", attempt+1, err)
 			}
 		}
 
 		writes, payload := state.reviewWriteFacts()
-		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != state.headSHA() {
+		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != head {
 			t.Fatalf("request-changes writes = %d, payload = %#v", writes, payload)
 		}
 		postedComments := payload["comments"].([]any)
@@ -611,6 +614,7 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 
 func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.T) {
 	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
 	cfg, _, _ := state.service(t)
 	writeServiceConfig(t, cfg)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
@@ -629,7 +633,7 @@ func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.
 	if err := os.WriteFile(briefBody, []byte("Repository review brief findings.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	comments := []forge.ReviewComment{{Path: "internal/state.go", Body: "Brief concern.", NewPosition: 41}}
+	comments := []requestedReviewComment{{Path: "internal/state.go", Body: "Brief concern.", Line: 41}}
 	encoded, err := json.Marshal(comments)
 	if err != nil {
 		t.Fatal(err)
@@ -638,7 +642,6 @@ func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.
 		t.Fatal(err)
 	}
 
-	head, target := state.headSHA(), state.targetSHA()
 	if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", sweepBody}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
@@ -656,12 +659,174 @@ func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.
 	}
 }
 
+func TestForgeReviewFoldsOffDiffFindingsIntoTheBody(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
+	configureForgeCommandFixture(t, state)
+	comments := []requestedReviewComment{
+		{Path: "src/code.txt", Line: 10, Body: "Anchored concern."},
+		{Path: "src/code.txt", Line: 1, Body: "Outside-hunk concern."},
+	}
+
+	runReviewAttempts(t, state, head, target, "Review findings.", comments, 2)
+	writes, payload := state.reviewWriteFacts()
+	if writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	posted := payload["comments"].([]any)
+	if len(posted) != 1 || posted[0].(map[string]any)["new_position"] != float64(10) {
+		t.Fatalf("inline comments = %#v", posted)
+	}
+	body := payload["body"].(string)
+	for _, want := range []string{
+		"Findings that could not be anchored inline:",
+		"`src/code.txt` line 1",
+		"Outside-hunk concern.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("review body omitted %q: %q", want, body)
+		}
+	}
+}
+
+func TestForgeReviewConvergesWhenTheForgeRewritesStoredPositions(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
+	state.setPositionRewrite("src/code.txt", 10, 3)
+	configureForgeCommandFixture(t, state)
+
+	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{{
+		Path: "src/code.txt", Line: 10, Body: "Blame-rewritten concern.",
+	}}, 2)
+	if writes, _ := state.reviewWriteFacts(); writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	stored := state.reviewComments[1][0]
+	if stored["position"] != int64(3) || stored["diff_hunk"] == "" {
+		t.Fatalf("stored anchored comment = %#v", stored)
+	}
+}
+
+func TestForgeReviewConvergesWhenTheForgeStoresACommentUnanchored(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
+	state.setDiffNewSide(nil)
+	configureForgeCommandFixture(t, state)
+
+	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{{
+		Path: "src/code.txt", Line: 10, Body: "Durable concern.",
+	}}, 2)
+	if writes, _ := state.reviewWriteFacts(); writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	stored := state.reviewComments[1][0]
+	if stored["position"] != widgetUnanchoredPosition || stored["diff_hunk"] != "" {
+		t.Fatalf("stored unanchored comment = %#v", stored)
+	}
+}
+
+func configureForgeCommandFixture(t *testing.T, state *forgejoFixtureState) {
+	t.Helper()
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+}
+
+func runReviewAttempts(
+	t *testing.T,
+	state *forgejoFixtureState,
+	head, target, body string,
+	comments []requestedReviewComment,
+	attempts int,
+) {
+	t.Helper()
+	directory := t.TempDir()
+	bodyPath := filepath.Join(directory, "body.md")
+	commentsPath := filepath.Join(directory, "comments.json")
+	if err := os.WriteFile(bodyPath, []byte(body+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(comments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(commentsPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{
+			"review", head, target, "comment", bodyPath, commentsPath,
+		}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("review attempt %d: %v", attempt, err)
+		}
+	}
+}
+
 func mapsClone(source map[string]any) map[string]any {
 	clone := make(map[string]any, len(source))
 	for key, value := range source {
 		clone[key] = value
 	}
 	return clone
+}
+
+func installAnchoredWorkspace(t *testing.T, state *forgejoFixtureState, path string, changedLines ...int) (head, target string) {
+	t.Helper()
+	workspace := t.TempDir()
+	runGit(t, workspace, "init", "-q")
+	runGit(t, workspace, "config", "user.name", "Minos Test")
+	runGit(t, workspace, "config", "user.email", "minos@example.invalid")
+
+	lineCount := 8
+	for _, line := range changedLines {
+		if line+4 > lineCount {
+			lineCount = line + 4
+		}
+	}
+	lines := make([]string, lineCount)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("line %d", index+1)
+	}
+	fullPath := filepath.Join(workspace, path)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-q", "-m", "target")
+	target = strings.TrimSpace(gitOutput(t, workspace, "rev-parse", "HEAD"))
+
+	for _, line := range changedLines {
+		lines[line-1] = fmt.Sprintf("changed line %d", line)
+	}
+	if err := os.WriteFile(fullPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-q", "-m", "head")
+	head = strings.TrimSpace(gitOutput(t, workspace, "rev-parse", "HEAD"))
+
+	diff, err := mergeBaseDiff(t.Context(), workspace, target, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.setDiffNewSide(newSideIntervals(diff))
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["sha"] = head
+		pullRequest["base"].(map[string]any)["sha"] = target
+	})
+	t.Setenv("MINOS_WORKSPACE", workspace)
+	return head, target
 }
 
 type forgejoFixtureState struct {
@@ -690,6 +855,8 @@ type forgejoFixtureState struct {
 	reviewWrites             int
 	reviewPayloads           []map[string]any
 	reviewComments           map[int64][]map[string]any
+	diffNewSide              map[string][][2]int64
+	positionRewrites         map[string]map[int64]int64
 	statusReadCommits        []string
 	virtualRefLookups        int
 	annexeCloneURL           string
@@ -699,6 +866,9 @@ type statusPostRequest struct {
 	Head    string
 	Payload map[string]any
 }
+
+// Widget#28 exposed this blame-origin coordinate on an unanchored comment.
+const widgetUnanchoredPosition int64 = 3691
 
 func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 	t.Helper()
@@ -716,7 +886,9 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 	}
 	state := &forgejoFixtureState{
 		t: t, pullRequest: event.PullRequest, repository: event.Repository,
-		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any), sourceBranchExists: true,
+		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any),
+		diffNewSide: make(map[string][][2]int64), positionRewrites: make(map[string]map[int64]int64),
+		sourceBranchExists: true,
 	}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
@@ -781,6 +953,21 @@ func (s *forgejoFixtureState) setReviewWithComments(review map[string]any, comme
 	s.reviews = []map[string]any{review}
 	id := int64(review["id"].(float64))
 	s.reviewComments[id] = comments
+}
+
+func (s *forgejoFixtureState) setDiffNewSide(intervals map[string][][2]int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.diffNewSide = intervals
+}
+
+func (s *forgejoFixtureState) setPositionRewrite(path string, requested, stored int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.positionRewrites[path] == nil {
+		s.positionRewrites[path] = make(map[int64]int64)
+	}
+	s.positionRewrites[path][requested] = stored
 }
 
 func (s *forgejoFixtureState) reviewWriteFacts() (int, map[string]any) {
@@ -939,7 +1126,21 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 				comment := mapsClone(raw.(map[string]any))
 				comment["id"] = index + 1
 				comment["pull_request_review_id"] = nextID
-				comment["position"] = comment["new_position"]
+				path, _ := comment["path"].(string)
+				requestedLine := int64(comment["new_position"].(float64))
+				if lineInIntervals(requestedLine, s.diffNewSide[path]) {
+					storedLine := requestedLine
+					if rewrites := s.positionRewrites[path]; rewrites != nil {
+						if rewritten, ok := rewrites[requestedLine]; ok {
+							storedLine = rewritten
+						}
+					}
+					comment["position"] = storedLine
+					comment["diff_hunk"] = fmt.Sprintf("@@ -%d,3 +%d,3 @@", requestedLine, requestedLine)
+				} else {
+					comment["position"] = widgetUnanchoredPosition
+					comment["diff_hunk"] = ""
+				}
 				comment["original_position"] = float64(0)
 				delete(comment, "new_position")
 				comments = append(comments, comment)
