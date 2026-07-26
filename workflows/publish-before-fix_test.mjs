@@ -97,6 +97,7 @@ async function requestBody(request) {
 }
 
 async function forgeFixture(options = {}) {
+  const unanchoredPositions = new Set(options.unanchoredPositions || []);
   const state = {
     reviews: [],
     comments: new Map(),
@@ -147,14 +148,21 @@ async function forgeFixture(options = {}) {
       };
       if (state.storePost) {
         state.reviews.push(review);
-        state.comments.set(id, (payload.comments || []).map((comment, index) => ({
-          id: index + 1,
-          pull_request_review_id: id,
-          path: comment.path,
-          body: comment.body,
-          position: comment.new_position,
-          original_position: 0,
-        })));
+        state.comments.set(id, (payload.comments || []).map((comment, index) => {
+          const stored = {
+            id: index + 1,
+            pull_request_review_id: id,
+            path: comment.path,
+            body: comment.body,
+            original_position: 0,
+          };
+          if (unanchoredPositions.has(comment.new_position)) {
+            stored.diff_hunk = "";
+          } else {
+            stored.position = comment.new_position;
+          }
+          return stored;
+        }));
       }
       response.end(JSON.stringify(review));
       return;
@@ -263,6 +271,43 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.equal(events.filter((event) => event.startsWith("fix-agent-called:")).length, 1);
       assert.equal(events[0].split(":")[1], events[1].split(":")[1]);
       assert.equal(events[1].split(":")[1], events[2].split(":")[1]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("an unanchorable confirmed finding reaches a durable fallback before dispatch", async () => {
+    const sourceLine = 7423;
+    const preparedInput = input([finding({
+      path: "src/large-file.rs",
+      line: sourceLine,
+    })]);
+    const fixture = await forgeFixture({ unanchoredPositions: [sourceLine] });
+    try {
+      const { result, events, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      const review = fixture.state.reviews[0];
+      const comments = fixture.state.comments.get(review.id) || [];
+      const findingIsAnchored = comments.some((comment) =>
+        comment.path === "src/large-file.rs" &&
+        comment.position > 0 &&
+        comment.body.includes(SENTINEL));
+      const findingIsInReviewBody =
+        review.body.includes(SENTINEL) &&
+        review.body.includes("src/large-file.rs") &&
+        review.body.includes(String(sourceLine));
+
+      assert.equal(
+        findingIsAnchored || findingIsInReviewBody,
+        true,
+        "the author-visible review must retain the finding either at a real diff position or in the review body with its source location",
+      );
+      assert.equal(result.status, "complete");
+      assert.equal(result.publication.outcome, "applied");
+      assert.match(prompts[0], new RegExp(SENTINEL));
+      assert.deepEqual(
+        events.slice(1).map((event) => event.split(":")[0]),
+        ["forge-review-confirmed", "fix-dispatch-started", "fix-agent-called"],
+      );
     } finally {
       await fixture.close();
     }
