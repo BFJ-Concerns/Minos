@@ -32,6 +32,7 @@ function args(findings, overrides = {}) {
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
     workspace: "/run/workspace",
+    verification: { build: "make build", tests: "make test" },
     guidance: { grounding: "annexe", path: "/run/subject-Annexe/README.md", content: "COMMISSION_VIOLET_719" },
     fixerBrief: { path: "workflows/review-briefs/fixer.md", readPath: "/minos/workflows/review-briefs/fixer.md", content: "MINOS_FIX_EVIDENCE_V1" },
     ...overrides,
@@ -127,6 +128,40 @@ test("a wave records one lead push for all distinct agent commits", async () => 
   assert.deepEqual(result.integration.author, { name: "Minos", email: "minos@example.invalid" });
 });
 
+test("fix assignments carry only the configured build and test obligations", async () => {
+  const original = finding("transition", "High", "internal/state.go", 41);
+  const cases = [
+    {
+      verification: { build: "cargo build --workspace --locked", tests: "cargo test --workspace --locked" },
+      build: true,
+      tests: true,
+    },
+    {
+      verification: { build: "", tests: "cargo test --workspace --locked" },
+      build: false,
+      tests: true,
+    },
+    { verification: { build: "", tests: "" }, build: false, tests: false },
+    { verification: { build: "   ", tests: "\t " }, build: false, tests: false, whitespaceOnly: true },
+    { verification: undefined, build: false, tests: false },
+  ];
+  for (const expected of cases) {
+    const { calls } = await run(args([original], { verification: expected.verification }));
+    const prompt = calls[0].prompt;
+    assert.equal(
+      prompt.includes('Run this configured build command before returning: "cargo build --workspace --locked"'),
+      expected.build,
+    );
+    assert.equal(
+      prompt.includes('Run this configured test command before returning: "cargo test --workspace --locked"'),
+      expected.tests,
+    );
+    if (!expected.build) assert.doesNotMatch(prompt, /configured build/i);
+    if (!expected.tests) assert.doesNotMatch(prompt, /configured test/i);
+    if (expected.whitespaceOnly) assert.doesNotMatch(prompt, /\b(?:build|test|configured)\b/i);
+  }
+});
+
 test("fix write-ups keep the finding path and line", async () => {
   const original = finding("transition", "High", "internal/state.go", 41);
   const { result } = await run(args([original]));
@@ -188,7 +223,10 @@ test("single-wave mode dispatches every brief finding once and requests build an
   assert.equal(result.buildAndTestsRequired, true);
   assert.equal(result.rerunReview, false);
   assert.equal(result.sweepReview, null);
-  assert.equal(result.fixReview, null);
+  assert.deepEqual(result.fixReview.comments, [
+    { path: "a.go", body: "Repaired material.", new_position: 1 },
+    { path: "b.go", body: "Repaired minor.", new_position: 2 },
+  ]);
 });
 
 test("a failed single-wave brief fix is not retried and cannot pass the stage", async () => {
@@ -202,6 +240,7 @@ test("a failed single-wave brief fix is not retried and cannot pass the stage", 
   assert.equal(result.confirmedUnfixed.length, 1);
   assert.equal(result.confirmedUnfixed[0].attempts, 1);
   assert.equal(result.repairsComplete, false);
+  assert.equal(result.requestChangesReview, null);
   assert.equal(result.rerunReview, false);
 });
 
@@ -212,9 +251,42 @@ test("published review prose discusses code without process or round labels", as
 });
 
 test("incomplete review input dispatches no fix agents", async () => {
-  const { result, calls } = await run(args([], { review: { status: "incomplete", confirmedFindings: [] } }));
+  const { result, calls } = await run(args([], {
+    review: { status: "incomplete", reason: "verifier result is missing", confirmedFindings: [] },
+  }));
   assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, "fix preparation needs a complete review: verifier result is missing");
   assert.equal(calls.length, 0);
+});
+
+test("a malformed brief review keeps its diagnostic through effectful dispatch", async () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-malformed-"));
+  const guidancePath = join(root, "README.md");
+  const orientationPath = join(root, "orientation.json");
+  const reviewPath = join(root, "review.json");
+  writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
+  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
+  writeFileSync(reviewPath, JSON.stringify({
+    status: "complete",
+    reviewed: { target: "target111" },
+    confirmedFindings: [],
+  }));
+  const plan = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, "--single-wave"], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root },
+  }));
+  const calls = [];
+  const result = await script(
+    async () => { calls.push("called"); },
+    async (thunks) => Promise.all(thunks.map((thunk) => thunk())),
+    async () => [],
+    () => {},
+    () => {},
+    plan,
+  );
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, "fix preparation review needs reviewed.head as a non-empty string");
+  assert.deepEqual(calls, []);
 });
 
 test("direct fix input with empty guidance dispatches no fix agents", async () => {
@@ -268,12 +340,15 @@ test("the deterministic fix input carries configured loop knobs and the run reco
       MINOS_REVIEW_THRESHOLD: "Medium",
       MINOS_FIX_CLUSTER_CAP: "4",
       MINOS_MAX_ROUNDS: "8",
+      MINOS_BUILD_CMD: "make build",
+      MINOS_TEST_CMD: "make test",
     },
   }));
   assert.equal(input.threshold, "Medium");
   assert.equal(input.clusterCap, 4);
   assert.equal(input.maximumRounds, 8);
   assert.equal(input.runRecord.round, 3);
+  assert.deepEqual(input.verification, { build: "make build", tests: "make test" });
   assert.equal(input.guidance.content, "COMMISSION_VIOLET_719");
 });
 

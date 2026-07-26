@@ -1,0 +1,138 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: reconcile-target WORKSPACE BASE_SHA" >&2
+  exit 2
+fi
+
+workspace="$1"
+base_sha="$2"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+: "${MINOS_BASE_REF:?MINOS_BASE_REF is required}"
+
+state_file="${MINOS_RUN_DIR}/reconciliation.json"
+preimage_dir="${MINOS_RUN_DIR}/reconciliation/preimages"
+target_ref="refs/minos/target"
+
+if [ ! -f "$state_file" ]; then
+  echo "reconcile-target: reconciliation state is missing: $state_file" >&2
+  exit 1
+fi
+if ! git -C "$workspace" cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+  echo "reconcile-target: base head is not a commit: $base_sha" >&2
+  exit 1
+fi
+if ! git -C "$workspace" cat-file -e "${target_ref}^{commit}" 2>/dev/null; then
+  echo "reconcile-target: pinned target is missing: $target_ref" >&2
+  exit 1
+fi
+
+git_dir="$(git -C "$workspace" rev-parse --path-format=absolute --git-dir)"
+if [ -f "${git_dir}/MERGE_HEAD" ] || [ -d "${git_dir}/rebase-merge" ] || [ -d "${git_dir}/rebase-apply" ]; then
+  echo "reconcile-target: finish the current merge or rebase before reconciling again" >&2
+  exit 1
+fi
+if ! git -C "$workspace" diff --quiet || ! git -C "$workspace" diff --cached --quiet; then
+  echo "reconcile-target: tracked workspace changes would be overwritten" >&2
+  exit 1
+fi
+
+write_state() {
+  outcome="$1"
+  merge_sha="$2"
+  conflicts_json="$3"
+  preimages="$4"
+  auto_merge_tree="$5"
+  state_tmp="${state_file}.tmp"
+  jq \
+    --arg outcome "$outcome" \
+    --arg base_head "$base_sha" \
+    --arg merge "$merge_sha" \
+    --argjson conflicts "$conflicts_json" \
+    --arg preimages "$preimages" \
+    --arg auto_merge_tree "$auto_merge_tree" \
+    '. + {
+      outcome: $outcome,
+      baseHead: $base_head,
+      merge: (if $merge == "" then null else $merge end),
+      conflicts: $conflicts,
+      preimageDir: (if $preimages == "" then null else $preimages end),
+      autoMergeTree: (if $auto_merge_tree == "" then null else $auto_merge_tree end)
+    }' \
+    "$state_file" >"$state_tmp"
+  mv "$state_tmp" "$state_file"
+}
+
+record_unpushable() {
+  reconciliation_sha="$1"
+  common_dir="$(git -C "$workspace" rev-parse --path-format=absolute --git-common-dir)"
+  unpushable_file="${common_dir}/minos-unpushable"
+  if [ -e "$unpushable_file" ] && { [ ! -f "$unpushable_file" ] || [ ! -r "$unpushable_file" ]; }; then
+    echo "reconcile-target: reconciliation record is present but unreadable: $unpushable_file" >&2
+    exit 1
+  fi
+  if [ ! -f "$unpushable_file" ] || ! grep -Fxq "$reconciliation_sha" "$unpushable_file"; then
+    printf '%s\n' "$reconciliation_sha" >>"$unpushable_file"
+  fi
+  git -C "$workspace" update-ref refs/minos/reconciled "$reconciliation_sha"
+}
+
+git -C "$workspace" checkout --detach "$base_sha" >/dev/null
+rm -rf "$preimage_dir"
+
+if git -C "$workspace" merge-base --is-ancestor "$target_ref" "$base_sha"; then
+  write_state "unnecessary" "" "[]" "" ""
+  jq -nc '{outcome:"unnecessary",merge:null,conflicts:[]}'
+  exit 0
+fi
+
+message="Minos local reconciliation: merge ${MINOS_BASE_REF} into ${base_sha} — never pushed"
+if git -C "$workspace" merge --no-ff -m "$message" "$target_ref" >/dev/null 2>&1; then
+  reconciliation_sha="$(git -C "$workspace" rev-parse HEAD)"
+  record_unpushable "$reconciliation_sha"
+  write_state "reconciled" "$reconciliation_sha" "[]" "" ""
+  jq -nc --arg merge "$reconciliation_sha" '{outcome:"reconciled",merge:$merge,conflicts:[]}'
+  exit 0
+fi
+
+conflicts_json="$(git -C "$workspace" diff --name-only --diff-filter=U -z |
+  jq -Rs 'split("\u0000") | map(select(length > 0))')"
+if [ "$conflicts_json" = "[]" ]; then
+  if [ -f "${git_dir}/MERGE_HEAD" ] && ! git -C "$workspace" diff --cached --quiet; then
+    git -C "$workspace" commit -m "$message" >/dev/null
+    reconciliation_sha="$(git -C "$workspace" rev-parse HEAD)"
+    record_unpushable "$reconciliation_sha"
+    write_state "reconciled" "$reconciliation_sha" "[]" "" ""
+    jq -nc --arg merge "$reconciliation_sha" '{outcome:"reconciled",merge:$merge,conflicts:[]}'
+    exit 0
+  fi
+  echo "reconcile-target: merge failed without conflicted paths" >&2
+  exit 1
+fi
+
+mkdir -p "$preimage_dir"
+git -C "$workspace" diff --name-only --diff-filter=U |
+  while IFS= read -r conflict_path; do
+    mkdir -p "$preimage_dir/$(dirname "$conflict_path")"
+    cp "$workspace/$conflict_path" "$preimage_dir/$conflict_path"
+  done
+
+index_path="$(git -C "$workspace" rev-parse --path-format=absolute --git-path index)"
+normalised_index="$(mktemp)"
+cleanup_index() {
+  rm -f "$normalised_index"
+}
+trap cleanup_index EXIT HUP INT TERM
+cp "$index_path" "$normalised_index"
+printf '%s\n' "$conflicts_json" | jq -r '.[]' |
+  while IFS= read -r conflict_path; do
+    GIT_INDEX_FILE="$normalised_index" \
+      git -C "$workspace" update-index --force-remove -- "$conflict_path"
+  done
+auto_merge_tree="$(GIT_INDEX_FILE="$normalised_index" git -C "$workspace" write-tree)"
+cleanup_index
+trap - EXIT HUP INT TERM
+
+write_state "conflict" "" "$conflicts_json" "$preimage_dir" "$auto_merge_tree"
+jq -nc --argjson conflicts "$conflicts_json" '{outcome:"conflict",merge:null,conflicts:$conflicts}'

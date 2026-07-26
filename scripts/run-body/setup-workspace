@@ -7,6 +7,10 @@ set -eu
 : "${MINOS_REPO_NAME:?MINOS_REPO_NAME is required}"
 : "${MINOS_PR:?MINOS_PR is required}"
 : "${MINOS_HEAD_SHA:?MINOS_HEAD_SHA is required}"
+: "${MINOS_TARGET_SHA:?MINOS_TARGET_SHA is required}"
+: "${MINOS_BASE_REF:?MINOS_BASE_REF is required}"
+: "${MINOS_HEAD_BRANCH:?MINOS_HEAD_BRANCH is required}"
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 : "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
 : "${MINOS_ORIENTATION:?MINOS_ORIENTATION is required}"
 : "${MINOS_GIT_AUTHOR_NAME:?MINOS_GIT_AUTHOR_NAME is required}"
@@ -56,6 +60,25 @@ if [ -z "$repository_url" ]; then
   echo "setup-workspace: pull request omitted the source repository clone URL" >&2
   exit 1
 fi
+target_repository_url="$(jq -r '.base.repo.clone_url // ""' "$response_file")"
+if [ -z "$target_repository_url" ]; then
+  echo "setup-workspace: pull request omitted the target repository clone URL" >&2
+  exit 1
+fi
+head_repository="$(jq -r '.head.repo.full_name // ""' "$response_file")"
+base_repository="$(jq -r '.base.repo.full_name // ""' "$response_file")"
+observed_head_branch="$(jq -r '.head.ref // ""' "$response_file")"
+is_fork=false
+if [ -n "$head_repository" ] && [ -n "$base_repository" ]; then
+  [ "$head_repository" = "$base_repository" ] || is_fork=true
+elif [ "$repository_url" != "$target_repository_url" ]; then
+  is_fork=true
+fi
+case "$observed_head_branch" in
+  ""|refs/pull/*/head) has_publication=false ;;
+  *) has_publication=true ;;
+esac
+[ "$is_fork" = false ] || has_publication=false
 
 git -c "http.extraHeader=Authorization: token ${forge_token}" clone --no-checkout "$repository_url" "$MINOS_WORKSPACE"
 git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
@@ -67,6 +90,26 @@ fi
 git -C "$MINOS_WORKSPACE" config user.name "$MINOS_GIT_AUTHOR_NAME"
 git -C "$MINOS_WORKSPACE" config user.email "$MINOS_GIT_AUTHOR_EMAIL"
 git -C "$MINOS_WORKSPACE" config http.extraHeader "Authorization: token ${forge_token}"
+git -C "$MINOS_WORKSPACE" config rerere.enabled true
+git -C "$MINOS_WORKSPACE" config rerere.autoUpdate true
+git -C "$MINOS_WORKSPACE" config merge.conflictStyle zdiff3
+
+script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+common_dir="$(git -C "$MINOS_WORKSPACE" rev-parse --path-format=absolute --git-common-dir)"
+mkdir -p "$common_dir/hooks"
+# This hook binds every checkout sharing the common Git directory and refuses
+# pushes containing recorded reconciliation ancestry. It does not identify the
+# caller or constrain pushes of other ancestry; a separate clone inherits
+# neither the hook nor its reconciliation record.
+install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
+
+git -C "$MINOS_WORKSPACE" fetch --no-tags "$target_repository_url" \
+  "+refs/heads/${MINOS_BASE_REF}:refs/minos/target"
+observed_target="$(git -C "$MINOS_WORKSPACE" rev-parse refs/minos/target)"
+if [ "$observed_target" != "$MINOS_TARGET_SHA" ]; then
+  echo "setup-workspace: pull-request target moved from $MINOS_TARGET_SHA to $observed_target" >&2
+  exit 1
+fi
 
 annexe_name="${MINOS_REPO_NAME}-Annexe"
 annexe_path="$(dirname "$MINOS_WORKSPACE")/${annexe_name}"
@@ -119,3 +162,33 @@ case "$response_status" in
     exit 1
     ;;
 esac
+
+publication_path=""
+if [ "$has_publication" = true ]; then
+  publication_path="${MINOS_RUN_DIR}/publication"
+  git -C "$MINOS_WORKSPACE" worktree add -B "$MINOS_HEAD_BRANCH" \
+    "$publication_path" "$MINOS_HEAD_SHA"
+fi
+
+jq -n \
+  --argjson fork "$is_fork" \
+  --arg target "$MINOS_TARGET_SHA" \
+  --arg target_branch "$MINOS_BASE_REF" \
+  --arg target_repository_url "$target_repository_url" \
+  --arg base_head "$MINOS_HEAD_SHA" \
+  --arg publication "$publication_path" \
+  '{
+    outcome:"unnecessary",
+    fork:$fork,
+    target:$target,
+    targetBranch:$target_branch,
+    targetRepositoryUrl:$target_repository_url,
+    baseHead:$base_head,
+    merge:null,
+    conflicts:[],
+    preimageDir:null,
+    autoMergeTree:null,
+    publication:(if $publication == "" then null else $publication end)
+  }' >"${MINOS_RUN_DIR}/reconciliation.json"
+
+"$script_dir/reconcile-target" "$MINOS_WORKSPACE" "$MINOS_HEAD_SHA"

@@ -522,6 +522,18 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "run-record-adjudicator.mjs"), []byte("export function adjudicate() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "workflows", "setup-briefs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "setup.js"), []byte("export const meta = {};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "setup-briefs", "setup-agent.md"), []byte("# Setup\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "setup_test.mjs"), []byte("must not install\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	destination := filepath.Join(t.TempDir(), "opt", "minos")
 	cmd := exec.Command(filepath.Join(sourceRoot, "scripts", "install-review-runtime"), destination)
@@ -534,8 +546,13 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 		filepath.Join(destination, "runtime", "ensemble.source-version"),
 		filepath.Join(destination, "workflows", "adjudicated-review"),
 		filepath.Join(destination, "workflows", "run-record-adjudicator.mjs"),
+		filepath.Join(destination, "workflows", "setup.js"),
+		filepath.Join(destination, "workflows", "setup-briefs", "setup-agent.md"),
 	} {
 		assertRegularFile(t, path)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "workflows", "setup_test.mjs")); !os.IsNotExist(err) {
+		t.Fatalf("workflow test was installed or stat failed unexpectedly: %v", err)
 	}
 	info, err := os.Stat(filepath.Join(destination, "workflows", "adjudicated-review"))
 	if err != nil {

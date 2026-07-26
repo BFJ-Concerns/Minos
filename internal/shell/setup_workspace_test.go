@@ -162,7 +162,10 @@ func newSetupForge(t *testing.T, head, repository, annexe string) *httptest.Serv
 		switch r.URL.Path {
 		case "/api/v1/repos/owner/repository/pulls/17":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"head":{"sha":%q,"repo":{"clone_url":%q}}}`, head, repository)
+			_, _ = fmt.Fprintf(w, `{
+				"head":{"sha":%q,"ref":"feature","repo":{"clone_url":%q,"full_name":"owner/repository"}},
+				"base":{"ref":"main","repo":{"clone_url":%q,"full_name":"owner/repository"}}
+			}`, head, repository, repository)
 		case "/api/v1/repos/owner/repository-Annexe":
 			if annexe == "" {
 				http.Error(w, "not found", http.StatusNotFound)
@@ -180,13 +183,18 @@ func newSetupForge(t *testing.T, head, repository, annexe string) *httptest.Serv
 
 func runSetupWorkspace(t *testing.T, apiBase, runDir, workspace, orientation, head string) {
 	t.Helper()
-	cmd := setupWorkspaceCommand(t, apiBase, runDir, workspace, orientation, head)
+	cmd := setupWorkspaceCommandForTarget(t, apiBase, runDir, workspace, orientation, head, head)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("setup-workspace failed: %v\n%s", err, output)
 	}
 }
 
 func setupWorkspaceCommand(t *testing.T, apiBase, runDir, workspace, orientation, head string) *exec.Cmd {
+	t.Helper()
+	return setupWorkspaceCommandForTarget(t, apiBase, runDir, workspace, orientation, head, head)
+}
+
+func setupWorkspaceCommandForTarget(t *testing.T, apiBase, runDir, workspace, orientation, head, target string) *exec.Cmd {
 	t.Helper()
 	credential := filepath.Join(runDir, "forge.token")
 	if err := os.WriteFile(credential, []byte("forge-token\n"), 0o600); err != nil {
@@ -201,6 +209,10 @@ func setupWorkspaceCommand(t *testing.T, apiBase, runDir, workspace, orientation
 		"MINOS_REPO_NAME=repository",
 		"MINOS_PR=17",
 		"MINOS_HEAD_SHA="+head,
+		"MINOS_TARGET_SHA="+target,
+		"MINOS_BASE_REF=main",
+		"MINOS_HEAD_BRANCH=feature",
+		"MINOS_RUN_DIR="+runDir,
 		"MINOS_WORKSPACE="+workspace,
 		"MINOS_ORIENTATION="+orientation,
 		"MINOS_GIT_AUTHOR_NAME=Minos",
