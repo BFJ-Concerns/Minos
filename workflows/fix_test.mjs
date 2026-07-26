@@ -258,8 +258,8 @@ test("single-wave mode dispatches every brief finding once and requests build an
   assert.equal(result.rerunReview, false);
   assert.equal(result.sweepReview, null);
   assert.deepEqual(result.fixReview.comments, [
-    { path: "a.go", body: "Repaired material.", new_position: 1 },
-    { path: "b.go", body: "Repaired minor.", new_position: 2 },
+    { path: "a.go", body: "Repaired material.", line: 1 },
+    { path: "b.go", body: "Repaired minor.", line: 2 },
   ]);
 });
 

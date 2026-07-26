@@ -163,7 +163,7 @@ test("the publication executable carries the finding through forge confirmation 
   assert.equal(calls[0].comments.length, 1);
   assert.match(calls[0].comments[0].body, new RegExp(SENTINEL));
   assert.equal(calls[0].comments[0].path, "internal/state.go");
-  assert.equal(calls[0].comments[0].new_position, 41);
+  assert.equal(calls[0].comments[0].line, 41);
 
   assert.equal(calls[1].command, process.execPath);
   assert.deepEqual(calls[1].args.slice(0, 3), [

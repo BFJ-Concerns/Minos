@@ -393,19 +393,15 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
         { encoding: "utf8", env: fixture.env },
       );
       const publication = JSON.parse(stdout);
+      const durableReview = fixture.state.reviews[0];
       const durableComments = fixture.state.comments.get(1) || [];
       assert.equal(publication.outcome, "applied");
       assert.equal(fixture.state.postCount, 1);
       assert.ok(fixture.state.commentReadCount > 0);
-      assert.deepEqual(durableComments.map((comment) => ({
-        path: comment.path,
-        anchored: typeof comment.diff_hunk === "string" && comment.diff_hunk !== "",
-        body: comment.body,
-      })), [{
-        path: "src/brief-scope.rs",
-        anchored: true,
-        body: writeUp,
-      }]);
+      assert.deepEqual(durableComments, []);
+      assert.match(durableReview.body, new RegExp(writeUp));
+      assert.match(durableReview.body, /src\/brief-scope\.rs/);
+      assert.match(durableReview.body, /\b73\b/);
     } finally {
       await fixture.close();
     }
