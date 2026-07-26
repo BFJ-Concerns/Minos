@@ -126,9 +126,12 @@ var hunkHeader = regexp.MustCompile(`^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9
 func newSideIntervals(diff []byte) map[string][][2]int64 {
 	intervals := make(map[string][][2]int64)
 	currentPath := ""
-	for _, rawLine := range bytes.Split(diff, []byte{'\n'}) {
+	lines := bytes.Split(diff, []byte{'\n'})
+	for index, rawLine := range lines {
 		line := string(rawLine)
-		if strings.HasPrefix(line, "+++ ") {
+		if index > 0 &&
+			strings.HasPrefix(string(lines[index-1]), "--- ") &&
+			strings.HasPrefix(line, "+++ ") {
 			currentPath = diffNewPath(strings.TrimPrefix(line, "+++ "))
 			continue
 		}

@@ -44,6 +44,44 @@ diff --git a/deleted.txt b/deleted.txt
 	}
 }
 
+func TestNewSideIntervalsDistinguishesAddedContentFromHeaders(t *testing.T) {
+	workspace := t.TempDir()
+	runGit(t, workspace, "init", "-q")
+	runGit(t, workspace, "config", "user.name", "Minos Test")
+	runGit(t, workspace, "config", "user.email", "minos@example.invalid")
+
+	lines := make([]string, 20)
+	for index := range lines {
+		lines[index] = "unchanged"
+	}
+	writeReviewFixtureFile(t, workspace, "src/content.txt", strings.Join(lines, "\n")+"\n")
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-q", "-m", "target")
+	target := strings.TrimSpace(gitOutput(t, workspace, "rev-parse", "HEAD"))
+
+	lines = append(lines[:2], append([]string{"++ payload"}, lines[2:]...)...)
+	lines[15] = "changed later"
+	writeReviewFixtureFile(t, workspace, "src/content.txt", strings.Join(lines, "\n")+"\n")
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-q", "-m", "head")
+	head := strings.TrimSpace(gitOutput(t, workspace, "rev-parse", "HEAD"))
+
+	diff, err := mergeBaseDiff(t.Context(), workspace, target, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(diff), "\n+++ payload\n") {
+		t.Fatalf("real diff did not expose the ambiguous content line:\n%s", diff)
+	}
+	intervals := newSideIntervals(diff)
+	if len(intervals["src/content.txt"]) != 2 {
+		t.Fatalf("real path intervals = %#v, all intervals = %#v", intervals["src/content.txt"], intervals)
+	}
+	if _, exists := intervals["payload"]; exists {
+		t.Fatalf("added content became a file path: %#v", intervals)
+	}
+}
+
 func TestAnchorReviewCommentsSplitsMembersAndRendersTruthfulFallback(t *testing.T) {
 	workspace, target, head := anchoredReviewRepository(t)
 	requested := []requestedReviewComment{
