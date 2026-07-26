@@ -149,6 +149,29 @@ test("path scope gates full-extent width independently of extent", async () => {
   assert.equal(missed.result.briefs[0].skipKind, "empty");
 });
 
+test("a triggered brief with a missing scope is recorded as misconfigured instead of widening", async () => {
+  const candidate = brief(
+    ".review/missing/scoped.md",
+    "---\nextent: full\nsweep: whole-tree\noccasion: release\n---\nJudge the missing scope.",
+    { scopeExists: false },
+  );
+  const { result, calls } = await run(args({
+    briefs: [candidate],
+    occasion: "release",
+    changedPaths: ["pkg/x.go"],
+  }));
+
+  assert.equal(calls.length, 0);
+  assert.deepEqual(result.dispatches, []);
+  assert.deepEqual(result.briefs, [{
+    brief: candidate.path,
+    title: "Scoped",
+    status: "skipped",
+    skipKind: "misconfigured-scope",
+    reason: "brief scope missing/ matches no repository directory",
+  }]);
+});
+
 test("per-file partitioning follows repository structure and clamps to a lossless plan", async () => {
   const trackedFiles = [
     ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/api/f${index}.go`, bytes: 10 })),

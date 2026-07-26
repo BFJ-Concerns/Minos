@@ -55,6 +55,13 @@ function deterministicDisposition(brief, front, occasion, changedPaths) {
       reason: "brief declares no relevance, occasion, or path-scope trigger",
     };
   }
+  if (hasPathScope && brief.scopeExists === false) {
+    return {
+      status: "skipped",
+      skipKind: "misconfigured-scope",
+      reason: `brief scope ${brief.scope}/ matches no repository directory`,
+    };
+  }
   // Occasion is a veto: a brief that names occasions runs only on a run that
   // names a matching one, whatever else it declares — it selects which runs the
   // brief applies to. A brief naming no occasion is unrestricted by occasion.
@@ -302,32 +309,27 @@ function scopeInventory(scope) {
   return input.trackedFiles.filter((entry) => !scope || entry.path === scope || entry.path.startsWith(scope + "/"));
 }
 
-function makeUnit(candidate, files, suffix, warning, concern) {
+function makeUnit(candidate, files, suffix, concern) {
   const { brief, front, base } = candidate;
   return {
     brief: brief.path,
     briefContent: brief.content,
     title: base.title,
     extent: front.extent,
-    scope: warning ? null : brief.scope,
+    scope: brief.scope,
     files,
     concern,
-    warning,
     label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-claude`,
   };
 }
 
 const partitionRequests = runnable.map((candidate, index) => {
   const { brief, front } = candidate;
-  const warning = brief.scope && !brief.scopeExists
-    ? `brief scope ${brief.scope}/ matches no repository directory; ran repo-wide instead`
-    : null;
-  const inventory = front.extent === "full" ? scopeInventory(warning ? null : brief.scope) : [];
+  const inventory = front.extent === "full" ? scopeInventory(brief.scope) : [];
   if (front.extent !== "full" || front.sweep !== "per-file" || inventory.length === 0) return null;
   return {
     candidate,
     inventory,
-    warning,
     label: `brief-partition-${index + 1}-${slug(brief.path)}-gpt`,
   };
 }).filter(Boolean);
@@ -359,7 +361,6 @@ if (partitionRequests.length > 0) {
         ...request.candidate.base,
         status: "not-run",
         reason: "partition exploration returned no usable result",
-        ...(request.warning ? { warning: request.warning } : {}),
       });
       return;
     }
@@ -370,21 +371,18 @@ if (partitionRequests.length > 0) {
 const dispatched = [];
 for (const candidate of runnable) {
   const { brief, front } = candidate;
-  const warning = brief.scope && !brief.scopeExists
-    ? `brief scope ${brief.scope}/ matches no repository directory; ran repo-wide instead`
-    : null;
   if (front.extent !== "full") {
-    dispatched.push(makeUnit(candidate, [], null, warning, null));
+    dispatched.push(makeUnit(candidate, [], null, null));
     continue;
   }
-  const inventory = scopeInventory(warning ? null : brief.scope);
+  const inventory = scopeInventory(brief.scope);
   if (front.sweep === "per-file" && inventory.length > 0) {
     const partition = partitions.get(brief.path);
     if (!partition) continue;
     partition.forEach((unit, index) =>
-      dispatched.push(makeUnit(candidate, unit.files, index + 1, warning, unit.concern)));
+      dispatched.push(makeUnit(candidate, unit.files, index + 1, unit.concern)));
   } else {
-    dispatched.push(makeUnit(candidate, inventory.map((entry) => entry.path), null, warning, null));
+    dispatched.push(makeUnit(candidate, inventory.map((entry) => entry.path), null, null));
   }
 }
 
@@ -429,7 +427,6 @@ dispatched.forEach((unit, unitIndex) => {
       title: unit.title,
       status: "not-run",
       reason: "specialist returned no result",
-      ...(unit.warning ? { warning: unit.warning } : {}),
     });
     return;
   }
@@ -449,7 +446,6 @@ dispatched.forEach((unit, unitIndex) => {
       title: unit.title,
       status: "run",
       reason: "applicable concern reviewed",
-      ...(unit.warning ? { warning: unit.warning } : {}),
     });
   result.findings.forEach((finding, findingIndex) =>
     proposed.push({ unit, unitIndex, finding, findingIndex }));
