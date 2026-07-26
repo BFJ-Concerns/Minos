@@ -569,6 +569,42 @@ func TestRebuildEstateReviewCompletionReactionJourneys(t *testing.T) {
 	}
 }
 
+func TestRebuildEstateBriefFixIncompleteResultStopsBeforeSuccessFields(t *testing.T) {
+	lifecyclePath := filepath.Join("..", "..", "lifecycle", "lifecycle.md")
+	lifecycle, err := os.ReadFile(lifecyclePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	instruction := string(lifecycle)
+	start := strings.Index(instruction, `> "$MINOS_RUN_DIR/brief-fix-result.json"`)
+	if start < 0 {
+		t.Fatal("lifecycle omits the brief-fix result")
+	}
+	end := strings.Index(instruction[start:], "`integration.commits`")
+	if end < 0 {
+		t.Fatal("lifecycle omits the brief-fix success fields")
+	}
+	briefFixStop := instruction[start : start+end]
+
+	for _, clause := range []string{
+		"Before reading any other result field, read `status`.",
+		"If it is `incomplete`",
+		"append its `reason` to `$MINOS_FAILURE_LOG`",
+		"set `\"$MINOS_BIN\" forge status",
+		`CURRENT_HEAD "$MINOS_TARGET_SHA" incomplete`,
+		`remove the 👀 with`,
+		`"$MINOS_BIN" forge reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`,
+		"write the non-clean terminal marker, and stop",
+	} {
+		at := strings.Index(briefFixStop, clause)
+		if at < 0 {
+			t.Fatalf("brief-fix incomplete stop omits %q", clause)
+		}
+		briefFixStop = briefFixStop[at+len(clause):]
+	}
+}
+
 func TestRebuildEstateAllRunReachedTerminalOutcomesBindEyesCleanup(t *testing.T) {
 	lifecyclePath := filepath.Join("..", "..", "lifecycle", "lifecycle.md")
 	lifecycle, err := os.ReadFile(lifecyclePath)
