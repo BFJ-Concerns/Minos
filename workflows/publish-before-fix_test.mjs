@@ -313,6 +313,60 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
+  await t.test("a single-wave fixer write-up reaches the durable review surface", async () => {
+    const writeUp = "BRIEF-FIX-WRITE-UP-SENTINEL-719";
+    const preparedInput = input([finding({
+      path: "src/brief-scope.rs",
+      line: 73,
+    })], { singleWave: true });
+    const plan = prepareFixWave(preparedInput);
+    const agent = async (prompt, options) => ({
+      commit: `${options.label}-commit`,
+      fixes: assignedFindings(prompt).map((item) => ({
+        findingKey: item.key,
+        status: "fixed",
+        writeUp,
+      })),
+    });
+    const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk()));
+    const fixResult = await fixScript(agent, parallel, async () => [], () => {}, () => {}, plan);
+    assert.ok(
+      fixResult.fixReview,
+      "the single-wave result must expose the fixer write-up to the lifecycle publication consumer",
+    );
+
+    const materialised = mkdtempSync(join(tmpdir(), "minos-brief-fix-review-"));
+    const bodyPath = join(materialised, "body.md");
+    const commentsPath = join(materialised, "comments.json");
+    writeFileSync(bodyPath, fixResult.fixReview.body, { mode: 0o600 });
+    writeFileSync(commentsPath, JSON.stringify(fixResult.fixReview.comments), { mode: 0o600 });
+
+    const fixture = await forgeFixture();
+    try {
+      const output = execFileSync(
+        minosBin,
+        ["forge", "review", HEAD, TARGET, "comment", bodyPath, commentsPath],
+        { encoding: "utf8", env: fixture.env },
+      );
+      const publication = JSON.parse(output);
+      const durableComments = fixture.state.comments.get(1) || [];
+      assert.equal(publication.outcome, "applied");
+      assert.equal(fixture.state.postCount, 1);
+      assert.ok(fixture.state.commentReadCount > 0);
+      assert.deepEqual(durableComments.map((comment) => ({
+        path: comment.path,
+        position: comment.position,
+        body: comment.body,
+      })), [{
+        path: "src/brief-scope.rs",
+        position: 73,
+        body: writeUp,
+      }]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   await t.test("an exact pre-existing review crosses the barrier without another POST", async () => {
     const preparedInput = input();
     const plan = prepareFixWave(preparedInput);

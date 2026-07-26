@@ -61,6 +61,18 @@ async function run(input, respond = (label, prompt) => ({
   return { result, calls };
 }
 
+function verificationActionsUnderstoodByWorker(prompt) {
+  const actions = new Set();
+  for (const sentence of prompt.split(/(?<=[.!?])\s+|\n+/)) {
+    const instruction = sentence.trim();
+    const isWorkerDirective = /^(?:before [^,]+,\s*)?(?:you (?:must|need to|are required to)\s+)?(?:run|execute)\b/i.test(instruction);
+    if (!isWorkerDirective || !/\bconfigured\b/i.test(instruction)) continue;
+    if (/\bbuild\b/i.test(instruction)) actions.add("build");
+    if (/\btests?\b/i.test(instruction)) actions.add("tests");
+  }
+  return [...actions];
+}
+
 test("a High plus two Lows is working, posts all findings, and dispatches all fixes", async () => {
   const findings = [
     finding("unsafe transition", "High", "a.go", 4),
@@ -188,7 +200,31 @@ test("single-wave mode dispatches every brief finding once and requests build an
   assert.equal(result.buildAndTestsRequired, true);
   assert.equal(result.rerunReview, false);
   assert.equal(result.sweepReview, null);
-  assert.equal(result.fixReview, null);
+});
+
+test("a fix worker actually performs the configured build and test verification it is assigned", async () => {
+  const actions = [];
+  const original = finding("transition", "High", "internal/state.go", 41);
+  const { result, calls } = await run(
+    args([original], { singleWave: true }),
+    (label, prompt) => {
+      actions.push(...verificationActionsUnderstoodByWorker(prompt));
+      const verified = actions.includes("build") && actions.includes("tests");
+      return {
+        commit: verified ? `${label}-verified-commit` : "",
+        fixes: assignedFindings(prompt).map((item) => ({
+          findingKey: item.key,
+          status: verified ? "fixed" : "failed",
+          writeUp: verified ? "Repair passed configured build and tests." : "Verification was not assigned.",
+        })),
+      };
+    },
+  );
+
+  assert.deepEqual(actions, ["build", "tests"]);
+  assert.equal(calls.length, 1);
+  assert.equal(result.repairsComplete, true);
+  assert.deepEqual(result.integration.commits, ["brief-fix-cluster-1-verified-commit"]);
 });
 
 test("a failed single-wave brief fix is not retried and cannot pass the stage", async () => {
