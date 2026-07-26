@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -111,9 +112,15 @@ function input() {
 function runWrapper(t, scenario) {
   const operationRoot = mkdtempSync(join(tmpdir(), "minos-publication-wrapper-"));
   t.after(() => rmSync(operationRoot, { recursive: true, force: true }));
+  const publication = join(operationRoot, "publication");
   const inputPath = join(operationRoot, "fix-input.json");
   const preloadPath = join(operationRoot, "record-children.mjs");
   const recorderPath = join(operationRoot, "child-calls.json");
+  mkdirSync(publication);
+  writeFileSync(
+    join(operationRoot, "reconciliation.json"),
+    JSON.stringify({ publication }),
+  );
   writeFileSync(inputPath, JSON.stringify(input()));
   writeFileSync(preloadPath, preloadSource);
 
@@ -127,6 +134,7 @@ function runWrapper(t, scenario) {
       MINOS_ENSEMBLE_LAUNCHER: "/recorded/ensemble.mjs",
       MINOS_PUBLICATION_RECORDER: recorderPath,
       MINOS_PUBLICATION_SCENARIO: scenario,
+      MINOS_RUN_DIR: operationRoot,
     },
   });
 
@@ -136,11 +144,12 @@ function runWrapper(t, scenario) {
   return {
     result: JSON.parse(processResult.stdout),
     calls: JSON.parse(readFileSync(recorderPath, "utf8")),
+    publication,
   };
 }
 
 test("the publication executable carries the finding through forge confirmation before dispatch", (t) => {
-  const { result, calls } = runWrapper(t, "applied");
+  const { result, calls, publication } = runWrapper(t, "applied");
 
   assert.equal(calls.length, 2);
   assert.equal(calls[0].command, "/recorded/minos");
@@ -163,6 +172,7 @@ test("the publication executable carries the finding through forge confirmation 
     `@${calls[1].planPath}`,
   ]);
   assert.equal(calls[1].args[3], join(workflowsDir, "fix.js"));
+  assert.equal(calls[1].cwd, publication);
   assert.match(JSON.stringify(calls[1].plan), new RegExp(SENTINEL));
   assert.equal(
     [calls[0].bodyPath, calls[0].commentsPath, calls[1].planPath].every((path) => !existsSync(path)),
