@@ -334,17 +334,122 @@ func TestRunBodyFailsLoudlyWhenFailureLogIsUnwritable(t *testing.T) {
 	}
 }
 
-func TestRunBodyRecognisesRealClaudeTerminalStates(t *testing.T) {
-	for _, state := range []string{"done", "blocked", "failed", "stopped"} {
+func TestRunBodyKeepsWaitingLeadsAlive(t *testing.T) {
+	for _, state := range []string{"done", "blocked"} {
+		t.Run(state, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			fixture.run(t, map[string]string{
+				"MINOS_TEST_PENDING_STATE": state,
+				"MINOS_TEST_WAIT_POLLS":    "3",
+			})
+			assertContainsFile(t, fixture.record+".terminal", `"status":null`)
+			assertContainsFile(t, fixture.record+".waiting-states", state)
+			assertContainsFile(t, fixture.record+".survived", "3")
+			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+func TestRunBodyStopsLeadAfterCleanMarker(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, map[string]string{
+		"MINOS_TEST_TERMINAL_STATE":     "done",
+		"MINOS_TEST_WRITE_CLEAN_MARKER": "1",
+	})
+
+	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "clean")
+	assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
+	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
+	for _, state := range []string{"failed", "stopped"} {
 		t.Run(state, func(t *testing.T) {
 			fixture := newRunBodyFixture(t)
 			fixture.run(t, map[string]string{"MINOS_TEST_TERMINAL_STATE": state})
-			assertContainsFile(t, fixture.record+".terminal", `"status":null`)
 			assertContainsFile(t, fixture.record+".terminal", `"state":"`+state+`"`)
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 			fixture.assertProcessesStopped(t)
 		})
 	}
+}
+
+func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, map[string]string{
+		"MINOS_TEST_TERMINAL_STATE":  "done",
+		"MINOS_LEAD_SILENCE_TIMEOUT": "0",
+		"MINOS_CLAUDE_POLL_SECONDS":  "0",
+	})
+
+	assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
+	assertContainsFile(t, fixture.record+".attempts", "1")
+	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyRejectsInvalidSilenceTimeout(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": "one-hour"})
+	if err == nil {
+		t.Fatalf("run-body accepted an invalid silence timeout\n%s", output)
+	}
+	if !strings.Contains(string(output), "MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds") {
+		t.Fatalf("run-body did not report the invalid silence timeout\n%s", output)
+	}
+	assertFailureLine(
+		t,
+		fixture.failureLog,
+		"stage=configuration",
+		"cause=MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds",
+	)
+}
+
+// A digit string too large for shell integer arithmetic used to pass
+// validation and then make the backstop comparison error on every poll, which
+// removed the backstop entirely rather than lengthening it — a fat-fingered
+// value in run-body.env would leave a hung run to the systemd limit with no
+// other signal.
+func TestRunBodyRejectsOutOfRangeSilenceTimeout(t *testing.T) {
+	for _, value := range []string{"99999999999999999999", "604801"} {
+		t.Run(value, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": value})
+			if err == nil {
+				t.Fatalf("run-body accepted an out-of-range silence timeout\n%s", output)
+			}
+			if !strings.Contains(string(output), "MINOS_LEAD_SILENCE_TIMEOUT") {
+				t.Fatalf("run-body did not report the out-of-range silence timeout\n%s", output)
+			}
+			assertFailureLine(t, fixture.failureLog, "stage=configuration")
+		})
+	}
+}
+
+func TestRunBodyResetsSilenceTimeoutWhenLeadProducesOutput(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, map[string]string{
+		"MINOS_TEST_TERMINAL_STATE":  "done",
+		"MINOS_TEST_OUTPUT_POLLS":    "6",
+		"MINOS_LEAD_SILENCE_TIMEOUT": "1",
+		"MINOS_CLAUDE_POLL_SECONDS":  "0.25",
+	})
+
+	attemptsData, err := os.ReadFile(fixture.record + ".attempts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := strconv.Atoi(strings.TrimSpace(string(attemptsData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts < 7 {
+		t.Fatalf("Claude agent queries = %d, want at least 7 after timeline output reset the silence deadline", attempts)
+	}
+	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	fixture.assertProcessesStopped(t)
 }
 
 func TestRunBodyRetriesTransientAgentQuery(t *testing.T) {
@@ -544,6 +649,9 @@ case "$1" in
     sleep 300 </dev/null >/dev/null 2>&1 &
     task_pid=$!
     printf '%s\n%s\n' "$lead_pid" "$task_pid" >"$record.pids"
+    if [ "${MINOS_TEST_WRITE_CLEAN_MARKER:-}" = "1" ]; then
+      printf 'clean\n' >"$MINOS_RUN_DIR/lead-complete"
+    fi
     printf 'Agent backgrounded: abcdef12\n'
     ;;
   agents)
@@ -558,7 +666,23 @@ case "$1" in
       exit 1
     fi
     printf 'agents\n' >>"$record.calls"
-    terminal_state="${MINOS_TEST_TERMINAL_STATE:-done}"
+    while IFS= read -r pid; do
+      kill -0 "$pid"
+    done <"$record.pids"
+    printf '%s\n' "$attempts" >>"$record.survived"
+    terminal_state="${MINOS_TEST_TERMINAL_STATE:-failed}"
+    wait_polls="${MINOS_TEST_WAIT_POLLS:-0}"
+    if [ "$attempts" -le "$wait_polls" ]; then
+      terminal_state="${MINOS_TEST_PENDING_STATE:?}"
+      printf '%s\n' "$terminal_state" >>"$record.waiting-states"
+    fi
+    output_polls="${MINOS_TEST_OUTPUT_POLLS:-0}"
+    if [ "$attempts" -le "$output_polls" ]; then
+      timeline="$CLAUDE_CONFIG_DIR/jobs/abcdef12/timeline.jsonl"
+      mkdir -p "$(dirname "$timeline")"
+      printf '{"at":%s,"state":"working","detail":"fixture output","text":"fixture output"}\n' \
+        "$attempts" >>"$timeline"
+    fi
     printf '[{"id":"abcdef12","sessionId":"session-one","status":null,"state":"%s"}]\n' "$terminal_state" |
       tee "$record.terminal"
     ;;

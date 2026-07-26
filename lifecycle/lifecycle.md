@@ -22,6 +22,13 @@ helper actually reported, not a restatement of the status. This line is the
 operator's durable record of why a run did not converge — the only trace once the
 run's scratch is gone — so write the real reason.
 
+Whenever you stop after a clean, converged pass, run
+`printf 'clean\n' > "$MINOS_RUN_DIR/lead-complete"`. This is an absolute
+terminal obligation, symmetric with recording a non-clean stop. Run it only
+after all final forge writes and cleanup have succeeded, as your last action
+before ending the turn; the supervisor treats it as proof that there is no work
+or wake still pending.
+
 1. The setup script has cloned the repository at the observed pull-request head
    into `$MINOS_WORKSPACE`, refused setup if that head moved while cloning, and
    recorded its orientation in
@@ -48,20 +55,41 @@ run's scratch is gone — so write the real reason.
 4. Run every Ensemble workflow in this lifecycle from this accountable lead
    session. Never delegate its invocation to an agent or subagent;
    responsibility for orchestration remains with the lead. Launch each such
-   workflow as a **background** command — never in the foreground, where a stage
-   that runs longer than the session's ten-minute command limit is killed
-   mid-run (exit 143), its agents wasted and its scratch orphaned. This governs
-   every Ensemble command block below — the main review, the fix waves, the
-   brief review, the brief fix: each block shows the command and where its
-   verdict is redirected, but you always run it as a background task, not as the
-   foreground command it is written as. Redirect the verdict to the named result
-   file and diagnostics to a `.log` beside it, launch it in the background, and
-   wait for the background **process itself to exit** — not merely for the
-   result file to appear, which redirection creates immediately and half-written.
-   Only once the process has exited is the result file complete: then read it and
-   parse it as JSON before you trust the verdict. A result file that does not
-   parse, or a background task that exits non-zero, is an infrastructure failure
-   — treat it as an incomplete stop, never as a verdict.
+   workflow through Bash with `run_in_background` — do not append shell `&`.
+   The Bash task then owns the workflow process, remains alive across turns and
+   sends one completion notification when that process exits. This protects a
+   workflow that runs beyond a foreground command's ten-minute limit; it does
+   not relax any ordering or publication precondition elsewhere in this
+   lifecycle.
+
+   This governs every Ensemble command block below — the main review, fix
+   waves, brief review and brief fix. Each block names its result JSON; redirect
+   diagnostics to the same basename with `.log` instead of `.json`, then submit
+   the complete command as one background Bash task. Record its task ID and use
+   its completion notification as the primary watcher on process exit. Before
+   ending the turn, always call `ScheduleWakeup` with a delay of 1200 seconds
+   or more and a prompt naming the task to re-check. The completion
+   notification is the fast path, so this wake exists only to bound the
+   silence if that notification never arrives — a shorter delay polls for work
+   the harness already reports and costs a full context re-read each time. If
+   the wake fires first, inspect the task when useful, confirm whether it is
+   still running and re-arm the fallback before ending the turn again. Keep
+   every such delay comfortably below `MINOS_LEAD_SILENCE_TIMEOUT`
+   (3600 seconds by default): the supervisor treats a lead with no observed
+   turn activity for that long as ended, so a fallback at or beyond it would
+   let a live waiting lead be stopped. You may additionally create a
+   session-only inspection timer with `CronCreate` when progress merits a
+   closer look, but it supplements rather than replaces the process-exit
+   watcher and fallback wake. When the task completion notification arrives,
+   cancel the fallback with `ScheduleWakeup`'s `stop: true`.
+
+   Do not sleep for a guessed duration and do not trust the result file merely
+   because it exists: redirection creates it immediately and it may be
+   half-written. Only once the background process has exited is the result file
+   complete; then read it and parse it as JSON before trusting the verdict. A
+   result file that does not parse, or a background task that exits non-zero, is
+   an infrastructure failure — treat it as an incomplete stop, never as a
+   verdict.
 
    Build the main review input from disk and write it to a file:
 
@@ -312,19 +340,20 @@ run's scratch is gone — so write the real reason.
    flake remains unproven. A non-passing `check_decision` with no explicit
    `failed_checks` is incomplete forge state, not a root-cause dispatch.
 9. If `$MINOS_AUTO_MERGE` is not `true`, the clean run is complete without a
-   merge: remove 👀 and stop. If it is `true`, keep using the watcher until the
-   trusted snapshot has `check_decision` `pass`, reports both `mergeable` and
-   `can_merge`, and still names the verified finishing head and target. Select
-   one of its `allowed_merge_methods` and call `"$MINOS_BIN" forge merge HEAD
-   TARGET METHOD`. The guarded merge binds the exact head and is idempotent.
-   Then set `merged`. For a non-empty, unprotected source branch whose
-   `head_repository` equals `target_repository`, call `"$MINOS_BIN" forge
-   delete-source-branch HEAD TARGET HEAD_BRANCH`; its merged-pull guard and
-   read-back make repeat deletion safe. Never try to delete a fork branch, a
-   protected branch, or a virtual pull ref. Finally remove 👀 with
-   `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`. Merged,
-   request-changes, clean-without-auto-merge, and every incomplete outcome the
-   run reaches end 👀-absent; a crash alone leaves it for the next idempotent
+   merge: remove 👀, write the clean terminal marker, and stop. If it is `true`,
+   keep using the watcher until the trusted snapshot has `check_decision`
+   `pass`, reports both `mergeable` and `can_merge`, and still names the
+   verified finishing head and target. Select one of its
+   `allowed_merge_methods` and call `"$MINOS_BIN" forge merge HEAD TARGET
+   METHOD`. The guarded merge binds the exact head and is idempotent. Then set
+   `merged`. For a non-empty, unprotected source branch whose `head_repository`
+   equals `target_repository`, call `"$MINOS_BIN" forge delete-source-branch
+   HEAD TARGET HEAD_BRANCH`; its merged-pull guard and read-back make repeat
+   deletion safe. Never try to delete a fork branch, a protected branch, or a
+   virtual pull ref. Finally remove 👀 with `"$MINOS_BIN" forge
+   reaction-remove HEAD TARGET eyes`, write the clean terminal marker, and
+   stop. Merged, request-changes, clean-without-auto-merge, and every incomplete outcome
+   the run reaches end 👀-absent; a crash alone leaves it for the next idempotent
    claim.
 
 Use your judgement. Retry an ordinary transient failure when that is sensible;

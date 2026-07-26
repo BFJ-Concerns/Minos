@@ -80,3 +80,4 @@ try {
 }
 
 process.stdout.write(`${JSON.stringify(verdict)}\n`);
+process.stderr.write("[workflow] complete\n");

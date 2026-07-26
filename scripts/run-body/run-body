@@ -163,6 +163,27 @@ failure_stage="lifecycle-instruction"
 failure_cause="could not read lifecycle instruction $MINOS_LIFECYCLE_INSTRUCTION"
 instruction="$(cat "$MINOS_LIFECYCLE_INSTRUCTION")"
 session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
+completion_marker="$MINOS_RUN_DIR/lead-complete"
+silence_timeout="${MINOS_LEAD_SILENCE_TIMEOUT:-3600}"
+failure_stage="configuration"
+failure_cause="MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds"
+case "$silence_timeout" in
+  *[!0-9]*|'')
+    echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds" >&2
+    exit 1
+    ;;
+esac
+# A digit string too large for shell integer arithmetic makes the backstop
+# comparison error out on every poll, silently removing the backstop rather
+# than lengthening it. Cap it at a week, which is far beyond the systemd unit's
+# own 12-hour bound.
+if [ "$silence_timeout" -gt 604800 ] 2>/dev/null; then
+  echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT must not exceed 604800 seconds" >&2
+  exit 1
+elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
+  echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT is out of range" >&2
+  exit 1
+fi
 failure_stage="lead-launch"
 failure_cause="Claude lead launch failed"
 launch_output="$("$MINOS_CLAUDE" \
@@ -182,18 +203,46 @@ if [ -z "$session_id" ]; then
   exit 1
 fi
 prelaunch=false
+lead_timeline="$CLAUDE_CONFIG_DIR/jobs/$session_id/timeline.jsonl"
+last_output_signature=""
+last_output_at="$(date +%s)"
 
 while :; do
+  agent_state=""
   if agents="$("$MINOS_CLAUDE" agents --json --all)"; then
-    if printf '%s' "$agents" | jq -e --arg id "$session_id" '
+    agent_state="$(printf '%s' "$agents" | jq -r --arg id "$session_id" '
       (if type == "array" then . else .agents end)[] |
-      select(
-        .id == $id and
-        (.state == "done" or .state == "blocked" or .state == "failed" or .state == "stopped")
-      )
-    ' >/dev/null; then
-      break
-    fi
+      select(.id == $id) |
+      .state // empty
+    ' 2>/dev/null)" || agent_state=""
+  fi
+
+  # 1. Claude has reported an unrecoverable terminal state.
+  if [ "$agent_state" = "failed" ] || [ "$agent_state" = "stopped" ]; then
+    break
+  fi
+
+  # 2. The lead has declared that its clean terminal obligations are complete.
+  if [ -f "$completion_marker" ] &&
+    grep -qx 'clean' "$completion_marker" 2>/dev/null; then
+    break
+  fi
+
+  # 3. The background job timeline records the lead's turn boundaries — not a
+  #    continuous output stream, so this measures turn cadence rather than
+  #    liveness, and a single turn longer than the timeout looks silent. The
+  #    lifecycle's fallback wake (well under the default) is what keeps a live
+  #    waiting lead writing inside the window. Sibling state.json moves with
+  #    harness bookkeeping and is deliberately not watched: it would let a dead
+  #    lead reset its own deadline.
+  output_signature="$(stat -c '%Y:%s' "$lead_timeline" 2>/dev/null || true)"
+  if [ -n "$output_signature" ] && [ "$output_signature" != "$last_output_signature" ]; then
+    last_output_signature="$output_signature"
+    last_output_at="$(date +%s)"
+  fi
+  now="$(date +%s)"
+  if [ $((now - last_output_at)) -ge "$silence_timeout" ]; then
+    break
   fi
   sleep "${MINOS_CLAUDE_POLL_SECONDS:-3}"
 done
