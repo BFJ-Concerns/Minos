@@ -35,6 +35,7 @@ function writeUpComment(finding, writeUp) {
 
 function fixPrompt(plan, cluster, attempt) {
   const brief = plan.input.fixerBrief;
+  const verification = plan.input.verification || { build: "", tests: "" };
   return (
     `Read and follow the Markdown fix brief at ${brief.readPath}.\n\n` +
     `<fix-brief path="${brief.path}">\n${brief.content}\n</fix-brief>\n\n` +
@@ -45,6 +46,9 @@ function fixPrompt(plan, cluster, attempt) {
     `Wave fingerprint: ${plan.fingerprint}\n` +
     `Assigned files: ${cluster.files.join(", ")}\n` +
     `Confirmed findings: ${JSON.stringify(cluster.findings)}\n` +
+    `Before returning, run the configured build and tests, skipping either when its command is empty rather than inventing a substitute.\n` +
+    `Configured build command: ${JSON.stringify(verification.build || "")}\n` +
+    `Configured test command: ${JSON.stringify(verification.tests || "")}\n` +
     `Return one result for every findingKey. Commit completed repairs, return the commit SHA, and do not push.`
   );
 }

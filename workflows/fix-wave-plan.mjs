@@ -142,6 +142,10 @@ export function prepareFixWave(input) {
     return deepFreeze(failedPlan(input, "maximum rounds must be a positive integer when set"));
 
   const prior = input.runRecord && typeof input.runRecord === "object" ? input.runRecord : {};
+  const verification = {
+    build: typeof input.verification?.build === "string" ? input.verification.build : "",
+    tests: typeof input.verification?.tests === "string" ? input.verification.tests : "",
+  };
   const priorUnfixed = Array.isArray(prior.confirmedUnfixed)
     ? prior.confirmedUnfixed.map((entry) => ({
       ...entry,
@@ -163,6 +167,7 @@ export function prepareFixWave(input) {
       fingerprint,
       input: {
         workspace: input.workspace,
+        verification,
         guidance: { ...input.guidance },
         fixerBrief: { ...input.fixerBrief },
       },
@@ -239,6 +244,7 @@ export function prepareFixWave(input) {
     fingerprint,
     input: {
       workspace: input.workspace,
+      verification,
       guidance: { ...input.guidance },
       fixerBrief: { ...input.fixerBrief },
     },

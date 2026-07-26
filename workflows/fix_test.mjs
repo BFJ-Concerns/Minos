@@ -32,6 +32,7 @@ function args(findings, overrides = {}) {
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
     workspace: "/run/workspace",
+    verification: { build: "make build", tests: "make test" },
     guidance: { grounding: "annexe", path: "/run/subject-Annexe/README.md", content: "COMMISSION_VIOLET_719" },
     fixerBrief: { path: "workflows/review-briefs/fixer.md", readPath: "/minos/workflows/review-briefs/fixer.md", content: "MINOS_FIX_EVIDENCE_V1" },
     ...overrides,
@@ -125,6 +126,18 @@ test("a wave records one lead push for all distinct agent commits", async () => 
   assert.deepEqual(result.integration.commits, ["fix-cluster-1-commit", "fix-cluster-2-commit"]);
   assert.equal(result.integration.pushCount, 1);
   assert.deepEqual(result.integration.author, { name: "Minos", email: "minos@example.invalid" });
+});
+
+test("fix assignments carry the exact configured build and test commands", async () => {
+  const original = finding("transition", "High", "internal/state.go", 41);
+  const { calls } = await run(args([original], {
+    verification: {
+      build: "cargo build --workspace --locked",
+      tests: "cargo test --workspace --locked",
+    },
+  }));
+  assert.match(calls[0].prompt, /Configured build command: "cargo build --workspace --locked"/);
+  assert.match(calls[0].prompt, /Configured test command: "cargo test --workspace --locked"/);
 });
 
 test("fix write-ups keep the finding path and line", async () => {
@@ -268,12 +281,15 @@ test("the deterministic fix input carries configured loop knobs and the run reco
       MINOS_REVIEW_THRESHOLD: "Medium",
       MINOS_FIX_CLUSTER_CAP: "4",
       MINOS_MAX_ROUNDS: "8",
+      MINOS_BUILD_CMD: "make build",
+      MINOS_TEST_CMD: "make test",
     },
   }));
   assert.equal(input.threshold, "Medium");
   assert.equal(input.clusterCap, 4);
   assert.equal(input.maximumRounds, 8);
   assert.equal(input.runRecord.round, 3);
+  assert.deepEqual(input.verification, { build: "make build", tests: "make test" });
   assert.equal(input.guidance.content, "COMMISSION_VIOLET_719");
 });
 
