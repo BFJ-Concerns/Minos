@@ -7,6 +7,12 @@ invariants, edge cases, unsafe ordering, and errors that are lost or mishandled.
 Ground every finding in the changed code and enough directly related context to show
 that the pull request introduced it.
 
+If you notice a real defect outside those bounds, do not return it as a finding.
+Treat it as an unverified observation for routing to the reviewed project's annexe
+`ISSUES.md`, or to the pull request when the project has no annexe. State plainly
+that the observation was not verified. A failure to record it is presentation
+failure and must not fail the review.
+
 If the assigned concern and scope contain nothing to judge, return
 `applicability.status` as `inapplicable`, explain why, and return no findings.
 Otherwise return `applicable` and report any grounded findings.
