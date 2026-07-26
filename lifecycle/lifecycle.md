@@ -41,6 +41,74 @@ or wake still pending.
    safe to repeat). If the snapshot now shows that the head or target has moved
    since setup, remove 👀 against that fresh head and target and stop without
    publishing.
+
+   Read `$MINOS_RUN_DIR/reconciliation.json`. Setup has fetched the target from
+   the base repository, verified its observed SHA and pinned it at
+   `refs/minos/target` for the whole run. The record says whether merging that
+   target locally was unnecessary, completed cleanly, or left a conflict in
+   progress. A completed reconciliation merge exists only in the detached
+   reading workspace. Minos records it as unpushable, while every repair and
+   finishing push operates on the separate publication worktree recorded in
+   this file. Never move the pinned target during the review loop: it fixes
+   both the code context and the merge-base-to-head comment geometry.
+
+   Run the setup workflow on every run, whatever the reconciliation outcome.
+   Launch it from `$MINOS_WORKSPACE` as one background Bash task under step 4's
+   workflow discipline, with diagnostics beside the result:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" \
+     > "$MINOS_RUN_DIR/setup-args.json"
+   node /opt/minos/runtime/ensemble.mjs \
+     --json-args @"$MINOS_RUN_DIR/setup-args.json" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
+     > "$MINOS_RUN_DIR/setup-result.json" \
+     2> "$MINOS_RUN_DIR/setup-result.log"
+   ```
+
+   Wait for the background process to exit before reading the result. A
+   non-zero process exit, invalid JSON, a result whose `status` is not
+   `complete`, or `environment.ready: false` is an incomplete terminal
+   outcome. Append the returned `reason` or `environment.cause` to
+   `$MINOS_FAILURE_LOG`, set `incomplete`, remove 👀, and stop.
+
+   When `reconciliation.attempted` is true, check the resolution content rather
+   than recreating its process. Run
+   `"${MINOS_SETUP_WORKSPACE%/*}/show-resolutions"` and compare each
+   marker-bearing preimage with the staged result and the corresponding
+   `resolutions[].note`. Accept a file only when the staged content preserves
+   both parents' intent and introduces no content found in neither. Never edit
+   a conflicted file yourself.
+
+   For a rejected path, run
+   `"${MINOS_SETUP_WORKSPACE%/*}/reopen-conflict" "$MINOS_WORKSPACE" PATH...`,
+   write one JSON objections file containing the rejected paths and concrete
+   objections, then redispatch once:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" \
+     --reconcile-only --objections "$MINOS_RUN_DIR/setup-objections.json" \
+     > "$MINOS_RUN_DIR/setup-retry-args.json"
+   node /opt/minos/runtime/ensemble.mjs \
+     --json-args @"$MINOS_RUN_DIR/setup-retry-args.json" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
+     > "$MINOS_RUN_DIR/setup-retry-result.json" \
+     2> "$MINOS_RUN_DIR/setup-retry-result.log"
+   ```
+
+   Apply the same process-exit and result checks to the retry, then inspect its
+   bounded resolution diff. A second unacceptable resolution ends the run
+   incomplete with the specific objection recorded. Once every resolution
+   stands, run
+   `"${MINOS_SETUP_WORKSPACE%/*}/complete-reconciliation"
+   "$MINOS_WORKSPACE"`.
+
+   The same check, one-retry and completion rule applies when a later Minos
+   script reports `reconcile-conflict`: redispatch the setup workflow in
+   reconciliation-only mode before continuing the round. The change under
+   review remains the pinned target-to-current-pull-request-head range. The
+   reconciliation merge supplies the context in which code is read; it is never
+   itself part of the reviewed change.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you

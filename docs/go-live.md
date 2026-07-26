@@ -6,9 +6,13 @@ machine itself is the containment boundary.
 
 1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
 2. Install `scripts/adaptations/forgejo` under
-   `/opt/minos/adaptations/forgejo`, `scripts/run-body/run-body` under
-   `/opt/minos/run-body`, `lifecycle` under `/opt/minos/lifecycle`, and
-   `skills/foundry/root-cause` under `/opt/minos/skills/foundry/root-cause`.
+   `/opt/minos/adaptations/forgejo`; install every executable under
+   `scripts/run-body/` under `/opt/minos/run-body` with the same basename and
+   executable mode: `run-body`, `setup-workspace`, `pre-push-guard`,
+   `reconcile-target`, `complete-reconciliation`, `reopen-conflict`,
+   `show-resolutions`, `sync-target` and `watch-snapshot`. Install `lifecycle`
+   under `/opt/minos/lifecycle`, and `skills/foundry/root-cause` under
+   `/opt/minos/skills/foundry/root-cause`.
 3. Run `scripts/install-review-runtime /opt/minos`. It installs the complete
    test-free review runtime under `/opt/minos`: the vendored Ensemble launcher
    and its provenance files, the adjudication wrapper and adapter, and every

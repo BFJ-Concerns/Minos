@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
 const setupPath = join(workflowsDir, "setup.js");
 const setupSource = readFileSync(setupPath, "utf8");
+const lifecycle = readFileSync(join(workflowsDir, "..", "lifecycle", "lifecycle.md"), "utf8");
 const setupBody = setupSource.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const setupWorkflow = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", setupBody);
@@ -183,4 +184,17 @@ test("setup input builder loudly rejects a missing reconciliation record", () =>
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /reconciliation\.json/);
+});
+
+test("lifecycle runs setup every time and keeps resolution checking with the lead", () => {
+  const stageOne = lifecycle.slice(lifecycle.indexOf("1. The setup script"), lifecycle.indexOf("2. Publish"));
+  assert.match(stageOne, /Run the setup workflow on every run/);
+  assert.match(stageOne, /setup-inputs\.mjs[\s\S]*setup\.js/);
+  assert.match(stageOne, /environment\.ready: false[\s\S]*incomplete terminal/);
+  assert.match(stageOne, /show-resolutions[\s\S]*preserves\s+both parents' intent/);
+  assert.match(stageOne, /reopen-conflict[\s\S]*redispatch once/);
+  assert.match(stageOne, /complete-reconciliation/);
+  assert.match(stageOne, /merge-base-to-head comment geometry/);
+  assert.match(stageOne, /pinned target-to-current-pull-request-head range/);
+  assert.match(stageOne, /Never edit\s+a conflicted file yourself/);
 });
