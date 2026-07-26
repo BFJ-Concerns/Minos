@@ -149,15 +149,14 @@ test("path scope gates full-extent width independently of extent", async () => {
   assert.equal(missed.result.briefs[0].skipKind, "empty");
 });
 
-test("a triggered brief with a missing scope is recorded as misconfigured instead of widening", async () => {
+test("a brief whose missing scope is its only trigger skips as misconfigured", async () => {
   const candidate = brief(
     ".review/missing/scoped.md",
-    "---\nextent: full\nsweep: whole-tree\noccasion: release\n---\nJudge the missing scope.",
+    "---\nextent: full\nsweep: whole-tree\n---\nJudge the missing scope.",
     { scopeExists: false },
   );
   const { result, calls } = await run(args({
     briefs: [candidate],
-    occasion: "release",
     changedPaths: ["pkg/x.go"],
   }));
 
@@ -170,6 +169,46 @@ test("a triggered brief with a missing scope is recorded as misconfigured instea
     skipKind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
+});
+
+test("a matched occasion runs a missing-scope brief and records the misconfiguration", async () => {
+  const candidate = brief(
+    ".review/missing/scoped.md",
+    "---\nextent: full\nsweep: whole-tree\noccasion: release\n---\nJudge the missing scope.",
+    { scopeExists: false },
+  );
+  const { result, calls } = await run(
+    args({ briefs: [candidate], occasion: "release", changedPaths: ["pkg/x.go"] }),
+    responder({ specialist: () => specialistResult([]) }),
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].opts.label, /^repository-/);
+  assert.match(calls[0].prompt, /Assigned scope: missing\/\./);
+  assert.doesNotMatch(calls[0].prompt, /Assigned scope: the whole repository/);
+  assert.deepEqual(result.dispatches, [{
+    brief: candidate.path,
+    title: "Scoped",
+    label: "repository-review-missing-scoped-md-claude",
+    extent: "full",
+    scope: "missing",
+    files: [],
+  }]);
+  assert.deepEqual(result.briefs, [
+    {
+      brief: candidate.path,
+      title: "Scoped",
+      status: "run",
+      reason: "applicable concern reviewed",
+    },
+    {
+      brief: candidate.path,
+      title: "Scoped",
+      status: "skipped",
+      skipKind: "misconfigured-scope",
+      reason: "brief scope missing/ matches no repository directory",
+    },
+  ]);
 });
 
 test("per-file partitioning follows repository structure and clamps to a lossless plan", async () => {

@@ -48,6 +48,12 @@ function deterministicDisposition(brief, front, occasion, changedPaths) {
   const hasOccasion = front.occasion.length > 0;
   const hasRelevance = Boolean(front.relevance);
   const hasPathScope = typeof brief.scope === "string" && brief.scope !== "";
+  const misconfiguration = hasPathScope && brief.scopeExists === false
+    ? {
+        skipKind: "misconfigured-scope",
+        reason: `brief scope ${brief.scope}/ matches no repository directory`,
+      }
+    : null;
   if (!hasOccasion && !hasRelevance && !hasPathScope) {
     return {
       status: "skipped",
@@ -55,32 +61,36 @@ function deterministicDisposition(brief, front, occasion, changedPaths) {
       reason: "brief declares no relevance, occasion, or path-scope trigger",
     };
   }
-  if (hasPathScope && brief.scopeExists === false) {
-    return {
-      status: "skipped",
-      skipKind: "misconfigured-scope",
-      reason: `brief scope ${brief.scope}/ matches no repository directory`,
-    };
-  }
   // Occasion is a veto: a brief that names occasions runs only on a run that
   // names a matching one, whatever else it declares — it selects which runs the
   // brief applies to. A brief naming no occasion is unrestricted by occasion.
   if (hasOccasion) {
     if (!occasion)
-      return { status: "skipped", skipKind: "occasion", reason: `brief applies on occasion ${front.occasion.join(", ")}; this run names none` };
+      return {
+        status: "skipped",
+        skipKind: "occasion",
+        reason: `brief applies on occasion ${front.occasion.join(", ")}; this run names none`,
+        misconfiguration,
+      };
     if (!front.occasion.includes(occasion))
-      return { status: "skipped", skipKind: "occasion", reason: `brief applies on occasion ${front.occasion.join(", ")}, not ${occasion}` };
+      return {
+        status: "skipped",
+        skipKind: "occasion",
+        reason: `brief applies on occasion ${front.occasion.join(", ")}, not ${occasion}`,
+        misconfiguration,
+      };
     // A matched occasion is itself a satisfied trigger; a path-scope or relevance
     // it also carries only refines width, it does not further gate a brief the
     // occasion has already opted in.
-    return { triggered: true };
+    return { triggered: true, misconfiguration };
   }
   // No occasion declared: run on a satisfied positive trigger — a touched
   // path-scope, or a relevance condition judged in the relevance phase.
   const scopeSatisfied =
     hasPathScope && changedPaths.some((path) => path === brief.scope || path.startsWith(brief.scope + "/"));
-  if (scopeSatisfied) return { triggered: true };
-  if (hasRelevance) return { triggered: false };
+  if (scopeSatisfied) return { triggered: true, misconfiguration };
+  if (hasRelevance) return { triggered: false, misconfiguration };
+  if (misconfiguration) return { status: "skipped", ...misconfiguration };
   return { status: "skipped", skipKind: "empty", reason: `nothing changed under scope ${brief.scope}/` };
 }
 
@@ -252,13 +262,22 @@ const addLeg = (label, role, pinnedModel) => {
   return leg;
 };
 const reports = new Map();
+const misconfigurations = [];
 const candidates = [];
 for (const brief of input.briefs) {
   const front = parseFrontmatter(brief.content);
   const base = { brief: brief.path, title: briefTitle(brief.path, front) };
   const disposition = deterministicDisposition(brief, front, input.occasion || null, input.changedPaths);
-  if (disposition.status === "skipped") reports.set(brief.path, { ...base, ...disposition });
-  else candidates.push({ brief, front, base, triggered: disposition.triggered });
+  const { misconfiguration, ...recordedDisposition } = disposition;
+  if (disposition.status === "skipped") reports.set(brief.path, { ...base, ...recordedDisposition });
+  else
+    candidates.push({ brief, front, base, triggered: disposition.triggered });
+  if (misconfiguration)
+    misconfigurations.push({
+      ...base,
+      status: "skipped",
+      ...misconfiguration,
+    });
 }
 
 // Only briefs not already settled by a deterministic trigger need the judged
@@ -487,7 +506,7 @@ return {
   stage: "present",
   requiredModelEvidence: legs,
   proposedFindings,
-  briefs: [...reports.values(), ...inapplicable],
+  briefs: [...reports.values(), ...misconfigurations, ...inapplicable],
   dispatches: dispatched.map(({ brief, title, label, extent, scope, files }) => ({ brief, title, label, extent, scope, files })),
   reviewers: reviewerStates,
 };
