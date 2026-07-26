@@ -95,6 +95,13 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 	}
 	assertContainsFile(t, filepath.Join(*state.PreimageDir, "shared.txt"), "<<<<<<<")
 
+	complete := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "complete-reconciliation"), workspace)
+	complete.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir, "MINOS_BASE_REF=main")
+	completeOutput, err := complete.CombinedOutput()
+	if err == nil || !strings.Contains(string(completeOutput), "unmerged paths remain") {
+		t.Fatalf("unmerged completion was not refused: %v\n%s", err, completeOutput)
+	}
+
 	if err := os.WriteFile(filepath.Join(workspace, "shared.txt"), []byte("feature and target\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -117,14 +124,35 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 		t.Fatal(err)
 	}
 	runGit(t, workspace, "add", "shared.txt")
-	complete := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "complete-reconciliation"), workspace)
+	complete = exec.Command(filepath.Join("..", "..", "scripts", "run-body", "complete-reconciliation"), workspace)
 	complete.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir, "MINOS_BASE_REF=main")
-	if completeOutput, err := complete.CombinedOutput(); err != nil {
+	if completeOutput, err = complete.CombinedOutput(); err != nil {
 		t.Fatalf("complete-reconciliation: %v\n%s", err, completeOutput)
 	}
 	accepted := readReconciliationState(t, statePath)
 	if accepted.Outcome != "reconciled" || accepted.Merge == nil {
 		t.Fatalf("accepted state = %+v", accepted)
+	}
+
+	buildAndTest := exec.Command(
+		"sh", "-c",
+		`test "$(cat shared.txt)" = "feature and target" &&
+		 test "$(git rev-parse HEAD^1)" = "$EXPECTED_HEAD" &&
+		 test "$(git rev-parse HEAD^2)" = "$EXPECTED_TARGET"`,
+	)
+	buildAndTest.Dir = workspace
+	buildAndTest.Env = append(os.Environ(), "EXPECTED_HEAD="+head, "EXPECTED_TARGET="+target)
+	if stageOutput, err := buildAndTest.CombinedOutput(); err != nil {
+		t.Fatalf("merged-tree build/test consumer failed: %v\n%s", err, stageOutput)
+	}
+	remoteRefsBefore := gitOutput(t, repository, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
+	forbiddenPush := exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/forbidden-reconciliation")
+	forbiddenOutput, err := forbiddenPush.CombinedOutput()
+	if err == nil || !strings.Contains(string(forbiddenOutput), "pre-push-guard: refusing to push") {
+		t.Fatalf("reconciled workspace push did not fire the guard: %v\n%s", err, forbiddenOutput)
+	}
+	if remoteRefsAfter := gitOutput(t, repository, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"); remoteRefsAfter != remoteRefsBefore {
+		t.Fatalf("remote refs changed after reconciled workspace refusal\nbefore:\n%s\nafter:\n%s", remoteRefsBefore, remoteRefsAfter)
 	}
 
 	publication := *accepted.Publication

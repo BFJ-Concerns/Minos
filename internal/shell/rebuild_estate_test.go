@@ -20,6 +20,8 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = head
 		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
+		pullRequest["base"].(map[string]any)["sha"] = head
+		pullRequest["base"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
 	state.setAnnexeCloneURL(annexeRepository)
 

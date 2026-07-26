@@ -23,9 +23,13 @@ jq -r '.conflicts[]' "$state_file" |
     fi
     staged_file="$(mktemp)"
     if ! git -C "$MINOS_WORKSPACE" show ":$conflict_path" >"$staged_file"; then
-      rm -f "$staged_file"
-      echo "show-resolutions: $conflict_path is not staged" >&2
-      exit 1
+      if ! git -C "$MINOS_WORKSPACE" diff --cached --name-only -- "$conflict_path" |
+        grep -Fxq "$conflict_path"; then
+        rm -f "$staged_file"
+        echo "show-resolutions: $conflict_path is not staged" >&2
+        exit 1
+      fi
+      : >"$staged_file"
     fi
     printf '=== %s\n' "$conflict_path"
     diff -u \
