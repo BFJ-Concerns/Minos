@@ -9,6 +9,5 @@ return `applicability.status` as `inapplicable`, explain why, and return no find
 Otherwise return `applicable` and report any grounded findings.
 
 Do not load skills, start another workflow, consult historical sessions, search the
-web, or inspect unrelated worktrees. Return at most two structured findings.
-Severity is Critical, High, Medium, or Low; confidence is an independent integer
-from 0 to 100.
+web, or inspect unrelated worktrees. Severity is Critical, High, Medium, or Low;
+confidence is an independent integer from 0 to 100.

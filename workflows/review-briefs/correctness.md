@@ -13,5 +13,5 @@ Otherwise return `applicable` and report any grounded findings.
 
 Do not load skills, start another workflow, consult historical sessions, search the
 web, or inspect unrelated worktrees. Do not broaden beyond the assigned scope.
-Return at most two structured findings. Severity is Critical, High, Medium, or Low;
-confidence is an independent integer from 0 to 100.
+Severity is Critical, High, Medium, or Low; confidence is an independent integer
+from 0 to 100.
