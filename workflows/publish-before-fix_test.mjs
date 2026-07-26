@@ -98,6 +98,7 @@ async function requestBody(request) {
 
 async function forgeFixture(options = {}) {
   const unanchoredPositions = new Set(options.unanchoredPositions || []);
+  const storedPositions = new Map(options.storedPositions || []);
   const state = {
     reviews: [],
     comments: new Map(),
@@ -159,7 +160,10 @@ async function forgeFixture(options = {}) {
           if (unanchoredPositions.has(comment.new_position)) {
             stored.diff_hunk = "";
           } else {
-            stored.position = comment.new_position;
+            stored.diff_hunk = "@@ -1,1 +1,1 @@\n-visible anchored context";
+            stored.position = storedPositions.has(comment.new_position)
+              ? storedPositions.get(comment.new_position)
+              : comment.new_position;
           }
           return stored;
         }));
@@ -226,6 +230,7 @@ function seedExactReview(fixture, plan, comments = plan.sweepReview.comments) {
     pull_request_review_id: 41,
     path: comment.path,
     body: comment.body,
+    diff_hunk: "@@ -1,1 +1,1 @@\n-visible anchored context",
     position: comment.new_position,
     original_position: 0,
   })));
@@ -289,7 +294,8 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       const comments = fixture.state.comments.get(review.id) || [];
       const findingIsAnchored = comments.some((comment) =>
         comment.path === "src/large-file.rs" &&
-        comment.position > 0 &&
+        typeof comment.diff_hunk === "string" &&
+        comment.diff_hunk !== "" &&
         comment.body.includes(SENTINEL));
       const findingIsInReviewBody =
         review.body.includes(SENTINEL) &&
@@ -299,7 +305,43 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.equal(
         findingIsAnchored || findingIsInReviewBody,
         true,
-        "the author-visible review must retain the finding either at a real diff position or in the review body with its source location",
+        "the author-visible review must retain the finding either at a real inline anchor or in the review body with its source location",
+      );
+      assert.equal(result.status, "complete");
+      assert.equal(result.publication.outcome, "applied");
+      assert.match(prompts[0], new RegExp(SENTINEL));
+      assert.deepEqual(
+        events.slice(1).map((event) => event.split(":")[0]),
+        ["forge-review-confirmed", "fix-dispatch-started", "fix-agent-called"],
+      );
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("a blame-rewritten inline anchor remains confirmed before dispatch", async () => {
+    const submittedFileLine = 7423;
+    const preparedInput = input([finding({
+      path: "src/large-file.rs",
+      line: submittedFileLine,
+    })]);
+    const fixture = await forgeFixture({
+      storedPositions: [[submittedFileLine, 3691]],
+    });
+    try {
+      const { result, events, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      const review = fixture.state.reviews[0];
+      const comments = fixture.state.comments.get(review.id) || [];
+      const findingReachedAnchoredComment = comments.some((comment) =>
+        comment.path === "src/large-file.rs" &&
+        typeof comment.diff_hunk === "string" &&
+        comment.diff_hunk !== "" &&
+        comment.body.includes(SENTINEL));
+
+      assert.equal(
+        findingReachedAnchoredComment,
+        true,
+        "Forgejo's durable comment visibly carries the finding regardless of its stored blame coordinate",
       );
       assert.equal(result.status, "complete");
       assert.equal(result.publication.outcome, "applied");
@@ -355,11 +397,11 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.ok(fixture.state.commentReadCount > 0);
       assert.deepEqual(durableComments.map((comment) => ({
         path: comment.path,
-        position: comment.position,
+        anchored: typeof comment.diff_hunk === "string" && comment.diff_hunk !== "",
         body: comment.body,
       })), [{
         path: "src/brief-scope.rs",
-        position: 73,
+        anchored: true,
         body: writeUp,
       }]);
     } finally {
