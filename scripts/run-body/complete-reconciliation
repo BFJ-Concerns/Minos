@@ -31,15 +31,6 @@ if git -C "$workspace" diff --cached --quiet; then
   echo "complete-reconciliation: no staged resolution is present" >&2
   exit 1
 fi
-expected_paths="$(mktemp)"
-staged_paths="$(mktemp)"
-trap 'rm -f "$expected_paths" "$staged_paths"' 0
-jq -r '.conflicts[]' "$state_file" | sort >"$expected_paths"
-git -C "$workspace" diff --cached --name-only | sort >"$staged_paths"
-if ! cmp -s "$expected_paths" "$staged_paths"; then
-  echo "complete-reconciliation: staged paths do not match the recorded conflicts" >&2
-  exit 1
-fi
 
 base_sha="$(jq -r '.baseHead // ""' "$state_file")"
 if [ -z "$base_sha" ]; then

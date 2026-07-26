@@ -97,6 +97,9 @@ git -C "$MINOS_WORKSPACE" config merge.conflictStyle zdiff3
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 common_dir="$(git -C "$MINOS_WORKSPACE" rev-parse --path-format=absolute --git-common-dir)"
 mkdir -p "$common_dir/hooks"
+# This guard covers checkouts that share this common Git directory, including
+# linked worktrees. A separate clone does not inherit it; the trusted disposable
+# box remains the boundary against deliberate hook bypass or clone-and-push.
 install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
 
 git -C "$MINOS_WORKSPACE" fetch --no-tags "$target_repository_url" \

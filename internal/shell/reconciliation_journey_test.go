@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,10 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 		t.Fatal(err)
 	}
 	runGit(t, workspace, "add", "shared.txt")
+	staged := strings.Fields(gitOutput(t, workspace, "diff", "--cached", "--name-only"))
+	if !slices.Equal(staged, []string{"shared.txt", "sibling.txt"}) {
+		t.Fatalf("staged merge paths = %v, want resolved conflict plus clean target path", staged)
+	}
 	show := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "show-resolutions"))
 	show.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir, "MINOS_WORKSPACE="+workspace)
 	showOutput, err := show.CombinedOutput()
@@ -133,10 +138,14 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 	if accepted.Outcome != "reconciled" || accepted.Merge == nil {
 		t.Fatalf("accepted state = %+v", accepted)
 	}
+	if got := gitOutput(t, workspace, "show", "HEAD:sibling.txt"); got != "clean target content" {
+		t.Fatalf("completed reconciliation dropped clean target content: %q", got)
+	}
 
 	buildAndTest := exec.Command(
 		"sh", "-c",
 		`test "$(cat shared.txt)" = "feature and target" &&
+		 test "$(cat sibling.txt)" = "clean target content" &&
 		 test "$(git rev-parse HEAD^1)" = "$EXPECTED_HEAD" &&
 		 test "$(git rev-parse HEAD^2)" = "$EXPECTED_TARGET"`,
 	)
@@ -174,6 +183,9 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 	}
 	if got := gitOutput(t, workspace, "show", "HEAD:shared.txt"); got != "feature and target" {
 		t.Fatalf("rerere result = %q", got)
+	}
+	if got := gitOutput(t, workspace, "show", "HEAD:sibling.txt"); got != "clean target content" {
+		t.Fatalf("rerere reconciliation dropped clean target content: %q", got)
 	}
 }
 
@@ -433,6 +445,9 @@ func TestSyncTargetReusesAnAcceptedSetupResolutionWithoutPublishingSetupMerge(t 
 	if got := gitOutput(t, repository, "show", "feature:shared.txt"); got != "feature and target" {
 		t.Fatalf("published rerere resolution = %q", got)
 	}
+	if got := gitOutput(t, repository, "show", "feature:sibling.txt"); got != "clean target content" {
+		t.Fatalf("finishing sync dropped clean target content: %q", got)
+	}
 	if err := exec.Command("git", "-C", repository, "merge-base", "--is-ancestor", *state.Merge, published).Run(); err == nil {
 		t.Fatal("finishing sync published the setup reconciliation merge")
 	}
@@ -476,7 +491,12 @@ func createDivergedSetupRepository(t *testing.T, conflict bool) (string, string,
 	if err := os.WriteFile(filepath.Join(repository, targetName), []byte("target\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repository, "add", targetName)
+	if conflict {
+		if err := os.WriteFile(filepath.Join(repository, "sibling.txt"), []byte("clean target content\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, repository, "add", ".")
 	runGit(t, repository, "commit", "-m", "target")
 	target := gitOutput(t, repository, "rev-parse", "HEAD")
 	return repository, head, target

@@ -394,6 +394,39 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     assert.equal(dispatchedFrom, publication);
   });
 
+  await t.test("a missing reconciliation record after publication returns a structured failure", async () => {
+    const runDir = mkdtempSync(join(tmpdir(), "minos-publication-missing-cwd-"));
+    const events = [];
+    let dispatchCalls = 0;
+    const result = await publishBeforeFix({
+      input: input(),
+      head: HEAD,
+      target: TARGET,
+      minosBin,
+      launcher: "/unused/ensemble.mjs",
+      workflowScript: fixScriptPath,
+      env: { ...process.env, MINOS_RUN_DIR: runDir },
+      runForge: async () => ({
+        code: 0,
+        signal: null,
+        stdout: '{"outcome":"applied"}\n',
+        stderr: "",
+      }),
+      runDispatch: async () => {
+        dispatchCalls += 1;
+        throw new Error("must not dispatch");
+      },
+      onEvent: (event) => events.push(event),
+      diagnostics: () => {},
+    });
+    assert.equal(result.status, "incomplete");
+    assert.equal(result.publication.outcome, "applied");
+    assert.match(result.reason, /fix dispatch workspace resolution failed/);
+    assert.match(result.reason, /reconciliation\.json/);
+    assert.equal(dispatchCalls, 0);
+    assert.equal(events.filter((event) => event.startsWith("fix-dispatch-started:")).length, 0);
+  });
+
   await t.test("terminal preparation refuses publication and dispatch", async () => {
     const events = [];
     let forgeCalls = 0;

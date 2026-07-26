@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
 const reconcileOnly = argv.includes("--reconcile-only");
-const objectionsIndex = argv.indexOf("--objections");
 const recognised = new Set(["--reconcile-only", "--objections"]);
 let objectionsPath = null;
 let invalid = false;

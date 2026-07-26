@@ -117,11 +117,23 @@ export async function publishBeforeFix({
       );
 
     onEvent(`forge-review-confirmed:${plan.fingerprint}`);
-    onEvent(`fix-dispatch-started:${plan.fingerprint}`);
 
-    const dispatchCwd = env.MINOS_RUN_DIR
-      ? JSON.parse(readFileSync(join(env.MINOS_RUN_DIR, "reconciliation.json"), "utf8")).publication || cwd
-      : cwd;
+    let dispatchCwd = cwd;
+    if (env.MINOS_RUN_DIR) {
+      try {
+        const reconciliation = JSON.parse(
+          readFileSync(join(env.MINOS_RUN_DIR, "reconciliation.json"), "utf8"),
+        );
+        dispatchCwd = reconciliation.publication || cwd;
+      } catch (error) {
+        return publicationFailure(
+          plan,
+          `fix dispatch workspace resolution failed: ${error.message}`,
+          publication,
+        );
+      }
+    }
+    onEvent(`fix-dispatch-started:${plan.fingerprint}`);
     let dispatchResult;
     try {
       dispatchResult = await runDispatch({ launcher, workflowScript, planPath, plan, cwd: dispatchCwd, env });
