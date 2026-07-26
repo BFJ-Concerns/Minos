@@ -201,7 +201,10 @@ test("single-wave mode dispatches every brief finding once and requests build an
   assert.equal(result.buildAndTestsRequired, true);
   assert.equal(result.rerunReview, false);
   assert.equal(result.sweepReview, null);
-  assert.equal(result.fixReview, null);
+  assert.deepEqual(result.fixReview.comments, [
+    { path: "a.go", body: "Repaired material.", new_position: 1 },
+    { path: "b.go", body: "Repaired minor.", new_position: 2 },
+  ]);
 });
 
 test("a failed single-wave brief fix is not retried and cannot pass the stage", async () => {
@@ -215,6 +218,7 @@ test("a failed single-wave brief fix is not retried and cannot pass the stage", 
   assert.equal(result.confirmedUnfixed.length, 1);
   assert.equal(result.confirmedUnfixed[0].attempts, 1);
   assert.equal(result.repairsComplete, false);
+  assert.equal(result.requestChangesReview, null);
   assert.equal(result.rerunReview, false);
 });
 

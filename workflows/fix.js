@@ -109,6 +109,7 @@ if (plan.classification === "single-wave") {
       phase: "Fix",
     })));
   const commits = [];
+  const fixed = [];
   const confirmedUnfixed = [];
   plan.clusters.forEach((cluster, index) => {
     const result = results[index];
@@ -120,6 +121,7 @@ if (plan.classification === "single-wave") {
       const entry = returned.get(finding.key);
       if (result && result.commit && entry && entry.status === "fixed" && entry.writeUp) {
         usedCommit = true;
+        fixed.push({ finding, writeUp: entry.writeUp });
       } else {
         confirmedUnfixed.push({
           key: finding.key,
@@ -140,7 +142,11 @@ if (plan.classification === "single-wave") {
     fingerprint: plan.fingerprint,
     dispatches: plan.dispatches,
     sweepReview: null,
-    fixReview: null,
+    fixReview: fixed.length > 0 ? {
+      verdict: "comment",
+      body: "Implemented repairs for confirmed findings.",
+      comments: fixed.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
+    } : null,
     requestChangesReview: null,
     integration: {
       commits: uniqueCommits,
