@@ -97,9 +97,10 @@ git -C "$MINOS_WORKSPACE" config merge.conflictStyle zdiff3
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 common_dir="$(git -C "$MINOS_WORKSPACE" rev-parse --path-format=absolute --git-common-dir)"
 mkdir -p "$common_dir/hooks"
-# This guard covers checkouts that share this common Git directory, including
-# linked worktrees. A separate clone does not inherit it; the trusted disposable
-# box remains the boundary against deliberate hook bypass or clone-and-push.
+# This hook binds every checkout sharing the common Git directory and refuses
+# pushes containing recorded reconciliation ancestry. It does not identify the
+# caller or constrain pushes of other ancestry; a separate clone inherits
+# neither the hook nor its reconciliation record.
 install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
 
 git -C "$MINOS_WORKSPACE" fetch --no-tags "$target_repository_url" \
@@ -186,6 +187,7 @@ jq -n \
     merge:null,
     conflicts:[],
     preimageDir:null,
+    autoMergeTree:null,
     publication:(if $publication == "" then null else $publication end)
   }' >"${MINOS_RUN_DIR}/reconciliation.json"
 

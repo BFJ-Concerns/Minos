@@ -32,6 +32,32 @@ if git -C "$workspace" diff --cached --quiet; then
   exit 1
 fi
 
+auto_merge_tree="$(jq -r '.autoMergeTree // ""' "$state_file")"
+if [ -z "$auto_merge_tree" ] ||
+  ! git -C "$workspace" cat-file -e "${auto_merge_tree}^{tree}" 2>/dev/null; then
+  echo "complete-reconciliation: reconciliation state omitted a valid autoMergeTree" >&2
+  exit 1
+fi
+index_path="$(git -C "$workspace" rev-parse --path-format=absolute --git-path index)"
+normalised_index="$(mktemp)"
+cleanup_index() {
+  rm -f "$normalised_index"
+}
+trap cleanup_index EXIT HUP INT TERM
+cp "$index_path" "$normalised_index"
+jq -r '.conflicts[]' "$state_file" |
+  while IFS= read -r conflict_path; do
+    GIT_INDEX_FILE="$normalised_index" \
+      git -C "$workspace" update-index --force-remove -- "$conflict_path"
+  done
+staged_outside_conflicts="$(GIT_INDEX_FILE="$normalised_index" git -C "$workspace" write-tree)"
+cleanup_index
+trap - EXIT HUP INT TERM
+if [ "$staged_outside_conflicts" != "$auto_merge_tree" ]; then
+  echo "complete-reconciliation: staged paths outside recorded conflicts differ from Git's auto-merge result" >&2
+  exit 1
+fi
+
 base_sha="$(jq -r '.baseHead // ""' "$state_file")"
 if [ -z "$base_sha" ]; then
   echo "complete-reconciliation: reconciliation state omitted baseHead" >&2

@@ -43,6 +43,7 @@ write_state() {
   merge_sha="$2"
   conflicts_json="$3"
   preimages="$4"
+  auto_merge_tree="$5"
   state_tmp="${state_file}.tmp"
   jq \
     --arg outcome "$outcome" \
@@ -50,12 +51,14 @@ write_state() {
     --arg merge "$merge_sha" \
     --argjson conflicts "$conflicts_json" \
     --arg preimages "$preimages" \
+    --arg auto_merge_tree "$auto_merge_tree" \
     '. + {
       outcome: $outcome,
       baseHead: $base_head,
       merge: (if $merge == "" then null else $merge end),
       conflicts: $conflicts,
-      preimageDir: (if $preimages == "" then null else $preimages end)
+      preimageDir: (if $preimages == "" then null else $preimages end),
+      autoMergeTree: (if $auto_merge_tree == "" then null else $auto_merge_tree end)
     }' \
     "$state_file" >"$state_tmp"
   mv "$state_tmp" "$state_file"
@@ -79,7 +82,7 @@ git -C "$workspace" checkout --detach "$base_sha" >/dev/null
 rm -rf "$preimage_dir"
 
 if git -C "$workspace" merge-base --is-ancestor "$target_ref" "$base_sha"; then
-  write_state "unnecessary" "" "[]" ""
+  write_state "unnecessary" "" "[]" "" ""
   jq -nc '{outcome:"unnecessary",merge:null,conflicts:[]}'
   exit 0
 fi
@@ -88,7 +91,7 @@ message="Minos local reconciliation: merge ${MINOS_BASE_REF} into ${base_sha} â€
 if git -C "$workspace" merge --no-ff -m "$message" "$target_ref" >/dev/null 2>&1; then
   reconciliation_sha="$(git -C "$workspace" rev-parse HEAD)"
   record_unpushable "$reconciliation_sha"
-  write_state "reconciled" "$reconciliation_sha" "[]" ""
+  write_state "reconciled" "$reconciliation_sha" "[]" "" ""
   jq -nc --arg merge "$reconciliation_sha" '{outcome:"reconciled",merge:$merge,conflicts:[]}'
   exit 0
 fi
@@ -100,7 +103,7 @@ if [ "$conflicts_json" = "[]" ]; then
     git -C "$workspace" commit -m "$message" >/dev/null
     reconciliation_sha="$(git -C "$workspace" rev-parse HEAD)"
     record_unpushable "$reconciliation_sha"
-    write_state "reconciled" "$reconciliation_sha" "[]" ""
+    write_state "reconciled" "$reconciliation_sha" "[]" "" ""
     jq -nc --arg merge "$reconciliation_sha" '{outcome:"reconciled",merge:$merge,conflicts:[]}'
     exit 0
   fi
@@ -115,5 +118,21 @@ git -C "$workspace" diff --name-only --diff-filter=U |
     cp "$workspace/$conflict_path" "$preimage_dir/$conflict_path"
   done
 
-write_state "conflict" "" "$conflicts_json" "$preimage_dir"
+index_path="$(git -C "$workspace" rev-parse --path-format=absolute --git-path index)"
+normalised_index="$(mktemp)"
+cleanup_index() {
+  rm -f "$normalised_index"
+}
+trap cleanup_index EXIT HUP INT TERM
+cp "$index_path" "$normalised_index"
+printf '%s\n' "$conflicts_json" | jq -r '.[]' |
+  while IFS= read -r conflict_path; do
+    GIT_INDEX_FILE="$normalised_index" \
+      git -C "$workspace" update-index --force-remove -- "$conflict_path"
+  done
+auto_merge_tree="$(GIT_INDEX_FILE="$normalised_index" git -C "$workspace" write-tree)"
+cleanup_index
+trap - EXIT HUP INT TERM
+
+write_state "conflict" "" "$conflicts_json" "$preimage_dir" "$auto_merge_tree"
 jq -nc --argjson conflicts "$conflicts_json" '{outcome:"conflict",merge:null,conflicts:$conflicts}'

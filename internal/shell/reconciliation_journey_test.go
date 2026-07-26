@@ -21,6 +21,7 @@ type reconciliationState struct {
 	Merge         *string  `json:"merge"`
 	Conflicts     []string `json:"conflicts"`
 	PreimageDir   *string  `json:"preimageDir"`
+	AutoMergeTree *string  `json:"autoMergeTree"`
 	Publication   *string  `json:"publication"`
 	TargetBranch  string   `json:"targetBranch"`
 	TargetRepoURL string   `json:"targetRepositoryUrl"`
@@ -88,9 +89,11 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 		t.Fatalf("conflicted setup should continue: %v\n%s", err, output)
 	}
 	state := readReconciliationState(t, statePath)
-	if state.Outcome != "conflict" || state.Merge != nil || len(state.Conflicts) != 1 || state.Conflicts[0] != "shared.txt" || state.PreimageDir == nil {
+	if state.Outcome != "conflict" || state.Merge != nil || len(state.Conflicts) != 1 ||
+		state.Conflicts[0] != "shared.txt" || state.PreimageDir == nil || state.AutoMergeTree == nil {
 		t.Fatalf("conflict state = %+v", state)
 	}
+	runGit(t, workspace, "cat-file", "-e", *state.AutoMergeTree+"^{tree}")
 	if _, err := os.Stat(filepath.Join(gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-dir"), "MERGE_HEAD")); err != nil {
 		t.Fatalf("MERGE_HEAD missing: %v", err)
 	}
@@ -450,6 +453,104 @@ func TestSyncTargetReusesAnAcceptedSetupResolutionWithoutPublishingSetupMerge(t 
 	}
 	if err := exec.Command("git", "-C", repository, "merge-base", "--is-ancestor", *state.Merge, published).Run(); err == nil {
 		t.Fatal("finishing sync published the setup reconciliation merge")
+	}
+}
+
+func TestCompleteReconciliationAllowsOnlyRecordedConflictResolutions(t *testing.T) {
+	t.Run("ordinary conflict with a clean target path completes", func(t *testing.T) {
+		runDir, workspace := createConflictCompletionEstate(t)
+		resolveConflict(t, workspace)
+		output, err := runCompleteReconciliation(workspace, runDir)
+		if err != nil {
+			t.Fatalf("ordinary completion: %v\n%s", err, output)
+		}
+		if got := gitOutput(t, workspace, "show", "HEAD:sibling.txt"); got != "clean target content" {
+			t.Fatalf("ordinary completion dropped clean target content: %q", got)
+		}
+	})
+
+	t.Run("an unrelated staged path is refused and shown", func(t *testing.T) {
+		runDir, workspace := createConflictCompletionEstate(t)
+		resolveConflict(t, workspace)
+		if err := os.WriteFile(filepath.Join(workspace, "unrelated.txt"), []byte("invented\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, workspace, "add", "unrelated.txt")
+		output, err := runCompleteReconciliation(workspace, runDir)
+		if err == nil || !strings.Contains(output, "staged paths outside recorded conflicts differ from Git's auto-merge result") {
+			t.Fatalf("unrelated staged path was not refused: %v\n%s", err, output)
+		}
+		assertUnexpectedResolutionShown(t, runDir, workspace, "unrelated.txt", "invented")
+	})
+
+	t.Run("a rewritten clean auto-merge is refused and shown", func(t *testing.T) {
+		runDir, workspace := createConflictCompletionEstate(t)
+		resolveConflict(t, workspace)
+		if err := os.WriteFile(filepath.Join(workspace, "sibling.txt"), []byte("agent rewrite\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, workspace, "add", "sibling.txt")
+		output, err := runCompleteReconciliation(workspace, runDir)
+		if err == nil || !strings.Contains(output, "staged paths outside recorded conflicts differ from Git's auto-merge result") {
+			t.Fatalf("rewritten clean auto-merge was not refused: %v\n%s", err, output)
+		}
+		assertUnexpectedResolutionShown(t, runDir, workspace, "sibling.txt", "agent rewrite")
+	})
+
+	t.Run("an unresolved conflict stays refused", func(t *testing.T) {
+		runDir, workspace := createConflictCompletionEstate(t)
+		output, err := runCompleteReconciliation(workspace, runDir)
+		if err == nil || !strings.Contains(output, "unmerged paths remain") {
+			t.Fatalf("unresolved conflict was not refused: %v\n%s", err, output)
+		}
+	})
+
+	t.Run("an unstaged post-resolution edit stays refused", func(t *testing.T) {
+		runDir, workspace := createConflictCompletionEstate(t)
+		resolveConflict(t, workspace)
+		if err := os.WriteFile(filepath.Join(workspace, "shared.txt"), []byte("unstaged rewrite\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		output, err := runCompleteReconciliation(workspace, runDir)
+		if err == nil || !strings.Contains(output, "unstaged tracked changes remain") {
+			t.Fatalf("unstaged rewrite was not refused: %v\n%s", err, output)
+		}
+	})
+}
+
+func createConflictCompletionEstate(t *testing.T) (string, string) {
+	t.Helper()
+	repository, head, target := createDivergedSetupRepository(t, true)
+	server := newSetupForge(t, head, repository, "")
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	runSetupWorkspaceForTarget(t, server.URL, runDir, workspace, head, target)
+	return runDir, workspace
+}
+
+func resolveConflict(t *testing.T, workspace string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(workspace, "shared.txt"), []byte("feature and target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", "shared.txt")
+}
+
+func runCompleteReconciliation(workspace, runDir string) (string, error) {
+	command := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "complete-reconciliation"), workspace)
+	command.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir, "MINOS_BASE_REF=main")
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+func assertUnexpectedResolutionShown(t *testing.T, runDir, workspace, path, content string) {
+	t.Helper()
+	show := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "show-resolutions"))
+	show.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir, "MINOS_WORKSPACE="+workspace)
+	output, err := show.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "=== staged outside recorded conflicts") ||
+		!strings.Contains(string(output), path) || !strings.Contains(string(output), content) {
+		t.Fatalf("unexpected staged change was not shown: %v\n%s", err, output)
 	}
 }
 
