@@ -34,6 +34,7 @@ function args(findings, overrides = {}) {
     workspace: "/run/workspace",
     guidance: { grounding: "annexe", path: "/run/subject-Annexe/README.md", content: "COMMISSION_VIOLET_719" },
     fixerBrief: { path: "workflows/review-briefs/fixer.md", readPath: "/minos/workflows/review-briefs/fixer.md", content: "MINOS_FIX_EVIDENCE_V1" },
+    verification: { build: "make build", tests: "make test" },
     ...overrides,
   };
 }
@@ -63,15 +64,34 @@ async function run(input, respond = (label, prompt) => ({
 
 function verificationActionsUnderstoodByWorker(prompt) {
   const actions = new Set();
+  let assignedConfiguredVerification = false;
   for (const sentence of prompt.split(/(?<=[.!?])\s+|\n+/)) {
     const instruction = sentence.trim();
     const isWorkerDirective = /^(?:before [^,]+,\s*)?(?:you (?:must|need to|are required to)\s+)?(?:run|execute)\b/i.test(instruction);
-    if (!isWorkerDirective || !/\bconfigured\b/i.test(instruction)) continue;
-    if (/\bbuild\b/i.test(instruction)) actions.add("build");
-    if (/\btests?\b/i.test(instruction)) actions.add("tests");
+    if (isWorkerDirective && /\bconfigured\b/i.test(instruction))
+      assignedConfiguredVerification = true;
   }
+  if (!assignedConfiguredVerification) return [];
+  const configuredCommand = (kind) => {
+    const match = prompt.match(new RegExp(`^Configured ${kind} command:\\s*(\"(?:\\\\.|[^\"])*\")\\s*$`, "mi"));
+    if (!match) return "";
+    return JSON.parse(match[1]).trim();
+  };
+  if (configuredCommand("build") !== "") actions.add("build");
+  if (configuredCommand("test") !== "") actions.add("tests");
   return [...actions];
 }
+
+test("the recording worker treats only non-empty configured commands as obligations", () => {
+  const prompt = (build, tests) =>
+    `Before returning, run the configured build and tests, skipping either when its command is empty rather than inventing a substitute.\n` +
+    `Configured build command: ${JSON.stringify(build)}\n` +
+    `Configured test command: ${JSON.stringify(tests)}\n`;
+  assert.deepEqual(verificationActionsUnderstoodByWorker(prompt("make build", "make test")), ["build", "tests"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(prompt("make build", "")), ["build"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(prompt("", "make test")), ["tests"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(prompt("", "")), []);
+});
 
 test("a High plus two Lows is working, posts all findings, and dispatches all fixes", async () => {
   const findings = [

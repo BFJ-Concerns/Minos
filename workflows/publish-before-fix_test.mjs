@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 import { publishBeforeFix } from "./publish-before-fix.mjs";
@@ -17,6 +18,7 @@ const fixSource = readFileSync(fixScriptPath, "utf8");
 const fixBody = fixSource.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const fixScript = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", fixBody);
+const execFileAsync = promisify(execFile);
 
 const HEAD = "2222222222222222222222222222222222222222";
 const TARGET = "1111111111111111111111111111111111111111";
@@ -385,12 +387,12 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
 
     const fixture = await forgeFixture();
     try {
-      const output = execFileSync(
+      const { stdout } = await execFileAsync(
         minosBin,
         ["forge", "review", HEAD, TARGET, "comment", bodyPath, commentsPath],
         { encoding: "utf8", env: fixture.env },
       );
-      const publication = JSON.parse(output);
+      const publication = JSON.parse(stdout);
       const durableComments = fixture.state.comments.get(1) || [];
       assert.equal(publication.outcome, "applied");
       assert.equal(fixture.state.postCount, 1);
