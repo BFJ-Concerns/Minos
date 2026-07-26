@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -32,6 +32,14 @@ function writeAndCommit(cwd, path, contents, message) {
   git(cwd, "add", path);
   git(cwd, "commit", "-m", message);
   return git(cwd, "rev-parse", "HEAD");
+}
+
+function isAncestor(gitDir, ancestor, descendant) {
+  return spawnSync(
+    "git",
+    ["--git-dir", gitDir, "merge-base", "--is-ancestor", ancestor, descendant],
+    { stdio: "ignore" },
+  ).status === 0;
 }
 
 function createDivergedRemote(root) {
@@ -153,8 +161,7 @@ test("setup, fix dispatch, publication and round reconciliation preserve their s
     [head, target],
   );
   assert.equal(git(initial.publication, "rev-parse", "HEAD"), head);
-  assert.throws(() =>
-    execFileSync("git", ["--git-dir", remote, "merge-base", "--is-ancestor", initial.merge, `refs/heads/${HEAD_REF}`]));
+  assert.equal(isAncestor(remote, initial.merge, `refs/heads/${HEAD_REF}`), false);
 
   let dispatchCwd = null;
   const result = await publishBeforeFix({
@@ -230,7 +237,7 @@ test("setup, fix dispatch, publication and round reconciliation preserve their s
   assert.equal(dispatchCwd, initial.publication);
   const commitsPath = join(runDir, "fix-commits.json");
   writeFileSync(commitsPath, JSON.stringify(result.integration.commits));
-  const integration = JSON.parse(execFileSync(
+  const integrationOutput = execFileSync(
     join(repositoryRoot, "workflows", "integrate-wave"),
     [reading, commitsPath],
     {
@@ -245,15 +252,15 @@ test("setup, fix dispatch, publication and round reconciliation preserve their s
         MINOS_GIT_AUTHOR_EMAIL: "minos@example.invalid",
       },
     },
-  ));
+  );
+  const integration = JSON.parse(integrationOutput.trim().split(/\r?\n/).at(-1));
 
   assert.equal(integration.outcome, "reconciled");
   assert.equal(readFileSync(join(remote, "push-count"), "utf8").trim(), "1");
   const publishedHead = git(remote, "rev-parse", `refs/heads/${HEAD_REF}`);
   assert.equal(git(initial.publication, "rev-parse", "HEAD"), publishedHead);
   assert.equal(git(remote, "show", `${publishedHead}:repair.txt`), "repaired");
-  assert.throws(() =>
-    execFileSync("git", ["--git-dir", remote, "merge-base", "--is-ancestor", initial.merge, publishedHead]));
+  assert.equal(isAncestor(remote, initial.merge, publishedHead), false);
 
   const advanced = JSON.parse(readFileSync(statePath, "utf8"));
   assert.notEqual(advanced.merge, initial.merge);
