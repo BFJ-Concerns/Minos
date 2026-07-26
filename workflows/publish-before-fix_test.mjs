@@ -18,9 +18,69 @@ const fixBody = fixSource.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const fixScript = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", fixBody);
 
-const HEAD = "2222222222222222222222222222222222222222";
-const TARGET = "1111111111111111111111111111111111111111";
+const JOURNEY_REPOSITORY = createAnchoringRepository();
+const HEAD = JOURNEY_REPOSITORY.head;
+const TARGET = JOURNEY_REPOSITORY.target;
 const SENTINEL = "ORDERING-SENTINEL-publication-before-fix";
+
+function createAnchoringRepository() {
+  const workspace = mkdtempSync(join(tmpdir(), "minos-publication-workspace-"));
+  execFileSync("git", ["init", "-q"], { cwd: workspace });
+  execFileSync("git", ["config", "user.name", "Minos Test"], { cwd: workspace });
+  execFileSync("git", ["config", "user.email", "minos@example.invalid"], { cwd: workspace });
+
+  const files = new Map([
+    ["internal/state.go", Array.from({ length: 50 }, (_, index) => `state line ${index + 1}`)],
+    ["src/large-file.rs", Array.from({ length: 7430 }, (_, index) => `large line ${index + 1}`)],
+  ]);
+  for (const [path, lines] of files) {
+    const fullPath = join(workspace, path);
+    execFileSync("mkdir", ["-p", dirname(fullPath)]);
+    writeFileSync(fullPath, `${lines.join("\n")}\n`);
+  }
+  execFileSync("git", ["add", "."], { cwd: workspace });
+  execFileSync("git", ["commit", "-q", "-m", "target"], { cwd: workspace });
+  const target = execFileSync("git", ["rev-parse", "HEAD"], { cwd: workspace, encoding: "utf8" }).trim();
+
+  files.get("internal/state.go")[40] = "changed state line 41";
+  files.get("src/large-file.rs")[7399] = "changed large line 7400";
+  for (const [path, lines] of files) {
+    writeFileSync(join(workspace, path), `${lines.join("\n")}\n`);
+  }
+  execFileSync("git", ["add", "."], { cwd: workspace });
+  execFileSync("git", ["commit", "-q", "-m", "head"], { cwd: workspace });
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: workspace, encoding: "utf8" }).trim();
+  const diff = execFileSync("git", [
+    "diff", "--no-ext-diff", "--no-color", "--unified=3", "-M", target, head,
+  ], { cwd: workspace, encoding: "utf8" });
+  return { workspace, target, head, diffNewSide: parseNewSideIntervals(diff) };
+}
+
+function parseNewSideIntervals(diff) {
+  const intervals = new Map();
+  let path = "";
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ ")) {
+      const label = line.slice(4);
+      path = label === "/dev/null" ? "" : label.replace(/^b\//, "");
+      continue;
+    }
+    const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!path || !match) continue;
+    const start = Number(match[1]);
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    if (count > 0) {
+      const current = intervals.get(path) || [];
+      current.push([start, start + count - 1]);
+      intervals.set(path, current);
+    }
+  }
+  return intervals;
+}
+
+function isAnchored(intervals, path, line) {
+  return (intervals.get(path) || []).some(([start, end]) => line >= start && line <= end);
+}
 
 function finding(overrides = {}) {
   return {
@@ -97,6 +157,7 @@ async function requestBody(request) {
 }
 
 async function forgeFixture(options = {}) {
+  const storedPositions = new Map(options.storedPositions || []);
   const state = {
     reviews: [],
     comments: new Map(),
@@ -104,6 +165,7 @@ async function forgeFixture(options = {}) {
     commentReadCount: 0,
     actualHead: options.actualHead || HEAD,
     storePost: options.storePost !== false,
+    diffNewSide: options.diffNewSide || JOURNEY_REPOSITORY.diffNewSide,
   };
   const server = createServer(async (request, response) => {
     response.setHeader("Content-Type", "application/json");
@@ -147,14 +209,20 @@ async function forgeFixture(options = {}) {
       };
       if (state.storePost) {
         state.reviews.push(review);
-        state.comments.set(id, (payload.comments || []).map((comment, index) => ({
-          id: index + 1,
-          pull_request_review_id: id,
-          path: comment.path,
-          body: comment.body,
-          position: comment.new_position,
-          original_position: 0,
-        })));
+        state.comments.set(id, (payload.comments || []).map((comment, index) => {
+          const anchored = isAnchored(state.diffNewSide, comment.path, comment.new_position);
+          return {
+            id: index + 1,
+            pull_request_review_id: id,
+            path: comment.path,
+            body: comment.body,
+            position: anchored
+              ? (storedPositions.get(`${comment.path}:${comment.new_position}`) ?? comment.new_position)
+              : 3691,
+            original_position: 0,
+            diff_hunk: anchored ? `@@ -${comment.new_position},3 +${comment.new_position},3 @@` : "",
+          };
+        }));
       }
       response.end(JSON.stringify(review));
       return;
@@ -200,6 +268,7 @@ credential-file = "${tokenPath}"
       MINOS_OWNER: "minos-e2e-owner",
       MINOS_REPO_NAME: "subject",
       MINOS_PR: "1",
+      MINOS_WORKSPACE: JOURNEY_REPOSITORY.workspace,
     },
     close: () => new Promise((resolveClose) => server.close(resolveClose)),
   };
@@ -218,7 +287,8 @@ function seedExactReview(fixture, plan, comments = plan.sweepReview.comments) {
     pull_request_review_id: 41,
     path: comment.path,
     body: comment.body,
-    position: comment.new_position,
+    diff_hunk: `@@ -${comment.line},3 +${comment.line},3 @@`,
+    position: comment.line,
     original_position: 0,
   })));
 }
@@ -263,6 +333,82 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.equal(events.filter((event) => event.startsWith("fix-agent-called:")).length, 1);
       assert.equal(events[0].split(":")[1], events[1].split(":")[1]);
       assert.equal(events[1].split(":")[1], events[2].split(":")[1]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("an outside-hunk confirmed finding reaches a durable fallback before dispatch", async () => {
+    const sourceLine = 7423;
+    const preparedInput = input([finding({
+      path: "src/large-file.rs",
+      line: sourceLine,
+    })]);
+    const fixture = await forgeFixture();
+    try {
+      const { result, events, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      const review = fixture.state.reviews[0];
+      const comments = fixture.state.comments.get(review.id) || [];
+      const findingIsAnchored = comments.some((comment) =>
+        comment.path === "src/large-file.rs" &&
+        typeof comment.diff_hunk === "string" &&
+        comment.diff_hunk !== "" &&
+        comment.body.includes(SENTINEL));
+      const findingIsInReviewBody =
+        review.body.includes(SENTINEL) &&
+        review.body.includes("src/large-file.rs") &&
+        review.body.includes(String(sourceLine)) &&
+        review.body.includes("could not be anchored inline");
+
+      assert.equal(
+        findingIsAnchored || findingIsInReviewBody,
+        true,
+        "the author-visible review must retain the finding either at a real inline anchor or in the review body with its source location",
+      );
+      assert.equal(result.status, "complete");
+      assert.equal(result.publication.outcome, "applied");
+      assert.match(prompts[0], new RegExp(SENTINEL));
+      assert.deepEqual(
+        events.slice(1).map((event) => event.split(":")[0]),
+        ["forge-review-confirmed", "fix-dispatch-started", "fix-agent-called"],
+      );
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("a blame-rewritten real inline anchor remains confirmed before dispatch", async () => {
+    const submittedFileLine = 41;
+    const preparedInput = input([finding({
+      path: "internal/state.go",
+      line: submittedFileLine,
+    })]);
+    const fixture = await forgeFixture({
+      storedPositions: [[`internal/state.go:${submittedFileLine}`, 3691]],
+    });
+    try {
+      const { result, events, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      const review = fixture.state.reviews[0];
+      const comments = fixture.state.comments.get(review.id) || [];
+      const findingReachedAnchoredComment = comments.some((comment) =>
+        comment.path === "internal/state.go" &&
+        comment.position === 3691 &&
+        typeof comment.diff_hunk === "string" &&
+        comment.diff_hunk !== "" &&
+        comment.body.includes(SENTINEL));
+
+      assert.equal(
+        findingReachedAnchoredComment,
+        true,
+        "the durable inline comment must survive Forgejo replacing the submitted file line with its blame-origin coordinate",
+      );
+      assert.equal(result.status, "complete");
+      assert.equal(result.publication.outcome, "applied");
+      assert.match(prompts[0], new RegExp(SENTINEL));
+      assert.deepEqual(
+        events.slice(1).map((event) => event.split(":")[0]),
+        ["forge-review-confirmed", "fix-dispatch-started", "fix-agent-called"],
+      );
     } finally {
       await fixture.close();
     }

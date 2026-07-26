@@ -260,8 +260,10 @@ as proof that there is no work or wake still pending.
 
    After the push, read a fresh forge snapshot and use its current head. When
    `fixReview` is present, materialise its body and comments and post one
-   `comment` review on that head; every write-up deliberately uses its original
-   finding's path and line. Then run the exact configured build and test
+   `comment` review on that head; each write-up is requested at its original
+   finding's path and line, and the posting command anchors it where that head's
+   diff still carries the line — a write-up the diff cannot carry inline is
+   named in the review body instead. Then run the exact configured build and test
    commands again and run the complete input-builder and adjudication-wrapper
    flow on the new head. Do the same fresh build, test, and review even when
    every attempted fix failed and no commit was integrated. Continue from
