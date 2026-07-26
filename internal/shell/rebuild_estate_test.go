@@ -215,9 +215,7 @@ func TestRebuildEstateStopsNonCleanLeadWithoutHoldingItForSilence(t *testing.T) 
 		t.Fatalf("non-clean run body failed: %v\n%s", err, output)
 	}
 
-	if _, err := os.Stat(filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete")); !os.IsNotExist(err) {
-		t.Fatalf("non-clean lead wrote a clean marker or marker stat failed: %v", err)
-	}
+	assertContainsFile(t, filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete"), "non-clean")
 	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=brief-fix cause=repairs-incomplete")
 	assertContainsFile(t, record+".terminal", `"state":"done"`)
 	assertContainsFile(t, record+".calls", "stop abcdef12")
@@ -649,6 +647,7 @@ case "$1" in
     if [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
       printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=brief-fix cause=repairs-incomplete\n' \
         >>"$MINOS_FAILURE_LOG"
+      printf 'non-clean\n' >"$MINOS_RUN_DIR/lead-complete"
     else
       printf 'clean\n' >"$MINOS_RUN_DIR/lead-complete"
     fi
