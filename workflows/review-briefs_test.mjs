@@ -32,8 +32,22 @@ function finding(overrides = {}) {
   };
 }
 
-function specialistResult(findings = [finding()], applicability = { status: "applicable", reason: "the concern applies" }) {
-  return { applicability, findings };
+function observation(overrides = {}) {
+  return {
+    title: "pre-existing repository defect",
+    path: "pkg/legacy.go",
+    line: 11,
+    explanation: "Unverified observation: unchanged code violates the repository concern.",
+    ...overrides,
+  };
+}
+
+function specialistResult(
+  findings = [finding()],
+  applicability = { status: "applicable", reason: "the concern applies" },
+  outOfScopeObservations = [],
+) {
+  return { applicability, findings, outOfScopeObservations };
 }
 
 function args(overrides = {}) {
@@ -149,6 +163,68 @@ test("path scope gates full-extent width independently of extent", async () => {
   assert.equal(missed.result.briefs[0].skipKind, "empty");
 });
 
+test("a brief whose missing scope is its only trigger skips as misconfigured", async () => {
+  const candidate = brief(
+    ".review/missing/scoped.md",
+    "---\nextent: full\nsweep: whole-tree\n---\nJudge the missing scope.",
+    { scopeExists: false },
+  );
+  const { result, calls } = await run(args({
+    briefs: [candidate],
+    changedPaths: ["pkg/x.go"],
+  }));
+
+  assert.equal(calls.length, 0);
+  assert.deepEqual(result.dispatches, []);
+  assert.deepEqual(result.briefs, [{
+    brief: candidate.path,
+    title: "Scoped",
+    status: "skipped",
+    skipKind: "misconfigured-scope",
+    reason: "brief scope missing/ matches no repository directory",
+  }]);
+});
+
+test("a matched occasion runs a missing-scope brief and records the misconfiguration", async () => {
+  const candidate = brief(
+    ".review/missing/scoped.md",
+    "---\nextent: full\nsweep: whole-tree\noccasion: release\n---\nJudge the missing scope.",
+    { scopeExists: false },
+  );
+  const { result, calls } = await run(
+    args({ briefs: [candidate], occasion: "release", changedPaths: ["pkg/x.go"] }),
+    responder({ specialist: () => specialistResult([]) }),
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].opts.label, /^repository-/);
+  assert.match(calls[0].prompt, /Assigned scope: missing\/\./);
+  assert.doesNotMatch(calls[0].prompt, /Assigned scope: the whole repository/);
+  assert.deepEqual(result.dispatches, [{
+    brief: candidate.path,
+    title: "Scoped",
+    label: "repository-review-missing-scoped-md-claude",
+    extent: "full",
+    scope: "missing",
+    files: [],
+  }]);
+  assert.deepEqual(result.briefs, [
+    {
+      brief: candidate.path,
+      title: "Scoped",
+      status: "run",
+      reason: "applicable concern reviewed",
+    },
+    {
+      brief: candidate.path,
+      title: "Scoped",
+      status: "skipped",
+      skipKind: "misconfigured-scope",
+      reason: "brief scope missing/ matches no repository directory",
+    },
+  ]);
+});
+
 test("per-file partitioning follows repository structure and clamps to a lossless plan", async () => {
   const trackedFiles = [
     ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/api/f${index}.go`, bytes: 10 })),
@@ -260,6 +336,47 @@ test("an applicable finding emits opposite-family routing and raw verifier outpu
   // The fixture brief sits under pkg/ and pkg/x.go changed, so its path-scope
   // trigger fires and relevance is moot: a specialist and its verifier only.
   assert.equal(result.requiredModelEvidence.length, 2);
+});
+
+test("a repository observation is returned separately and never reaches verification", async () => {
+  const { result, calls } = await run(args(), responder({
+    specialist: () => specialistResult([], undefined, [observation()]),
+  }));
+
+  assert.deepEqual(result.proposedFindings, []);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+  assert.deepEqual(result.outOfScopeObservations, [{
+    id: "repository-review-pkg-errors-md-claude:observation:1",
+    source: "Errors",
+    title: "pre-existing repository defect",
+    path: "pkg/legacy.go",
+    line: 11,
+    explanation: "Unverified observation: unchanged code violates the repository concern.",
+    observingLabel: "repository-review-pkg-errors-md-claude",
+    verified: false,
+  }]);
+  const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
+  assert.ok(!specialist.opts.schema.required.includes("outOfScopeObservations"));
+  assert.ok(specialist.opts.schema.properties.outOfScopeObservations);
+  assert.deepEqual(
+    specialist.opts.schema.properties.outOfScopeObservations.items.required,
+    ["title", "path", "line", "explanation"],
+  );
+});
+
+test("a repository specialist may omit an empty observation array", async () => {
+  const { result, calls } = await run(args(), responder({
+    specialist: () => ({
+      applicability: { status: "applicable", reason: "the concern applies" },
+      findings: [],
+    }),
+  }));
+
+  assert.deepEqual(result.outOfScopeObservations, []);
+  assert.deepEqual(result.proposedFindings, []);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+  const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
+  assert.ok(!specialist.opts.schema.required.includes("outOfScopeObservations"));
 });
 
 test("a matched occasion runs a scoped brief even when its scope is untouched", async () => {

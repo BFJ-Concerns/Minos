@@ -123,6 +123,18 @@ const findingShape = {
   },
 };
 
+const outOfScopeObservationShape = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "path", "line", "explanation"],
+  properties: {
+    title: { type: "string" },
+    path: { type: "string" },
+    line: { type: "integer", minimum: 1 },
+    explanation: { type: "string" },
+  },
+};
+
 const applicabilityShape = {
   type: "object",
   additionalProperties: false,
@@ -140,6 +152,7 @@ const specialistSchema = {
   properties: {
     applicability: applicabilityShape,
     findings: { type: "array", items: findingShape },
+    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
   },
 };
 
@@ -235,6 +248,7 @@ if (!exploration) {
     stage: "present",
     requiredModelEvidence: legs,
     proposedFindings: [],
+    outOfScopeObservations: [],
     briefs: [],
     dispatches: [],
     reviewers: [{ label: "exploration", role: "exploration", status: "no-result" }],
@@ -271,6 +285,7 @@ const specialistResults = await parallel(
 
 const reviewerStates = [];
 const proposed = [];
+const outOfScopeObservations = [];
 const briefs = [];
 specialistUnits.forEach((unit, unitIndex) => {
   const result = specialistResults[unitIndex];
@@ -285,6 +300,18 @@ specialistUnits.forEach((unit, unitIndex) => {
     status: result ? "done" : "no-result",
   });
   if (!result) return;
+  const observations = Array.isArray(result.outOfScopeObservations)
+    ? result.outOfScopeObservations
+    : [];
+  observations.forEach((observation, observationIndex) => {
+    outOfScopeObservations.push({
+      id: `${unit.label}:observation:${observationIndex + 1}`,
+      source: unit.concern,
+      ...observation,
+      observingLabel: unit.label,
+      verified: false,
+    });
+  });
   if (result.applicability.status === "inapplicable") {
     briefs.push({
       brief: unit.roleBrief,
@@ -344,6 +371,7 @@ return {
   stage: "present",
   requiredModelEvidence: legs,
   proposedFindings,
+  outOfScopeObservations,
   briefs,
   dispatches: planned.dispatched.map((unit) => ({
     id: unit.id,

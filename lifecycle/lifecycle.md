@@ -41,6 +41,74 @@ or wake still pending.
    safe to repeat). If the snapshot now shows that the head or target has moved
    since setup, remove 👀 against that fresh head and target and stop without
    publishing.
+
+   Read `$MINOS_RUN_DIR/reconciliation.json`. Setup has fetched the target from
+   the base repository, verified its observed SHA and pinned it at
+   `refs/minos/target` for the whole run. The record says whether merging that
+   target locally was unnecessary, completed cleanly, or left a conflict in
+   progress. A completed reconciliation merge exists only in the detached
+   reading workspace. Minos records it as unpushable, while every repair and
+   finishing push operates on the separate publication worktree recorded in
+   this file. Never move the pinned target during the review loop: it fixes
+   both the code context and the merge-base-to-head comment geometry.
+
+   Run the setup workflow on every run, whatever the reconciliation outcome.
+   Launch it from `$MINOS_WORKSPACE` as one background Bash task under step 4's
+   workflow discipline, with diagnostics beside the result:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" \
+     > "$MINOS_RUN_DIR/setup-args.json"
+   node /opt/minos/runtime/ensemble.mjs \
+     --json-args @"$MINOS_RUN_DIR/setup-args.json" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
+     > "$MINOS_RUN_DIR/setup-result.json" \
+     2> "$MINOS_RUN_DIR/setup-result.log"
+   ```
+
+   Wait for the background process to exit before reading the result. A
+   non-zero process exit, invalid JSON, a result whose `status` is not
+   `complete`, or `environment.ready: false` is an incomplete terminal
+   outcome. Append the returned `reason` or `environment.cause` to
+   `$MINOS_FAILURE_LOG`, set `incomplete`, remove 👀, and stop.
+
+   When `reconciliation.attempted` is true, check the resolution content rather
+   than recreating its process. Run
+   `"${MINOS_SETUP_WORKSPACE%/*}/show-resolutions"` and compare each
+   marker-bearing preimage with the staged result and the corresponding
+   `resolutions[].note`. Accept a file only when the staged content preserves
+   both parents' intent and introduces no content found in neither. Never edit
+   a conflicted file yourself.
+
+   For a rejected path, run
+   `"${MINOS_SETUP_WORKSPACE%/*}/reopen-conflict" "$MINOS_WORKSPACE" PATH...`,
+   write one JSON objections file containing the rejected paths and concrete
+   objections, then redispatch once:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" \
+     --reconcile-only --objections "$MINOS_RUN_DIR/setup-objections.json" \
+     > "$MINOS_RUN_DIR/setup-retry-args.json"
+   node /opt/minos/runtime/ensemble.mjs \
+     --json-args @"$MINOS_RUN_DIR/setup-retry-args.json" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
+     > "$MINOS_RUN_DIR/setup-retry-result.json" \
+     2> "$MINOS_RUN_DIR/setup-retry-result.log"
+   ```
+
+   Apply the same process-exit and result checks to the retry, then inspect its
+   bounded resolution diff. A second unacceptable resolution ends the run
+   incomplete with the specific objection recorded. Once every resolution
+   stands, run
+   `"${MINOS_SETUP_WORKSPACE%/*}/complete-reconciliation"
+   "$MINOS_WORKSPACE"`.
+
+   The same check, one-retry and completion rule applies when a later Minos
+   script reports `reconcile-conflict`: redispatch the setup workflow in
+   reconciliation-only mode before continuing the round. The change under
+   review remains the pinned target-to-current-pull-request-head range. The
+   reconciliation merge supplies the context in which code is read; it is never
+   itself part of the reviewed change.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you
@@ -120,6 +188,11 @@ or wake still pending.
    and every finding has a complete verifier verdict, and returns the
    adjudicated verdict. Do not read the archive, judge the workflow's engine
    pairing, resume the workflow, or duplicate its findings yourself.
+
+   Any adjudicated verdict may also contain `outOfScopeObservations`. These are
+   unverified observations, not findings, and carry no verifier verdict. Keep
+   them in the saved verdict, but do not publish them through this lifecycle;
+   their publication is owned separately.
 
    Only a verdict whose `status` is `complete` is publishable. A missing result,
    incomplete leg, or missing or invalid verifier result yields `incomplete` or
@@ -258,14 +331,15 @@ or wake still pending.
    requests a second brief review or fix wave. If its
    `integration.commits` is non-empty, integrate them through `integrate-wave`
    exactly as in the main loop, then take a fresh forge snapshot and use its
-   current head. Run `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD` exactly as
-   configured and to completion when each is non-empty; do not substitute or
-   invent commands. If the single wave leaves `confirmedUnfixed` entries, or
-   integration, build or tests fail, add no 👍, set attention or incomplete to
-   reflect the actual result, remove the 👀, and stop. If all fixes were
-   integrated and the exact configured build and tests pass, the brief stage
-   has passed: add the 👍 on the fresh head. Do not run another review loop.
-   Thus both a no-findings pass
+   current head. When `fixReview` is present, materialise its body and comments
+   and post one `comment` review on that fresh head. Run `$MINOS_BUILD_CMD` and
+   `$MINOS_TEST_CMD` exactly as configured and to completion when each is
+   non-empty; do not substitute or invent commands. If the single wave leaves
+   `confirmedUnfixed` entries, or integration, build or tests fail, add no 👍,
+   set attention or incomplete to reflect the actual result, remove the 👀, and
+   stop. If all fixes were integrated and the exact configured build and tests
+   pass, the brief stage has passed: add the 👍 on the fresh head. Do not run
+   another review loop. Thus both a no-findings pass
    and a findings-fixed-and-verified pass end in the same idempotent 👍 signal.
 
 8. Enter finishing only after both review stages are done and the current result
