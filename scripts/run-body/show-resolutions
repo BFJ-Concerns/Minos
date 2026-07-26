@@ -1,0 +1,40 @@
+#!/usr/bin/env sh
+set -eu
+
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+: "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
+state_file="${MINOS_RUN_DIR}/reconciliation.json"
+
+if [ ! -f "$state_file" ]; then
+  echo "show-resolutions: reconciliation state is missing: $state_file" >&2
+  exit 1
+fi
+preimage_dir="$(jq -r '.preimageDir // ""' "$state_file")"
+if [ -z "$preimage_dir" ]; then
+  echo "show-resolutions: reconciliation state has no conflict preimages" >&2
+  exit 1
+fi
+
+jq -r '.conflicts[]' "$state_file" |
+  while IFS= read -r conflict_path; do
+    if [ ! -f "$preimage_dir/$conflict_path" ]; then
+      echo "show-resolutions: missing preimage for $conflict_path" >&2
+      exit 1
+    fi
+    staged_file="$(mktemp)"
+    if ! git -C "$MINOS_WORKSPACE" show ":$conflict_path" >"$staged_file"; then
+      rm -f "$staged_file"
+      echo "show-resolutions: $conflict_path is not staged" >&2
+      exit 1
+    fi
+    printf '=== %s\n' "$conflict_path"
+    diff -u \
+      --label "preimage/$conflict_path" \
+      --label "staged/$conflict_path" \
+      "$preimage_dir/$conflict_path" "$staged_file" || diff_status=$?
+    rm -f "$staged_file"
+    if [ "${diff_status:-0}" -gt 1 ]; then
+      exit "$diff_status"
+    fi
+    unset diff_status
+  done
