@@ -35,6 +35,7 @@ function args(findings, overrides = {}) {
     verification: { build: "make build", tests: "make test" },
     guidance: { grounding: "annexe", path: "/run/subject-Annexe/README.md", content: "COMMISSION_VIOLET_719" },
     fixerBrief: { path: "workflows/review-briefs/fixer.md", readPath: "/minos/workflows/review-briefs/fixer.md", content: "MINOS_FIX_EVIDENCE_V1" },
+    verification: { build: "make build", tests: "make test" },
     ...overrides,
   };
 }
@@ -61,6 +62,39 @@ async function run(input, respond = (label, prompt) => ({
   const result = await script(agent, parallel, async () => [], () => {}, () => {}, plan);
   return { result, calls };
 }
+
+function verificationActionsUnderstoodByWorker(prompt) {
+  const actions = new Set();
+  for (const sentence of prompt.split(/(?<=[.!?])\s+|\n+/)) {
+    const instruction = sentence.trim();
+    const isWorkerDirective = /^(?:before [^,]+,\s*)?(?:you (?:must|need to|are required to)\s+)?(?:run|execute)\b/i.test(instruction);
+    if (!isWorkerDirective || !/\bconfigured\b/i.test(instruction)) continue;
+    const encodedCommand = instruction.match(/("(?:\\.|[^"])*")\s*[.!?]?$/);
+    if (!encodedCommand || JSON.parse(encodedCommand[1]).trim() === "") continue;
+    if (/\bbuild\b/i.test(instruction)) actions.add("build");
+    if (/\btests?\b/i.test(instruction)) actions.add("tests");
+  }
+  return [...actions];
+}
+
+test("the recording worker reads obligations from directive meaning and command presence", () => {
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    `Run this configured build command before returning: "make build"\n` +
+    `Execute the configured test command prior to completion: "make test"\n`,
+  ), ["build", "tests"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    `Execute the configured build check before returning: "make build"\n`,
+  ), ["build"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    `Run the configured tests prior to completion: "make test"\n`,
+  ), ["tests"]);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    "Return one result for every findingKey.\n",
+  ), []);
+  assert.deepEqual(verificationActionsUnderstoodByWorker(
+    `Run the configured build command before returning: "   "\n`,
+  ), []);
+});
 
 test("a High plus two Lows is working, posts all findings, and dispatches all fixes", async () => {
   const findings = [
@@ -227,6 +261,44 @@ test("single-wave mode dispatches every brief finding once and requests build an
     { path: "a.go", body: "Repaired material.", line: 1 },
     { path: "b.go", body: "Repaired minor.", line: 2 },
   ]);
+});
+
+test("a fix worker performs exactly the configured verification it is assigned", async (t) => {
+  for (const shape of [
+    { name: "build and tests", verification: { build: "make build", tests: "make test" }, expected: ["build", "tests"] },
+    { name: "build only", verification: { build: "make build", tests: "" }, expected: ["build"] },
+    { name: "tests only", verification: { build: "", tests: "make test" }, expected: ["tests"] },
+    { name: "nothing configured", verification: { build: "", tests: "" }, expected: [] },
+    { name: "whitespace-only build", verification: { build: "   ", tests: "" }, expected: [] },
+  ]) {
+    await t.test(shape.name, async () => {
+      const actions = [];
+      const original = finding("transition", "High", "internal/state.go", 41);
+      const { result, calls } = await run(
+        args([original], { singleWave: true, verification: shape.verification }),
+        (label, prompt) => {
+          actions.push(...verificationActionsUnderstoodByWorker(prompt));
+          const assignmentUnderstood = actions.length === shape.expected.length &&
+            actions.every((action, index) => action === shape.expected[index]);
+          return {
+            commit: assignmentUnderstood ? `${label}-verified-commit` : "",
+            fixes: assignedFindings(prompt).map((item) => ({
+              findingKey: item.key,
+              status: assignmentUnderstood ? "fixed" : "failed",
+              writeUp: assignmentUnderstood
+                ? "Repair completed every configured verification action."
+                : "Configured verification assignment was not understood.",
+            })),
+          };
+        },
+      );
+
+      assert.deepEqual(actions, shape.expected);
+      assert.equal(calls.length, 1);
+      assert.equal(result.repairsComplete, true);
+      assert.deepEqual(result.integration.commits, ["brief-fix-cluster-1-verified-commit"]);
+    });
+  }
 });
 
 test("a failed single-wave brief fix is not retried and cannot pass the stage", async () => {

@@ -338,6 +338,12 @@ as proof that there is no work or wake still pending.
      > "$MINOS_RUN_DIR/brief-fix-result.json"
    ```
 
+   Before reading any other result field, read `status`. If it is `incomplete`,
+   append its `reason` to `$MINOS_FAILURE_LOG`, set `"$MINOS_BIN" forge status
+   CURRENT_HEAD "$MINOS_TARGET_SHA" incomplete`, remove the 👀 with
+   `"$MINOS_BIN" forge reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`,
+   write the non-clean terminal marker, and stop.
+
    This mode dispatches every confirmed brief finding exactly once and never
    requests a second brief review or fix wave. If its
    `integration.commits` is non-empty, integrate them through `integrate-wave`
