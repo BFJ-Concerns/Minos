@@ -27,7 +27,7 @@ const scenario = process.env.MINOS_ADJUDICATOR_SCENARIO;
 const recorderPath = process.env.MINOS_ADJUDICATOR_RECORDER;
 
 function envelope() {
-  return {
+  const result = {
     reviewed: { target: "target-sha", head: "head-sha", occasion: null },
     stage: "present",
     requiredModelEvidence: [
@@ -53,6 +53,46 @@ function envelope() {
     dispatches: [],
     reviewers: [],
   };
+  if (scenario === "brief-runs") {
+    result.briefs = [
+      {
+        brief: ".review/missing/scoped.md",
+        title: "Scoped",
+        status: "run",
+        reason: "applicable concern reviewed",
+      },
+      {
+        brief: ".review/missing/scoped.md",
+        title: "Scoped",
+        status: "skipped",
+        skipKind: "misconfigured-scope",
+        reason: "brief scope missing/ matches no repository directory",
+      },
+    ];
+  } else if (scenario === "brief-skips") {
+    result.briefs = [{
+      brief: ".review/missing/scoped.md",
+      title: "Scoped",
+      status: "skipped",
+      skipKind: "misconfigured-scope",
+      reason: "brief scope missing/ matches no repository directory",
+    }];
+  } else if (scenario === "observation") {
+    result.outOfScopeObservations = [{
+      id: "specialist:observation:1",
+      source: "Correctness",
+      title: "Unchanged adjacent defect",
+      path: "internal/adjacent.go",
+      line: 73,
+      explanation: "OBSERVATION-SENTINEL-719 remains unverified.",
+      observingLabel: "specialist",
+      verified: false,
+      severity: "Critical",
+      confidence: 100,
+      verdict: "confirmed",
+    }];
+  }
+  return result;
 }
 
 function writeArchive(recordDir) {
@@ -153,6 +193,18 @@ function assertWithheld(verdict) {
   assert.equal(verdict.fixRequired, false);
 }
 
+function machineReadableBriefStatus(verdict, brief) {
+  const disposition = Array.isArray(verdict.briefs)
+    ? verdict.briefs.find((entry) => entry && entry.brief === brief)
+    : null;
+  if (disposition && ["run", "skipped"].includes(disposition.status)) return disposition.status;
+  if (Array.isArray(verdict.ran) && verdict.ran.some((entry) =>
+    entry === brief || (entry && entry.brief === brief))) return "run";
+  if (Array.isArray(verdict.skipped) && verdict.skipped.some((entry) =>
+    entry === brief || (entry && entry.brief === brief))) return "skipped";
+  return null;
+}
+
 test("the executable adjudicator carries the launch contract through to a publishable verdict", (t) => {
   const { verdict, launch, result, argsPath, workflowPath } = runWrapper(t, "complete");
 
@@ -173,6 +225,44 @@ test("the executable adjudicator carries the launch contract through to a publis
     new_position: comment.new_position,
   })), [{ path: "internal/review.go", new_position: 42 }]);
   assert.match(result.stderr, /\[workflow\] complete/);
+});
+
+test("the adjudicated verdict distinguishes a misconfigured brief that ran from one that skipped", (t) => {
+  const brief = ".review/missing/scoped.md";
+  const ran = runWrapper(t, "brief-runs").verdict;
+  const skipped = runWrapper(t, "brief-skips").verdict;
+
+  assert.equal(ran.status, "complete");
+  assert.equal(skipped.status, "complete");
+  assert.equal(machineReadableBriefStatus(ran, brief), "run");
+  assert.equal(machineReadableBriefStatus(skipped, brief), "skipped");
+});
+
+test("the executable verdict carries observations without admitting them as findings", (t) => {
+  const verdict = runWrapper(t, "observation").verdict;
+
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
+  assert.equal(verdict.confirmedFindings.some((finding) =>
+    finding.id === "specialist:observation:1"), false);
+  assert.deepEqual(verdict.outOfScopeObservations, [{
+    id: "specialist:observation:1",
+    source: "Correctness",
+    title: "Unchanged adjacent defect",
+    path: "internal/adjacent.go",
+    line: 73,
+    explanation: "OBSERVATION-SENTINEL-719 remains unverified.",
+    observingLabel: "specialist",
+    verified: false,
+  }]);
+});
+
+test("the executable verdict accepts an omitted optional observation array", (t) => {
+  const verdict = runWrapper(t, "observation-omitted").verdict;
+
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.outOfScopeObservations, []);
+  assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
 });
 
 for (const failure of [
