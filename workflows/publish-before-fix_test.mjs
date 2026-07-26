@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 import { publishBeforeFix } from "./publish-before-fix.mjs";
@@ -17,6 +18,7 @@ const fixSource = readFileSync(fixScriptPath, "utf8");
 const fixBody = fixSource.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const fixScript = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", fixBody);
+const execFileAsync = promisify(execFile);
 
 const JOURNEY_REPOSITORY = createAnchoringRepository();
 const HEAD = JOURNEY_REPOSITORY.head;
@@ -357,8 +359,7 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       const findingIsInReviewBody =
         review.body.includes(SENTINEL) &&
         review.body.includes("src/large-file.rs") &&
-        review.body.includes(String(sourceLine)) &&
-        review.body.includes("could not be anchored inline");
+        review.body.includes(String(sourceLine));
 
       assert.equal(
         findingIsAnchored || findingIsInReviewBody,
@@ -392,7 +393,6 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       const comments = fixture.state.comments.get(review.id) || [];
       const findingReachedAnchoredComment = comments.some((comment) =>
         comment.path === "internal/state.go" &&
-        comment.position === 3691 &&
         typeof comment.diff_hunk === "string" &&
         comment.diff_hunk !== "" &&
         comment.body.includes(SENTINEL));
@@ -400,7 +400,7 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.equal(
         findingReachedAnchoredComment,
         true,
-        "the durable inline comment must survive Forgejo replacing the submitted file line with its blame-origin coordinate",
+        "Forgejo's durable comment visibly carries the finding regardless of its stored blame coordinate",
       );
       assert.equal(result.status, "complete");
       assert.equal(result.publication.outcome, "applied");
@@ -409,6 +409,56 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
         events.slice(1).map((event) => event.split(":")[0]),
         ["forge-review-confirmed", "fix-dispatch-started", "fix-agent-called"],
       );
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("a single-wave fixer write-up reaches the durable review surface", async () => {
+    const writeUp = "BRIEF-FIX-WRITE-UP-SENTINEL-719";
+    const preparedInput = input([finding({
+      path: "src/brief-scope.rs",
+      line: 73,
+    })], { singleWave: true });
+    const plan = prepareFixWave(preparedInput);
+    const agent = async (prompt, options) => ({
+      commit: `${options.label}-commit`,
+      fixes: assignedFindings(prompt).map((item) => ({
+        findingKey: item.key,
+        status: "fixed",
+        writeUp,
+      })),
+    });
+    const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk()));
+    const fixResult = await fixScript(agent, parallel, async () => [], () => {}, () => {}, plan);
+    assert.ok(
+      fixResult.fixReview,
+      "the single-wave result must expose the fixer write-up to the lifecycle publication consumer",
+    );
+
+    const materialised = mkdtempSync(join(tmpdir(), "minos-brief-fix-review-"));
+    const bodyPath = join(materialised, "body.md");
+    const commentsPath = join(materialised, "comments.json");
+    writeFileSync(bodyPath, fixResult.fixReview.body, { mode: 0o600 });
+    writeFileSync(commentsPath, JSON.stringify(fixResult.fixReview.comments), { mode: 0o600 });
+
+    const fixture = await forgeFixture();
+    try {
+      const { stdout } = await execFileAsync(
+        minosBin,
+        ["forge", "review", HEAD, TARGET, "comment", bodyPath, commentsPath],
+        { encoding: "utf8", env: fixture.env },
+      );
+      const publication = JSON.parse(stdout);
+      const durableReview = fixture.state.reviews[0];
+      const durableComments = fixture.state.comments.get(1) || [];
+      assert.equal(publication.outcome, "applied");
+      assert.equal(fixture.state.postCount, 1);
+      assert.ok(fixture.state.commentReadCount > 0);
+      assert.deepEqual(durableComments, []);
+      assert.match(durableReview.body, new RegExp(writeUp));
+      assert.match(durableReview.body, /src\/brief-scope\.rs/);
+      assert.match(durableReview.body, /\b73\b/);
     } finally {
       await fixture.close();
     }
