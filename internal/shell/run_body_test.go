@@ -368,11 +368,19 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 			fixture.run(t, map[string]string{
 				"MINOS_TEST_TERMINAL_STATE":    "done",
 				"MINOS_TEST_COMPLETION_MARKER": outcome,
+				"MINOS_LEAD_SILENCE_TIMEOUT":   "1",
+				"MINOS_CLAUDE_POLL_SECONDS":    "0",
 			})
 
 			assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), outcome)
 			assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
-			assertContainsFile(t, fixture.record+".attempts", "1")
+			attemptsData, err := os.ReadFile(fixture.record + ".attempts")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempts := strings.TrimSpace(string(attemptsData)); attempts != "1" {
+				t.Fatalf("Claude agent queries = %s, want exactly 1", attempts)
+			}
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 			fixture.assertProcessesStopped(t)
 		})
