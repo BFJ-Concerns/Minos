@@ -30,6 +30,7 @@ const envelope = {
     rawVerifier: { verdict: "upheld", confidence: 94, reason: "The invalid state is reachable." },
   }],
   briefs: [{ brief: ".review/errors.md", title: "Error handling", status: "run", reason: "applicable concern reviewed" }],
+  misconfigurations: [],
   dispatches: [{ brief: ".review/errors.md", label: "specialist-1" }],
   reviewers: [],
 };
@@ -75,6 +76,9 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   assert.equal("new_position" in adapterVerdict.reviewBody.comments[0], false);
   assert.equal(adapterVerdict.reviewBody.body, "Repository review brief findings.");
   assert.equal(adapterVerdict.fixRequired, true);
+  assert.deepEqual(adapterVerdict.ran, [{ brief: ".review/errors.md", title: "Error handling" }]);
+  assert.deepEqual(adapterVerdict.skipped, []);
+  assert.deepEqual(adapterVerdict.misconfigurations, []);
   assert.deepEqual(
     adapterVerdict.modelEvidence.map(({ label, resolvedModel, status }) => ({ label, resolvedModel, status })),
     [
@@ -266,6 +270,19 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
   assert.match(adapterVerdict.incomplete.join("\n"), /proposed finding 1 is absent or malformed/);
 });
 
+test("a malformed misconfigurations field cannot become publishable", { timeout: 1000 }, async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const malformedEnvelope = {
+    ...envelope,
+    misconfigurations: null,
+  };
+  const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
+  assert.equal(adapterVerdict.status, "incomplete");
+  assert.deepEqual(adapterVerdict.confirmedFindings, []);
+  assert.equal(adapterVerdict.reviewBody, null);
+  assert.match(adapterVerdict.incomplete.join("\n"), /envelope misconfigurations is absent or unreadable/);
+});
+
 test("a zero-leg archive needs no agents directory", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, { records: {}, agentsDirectory: false });
   const absentEnvelope = {
@@ -274,6 +291,7 @@ test("a zero-leg archive needs no agents directory", async (t) => {
     requiredModelEvidence: [],
     proposedFindings: [],
     briefs: [],
+    misconfigurations: [],
     dispatches: [],
     reviewers: [],
   };

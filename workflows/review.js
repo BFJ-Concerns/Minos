@@ -250,6 +250,7 @@ if (!exploration) {
     proposedFindings: [],
     outOfScopeObservations: [],
     briefs: [],
+    misconfigurations: [],
     dispatches: [],
     reviewers: [{ label: "exploration", role: "exploration", status: "no-result" }],
   };
@@ -373,6 +374,7 @@ return {
   proposedFindings,
   outOfScopeObservations,
   briefs,
+  misconfigurations: [],
   dispatches: planned.dispatched.map((unit) => ({
     id: unit.id,
     label: unit.label,

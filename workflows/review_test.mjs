@@ -112,7 +112,7 @@ test("the script emits an envelope with every routed leg and raw verifier output
   const { result, calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
 
   assert.deepEqual(Object.keys(result).sort(), [
-    "briefs", "dispatches", "outOfScopeObservations", "proposedFindings",
+    "briefs", "dispatches", "misconfigurations", "outOfScopeObservations", "proposedFindings",
     "requiredModelEvidence", "reviewed", "reviewers", "stage",
   ]);
   assert.equal(result.stage, "present");

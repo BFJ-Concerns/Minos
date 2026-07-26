@@ -37,6 +37,7 @@ test("an unverified observation survives adjudication without becoming a finding
       { ...observation, id: "invalid-observation", verified: true },
     ],
     briefs: [],
+    misconfigurations: [],
     dispatches: [],
     reviewers: [],
   };
