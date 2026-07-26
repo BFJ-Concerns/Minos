@@ -128,16 +128,36 @@ test("a wave records one lead push for all distinct agent commits", async () => 
   assert.deepEqual(result.integration.author, { name: "Minos", email: "minos@example.invalid" });
 });
 
-test("fix assignments carry the exact configured build and test commands", async () => {
+test("fix assignments carry only the configured build and test obligations", async () => {
   const original = finding("transition", "High", "internal/state.go", 41);
-  const { calls } = await run(args([original], {
-    verification: {
-      build: "cargo build --workspace --locked",
-      tests: "cargo test --workspace --locked",
+  const cases = [
+    {
+      verification: { build: "cargo build --workspace --locked", tests: "cargo test --workspace --locked" },
+      build: true,
+      tests: true,
     },
-  }));
-  assert.match(calls[0].prompt, /Configured build command: "cargo build --workspace --locked"/);
-  assert.match(calls[0].prompt, /Configured test command: "cargo test --workspace --locked"/);
+    {
+      verification: { build: "", tests: "cargo test --workspace --locked" },
+      build: false,
+      tests: true,
+    },
+    { verification: { build: "", tests: "" }, build: false, tests: false },
+    { verification: undefined, build: false, tests: false },
+  ];
+  for (const expected of cases) {
+    const { calls } = await run(args([original], { verification: expected.verification }));
+    const prompt = calls[0].prompt;
+    assert.equal(
+      prompt.includes('Run this configured build command before returning: "cargo build --workspace --locked"'),
+      expected.build,
+    );
+    assert.equal(
+      prompt.includes('Run this configured test command before returning: "cargo test --workspace --locked"'),
+      expected.tests,
+    );
+    if (!expected.build) assert.doesNotMatch(prompt, /configured build/i);
+    if (!expected.tests) assert.doesNotMatch(prompt, /configured test/i);
+  }
 });
 
 test("fix write-ups keep the finding path and line", async () => {

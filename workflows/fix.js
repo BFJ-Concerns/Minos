@@ -33,6 +33,11 @@ function writeUpComment(finding, writeUp) {
   return { path: finding.path, body: writeUp, new_position: finding.line };
 }
 
+function verificationInstruction(kind, command) {
+  if (!command) return "";
+  return `Run this configured ${kind} command before returning: ${JSON.stringify(command)}\n`;
+}
+
 function fixPrompt(plan, cluster, attempt) {
   const brief = plan.input.fixerBrief;
   const verification = plan.input.verification || { build: "", tests: "" };
@@ -46,9 +51,8 @@ function fixPrompt(plan, cluster, attempt) {
     `Wave fingerprint: ${plan.fingerprint}\n` +
     `Assigned files: ${cluster.files.join(", ")}\n` +
     `Confirmed findings: ${JSON.stringify(cluster.findings)}\n` +
-    `Before returning, run the configured build and tests, skipping either when its command is empty rather than inventing a substitute.\n` +
-    `Configured build command: ${JSON.stringify(verification.build || "")}\n` +
-    `Configured test command: ${JSON.stringify(verification.tests || "")}\n` +
+    verificationInstruction("build", verification.build) +
+    verificationInstruction("test", verification.tests) +
     `Return one result for every findingKey. Commit completed repairs, return the commit SHA, and do not push.`
   );
 }
