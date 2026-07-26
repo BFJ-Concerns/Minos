@@ -41,5 +41,3 @@ with this boundary rather than treating older procedural text as authority.
 - `go test ./internal/shell -run '<TestName>'` runs a focused shell-package test.
 - `node --test workflows/review_test.mjs` drives the review workflow's decision
   logic against synthetic run results and fixture briefs.
-- Do not change the deployed Minos box unless the active task explicitly
-  includes deployment.
