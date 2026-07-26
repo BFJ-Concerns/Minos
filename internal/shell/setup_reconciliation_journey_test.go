@@ -36,7 +36,7 @@ func TestSetupReconcilesTargetLocallyWithoutPushingMergeAncestry(t *testing.T) {
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspace(t, server.URL, runDir, workspace, orientation, head)
+	runSetupReconciliationWorkspace(t, server.URL, runDir, workspace, orientation, head, target)
 
 	if _, err := os.Stat(filepath.Join(remote, "push-count")); !os.IsNotExist(err) {
 		t.Fatalf("setup contacted the remote push boundary: %v", err)
@@ -52,6 +52,35 @@ func TestSetupReconcilesTargetLocallyWithoutPushingMergeAncestry(t *testing.T) {
 	}
 	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got == head {
 		t.Fatalf("local workspace remained at the unreconciled pull-request head %s", head)
+	}
+}
+
+func runSetupReconciliationWorkspace(t *testing.T, apiBase, runDir, workspace, orientation, head, target string) {
+	t.Helper()
+	credential := filepath.Join(runDir, "forge.token")
+	if err := os.WriteFile(credential, []byte("forge-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join("..", "..", "scripts", "run-body", "setup-workspace")
+	cmd := exec.Command(script)
+	cmd.Env = append(os.Environ(),
+		"MINOS_API_BASE="+apiBase,
+		"MINOS_CREDENTIAL_FILE="+credential,
+		"MINOS_OWNER=owner",
+		"MINOS_REPO_NAME=repository",
+		"MINOS_PR=17",
+		"MINOS_HEAD_SHA="+head,
+		"MINOS_TARGET_SHA="+target,
+		"MINOS_BASE_REF=main",
+		"MINOS_HEAD_BRANCH=feature",
+		"MINOS_RUN_DIR="+runDir,
+		"MINOS_WORKSPACE="+workspace,
+		"MINOS_ORIENTATION="+orientation,
+		"MINOS_GIT_AUTHOR_NAME=Minos",
+		"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("setup-workspace failed: %v\n%s", err, output)
 	}
 }
 
