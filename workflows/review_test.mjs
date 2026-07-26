@@ -151,11 +151,27 @@ test("an out-of-scope observation leaves the specialist without entering finding
     verified: false,
   }]);
   const schema = specialistCalls(calls)[0].opts.schema;
-  assert.ok(schema.required.includes("outOfScopeObservations"));
+  assert.ok(!schema.required.includes("outOfScopeObservations"));
+  assert.ok(schema.properties.outOfScopeObservations);
   assert.deepEqual(
     schema.properties.outOfScopeObservations.items.required,
     ["title", "path", "line", "explanation"],
   );
+});
+
+test("a specialist may omit an empty observation array", async () => {
+  const { result, calls } = await runScript(ARGS, responder({
+    specialist: () => ({
+      applicability: { status: "applicable", reason: "the concern applies" },
+      findings: [],
+    }),
+  }));
+
+  assert.deepEqual(result.outOfScopeObservations, []);
+  assert.deepEqual(result.proposedFindings, []);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+  const schema = specialistCalls(calls)[0].opts.schema;
+  assert.ok(!schema.required.includes("outOfScopeObservations"));
 });
 
 test("each finding is verified by the family opposite its specialist", async () => {
@@ -266,6 +282,10 @@ test("an exploration null still emits its required leg for archive adjudication"
 
 test("the lifecycle uses one adjudicated review call and publication-owned fix waves", () => {
   assert.match(lifecycle, /invoke the adjudication wrapper once[\s\S]*review\.js[\s\S]*--json-args/);
+  assert.match(
+    lifecycle,
+    /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*do not publish them through this lifecycle/,
+  );
   assert.match(lifecycle, /publish-before-fix[\s\S]*fix-args\.json[\s\S]*HEAD TARGET/);
   assert.match(lifecycle, /starts the effectful `fix\.js`[\s\S]*only after[\s\S]*`outcome: "applied"`/);
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);

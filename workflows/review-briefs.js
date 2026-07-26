@@ -159,7 +159,7 @@ const outOfScopeObservationShape = {
 const specialistSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["applicability", "findings", "outOfScopeObservations"],
+  required: ["applicability", "findings"],
   properties: {
     applicability: {
       type: "object",

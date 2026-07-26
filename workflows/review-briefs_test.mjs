@@ -356,11 +356,27 @@ test("a repository observation is returned separately and never reaches verifica
     verified: false,
   }]);
   const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
-  assert.ok(specialist.opts.schema.required.includes("outOfScopeObservations"));
+  assert.ok(!specialist.opts.schema.required.includes("outOfScopeObservations"));
+  assert.ok(specialist.opts.schema.properties.outOfScopeObservations);
   assert.deepEqual(
     specialist.opts.schema.properties.outOfScopeObservations.items.required,
     ["title", "path", "line", "explanation"],
   );
+});
+
+test("a repository specialist may omit an empty observation array", async () => {
+  const { result, calls } = await run(args(), responder({
+    specialist: () => ({
+      applicability: { status: "applicable", reason: "the concern applies" },
+      findings: [],
+    }),
+  }));
+
+  assert.deepEqual(result.outOfScopeObservations, []);
+  assert.deepEqual(result.proposedFindings, []);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+  const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
+  assert.ok(!specialist.opts.schema.required.includes("outOfScopeObservations"));
 });
 
 test("a matched occasion runs a scoped brief even when its scope is untouched", async () => {
