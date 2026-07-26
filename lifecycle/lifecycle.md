@@ -20,14 +20,20 @@ clean pass. Record the pull request and head, the stage that failed, and the
 concrete cause — what the workflow verdict, a failed command, or a dispatched
 helper actually reported, not a restatement of the status. This line is the
 operator's durable record of why a run did not converge — the only trace once the
-run's scratch is gone — so write the real reason.
+run's scratch is gone — so write the real reason. Once all final forge writes
+and cleanup for that non-clean outcome have succeeded, run
+`printf 'non-clean\n' > "$MINOS_RUN_DIR/lead-complete"` as your last action
+before ending the turn. This marker is a separate absolute terminal obligation:
+the failure log records why the run did not converge, while the marker proves
+that no work or wake remains pending. Never write it before the terminal work
+and cleanup are complete.
 
 Whenever you stop after a clean, converged pass, run
 `printf 'clean\n' > "$MINOS_RUN_DIR/lead-complete"`. This is an absolute
-terminal obligation, symmetric with recording a non-clean stop. Run it only
-after all final forge writes and cleanup have succeeded, as your last action
-before ending the turn; the supervisor treats it as proof that there is no work
-or wake still pending.
+terminal obligation, symmetric with the non-clean marker. Run it only after all
+final forge writes and cleanup have succeeded, as your last action before ending
+the turn; the supervisor treats it as proof that there is no work or wake still
+pending.
 
 1. The setup script has cloned the repository at the observed pull-request head
    into `$MINOS_WORKSPACE`, refused setup if that head moved while cloning, and
