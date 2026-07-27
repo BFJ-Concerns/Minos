@@ -244,7 +244,14 @@ test("the adjudicated verdict distinguishes a misconfigured brief that ran from 
   assert.equal(machineReadableBriefStatus(skipped, brief), "skipped");
   assert.equal(ran.skipped.some((entry) => entry.brief === brief), false);
   assert.equal(skipped.ran.some((entry) => entry.brief === brief), false);
-  assert.deepEqual(ran.misconfigurations, skipped.misconfigurations);
+  const expectedMisconfigurations = [{
+    brief,
+    title: "Scoped",
+    kind: "misconfigured-scope",
+    reason: "brief scope missing/ matches no repository directory",
+  }];
+  assert.deepEqual(ran.misconfigurations, expectedMisconfigurations);
+  assert.deepEqual(skipped.misconfigurations, expectedMisconfigurations);
 });
 
 test("the executable verdict carries observations without admitting them as findings", (t) => {

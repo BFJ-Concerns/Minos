@@ -283,6 +283,34 @@ test("a malformed misconfigurations field cannot become publishable", { timeout:
   assert.match(adapterVerdict.incomplete.join("\n"), /envelope misconfigurations is absent or unreadable/);
 });
 
+for (const [description, misconfiguration] of [
+  ["missing kind", {
+    brief: ".review/missing/scoped.md",
+    title: "Scoped",
+    reason: "brief scope missing/ matches no repository directory",
+  }],
+  ["empty reason", {
+    brief: ".review/missing/scoped.md",
+    title: "Scoped",
+    kind: "misconfigured-scope",
+    reason: "",
+  }],
+]) {
+  test(`a misconfiguration entry with ${description} cannot become publishable`, { timeout: 1000 }, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t);
+    const malformedEnvelope = {
+      ...envelope,
+      misconfigurations: [misconfiguration],
+    };
+    const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
+    assert.equal(adapterVerdict.status, "incomplete");
+    assert.deepEqual(adapterVerdict.confirmedFindings, []);
+    assert.equal(adapterVerdict.reviewBody, null);
+    assert.equal(adapterVerdict.fixRequired, false);
+    assert.match(adapterVerdict.incomplete.join("\n"), /envelope contains a malformed brief misconfiguration/);
+  });
+}
+
 test("a zero-leg archive needs no agents directory", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, { records: {}, agentsDirectory: false });
   const absentEnvelope = {
