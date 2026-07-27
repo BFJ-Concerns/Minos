@@ -90,7 +90,7 @@ function deterministicDisposition(brief, front, occasion, changedPaths) {
     hasPathScope && changedPaths.some((path) => path === brief.scope || path.startsWith(brief.scope + "/"));
   if (scopeSatisfied) return { triggered: true, misconfiguration };
   if (hasRelevance) return { triggered: false, misconfiguration };
-  if (misconfiguration) return { status: "skipped", ...misconfiguration };
+  if (misconfiguration) return { status: "skipped", ...misconfiguration, misconfiguration };
   return { status: "skipped", skipKind: "empty", reason: `nothing changed under scope ${brief.scope}/` };
 }
 
@@ -125,6 +125,7 @@ function emptyEnvelope(input) {
     proposedFindings: [],
     outOfScopeObservations: [],
     briefs: [],
+    misconfigurations: [],
     dispatches: [],
     reviewers: [],
   };
@@ -289,8 +290,8 @@ for (const brief of input.briefs) {
   if (misconfiguration)
     misconfigurations.push({
       ...base,
-      status: "skipped",
-      ...misconfiguration,
+      kind: misconfiguration.skipKind,
+      reason: misconfiguration.reason,
     });
 }
 
@@ -534,7 +535,8 @@ return {
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,
-  briefs: [...reports.values(), ...misconfigurations, ...inapplicable],
+  briefs: [...reports.values(), ...inapplicable],
+  misconfigurations,
   dispatches: dispatched.map(({ brief, title, label, extent, scope, files }) => ({ brief, title, label, extent, scope, files })),
   reviewers: reviewerStates,
 };

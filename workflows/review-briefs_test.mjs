@@ -183,6 +183,12 @@ test("a brief whose missing scope is its only trigger skips as misconfigured", a
     skipKind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
+  assert.deepEqual(result.misconfigurations, [{
+    brief: candidate.path,
+    title: "Scoped",
+    kind: "misconfigured-scope",
+    reason: "brief scope missing/ matches no repository directory",
+  }]);
 });
 
 test("a matched occasion runs a missing-scope brief and records the misconfiguration", async () => {
@@ -208,21 +214,18 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
     scope: "missing",
     files: [],
   }]);
-  assert.deepEqual(result.briefs, [
-    {
-      brief: candidate.path,
-      title: "Scoped",
-      status: "run",
-      reason: "applicable concern reviewed",
-    },
-    {
-      brief: candidate.path,
-      title: "Scoped",
-      status: "skipped",
-      skipKind: "misconfigured-scope",
-      reason: "brief scope missing/ matches no repository directory",
-    },
-  ]);
+  assert.deepEqual(result.briefs, [{
+    brief: candidate.path,
+    title: "Scoped",
+    status: "run",
+    reason: "applicable concern reviewed",
+  }]);
+  assert.deepEqual(result.misconfigurations, [{
+    brief: candidate.path,
+    title: "Scoped",
+    kind: "misconfigured-scope",
+    reason: "brief scope missing/ matches no repository directory",
+  }]);
 });
 
 test("per-file partitioning follows repository structure and clamps to a lossless plan", async () => {

@@ -23,7 +23,9 @@ function incomplete(reason, envelope = null) {
     confirmedFindings: [],
     operatorAttention: [],
     reviewBody: null,
+    ran: [],
     skipped: [],
+    misconfigurations: [],
     fixRequired: false,
     modelEvidence: [],
   }, envelope);

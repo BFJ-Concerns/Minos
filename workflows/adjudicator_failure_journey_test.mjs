@@ -50,6 +50,7 @@ function envelope() {
         : { verdict: "upheld", confidence: 92, reason: "The defect is reachable." },
     }],
     briefs: [],
+    misconfigurations: [],
     dispatches: [],
     reviewers: [],
   };
@@ -61,20 +62,25 @@ function envelope() {
         status: "run",
         reason: "applicable concern reviewed",
       },
-      {
-        brief: ".review/missing/scoped.md",
-        title: "Scoped",
-        status: "skipped",
-        skipKind: "misconfigured-scope",
-        reason: "brief scope missing/ matches no repository directory",
-      },
     ];
+    result.misconfigurations = [{
+      brief: ".review/missing/scoped.md",
+      title: "Scoped",
+      kind: "misconfigured-scope",
+      reason: "brief scope missing/ matches no repository directory",
+    }];
   } else if (scenario === "brief-skips") {
     result.briefs = [{
       brief: ".review/missing/scoped.md",
       title: "Scoped",
       status: "skipped",
       skipKind: "misconfigured-scope",
+      reason: "brief scope missing/ matches no repository directory",
+    }];
+    result.misconfigurations = [{
+      brief: ".review/missing/scoped.md",
+      title: "Scoped",
+      kind: "misconfigured-scope",
       reason: "brief scope missing/ matches no repository directory",
     }];
   } else if (scenario === "observation") {
@@ -236,6 +242,16 @@ test("the adjudicated verdict distinguishes a misconfigured brief that ran from 
   assert.equal(skipped.status, "complete");
   assert.equal(machineReadableBriefStatus(ran, brief), "run");
   assert.equal(machineReadableBriefStatus(skipped, brief), "skipped");
+  assert.equal(ran.skipped.some((entry) => entry.brief === brief), false);
+  assert.equal(skipped.ran.some((entry) => entry.brief === brief), false);
+  const expectedMisconfigurations = [{
+    brief,
+    title: "Scoped",
+    kind: "misconfigured-scope",
+    reason: "brief scope missing/ matches no repository directory",
+  }];
+  assert.deepEqual(ran.misconfigurations, expectedMisconfigurations);
+  assert.deepEqual(skipped.misconfigurations, expectedMisconfigurations);
 });
 
 test("the executable verdict carries observations without admitting them as findings", (t) => {

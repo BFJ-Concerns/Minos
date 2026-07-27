@@ -40,7 +40,9 @@ function emptyVerdict(envelope, reason) {
     confirmedFindings: [],
     operatorAttention: [],
     reviewBody: null,
+    ran: [],
     skipped: [],
+    misconfigurations: [],
     fixRequired: false,
     modelEvidence: [],
   };
@@ -55,7 +57,8 @@ function validLeg(leg) {
   );
 }
 
-function skippedFrom(briefs, incomplete) {
+function dispositionsFrom(briefs, incomplete) {
+  const ran = [];
   const skipped = [];
   for (const entry of briefs) {
     if (!entry || typeof entry !== "object") {
@@ -69,6 +72,11 @@ function skippedFrom(briefs, incomplete) {
     if (entry.status === "run") {
       if (typeof entry.brief !== "string" || entry.brief === "" || typeof entry.title !== "string" || entry.title === "")
         incomplete.push("envelope contains a malformed run disposition");
+      else
+        ran.push({
+          brief: entry.brief,
+          title: entry.title,
+        });
       continue;
     }
     if (entry.status !== "skipped") {
@@ -91,7 +99,30 @@ function skippedFrom(briefs, incomplete) {
       reason: entry.reason,
     });
   }
-  return skipped;
+  return { ran, skipped };
+}
+
+function misconfigurationsFrom(entries, incomplete) {
+  const misconfigurations = [];
+  for (const entry of entries) {
+    if (
+      !entry || typeof entry !== "object" ||
+      typeof entry.brief !== "string" || entry.brief === "" ||
+      typeof entry.title !== "string" || entry.title === "" ||
+      typeof entry.kind !== "string" || entry.kind === "" ||
+      typeof entry.reason !== "string" || entry.reason === ""
+    ) {
+      incomplete.push("envelope contains a malformed brief misconfiguration");
+      continue;
+    }
+    misconfigurations.push({
+      brief: entry.brief,
+      title: entry.title,
+      kind: entry.kind,
+      reason: entry.reason,
+    });
+  }
+  return misconfigurations;
 }
 
 function validProposedFinding(finding) {
@@ -140,7 +171,7 @@ export async function adjudicate({ envelope, recordDir }) {
   }
   if (envelope.stage !== "present" && envelope.stage !== "absent")
     incomplete.push("envelope stage is absent or unknown");
-  for (const field of ["requiredModelEvidence", "proposedFindings", "briefs", "dispatches", "reviewers"])
+  for (const field of ["requiredModelEvidence", "proposedFindings", "briefs", "misconfigurations", "dispatches", "reviewers"])
     if (!Array.isArray(envelope[field])) incomplete.push(`envelope ${field} is absent or unreadable`);
 
   let manifests;
@@ -272,7 +303,11 @@ export async function adjudicate({ envelope, recordDir }) {
   }).filter(Boolean);
 
   const briefs = Array.isArray(envelope.briefs) ? envelope.briefs : [];
-  const skipped = skippedFrom(briefs, incomplete);
+  const { ran, skipped } = dispositionsFrom(briefs, incomplete);
+  const misconfigurations = misconfigurationsFrom(
+    Array.isArray(envelope.misconfigurations) ? envelope.misconfigurations : [],
+    incomplete,
+  );
   const complete = incomplete.length === 0;
   const confirmedFindings = complete ? adjudicated.filter((finding) => finding.verdict === "confirmed") : [];
   const operatorAttention = confirmedFindings
@@ -302,7 +337,9 @@ export async function adjudicate({ envelope, recordDir }) {
           comments,
         }
       : null,
+    ran,
     skipped,
+    misconfigurations,
     fixRequired: isBriefReview && complete && confirmedFindings.length > 0,
     modelEvidence,
   };
