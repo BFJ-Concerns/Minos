@@ -15,6 +15,9 @@ verify: fmt-check shell-check
     node --test workflows/*_test.mjs
     go build ./...
 
+# Alias for `verify`, kept for muscle memory.
+ci: verify
+
 # Go sources are gofmt-clean. Names the offenders rather than failing bare.
 [private]
 fmt-check:
