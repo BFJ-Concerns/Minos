@@ -21,7 +21,7 @@ the systemd unit for a pull request is the only live-run coordination.
 ## Commands
 
 ```sh
-make check
+just verify
 minos receive --config /etc/minos
 minos sweep --config /etc/minos
 ```
