@@ -2,9 +2,17 @@
 set -eu
 
 common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+common_dir_resolved="$(CDPATH= cd -P -- "$common_dir" && pwd -P)"
 unpushable_file="${common_dir}/minos-unpushable"
 protected_ref_file="${common_dir}/minos-protected-ref"
 protected_ref=""
+
+permit_is_in_common_dir() {
+  permit_path="$1"
+  permit_parent="$(dirname "$permit_path")"
+  permit_parent_resolved="$(CDPATH= cd -P -- "$permit_parent" 2>/dev/null && pwd -P)" || return 1
+  [ "$permit_parent_resolved" = "$common_dir_resolved" ] && [ ! -L "$permit_path" ]
+}
 
 if [ -e "$protected_ref_file" ]; then
   if [ ! -f "$protected_ref_file" ] || [ ! -r "$protected_ref_file" ]; then
@@ -71,7 +79,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       permit="$integrate_permit"
       expected_permitted_update="$remote_ref $local_sha"
       case "$permit" in
-        "$common_dir"/minos-integrate-wave-push.*) ;;
+        "$common_dir"/minos-integrate-wave-push.*)
+          permit_is_in_common_dir "$permit" || {
+            echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the integrate-wave push permit is outside the shared Git directory" >&2
+            exit 1
+          }
+          ;;
         *)
           echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the integrate-wave push permit is outside the shared Git directory" >&2
           exit 1
@@ -81,7 +94,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       permit="$sync_permit"
       expected_permitted_update="$remote_ref $local_sha $remote_sha"
       case "$permit" in
-        "$common_dir"/minos-sync-target-push.*) ;;
+        "$common_dir"/minos-sync-target-push.*)
+          permit_is_in_common_dir "$permit" || {
+            echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the sync-target push permit is outside the shared Git directory" >&2
+            exit 1
+          }
+          ;;
         *)
           echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the sync-target push permit is outside the shared Git directory" >&2
           exit 1

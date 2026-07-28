@@ -158,13 +158,73 @@ func TestPrePushGuardScopesAndConsumesControlledPushPermits(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	outsidePermit := filepath.Join(t.TempDir(), "permit")
+	if err := os.WriteFile(outsidePermit, []byte("refs/heads/feature "+repair+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	traversalRoot := filepath.Join(commonDir, "minos-integrate-wave-push.dir")
+	if err := os.Mkdir(traversalRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	traversalSuffix, err := filepath.Rel(traversalRoot, outsidePermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traversalPermit := traversalRoot + string(os.PathSeparator) + traversalSuffix
+	push := exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/feature")
+	push.Env = append(os.Environ(), "MINOS_INTEGRATE_WAVE_PUSH_PERMIT="+traversalPermit)
+	output, err := push.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "integrate-wave push permit is outside the shared Git directory") {
+		t.Fatalf("traversal permit result = %v\n%s", err, output)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != base {
+		t.Fatalf("remote feature = %q after traversal permit, want %q", got, base)
+	}
+
+	symlinkPermit := filepath.Join(commonDir, "minos-integrate-wave-push.link")
+	if err := os.Symlink(outsidePermit, symlinkPermit); err != nil {
+		t.Fatal(err)
+	}
+	push = exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/feature")
+	push.Env = append(os.Environ(), "MINOS_INTEGRATE_WAVE_PUSH_PERMIT="+symlinkPermit)
+	output, err = push.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "integrate-wave push permit is outside the shared Git directory") {
+		t.Fatalf("symlink permit result = %v\n%s", err, output)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != base {
+		t.Fatalf("remote feature = %q after symlink permit, want %q", got, base)
+	}
+
+	outsideSyncPermit := filepath.Join(t.TempDir(), "permit")
+	if err := os.WriteFile(outsideSyncPermit, []byte("refs/heads/feature "+repair+" "+base+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	syncTraversalRoot := filepath.Join(commonDir, "minos-sync-target-push.dir")
+	if err := os.Mkdir(syncTraversalRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	syncTraversalSuffix, err := filepath.Rel(syncTraversalRoot, outsideSyncPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncTraversalPermit := syncTraversalRoot + string(os.PathSeparator) + syncTraversalSuffix
+	push = exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/feature")
+	push.Env = append(os.Environ(), "MINOS_SYNC_TARGET_PUSH_PERMIT="+syncTraversalPermit)
+	output, err = push.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "sync-target push permit is outside the shared Git directory") {
+		t.Fatalf("sync-target traversal permit result = %v\n%s", err, output)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != base {
+		t.Fatalf("remote feature = %q after sync-target traversal permit, want %q", got, base)
+	}
+
 	integratePermit := filepath.Join(commonDir, "minos-integrate-wave-push.test")
 	if err := os.WriteFile(integratePermit, []byte("refs/heads/feature "+base+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	push := exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/feature")
+	push = exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/feature")
 	push.Env = append(os.Environ(), "MINOS_INTEGRATE_WAVE_PUSH_PERMIT="+integratePermit)
-	output, err := push.CombinedOutput()
+	output, err = push.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "permit authorises a different ref update") {
 		t.Fatalf("commit-mismatched permit result = %v\n%s", err, output)
 	}
