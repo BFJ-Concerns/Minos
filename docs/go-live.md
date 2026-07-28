@@ -26,18 +26,7 @@ machine itself is the containment boundary.
    - set `MINOS_CLAUDE_CONFIG_SEED` to a directory containing known-good,
      non-interactive Claude configuration;
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
-     non-interactive Codex ChatGPT authentication state, whose `config.toml`
-     carries
-
-     ```toml
-     [sandbox_workspace_write]
-     network_access = true
-     ```
-
-     Without it the fix agents cannot create sockets at all, so repairing any
-     test that binds a port is impossible. Ensemble runs worktree-isolated
-     agents under `workspace-write` regardless of the workflow's own sandbox
-     setting, so this seed key is the only place the grant can be made; and
+     non-interactive Codex ChatGPT authentication state; and
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
      `MINOS_ROOT_CAUSE_SKILL` and the other installed paths match the deployment.
 

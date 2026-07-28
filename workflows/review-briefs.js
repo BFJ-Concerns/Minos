@@ -445,7 +445,7 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
 const reviewerStates = [];
 const proposed = [];
 const outOfScopeObservations = [];
-const inapplicable = [];
+const inapplicableByBrief = new Map();
 dispatched.forEach((unit, unitIndex) => {
   const result = specialistResults[unitIndex];
   reviewerStates.push({
@@ -478,13 +478,16 @@ dispatched.forEach((unit, unitIndex) => {
     });
   });
   if (result.applicability.status === "inapplicable") {
-    inapplicable.push({
-      brief: unit.brief,
+    const aggregate = inapplicableByBrief.get(unit.brief) || {
       title: unit.title,
-      status: "skipped",
-      skipKind: "inapplicable",
+      units: [],
+    };
+    aggregate.units.push({
+      label: unit.label,
+      concern: unit.concern,
       reason: result.applicability.reason,
     });
+    inapplicableByBrief.set(unit.brief, aggregate);
     return;
   }
   if (!reports.has(unit.brief))
@@ -497,6 +500,27 @@ dispatched.forEach((unit, unitIndex) => {
   result.findings.forEach((finding, findingIndex) =>
     proposed.push({ unit, unitIndex, finding, findingIndex }));
 });
+
+for (const [brief, inapplicable] of inapplicableByBrief) {
+  const report = reports.get(brief);
+  if (report) {
+    reports.set(brief, {
+      ...report,
+      inapplicableUnits: inapplicable.units,
+    });
+    continue;
+  }
+  reports.set(brief, {
+    brief,
+    title: inapplicable.title,
+    status: "skipped",
+    skipKind: "inapplicable",
+    reason: inapplicable.units.length === 1
+      ? inapplicable.units[0].reason
+      : `all ${inapplicable.units.length} partition units were inapplicable`,
+    inapplicableUnits: inapplicable.units,
+  });
+}
 
 phase("Verify");
 for (const item of proposed) {
@@ -535,7 +559,7 @@ return {
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,
-  briefs: [...reports.values(), ...inapplicable],
+  briefs: [...reports.values()],
   misconfigurations,
   dispatches: dispatched.map(({ brief, title, label, extent, scope, files }) => ({ brief, title, label, extent, scope, files })),
   reviewers: reviewerStates,

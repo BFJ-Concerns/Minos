@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
+import { attachBriefPartitionDetails } from "./brief-partition-details.mjs";
 import { adjudicate } from "./run-record-adjudicator.mjs";
 import { attachOutOfScopeObservations } from "./out-of-scope-observations.mjs";
 
@@ -14,21 +15,24 @@ function incomplete(reason, envelope = null) {
   const reviewed = envelope && envelope.reviewed && typeof envelope.reviewed === "object"
     ? envelope.reviewed
     : { target: null, head: null, occasion: null };
-  return attachOutOfScopeObservations({
-    status: "incomplete",
-    complete: false,
-    reviewed,
-    incomplete: [reason],
-    infrastructureFailure: null,
-    confirmedFindings: [],
-    operatorAttention: [],
-    reviewBody: null,
-    ran: [],
-    skipped: [],
-    misconfigurations: [],
-    fixRequired: false,
-    modelEvidence: [],
-  }, envelope);
+  return attachBriefPartitionDetails(
+    attachOutOfScopeObservations({
+      status: "incomplete",
+      complete: false,
+      reviewed,
+      incomplete: [reason],
+      infrastructureFailure: null,
+      confirmedFindings: [],
+      operatorAttention: [],
+      reviewBody: null,
+      ran: [],
+      skipped: [],
+      misconfigurations: [],
+      fixRequired: false,
+      modelEvidence: [],
+    }, envelope),
+    envelope,
+  );
 }
 
 function launchEnsemble(args, options) {
@@ -67,8 +71,11 @@ try {
   const lines = stdout.split(/\r?\n/).filter((line) => line !== "");
   if (lines.length !== 1) throw new Error(`ensemble launcher emitted ${lines.length} stdout lines; expected one envelope`);
   envelope = JSON.parse(lines[0]);
-  verdict = attachOutOfScopeObservations(
-    await adjudicate({ envelope, recordDir }),
+  verdict = attachBriefPartitionDetails(
+    attachOutOfScopeObservations(
+      await adjudicate({ envelope, recordDir }),
+      envelope,
+    ),
     envelope,
   );
 } catch (error) {

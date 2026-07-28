@@ -270,6 +270,39 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
   assert.match(adapterVerdict.incomplete.join("\n"), /proposed finding 1 is absent or malformed/);
 });
 
+for (const [description, briefDisposition, condition] of [
+  [
+    "run disposition with no title",
+    { brief: ".review/errors.md", status: "run" },
+    /envelope contains a malformed run disposition/,
+  ],
+  [
+    "skipped disposition with an empty reason",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "skipped",
+      skipKind: "inapplicable",
+      reason: "",
+    },
+    /envelope contains a malformed skipped disposition/,
+  ],
+]) {
+  test(`a malformed ${description} cannot become publishable`, { timeout: 1000 }, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t);
+    const malformedEnvelope = {
+      ...envelope,
+      briefs: [briefDisposition],
+    };
+    const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
+    assert.equal(adapterVerdict.status, "incomplete");
+    assert.deepEqual(adapterVerdict.confirmedFindings, []);
+    assert.equal(adapterVerdict.reviewBody, null);
+    assert.equal(adapterVerdict.fixRequired, false);
+    assert.match(adapterVerdict.incomplete.join("\n"), condition);
+  });
+}
+
 test("a malformed misconfigurations field cannot become publishable", { timeout: 1000 }, async (t) => {
   const fixtureArchiveDir = fixtureArchive(t);
   const malformedEnvelope = {

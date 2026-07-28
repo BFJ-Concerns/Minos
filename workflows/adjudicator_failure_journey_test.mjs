@@ -83,6 +83,25 @@ function envelope() {
       kind: "misconfigured-scope",
       reason: "brief scope missing/ matches no repository directory",
     }];
+  } else if (scenario === "partition-detail") {
+    result.briefs = [{
+      brief: ".review/partitioned.md",
+      title: "Partitioned",
+      status: "run",
+      reason: "applicable concern reviewed",
+      inapplicableUnits: [
+        {
+          label: "repository-review-partitioned-md-2-claude",
+          concern: "Inapplicable alpha",
+          reason: "WRAPPER-PARTITION-ALPHA-0728",
+        },
+        {
+          label: "repository-review-partitioned-md-3-claude",
+          concern: "Inapplicable beta",
+          reason: "WRAPPER-PARTITION-BETA-0728",
+        },
+      ],
+    }];
   } else if (scenario === "observation") {
     result.outOfScopeObservations = [{
       id: "specialist:observation:1",
@@ -252,6 +271,29 @@ test("the adjudicated verdict distinguishes a misconfigured brief that ran from 
   }];
   assert.deepEqual(ran.misconfigurations, expectedMisconfigurations);
   assert.deepEqual(skipped.misconfigurations, expectedMisconfigurations);
+});
+
+test("the executable verdict preserves every inapplicable partition through the wrapper", (t) => {
+  const verdict = runWrapper(t, "partition-detail").verdict;
+
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.ran, [{
+    brief: ".review/partitioned.md",
+    title: "Partitioned",
+    inapplicableUnits: [
+      {
+        label: "repository-review-partitioned-md-2-claude",
+        concern: "Inapplicable alpha",
+        reason: "WRAPPER-PARTITION-ALPHA-0728",
+      },
+      {
+        label: "repository-review-partitioned-md-3-claude",
+        concern: "Inapplicable beta",
+        reason: "WRAPPER-PARTITION-BETA-0728",
+      },
+    ],
+  }]);
+  assert.deepEqual(verdict.skipped, []);
 });
 
 test("the executable verdict carries observations without admitting them as findings", (t) => {

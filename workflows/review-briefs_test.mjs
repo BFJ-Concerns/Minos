@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+
+import { attachBriefPartitionDetails } from "./brief-partition-details.mjs";
+import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
@@ -97,6 +100,30 @@ async function run(input, respond = responder()) {
   const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
   const result = await script(agent, parallel, async () => [], () => {}, () => {}, input);
   return { result, calls };
+}
+
+async function adjudicateEnvelope(t, envelope) {
+  const recordDir = mkdtempSync(join(tmpdir(), "minos-brief-partition-adjudication-"));
+  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
+  const archive = join(recordDir, "runs", "cwd", "namespace", "run");
+  mkdirSync(join(archive, "agents"), { recursive: true });
+  writeFileSync(join(archive, "manifest.json"), JSON.stringify({
+    kind: "run_manifest",
+    status: "complete",
+  }));
+  envelope.requiredModelEvidence.forEach((leg, index) => {
+    const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "agent.json"), JSON.stringify({
+      label: leg.label,
+      status: "complete",
+      resolved_model: leg.pinnedModel,
+    }));
+  });
+  return attachBriefPartitionDetails(
+    await adjudicate({ envelope, recordDir }),
+    envelope,
+  );
 }
 
 test("an absent .review directory emits a complete-stage envelope with no legs", async () => {
@@ -283,6 +310,137 @@ test("adaptive partitioning dispatches every coherent unit without a breadth cap
   );
   assert.equal(result.dispatches.length, 25);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("repository-")).length, 25);
+});
+
+test("a mixed partition is one durable run disposition with its inapplicable unit detail", async (t) => {
+  const trackedFiles = [
+    { path: "pkg/api.go", bytes: 10 },
+    { path: "pkg/ui.go", bytes: 10 },
+    { path: "pkg/jobs.go", bytes: 10 },
+  ];
+  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
+  const { result } = await run(
+    args({ briefs: [candidate], trackedFiles, occasion: "release" }),
+    responder({
+      partition: () => ({
+        units: [
+          { id: "api", concern: "API behaviour", files: ["pkg/api.go"] },
+          { id: "ui", concern: "UI behaviour", files: ["pkg/ui.go"] },
+          { id: "jobs", concern: "Job behaviour", files: ["pkg/jobs.go"] },
+        ],
+      }),
+      specialist: (label) => {
+        if (label.includes("-1-")) return specialistResult([]);
+        return specialistResult([], {
+          status: "inapplicable",
+          reason: label.includes("-2-")
+            ? "the UI partition contains no changed behaviour to judge"
+            : "the job partition contains no changed behaviour to judge",
+        });
+      },
+    }),
+  );
+
+  assert.equal(result.briefs.length, 1);
+  assert.equal(result.briefs[0].status, "run");
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.ran, [{
+    brief: candidate.path,
+    title: "Full",
+    inapplicableUnits: [
+      {
+        label: "repository-review-full-md-2-claude",
+        concern: "UI behaviour",
+        reason: "the UI partition contains no changed behaviour to judge",
+      },
+      {
+        label: "repository-review-full-md-3-claude",
+        concern: "Job behaviour",
+        reason: "the job partition contains no changed behaviour to judge",
+      },
+    ],
+  }]);
+  assert.deepEqual(verdict.skipped, []);
+});
+
+test("an entirely inapplicable partition is one durable skipped disposition", async (t) => {
+  const trackedFiles = [
+    { path: "pkg/api.go", bytes: 10 },
+    { path: "pkg/ui.go", bytes: 10 },
+  ];
+  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
+  const { result } = await run(
+    args({ briefs: [candidate], trackedFiles, occasion: "release" }),
+    responder({
+      partition: () => ({
+        units: [
+          { id: "api", concern: "API behaviour", files: ["pkg/api.go"] },
+          { id: "ui", concern: "UI behaviour", files: ["pkg/ui.go"] },
+        ],
+      }),
+      specialist: (label) => specialistResult([], {
+        status: "inapplicable",
+        reason: label.includes("-1-")
+          ? "the API partition has no relevant change"
+          : "the UI partition has no relevant change",
+      }),
+    }),
+  );
+
+  assert.equal(result.briefs.length, 1);
+  assert.equal(result.briefs[0].status, "skipped");
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.ran, []);
+  assert.deepEqual(verdict.skipped, [{
+    brief: candidate.path,
+    title: "Full",
+    skipKind: "inapplicable",
+    reason: "all 2 partition units were inapplicable",
+    inapplicableUnits: [
+      {
+        label: "repository-review-full-md-1-claude",
+        concern: "API behaviour",
+        reason: "the API partition has no relevant change",
+      },
+      {
+        label: "repository-review-full-md-2-claude",
+        concern: "UI behaviour",
+        reason: "the UI partition has no relevant change",
+      },
+    ],
+  }]);
+});
+
+test("an entirely applicable partition remains one unchanged durable run disposition", async (t) => {
+  const trackedFiles = [
+    { path: "pkg/api.go", bytes: 10 },
+    { path: "pkg/ui.go", bytes: 10 },
+  ];
+  const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
+  const { result } = await run(
+    args({ briefs: [candidate], trackedFiles, occasion: "release" }),
+    responder({
+      partition: () => ({
+        units: [
+          { id: "api", concern: "API behaviour", files: ["pkg/api.go"] },
+          { id: "ui", concern: "UI behaviour", files: ["pkg/ui.go"] },
+        ],
+      }),
+      specialist: () => specialistResult([]),
+    }),
+  );
+
+  assert.equal(result.briefs.length, 1);
+  assert.equal(result.briefs[0].status, "run");
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.ran, [{
+    brief: candidate.path,
+    title: "Full",
+  }]);
+  assert.deepEqual(verdict.skipped, []);
 });
 
 test("a missing partition result leaves the brief not-run", async () => {

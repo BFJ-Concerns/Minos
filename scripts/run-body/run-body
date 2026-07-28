@@ -164,6 +164,9 @@ failure_cause="could not read lifecycle instruction $MINOS_LIFECYCLE_INSTRUCTION
 instruction="$(cat "$MINOS_LIFECYCLE_INSTRUCTION")"
 session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
 completion_marker="$MINOS_RUN_DIR/lead-complete"
+# During review the run tree may write only at phase transitions, measured
+# roughly 19–21 minutes apart on 2026-07-27. Do not tune this below about an
+# hour or a healthy review can hit the silence backstop.
 silence_timeout="${MINOS_LEAD_SILENCE_TIMEOUT:-3600}"
 failure_stage="configuration"
 failure_cause="MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds"
