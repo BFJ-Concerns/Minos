@@ -103,7 +103,11 @@ if ! git -C "$workspace" merge-base --is-ancestor "$target_ref" "$synced_head"; 
   exit 1
 fi
 
-git -C "$workspace" push \
+push_ref="refs/heads/${source_branch}"
+push_permit="$(mktemp "${common_dir}/minos-sync-target-push.XXXXXX")"
+trap 'rm -f "$push_permit"' 0 1 2 3 15
+printf '%s %s %s\n' "$push_ref" "$synced_head" "$expected_head" >"$push_permit"
+MINOS_SYNC_TARGET_PUSH_PERMIT="$push_permit" git -C "$workspace" push \
   "--force-with-lease=refs/heads/${source_branch}:${expected_head}" \
-  origin "HEAD:refs/heads/${source_branch}"
+  origin "HEAD:${push_ref}"
 jq -nc --arg head "$synced_head" --arg method "$method" '{outcome:"synced",head:$head,method:$method}'
