@@ -37,7 +37,8 @@ with this boundary rather than treating older procedural text as authority.
 
 ## Commands
 
-- `make check` runs formatting, shell syntax, vet, tests and build.
+- `just verify` runs formatting, shell syntax, vet, tests and build. It is the
+  gate: CI runs this same recipe, so a green run here means CI's checks passed.
 - `go test ./internal/shell -run '<TestName>'` runs a focused shell-package test.
 - `node --test workflows/review_test.mjs` drives the review workflow's decision
   logic against synthetic run results and fixture briefs.

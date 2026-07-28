@@ -21,11 +21,15 @@ jobs:
         uses: actions/setup-node@v4.4.0
         with:
           node-version: '24.18.0'
-      - name: Install jq
+      - name: Install jq and just
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
           apt-get install --yes --no-install-recommends jq
-      - name: Run checks
-        run: make check
+          curl -LsSf https://github.com/casey/just/releases/download/1.57.0/just-1.57.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar zxf - -C /usr/local/bin just
+      # The same command a dev box runs. What the gate checks lives in the
+      # justfile, not here, so CI and local cannot drift apart.
+      - name: Verify
+        run: just verify
