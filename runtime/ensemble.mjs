@@ -3765,6 +3765,7 @@ var require_fast_uri = __commonJS({
       return uriTokens.join("");
     }
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
+    var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
     function getParseError(parsed, matches) {
       if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
@@ -3793,6 +3794,11 @@ var require_fast_uri = __commonJS({
         } else {
           uri = "//" + uri;
         }
+      }
+      const authorityMatch = uri.match(AUTHORITY_PREFIX);
+      if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
+        parsed.error = "URI authority must not contain a literal backslash.";
+        malformedAuthorityOrPort = true;
       }
       const matches = uri.match(URI_PARSE);
       if (matches) {
@@ -3837,7 +3843,7 @@ var require_fast_uri = __commonJS({
         if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
           if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) {
             try {
-              parsed.host = URL.domainToASCII(parsed.host.toLowerCase());
+              parsed.host = new URL("http://" + parsed.host).hostname;
             } catch (e) {
               parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
             }
@@ -6578,8 +6584,276 @@ import { readFile as readFile6 } from "node:fs/promises";
 import path9 from "node:path";
 import { parseArgs } from "node:util";
 
-// src/runtime.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+// src/ambient-settings.ts
+import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+
+// src/concurrency-defaults.ts
+import { cpus } from "node:os";
+function defaultCodexConcurrency() {
+  return Math.max(1, Math.min(16, cpus().length - 2));
+}
+function defaultClaudeConcurrency() {
+  return 8;
+}
+function defaultOpenCodeConcurrency() {
+  return 2;
+}
+
+// src/ambient-settings.ts
+var CONFIG_SCHEMA_VERSION = 1;
+var AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
+var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
+var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
+var AmbientConfigError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = new.target.name;
+  }
+};
+var ENGINES = ["codex", "claude", "opencode"];
+var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
+var ENABLED_VALUES = /* @__PURE__ */ new Set(["1", "on", "true", "yes"]);
+function resolveAmbientSettings(input) {
+  const configFile = machineConfigPath(input.env);
+  const config = readMachineConfig(configFile);
+  const defaults = {
+    codex: defaultCodexConcurrency(),
+    claude: defaultClaudeConcurrency(),
+    opencode: defaultOpenCodeConcurrency()
+  };
+  return {
+    configFile,
+    agentCeiling: resolveAgentCeiling({
+      flag: input.flags?.agentCeiling,
+      env: input.env[AGENT_CEILING_ENV],
+      file: config?.agent_ceiling,
+      configFile
+    }),
+    concurrencyCaps: Object.fromEntries(
+      ENGINES.map((engine) => [
+        engine,
+        resolveNumber({
+          flag: input.flags?.concurrencyCaps?.[engine],
+          env: input.env[`ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`],
+          envKey: `ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`,
+          file: config?.concurrency?.[engine],
+          fileKey: `concurrency.${engine}`,
+          configFile,
+          fallback: defaults[engine]
+        })
+      ])
+    ),
+    runRecordDir: resolveRunRecord(config, input.env),
+    statusDir: resolveStatus(config, input.env, input.cwd)
+  };
+}
+function machineConfigPath(env) {
+  const configHome = env.XDG_CONFIG_HOME !== void 0 && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : path.join(homedir(), ".config");
+  return path.join(configHome, "ensemble", "config.json");
+}
+function readMachineConfig(configFile) {
+  let source;
+  try {
+    source = readFileSync(configFile, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      return null;
+    }
+    throw new AmbientConfigError(`Cannot read machine configuration ${configFile}: ${errorMessage(error)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(source);
+  } catch (error) {
+    throw new AmbientConfigError(`Cannot parse JSON machine configuration ${configFile}: ${errorMessage(error)}`);
+  }
+  if (!isObject(parsed) || Array.isArray(parsed)) {
+    throw fileValueError(configFile, "<root>", "must be a JSON object");
+  }
+  assertKnownKeys(parsed, ["schema_version", "agent_ceiling", "concurrency", "run_record", "status"], configFile);
+  if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
+    throw new AmbientConfigError(
+      `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
+    );
+  }
+  validateOptionalPositiveInteger(parsed, "agent_ceiling", configFile);
+  validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
+  validateSection(parsed, "run_record", ["enabled", "dir"], configFile, validateRunSetting);
+  validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
+  return parsed;
+}
+function validateSection(root, key, knownKeys, configFile, validate) {
+  const value = root[key];
+  if (value === void 0) {
+    return;
+  }
+  if (!isObject(value) || Array.isArray(value)) {
+    throw fileValueError(configFile, key, "must be a JSON object");
+  }
+  assertKnownKeys(value, knownKeys, configFile, key);
+  for (const nestedKey of knownKeys) {
+    validate(value, nestedKey, configFile, key);
+  }
+}
+function validateRunSetting(section, key, configFile, prefix = "") {
+  const value = section[key];
+  if (value === void 0) {
+    return;
+  }
+  const qualified = `${prefix}.${key}`;
+  if (key === "enabled" && typeof value !== "boolean") {
+    throw fileValueError(configFile, qualified, "must be a boolean");
+  }
+  if (key === "dir" && (typeof value !== "string" || value.trim().length === 0)) {
+    throw fileValueError(configFile, qualified, "must be a non-empty string");
+  }
+}
+function validateOptionalPositiveInteger(section, key, configFile, prefix = "") {
+  const value = section[key];
+  if (value === void 0) {
+    return;
+  }
+  const qualified = prefix.length > 0 ? `${prefix}.${key}` : key;
+  assertPositiveInteger(value, qualified, configFile);
+}
+function assertKnownKeys(value, knownKeys, configFile, prefix) {
+  const allowed = new Set(knownKeys);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      const qualified = prefix === void 0 ? key : `${prefix}.${key}`;
+      throw new AmbientConfigError(`Unknown machine configuration key ${qualified} in ${configFile}`);
+    }
+  }
+}
+function resolveNumber(input) {
+  if (input.flag !== void 0) {
+    assertPositiveInteger(input.flag, input.fileKey, "CLI flags");
+    return { value: input.flag, layer: "flag" };
+  }
+  if (input.env !== void 0) {
+    const parsed = parseEnvironmentInteger(input.env, input.envKey);
+    return { value: parsed, layer: "env" };
+  }
+  if (input.file !== void 0) {
+    return { value: input.file, layer: "config-file" };
+  }
+  return { value: input.fallback, layer: "default" };
+}
+function resolveAgentCeiling(input) {
+  if (input.flag !== void 0) {
+    if (input.flag !== null) {
+      assertPositiveInteger(input.flag, "agent_ceiling", "CLI flags");
+    }
+    return { value: input.flag, layer: "flag" };
+  }
+  if (input.env !== void 0) {
+    if (input.env.trim() === "null") {
+      return { value: null, layer: "env" };
+    }
+    return {
+      value: parseEnvironmentInteger(input.env, AGENT_CEILING_ENV),
+      layer: "env"
+    };
+  }
+  if (input.file !== void 0) {
+    return { value: input.file, layer: "config-file" };
+  }
+  return { value: null, layer: "default" };
+}
+function resolveRunRecord(config, env) {
+  const enabled = resolveEnabled(env[RUN_RECORD_ENV], RUN_RECORD_ENV, config?.run_record?.enabled);
+  if (!enabled.value) {
+    return { value: null, layer: enabled.layer };
+  }
+  const directory = resolveDirectory(
+    env[RUN_RECORD_DIR_ENV],
+    RUN_RECORD_DIR_ENV,
+    config?.run_record?.dir,
+    path.join(dataHome(env), "ensemble")
+  );
+  return directory;
+}
+function resolveStatus(config, env, cwd) {
+  const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
+  if (!enabled.value) {
+    return { value: null, layer: enabled.layer };
+  }
+  const directory = resolveDirectory(
+    env.ENSEMBLE_STATUS_DIR,
+    "ENSEMBLE_STATUS_DIR",
+    config?.status?.dir,
+    path.join(cwd, ".claude")
+  );
+  return { value: isDirectory(directory.value) ? directory.value : null, layer: directory.layer };
+}
+function resolveEnabled(envValue, envKey, fileValue) {
+  if (envValue !== void 0) {
+    const normalised = envValue.trim().toLowerCase();
+    if (DISABLED_VALUES.has(normalised)) {
+      return { value: false, layer: "env" };
+    }
+    if (ENABLED_VALUES.has(normalised)) {
+      return { value: true, layer: "env" };
+    }
+    throw new AmbientConfigError(`Invalid value for ${envKey}: expected on/off, true/false, yes/no, or 1/0`);
+  }
+  if (fileValue !== void 0) {
+    return { value: fileValue, layer: "config-file" };
+  }
+  return { value: true, layer: "default" };
+}
+function resolveDirectory(envValue, envKey, fileValue, fallback) {
+  if (envValue !== void 0) {
+    if (envValue.trim().length === 0) {
+      throw new AmbientConfigError(`Invalid value for ${envKey}: expected a non-empty directory path`);
+    }
+    return { value: envValue, layer: "env" };
+  }
+  if (fileValue !== void 0) {
+    return { value: fileValue, layer: "config-file" };
+  }
+  return { value: fallback, layer: "default" };
+}
+function parseEnvironmentInteger(value, key) {
+  if (!/^[0-9]+$/.test(value.trim())) {
+    throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1`);
+  }
+  const parsed = Number(value.trim());
+  assertPositiveInteger(parsed, key, "environment");
+  return parsed;
+}
+function assertPositiveInteger(value, key, source) {
+  if (!Number.isInteger(value) || value < 1) {
+    if (source.endsWith(".json")) {
+      throw fileValueError(source, key, "must be an integer of at least 1");
+    }
+    throw new AmbientConfigError(`Invalid value for ${key} from ${source}: expected an integer of at least 1`);
+  }
+}
+function fileValueError(configFile, key, detail) {
+  return new AmbientConfigError(`Invalid machine configuration key ${key} in ${configFile}: ${detail}`);
+}
+function dataHome(env) {
+  return env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path.join(homedir(), ".local", "share");
+}
+function isDirectory(candidate) {
+  try {
+    return statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
+}
+function isObject(value) {
+  return typeof value === "object" && value !== null;
+}
+function isNodeError(error, code) {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
 
 // src/errors.ts
 var EnsembleError = class extends Error {
@@ -6587,6 +6861,8 @@ var EnsembleError = class extends Error {
     super(message, options);
     this.name = new.target.name;
   }
+};
+var AgentOptionRejectedError = class extends EnsembleError {
 };
 var AppServerExitedError = class extends EnsembleError {
 };
@@ -6623,12 +6899,12 @@ var BudgetExceededError = class extends EnsembleError {
     super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
   }
 };
-var MissingEngineError = class extends EnsembleError {
+var MissingEngineError = class extends AgentOptionRejectedError {
   constructor() {
     super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
   }
 };
-var UnknownEngineError = class extends EnsembleError {
+var UnknownEngineError = class extends AgentOptionRejectedError {
   constructor(engine) {
     super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
   }
@@ -6649,35 +6925,14 @@ var ClaudeValveError = class extends ClaudeWorkerError {
 };
 var ClaudeTranscriptError = class extends ClaudeWorkerError {
 };
-var ClaudeWorktreeIsolationUnsupportedError = class extends EnsembleError {
-  constructor() {
-    super(
-      "isolation:'worktree' is not supported on the Claude engine in v1: Claude background sessions manage their own .claude/worktrees isolation. Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
-    );
-  }
-};
-var ClaudeWebSearchUnsupportedError = class extends EnsembleError {
-  constructor() {
-    super(
-      "webSearch:true is not supported on the Claude engine in v1: Ensemble only enables live web search through Codex's app-server config. Run the worker without webSearch, or use engine:'codex' for live web search."
-    );
-  }
-};
-var ClaudeSandboxUnsupportedError = class extends EnsembleError {
-  constructor(sandbox) {
-    super(
-      `sandbox:${JSON.stringify(sandbox)} is not supported on the Claude engine in v1: the sandbox option is a Codex app-server capability. Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing.`
-    );
-  }
-};
-var OpenCodeModelRequiredError = class extends EnsembleError {
+var OpenCodeModelRequiredError = class extends AgentOptionRejectedError {
   constructor(registered) {
     super(
       `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
     );
   }
 };
-var OpenCodeModelNotRegisteredError = class extends EnsembleError {
+var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
   constructor(model, registered) {
     super(
       `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
@@ -6691,25 +6946,9 @@ var OpenCodeRunError = class extends OpenCodeWorkerError {
     super(message);
   }
 };
-var OpenCodeWorktreeIsolationUnsupportedError = class extends EnsembleError {
-  constructor() {
-    super(
-      "isolation:'worktree' is not supported on the opencode engine in v1: Ensemble only manages git-worktree isolation for Codex workers. Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
-    );
-  }
-};
-var OpenCodeWebSearchUnsupportedError = class extends EnsembleError {
-  constructor() {
-    super(
-      "webSearch:true is not supported on the opencode engine in v1: the opencode subprocess transport does not expose an Ensemble-controlled live-search switch. Run the worker without webSearch, or use engine:'codex' for live web search."
-    );
-  }
-};
-var OpenCodeSandboxUnsupportedError = class extends EnsembleError {
-  constructor(sandbox) {
-    super(
-      `sandbox:${JSON.stringify(sandbox)} is not supported on the opencode engine in v1: the sandbox option is a Codex app-server capability. Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing.`
-    );
+var WorktreePlacementRejectedError = class extends AgentOptionRejectedError {
+  constructor(cwd, options) {
+    super(`isolation:'worktree' requires cwd to be inside a git repository: ${cwd}`, options);
   }
 };
 var TurnTimeoutError = class extends EnsembleError {
@@ -6717,16 +6956,309 @@ var TurnTimeoutError = class extends EnsembleError {
     super(message);
   }
 };
-var FallbackModelUnsupportedError = class extends EnsembleError {
+var FallbackModelUnsupportedError = class extends AgentOptionRejectedError {
   constructor(engine) {
     super(
       `fallbackModel is not supported on the ${engine} engine in v1: only the Claude engine exposes a fallback-model switch. Remove fallbackModel, or use engine:'claude' for declared degradation.`
     );
   }
 };
-var InvalidAgentSchemaError = class extends EnsembleError {
+var RemovedAgentOptionError = class extends AgentOptionRejectedError {
+  constructor(option) {
+    super(
+      `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. Remove ${JSON.stringify(option)} from this call.`
+    );
+  }
+};
+var UnrecognisedAgentOptionError = class extends AgentOptionRejectedError {
+  constructor(option, recognised) {
+    super(
+      `Unrecognised agent() option ${JSON.stringify(option)}; expected one of ${recognised.map((name) => JSON.stringify(name)).join(", ")}`
+    );
+  }
+};
+var InvalidAgentOptionValueError = class extends AgentOptionRejectedError {
+  constructor(option, value, expected) {
+    super(
+      `Invalid agent() option ${JSON.stringify(option)} value ${formatAgentOptionValue(value)}; expected ${expected}`
+    );
+  }
+};
+var InvalidAgentSchemaError = class extends AgentOptionRejectedError {
   constructor(message, options) {
     super(`agent schema does not compile as JSON Schema: ${message}`, options);
+  }
+};
+function formatAgentOptionValue(value) {
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "undefined") {
+    return String(value);
+  }
+  if (typeof value === "bigint") {
+    return `${String(value)}n`;
+  }
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// src/runtime.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// src/agent-placement.ts
+import path3 from "node:path";
+
+// src/worktree-isolation.ts
+import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import path2 from "node:path";
+import { promisify } from "node:util";
+var execFileAsync = promisify(execFile);
+var GitWorktreeIsolationManager = class {
+  #counter = 0;
+  #repoRoots = /* @__PURE__ */ new Map();
+  #worktreeRoots = /* @__PURE__ */ new Map();
+  async create(baseCwd) {
+    const repoRoot = await this.#gitRepoRoot(baseCwd);
+    const name = this.#uniqueName();
+    const branch = `ensemble-workflows/${name}`;
+    const worktreePath = path2.join(path2.dirname(repoRoot), `${path2.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    await mkdir(path2.dirname(worktreePath), { recursive: true });
+    await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    const baseCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
+    this.#worktreeRoots.set(worktreePath, repoRoot);
+    return {
+      path: worktreePath,
+      branch,
+      baseCommit
+    };
+  }
+  async finish(worktree) {
+    const status = await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    const tip = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
+    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
+    if (changed) {
+      this.#worktreeRoots.delete(worktree.path);
+      return {
+        ...worktree,
+        changed: true,
+        removed: false
+      };
+    }
+    const repoRoot = this.#worktreeRoots.get(worktree.path);
+    if (repoRoot === void 0) {
+      throw new Error(`worktree was not created by this manager: ${worktree.path}`);
+    }
+    await git(repoRoot, ["worktree", "remove", worktree.path]);
+    await git(repoRoot, ["branch", "-D", worktree.branch]);
+    this.#worktreeRoots.delete(worktree.path);
+    return {
+      ...worktree,
+      changed: false,
+      removed: true
+    };
+  }
+  async #gitRepoRoot(baseCwd) {
+    const resolvedCwd = path2.resolve(baseCwd);
+    let repoRoot = this.#repoRoots.get(resolvedCwd);
+    if (repoRoot === void 0) {
+      repoRoot = git(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
+        throw new WorktreePlacementRejectedError(resolvedCwd, {
+          cause: error
+        });
+      });
+      this.#repoRoots.set(resolvedCwd, repoRoot);
+    }
+    try {
+      return (await repoRoot).trim();
+    } catch (error) {
+      this.#repoRoots.delete(resolvedCwd);
+      throw error;
+    }
+  }
+  #uniqueName() {
+    this.#counter += 1;
+    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID().slice(0, 8)}`;
+  }
+};
+async function git(cwd, args) {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd,
+      maxBuffer: 10 * 1024 * 1024
+    });
+    return stdout;
+  } catch (error) {
+    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${formatExecError(error)}`, {
+      cause: error
+    });
+  }
+}
+function formatExecError(error) {
+  if (typeof error === "object" && error !== null) {
+    const stderr = "stderr" in error && typeof error.stderr === "string" ? error.stderr.trim() : "";
+    const message = "message" in error && typeof error.message === "string" ? error.message : "";
+    return stderr.length > 0 ? stderr : message;
+  }
+  return String(error);
+}
+
+// src/agent-placement.ts
+var AgentPlacementManager = class {
+  baseCwd;
+  #worktreeManager;
+  constructor(options) {
+    this.baseCwd = path3.resolve(options.baseCwd);
+    this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
+  }
+  async open(options) {
+    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
+    if (options.isolation !== "worktree") {
+      return { cwd: requestedCwd };
+    }
+    const worktree = await this.#worktreeManager.create(requestedCwd);
+    return { cwd: worktree.path, worktree };
+  }
+  async close(placement) {
+    if (placement.worktree === void 0) {
+      return null;
+    }
+    return this.#worktreeManager.finish(placement.worktree);
+  }
+};
+function resolveAgentCwd(baseCwd, requestedCwd) {
+  return path3.resolve(baseCwd, requestedCwd ?? ".");
+}
+
+// src/admission.ts
+var AdmissionController = class {
+  ceiling;
+  #caps;
+  #ceilingActive = 0;
+  #engineActive = /* @__PURE__ */ new Map();
+  #waiting = [];
+  #onAdmission;
+  #eventSeq = 0;
+  #closed = false;
+  constructor(options) {
+    if (options.ceiling !== null && (!Number.isInteger(options.ceiling) || options.ceiling < 1)) {
+      throw new Error(`Agent ceiling must be a positive integer, got ${options.ceiling}`);
+    }
+    for (const [engine, cap] of options.caps) {
+      if (!Number.isInteger(cap) || cap < 1) {
+        throw new Error(`Concurrency cap for ${engine} must be a positive integer, got ${cap}`);
+      }
+    }
+    this.ceiling = options.ceiling;
+    this.#caps = options.caps;
+    this.#onAdmission = options.onAdmission;
+  }
+  admit(engine, agentId, task) {
+    if (this.#closed) {
+      throw new Error("AdmissionController is closed");
+    }
+    if (!this.#caps.has(engine)) {
+      throw new Error(`No concurrency cap registered for engine ${engine}`);
+    }
+    return new Promise((resolve, reject) => {
+      this.#waiting.push({
+        engine,
+        agentId,
+        task: async () => task(),
+        resolve: (value) => resolve(value),
+        reject,
+        skipReported: false
+      });
+      this.#emit("queued", engine, agentId);
+      this.#drain();
+    });
+  }
+  /**
+   * Settles every promise already accepted by the runtime. Waiting tasks are
+   * released through their engine adapters without enforcing admission gates:
+   * engine shutdown immediately follows and is responsible for making those
+   * already-accepted calls return without dispatching further live work.
+   */
+  close() {
+    if (this.#closed) {
+      return;
+    }
+    this.#closed = true;
+    const waiting = this.#waiting.splice(0);
+    for (const entry of waiting) {
+      this.#start(entry, true);
+    }
+  }
+  snapshot() {
+    return {
+      ceilingActive: this.#ceilingActive,
+      engineActive: new Map(this.#engineActive),
+      waiting: this.#waiting.length
+    };
+  }
+  #drain() {
+    let index = 0;
+    const bypassed = [];
+    while (index < this.#waiting.length) {
+      if (this.ceiling !== null && this.#ceilingActive >= this.ceiling) {
+        return;
+      }
+      const entry = this.#waiting[index];
+      if (entry === void 0) {
+        return;
+      }
+      if (this.#activeFor(entry.engine) >= this.#capFor(entry.engine)) {
+        bypassed.push(entry);
+        index += 1;
+        continue;
+      }
+      for (const skipped of bypassed) {
+        if (!skipped.skipReported) {
+          skipped.skipReported = true;
+          this.#emit("skipped", skipped.engine, skipped.agentId, "engine-cap");
+        }
+      }
+      bypassed.length = 0;
+      this.#waiting.splice(index, 1);
+      this.#start(entry, false);
+    }
+  }
+  #start(entry, bypassGates) {
+    this.#ceilingActive += 1;
+    this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) + 1);
+    this.#emit("admitted", entry.engine, entry.agentId);
+    Promise.resolve().then(entry.task).then(entry.resolve, entry.reject).finally(() => {
+      this.#ceilingActive -= 1;
+      this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) - 1);
+      this.#emit("released", entry.engine, entry.agentId);
+      if (!bypassGates && !this.#closed) {
+        this.#drain();
+      }
+    });
+  }
+  #capFor(engine) {
+    const cap = this.#caps.get(engine);
+    if (cap === void 0) {
+      throw new Error(`No concurrency cap registered for engine ${engine}`);
+    }
+    return cap;
+  }
+  #activeFor(engine) {
+    return this.#engineActive.get(engine) ?? 0;
+  }
+  #emit(kind, engine, agentId, reason) {
+    this.#eventSeq += 1;
+    this.#onAdmission?.({
+      seq: this.#eventSeq,
+      engine,
+      agentId,
+      kind,
+      ceilingHeld: this.#ceilingActive,
+      engineHeld: this.#activeFor(engine),
+      ...reason === void 0 ? {} : { reason }
+    });
   }
 };
 
@@ -6800,6 +7332,100 @@ function numericField(source, key) {
 }
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/opencode-model-registry.ts
+var MODELS = [
+  {
+    key: "glm-5.2",
+    providerModel: "openrouter/z-ai/glm-5.2",
+    displayName: "GLM 5.2",
+    provider: "openrouter",
+    family: "glm",
+    capabilities: {
+      vision: false
+    },
+    billing: {
+      mode: "pay-as-you-go"
+    }
+  }
+];
+var StaticOpenCodeModelRegistry = class {
+  #models = /* @__PURE__ */ new Map();
+  #names;
+  constructor(models) {
+    for (const model of models) {
+      this.#models.set(model.key, model);
+      this.#models.set(model.providerModel, model);
+    }
+    this.#names = models.map((model) => model.key);
+  }
+  get(model) {
+    return this.#models.get(model);
+  }
+  names() {
+    return [...this.#names];
+  }
+};
+var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
+
+// src/engine-option-validation.ts
+var MAX_TIMER_DELAY_MS = 2147483647;
+var AGENT_OPTION_KEYS = Object.keys({
+  engine: true,
+  schema: true,
+  model: true,
+  effort: true,
+  fallbackModel: true,
+  cwd: true,
+  isolation: true,
+  timeoutMs: true,
+  maxAttempts: true,
+  label: true,
+  phase: true
+});
+var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
+var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
+function assertRecognisedAgentOptions(options) {
+  for (const key of Object.keys(options)) {
+    if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
+      throw new RemovedAgentOptionError(key);
+    }
+    if (!AGENT_OPTION_KEY_SET.has(key)) {
+      throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
+    }
+  }
+  const values = options;
+  if (values.isolation !== void 0 && values.isolation !== "worktree") {
+    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+  }
+  assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
+  assertPositiveIntegerOption(values, "maxAttempts");
+}
+function assertFallbackModelSupported(engine, fallbackModel) {
+  if (fallbackModel !== void 0 && engine !== "claude") {
+    throw new FallbackModelUnsupportedError(engine);
+  }
+}
+function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
+  const registered = registry.get(model);
+  if (registered === void 0) {
+    throw new OpenCodeModelNotRegisteredError(model, registry.names());
+  }
+  return registered;
+}
+function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
+  assertFallbackModelSupported(engine, defaults.fallbackModel);
+  if (engine === "opencode" && defaults.model !== void 0) {
+    requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+  }
+}
+function assertPositiveIntegerOption(options, option, maximum) {
+  const value = options[option];
+  if (value !== void 0 && (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || maximum !== void 0 && value > maximum)) {
+    const expected = maximum === void 0 ? "a positive integer" : `a positive integer no greater than ${maximum}`;
+    throw new InvalidAgentOptionValueError(option, value, expected);
+  }
 }
 
 // src/progress.ts
@@ -6990,9 +7616,6 @@ function rank(state) {
   return state === "running" ? 0 : 1;
 }
 
-// src/engines.ts
-import { cpus } from "node:os";
-
 // src/app-server.ts
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -7038,13 +7661,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     return transport;
   }
   async openThread(options) {
-    const config = options.webSearch ? { web_search: "live" } : {};
     const requestParams = {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
-      sandbox: options.sandbox,
-      ephemeral: true,
-      config
+      sandbox: "danger-full-access",
+      ephemeral: true
     };
     const result = await this.#request("thread/start", requestParams);
     const resultObject = asJsonObject(result);
@@ -7087,7 +7708,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     try {
       const params = {
         threadId,
-        input: [{ type: "text", text: prompt }]
+        input: [{ type: "text", text: prompt }],
+        sandboxPolicy: { type: "dangerFullAccess" }
       };
       if (options.schema !== void 0) {
         params.outputSchema = options.schema;
@@ -7198,8 +7820,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (this.#hasExited) {
       throw new AppServerExitedError("codex app-server is not running");
     }
+    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
     await new Promise((resolve, reject) => {
-      this.#process.stdin.write(`${line}
+      this.#process.stdin.write(`${framedLine}
 `, (error) => {
         if (error !== null && error !== void 0) {
           reject(error);
@@ -7502,10 +8125,10 @@ function itemTypeFromItem(item) {
 }
 
 // src/claude-control-plane.ts
-import { execFile, spawn as spawn2 } from "node:child_process";
+import { execFile as execFile2, spawn as spawn2 } from "node:child_process";
 import { access, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import path from "node:path";
+import { homedir as homedir2 } from "node:os";
+import path4 from "node:path";
 var ClaudeCliControlPlane = class {
   #claudeBin;
   #tmuxBin;
@@ -7518,7 +8141,7 @@ var ClaudeCliControlPlane = class {
   constructor(options = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
-    this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
+    this.#projectsDir = options.projectsDir ?? path4.join(homedir2(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
@@ -7582,7 +8205,7 @@ var ClaudeCliControlPlane = class {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path.join(this.#projectsDir, dir, filename);
+      const candidate = path4.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -7609,9 +8232,15 @@ var ClaudeCliControlPlane = class {
         return false;
       }
       await delay(this.#valveAttachSettleMs);
-      await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
+      const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
+      if (!typed.ok) {
+        return false;
+      }
       await delay(this.#valveSubmitSettleMs);
-      await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      if (!submitted.ok) {
+        return false;
+      }
       await delay(this.#valveKillSettleMs);
       return true;
     } finally {
@@ -7662,7 +8291,7 @@ var ClaudeCliControlPlane = class {
   }
   #run(file, args, cwd) {
     return new Promise((resolve) => {
-      execFile(
+      execFile2(
         file,
         args,
         { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: process.env },
@@ -7721,7 +8350,7 @@ function delay(ms) {
 }
 
 // src/claude-engine.ts
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/claude-transcript.ts
 import { readFile } from "node:fs/promises";
@@ -7988,8 +8617,12 @@ var ClaudeEngineInvocation = class {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         nudges += 1;
-        await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        await delay2(this.#pollIntervalMs);
+        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        if (!steered) {
+          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
+        }
+        await this.#awaitReceipt(handle, mark);
         continue;
       }
       if (status.status !== "busy") {
@@ -8096,7 +8729,7 @@ var ClaudeEngineInvocation = class {
     ];
     if (this.#options.schema !== void 0) {
       lines.push(
-        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
         JSON.stringify(this.#options.schema)
       );
     }
@@ -8109,9 +8742,9 @@ var ClaudeEngineInvocation = class {
   #correctionMessage(previousFailure) {
     switch (previousFailure.kind) {
       case "schema-validation":
-        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a single corrected JSON value that conforms to the schema \u2014 no prose, no markdown fences.`;
+        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
       case "invalid-json":
-        return "Your last final message was not valid JSON for the required schema. Reply with exactly one JSON value that conforms to the schema \u2014 no prose, no markdown fences.";
+        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
       case "empty-output":
       default:
         return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
@@ -8123,7 +8756,7 @@ var ClaudeEngineInvocation = class {
   }
   #nextName() {
     dispatchCounter += 1;
-    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
+    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID2().slice(0, 8)}`;
   }
 };
 function emptyTurnResult(attemptFailure) {
@@ -8243,7 +8876,11 @@ var OpenCodeEngineInvocation = class {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
+    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
+      breakdown: usageFromExport(exportData),
+      cost: exportData.info?.cost ?? null
+    };
+    const usageEvent = parsedRun.sessionId === null || usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId, usage2.breakdown, usage2.cost);
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -8272,9 +8909,8 @@ var OpenCodeEngineInvocation = class {
       }
     };
   }
-  #usageEvent(sessionId, exportData) {
-    const breakdown = usageFromExport(exportData.info?.tokens);
-    if (breakdown === null || breakdown.totalTokens === 0) {
+  #usageEvent(sessionId, breakdown, cost) {
+    if (breakdown.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
@@ -8290,7 +8926,7 @@ var OpenCodeEngineInvocation = class {
         model: this.#modelKey,
         providerModel: this.#providerModel,
         tokenUsage: { last: breakdown, total: breakdown },
-        cost: exportData.info?.cost ?? null
+        cost
       }
     };
     this.#onEvent?.({
@@ -8307,7 +8943,7 @@ var OpenCodeEngineInvocation = class {
     ];
     if (this.#options.schema !== void 0) {
       lines.push(
-        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
         JSON.stringify(this.#options.schema)
       );
     }
@@ -8319,18 +8955,7 @@ var OpenCodeEngineInvocation = class {
   }
 };
 function rejectUnsupportedOpenCodeOptions(options) {
-  if (options.isolation === "worktree") {
-    throw new OpenCodeWorktreeIsolationUnsupportedError();
-  }
-  if (options.webSearch) {
-    throw new OpenCodeWebSearchUnsupportedError();
-  }
-  if (options.sandbox !== void 0) {
-    throw new OpenCodeSandboxUnsupportedError(options.sandbox);
-  }
-  if (options.fallbackModel !== void 0) {
-    throw new FallbackModelUnsupportedError("opencode");
-  }
+  assertFallbackModelSupported("opencode", options.fallbackModel);
 }
 function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3) {
   return new Promise((resolve, reject) => {
@@ -8456,6 +9081,9 @@ function fallbackText(events) {
       continue;
     }
     if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
+      if (currentStepText === null && finalStoppedStepText.length > 0) {
+        continue;
+      }
       currentStepText ??= [];
       currentStepText.push(event.part.text);
       continue;
@@ -8487,21 +9115,85 @@ function fallbackText(events) {
   }
   return "";
 }
-function usageFromExport(tokens) {
+function usageFromExport(exportData) {
+  const messageTokens = [];
+  if (Array.isArray(exportData.messages)) {
+    for (const message of exportData.messages) {
+      if (isRecord(message) && isRecord(message.info) && message.info.role === "assistant") {
+        messageTokens.push(message.info.tokens);
+      }
+    }
+  }
+  return aggregateOpenCodeUsage(messageTokens) ?? aggregateOpenCodeUsage([exportData.info?.tokens]);
+}
+function usageFromStream(events) {
+  const stepTokens = [];
+  let cost = null;
+  for (const event of events) {
+    if (!isRecord(event) || event.type !== "step_finish" || !isRecord(event.part) || event.part.type !== "step-finish") {
+      continue;
+    }
+    stepTokens.push(event.part.tokens);
+    const stepCost = numberValue(event.part.cost);
+    if (stepCost !== null) {
+      cost = (cost ?? 0) + stepCost;
+    }
+  }
+  return { breakdown: aggregateOpenCodeUsage(stepTokens), cost };
+}
+function openCodeTokenSnapshot(tokens) {
   if (!isRecord(tokens)) {
     return null;
   }
-  const inputTokens = numberField(tokens, "input") ?? 0;
-  const outputTokens = numberField(tokens, "output") ?? 0;
-  const reasoningOutputTokens = numberField(tokens, "reasoning") ?? 0;
+  const inputTokens = numberField(tokens, "input");
+  const outputTokens = numberField(tokens, "output");
+  const reasoningOutputTokens = numberField(tokens, "reasoning");
   const cache = tokens.cache;
-  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") ?? 0 : 0;
+  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const reportedTotal = numberField(tokens, "total");
+  if (inputTokens === null && outputTokens === null && reasoningOutputTokens === null && cachedInputTokens === null && reportedTotal === null) {
+    return null;
+  }
+  return {
+    cachedInputTokens: cachedInputTokens ?? 0,
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    reasoningOutputTokens: reasoningOutputTokens ?? 0,
+    reportedTotal,
+    hasCategorisedTokens: cachedInputTokens !== null || inputTokens !== null || outputTokens !== null || reasoningOutputTokens !== null
+  };
+}
+function aggregateOpenCodeUsage(tokenSnapshots) {
+  let sawUsage = false;
+  let cachedInputTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let reasoningOutputTokens = 0;
+  let uncategorisedTokens = 0;
+  for (const tokens of tokenSnapshots) {
+    const snapshot = openCodeTokenSnapshot(tokens);
+    if (snapshot === null) {
+      continue;
+    }
+    sawUsage = true;
+    cachedInputTokens = snapshot.cachedInputTokens;
+    inputTokens = snapshot.inputTokens;
+    outputTokens += snapshot.outputTokens;
+    reasoningOutputTokens += snapshot.reasoningOutputTokens;
+    if (!snapshot.hasCategorisedTokens && snapshot.reportedTotal !== null) {
+      uncategorisedTokens += snapshot.reportedTotal;
+    }
+  }
+  if (!sawUsage) {
+    return null;
+  }
+  const totalTokens = cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
   return {
     cachedInputTokens,
     inputTokens,
     outputTokens,
     reasoningOutputTokens,
-    totalTokens: inputTokens + outputTokens + reasoningOutputTokens
+    totalTokens
   };
 }
 function transcriptContent(stdout, exportData) {
@@ -8546,47 +9238,14 @@ function errorFromEvent(event) {
   return null;
 }
 function numberField(record, key) {
-  const value = record[key];
+  return numberValue(record[key]);
+}
+function numberValue(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-// src/opencode-model-registry.ts
-var MODELS = [
-  {
-    key: "glm-5.2",
-    providerModel: "openrouter/z-ai/glm-5.2",
-    displayName: "GLM 5.2",
-    provider: "openrouter",
-    family: "glm",
-    capabilities: {
-      vision: false
-    },
-    billing: {
-      mode: "pay-as-you-go"
-    }
-  }
-];
-var StaticOpenCodeModelRegistry = class {
-  #models = /* @__PURE__ */ new Map();
-  #names;
-  constructor(models) {
-    for (const model of models) {
-      this.#models.set(model.key, model);
-      this.#models.set(model.providerModel, model);
-    }
-    this.#names = models.map((model) => model.key);
-  }
-  get(model) {
-    return this.#models.get(model);
-  }
-  names() {
-    return [...this.#names];
-  }
-};
-var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
 
 // src/scheduler.ts
 var Scheduler = class {
@@ -8635,30 +9294,27 @@ var ajv = new import_ajv.Ajv({
   allErrors: true,
   strict: false
 });
-function parseJsonFromText(text) {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    return null;
+function selectLastValidJsonFromText(text, schema) {
+  const candidates = parseJsonCandidates(text);
+  if (candidates.length === 0) {
+    return { kind: "invalid-json" };
   }
-  const direct = tryParse(trimmed);
-  if (direct.ok) {
-    return { value: direct.value, source: "direct" };
-  }
-  const objectCandidate = extractBalancedJson(trimmed, "{", "}");
-  if (objectCandidate !== null) {
-    const parsed = tryParse(objectCandidate);
-    if (parsed.ok) {
-      return { value: parsed.value, source: "object-fallback" };
+  let selected = null;
+  let lastValidation = null;
+  for (const candidate of candidates) {
+    const validation = validateJsonSchema(candidate.value, schema);
+    if (validation.ok) {
+      selected = candidate;
     }
+    lastValidation = validation;
   }
-  const arrayCandidate = extractBalancedJson(trimmed, "[", "]");
-  if (arrayCandidate !== null) {
-    const parsed = tryParse(arrayCandidate);
-    if (parsed.ok) {
-      return { value: parsed.value, source: "array-fallback" };
-    }
+  if (selected !== null) {
+    return { kind: "valid", parsed: selected };
   }
-  return null;
+  if (lastValidation !== null) {
+    return { kind: "schema-validation", validation: lastValidation };
+  }
+  return { kind: "invalid-json" };
 }
 function validateJsonSchema(value, schema) {
   const validate = compileSchema(schema);
@@ -8770,121 +9426,120 @@ function tryParse(source) {
     return { ok: false };
   }
 }
-function extractBalancedJson(source, open, close) {
-  const start = source.indexOf(open);
-  if (start === -1) {
-    return null;
+function parseJsonCandidates(source) {
+  const trimmed = source.trim();
+  if (trimmed.length === 0) {
+    return [];
   }
-  let depth = 0;
-  let isInString = false;
-  let isEscaped = false;
-  for (let index = start; index < source.length; index += 1) {
-    const char = source[index];
-    if (isInString) {
-      if (isEscaped) {
-        isEscaped = false;
-      } else if (char === "\\") {
-        isEscaped = true;
-      } else if (char === '"') {
-        isInString = false;
-      }
+  const direct = tryParse(trimmed);
+  if (direct.ok) {
+    return [{ value: direct.value, source: "direct" }];
+  }
+  const candidates = [];
+  const regions = indexBalancedJsonRegions(trimmed);
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const open = trimmed[index];
+    if (open !== "{" && open !== "[") {
       continue;
     }
-    if (char === '"') {
-      isInString = true;
-    } else if (char === open) {
-      depth += 1;
-    } else if (char === close) {
-      depth -= 1;
-      if (depth === 0) {
-        return source.slice(start, index + 1);
+    const region = regions.byStart.get(index);
+    if (region === void 0) {
+      continue;
+    }
+    const alreadyClassified = region.parsed !== void 0;
+    const parsed = parseRegion(trimmed, region);
+    if (parsed.ok) {
+      candidates.push({
+        value: parsed.value,
+        source: open === "{" ? "object-fallback" : "array-fallback"
+      });
+      index = region.end;
+    } else if (!alreadyClassified) {
+      classifyDescendants(trimmed, region);
+    }
+  }
+  return candidates;
+}
+function indexBalancedJsonRegions(source) {
+  const starts = {
+    "{": [[], []],
+    "[": [[], []]
+  };
+  const regions = [];
+  let quoteParity = 0;
+  let consecutiveBackslashes = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "\\") {
+      consecutiveBackslashes += 1;
+      continue;
+    }
+    if (char === '"' && consecutiveBackslashes % 2 === 0) {
+      quoteParity = quoteParity === 0 ? 1 : 0;
+      consecutiveBackslashes = 0;
+      continue;
+    }
+    consecutiveBackslashes = 0;
+    if (char === "{" || char === "[") {
+      starts[char][quoteParity].push(index);
+      continue;
+    }
+    const open = char === "}" ? "{" : char === "]" ? "[" : null;
+    if (open !== null) {
+      const start = starts[open][quoteParity].pop();
+      if (start !== void 0) {
+        regions.push({ start, end: index, quoteParity, children: [] });
       }
     }
   }
-  return null;
+  const ordered = regions.sort((left, right) => left.start - right.start || right.end - left.end);
+  attachContainedRegions(ordered, 0);
+  attachContainedRegions(ordered, 1);
+  return { byStart: new Map(ordered.map((region) => [region.start, region])), ordered };
 }
-
-// src/worktree-isolation.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { execFile as execFile2 } from "node:child_process";
-import { mkdir } from "node:fs/promises";
-import path2 from "node:path";
-import { promisify } from "node:util";
-var execFileAsync = promisify(execFile2);
-var GitWorktreeIsolationManager = class {
-  baseCwd;
-  #counter = 0;
-  #repoRoot = null;
-  constructor(baseCwd) {
-    this.baseCwd = baseCwd;
-  }
-  async create() {
-    const repoRoot = await this.#gitRepoRoot();
-    const name = this.#uniqueName();
-    const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path2.join(path2.dirname(repoRoot), `${path2.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir(path2.dirname(worktreePath), { recursive: true });
-    await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
-    const baseCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
-    return {
-      path: worktreePath,
-      branch,
-      baseCommit
-    };
-  }
-  async finish(worktree) {
-    const status = await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    const tip = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
-    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
-    if (changed) {
-      return {
-        ...worktree,
-        changed: true,
-        removed: false
-      };
+function attachContainedRegions(regions, quoteParity) {
+  const containers = [];
+  for (const region of regions) {
+    if (region.quoteParity !== quoteParity) {
+      continue;
     }
-    const repoRoot = await this.#gitRepoRoot();
-    await git(repoRoot, ["worktree", "remove", worktree.path]);
-    await git(repoRoot, ["branch", "-D", worktree.branch]);
-    return {
-      ...worktree,
-      changed: false,
-      removed: true
-    };
-  }
-  async #gitRepoRoot() {
-    this.#repoRoot ??= git(this.baseCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
-      throw new Error(`isolation:'worktree' requires cwd to be inside a git repo: ${this.baseCwd}`, {
-        cause: error
-      });
-    });
-    return (await this.#repoRoot).trim();
-  }
-  #uniqueName() {
-    this.#counter += 1;
-    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID2().slice(0, 8)}`;
-  }
-};
-async function git(cwd, args) {
-  try {
-    const { stdout } = await execFileAsync("git", args, {
-      cwd,
-      maxBuffer: 10 * 1024 * 1024
-    });
-    return stdout;
-  } catch (error) {
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${formatExecError(error)}`, {
-      cause: error
-    });
+    while (containers.length > 0) {
+      const candidate = containers.at(-1);
+      if (candidate.end >= region.end) {
+        break;
+      }
+      containers.pop();
+    }
+    const parent = containers.at(-1);
+    if (parent !== void 0 && parent.start < region.start && region.end <= parent.end) {
+      parent.children.push(region);
+    }
+    containers.push(region);
   }
 }
-function formatExecError(error) {
-  if (typeof error === "object" && error !== null) {
-    const stderr = "stderr" in error && typeof error.stderr === "string" ? error.stderr.trim() : "";
-    const message = "message" in error && typeof error.message === "string" ? error.message : "";
-    return stderr.length > 0 ? stderr : message;
+function parseRegion(source, region) {
+  region.parsed ??= tryParse(source.slice(region.start, region.end + 1));
+  return region.parsed;
+}
+function classifyDescendants(source, region) {
+  const descendants = [];
+  const pending = [...region.children];
+  while (pending.length > 0) {
+    const descendant = pending.pop();
+    descendants.push(descendant);
+    pending.push(...descendant.children);
   }
-  return String(error);
+  for (let index = descendants.length - 1; index >= 0; index -= 1) {
+    const descendant = descendants[index];
+    if (descendant.parsed !== void 0) {
+      continue;
+    }
+    if (descendant.children.some((child) => child.parsed?.ok === false)) {
+      descendant.parsed = { ok: false };
+    } else {
+      parseRegion(source, descendant);
+    }
+  }
 }
 
 // src/engines.ts
@@ -8910,31 +9565,20 @@ var CodexEngineAdapter = class {
   concurrency;
   #transport;
   #scheduler;
-  #worktreeManager;
-  #onEvent;
-  #onWorktreeFinished;
   constructor(options) {
     this.concurrency = options.concurrency;
     this.#transport = options.transport;
     this.#scheduler = new Scheduler(options.concurrency);
-    this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager(options.transport.cwd);
-    this.#onEvent = options.onEvent;
-    this.#onWorktreeFinished = options.onWorktreeFinished;
   }
   schedule(task) {
     return this.#scheduler.schedule(task);
   }
   createInvocation(prompt, options) {
-    if (options.fallbackModel !== void 0) {
-      throw new FallbackModelUnsupportedError(this.name);
-    }
+    assertFallbackModelSupported(this.name, options.fallbackModel);
     return new CodexEngineInvocation({
       prompt,
       options,
-      transport: this.#transport,
-      worktreeManager: this.#worktreeManager,
-      onEvent: this.#onEvent,
-      onWorktreeFinished: this.#onWorktreeFinished
+      transport: this.#transport
     });
   }
   async close() {
@@ -8945,52 +9589,18 @@ var CodexEngineInvocation = class {
   #prompt;
   #options;
   #transport;
-  #worktreeManager;
-  #onEvent;
-  #onWorktreeFinished;
   constructor(options) {
     this.#prompt = options.prompt;
     this.#options = options.options;
     this.#transport = options.transport;
-    this.#worktreeManager = options.worktreeManager;
-    this.#onEvent = options.onEvent;
-    this.#onWorktreeFinished = options.onWorktreeFinished;
   }
   async runAttempt(context) {
     const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    if (this.#options.isolation === "worktree") {
-      return this.#runIsolatedWorktreeTurn(prompt);
-    }
-    return this.#runTurnInCwd(prompt, {
-      sandbox: this.#options.sandbox ?? "read-only"
-    });
+    return this.#runTurnInCwd(prompt, this.#options.cwd);
   }
-  async #runIsolatedWorktreeTurn(prompt) {
-    const worktree = await this.#worktreeManager.create();
-    let result;
-    try {
-      result = await this.#runTurnInCwd(prompt, {
-        cwd: worktree.path,
-        sandbox: "workspace-write"
-      });
-    } catch (error) {
-      await this.#finishWorktree(worktree);
-      throw error;
-    }
-    const record = await this.#finishWorktree(worktree);
-    return {
-      ...result,
-      worktree: {
-        branch: record.branch,
-        baseCommit: record.baseCommit
-      }
-    };
-  }
-  async #runTurnInCwd(prompt, location) {
+  async #runTurnInCwd(prompt, cwd) {
     const threadId = await this.#transport.openThread({
-      webSearch: this.#options.webSearch,
-      sandbox: location.sandbox,
-      ...location.cwd !== void 0 ? { cwd: location.cwd } : {}
+      ...cwd !== void 0 ? { cwd } : {}
     });
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
@@ -8998,21 +9608,6 @@ var CodexEngineInvocation = class {
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {}
     });
-  }
-  async #finishWorktree(worktree) {
-    const record = await this.#worktreeManager.finish(worktree);
-    this.#onWorktreeFinished(record);
-    this.#onEvent({
-      method: "worktree/finished",
-      params: {
-        path: record.path,
-        branch: record.branch,
-        changed: record.changed,
-        removed: record.removed
-      },
-      receivedAt: Date.now()
-    });
-    return record;
   }
 };
 var ClaudeEngineAdapter = class {
@@ -9024,7 +9619,7 @@ var ClaudeEngineAdapter = class {
   #onEvent;
   #config;
   constructor(options = {}) {
-    this.concurrency = options.concurrency ?? 8;
+    this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
     this.#scheduler = new Scheduler(this.concurrency);
     this.#cwd = options.cwd ?? process.cwd();
     this.#controlPlane = options.controlPlane ?? new ClaudeCliControlPlane();
@@ -9035,18 +9630,9 @@ var ClaudeEngineAdapter = class {
     return this.#scheduler.schedule(task);
   }
   createInvocation(prompt, options) {
-    if (options.isolation === "worktree") {
-      throw new ClaudeWorktreeIsolationUnsupportedError();
-    }
-    if (options.webSearch) {
-      throw new ClaudeWebSearchUnsupportedError();
-    }
-    if (options.sandbox !== void 0) {
-      throw new ClaudeSandboxUnsupportedError(options.sandbox);
-    }
     return new ClaudeEngineInvocation({
       prompt,
-      cwd: this.#cwd,
+      cwd: options.cwd ?? this.#cwd,
       options,
       controlPlane: this.#controlPlane,
       ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
@@ -9081,13 +9667,10 @@ var OpenCodeEngineAdapter = class {
     if (options.model === void 0) {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
-    const model = this.#modelRegistry.get(options.model);
-    if (model === void 0) {
-      throw new OpenCodeModelNotRegisteredError(options.model, this.#modelRegistry.names());
-    }
+    const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
     return new OpenCodeEngineInvocation({
       prompt,
-      cwd: this.#cwd,
+      cwd: options.cwd ?? this.#cwd,
       providerModel: model.providerModel,
       modelKey: model.key,
       options,
@@ -9112,9 +9695,7 @@ async function createDefaultEngineRegistry(options) {
   return new EngineRegistry([
     new CodexEngineAdapter({
       transport,
-      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency(),
-      onEvent: options.onEvent,
-      onWorktreeFinished: options.onWorktreeFinished
+      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
     }),
     new ClaudeEngineAdapter({
       cwd: options.cwd,
@@ -9139,12 +9720,6 @@ function promptWithFailureFeedback(prompt, failure) {
 
 A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
 }
-function defaultCodexConcurrency() {
-  return Math.max(1, Math.min(16, cpus().length - 2));
-}
-function defaultOpenCodeConcurrency() {
-  return 2;
-}
 
 // src/runtime.ts
 var EnsembleRuntime = class _EnsembleRuntime {
@@ -9153,6 +9728,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** Live, in-memory view of what the run is doing. Always maintained; persisting it is opt-in at the CLI. */
   progress;
   #engines;
+  #admission;
+  #placement;
   #defaultTurnTimeoutMs;
   #defaultMaxAttempts;
   #eventListeners = /* @__PURE__ */ new Set();
@@ -9168,13 +9745,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
     });
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
+    this.#placement = new AgentPlacementManager({
+      baseCwd: options.cwd ?? process.cwd(),
+      ...options.worktreeManager !== void 0 ? { worktreeManager: options.worktreeManager } : {}
+    });
     this.#engines = options.engines ?? new EngineRegistry([
       new CodexEngineAdapter({
         transport: requireTransport(options.transport),
-        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency(),
-        ...options.worktreeManager !== void 0 ? { worktreeManager: options.worktreeManager } : {},
-        onEvent: (event) => this.handleEngineEvent("codex", event),
-        onWorktreeFinished: (record) => this.worktrees.push(record)
+        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
       }),
       new ClaudeEngineAdapter({
         ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {}
@@ -9183,13 +9761,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {}
       })
     ]);
+    this.#admission = new AdmissionController({
+      ceiling: options.agentCeiling ?? null,
+      caps: this.#engineCaps()
+    });
     this.#registerEngineCaps();
   }
   static async create(options = {}) {
     let runtime = null;
-    const worktrees = [];
+    const cwd = options.cwd ?? process.cwd();
     const engines = await createDefaultEngineRegistry({
-      cwd: options.cwd ?? process.cwd(),
+      cwd,
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
@@ -9204,22 +9786,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
       onOpenCodeEvent: (event) => {
         runtime?.handleEngineEvent("opencode", event);
       },
-      onWorktreeFinished: (record) => {
-        if (runtime === null) {
-          worktrees.push(record);
-          return;
-        }
-        runtime.worktrees.push(record);
-      },
       ...options.concurrencyCaps !== void 0 ? { concurrencyCaps: options.concurrencyCaps } : {}
     });
     runtime = new _EnsembleRuntime({
       engines,
+      cwd,
       ...options.budgetCeilings !== void 0 ? { budgetCeilings: options.budgetCeilings } : {},
       ...options.defaultTurnTimeoutMs !== void 0 ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {},
+      ...options.agentCeiling !== void 0 ? { agentCeiling: options.agentCeiling } : {},
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3
     });
-    runtime.worktrees.push(...worktrees);
     return runtime;
   }
   onEvent(listener) {
@@ -9252,10 +9828,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
+    assertRecognisedAgentOptions(options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
     const engine = this.#engineFor(options.engine);
+    const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
@@ -9269,35 +9847,46 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
-    return engine.schedule(async () => {
-      this.progress.startAgent(agentId);
-      try {
-        const result = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
-        const outcome = result === null ? "failed" : "done";
-        this.progress.settleAgent(agentId, outcome);
-        agentRecord.status = outcome === "done" ? "complete" : "failed";
-        agentRecord.rawOutput = lastRawOutput(agentRecord);
-        agentRecord.validatedOutput = result;
-        if (outcome === "done") {
-          this.#completed.push({
-            id: agentId,
-            engine: engine.name,
-            label: options.label ?? null,
-            phase: options.phase ?? null,
-            output: result
-          });
+    return this.#admission.admit(
+      engine.name,
+      agentId,
+      () => engine.schedule(async () => {
+        const executionStartedAt = Date.now();
+        this.progress.startAgent(agentId);
+        try {
+          const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
+          const outcome = execution.status === "complete" ? "done" : "failed";
+          const executionEndedAt = Date.now();
+          agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+          agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+          this.progress.settleAgent(agentId, outcome);
+          agentRecord.status = outcome === "done" ? "complete" : "failed";
+          agentRecord.rawOutput = lastRawOutput(agentRecord);
+          agentRecord.validatedOutput = execution.value;
+          if (outcome === "done") {
+            this.#completed.push({
+              id: agentId,
+              engine: engine.name,
+              label: options.label ?? null,
+              phase: options.phase ?? null,
+              output: execution.value
+            });
+          }
+          await this.#recordAgentSafely(agentRecord);
+          return execution.value;
+        } catch (error) {
+          const executionEndedAt = Date.now();
+          agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+          agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+          this.progress.settleAgent(agentId, "failed");
+          agentRecord.status = "failed";
+          agentRecord.rawOutput = lastRawOutput(agentRecord);
+          agentRecord.validatedOutput = null;
+          await this.#recordAgentSafely(agentRecord);
+          throw error;
         }
-        await this.#recordAgentSafely(agentRecord);
-        return result;
-      } catch (error) {
-        this.progress.settleAgent(agentId, "failed");
-        agentRecord.status = "failed";
-        agentRecord.rawOutput = lastRawOutput(agentRecord);
-        agentRecord.validatedOutput = null;
-        await this.#recordAgentSafely(agentRecord);
-        throw error;
-      }
-    });
+      })
+    );
   }
   /**
    * The archive is observability: a bookkeeping failure must not reject (or,
@@ -9328,18 +9917,103 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   async close() {
     this.#closed = true;
+    this.#admission.close();
     await this.#engines.close();
   }
   async #runAgent(engine, prompt, options, agentId, agentRecord) {
-    const invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options));
+    const placement = await this.#placement.open(options);
+    agentRecord.resolvedCwd = placement.cwd;
+    agentRecord.isolation = options.isolation ?? null;
+    let invocation;
+    let completion;
     try {
+      invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
       if (options.schema !== void 0) {
-        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId, agentRecord);
+        completion = {
+          ok: true,
+          execution: await this.#runSchemaAgent(
+            engine.name,
+            invocation,
+            { ...options, schema: options.schema },
+            agentId,
+            agentRecord
+          )
+        };
+      } else {
+        completion = {
+          ok: true,
+          execution: {
+            status: "complete",
+            value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
+          }
+        };
       }
-      return await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord);
+    } catch (error) {
+      completion = { ok: false, error };
     } finally {
-      await invocation.close?.();
+      try {
+        try {
+          await invocation?.close?.();
+        } catch (error) {
+          completion = { ok: false, error };
+        }
+      } finally {
+        try {
+          const worktree = await this.#placement.close(placement);
+          if (worktree !== null) {
+            this.#publishWorktree(agentRecord, worktree);
+            this.#emitEvent({
+              method: "worktree/finished",
+              params: {
+                path: worktree.path,
+                branch: worktree.branch,
+                changed: worktree.changed,
+                removed: worktree.removed
+              },
+              receivedAt: Date.now()
+            });
+          }
+        } catch (error) {
+          if (placement.worktree !== void 0) {
+            const worktree = {
+              ...placement.worktree,
+              changed: true,
+              removed: false
+            };
+            this.#publishWorktree(agentRecord, worktree);
+            this.#emitEvent({
+              method: "worktree/finalisationFailed",
+              params: {
+                agentId,
+                path: worktree.path,
+                branch: worktree.branch,
+                message: failureFromError(error).message
+              },
+              receivedAt: Date.now()
+            });
+          }
+          if (completion?.ok !== false) {
+            completion = { ok: false, error };
+          }
+        }
+      }
     }
+    if (completion === void 0) {
+      throw new Error("agent execution ended without a result");
+    }
+    if (!completion.ok) {
+      throw completion.error;
+    }
+    return completion.execution;
+  }
+  #publishWorktree(agentRecord, worktree) {
+    this.worktrees.push(worktree);
+    agentRecord.worktree = {
+      branch: worktree.branch,
+      baseCommit: worktree.baseCommit,
+      changed: worktree.changed,
+      removed: worktree.removed
+    };
   }
   async #runTextAgent(engine, invocation, options, agentId, agentRecord) {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
@@ -9411,8 +10085,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
           agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
           continue;
         }
-        const parsed = parseJsonFromText(result.text);
-        if (parsed === null) {
+        const selection = selectLastValidJsonFromText(result.text, options.schema);
+        if (selection.kind === "invalid-json") {
           previousFailure = {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
@@ -9420,14 +10094,18 @@ var EnsembleRuntime = class _EnsembleRuntime {
           agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
           continue;
         }
-        const validation = validateJsonSchema(parsed.value, options.schema);
-        if (validation.ok) {
-          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, parsed.value, startedAt, result));
-          return parsed.value;
+        if (selection.kind === "valid") {
+          agentRecord.attempts.push(
+            attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
+          );
+          return {
+            status: "complete",
+            value: selection.parsed.value
+          };
         }
         previousFailure = {
           kind: "schema-validation",
-          message: JSON.stringify(validation.errors ?? [])
+          message: JSON.stringify(selection.validation.errors ?? [])
         };
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {
@@ -9438,7 +10116,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
       }
     }
-    return null;
+    return {
+      status: "failed",
+      value: null
+    };
   }
   #emitEvent(event) {
     for (const listener of this.#eventListeners) {
@@ -9468,6 +10149,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
   }
+  #engineCaps() {
+    const caps = /* @__PURE__ */ new Map();
+    for (const name of this.#engines.names()) {
+      const adapter = this.#engines.get(name);
+      if (adapter !== void 0) {
+        caps.set(name, adapter.concurrency);
+      }
+    }
+    return caps;
+  }
   #engineFor(engine) {
     if (engine === void 0) {
       throw new MissingEngineError();
@@ -9481,17 +10172,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     return adapter;
   }
-  #engineTurnOptions(options) {
+  #engineTurnOptions(options, cwd) {
     const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
-      webSearch: options.webSearch ?? false,
       ...resolvedTimeoutMs !== void 0 ? { timeoutMs: resolvedTimeoutMs } : {},
       ...options.schema !== void 0 ? { schema: options.schema } : {},
       ...options.model !== void 0 ? { model: options.model } : {},
       ...options.effort !== void 0 ? { effort: options.effort } : {},
       ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
-      ...options.isolation !== void 0 ? { isolation: options.isolation } : {},
-      ...options.sandbox !== void 0 ? { sandbox: options.sandbox } : {}
+      cwd
     };
   }
   #newAgentRecord(id, engine, options) {
@@ -9502,6 +10191,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
       resolvedModel: null,
+      resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
+      isolation: options.isolation ?? null,
       worktree: null,
       label: options.label ?? null,
       phase: options.phase ?? null,
@@ -9511,6 +10202,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       schema: options.schema ?? null,
       rawOutput: null,
       validatedOutput: null,
+      queuedMs: 0,
+      executionMs: 0,
       attempts: []
     };
   }
@@ -9546,9 +10239,6 @@ function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, sta
 function recordTurnMetadata(record, result) {
   if (result.resolvedModel !== void 0) {
     record.resolvedModel = result.resolvedModel;
-  }
-  if (result.worktree !== void 0) {
-    record.worktree = result.worktree;
   }
 }
 function recordOperationalFailure(record, attempt, startedAtMs, result) {
@@ -9611,6 +10301,9 @@ async function parallel(thunks, log) {
       try {
         return await thunk();
       } catch (error) {
+        if (error instanceof AgentOptionRejectedError) {
+          throw error;
+        }
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
         return null;
       }
@@ -9629,6 +10322,9 @@ async function pipeline(items, stages, log) {
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
+          if (error instanceof AgentOptionRejectedError) {
+            throw error;
+          }
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
           return null;
         }
@@ -9638,6 +10334,7 @@ async function pipeline(items, stages, log) {
   );
 }
 function mergeAgentDefaults(defaults, agentOptions) {
+  assertRecognisedAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
   if (engineDefaults === void 0) {
@@ -9661,13 +10358,13 @@ function formatError(error) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { readFile as readFile3 } from "node:fs/promises";
-import path4 from "node:path";
+import path6 from "node:path";
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
 import { access as access2, readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
-import path3 from "node:path";
+import { homedir as homedir3 } from "node:os";
+import path5 from "node:path";
 var WorkflowResolutionError = class extends Error {
   constructor(message, options) {
     super(message, options);
@@ -9680,10 +10377,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path3.join(homedir2(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path5.join(homedir3(), ".local", "share");
   return {
-    project: path3.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path3.join(dataHome, "ensemble", "workflows")
+    project: path5.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path5.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -9693,7 +10390,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path3.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path5.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -9763,7 +10460,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path3.join(dir, entry.name);
+    const scriptPath = path5.join(dir, entry.name);
     try {
       const source = await readFile2(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
@@ -9831,7 +10528,7 @@ var WorkflowTimeoutError = class extends WorkflowScriptError {
 async function runWorkflowScript(options) {
   const extracted = extractWorkflowSource(options.source);
   const defaults = readWorkflowDefaults(extracted.defaultsSource, options.filename);
-  const cwd = options.cwd ?? path4.dirname(path4.resolve(options.filename));
+  const cwd = options.cwd ?? path6.dirname(path6.resolve(options.filename));
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -9862,9 +10559,7 @@ async function runWorkflowScript(options) {
     }
   });
   const context = createSandboxContext(hooks);
-  const script = new vm.Script(buildWrappedSource(extracted), {
-    filename: options.filename
-  });
+  const script = compileWorkflowScript(extracted, options.filename);
   let runResult;
   try {
     runResult = options.timeoutMs === void 0 ? script.runInContext(context) : script.runInContext(context, { timeout: options.timeoutMs });
@@ -9876,11 +10571,18 @@ async function runWorkflowScript(options) {
   }
   const resultRecord = asResultRecord(runResult);
   const meta = normaliseVmValue(resultRecord.meta);
+  const resultSettlement = resultRecord.promise.then(
+    (value) => ({ status: "fulfilled", value }),
+    (error) => ({ status: "rejected", error })
+  );
   await options.onMeta?.(meta);
-  const result = await withTimeout(resultRecord.promise, options.timeoutMs);
+  const settlement = await withTimeout(resultSettlement, options.timeoutMs);
+  if (settlement.status === "rejected") {
+    throw settlement.error;
+  }
   return {
     meta,
-    result: normaliseVmValue(result)
+    result: normaliseVmValue(settlement.value)
   };
 }
 function readWorkflowMeta(source, filename = "workflow.js") {
@@ -9904,7 +10606,7 @@ function extractWorkflowSource(source) {
     bodyStart += 1;
   }
   let defaultsSource = null;
-  const afterMeta = skipWhitespace(withoutBom, bodyStart);
+  const afterMeta = skipWhitespaceAndComments(withoutBom, bodyStart);
   const defaultsMatch = /^export\s+const\s+defaults\s*=/.exec(withoutBom.slice(afterMeta));
   if (defaultsMatch !== null) {
     const defaultsStart = skipWhitespace(withoutBom, afterMeta + defaultsMatch[0].length);
@@ -9958,6 +10660,7 @@ function validateWorkflowDefaults(value) {
       }
       engineDefaults[option] = optionValue;
     }
+    validateEngineDefaults(engine, engineDefaults);
     defaults[engine] = engineDefaults;
   }
   return defaults;
@@ -9969,6 +10672,34 @@ const __workflowPromise = (async () => {
 ${workflow.bodySource}
 })();
 ({ meta: __workflowMeta, promise: __workflowPromise });`;
+}
+function compileWorkflowScript(workflow, filename) {
+  try {
+    return new vm.Script(buildWrappedSource(workflow), { filename });
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    const bodyWithoutDefaultsExport = workflow.bodySource.replace(
+      /\bexport(?=\s+const\s+defaults\s*=)/g,
+      "      "
+    );
+    if (bodyWithoutDefaultsExport === workflow.bodySource) {
+      throw error;
+    }
+    try {
+      new vm.Script(buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }), { filename });
+    } catch {
+      throw new WorkflowScriptError(
+        `Workflow body contains \`export const defaults\`, but its placement could not be checked because the body has another syntax error: ${error.message}`,
+        { cause: error }
+      );
+    }
+    throw new WorkflowScriptError(
+      "Workflow `export const defaults` must follow `meta`, with only whitespace or comments between them",
+      { cause: error }
+    );
+  }
 }
 function createSandboxContext(hooks) {
   return vm.createContext(
@@ -10052,6 +10783,22 @@ function skipWhitespace(source, start) {
   let index = start;
   while (index < source.length && /\s/.test(source[index] ?? "")) {
     index += 1;
+  }
+  return index;
+}
+function skipWhitespaceAndComments(source, start) {
+  let index = start;
+  while (index < source.length) {
+    index = skipWhitespace(source, index);
+    if (source.startsWith("//", index)) {
+      index = skipLineComment(source, index);
+      continue;
+    }
+    if (source.startsWith("/*", index)) {
+      index = skipBlockComment(source, index);
+      continue;
+    }
+    return index;
   }
   return index;
 }
@@ -10145,7 +10892,7 @@ function skipBlockComment(source, start) {
 import { createHash } from "node:crypto";
 import { mkdir as mkdir2, readFile as readFile4, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
-import path5 from "node:path";
+import path7 from "node:path";
 import { execFile as execFile3 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -10181,7 +10928,7 @@ var RunRecordWriter = class _RunRecordWriter {
   static async start(options) {
     const namespace = await deriveNamespace(options.cwd);
     const runId = `${namespace.id}:${options.runUuid}`;
-    const archiveDir = path5.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
+    const archiveDir = path7.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
     await mkdir2(archiveDir, { recursive: true });
     const harnessRoot = await findHarnessRoot() ?? options.cwd;
     const packageInfo = await readPackageInfo(harnessRoot);
@@ -10209,6 +10956,10 @@ var RunRecordWriter = class _RunRecordWriter {
         raw: null
       },
       cli_flags: options.cliFlags,
+      concurrency: {
+        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
+        engines: options.concurrency?.engines ?? {}
+      },
       git: {
         start: gitStart,
         end: null
@@ -10297,9 +11048,13 @@ var RunRecordWriter = class _RunRecordWriter {
       effort: record.effort,
       fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
+      resolved_cwd: record.resolvedCwd,
+      isolation: record.isolation,
       worktree: record.worktree === null ? null : {
         branch: record.worktree.branch,
-        base_commit: record.worktree.baseCommit
+        base_commit: record.worktree.baseCommit,
+        changed: record.worktree.changed,
+        removed: record.worktree.removed
       },
       label: record.label,
       phase: record.phase,
@@ -10309,6 +11064,8 @@ var RunRecordWriter = class _RunRecordWriter {
       schema: record.schema,
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
+      queued_ms: record.queuedMs,
+      execution_ms: record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
@@ -10358,16 +11115,16 @@ var RunRecordWriter = class _RunRecordWriter {
 `);
   }
   async #writeText(relativePath, content) {
-    const destination = path5.join(this.archiveDir, relativePath);
-    await mkdir2(path5.dirname(destination), { recursive: true });
-    const temporary = path5.join(path5.dirname(destination), `.${path5.basename(destination)}${this.#tmpSuffix()}`);
+    const destination = path7.join(this.archiveDir, relativePath);
+    await mkdir2(path7.dirname(destination), { recursive: true });
+    const temporary = path7.join(path7.dirname(destination), `.${path7.basename(destination)}${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, content);
     await this.#trackFile(relativePath);
   }
   async #writeManifest() {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
-    const destination = path5.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path5.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
+    const destination = path7.join(this.archiveDir, MANIFEST_PATH);
+    const temporary = path7.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
 `);
   }
@@ -10378,7 +11135,7 @@ var RunRecordWriter = class _RunRecordWriter {
     return `.${process.pid}.${this.#tmpSeq}.tmp`;
   }
   async #trackFile(relativePath) {
-    const absolute = path5.join(this.archiveDir, relativePath);
+    const absolute = path7.join(this.archiveDir, relativePath);
     const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
     this.#files.set(relativePath, {
       path: relativePath,
@@ -10470,7 +11227,7 @@ async function readGitState(cwd, diffPath, archiveDir) {
   if (dirty === true) {
     const diff = await git2(["diff", "HEAD", "--binary"], cwd) ?? await git2(["diff", "--binary"], cwd);
     if (diff !== null && diff.length > 0) {
-      await writeStandaloneText(path5.join(archiveDir, diffPath), diff);
+      await writeStandaloneText(path7.join(archiveDir, diffPath), diff);
       archivedDiffPath = diffPath;
     }
   }
@@ -10478,7 +11235,7 @@ async function readGitState(cwd, diffPath, archiveDir) {
 }
 async function readPackageInfo(cwd) {
   try {
-    const text = await readFile4(path5.join(cwd, "package.json"), "utf8");
+    const text = await readFile4(path7.join(cwd, "package.json"), "utf8");
     const parsed = JSON.parse(text);
     return {
       name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
@@ -10489,17 +11246,17 @@ async function readPackageInfo(cwd) {
   }
 }
 async function findHarnessRoot() {
-  let current = path5.dirname(fileURLToPath(import.meta.url));
+  let current = path7.dirname(fileURLToPath(import.meta.url));
   for (; ; ) {
     try {
-      const text = await readFile4(path5.join(current, "package.json"), "utf8");
+      const text = await readFile4(path7.join(current, "package.json"), "utf8");
       const parsed = JSON.parse(text);
       if (parsed.name === "ensemble-workflows") {
         return current;
       }
     } catch {
     }
-    const parent = path5.dirname(current);
+    const parent = path7.dirname(current);
     if (parent === current) {
       return null;
     }
@@ -10558,8 +11315,8 @@ async function hashFile(filePath) {
   return createHash("sha256").update(text).digest("hex");
 }
 async function writeStandaloneText(destination, content) {
-  await mkdir2(path5.dirname(destination), { recursive: true });
-  const temporary = path5.join(path5.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await mkdir2(path7.dirname(destination), { recursive: true });
+  const temporary = path7.join(path7.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
   await writeAndRename(temporary, destination, content);
 }
 async function writeAndRename(temporary, destination, content) {
@@ -10582,49 +11339,32 @@ function safeName(filename, suffix) {
   return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
 }
 
-// src/run-record-config.ts
-import { homedir as homedir3 } from "node:os";
-import path6 from "node:path";
-var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
-var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
-function resolveRunRecordDir(env) {
-  if (isOff(env[RUN_RECORD_ENV])) {
-    return null;
-  }
-  const explicit = env[RUN_RECORD_DIR_ENV];
-  if (explicit !== void 0 && explicit.length > 0) {
-    return explicit;
-  }
-  const dataHome = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path6.join(homedir3(), ".local", "share");
-  return path6.join(dataHome, "ensemble");
-}
-function isOff(value) {
-  if (value === void 0) {
-    return false;
-  }
-  return ["off", "0", "false", "no"].includes(value.trim().toLowerCase());
-}
-
 // src/status-file.ts
-import { mkdir as mkdir3, readFile as readFile5, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
-import path7 from "node:path";
+import { randomUUID as randomUUID4 } from "node:crypto";
+import { link, readFile as readFile5, readdir as readdir3, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
+import path8 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var DEFAULT_HEARTBEAT_MS = 1e4;
+var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
+var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile5, readdir: readdir3, rename: rename2, unlink, writeFile: writeFile2 };
 var StatusFileWriter = class {
   #progress;
   #dir;
   #onError;
+  #fileOperations;
   #unsubscribe;
   #writing = null;
   #dirty = false;
   #closed = false;
-  #ensuredDir = false;
   #tmpSeq = 0;
   #heartbeat;
+  #initialSweep;
   constructor(options) {
     this.#progress = options.progress;
     this.#dir = options.dir;
     this.#onError = options.onError;
+    this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
+    this.#initialSweep = this.#sweepStaleArtifacts();
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
@@ -10661,61 +11401,97 @@ var StatusFileWriter = class {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
-      this.#onError?.(error);
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
     }
   }
   async #writeAtomic(snapshot) {
-    if (!this.#ensuredDir) {
-      await mkdir3(this.#dir, { recursive: true });
-      this.#ensuredDir = true;
-    }
-    const target = path7.join(this.#dir, STATUS_FILENAME);
+    await this.#initialSweep;
+    const target = path8.join(this.#dir, STATUS_FILENAME);
     const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
-    await writeFile2(tmp, `${JSON.stringify(snapshot)}
+    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(snapshot)}
 `, "utf8");
-    await rename2(tmp, target);
+    await this.#fileOperations.rename(tmp, target);
   }
   async #removeSnapshot() {
-    const target = path7.join(this.#dir, STATUS_FILENAME);
+    const target = path8.join(this.#dir, STATUS_FILENAME);
+    const claim = `${target}.${process.pid}.${randomUUID4()}.remove`;
     try {
-      const current = JSON.parse(await readFile5(target, "utf8"));
-      if (typeof current.runId === "string" && current.runId !== this.#progress.runId) {
+      await this.#fileOperations.rename(target, claim);
+    } catch (error) {
+      if (isNodeError2(error) && error.code === "ENOENT") {
         return;
       }
+      this.#reportError(error);
+      return;
+    }
+    let belongsToAnotherRun = false;
+    try {
+      const current = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
+      belongsToAnotherRun = typeof current.runId === "string" && current.runId !== this.#progress.runId;
     } catch {
     }
+    if (belongsToAnotherRun) {
+      try {
+        await this.#fileOperations.link(claim, target);
+      } catch (error) {
+        if (!isNodeError2(error) || error.code !== "EEXIST") {
+          this.#reportError(error);
+        }
+      }
+    }
     try {
-      await unlink(target);
+      await this.#fileOperations.unlink(claim);
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
+      if (isNodeError2(error) && error.code === "ENOENT") {
         return;
       }
+      this.#reportError(error);
+    }
+  }
+  async #sweepStaleArtifacts() {
+    let entries;
+    try {
+      entries = await this.#fileOperations.readdir(this.#dir);
+    } catch (error) {
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
+      return;
+    }
+    for (const entry of entries) {
+      const prefix = `${STATUS_FILENAME}.`;
+      const match = entry.startsWith(prefix) ? STATUS_ARTIFACT_SUFFIX_PATTERN.exec(entry.slice(prefix.length)) : null;
+      const ownerPid = Number(match?.[1]);
+      if (!Number.isSafeInteger(ownerPid) || isProcessAlive(ownerPid)) {
+        continue;
+      }
+      try {
+        await this.#fileOperations.unlink(path8.join(this.#dir, entry));
+      } catch (error) {
+        if (!isNodeError2(error) || error.code !== "ENOENT") {
+          this.#reportError(error);
+        }
+      }
+    }
+  }
+  #reportError(error) {
+    try {
       this.#onError?.(error);
+    } catch {
     }
   }
 };
-function isNodeError(error) {
+function isNodeError2(error) {
   return typeof error === "object" && error !== null && "code" in error;
 }
-
-// src/status-config.ts
-import { statSync } from "node:fs";
-import path8 from "node:path";
-var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
-function resolveStatusDir(env, cwd) {
-  const toggle = (env.ENSEMBLE_STATUS ?? "").trim().toLowerCase();
-  if (DISABLED_VALUES.has(toggle)) {
-    return null;
-  }
-  const explicit = env.ENSEMBLE_STATUS_DIR?.trim();
-  if (explicit !== void 0 && explicit.length > 0) {
-    return explicit;
-  }
-  const localClaudeDir = path8.join(cwd, ".claude");
+function isProcessAlive(pid) {
   try {
-    return statSync(localClaudeDir).isDirectory() ? localClaudeDir : null;
-  } catch {
-    return null;
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isNodeError2(error) || error.code !== "ESRCH";
   }
 }
 
@@ -10726,6 +11502,7 @@ async function createRuntime2(options = {}) {
 
 // src/cli.ts
 async function runEnsembleCli(argv, options = {}) {
+  const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
@@ -10748,15 +11525,26 @@ async function runEnsembleCli(argv, options = {}) {
     return 0;
   }
   let invocation;
+  let ambientSettings;
   try {
-    invocation = await parseInvocation(argv, cwd);
+    invocation = await parseInvocation(argv, cwd, stdin);
+    ambientSettings = resolveAmbientSettings({
+      env,
+      cwd,
+      flags: {
+        ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
+        ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
+      }
+    });
   } catch (error) {
     stderr.write(`${formatError3(error)}
 `);
-    stderr.write(usage());
+    if (!(error instanceof AmbientConfigError)) {
+      stderr.write(usage());
+    }
     return 2;
   }
-  if (invocation.scriptArg === void 0) {
+  if (invocation.kind === "workflow" && invocation.scriptArg === void 0) {
     stderr.write(usage());
     return 2;
   }
@@ -10766,30 +11554,30 @@ async function runEnsembleCli(argv, options = {}) {
   let runRecordWriter = null;
   let finalRecord = null;
   try {
-    const scriptPath = path9.resolve(cwd, invocation.scriptArg);
-    const source = await readFile6(scriptPath, "utf8");
+    const prepared = await prepareRun(invocation, cwd);
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
-      ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
+      ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
-    const runRecordDir = options.runRecordDir ?? null;
+    const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     if (runRecordDir !== null && runRecordDir.length > 0) {
       runRecordWriter = await RunRecordWriter.start({
         storeDir: runRecordDir,
         cwd,
         runUuid: runtimeRunId,
-        workflowPath: scriptPath,
-        workflowSource: source,
-        args: invocation.args,
-        cliFlags: cliFlags(invocation)
+        workflowPath: prepared.workflowPath,
+        workflowSource: prepared.source,
+        args: prepared.recordArgs,
+        cliFlags: cliFlags(invocation),
+        concurrency: recordConcurrency(ambientSettings, progress)
       });
       runtime.setRunRecorder?.(runRecordWriter);
     }
-    const statusDir = options.statusDir ?? null;
+    const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
@@ -10823,20 +11611,37 @@ async function runEnsembleCli(argv, options = {}) {
 `);
         return;
       }
-      if (event.method !== "worktree/finished" || event.params.changed !== true) {
+      if (event.method === "worktree/finalisationFailed") {
+        const worktreePath2 = typeof event.params.path === "string" ? event.params.path : "<unknown>";
+        const branch2 = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
+        const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
+        stderr.write(`[worktree] finalisation failed for ${worktreePath2} (${branch2}): ${message}
+`);
+        return;
+      }
+      if (event.method !== "worktree/finished") {
         return;
       }
       const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
       const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
+      if (invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree") {
+        const outcome = event.params.changed === true ? "changed" : "unchanged and removed";
+        stderr.write(`[worktree] ${outcome} ${worktreePath} (${branch})
+`);
+        return;
+      }
+      if (event.params.changed !== true) {
+        return;
+      }
       stderr.write(`[worktree] changed ${worktreePath} (${branch})
 `);
     });
     const runnerOptions = {
-      source,
-      filename: scriptPath,
+      source: prepared.source,
+      filename: prepared.workflowPath,
       cwd,
       runtime,
-      args: invocation.args,
+      args: prepared.runnerArgs,
       env,
       log: (message) => {
         stderr.write(`${message}
@@ -10853,9 +11658,13 @@ async function runEnsembleCli(argv, options = {}) {
         runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
         interrupt.promise
       ]);
-      stdout.write(`${serialiseResult(result)}
+      if (invocation.kind === "agent" && result === null && !completedDirectAgentWithNull(runtime)) {
+        throw new SingleAgentFailedError();
+      }
+      const serialised = serialiseResult(result);
+      stdout.write(`${serialised}
 `);
-      finalRecord = { status: "complete", exitCode: 0, result };
+      finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
       return 0;
     } finally {
       interrupt.dispose();
@@ -10863,9 +11672,10 @@ async function runEnsembleCli(argv, options = {}) {
   } catch (error) {
     const status = error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
     const partial = partialResult(runtime, status);
-    stdout.write(`${serialiseResult(partial)}
+    const serialised = serialiseResult(partial);
+    stdout.write(`${serialised}
 `);
-    finalRecord = { status, exitCode: 1, result: partial };
+    finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
     stderr.write(`${formatError3(error)}
 `);
     return 1;
@@ -10886,6 +11696,10 @@ function partialResult(runtime, reason) {
   const completed = runtime?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
 }
+function completedDirectAgentWithNull(runtime) {
+  const completed = runtime.completedOutputs?.() ?? [];
+  return completed.some((agent) => agent.output === null);
+}
 function workflowName(meta) {
   if (typeof meta === "object" && meta !== null && "name" in meta) {
     const name = meta.name;
@@ -10893,13 +11707,76 @@ function workflowName(meta) {
   }
   return null;
 }
+async function prepareRun(invocation, cwd) {
+  if (invocation.kind === "agent") {
+    return {
+      workflowPath: path9.join(cwd, "<ensemble-agent>"),
+      source: singleAgentWorkflowSource(invocation),
+      runnerArgs: [],
+      recordArgs: {
+        prompt: invocation.prompt,
+        options: invocation.agentOptions
+      }
+    };
+  }
+  if (invocation.scriptArg === void 0) {
+    throw new Error("workflow invocation has no script path");
+  }
+  const workflowPath = path9.resolve(cwd, invocation.scriptArg);
+  return {
+    workflowPath,
+    source: await readFile6(workflowPath, "utf8"),
+    runnerArgs: invocation.args,
+    recordArgs: invocation.args
+  };
+}
+function singleAgentWorkflowSource(invocation) {
+  const meta = {
+    name: "ensemble-agent",
+    description: "Single worker invoked from the Ensemble CLI",
+    ...invocation.task !== void 0 ? { task: invocation.task } : {}
+  };
+  return [
+    `export const meta = ${JSON.stringify(meta)};`,
+    `return await agent(${JSON.stringify(invocation.prompt)}, ${JSON.stringify(invocation.agentOptions)});`,
+    ""
+  ].join("\n");
+}
 function cliFlags(invocation) {
   return {
     ...invocation.budgetCeilings !== void 0 ? { budget: invocation.budgetCeilings } : {},
+    ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
-    jsonArgs: invocation.jsonArgsProvided
+    jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
+}
+function runtimeConcurrencyOptions(settings) {
+  const concurrencyCaps = {};
+  for (const engine of ["codex", "claude", "opencode"]) {
+    const resolved = settings.concurrencyCaps[engine];
+    if (resolved.layer !== "default") {
+      concurrencyCaps[engine] = resolved.value;
+    }
+  }
+  return {
+    ...settings.agentCeiling.layer !== "default" ? { agentCeiling: settings.agentCeiling.value } : {},
+    ...Object.keys(concurrencyCaps).length > 0 ? { concurrencyCaps } : {}
+  };
+}
+function recordConcurrency(settings, progress) {
+  const snapshot = progress?.snapshot();
+  if (snapshot === void 0) {
+    return { agentCeiling: settings.agentCeiling, engines: settings.concurrencyCaps };
+  }
+  const engines = {};
+  for (const engine of ["codex", "claude", "opencode"]) {
+    const cap = snapshot.engines[engine]?.cap;
+    if (cap !== null && cap !== void 0) {
+      engines[engine] = { value: cap, layer: settings.concurrencyCaps[engine].layer };
+    }
+  }
+  return { agentCeiling: settings.agentCeiling, engines };
 }
 var CliUsageError = class extends Error {
   constructor(message) {
@@ -10941,13 +11818,26 @@ function watchWorkflowInterrupts() {
     }
   };
 }
-async function parseInvocation(argv, cwd) {
+var SingleAgentFailedError = class extends Error {
+  constructor() {
+    super("Agent exhausted its attempts without producing a result");
+    this.name = new.target.name;
+  }
+};
+async function parseInvocation(argv, cwd, stdin) {
+  if (argv[0] === "agent") {
+    return parseAgentInvocation(argv.slice(1), cwd, stdin);
+  }
+  return parseWorkflowInvocation(argv, cwd);
+}
+async function parseWorkflowInvocation(argv, cwd) {
   const split = splitTuningFlags(argv);
   const parsed = parseArgs({
     args: split.tuningArgs,
     options: {
       "json-args": { type: "string" },
       budget: { type: "string", multiple: true },
+      "agent-ceiling": { type: "string" },
       concurrency: { type: "string", multiple: true },
       timeout: { type: "string" }
     },
@@ -10958,16 +11848,97 @@ async function parseInvocation(argv, cwd) {
   const positionalArgs = split.scriptArg === void 0 ? [] : split.scriptArgs;
   const args = jsonArgs === void 0 ? positionalArgs : await parseJsonArgs(jsonArgs, cwd);
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
+  const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   return {
+    kind: "workflow",
     scriptArg: split.scriptArg,
     args,
     jsonArgsProvided: jsonArgs !== void 0,
     ...budgetCeilings !== void 0 ? { budgetCeilings } : {},
+    ...agentCeiling !== void 0 ? { agentCeiling } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {}
   };
+}
+async function parseAgentInvocation(argv, cwd, stdin) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      options: {
+        engine: { type: "string" },
+        model: { type: "string" },
+        effort: { type: "string" },
+        cwd: { type: "string" },
+        isolation: { type: "string" },
+        schema: { type: "string" },
+        task: { type: "string" },
+        budget: { type: "string", multiple: true },
+        "agent-ceiling": { type: "string" },
+        concurrency: { type: "string", multiple: true },
+        timeout: { type: "string" }
+      },
+      strict: true,
+      allowPositionals: true
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(message);
+  }
+  if (parsed.positionals.length > 1) {
+    throw new CliUsageError("ensemble agent accepts exactly one prompt argument, or reads the prompt from stdin");
+  }
+  const prompt = parsed.positionals[0] ?? await readPrompt(stdin);
+  if (prompt.length === 0) {
+    throw new CliUsageError("ensemble agent requires a prompt argument or a non-empty prompt on stdin");
+  }
+  const rawEngine = parsed.values.engine;
+  if (rawEngine === void 0) {
+    throw new CliUsageError("ensemble agent requires --engine");
+  }
+  const engine = parseEngineName(rawEngine, "--engine");
+  const isolation = parseIsolation(parsed.values.isolation);
+  const schema = parsed.values.schema === void 0 ? void 0 : await parseJsonValue(parsed.values.schema, cwd, "--schema");
+  const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
+  const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
+  const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
+  const timeoutMs = parseTimeoutMs(parsed.values.timeout);
+  const agentOptions = {
+    engine,
+    ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
+    ...parsed.values.effort !== void 0 ? { effort: parsed.values.effort } : {},
+    ...parsed.values.cwd !== void 0 ? { cwd: parsed.values.cwd } : {},
+    ...isolation !== void 0 ? { isolation } : {},
+    ...schema !== void 0 ? { schema } : {}
+  };
+  return {
+    kind: "agent",
+    prompt,
+    agentOptions,
+    ...parsed.values.task !== void 0 ? { task: parsed.values.task } : {},
+    ...budgetCeilings !== void 0 ? { budgetCeilings } : {},
+    ...agentCeiling !== void 0 ? { agentCeiling } : {},
+    ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
+    ...timeoutMs !== void 0 ? { timeoutMs } : {}
+  };
+}
+async function readPrompt(stdin) {
+  const chunks = [];
+  for await (const chunk of stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+function parseIsolation(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  if (value !== "worktree") {
+    throw new CliUsageError(`--isolation must be worktree, got ${value}`);
+  }
+  return value;
 }
 function splitTuningFlags(argv) {
   const tuningArgs = [];
@@ -10999,27 +11970,33 @@ function splitTuningFlags(argv) {
     if (value.startsWith("-")) {
       throw new CliUsageError(`Unknown option before script path: ${value}`);
     }
-    return {
-      tuningArgs,
-      scriptArg: value,
-      scriptArgs: argv.slice(index + 1)
-    };
+    const scriptArgs = argv.slice(index + 1);
+    const misplacedTuningFlag = scriptArgs.find((argument) => isKnownOption(argument) || isKnownInlineOption(argument));
+    if (misplacedTuningFlag !== void 0) {
+      throw new CliUsageError(
+        `Tuning flag ${misplacedTuningFlag} appears after the script path; put tuning flags before the script, or put \`--\` before the script path to pass it through`
+      );
+    }
+    return { tuningArgs, scriptArg: value, scriptArgs };
   }
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--concurrency" || value === "--timeout";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=");
 }
 async function parseJsonArgs(value, cwd) {
+  return parseJsonValue(value, cwd, "--json-args");
+}
+async function parseJsonValue(value, cwd, flagName) {
   let source = value;
   let sourceDescription = "the argument";
   if (value.startsWith("@")) {
     const filename = value.slice(1);
     if (filename.length === 0) {
-      throw new CliUsageError("--json-args @file requires a file path");
+      throw new CliUsageError(`${flagName} @file requires a file path`);
     }
     const filePath = path9.resolve(cwd, filename);
     sourceDescription = filePath;
@@ -11027,14 +12004,14 @@ async function parseJsonArgs(value, cwd) {
       source = await readFile6(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new CliUsageError(`--json-args could not read ${filePath}: ${message}`);
+      throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);
     }
   }
   try {
     return JSON.parse(source);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(`--json-args ${sourceDescription} must contain valid JSON: ${message}`);
+    throw new CliUsageError(`${flagName} ${sourceDescription} must contain valid JSON: ${message}`);
   }
 }
 function parseEngineMap(values, parseValue, flagName) {
@@ -11075,6 +12052,19 @@ function parseConcurrencyCap(value) {
   }
   return cap;
 }
+function parseAgentCeiling(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  if (value.trim() === "null") {
+    return null;
+  }
+  const ceiling = Number(value);
+  if (!Number.isInteger(ceiling) || ceiling < 1) {
+    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null, got ${value}`);
+  }
+  return ceiling;
+}
 function parseTimeoutMs(value) {
   if (value === void 0) {
     return void 0;
@@ -11087,7 +12077,10 @@ function parseTimeoutMs(value) {
 }
 function usage() {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]",
+    "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]",
+    "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""
   ].join("\n");
@@ -11104,14 +12097,21 @@ function formatError3(error) {
   if (error instanceof CliUsageError) {
     return error.message;
   }
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
+  if (error instanceof AgentOptionRejectedError) {
+    return `${error.name}: ${error.message}`;
+  }
+  if (isError(error)) {
+    const stack = error.stack;
+    return typeof stack === "string" && stack.trim().length > 0 ? stack : String(error);
   }
   return String(error);
 }
+function isError(error) {
+  return Error.isError(error);
+}
 
 // src/node-version.ts
-import { readFileSync } from "node:fs";
+import { readFileSync as readFileSync2 } from "node:fs";
 import path10 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function requiredNodeRange(fromUrl = import.meta.url) {
@@ -11169,7 +12169,7 @@ function readPackageMetadata(fromUrl) {
   while (true) {
     const candidate = path10.join(current, "package.json");
     try {
-      const metadata = JSON.parse(readFileSync(candidate, "utf8"));
+      const metadata = JSON.parse(readFileSync2(candidate, "utf8"));
       if (metadata.name === "ensemble-workflows") {
         return metadata;
       }
@@ -11194,9 +12194,7 @@ if (isMain) {
   } else {
     const cwd = process.cwd();
     const exitCode = await runEnsembleCli(process.argv.slice(2), {
-      cwd,
-      statusDir: resolveStatusDir(process.env, cwd),
-      runRecordDir: resolveRunRecordDir(process.env)
+      cwd
     });
     process.exitCode = exitCode;
   }
