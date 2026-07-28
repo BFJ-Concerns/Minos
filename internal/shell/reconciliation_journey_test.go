@@ -259,6 +259,21 @@ func TestIntegrateWavePublishesOnlyTheHeadLineageAndReconcilesTheReadingTree(t *
 	repair := gitOutput(t, agentWorktree, "rev-parse", "HEAD")
 	commits := writeJSONFixture(t, []string{repair})
 
+	remoteRefsBefore := gitOutput(t, repository, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
+	unsanctioned := exec.Command("git", "-C", agentWorktree, "push", "origin", "HEAD:refs/heads/feature")
+	unsanctionedOutput, err := unsanctioned.CombinedOutput()
+	if err == nil || !strings.Contains(string(unsanctionedOutput), "worker fixes must be routed through workflows/integrate-wave") {
+		t.Fatalf("unsanctioned author-branch push result = %v\n%s", err, unsanctionedOutput)
+	}
+	if remoteRefsAfter := gitOutput(t, repository, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"); remoteRefsAfter != remoteRefsBefore {
+		t.Fatalf("remote refs changed after author-branch refusal\nbefore:\n%s\nafter:\n%s", remoteRefsBefore, remoteRefsAfter)
+	}
+
+	runGit(t, agentWorktree, "push", "origin", "HEAD:refs/heads/worker-evidence")
+	if got := gitOutput(t, repository, "rev-parse", "refs/heads/worker-evidence"); got != repair {
+		t.Fatalf("unprotected remote ref = %q, want %q", got, repair)
+	}
+
 	setupScript, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "setup-workspace"))
 	if err != nil {
 		t.Fatal(err)
