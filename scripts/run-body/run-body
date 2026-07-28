@@ -124,12 +124,16 @@ fi
 HOME="${MINOS_RUN_DIR%/}/home"
 CLAUDE_CONFIG_DIR="$HOME/.claude"
 CODEX_HOME="$HOME/.codex"
-export HOME CLAUDE_CONFIG_DIR CODEX_HOME
+XDG_STATE_HOME="${MINOS_RUN_DIR%/}/state"
+PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export HOME CLAUDE_CONFIG_DIR CODEX_HOME XDG_STATE_HOME PATH
 failure_stage="runtime-home"
-failure_cause="could not create isolated Claude and Codex configuration directories"
-mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME"
-failure_cause="could not secure isolated Claude and Codex configuration directories"
-chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME"
+failure_cause="could not create isolated runtime home, state and tool directories"
+mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
+  "$HOME/.cargo/bin" "$HOME/.local/bin"
+failure_cause="could not secure isolated runtime home, state and tool directories"
+chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
+  "$HOME/.cargo/bin" "$HOME/.local/bin"
 failure_stage="claude-seed"
 failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
 cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"

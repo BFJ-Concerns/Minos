@@ -23,6 +23,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	configDir := filepath.Join(homeDir, ".claude")
 	codexConfigDir := filepath.Join(homeDir, ".codex")
 	projectsDir := filepath.Join(homeDir, ".claude", "projects")
+	stateDir := filepath.Join(fixture.runDir, "state")
 	info, err := os.Stat(configDir)
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +42,33 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if filepath.Dir(projectsDir) != configDir {
 		t.Fatalf("control-plane transcript directory %q is not inside seeded Claude config %q", projectsDir, configDir)
 	}
+	stateInfo, err := os.Stat(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("XDG_STATE_HOME mode = %o, want 700", stateInfo.Mode().Perm())
+	}
+	for _, path := range []string{
+		filepath.Join(homeDir, ".cargo", "bin"),
+		filepath.Join(homeDir, ".local", "bin"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Fatalf("provisioned tool directory %s mode = %o, want 700", path, info.Mode().Perm())
+		}
+	}
+	assertContainsFile(t, filepath.Join(stateDir, "worker-state"), "worker wrote state")
+	assertContainsFile(t, fixture.record+".worker-tool", filepath.Join(homeDir, ".local", "bin", "minos-worker-probe"))
+	assertContainsFile(t, fixture.record+".worker-env", "XDG_STATE_HOME="+stateDir)
+	assertContainsFile(
+		t,
+		fixture.record+".worker-env",
+		"PATH="+filepath.Join(homeDir, ".cargo", "bin")+":"+filepath.Join(homeDir, ".local", "bin")+":",
+	)
 	assertContainsFile(t, fixture.record+".setup", "setup invoked")
 	assertContainsFile(t, fixture.record+".argv", "--bg")
 	assertContainsFile(t, fixture.record+".argv", "--model")
@@ -258,6 +286,20 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 			},
 			wantStage: "codex-seed",
 			wantCause: "could not copy Codex configuration seed",
+		},
+		{
+			name: "runtime state directory",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				if err := os.MkdirAll(fixture.runDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(fixture.runDir, "state"), []byte("not a directory\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return nil
+			},
+			wantStage: "runtime-home",
+			wantCause: "could not create isolated runtime home, state and tool directories",
 		},
 		{
 			name: "root-cause skill copy",
@@ -691,6 +733,14 @@ func newRunBodyFixture(t *testing.T) runBodyFixture {
 	if err := os.WriteFile(fixture.instructionPath, []byte("Follow the Minos lifecycle exactly.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	workerProbeSource := filepath.Join(fixture.root, "minos-worker-probe")
+	writeScript(t, workerProbeSource, `#!/usr/bin/env sh
+set -eu
+record="${MINOS_TEST_RECORD:?}"
+env | sort >"$record.worker-env"
+printf 'worker wrote state\n' >"$XDG_STATE_HOME/worker-state"
+command -v minos-worker-probe >"$record.worker-tool"
+`)
 	writeScript(t, fixture.claudeStub, `#!/usr/bin/env sh
 set -eu
 record="${MINOS_TEST_RECORD:?}"
@@ -716,7 +766,10 @@ case "$1" in
     cat >"$record.stdin"
     sleep 300 </dev/null >/dev/null 2>&1 &
     lead_pid=$!
-    sleep 300 </dev/null >/dev/null 2>&1 &
+    (
+      minos-worker-probe
+      exec sleep 300
+    ) </dev/null >/dev/null 2>&1 &
     task_pid=$!
     printf '%s\n%s\n' "$lead_pid" "$task_pid" >"$record.pids"
     if [ "${MINOS_TEST_WORK_WRITES:-0}" -gt 0 ]; then
@@ -778,6 +831,7 @@ esac
 	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
 set -eu
 mkdir -p "$MINOS_WORKSPACE"
+install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
 printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
 printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 `)
@@ -787,18 +841,19 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 		t.Fatal(err)
 	}
 	runBodyEnv := map[string]string{
-		"MINOS_CLAUDE":                fixture.claudeStub,
-		"MINOS_LEAD_MODEL":            "claude-opus-5",
-		"MINOS_GIT_AUTHOR_NAME":       "Minos",
-		"MINOS_GIT_AUTHOR_EMAIL":      "minos@example.invalid",
-		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,
-		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
-		"MINOS_LIFECYCLE_INSTRUCTION": fixture.instructionPath,
-		"MINOS_REVIEW_WORKFLOW":       "/opt/minos/workflows/adjudicated-review",
-		"MINOS_ROOT_CAUSE_SKILL":      skillSource,
-		"MINOS_SETUP_WORKSPACE":       fixture.setupStub,
-		"MINOS_BIN":                   "/usr/local/bin/minos",
-		"MINOS_FAILURE_LOG":           fixture.failureLog,
+		"MINOS_CLAUDE":                   fixture.claudeStub,
+		"MINOS_LEAD_MODEL":               "claude-opus-5",
+		"MINOS_GIT_AUTHOR_NAME":          "Minos",
+		"MINOS_GIT_AUTHOR_EMAIL":         "minos@example.invalid",
+		"MINOS_CLAUDE_CONFIG_SEED":       claudeSeed,
+		"MINOS_CODEX_CONFIG_SEED":        codexSeed,
+		"MINOS_LIFECYCLE_INSTRUCTION":    fixture.instructionPath,
+		"MINOS_REVIEW_WORKFLOW":          "/opt/minos/workflows/adjudicated-review",
+		"MINOS_ROOT_CAUSE_SKILL":         skillSource,
+		"MINOS_SETUP_WORKSPACE":          fixture.setupStub,
+		"MINOS_BIN":                      "/usr/local/bin/minos",
+		"MINOS_FAILURE_LOG":              fixture.failureLog,
+		"MINOS_TEST_WORKER_PROBE_SOURCE": workerProbeSource,
 	}
 	var config strings.Builder
 	for name, value := range runBodyEnv {
