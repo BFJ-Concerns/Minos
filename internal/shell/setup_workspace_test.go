@@ -28,6 +28,14 @@ func TestSetupWorkspaceChecksOutHeadClonesAnnexeAndConfiguresAuthor(t *testing.T
 	if got := gitOutput(t, workspace, "config", "--get", "http.extraHeader"); got != "Authorization: token forge-token" {
 		t.Fatalf("workspace Git authentication = %q, want forge token header", got)
 	}
+	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	protectedRef, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(protectedRef)); got != "refs/heads/feature" {
+		t.Fatalf("protected ref = %q, want pull-request branch", got)
+	}
 	annexePath := filepath.Join(runDir, "repository-Annexe")
 	assertContainsFile(t, filepath.Join(annexePath, "README.md"), "# Commission")
 	if got := gitOutput(t, annexePath, "config", "--get", "http.extraHeader"); got != "Authorization: token forge-token" {

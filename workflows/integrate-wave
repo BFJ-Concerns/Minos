@@ -40,7 +40,14 @@ for commit in $(jq -r '.[]' "$commits_file"); do
   git -C "$workspace" cherry-pick "$commit"
 done
 
-git -C "$workspace" push origin "HEAD:refs/heads/${MINOS_HEAD_BRANCH}"
+common_dir="$(git -C "$workspace" rev-parse --path-format=absolute --git-common-dir)"
+push_ref="refs/heads/${MINOS_HEAD_BRANCH}"
+push_head="$(git -C "$workspace" rev-parse HEAD)"
+push_permit="$(mktemp "${common_dir}/minos-integrate-wave-push.XXXXXX")"
+trap 'rm -f "$push_permit"' 0 1 2 3 15
+printf '%s %s\n' "$push_ref" "$push_head" >"$push_permit"
+MINOS_INTEGRATE_WAVE_PUSH_PERMIT="$push_permit" \
+  git -C "$workspace" push origin "HEAD:${push_ref}"
 
 if [ -n "$reconciliation_file" ]; then
   : "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required for round reconciliation}"
