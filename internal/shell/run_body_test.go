@@ -23,6 +23,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	configDir := filepath.Join(homeDir, ".claude")
 	codexConfigDir := filepath.Join(homeDir, ".codex")
 	projectsDir := filepath.Join(homeDir, ".claude", "projects")
+	stateDir := filepath.Join(fixture.runDir, "state")
 	info, err := os.Stat(configDir)
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +42,21 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if filepath.Dir(projectsDir) != configDir {
 		t.Fatalf("control-plane transcript directory %q is not inside seeded Claude config %q", projectsDir, configDir)
 	}
+	stateInfo, err := os.Stat(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("XDG_STATE_HOME mode = %o, want 700", stateInfo.Mode().Perm())
+	}
+	assertContainsFile(t, filepath.Join(stateDir, "worker-state"), "worker wrote state")
+	assertContainsFile(t, fixture.record+".worker-tool", filepath.Join(homeDir, ".local", "bin", "minos-worker-probe"))
+	assertContainsFile(t, fixture.record+".worker-env", "XDG_STATE_HOME="+stateDir)
+	assertContainsFile(
+		t,
+		fixture.record+".worker-env",
+		"PATH="+filepath.Join(homeDir, ".cargo", "bin")+":"+filepath.Join(homeDir, ".local", "bin")+":",
+	)
 	assertContainsFile(t, fixture.record+".setup", "setup invoked")
 	assertContainsFile(t, fixture.record+".argv", "--bg")
 	assertContainsFile(t, fixture.record+".argv", "--model")
@@ -258,6 +274,17 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 			},
 			wantStage: "codex-seed",
 			wantCause: "could not copy Codex configuration seed",
+		},
+		{
+			name: "runtime state directory",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				if err := os.WriteFile(filepath.Join(fixture.runDir, "state"), []byte("not a directory\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return nil
+			},
+			wantStage: "runtime-home",
+			wantCause: "could not create isolated runtime home and state directories",
 		},
 		{
 			name: "root-cause skill copy",
@@ -691,6 +718,17 @@ func newRunBodyFixture(t *testing.T) runBodyFixture {
 	if err := os.WriteFile(fixture.instructionPath, []byte("Follow the Minos lifecycle exactly.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	workerBinDir := filepath.Join(fixture.runDir, "home", ".local", "bin")
+	if err := os.MkdirAll(workerBinDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(workerBinDir, "minos-worker-probe"), `#!/usr/bin/env sh
+set -eu
+record="${MINOS_TEST_RECORD:?}"
+env | sort >"$record.worker-env"
+printf 'worker wrote state\n' >"$XDG_STATE_HOME/worker-state"
+command -v minos-worker-probe >"$record.worker-tool"
+`)
 	writeScript(t, fixture.claudeStub, `#!/usr/bin/env sh
 set -eu
 record="${MINOS_TEST_RECORD:?}"
@@ -716,7 +754,10 @@ case "$1" in
     cat >"$record.stdin"
     sleep 300 </dev/null >/dev/null 2>&1 &
     lead_pid=$!
-    sleep 300 </dev/null >/dev/null 2>&1 &
+    (
+      minos-worker-probe
+      exec sleep 300
+    ) </dev/null >/dev/null 2>&1 &
     task_pid=$!
     printf '%s\n%s\n' "$lead_pid" "$task_pid" >"$record.pids"
     if [ "${MINOS_TEST_WORK_WRITES:-0}" -gt 0 ]; then
