@@ -49,6 +49,18 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if stateInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("XDG_STATE_HOME mode = %o, want 700", stateInfo.Mode().Perm())
 	}
+	for _, path := range []string{
+		filepath.Join(homeDir, ".cargo", "bin"),
+		filepath.Join(homeDir, ".local", "bin"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Fatalf("provisioned tool directory %s mode = %o, want 700", path, info.Mode().Perm())
+		}
+	}
 	assertContainsFile(t, filepath.Join(stateDir, "worker-state"), "worker wrote state")
 	assertContainsFile(t, fixture.record+".worker-tool", filepath.Join(homeDir, ".local", "bin", "minos-worker-probe"))
 	assertContainsFile(t, fixture.record+".worker-env", "XDG_STATE_HOME="+stateDir)
@@ -278,13 +290,16 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 		{
 			name: "runtime state directory",
 			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				if err := os.MkdirAll(fixture.runDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.WriteFile(filepath.Join(fixture.runDir, "state"), []byte("not a directory\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				return nil
 			},
 			wantStage: "runtime-home",
-			wantCause: "could not create isolated runtime home and state directories",
+			wantCause: "could not create isolated runtime home, state and tool directories",
 		},
 		{
 			name: "root-cause skill copy",
@@ -718,11 +733,8 @@ func newRunBodyFixture(t *testing.T) runBodyFixture {
 	if err := os.WriteFile(fixture.instructionPath, []byte("Follow the Minos lifecycle exactly.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	workerBinDir := filepath.Join(fixture.runDir, "home", ".local", "bin")
-	if err := os.MkdirAll(workerBinDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	writeScript(t, filepath.Join(workerBinDir, "minos-worker-probe"), `#!/usr/bin/env sh
+	workerProbeSource := filepath.Join(fixture.root, "minos-worker-probe")
+	writeScript(t, workerProbeSource, `#!/usr/bin/env sh
 set -eu
 record="${MINOS_TEST_RECORD:?}"
 env | sort >"$record.worker-env"
@@ -819,6 +831,7 @@ esac
 	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
 set -eu
 mkdir -p "$MINOS_WORKSPACE"
+install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
 printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
 printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 `)
@@ -828,18 +841,19 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 		t.Fatal(err)
 	}
 	runBodyEnv := map[string]string{
-		"MINOS_CLAUDE":                fixture.claudeStub,
-		"MINOS_LEAD_MODEL":            "claude-opus-5",
-		"MINOS_GIT_AUTHOR_NAME":       "Minos",
-		"MINOS_GIT_AUTHOR_EMAIL":      "minos@example.invalid",
-		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,
-		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
-		"MINOS_LIFECYCLE_INSTRUCTION": fixture.instructionPath,
-		"MINOS_REVIEW_WORKFLOW":       "/opt/minos/workflows/adjudicated-review",
-		"MINOS_ROOT_CAUSE_SKILL":      skillSource,
-		"MINOS_SETUP_WORKSPACE":       fixture.setupStub,
-		"MINOS_BIN":                   "/usr/local/bin/minos",
-		"MINOS_FAILURE_LOG":           fixture.failureLog,
+		"MINOS_CLAUDE":                   fixture.claudeStub,
+		"MINOS_LEAD_MODEL":               "claude-opus-5",
+		"MINOS_GIT_AUTHOR_NAME":          "Minos",
+		"MINOS_GIT_AUTHOR_EMAIL":         "minos@example.invalid",
+		"MINOS_CLAUDE_CONFIG_SEED":       claudeSeed,
+		"MINOS_CODEX_CONFIG_SEED":        codexSeed,
+		"MINOS_LIFECYCLE_INSTRUCTION":    fixture.instructionPath,
+		"MINOS_REVIEW_WORKFLOW":          "/opt/minos/workflows/adjudicated-review",
+		"MINOS_ROOT_CAUSE_SKILL":         skillSource,
+		"MINOS_SETUP_WORKSPACE":          fixture.setupStub,
+		"MINOS_BIN":                      "/usr/local/bin/minos",
+		"MINOS_FAILURE_LOG":              fixture.failureLog,
+		"MINOS_TEST_WORKER_PROBE_SOURCE": workerProbeSource,
 	}
 	var config strings.Builder
 	for name, value := range runBodyEnv {
