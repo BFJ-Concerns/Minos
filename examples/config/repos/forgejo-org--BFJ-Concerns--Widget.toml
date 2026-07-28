@@ -4,7 +4,7 @@ repo = "Widget"
 
 [adaptation]
 build = "cargo build --workspace"
-test = "cargo test --workspace"
+test = "just verify"
 run-body = "/opt/minos/run-body/run-body"
 
 [policy]
