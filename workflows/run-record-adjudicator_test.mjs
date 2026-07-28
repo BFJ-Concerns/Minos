@@ -43,6 +43,7 @@ function fixtureArchive(t, {
     "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
   },
   duplicateRecords = [],
+  rawAgentRecords = [],
   manifests = 1,
   agentsDirectory = true,
 } = {}) {
@@ -52,13 +53,30 @@ function fixtureArchive(t, {
     const archive = join(recordDir, "runs", "cwd", `namespace-${run}`, `run-${run}`);
     mkdirSync(agentsDirectory ? join(archive, "agents") : archive, { recursive: true });
     writeFileSync(join(archive, "manifest.json"), JSON.stringify({ kind: "run_manifest", status: manifestStatus }));
-    [...Object.entries(records), ...duplicateRecords].forEach(([label, record], index) => {
+    const agentRecords = [
+      ...[...Object.entries(records), ...duplicateRecords]
+        .map(([label, record]) => JSON.stringify({ label, ...record })),
+      ...rawAgentRecords,
+    ];
+    agentRecords.forEach((record, index) => {
       const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
       mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, "agent.json"), JSON.stringify({ label, ...record }));
+      writeFileSync(join(directory, "agent.json"), record);
     });
   }
   return recordDir;
+}
+
+function assertWithheld(adapterVerdict, condition) {
+  assert.notEqual(adapterVerdict.status, "complete");
+  assert.ok(adapterVerdict.incomplete.length > 0);
+  if (typeof condition === "string")
+    assert.ok(adapterVerdict.incomplete.includes(condition), adapterVerdict.incomplete.join("\n"));
+  else
+    assert.match(adapterVerdict.incomplete.join("\n"), condition);
+  assert.deepEqual(adapterVerdict.confirmedFindings, []);
+  assert.equal(adapterVerdict.reviewBody, null);
+  assert.equal(adapterVerdict.fixRequired, false);
 }
 
 test("complete legs and a complete verifier result produce a complete adapter verdict", async (t) => {
@@ -178,8 +196,72 @@ for (const manifests of [0, 2]) {
   test(`${manifests} manifests fail closed`, async (t) => {
     const fixtureArchiveDir = fixtureArchive(t, { manifests });
     const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
-    assert.equal(adapterVerdict.status, "incomplete");
-    assert.match(adapterVerdict.incomplete[0], new RegExp(`contains ${manifests} manifests`));
+    assertWithheld(
+      adapterVerdict,
+      `run-record directory contains ${manifests} manifests; expected exactly one`,
+    );
+  });
+}
+
+for (const {
+  description,
+  archive = {},
+  caseEnvelope = envelope,
+  condition,
+} of [
+  {
+    description: "unreadable agent JSON",
+    archive: { rawAgentRecords: ["not-json"] },
+    condition: /^agent records are unreadable: .*not-json.*$/,
+  },
+  {
+    description: "an agent record without a readable label",
+    archive: { duplicateRecords: [["ignored", { label: "", status: "complete" }]] },
+    condition: "agent record 000004 has no readable label",
+  },
+  {
+    description: "a malformed required model-evidence leg",
+    caseEnvelope: {
+      ...envelope,
+      requiredModelEvidence: [{ label: "exploration" }, ...legs.slice(1)],
+    },
+    condition: "required model-evidence leg 1 is malformed",
+  },
+  {
+    description: "an array envelope",
+    caseEnvelope: [],
+    condition: "launcher returned an unreadable envelope",
+  },
+  {
+    description: "an absent reviewed identity",
+    caseEnvelope: { ...envelope, reviewed: undefined },
+    condition: "envelope reviewed identity is absent",
+  },
+  {
+    description: "an absent reviewed target",
+    caseEnvelope: { ...envelope, reviewed: { ...envelope.reviewed, target: "" } },
+    condition: "envelope reviewed target is absent or unreadable",
+  },
+  {
+    description: "an absent reviewed head",
+    caseEnvelope: { ...envelope, reviewed: { ...envelope.reviewed, head: "" } },
+    condition: "envelope reviewed head is absent or unreadable",
+  },
+  {
+    description: "an unreadable reviewed occasion",
+    caseEnvelope: { ...envelope, reviewed: { ...envelope.reviewed, occasion: 42 } },
+    condition: "envelope reviewed occasion is unreadable",
+  },
+  {
+    description: "an unknown stage",
+    caseEnvelope: { ...envelope, stage: "unknown" },
+    condition: "envelope stage is absent or unknown",
+  },
+]) {
+  test(`${description} cannot become publishable`, { timeout: 1000 }, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t, archive);
+    const adapterVerdict = await adjudicate({ envelope: caseEnvelope, recordDir: fixtureArchiveDir });
+    assertWithheld(adapterVerdict, condition);
   });
 }
 
