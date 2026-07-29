@@ -158,6 +158,15 @@ as proof that there is no work or wake still pending.
    watcher and fallback wake. When the task completion notification arrives,
    cancel the fallback with `ScheduleWakeup`'s `stop: true`.
 
+   If you believe `ScheduleWakeup` is unavailable to you, record that belief in
+   `$MINOS_FAILURE_LOG` and fall back to a `CronCreate` timer at the same
+   interval, cancelling it with `CronDelete`. Never respond to a tool you
+   think is missing by going silent: an unwatched wait is how a live run
+   reaches the silence backstop with work still in flight. The record matters
+   as much as the fallback — a lead that reports a tool missing has either met
+   a real harness fault worth fixing or misjudged its own capabilities, and
+   only the log line distinguishes them.
+
    Do not sleep for a guessed duration and do not trust the result file merely
    because it exists: redirection creates it immediately and it may be
    half-written. Only once the background process has exited is the result file
