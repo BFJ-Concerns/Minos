@@ -225,11 +225,7 @@ export function prepareFixWave(input) {
       round,
       fingerprint,
       dispatches: [],
-      sweepReview: findings.length > 0 ? {
-        verdict: "comment",
-        body: "Confirmed findings in the reviewed code.",
-        comments: findings.map(findingComment),
-      } : null,
+      sweepReview: null,
       fixReview: null,
       requestChangesReview: requestChanges.length > 0 ? {
         verdict: "request-changes",

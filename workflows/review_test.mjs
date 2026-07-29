@@ -288,10 +288,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   );
   assert.match(lifecycle, /publish-before-fix[\s\S]*fix-args\.json[\s\S]*HEAD TARGET/);
   assert.match(lifecycle, /starts the effectful `fix\.js`[\s\S]*only after[\s\S]*`outcome: "applied"`/);
-  assert.match(
-    lifecycle,
-    /publishes every complete sweep that contains confirmed findings[\s\S]*`terminal` preparation[\s\S]*dispatches nothing/,
-  );
+  assert.match(lifecycle, /Do not post the terminal sweep's sub-threshold[\s\S]*findings/);
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,
@@ -305,6 +302,10 @@ test("only an unchanged or verified tests-only finishing result may reach the me
   assert.match(
     finishing,
     /red-check path[\s\S]*label-only path/,
+  );
+  assert.match(
+    finishing,
+    /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Give the helper that file/,
   );
   assert.match(
     finishing,

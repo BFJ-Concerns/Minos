@@ -232,17 +232,15 @@ as proof that there is no work or wake still pending.
      > "$MINOS_RUN_DIR/fix-result.json"
    ```
 
-   This one production operation prepares an immutable wave without agents and
-   publishes every complete sweep that contains confirmed findings. A `working`
-   preparation starts the effectful `fix.js` dispatcher only after the guarded
-   forge command returns `outcome: "applied"`; a `terminal` preparation
-   publishes the same author-visible findings and dispatches nothing. An exact
+   This one production operation prepares an immutable wave without agents. A
+   `working` preparation materialises the exact sweep review, publishes it
+   through the guarded forge command, and starts the effectful `fix.js`
+   dispatcher only after the command returns `outcome: "applied"`. An exact
    pre-existing review is applied and may continue; every other publication
    result returns `incomplete` without starting the dispatcher. On an
    incomplete result, set `"$MINOS_BIN" forge status HEAD TARGET incomplete`,
    remove the 👀 with `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`,
-   write the non-clean terminal marker, and stop. A complete sweep with no
-   confirmed findings has no review payload and never publishes an all-clear.
+   write the non-clean terminal marker, and stop.
 
    The operation's returned `runRecord` is the run-scoped loop record, including
    the round count and confirmed-unfixed findings. Start with an absent record
@@ -281,8 +279,8 @@ as proof that there is no work or wake still pending.
    classification; do not substitute your own judgement for the threshold.
 6. A `terminal` classification means no finding at or above the threshold
    remains beyond entries already confirmed-unfixed, or the configured maximum
-   rounds has been reached. Its confirmed findings have already been published
-   by the operation above, but it dispatches no fix agents. Pass `overflow` to
+   rounds has been reached. Do not post the terminal sweep's sub-threshold
+   findings and do not dispatch fix agents for them. Pass `overflow` to
    `publish-overflow.mjs` with `$MINOS_ORIENTATION`: with an annexe it appends
    each finding once to `ISSUES.md`, commits and pushes the annexe; without an
    annexe it returns the one review body/comments payload that must be posted
@@ -414,6 +412,21 @@ as proof that there is no work or wake still pending.
    root-cause helper is required. Record which condition triggered it: a
    non-empty `failed_checks` array is the red-check path; only an empty
    `failed_checks` array with the exact label is the label-only path.
+
+   Before constructing the helper, retrieve the forge's check evidence for the
+   exact guarded head and target:
+
+   ```sh
+   "$MINOS_BIN" forge check-logs HEAD TARGET \
+     > "$MINOS_RUN_DIR/check-logs.json"
+   ```
+
+   Give the helper that file and direct it to start from the recorded job
+   statuses and logs, including any retry or flaky-test lines. The evidence is
+   diagnostic input, not proof of a cause: the helper must still reproduce and
+   prove its diagnosis. If the forge has no Actions-backed status URL, the
+   command returns an empty `runs` array; say so in the helper prompt rather
+   than inventing log evidence.
 
    Write `rootcause.js` as a bare Ensemble workflow that dispatches one agent
    with the vendored root-cause skill on `codex` / `gpt-5.6-sol`, using

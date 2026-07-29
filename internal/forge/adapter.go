@@ -43,6 +43,16 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	return snapshot, nil
 }
 
+// CheckLogs returns forge-provided job logs associated with check statuses on
+// the guarded pull-request head. The adaptation owns provider-specific URL and
+// Actions API handling; callers receive its evidence object unchanged.
+func (a *Adapter) CheckLogs(ctx context.Context, guard Guard) ([]byte, error) {
+	return a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-check-logs",
+		Arguments: a.guardArguments(guard),
+	})
+}
+
 func (a *Adapter) Claim(ctx context.Context, repository Repository, pullRequest int64) WriteResult {
 	out, err := a.runner.Run(ctx, RunRequest{
 		Operation: "claim",

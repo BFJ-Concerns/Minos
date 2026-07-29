@@ -1,0 +1,89 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+expected_head="$4"
+expected_target="$5"
+expected_login="$6"
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$expected_head" "$expected_target" "$expected_login"; then
+  :
+else
+  guard_code=$?
+  if [ "$guard_code" -eq 1 ]; then
+    # Set by guard_open_pull_request in the sourced adaptation library.
+    # shellcheck disable=SC2154
+    echo "guarded-check-logs: $guard_reason" >&2
+  else
+    echo "guarded-check-logs: forge state could not be read" >&2
+  fi
+  exit 1
+fi
+
+statuses="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${expected_head}/statuses?limit=50")"
+run_indexes="$(printf '%s' "$statuses" | jq -r '
+  [sort_by(.context, .id) | group_by(.context)[] | max_by(.id) |
+    .target_url // "" |
+    capture("/actions/runs/(?<run>[0-9]+)/jobs/[0-9]+")?.run //
+    empty] |
+  unique[]
+')"
+runs_json="$(api GET "/api/v1/repos/${owner}/${repo}/actions/runs?limit=50")"
+work_dir="$(mktemp -d)"
+trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
+evidence_file="$work_dir/evidence.json"
+printf '[]\n' >"$evidence_file"
+
+for run_index in $run_indexes; do
+  run_json="$(printf '%s' "$runs_json" | jq -c --argjson index "$run_index" '
+    ((.workflow_runs // .) | map(select(.index_in_repo == $index)) | first) // empty
+  ')"
+  [ -n "$run_json" ] || continue
+  run_id="$(printf '%s' "$run_json" | jq -r '.id')"
+  jobs_json="$(api GET "/api/v1/repos/${owner}/${repo}/actions/runs/${run_id}/jobs")"
+  jobs_file="$work_dir/jobs-${run_id}.json"
+  printf '[]\n' >"$jobs_file"
+  for job_id in $(printf '%s' "$jobs_json" | jq -r '(if type == "object" then .jobs else . end)[].id'); do
+    log_file="$work_dir/log-${job_id}.txt"
+    api GET "/api/v1/repos/${owner}/${repo}/actions/jobs/${job_id}/logs" >"$log_file"
+    job_json="$(printf '%s' "$jobs_json" | jq -c --argjson id "$job_id" '
+      (if type == "object" then .jobs else . end)[] | select(.id == $id)
+    ')"
+    next_jobs="$work_dir/jobs-${run_id}-next.json"
+    jq -n \
+      --slurpfile jobs "$jobs_file" \
+      --argjson job "$job_json" \
+      --rawfile log "$log_file" \
+      '$jobs[0] + [{
+        id: $job.id,
+        name: ($job.name // ""),
+        status: ($job.status // ""),
+        log: $log
+      }]' >"$next_jobs"
+    mv "$next_jobs" "$jobs_file"
+    rm -f "$log_file"
+  done
+  next_evidence="$work_dir/evidence-next.json"
+  jq -n \
+    --slurpfile evidence "$evidence_file" \
+    --argjson run "$run_json" \
+    --slurpfile jobs "$jobs_file" \
+    '$evidence[0] + [{
+      id: $run.id,
+      index: $run.index_in_repo,
+      status: ($run.status // ""),
+      title: ($run.title // ""),
+      jobs: $jobs[0]
+    }]' >"$next_evidence"
+  mv "$next_evidence" "$evidence_file"
+done
+
+jq -n \
+  --arg head "$expected_head" \
+  --arg target "$expected_target" \
+  --slurpfile runs "$evidence_file" \
+  '{head_sha:$head, target_sha:$target, runs:$runs[0]}'

@@ -74,15 +74,11 @@ export async function publishBeforeFix({
 }) {
   const plan = prepareFixWave(input);
   if (plan.fingerprint) onEvent(`fix-plan-created:${plan.fingerprint}`);
-  if (plan.status !== "complete") return plan;
-  if (!["working", "terminal"].includes(plan.classification))
+  if (plan.status !== "complete" || plan.classification === "terminal") return plan;
+  if (plan.classification !== "working")
     return publicationFailure(plan, `publication-before-fix refuses ${String(plan.classification)} preparation`);
   if (input.review.reviewed.head !== head || input.review.reviewed.target !== target)
     return publicationFailure(plan, "prepared wave does not match the requested head and target");
-  if (!plan.sweepReview) {
-    if (plan.classification === "terminal") return plan;
-    return publicationFailure(plan, "working preparation omitted its findings review");
-  }
 
   const operationDir = mkdtempSync(join(tmpdir(), "minos-publication-before-fix-"));
   try {
@@ -121,8 +117,6 @@ export async function publishBeforeFix({
       );
 
     onEvent(`forge-review-confirmed:${plan.fingerprint}`);
-    if (plan.classification === "terminal") return { ...plan, publication };
-
     let dispatchCwd = cwd;
     if (env.MINOS_RUN_DIR) {
       try {
