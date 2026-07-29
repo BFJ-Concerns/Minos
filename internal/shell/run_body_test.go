@@ -404,6 +404,26 @@ func TestRunBodyKeepsWaitingLeadsAlive(t *testing.T) {
 	}
 }
 
+func TestRunBodyRecordsBlockedLeadBeforeFirstRunActivity(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	output, err := fixture.execute(map[string]string{
+		"MINOS_TEST_NO_WORKER_PROBE": "1",
+		"MINOS_TEST_TERMINAL_STATE":  "blocked",
+	})
+	if err == nil {
+		t.Fatalf("run-body succeeded for a lead blocked before first activity\n%s", output)
+	}
+
+	assertFailureLine(
+		t,
+		fixture.failureLog,
+		"stage=lead-supervision",
+		"cause=Claude lead entered blocked state before producing run activity",
+	)
+	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	fixture.assertProcessesStopped(t)
+}
+
 func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 	for _, outcome := range []string{"clean", "non-clean"} {
 		t.Run(outcome, func(t *testing.T) {
@@ -461,15 +481,24 @@ func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 
 func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	fixture.run(t, map[string]string{
+	output, err := fixture.execute(map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":  "done",
 		"MINOS_LEAD_SILENCE_TIMEOUT": "0",
 		"MINOS_CLAUDE_POLL_SECONDS":  "0",
 	})
+	if err == nil {
+		t.Fatalf("run-body succeeded after the silence backstop stopped the lead\n%s", output)
+	}
 
 	assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
 	assertContainsFile(t, fixture.record+".attempts", "1")
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	assertFailureLine(
+		t,
+		fixture.failureLog,
+		"stage=lead-supervision",
+		"cause=Claude lead produced no run activity for 0 seconds (last state: done)",
+	)
 	fixture.assertProcessesStopped(t)
 }
 
@@ -513,13 +542,21 @@ func TestRunBodyRejectsOutOfRangeSilenceTimeout(t *testing.T) {
 
 func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	fixture.runWithin(t, 6*time.Second, map[string]string{
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	output, err := fixture.executeContext(ctx, map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":  "done",
 		"MINOS_TEST_WORK_WRITES":     "20",
 		"MINOS_TEST_WORK_INTERVAL":   "0.1",
 		"MINOS_LEAD_SILENCE_TIMEOUT": "1",
 		"MINOS_CLAUDE_POLL_SECONDS":  "0.25",
 	})
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("run-body did not finish within 6s\n%s", output)
+	}
+	if err == nil {
+		t.Fatalf("run-body succeeded after the silence backstop stopped the lead\n%s", output)
+	}
 
 	workData, err := os.ReadFile(filepath.Join(fixture.runDir, "workspace", "lead-work.log"))
 	if err != nil {
@@ -530,20 +567,30 @@ func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	}
 	assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	assertFailureLine(t, fixture.failureLog, "stage=lead-supervision")
 	fixture.assertProcessesStopped(t)
 }
 
 func TestRunBodyDoesNotTreatSupervisorPollingAsLeadActivity(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	fixture.runWithin(t, 4*time.Second, map[string]string{
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	output, err := fixture.executeContext(ctx, map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":   "done",
 		"MINOS_TEST_POLL_HOME_WRITES": "1",
 		"MINOS_LEAD_SILENCE_TIMEOUT":  "1",
 		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
 	})
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("run-body did not finish within 4s\n%s", output)
+	}
+	if err == nil {
+		t.Fatalf("run-body succeeded after the silence backstop stopped the lead\n%s", output)
+	}
 
 	assertContainsFile(t, filepath.Join(fixture.runDir, "home", ".claude", "daemon.status.json"), "poll")
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+	assertFailureLine(t, fixture.failureLog, "stage=lead-supervision")
 	fixture.assertProcessesStopped(t)
 }
 
@@ -766,12 +813,15 @@ case "$1" in
     cat >"$record.stdin"
     sleep 300 </dev/null >/dev/null 2>&1 &
     lead_pid=$!
-    (
-      minos-worker-probe
-      exec sleep 300
-    ) </dev/null >/dev/null 2>&1 &
-    task_pid=$!
-    printf '%s\n%s\n' "$lead_pid" "$task_pid" >"$record.pids"
+    printf '%s\n' "$lead_pid" >"$record.pids"
+    if [ "${MINOS_TEST_NO_WORKER_PROBE:-}" != "1" ]; then
+      (
+        minos-worker-probe
+        exec sleep 300
+      ) </dev/null >/dev/null 2>&1 &
+      task_pid=$!
+      printf '%s\n' "$task_pid" >>"$record.pids"
+    fi
     if [ "${MINOS_TEST_WORK_WRITES:-0}" -gt 0 ]; then
       (
         write=1

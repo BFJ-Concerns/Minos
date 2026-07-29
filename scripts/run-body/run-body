@@ -2,6 +2,7 @@
 set -eu
 
 prelaunch=true
+supervisor_failure=false
 failure_stage="configuration"
 failure_cause="run-body exited before loading its configuration"
 session_id=""
@@ -12,7 +13,7 @@ stop_session() {
   fi
 }
 
-append_prelaunch_failure() {
+append_failure() {
   [ -n "${MINOS_FAILURE_LOG:-}" ] || return 0
 
   failure_directory="$(dirname "$MINOS_FAILURE_LOG")"
@@ -30,8 +31,9 @@ on_exit() {
   status="$1"
   trap - 0
   set +e
-  if [ "$prelaunch" = true ] && [ "$status" -ne 0 ]; then
-    append_prelaunch_failure
+  if [ "$status" -ne 0 ] &&
+    { [ "$prelaunch" = true ] || [ "$supervisor_failure" = true ]; }; then
+    append_failure
   fi
   stop_session
   exit "$status"
@@ -193,6 +195,11 @@ elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
 fi
 failure_stage="lead-launch"
 failure_cause="Claude lead launch failed"
+last_activity_signature="$(
+  find "$MINOS_RUN_DIR" -path "$HOME" -prune -o -printf '%T@:%i:%s\n' 2>/dev/null |
+    LC_ALL=C sort -rn |
+    head -n 1
+)"
 launch_output="$("$MINOS_CLAUDE" \
   --bg \
   --name "$session_name" \
@@ -210,7 +217,7 @@ if [ -z "$session_id" ]; then
   exit 1
 fi
 prelaunch=false
-last_activity_signature=""
+lead_activity_seen=false
 last_activity_at="$(date +%s)"
 
 while :; do
@@ -223,19 +230,14 @@ while :; do
     ' 2>/dev/null)" || agent_state=""
   fi
 
-  # 1. Claude has reported an unrecoverable terminal state.
-  if [ "$agent_state" = "failed" ] || [ "$agent_state" = "stopped" ]; then
-    break
-  fi
-
-  # 2. The lead has declared that all terminal obligations are complete. The
+  # 1. The lead has declared that all terminal obligations are complete. The
   #    result is scratch; the forge and failure log carry the durable outcome.
   if [ -f "$completion_marker" ] &&
     grep -Eqx 'clean|non-clean' "$completion_marker" 2>/dev/null; then
     break
   fi
 
-  # 3. Work by the lead and its subprocesses changes the run tree outside the
+  # 2. Work by the lead and its subprocesses changes the run tree outside the
   #    isolated home. Exclude home because both this supervisor's roster poll
   #    and Claude's daemon can update config, job state, caches and updater
   #    downloads there without useful lead work.
@@ -247,11 +249,32 @@ while :; do
   if [ -n "$activity_signature" ] &&
     [ "$activity_signature" != "$last_activity_signature" ]; then
     last_activity_signature="$activity_signature"
+    lead_activity_seen=true
     last_activity_at="$(date +%s)"
   fi
+
+  # Claude also uses blocked for resumable waits after a turn, so it is not
+  # terminal once useful work has begun. Before the lead changes the run tree,
+  # however, blocked means the first turn cannot make progress and no lifecycle
+  # code exists yet to record or recover the failure.
+  if [ "$agent_state" = "blocked" ] && [ "$lead_activity_seen" = false ]; then
+    supervisor_failure=true
+    failure_stage="lead-supervision"
+    failure_cause="Claude lead entered blocked state before producing run activity"
+    exit 1
+  fi
+
+  # 3. Claude has reported an unrecoverable terminal state.
+  if [ "$agent_state" = "failed" ] || [ "$agent_state" = "stopped" ]; then
+    break
+  fi
+
   now="$(date +%s)"
   if [ $((now - last_activity_at)) -ge "$silence_timeout" ]; then
-    break
+    supervisor_failure=true
+    failure_stage="lead-supervision"
+    failure_cause="Claude lead produced no run activity for ${silence_timeout} seconds (last state: ${agent_state:-unknown})"
+    exit 1
   fi
   sleep "${MINOS_CLAUDE_POLL_SECONDS:-3}"
 done

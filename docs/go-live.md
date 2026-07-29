@@ -74,14 +74,17 @@ machine itself is the containment boundary.
    secret.
 
 Each run launches the `claude-opus-5` lead through `claude --bg`. `run-body`
-keeps resumable `done` and `blocked` turns alive; it stops the session only
+keeps resumable `done` and `blocked` turns alive after useful run activity has
+begun. A lead blocked before its first run-tree change is stopped and recorded
+as a supervision failure. The supervisor otherwise stops the session only
 after Claude reports `failed` or `stopped`, the lead writes its clean terminal
-marker, or the background-job timeline has produced no output for the silence
-timeout. The lead invokes review and repository-brief workflows through
-`/opt/minos/workflows/adjudicated-review`; the wrapper runs the selected script
-with `/opt/minos/runtime/ensemble.mjs` and asks the sibling run-record adapter to
-confirm every required leg ran to completion and every finding carries a
-verdict. Fix workflows
+marker, or the run tree outside its private home has not changed for the
+silence timeout. The silence backstop records a supervision failure instead of
+treating that stop as success. The lead invokes review and repository-brief
+workflows through `/opt/minos/workflows/adjudicated-review`; the wrapper runs
+the selected script with `/opt/minos/runtime/ensemble.mjs` and asks the sibling
+run-record adapter to confirm every required leg ran to completion and every
+finding carries a verdict. Fix workflows
 use the same launcher directly. The foreground run body waits for the exact
 background session and stops it at one of those terminal conditions. The
 transient systemd unit bounds a wedged run at 12 hours.
