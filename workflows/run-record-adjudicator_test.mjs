@@ -437,6 +437,43 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
   assert.match(adapterVerdict.incomplete.join("\n"), /proposed finding 1 is absent or malformed/);
 });
 
+for (const [description, findingField] of [
+  ["an unknown severity", { severity: "Wibble" }],
+  ["an out-of-range confidence", { confidence: 999 }],
+  ["an invalid line number", { line: -5 }],
+]) {
+  test(`a proposed finding with ${description} cannot become publishable`, { timeout: 1000 }, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t);
+    const malformedEnvelope = {
+      ...envelope,
+      proposedFindings: [{ ...envelope.proposedFindings[0], ...findingField }],
+    };
+    const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
+    assertWithheld(adapterVerdict, "proposed finding 1 is absent or malformed");
+  });
+}
+
+for (const [description, verifierField] of [
+  ["a non-integer confidence", { confidence: "lots" }],
+  ["a non-string reason", { reason: null }],
+]) {
+  test(`a verifier result with ${description} cannot become publishable`, { timeout: 1000 }, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t);
+    const malformedEnvelope = {
+      ...envelope,
+      proposedFindings: [{
+        ...envelope.proposedFindings[0],
+        rawVerifier: { ...envelope.proposedFindings[0].rawVerifier, ...verifierField },
+      }],
+    };
+    const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
+    assertWithheld(
+      adapterVerdict,
+      'finding "Distinct failure" has no complete verdict (verifier returned no valid result)',
+    );
+  });
+}
+
 for (const [description, briefDisposition, condition] of [
   [
     "run disposition with no title",
