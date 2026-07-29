@@ -35,6 +35,17 @@ const envelope = {
   reviewers: [],
 };
 
+const zeroLegEnvelope = {
+  reviewed: { target: "target-sha", head: "head-sha", occasion: null },
+  stage: "absent",
+  requiredModelEvidence: [],
+  proposedFindings: [],
+  briefs: [],
+  misconfigurations: [],
+  dispatches: [],
+  reviewers: [],
+};
+
 function fixtureArchive(t, {
   manifestStatus = "complete",
   records = {
@@ -73,10 +84,20 @@ function assertWithheld(adapterVerdict, condition) {
   if (typeof condition === "string")
     assert.ok(adapterVerdict.incomplete.includes(condition), adapterVerdict.incomplete.join("\n"));
   else
-    assert.match(adapterVerdict.incomplete.join("\n"), condition);
+    assert.ok(
+      adapterVerdict.incomplete.some((entry) => condition.test(entry)),
+      adapterVerdict.incomplete.join("\n"),
+    );
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
   assert.equal(adapterVerdict.reviewBody, null);
   assert.equal(adapterVerdict.fixRequired, false);
+}
+
+function missingRecordDirectory(t) {
+  const recordDir = mkdtempSync(join(tmpdir(), "minos-missing-adjudicator-fixture-"));
+  rmSync(recordDir, { recursive: true });
+  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
+  return recordDir;
 }
 
 test("complete legs and a complete verifier result produce a complete adapter verdict", async (t) => {
@@ -182,13 +203,13 @@ test("missing resolved_model does not withhold a complete verdict", async (t) =>
   assert.ok(adapterVerdict.modelEvidence.every((entry) => entry.resolvedModel === null));
 });
 
-for (const manifestStatus of ["failed", "timed-out"]) {
+for (const manifestStatus of ["failed", "timed-out", "interrupted"]) {
   test(`manifest ${manifestStatus} is an infrastructure failure`, async (t) => {
     const fixtureArchiveDir = fixtureArchive(t, { manifestStatus });
     const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
     assert.equal(adapterVerdict.status, "infrastructure-failure");
     assert.equal(adapterVerdict.infrastructureFailure.kind, manifestStatus);
-    assert.deepEqual(adapterVerdict.confirmedFindings, []);
+    assertWithheld(adapterVerdict, `ensemble run ended ${manifestStatus}`);
   });
 }
 
@@ -213,6 +234,17 @@ for (const {
     description: "unreadable agent JSON",
     archive: { rawAgentRecords: ["not-json"] },
     condition: /^agent records are unreadable: .*not-json.*$/,
+  },
+  {
+    description: "a zero-leg archive with unreadable agent JSON",
+    archive: { records: {}, rawAgentRecords: ["not-json"] },
+    caseEnvelope: zeroLegEnvelope,
+    condition: /^agent records are unreadable: .*not-json.*$/,
+  },
+  {
+    description: "a missing agents directory with required legs",
+    archive: { records: {}, agentsDirectory: false },
+    condition: /^agent records are unreadable: ENOENT: no such file or directory, scandir '.+\/agents'$/,
   },
   {
     description: "an agent record without a readable label",
@@ -257,6 +289,40 @@ for (const {
     caseEnvelope: { ...envelope, stage: "unknown" },
     condition: "envelope stage is absent or unknown",
   },
+  {
+    description: "a running manifest",
+    archive: { manifestStatus: "running" },
+    condition: "run manifest status is running; expected complete",
+  },
+  {
+    description: "a manifest without a readable status",
+    archive: { manifestStatus: null },
+    condition: "run manifest status is absent or unreadable",
+  },
+  ...[
+    "requiredModelEvidence",
+    "proposedFindings",
+    "briefs",
+    "dispatches",
+    "reviewers",
+  ].map((field) => ({
+    description: `an unreadable ${field} field`,
+    caseEnvelope: { ...envelope, [field]: null },
+    condition: `envelope ${field} is absent or unreadable`,
+  })),
+  {
+    description: "a not-run brief disposition",
+    caseEnvelope: {
+      ...envelope,
+      briefs: [{
+        brief: ".review/errors.md",
+        title: "Error handling",
+        status: "not-run",
+        reason: "specialist returned no result",
+      }],
+    },
+    condition: 'brief "Error handling" was not run (specialist returned no result)',
+  },
 ]) {
   test(`${description} cannot become publishable`, { timeout: 1000 }, async (t) => {
     const fixtureArchiveDir = fixtureArchive(t, archive);
@@ -264,6 +330,25 @@ for (const {
     assertWithheld(adapterVerdict, condition);
   });
 }
+
+for (const [description, recordDir] of [
+  ["a non-string record directory", null],
+  ["an empty record directory", ""],
+]) {
+  test(`${description} cannot become publishable`, { timeout: 1000 }, async () => {
+    const adapterVerdict = await adjudicate({ envelope, recordDir });
+    assertWithheld(adapterVerdict, "run-record directory is absent");
+  });
+}
+
+test("an unreadable record directory cannot become publishable", { timeout: 1000 }, async (t) => {
+  const recordDir = missingRecordDirectory(t);
+  const adapterVerdict = await adjudicate({ envelope, recordDir });
+  assertWithheld(
+    adapterVerdict,
+    /^run-record directory could not be read: ENOENT: no such file or directory, scandir '.+'$/,
+  );
+});
 
 test("a non-complete leg makes the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
@@ -428,17 +513,7 @@ for (const [description, misconfiguration] of [
 
 test("a zero-leg archive needs no agents directory", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, { records: {}, agentsDirectory: false });
-  const absentEnvelope = {
-    reviewed: { target: "target-sha", head: "head-sha", occasion: null },
-    stage: "absent",
-    requiredModelEvidence: [],
-    proposedFindings: [],
-    briefs: [],
-    misconfigurations: [],
-    dispatches: [],
-    reviewers: [],
-  };
-  const adapterVerdict = await adjudicate({ envelope: absentEnvelope, recordDir: fixtureArchiveDir });
+  const adapterVerdict = await adjudicate({ envelope: zeroLegEnvelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "complete");
   assert.deepEqual(adapterVerdict.modelEvidence, []);
 });
