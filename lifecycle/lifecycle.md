@@ -232,15 +232,17 @@ as proof that there is no work or wake still pending.
      > "$MINOS_RUN_DIR/fix-result.json"
    ```
 
-   This one production operation prepares an immutable wave without agents. A
-   `working` preparation materialises the exact sweep review, publishes it
-   through the guarded forge command, and starts the effectful `fix.js`
-   dispatcher only after the command returns `outcome: "applied"`. An exact
+   This one production operation prepares an immutable wave without agents and
+   publishes every complete sweep that contains confirmed findings. A `working`
+   preparation starts the effectful `fix.js` dispatcher only after the guarded
+   forge command returns `outcome: "applied"`; a `terminal` preparation
+   publishes the same author-visible findings and dispatches nothing. An exact
    pre-existing review is applied and may continue; every other publication
    result returns `incomplete` without starting the dispatcher. On an
    incomplete result, set `"$MINOS_BIN" forge status HEAD TARGET incomplete`,
    remove the 👀 with `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`,
-   write the non-clean terminal marker, and stop.
+   write the non-clean terminal marker, and stop. A complete sweep with no
+   confirmed findings has no review payload and never publishes an all-clear.
 
    The operation's returned `runRecord` is the run-scoped loop record, including
    the round count and confirmed-unfixed findings. Start with an absent record
@@ -279,8 +281,8 @@ as proof that there is no work or wake still pending.
    classification; do not substitute your own judgement for the threshold.
 6. A `terminal` classification means no finding at or above the threshold
    remains beyond entries already confirmed-unfixed, or the configured maximum
-   rounds has been reached. Do not post the terminal sweep's sub-threshold
-   findings and do not dispatch fix agents for them. Pass `overflow` to
+   rounds has been reached. Its confirmed findings have already been published
+   by the operation above, but it dispatches no fix agents. Pass `overflow` to
    `publish-overflow.mjs` with `$MINOS_ORIENTATION`: with an annexe it appends
    each finding once to `ISSUES.md`, commits and pushes the annexe; without an
    annexe it returns the one review body/comments payload that must be posted
@@ -416,24 +418,54 @@ as proof that there is no work or wake still pending.
    Write `rootcause.js` as a bare Ensemble workflow that dispatches one agent
    with the vendored root-cause skill on `codex` / `gpt-5.6-sol`, using
    `effort: "high"` and `isolation: "worktree"`. Give the agent a schema that
-   returns its diagnosis and a `commit` string. Direct it to read and follow
+   returns its diagnosis, a `commit` string and a concise code-only `writeUp`
+   explaining what it repaired. Direct it to read and follow
    `$MINOS_ROOT_CAUSE_SKILL/SKILL.md`, diagnose the supplied failure, fix only
    what it proves, commit a repair with the configured Minos identity, return
-   that commit, and never push. An empty `commit` means the isolated helper made
+   that commit and write-up, and never push. Keep this finishing investigation
+   proportionate to the named failing check or label: do not run broad unrelated
+   stress suites or large repetition campaigns once the cause is distinguished
+   and the exact repair is exercised. The lead owns the configured full build
+   and test after integration. An empty `commit` means the isolated helper made
    no mutation to integrate. Invoke the workflow through the bare Ensemble
-   launcher.
+   launcher and save its result as
+   `"$MINOS_RUN_DIR/rootcause-result.json"`.
 
-   When the helper returns a non-empty commit, write that one commit as a JSON
-   array and integrate it through `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
+   When the helper returns a non-empty commit, remember the current reviewed
+   head as `FINISHING_REVIEWED_HEAD`, write that one commit as a JSON array and
+   integrate it through `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
    "$MINOS_WORKSPACE" COMMITS_FILE`. Wait for the pushed head through the
-   snapshot watcher, then run the exact configured build and test commands on
-   the returned fresh head as for any fix. If those pass and the flake is fixed,
-   remove the exact label with `"$MINOS_BIN" forge label-remove FRESH_HEAD
-   FRESH_TARGET "Flaky Test"`; this guarded command reads the labels back and is
-   safe to repeat. Whether integration or verification passes or fails, a
-   helper-mutated head has not had a fresh whole review: set `incomplete`,
-   remove 👀, write the non-clean terminal marker, and stop.
-   Never continue a helper-mutated head to step 9 or merge it in this attempt.
+   snapshot watcher and use its exact head and target as `FRESH_HEAD` and
+   `FRESH_TARGET`. Remove the stale completion reaction with
+   `"$MINOS_BIN" forge reaction-remove FRESH_HEAD FRESH_TARGET +1`. Materialise
+   the helper's `writeUp` as a review body with an empty comments array and post
+   one `comment` review on `FRESH_HEAD`; this is a repair summary, separate from
+   the findings review.
+
+   Classify the exact integrated range before deciding whether another whole
+   review is needed:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/classify-finishing-change.mjs" \
+     "$MINOS_WORKSPACE" "$FINISHING_REVIEWED_HEAD" "$FRESH_HEAD" \
+     > "$MINOS_RUN_DIR/finishing-change.json"
+   ```
+
+   Then run the exact configured build and test commands on the fresh head as
+   for any fix. If those pass and the flake is fixed, remove the exact label
+   with `"$MINOS_BIN" forge label-remove FRESH_HEAD FRESH_TARGET "Flaky Test"`;
+   this guarded command reads the labels back and is safe to repeat.
+
+   A `tests-only` classification means every integrated path is a recognised
+   test path. This repair belongs to the final verification cycle and does not
+   invalidate the whole-code review: after the configured commands pass, add
+   the 👍 on `FRESH_HEAD` and continue to step 9 using that fresh head and
+   target. A `review-required` classification means production or unrecognised
+   paths changed: set `incomplete`, remove 👀, write the non-clean terminal
+   marker, and stop so a later run performs the fresh whole review. An `empty`
+   or unreadable classification is an incomplete integration result and stops
+   the same way. Any failed integration, publication, build or test also stops
+   incomplete; never carry a failing repair to merge.
 
    When the helper returns no commit and no pushed head appears, it has made no
    mutation. On the red-check path, leave the label when present, set

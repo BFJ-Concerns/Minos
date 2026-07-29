@@ -114,12 +114,12 @@ test("a High plus two Lows is working, posts all findings, and dispatches all fi
   assert.equal("fallbackModel" in calls[0].options, false);
 });
 
-test("a sweep containing only Lows is terminal and dispatches or posts nothing", async () => {
+test("a sweep containing only Lows is terminal, publishes its findings, and dispatches nothing", async () => {
   const findings = [finding("wording", "Low", "a.go", 4), finding("small edge", "Low", "b.go", 7)];
   const { result, calls } = await run(args(findings));
   assert.equal(result.classification, "terminal");
   assert.equal(result.terminalReason, "below-threshold");
-  assert.equal(result.sweepReview, null);
+  assert.equal(result.sweepReview.comments.length, 2);
   assert.equal(result.dispatches.length, 0);
   assert.equal(result.overflow.length, 2);
   assert.equal(calls.length, 0);

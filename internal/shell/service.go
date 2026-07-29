@@ -45,6 +45,25 @@ func currentReview(snapshot forge.Snapshot, botLogin string) (forge.Review, bool
 	return latest, found
 }
 
+func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
+	var latest forge.Status
+	found := false
+	for _, status := range snapshot.Statuses {
+		if status.Provider == forge.ForgejoProvider &&
+			status.Context == forge.OwnedStatusContext &&
+			status.Creator == botLogin &&
+			(!found || status.ID > latest.ID) {
+			latest = status
+			found = true
+		}
+	}
+	if found && (latest.Description == product.Incomplete().Description() ||
+		latest.Description == product.Working().Description()) {
+		return 0
+	}
+	return 1
+}
+
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (string, error) {
 	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
 	if err != nil {

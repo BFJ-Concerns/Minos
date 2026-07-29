@@ -4,7 +4,14 @@ import (
 	"context"
 	"flag"
 	"log"
+	"sort"
 )
+
+type sweepCandidate struct {
+	repo     RepoConfig
+	facts    Facts
+	priority int
+}
 
 func SweepCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
@@ -20,6 +27,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	var candidates []sweepCandidate
 	for _, repo := range repos {
 		forgeConfig, ok := cfg.Forges[repo.Forge]
 		if !ok {
@@ -35,14 +43,26 @@ func SweepCommand(ctx context.Context, args []string) error {
 			return err
 		}
 		for _, facts := range pullRequests {
-			result, err := reconcilePullRequest(ctx, cfg, repo, facts)
-			if err != nil {
-				log.Printf("%s#%s: %v", facts.RepoSlug(), facts.PR, err)
-				continue
+			priority := 1
+			if snapshot, err := currentSnapshot(ctx, cfg, facts); err != nil {
+				log.Printf("%s#%s: inspect continuation priority: %v", facts.RepoSlug(), facts.PR, err)
+			} else {
+				priority = continuationPriority(snapshot, cfg.Service.BotLogin)
 			}
-			if result == "started" {
-				log.Printf("started %s#%s", facts.RepoSlug(), facts.PR)
-			}
+			candidates = append(candidates, sweepCandidate{repo: repo, facts: facts, priority: priority})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].priority < candidates[j].priority
+	})
+	for _, candidate := range candidates {
+		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
+		if err != nil {
+			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
+			continue
+		}
+		if result == "started" {
+			log.Printf("started %s#%s", candidate.facts.RepoSlug(), candidate.facts.PR)
 		}
 	}
 	return nil

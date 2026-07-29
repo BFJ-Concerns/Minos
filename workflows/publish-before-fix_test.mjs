@@ -340,6 +340,26 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
+  await t.test("terminal sub-threshold findings reach the pull request without a fix dispatch", async () => {
+    const preparedInput = input([finding({ severity: "Medium" })]);
+    const fixture = await forgeFixture();
+    try {
+      const { result, events, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      assert.equal(result.status, "complete");
+      assert.equal(result.classification, "terminal");
+      assert.equal(result.terminalReason, "below-threshold");
+      assert.equal(result.publication.outcome, "applied");
+      assert.equal(fixture.state.postCount, 1);
+      assert.ok(fixture.state.commentReadCount > 0, "guarded adaptation read comments back");
+      assert.match(fixture.state.comments.get(1)[0].body, new RegExp(SENTINEL));
+      assert.equal(events.filter((event) => event.startsWith("forge-review-confirmed:")).length, 1);
+      assert.equal(events.filter((event) => event.startsWith("fix-dispatch-started:")).length, 0);
+      assert.deepEqual(prompts, []);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   await t.test("an outside-hunk confirmed finding reaches a durable fallback before dispatch", async () => {
     const sourceLine = 7423;
     const preparedInput = input([finding({
@@ -623,12 +643,12 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     assert.equal(events.filter((event) => event.startsWith("fix-dispatch-started:")).length, 0);
   });
 
-  await t.test("terminal preparation refuses publication and dispatch", async () => {
+  await t.test("a terminal sweep without findings publishes no all-clear and dispatches nothing", async () => {
     const events = [];
     let forgeCalls = 0;
     let dispatchCalls = 0;
     const result = await publishBeforeFix({
-      input: input([finding({ severity: "Low" })]),
+      input: input([]),
       head: HEAD,
       target: TARGET,
       minosBin,
