@@ -422,13 +422,9 @@ as proof that there is no work or wake still pending.
    explaining what it repaired. Direct it to read and follow
    `$MINOS_ROOT_CAUSE_SKILL/SKILL.md`, diagnose the supplied failure, fix only
    what it proves, commit a repair with the configured Minos identity, return
-   that commit and write-up, and never push. Keep this finishing investigation
-   proportionate to the named failing check or label: do not run broad unrelated
-   stress suites or large repetition campaigns once the cause is distinguished
-   and the exact repair is exercised. The lead owns the configured full build
-   and test after integration. An empty `commit` means the isolated helper made
-   no mutation to integrate. Invoke the workflow through the bare Ensemble
-   launcher and save its result as
+   that commit and write-up, and never push. An empty `commit` means the isolated
+   helper made no mutation to integrate. Invoke the workflow through the bare
+   Ensemble launcher and save its result as
    `"$MINOS_RUN_DIR/rootcause-result.json"`.
 
    When the helper returns a non-empty commit, remember the current reviewed
