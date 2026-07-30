@@ -45,6 +45,25 @@ func currentReview(snapshot forge.Snapshot, botLogin string) (forge.Review, bool
 	return latest, found
 }
 
+func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
+	var latest forge.Status
+	found := false
+	for _, status := range snapshot.Statuses {
+		if status.Provider == forge.ForgejoProvider &&
+			status.Context == forge.OwnedStatusContext &&
+			status.Creator == botLogin &&
+			(!found || status.ID > latest.ID) {
+			latest = status
+			found = true
+		}
+	}
+	if found && (latest.Description == product.Incomplete().Description() ||
+		latest.Description == product.Working().Description()) {
+		return 0
+	}
+	return 1
+}
+
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (string, error) {
 	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
 	if err != nil {
@@ -59,21 +78,23 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	facts.HeadRef = snapshot.HeadBranch
 	if review, reviewed := currentReview(snapshot, cfg.Service.BotLogin); reviewed {
 		state, terminal := terminalState(review)
-		if !terminal || hasTerminalStatus(snapshot, cfg, facts, state) {
-			return "nothing", nil
-		}
-		pr, _ := strconv.ParseInt(facts.PR, 10, 64)
-		result := adapter.SetProductStatus(ctx, forge.Guard{
-			Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
-			PullRequest: pr, HeadSHA: facts.HeadSHA, TargetSHA: facts.BaseSHA,
-		}, state)
-		switch result.Outcome {
-		case forge.WriteApplied:
-			return "recovered", nil
-		case forge.WriteRejected:
-			return "nothing", nil
-		default:
-			return "", fmt.Errorf("restore terminal Minos status: %s", result.Reason)
+		if terminal {
+			if hasTerminalStatus(snapshot, cfg, facts, state) {
+				return "nothing", nil
+			}
+			pr, _ := strconv.ParseInt(facts.PR, 10, 64)
+			result := adapter.SetProductStatus(ctx, forge.Guard{
+				Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+				PullRequest: pr, HeadSHA: facts.HeadSHA, TargetSHA: facts.BaseSHA,
+			}, state)
+			switch result.Outcome {
+			case forge.WriteApplied:
+				return "recovered", nil
+			case forge.WriteRejected:
+				return "nothing", nil
+			default:
+				return "", fmt.Errorf("restore terminal Minos status: %s", result.Reason)
+			}
 		}
 	}
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)

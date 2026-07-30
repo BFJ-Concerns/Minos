@@ -118,6 +118,45 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("incomplete pull request with a comment review starts a fresh attempt", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "COMMENT", "commit_id": state.headSHA(),
+			"body": "Implemented repairs for confirmed findings.",
+			"user": map[string]any{"login": "Minos"},
+		}})
+		state.setStatuses([]map[string]any{{
+			"id": 7, "context": "Minos", "status": "error", "description": "Review incomplete",
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+			"creator":    map[string]any{"login": "Minos"},
+		}})
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		var started bool
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			switch name {
+			case "systemctl":
+				return nil, nil
+			case "systemd-run":
+				started = true
+				return nil, nil
+			default:
+				t.Fatalf("unexpected command %q", name)
+				return nil, nil
+			}
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "started" || !started {
+			t.Fatalf("result = %q, started = %t; want a fresh attempt", result, started)
+		}
+	})
+
 	t.Run("virtual pull ref starts branchless", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.changePullRequest(func(pullRequest map[string]any) {
@@ -354,6 +393,65 @@ func TestSnapshotCarriesSortedLabelsAndForgeTargetSyncMethod(t *testing.T) {
 	}
 	if snapshot.TargetSyncMethod != "rebase" {
 		t.Fatalf("target sync method = %q, want forge-configured rebase", snapshot.TargetSyncMethod)
+	}
+}
+
+func TestForgeCheckLogsReturnsOnlyLatestStatusRunEvidence(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.statuses = []map[string]any{
+		{
+			"id": float64(1), "context": "CI / test", "status": "success",
+			"target_url": "/minos-e2e-owner/subject/actions/runs/41/jobs/0",
+		},
+		{
+			"id": float64(2), "context": "CI / test", "status": "success",
+			"target_url": "/minos-e2e-owner/subject/actions/runs/42/jobs/0",
+		},
+	}
+	state.actionRuns = []map[string]any{
+		{"id": float64(141), "index_in_repo": float64(41), "status": "success", "title": "old"},
+		{"id": float64(142), "index_in_repo": float64(42), "status": "success", "title": "current"},
+	}
+	state.actionJobs[141] = []map[string]any{{"id": float64(241), "name": "test", "status": "success"}}
+	state.actionJobs[142] = []map[string]any{{"id": float64(242), "name": "test", "status": "success"}}
+	state.actionLogs[241] = "FLAKY old_test\n"
+	state.actionLogs[242] = "Summary 2 passed (1 flaky)\nFLAKY current_test\n"
+
+	cfg, _, facts := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
+
+	var stdout bytes.Buffer
+	if err := ForgeCommand(
+		t.Context(),
+		[]string{"check-logs", state.headSHA(), state.targetSHA()},
+		&stdout,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var evidence struct {
+		HeadSHA string `json:"head_sha"`
+		Runs    []struct {
+			Index int64 `json:"index"`
+			Jobs  []struct {
+				Log string `json:"log"`
+			} `json:"jobs"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.HeadSHA != state.headSHA() || len(evidence.Runs) != 1 || evidence.Runs[0].Index != 42 {
+		t.Fatalf("evidence identity = %#v", evidence)
+	}
+	if len(evidence.Runs[0].Jobs) != 1 ||
+		!strings.Contains(evidence.Runs[0].Jobs[0].Log, "FLAKY current_test") ||
+		strings.Contains(evidence.Runs[0].Jobs[0].Log, "old_test") {
+		t.Fatalf("evidence jobs = %#v", evidence.Runs[0].Jobs)
 	}
 }
 
@@ -835,6 +933,9 @@ type forgejoFixtureState struct {
 	repository     map[string]any
 	reviews        []map[string]any
 	statuses       []map[string]any
+	actionRuns     []map[string]any
+	actionJobs     map[int64][]map[string]any
+	actionLogs     map[int64]string
 	server         *httptest.Server
 	tokenPath      string
 	adaptationPath string
@@ -888,6 +989,7 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 		t: t, pullRequest: event.PullRequest, repository: event.Repository,
 		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any),
 		diffNewSide: make(map[string][][2]int64), positionRewrites: make(map[string]map[int64]int64),
+		actionJobs: make(map[int64][]map[string]any), actionLogs: make(map[int64]string),
 		sourceBranchExists: true,
 	}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
@@ -1083,6 +1185,25 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		commit := strings.TrimSuffix(strings.SplitN(path, "/commits/", 2)[1], "/statuses")
 		s.statusReadCommits = append(s.statusReadCommits, commit)
 		writeFixtureJSON(s.t, w, s.statuses)
+	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/actions/runs":
+		writeFixtureJSON(s.t, w, map[string]any{"workflow_runs": s.actionRuns})
+	case r.Method == http.MethodGet && strings.Contains(path, "/actions/runs/") && strings.HasSuffix(path, "/jobs"):
+		idText := strings.TrimSuffix(strings.SplitN(path, "/actions/runs/", 2)[1], "/jobs")
+		id, err := strconv.ParseInt(idText, 10, 64)
+		if err != nil {
+			http.Error(w, "bad run id", http.StatusBadRequest)
+			return
+		}
+		writeFixtureJSON(s.t, w, s.actionJobs[id])
+	case r.Method == http.MethodGet && strings.Contains(path, "/actions/jobs/") && strings.HasSuffix(path, "/logs"):
+		idText := strings.TrimSuffix(strings.SplitN(path, "/actions/jobs/", 2)[1], "/logs")
+		id, err := strconv.ParseInt(idText, 10, 64)
+		if err != nil {
+			http.Error(w, "bad job id", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(s.actionLogs[id]))
 	case r.Method == http.MethodPost && strings.Contains(path, "/statuses/"):
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

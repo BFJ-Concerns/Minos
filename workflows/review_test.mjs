@@ -288,6 +288,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   );
   assert.match(lifecycle, /publish-before-fix[\s\S]*fix-args\.json[\s\S]*HEAD TARGET/);
   assert.match(lifecycle, /starts the effectful `fix\.js`[\s\S]*only after[\s\S]*`outcome: "applied"`/);
+  assert.match(lifecycle, /Do not post the terminal sweep's sub-threshold[\s\S]*findings/);
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,
@@ -296,7 +297,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
 });
 
-test("only an unchanged label-only helper failure may reach the merge path", () => {
+test("only an unchanged or verified tests-only finishing result may reach the merge path", () => {
   const finishing = lifecycle.slice(lifecycle.indexOf("8. Enter finishing"), lifecycle.indexOf("9. If"));
   assert.match(
     finishing,
@@ -304,7 +305,23 @@ test("only an unchanged label-only helper failure may reach the merge path", () 
   );
   assert.match(
     finishing,
-    /helper-mutated head has not had a fresh whole review[\s\S]*set `incomplete`[\s\S]*Never continue a helper-mutated head to step 9 or merge/,
+    /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Give the helper that file/,
+  );
+  assert.match(
+    finishing,
+    /classify-finishing-change\.mjs[\s\S]*`tests-only` classification[\s\S]*continue to step 9/,
+  );
+  assert.match(
+    finishing,
+    /`review-required` classification[\s\S]*set `incomplete`[\s\S]*fresh whole review/,
+  );
+  assert.match(
+    finishing,
+    /`writeUp`[\s\S]*rootcause-result\.json/,
+  );
+  assert.match(
+    finishing,
+    /helper's `writeUp`[\s\S]*post[\s\S]*one `comment` review/,
   );
   assert.match(
     finishing,

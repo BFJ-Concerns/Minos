@@ -117,7 +117,6 @@ export async function publishBeforeFix({
       );
 
     onEvent(`forge-review-confirmed:${plan.fingerprint}`);
-
     let dispatchCwd = cwd;
     if (env.MINOS_RUN_DIR) {
       try {
