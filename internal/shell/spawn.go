@@ -66,6 +66,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
 	}
+	if adopted {
+		for _, stale := range []string{"lead-complete", "memory-pressure"} {
+			if err := os.Remove(filepath.Join(runDir, stale)); err != nil && !os.IsNotExist(err) {
+				return "", fmt.Errorf("clear predecessor %s before continuation: %w", stale, err)
+			}
+		}
+	}
 	if !adopted {
 		runDir, err = os.MkdirTemp(cfg.Runs.Dir, unit+"-")
 		if err != nil {
