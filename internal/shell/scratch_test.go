@@ -257,6 +257,7 @@ func TestFailureDigestUsesExplicitBoundedEvidenceSources(t *testing.T) {
 			strings.Repeat(fmt.Sprintf("transcript-%02d ", index), 6000),
 		)
 	}
+	writeTestFile(t, filepath.Join(runDir, "ensemble-records", "review", "run.json"), "ENSEMBLE-VERDICT: incomplete\n")
 	failuresPath := filepath.Join(cfg.Runs.FailuresRepo, "FAILURES.md")
 	before, err := os.Stat(failuresPath)
 	if err != nil {
@@ -279,10 +280,68 @@ func TestFailureDigestUsesExplicitBoundedEvidenceSources(t *testing.T) {
 			t.Fatalf("digest contains unrelated evidence %q", forbidden)
 		}
 	}
-	for _, want := range []string{"run-local report", "transcript-00", "Digest truncated at 256 KiB"} {
+	for _, want := range []string{"run-local report", "transcript-00", "ENSEMBLE-VERDICT", "Digest truncated at 256 KiB"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("digest omits %q", want)
 		}
+	}
+}
+
+func TestPublishFailureDigestTimesOutAndRetainsLocalCommit(t *testing.T) {
+	originalTimeout := failurePublishTimeout
+	t.Cleanup(func() { failurePublishTimeout = originalTimeout })
+	failurePublishTimeout = 50 * time.Millisecond
+
+	root := t.TempDir()
+	checkout := filepath.Join(root, "Minos-Annexe")
+	runScratchGit(t, root, "init", "-b", "main", checkout)
+	configureTestGit(t, checkout)
+	writeTestFile(t, filepath.Join(checkout, "FAILURES.md"), "# Failures\n")
+	runScratchGit(t, checkout, "add", "FAILURES.md")
+	runScratchGit(t, checkout, "commit", "-m", "seed failures")
+	file, err := os.OpenFile(filepath.Join(checkout, "FAILURES.md"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("\n## salvaged run\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(bin, "git"), fmt.Sprintf(`#!/usr/bin/env sh
+if [ "$3" = "fetch" ]; then
+  sleep 2
+  exit 1
+fi
+exec %q "$@"
+`, realGit))
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	credential := filepath.Join(root, "forgejo.token")
+	writeTestFile(t, credential, "fixture-token\n")
+	var cfg ServiceConfig
+	cfg.Runs.FailuresRepo = checkout
+	cfg.Runs.FailuresCredentialFile = credential
+
+	started := time.Now()
+	if err := publishFailureDigest(t.Context(), cfg); err == nil {
+		t.Fatal("publish succeeded despite hung fetch")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("publish stopped after %s, want within one second", elapsed)
+	}
+	message := strings.TrimSpace(runScratchGitOutput(t, checkout, "log", "-1", "--pretty=%s"))
+	if message != "docs: record salvaged Minos run failure" {
+		t.Fatalf("local salvage commit = %q, want retained commit", message)
 	}
 }
 
@@ -487,11 +546,18 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 
 func runScratchGit(t *testing.T, directory string, arguments ...string) {
 	t.Helper()
+	_ = runScratchGitOutput(t, directory, arguments...)
+}
+
+func runScratchGitOutput(t *testing.T, directory string, arguments ...string) string {
+	t.Helper()
 	cmd := exec.Command("git", arguments...)
 	cmd.Dir = directory
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(arguments, " "), err, output)
 	}
+	return string(output)
 }
 
 func configureTestGit(t *testing.T, directory string) {

@@ -21,11 +21,17 @@ import (
 const salvageTailBytes = 64 * 1024
 
 const (
-	salvageDigestBytes = 256 * 1024
-	archiveRunTimeout  = 30 * time.Minute
+	salvageDigestBytes     = 256 * 1024
+	salvageMetadataBytes   = 4 * 1024
+	salvageFailureLogBytes = 32 * 1024
+	salvageEnsembleBytes   = 64 * 1024
+	salvageRunReportBytes  = 32 * 1024
+	salvageTranscriptBytes = salvageDigestBytes - salvageMetadataBytes - salvageFailureLogBytes - salvageEnsembleBytes - salvageRunReportBytes
+	archiveRunTimeout      = 30 * time.Minute
 )
 
 var walkEvidenceRoot = filepath.WalkDir
+var failurePublishTimeout = 5 * time.Minute
 
 func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[string]Facts) error {
 	if cfg.Runs.ArchiveCommand == "" {
@@ -229,19 +235,33 @@ func buildFailureDigest(runDir string) ([]byte, bool, error) {
 	if len(paths) == 0 && len(skipped) == 0 {
 		return nil, false, nil
 	}
-	var digest bytes.Buffer
-	appendDigestText(&digest, fmt.Sprintf("\n## %s — %s\n\n", time.Now().UTC().Format(time.RFC3339), filepath.Base(runDir)))
+	var metadata bytes.Buffer
+	appendBudgetedDigestText(&metadata, fmt.Sprintf("\n## %s — %s\n\n", time.Now().UTC().Format(time.RFC3339), filepath.Base(runDir)), salvageMetadataBytes, "metadata")
 	sort.Strings(skipped)
 	for _, note := range skipped {
-		if !appendDigestText(&digest, fmt.Sprintf("- Evidence skipped: `%s`\n", note)) {
-			return digest.Bytes(), true, nil
+		if !appendBudgetedDigestText(&metadata, fmt.Sprintf("- Evidence skipped: `%s`\n", note), salvageMetadataBytes, "metadata") {
+			break
 		}
 	}
 	if len(skipped) > 0 {
-		if !appendDigestText(&digest, "\n") {
-			return digest.Bytes(), true, nil
-		}
+		appendBudgetedDigestText(&metadata, "\n", salvageMetadataBytes, "metadata")
 	}
+	type sourceDigest struct {
+		name   string
+		budget int
+		data   bytes.Buffer
+	}
+	sources := []*sourceDigest{
+		{name: "failure-log", budget: salvageFailureLogBytes},
+		{name: "ensemble", budget: salvageEnsembleBytes},
+		{name: "run-report", budget: salvageRunReportBytes},
+		{name: "transcript", budget: salvageTranscriptBytes},
+	}
+	sourceByName := make(map[string]*sourceDigest, len(sources))
+	for _, source := range sources {
+		sourceByName[source.name] = source
+	}
+	sort.Strings(paths)
 	for _, path := range paths {
 		data, err := readTail(path, salvageTailBytes)
 		rel, relErr := filepath.Rel(runDir, path)
@@ -249,13 +269,12 @@ func buildFailureDigest(runDir string) ([]byte, bool, error) {
 			rel = path
 		}
 		rel = filepath.ToSlash(rel)
+		source := sourceByName[evidenceSource(rel)]
 		if err != nil {
 			if !errors.Is(err, fs.ErrPermission) {
 				return nil, false, fmt.Errorf("read salvage evidence %s: %w", rel, err)
 			}
-			if !appendDigestText(&digest, fmt.Sprintf("- Evidence skipped: `%s` (%v)\n", rel, err)) {
-				return digest.Bytes(), true, nil
-			}
+			appendBudgetedDigestText(&source.data, fmt.Sprintf("- Evidence skipped: `%s` (%v)\n", rel, err), source.budget, source.name)
 			continue
 		}
 		var section strings.Builder
@@ -264,16 +283,32 @@ func buildFailureDigest(runDir string) ([]byte, bool, error) {
 			fmt.Fprintf(&section, "    %s\n", line)
 		}
 		section.WriteString("\n")
-		if !appendDigestText(&digest, section.String()) {
-			return digest.Bytes(), true, nil
-		}
+		appendBudgetedDigestText(&source.data, section.String(), source.budget, source.name)
+	}
+	var digest bytes.Buffer
+	digest.Write(metadata.Bytes())
+	for _, source := range sources {
+		digest.Write(source.data.Bytes())
 	}
 	return digest.Bytes(), true, nil
 }
 
-func appendDigestText(digest *bytes.Buffer, text string) bool {
-	const truncated = "\n[Digest truncated at 256 KiB.]\n"
-	remaining := salvageDigestBytes - digest.Len()
+func evidenceSource(rel string) string {
+	switch {
+	case rel == "failure.log" || rel == "failures.log":
+		return "failure-log"
+	case strings.HasPrefix(rel, "ensemble-records/"):
+		return "ensemble"
+	case rel == "run-report.md" || rel == "report.md":
+		return "run-report"
+	default:
+		return "transcript"
+	}
+}
+
+func appendBudgetedDigestText(digest *bytes.Buffer, text string, budget int, source string) bool {
+	truncated := fmt.Sprintf("\n[Digest truncated at 256 KiB. Additional %s evidence omitted.]\n", source)
+	remaining := budget - digest.Len()
 	if len(text) <= remaining {
 		digest.WriteString(text)
 		return true
@@ -282,8 +317,8 @@ func appendDigestText(digest *bytes.Buffer, text string) bool {
 	if contentBytes > 0 {
 		digest.WriteString(text[:contentBytes])
 	}
-	if digest.Len() < salvageDigestBytes {
-		digest.WriteString(truncated[:min(len(truncated), salvageDigestBytes-digest.Len())])
+	if digest.Len() < budget {
+		digest.WriteString(truncated[:min(len(truncated), budget-digest.Len())])
 	}
 	return false
 }
@@ -375,15 +410,7 @@ func archiveRunEvidence(ctx context.Context, command, runDir, label string) erro
 	}
 	archiveCtx, cancel := context.WithTimeout(ctx, archiveRunTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(archiveCtx, command, runDir, label)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return nil
-		}
-		return err
-	}
+	cmd := processGroupCommandContext(archiveCtx, command, runDir, label)
 	cmd.Env = os.Environ()
 	cmd.Stdout = io.Discard
 	var stderr bytes.Buffer
@@ -402,6 +429,19 @@ func archiveRunEvidence(ctx context.Context, command, runDir, label string) erro
 	return nil
 }
 
+func processGroupCommandContext(ctx context.Context, name string, arguments ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, arguments...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	return cmd
+}
+
 func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 	if cfg.Runs.FailuresRepo == "" || cfg.Runs.FailuresCredentialFile == "" {
 		return fmt.Errorf("Minos annexe push is not fully configured; durable local append retained")
@@ -414,6 +454,8 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 	if token == "" {
 		return fmt.Errorf("Minos annexe credential is empty")
 	}
+	publishCtx, cancel := context.WithTimeout(ctx, failurePublishTimeout)
+	defer cancel()
 	env := append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_COUNT=1",
@@ -428,11 +470,11 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 		{"push", "origin", "HEAD:main"},
 	}
 	for _, arguments := range commands {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", cfg.Runs.FailuresRepo}, arguments...)...)
+		cmd := processGroupCommandContext(publishCtx, "git", append([]string{"-C", cfg.Runs.FailuresRepo}, arguments...)...)
 		cmd.Env = env
 		if out, err := cmd.CombinedOutput(); err != nil {
 			if arguments[0] == "rebase" {
-				abort := exec.CommandContext(ctx, "git", "-C", cfg.Runs.FailuresRepo, "rebase", "--abort")
+				abort := processGroupCommandContext(publishCtx, "git", "-C", cfg.Runs.FailuresRepo, "rebase", "--abort")
 				abort.Env = env
 				if abortOut, abortErr := abort.CombinedOutput(); abortErr != nil {
 					return fmt.Errorf("git rebase: %w: %s; preserve local commit but rebase abort failed: %v: %s",
