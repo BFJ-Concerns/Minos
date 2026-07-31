@@ -24,6 +24,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	codexConfigDir := filepath.Join(homeDir, ".codex")
 	projectsDir := filepath.Join(homeDir, ".claude", "projects")
 	stateDir := filepath.Join(fixture.runDir, "state")
+	cacheDir := filepath.Join(fixture.runDir, "cache")
 	info, err := os.Stat(configDir)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +65,22 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	assertContainsFile(t, filepath.Join(stateDir, "worker-state"), "worker wrote state")
 	assertContainsFile(t, fixture.record+".worker-tool", filepath.Join(homeDir, ".local", "bin", "minos-worker-probe"))
 	assertContainsFile(t, fixture.record+".worker-env", "XDG_STATE_HOME="+stateDir)
+	for name, path := range map[string]string{
+		"MINOS_SHARED_CACHE_DIR": cacheDir,
+		"SCCACHE_DIR":            filepath.Join(cacheDir, "rust", "sccache"),
+		"GOCACHE":                filepath.Join(cacheDir, "go", "build"),
+		"GOMODCACHE":             filepath.Join(cacheDir, "go", "modules"),
+		"npm_config_cache":       filepath.Join(cacheDir, "node", "npm"),
+	} {
+		assertContainsFile(t, fixture.record+".worker-env", name+"="+path)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("shared cache directory %s mode = %s, want directory 700", path, info.Mode())
+		}
+	}
 	assertContainsFile(
 		t,
 		fixture.record+".worker-env",
@@ -299,7 +316,7 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 				return nil
 			},
 			wantStage: "runtime-home",
-			wantCause: "could not create isolated runtime home, state and tool directories",
+			wantCause: "could not create isolated runtime home, state, cache and tool directories",
 		},
 		{
 			name: "root-cause skill copy",
