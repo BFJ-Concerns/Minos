@@ -3,8 +3,10 @@ package shell
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"sort"
+	"strings"
 )
 
 type sweepCandidate struct {
@@ -61,9 +63,19 @@ func SweepCommand(ctx context.Context, args []string) error {
 			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
 			continue
 		}
-		if result == "started" {
-			log.Printf("started %s#%s", candidate.facts.RepoSlug(), candidate.facts.PR)
+		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
+			log.Print(message)
 		}
 	}
 	return nil
+}
+
+func sweepDecisionMessage(facts Facts, result string) string {
+	if result == "started" {
+		return fmt.Sprintf("started %s#%s", facts.RepoSlug(), facts.PR)
+	}
+	if strings.HasPrefix(result, "deferred: ") {
+		return fmt.Sprintf("%s#%s: %s", facts.RepoSlug(), facts.PR, result)
+	}
+	return ""
 }

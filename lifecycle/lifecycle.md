@@ -384,7 +384,13 @@ as proof that there is no work or wake still pending.
    terminal marker, and stop instead.
 
    Save a fresh `"$MINOS_BIN" forge snapshot` JSON object. It is the sole forge
-   state used throughout finishing. Run
+   state used throughout finishing. For the initial and each fresh snapshot,
+   require `dependencies_available` to be true and `open_dependencies` to be
+   empty before taking another finishing action. If either condition fails,
+   append the concrete condition to `$MINOS_FAILURE_LOG`: use
+   `dependency_error` for unavailable state, or the exact `repository#number`
+   values for open dependencies. Set `incomplete`, remove 👀, write the
+   non-clean terminal marker, and stop. Run
    `"${MINOS_SETUP_WORKSPACE%/*}/sync-target"
    "$MINOS_WORKSPACE" HEAD_BRANCH TARGET_BRANCH HEAD TARGET
    TARGET_SYNC_METHOD` with its `head_branch`, `target_branch`, `head_sha`,
@@ -406,8 +412,9 @@ as proof that there is no work or wake still pending.
    snapshot to a file and run `"${MINOS_SETUP_WORKSPACE%/*}/watch-snapshot"
    SNAPSHOT_FILE 600`.
    The watcher repeatedly obtains the same `minos forge snapshot` object used
-   everywhere else and wakes only when its `head_sha`, `target_sha`, `statuses`,
-   or `labels` differ. Its JSON result contains the exact fresh snapshot to use
+   everywhere else and wakes when its `head_sha`, `target_sha`, `statuses`,
+   `labels`, dependency availability, dependency error, or open dependencies
+   differ. Its JSON result contains the exact fresh snapshot to use
    for the next decision. On its roughly ten-minute `timeout`, use the returned
    fresh snapshot as well; do not infer state from elapsed time, poll the forge
    separately, or sleep blind. If the target moved, return to target sync. If

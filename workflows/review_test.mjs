@@ -305,6 +305,10 @@ test("only an unchanged or verified tests-only finishing result may reach the me
   );
   assert.match(
     finishing,
+    /each fresh snapshot[\s\S]*`dependencies_available`[\s\S]*`open_dependencies`[\s\S]*set `incomplete`/,
+  );
+  assert.match(
+    finishing,
     /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Give the helper that file/,
   );
   assert.match(

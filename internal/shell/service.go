@@ -97,11 +97,32 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 			}
 		}
 	}
+	if reason, deferred := dependencyDeferral(snapshot); deferred {
+		return "deferred: " + reason, nil
+	}
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)
 	if err != nil {
 		return "", err
 	}
 	return string(outcome), nil
+}
+
+func dependencyDeferral(snapshot forge.Snapshot) (string, bool) {
+	if !snapshot.DependenciesAvailable {
+		reason := snapshot.DependencyError
+		if reason == "" {
+			reason = "forge adaptation did not report dependency state"
+		}
+		return "dependency state unavailable: " + reason, true
+	}
+	if len(snapshot.OpenDependencies) == 0 {
+		return "", false
+	}
+	dependencies := make([]string, 0, len(snapshot.OpenDependencies))
+	for _, dependency := range snapshot.OpenDependencies {
+		dependencies = append(dependencies, fmt.Sprintf("%s#%d", dependency.Repository, dependency.Number))
+	}
+	return "open dependencies: " + strings.Join(dependencies, ", "), true
 }
 
 func terminalState(review forge.Review) (product.State, bool) {
