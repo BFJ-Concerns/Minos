@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -142,6 +143,10 @@ function writeArchive(recordDir) {
     join(runDir, "agents", "000002", "agent.json"),
     JSON.stringify({ label: "verifier", status: "complete", resolved_model: "claude-opus-5" }),
   );
+  writeFileSync(
+    join(runDir, "agents", "000002", "attempt-001-claude.jsonl"),
+    "RETAINED-VERIFIER-TRANSCRIPT-0731\n",
+  );
 }
 
 childProcess.spawn = function recordedSpawn(command, args, options) {
@@ -172,7 +177,7 @@ childProcess.spawn = function recordedSpawn(command, args, options) {
 syncBuiltinESMExports();
 `;
 
-function runWrapper(t, scenario) {
+function runWrapper(t, scenario, { retention = "unset" } = {}) {
   const operationRoot = mkdtempSync(join(tmpdir(), "minos-adjudicator-wrapper-"));
   t.after(() => rmSync(operationRoot, { recursive: true, force: true }));
   const preloadPath = join(operationRoot, "record-ensemble.mjs");
@@ -182,6 +187,14 @@ function runWrapper(t, scenario) {
   writeFileSync(preloadPath, preloadSource);
   writeFileSync(argsPath, "{}");
   writeFileSync(workflowPath, "export default {};\n");
+  let minosRunDir;
+  if (retention === "success") {
+    minosRunDir = join(operationRoot, "durable-run");
+    mkdirSync(minosRunDir);
+  } else if (retention === "failure") {
+    minosRunDir = join(operationRoot, "not-a-directory");
+    writeFileSync(minosRunDir, "blocks retained evidence\n");
+  }
 
   const result = spawnSync(
     wrapperPath,
@@ -194,6 +207,7 @@ function runWrapper(t, scenario) {
         NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
         MINOS_ADJUDICATOR_SCENARIO: scenario,
         MINOS_ADJUDICATOR_RECORDER: recorderPath,
+        ...(minosRunDir ? { MINOS_RUN_DIR: minosRunDir } : {}),
       },
     },
   );
@@ -207,7 +221,7 @@ function runWrapper(t, scenario) {
     false,
     "the executable wrapper removes the exact run-record directory supplied to Ensemble",
   );
-  return { verdict, launch, result, argsPath, workflowPath };
+  return { verdict, launch, result, argsPath, workflowPath, minosRunDir };
 }
 
 function assertWithheld(verdict) {
@@ -249,6 +263,32 @@ test("the executable adjudicator carries the launch contract through to a publis
     path: comment.path,
     line: comment.line,
   })), [{ path: "internal/review.go", line: 42 }]);
+  assert.match(result.stderr, /\[workflow\] complete/);
+});
+
+test("the executable adjudicator retains the complete record directory for archival", (t) => {
+  const { verdict, launch, minosRunDir } = runWrapper(t, "complete", { retention: "success" });
+  const retained = join(minosRunDir, "ensemble-records", basename(launch.recordDir));
+
+  assert.equal(verdict.status, "complete");
+  assert.equal(existsSync(launch.recordDir), false, "the temporary record is still removed");
+  assert.equal(existsSync(join(retained, "runs", "cwd", "namespace", "run", "manifest.json")), true);
+  assert.equal(
+    readFileSync(
+      join(retained, "runs", "cwd", "namespace", "run", "agents", "000002", "attempt-001-claude.jsonl"),
+      "utf8",
+    ),
+    "RETAINED-VERIFIER-TRANSCRIPT-0731\n",
+  );
+});
+
+test("record retention failure emits one diagnostic without changing the verdict", (t) => {
+  const { verdict, result } = runWrapper(t, "complete", { retention: "failure" });
+  const diagnostics = result.stderr.match(/adjudicated-review: could not retain run record for archival:[^\n]*/g) || [];
+
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
+  assert.equal(diagnostics.length, 1);
   assert.match(result.stderr, /\[workflow\] complete/);
 });
 

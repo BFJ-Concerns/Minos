@@ -11,6 +11,7 @@ export const meta = {
 const GPT_SPECIALIST_MODEL = "gpt-5.6-sol";
 const GPT_EXPLORER_MODEL = "gpt-5.6-terra";
 const CLAUDE_MODEL = "claude-opus-5";
+const MAX_FINDINGS_PER_VERIFIER = 6;
 
 const ROLE_BRIEFS = {
   exploration: "workflows/review-briefs/exploration.md",
@@ -109,6 +110,19 @@ function normalisePlan(plan, files) {
   return { requested, dispatched, clamps };
 }
 
+function orientationPacket(target, head, files, units) {
+  return {
+    commitRange: `${target}...${head}`,
+    changedFiles: files.map(({ path, added, deleted }) => ({ path, added, deleted })),
+    ownership: units.map(({ id, concern, scope, specialistType }) => ({
+      unit: id,
+      concern,
+      scope,
+      specialistType,
+    })),
+  };
+}
+
 const findingShape = {
   type: "object",
   additionalProperties: false,
@@ -191,14 +205,24 @@ const explorationSchema = {
   },
 };
 
-const verifierSchema = {
+const verifierVerdictShape = {
   type: "object",
   additionalProperties: false,
-  required: ["verdict", "confidence", "reason"],
+  required: ["findingId", "verdict", "confidence", "reason"],
   properties: {
+    findingId: { type: "string" },
     verdict: { type: "string", enum: ["upheld", "refuted"] },
     confidence: { type: "integer", minimum: 0, maximum: 100 },
     reason: { type: "string" },
+  },
+};
+
+const verifierSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdicts"],
+  properties: {
+    verdicts: { type: "array", items: verifierVerdictShape },
   },
 };
 
@@ -217,8 +241,9 @@ const projectGuidance = projectGuidanceFromInput(input);
 if (!projectGuidance) throw new Error("deterministic input omitted reviewed-project guidance");
 
 const legs = [];
-function addLeg(label, role, pinnedModel) {
+function addLeg(label, role, pinnedModel, findingIds = null) {
   const leg = { label, role, pinnedModel };
+  if (findingIds) leg.findingIds = findingIds;
   legs.push(leg);
   return leg;
 }
@@ -258,6 +283,7 @@ if (!exploration) {
 
 const planned = normalisePlan(exploration.plan, exploration.files);
 const specialistUnits = planned.dispatched;
+const orientation = orientationPacket(target, head, exploration.files, specialistUnits);
 phase("Specialise");
 for (const unit of specialistUnits)
   addLeg(unit.label, "specialist", modelForFamily(unit.family));
@@ -267,7 +293,8 @@ function specialistPrompt(unit) {
     roleBriefs,
     projectGuidance,
     unit.roleBrief,
-    `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
+    `Orientation packet: ${JSON.stringify(orientation)}\n` +
+      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
   );
 }
 
@@ -277,7 +304,7 @@ const specialistResults = await parallel(
       engine: engineForFamily(unit.family),
       schema: specialistSchema,
       model: modelForFamily(unit.family),
-      effort: "high",
+      effort: "medium",
       label: unit.label,
       phase: "Specialise",
     })
@@ -324,47 +351,83 @@ specialistUnits.forEach((unit, unitIndex) => {
     return;
   }
   result.findings.forEach((finding, findingIndex) => {
-    proposed.push({ unit, unitIndex, finding, findingIndex });
+    proposed.push({
+      id: `${unit.label}:${findingIndex + 1}`,
+      unit,
+      unitIndex,
+      finding,
+      findingIndex,
+    });
   });
 });
 
 phase("Verify");
-for (const item of proposed) {
-  const verifierFamily = item.unit.family === "gpt" ? "claude" : "gpt";
-  item.verifyLabel = `verify-${item.unitIndex + 1}-${item.findingIndex + 1}-${verifierFamily}`;
-  item.verifierFamily = verifierFamily;
-  addLeg(item.verifyLabel, "verifier", modelForFamily(verifierFamily));
+const verifierGroups = [];
+for (const unit of specialistUnits) {
+  const unitFindings = proposed.filter((item) => item.unit === unit);
+  for (let offset = 0; offset < unitFindings.length; offset += MAX_FINDINGS_PER_VERIFIER) {
+    const items = unitFindings.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
+    const verifierFamily = unit.family === "gpt" ? "claude" : "gpt";
+    const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
+    const label = `verify-${items[0].unitIndex + 1}-${groupIndex}-${verifierFamily}`;
+    const findingIds = items.map((item) => item.id);
+    const group = { items, verifierFamily, label, findingIds };
+    verifierGroups.push(group);
+    items.forEach((item) => { item.verifyLabel = label; });
+    addLeg(label, "verifier", modelForFamily(verifierFamily), findingIds);
+  }
 }
 
 const verifierResults = await parallel(
-  proposed.map((item) => () =>
+  verifierGroups.map((group) => () =>
     agent(
       rolePrompt(
         roleBriefs,
         projectGuidance,
         ROLE_BRIEFS.verifier,
-        `Try to disprove this proposed finding against ${target}...${head} and the cited code.\n` +
-          `Proposing specialist: ${item.unit.label}\nFinding data: ${JSON.stringify(item.finding)}`
+        `Try to disprove each proposed finding against ${target}...${head} and the cited code.\n` +
+          `Proposing specialist: ${group.items[0].unit.label}\n` +
+          `Findings: ${JSON.stringify(group.items.map((item) => ({ id: item.id, ...item.finding })))}`
       ),
       {
-        engine: engineForFamily(item.verifierFamily),
+        engine: engineForFamily(group.verifierFamily),
         schema: verifierSchema,
-        model: modelForFamily(item.verifierFamily),
-        effort: "high",
-        label: item.verifyLabel,
+        model: modelForFamily(group.verifierFamily),
+        effort: "medium",
+        label: group.label,
         phase: "Verify",
       }
     )
   )
 );
 
-const proposedFindings = proposed.map((item, index) => ({
-  id: `${item.unit.label}:${item.findingIndex + 1}`,
+const verifierByFinding = new Map(proposed.map((item) => [item.id, null]));
+verifierGroups.forEach((group, groupIndex) => {
+  const response = verifierResults[groupIndex];
+  if (!response || !Array.isArray(response.verdicts)) return;
+  const expected = new Set(group.findingIds);
+  if (response.verdicts.some((verdict) => !expected.has(verdict && verdict.findingId))) return;
+  const verdictsById = new Map();
+  for (const verdict of response.verdicts) {
+    const existing = verdictsById.get(verdict.findingId) || [];
+    existing.push(verdict);
+    verdictsById.set(verdict.findingId, existing);
+  }
+  for (const findingId of group.findingIds) {
+    const matches = verdictsById.get(findingId) || [];
+    if (matches.length !== 1) continue;
+    const { findingId: omittedFindingId, ...rawVerifier } = matches[0];
+    verifierByFinding.set(findingId, rawVerifier);
+  }
+});
+
+const proposedFindings = proposed.map((item) => ({
+  id: item.id,
   source: item.unit.concern,
   ...item.finding,
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
-  rawVerifier: verifierResults[index] || null,
+  rawVerifier: verifierByFinding.get(item.id),
 }));
 
 return {

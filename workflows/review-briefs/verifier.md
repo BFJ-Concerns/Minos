@@ -8,6 +8,11 @@ introduced the behaviour, whether the cited path and line support it, and whethe
 existing invariant or caller refutes it. Return `upheld` only when the defect remains
 grounded after that challenge; otherwise return `refuted`.
 
+When the assignment supplies a findings array, return exactly one verdict keyed by
+finding id for every member. Do not omit, duplicate, or invent finding ids. For a
+low-confidence finding whose cited code cannot settle the verdict, run the focused
+confirming experiment described by the specialist where practical.
+
 Do not load skills, start another workflow, consult historical sessions, search the
-web, or inspect unrelated worktrees. Return one structured verdict with an
-independent confidence integer from 0 to 100.
+web, or inspect unrelated worktrees. Return the structured verdicts requested by the
+assignment with independent confidence integers from 0 to 100.
