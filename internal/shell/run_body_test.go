@@ -24,6 +24,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	codexConfigDir := filepath.Join(homeDir, ".codex")
 	projectsDir := filepath.Join(homeDir, ".claude", "projects")
 	stateDir := filepath.Join(fixture.runDir, "state")
+	cacheDir := filepath.Join(fixture.runDir, "cache")
 	info, err := os.Stat(configDir)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +65,22 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	assertContainsFile(t, filepath.Join(stateDir, "worker-state"), "worker wrote state")
 	assertContainsFile(t, fixture.record+".worker-tool", filepath.Join(homeDir, ".local", "bin", "minos-worker-probe"))
 	assertContainsFile(t, fixture.record+".worker-env", "XDG_STATE_HOME="+stateDir)
+	for name, path := range map[string]string{
+		"MINOS_SHARED_CACHE_DIR": cacheDir,
+		"SCCACHE_DIR":            filepath.Join(cacheDir, "rust", "sccache"),
+		"GOCACHE":                filepath.Join(cacheDir, "go", "build"),
+		"GOMODCACHE":             filepath.Join(cacheDir, "go", "modules"),
+		"npm_config_cache":       filepath.Join(cacheDir, "node", "npm"),
+	} {
+		assertContainsFile(t, fixture.record+".worker-env", name+"="+path)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("shared cache directory %s mode = %s, want directory 700", path, info.Mode())
+		}
+	}
 	assertContainsFile(
 		t,
 		fixture.record+".worker-env",
@@ -166,6 +183,19 @@ func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "180000",
 	})
 	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyStopsRunScopedSccacheServer(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	sccacheSource := filepath.Join(fixture.root, "sccache")
+	writeScript(t, sccacheSource, `#!/usr/bin/env sh
+printf '%s\n' "$*" >"$MINOS_TEST_RECORD.sccache"
+exit 23
+`)
+
+	fixture.run(t, map[string]string{"MINOS_TEST_SCCACHE_SOURCE": sccacheSource})
+
+	assertContainsFile(t, fixture.record+".sccache", "--stop-server")
 }
 
 func TestRunBodyRejectsInvalidGatewayConfigurationBeforeLaunchingClaude(t *testing.T) {
@@ -299,7 +329,7 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 				return nil
 			},
 			wantStage: "runtime-home",
-			wantCause: "could not create isolated runtime home, state and tool directories",
+			wantCause: "could not create isolated runtime home, state, cache and tool directories",
 		},
 		{
 			name: "root-cause skill copy",
@@ -882,6 +912,9 @@ esac
 set -eu
 mkdir -p "$MINOS_WORKSPACE"
 install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
+if [ -n "${MINOS_TEST_SCCACHE_SOURCE:-}" ]; then
+  install -m 700 "$MINOS_TEST_SCCACHE_SOURCE" "$HOME/.local/bin/sccache"
+fi
 printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
 printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 `)

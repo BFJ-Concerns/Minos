@@ -50,6 +50,17 @@ func TestRunCommandRemovesOwnedRunDirectory(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(runDir, runOwnerMarker), nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			readOnlyDir := filepath.Join(runDir, "cache", "go", "modules", "example.test", "module@v1.0.0")
+			if err := os.MkdirAll(readOnlyDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			readOnlyFile := filepath.Join(readOnlyDir, "module.go")
+			if err := os.WriteFile(readOnlyFile, []byte("package module\n"), 0o400); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(readOnlyDir, 0o500); err != nil {
+				t.Fatal(err)
+			}
 			body := filepath.Join(t.TempDir(), "body")
 			writeScript(t, body, tt.body)
 			t.Setenv("MINOS_RUN_DIR", runDir)

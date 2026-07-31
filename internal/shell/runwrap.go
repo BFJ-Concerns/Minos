@@ -22,7 +22,7 @@ func RunCommand(ctx context.Context, args []string) error {
 	if err := os.Remove(filepath.Join(runDir, runOwnerMarker)); err != nil {
 		return fmt.Errorf("refuse nested Minos run: this invocation does not own run directory %q: %w", runDir, err)
 	}
-	defer os.RemoveAll(runDir)
+	defer removeRunDir(runDir)
 	cmd := exec.CommandContext(ctx, runBodyPath())
 	cmd.Dir = runDir
 	cmd.Env = os.Environ()

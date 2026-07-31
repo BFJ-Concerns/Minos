@@ -46,7 +46,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(runDir, runOwnerMarker), nil, 0o600); err != nil {
-		_ = os.RemoveAll(runDir)
+		_ = removeRunDir(runDir)
 		return "", fmt.Errorf("create run ownership marker: %w", err)
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
@@ -78,7 +78,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		_ = os.RemoveAll(runDir)
+		_ = removeRunDir(runDir)
 		return "", err
 	}
 	args := []string{
@@ -93,7 +93,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	args = append(args, exe, "run", "--config", cfg.Root)
 	out, err = commandCombinedOutput(ctx, "systemd-run", args...)
 	if err != nil {
-		_ = os.RemoveAll(runDir)
+		_ = removeRunDir(runDir)
 		if strings.Contains(string(out), "already exists") {
 			return SpawnSuppressed, nil
 		}
