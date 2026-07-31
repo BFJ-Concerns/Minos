@@ -6,11 +6,50 @@ import { fileURLToPath } from "node:url";
 
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 
-const reviewPath = process.argv[2];
-const recordPath = process.argv[3];
-const singleWave = process.argv.includes("--single-wave");
-if (!reviewPath) {
-  process.stderr.write("usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave]\n");
+const usage = "usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave] [--grouping FILE]\n";
+const positionals = [];
+let singleWave = false;
+let groupingPath = null;
+let groupingRequested = false;
+let argumentError = null;
+for (let index = 2; index < process.argv.length; index += 1) {
+  const value = process.argv[index];
+  if (value === "--single-wave") singleWave = true;
+  else if (value === "--grouping") {
+    groupingRequested = true;
+    const candidate = process.argv[index + 1];
+    if (candidate && !candidate.startsWith("--")) {
+      groupingPath = candidate;
+      index += 1;
+    } else {
+      argumentError = "fix input option --grouping requires a file";
+      break;
+    }
+  } else if (value.startsWith("--")) {
+    argumentError = `unknown fix input option ${value}`;
+    break;
+  } else positionals.push(value);
+}
+let grouping;
+if (!argumentError && groupingRequested) {
+  let groupingContent;
+  try {
+    groupingContent = readFileSync(groupingPath, "utf8");
+  } catch {
+    argumentError = `fix grouping file is unreadable: ${groupingPath}`;
+  }
+  if (!argumentError) {
+    try {
+      grouping = JSON.parse(groupingContent);
+    } catch {
+      grouping = null;
+    }
+  }
+}
+const [reviewPath, recordPath] = positionals;
+if (argumentError || !reviewPath) {
+  if (argumentError) process.stderr.write(`${argumentError}\n`);
+  process.stderr.write(usage);
   process.exitCode = 2;
 } else {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -34,10 +73,10 @@ if (!reviewPath) {
   const result = {
     review: JSON.parse(readFileSync(reviewPath, "utf8")),
     threshold: process.env.MINOS_REVIEW_THRESHOLD || "High",
-    clusterCap: Number.parseInt(process.env.MINOS_FIX_CLUSTER_CAP || "5", 10),
     maximumRounds,
     runRecord,
     singleWave,
+    ...(groupingRequested ? { grouping } : {}),
     workspace: process.env.MINOS_WORKSPACE || orientation.repository,
     verification: {
       build: process.env.MINOS_BUILD_CMD || "",

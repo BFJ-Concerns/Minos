@@ -179,7 +179,6 @@ test("setup, fix dispatch, publication and round reconciliation preserve their s
         }],
       },
       threshold: "High",
-      clusterCap: 5,
       maximumRounds: null,
       runRecord: { round: 0, confirmedUnfixed: [] },
       workspace: reading,

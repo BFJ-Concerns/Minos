@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,12 +12,18 @@ import { isFixWavePlan, prepareFixWave } from "./fix-wave-plan.mjs";
 const scriptPath = fileURLToPath(new URL("./fix.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./fix-inputs.mjs", import.meta.url));
 const source = await readFile(scriptPath, "utf8");
+const fixerBriefPath = fileURLToPath(new URL("./review-briefs/fixer.md", import.meta.url));
+const fixerBriefContent = await readFile(fixerBriefPath, "utf8");
 const body = source.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
 
-function finding(title, severity, path, line) {
-  return { title, severity, confidence: 90, path, line, explanation: `${title} breaks the contract` };
+function finding(title, severity, path, line, id = `specialist:${title}`) {
+  return { id, title, severity, confidence: 90, path, line, explanation: `${title} breaks the contract` };
+}
+
+function grouping(...groups) {
+  return { kind: "minos-fix-grouping-v1", groups: groups.map((findings) => ({ findings })) };
 }
 
 function args(findings, overrides = {}) {
@@ -28,13 +34,12 @@ function args(findings, overrides = {}) {
       confirmedFindings: findings,
     },
     threshold: "High",
-    clusterCap: 5,
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
     workspace: "/run/workspace",
     verification: { build: "make build", tests: "make test" },
     guidance: { grounding: "annexe", path: "/run/subject-Annexe/README.md", content: "COMMISSION_VIOLET_719" },
-    fixerBrief: { path: "workflows/review-briefs/fixer.md", readPath: "/minos/workflows/review-briefs/fixer.md", content: "MINOS_FIX_EVIDENCE_V1" },
+    fixerBrief: { path: "workflows/review-briefs/fixer.md", readPath: fixerBriefPath, content: fixerBriefContent },
     verification: { build: "make build", tests: "make test" },
     ...overrides,
   };
@@ -96,6 +101,20 @@ test("the recording worker reads obligations from directive meaning and command 
   ), []);
 });
 
+test("fix-facing source surfaces contain no deterministic cluster or file boundary", async () => {
+  const paths = [
+    scriptPath,
+    fileURLToPath(new URL("./fix-wave-plan.mjs", import.meta.url)),
+    inputScriptPath,
+    fixerBriefPath,
+  ];
+  const surfaces = (await Promise.all(paths.map((path) => readFile(path, "utf8")))).join("\n");
+  assert.doesNotMatch(
+    surfaces,
+    /MINOS_FIX_CLUSTER_CAP|clusterCap|cluster-cap|clustersFor|Assigned files|Stay within|directly related context/i,
+  );
+});
+
 test("a High plus two Lows is working, posts all findings, and dispatches all fixes", async () => {
   const findings = [
     finding("unsafe transition", "High", "a.go", 4),
@@ -105,8 +124,8 @@ test("a High plus two Lows is working, posts all findings, and dispatches all fi
   const { result, calls } = await run(args(findings));
   assert.equal(result.classification, "working");
   assert.equal(result.sweepReview.comments.length, 3);
-  assert.equal(calls.length, 1);
-  assert.equal(result.dispatches.length, 1);
+  assert.equal(calls.length, 3);
+  assert.equal(result.dispatches.length, 3);
   assert.deepEqual(
     { engine: calls[0].options.engine, model: calls[0].options.model, isolation: calls[0].options.isolation },
     { engine: "codex", model: "gpt-5.6-sol", isolation: "worktree" },
@@ -141,7 +160,7 @@ test("the effectful dispatcher refuses a terminal preparation", async () => {
   assert.deepEqual(calls, []);
 });
 
-test("same-file findings stay together while small disjoint clusters pack only to the cap", async () => {
+test("default dispatch keeps every finding whole and carries purpose scope without a file boundary", async () => {
   const findings = [
     finding("a1", "High", "a.go", 1),
     finding("a2", "Low", "a.go", 2),
@@ -149,15 +168,96 @@ test("same-file findings stay together while small disjoint clusters pack only t
     finding("c1", "Low", "c.go", 1),
     finding("d1", "Low", "d.go", 1),
   ];
-  const { result } = await run(args(findings, { clusterCap: 2 }));
-  assert.deepEqual(result.dispatches.map((entry) => entry.files), [["a.go"], ["b.go", "c.go"], ["d.go"]]);
-  assert.deepEqual(result.dispatches.map((entry) => entry.findingKeys.length), [2, 2, 1]);
+  const { result, calls } = await run(args(findings));
+  assert.equal(result.dispatches.length, findings.length);
+  assert.ok(result.dispatches.every((entry) => entry.findingKeys.length === 1));
+  assert.ok(result.dispatches.every((entry) => !Object.hasOwn(entry, "files")));
+  assert.deepEqual(calls.map((call) => assignedFindings(call.prompt)[0].title), findings.map((item) => item.title));
+  for (const call of calls) {
+    assert.match(call.prompt, /Repair these findings and only these findings/);
+    assert.match(call.prompt, /purpose, not territory/);
+    assert.doesNotMatch(call.prompt, /Assigned files|Stay within/i);
+  }
+});
+
+test("duplicate finding keys fail closed before dispatch", async () => {
+  const first = finding("race", "Critical", "a.go", 7, "specialist:first");
+  first.explanation = "critical explanation";
+  const second = finding(" Race ", "Low", "a.go", 7, "specialist:second");
+  second.explanation = "low explanation";
+  const { result, calls } = await run(args([first, second]));
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, 'fix preparation has duplicate finding key ["a.go",7,"race"]');
+  assert.deepEqual(result.dispatches, []);
+  assert.deepEqual(calls, []);
+});
+
+test("lead grouping flows through validation to findings-scoped dispatch intact", async () => {
+  const findings = [
+    finding("first", "High", "a.go", 1),
+    finding("second", "Low", "b.go", 2),
+    finding("third", "Low", "c.go", 3),
+  ];
+  const input = args(findings, { grouping: grouping([findings[0].id, findings[2].id], [findings[1].id]) });
+  const plan = prepareFixWave(input);
+  const defaultPlan = prepareFixWave(args(findings));
+  assert.deepEqual(plan.grouping, { source: "lead" });
+  assert.deepEqual(plan.dispatches.map((entry) => entry.findingKeys), [
+    [plan.findings[0].key, plan.findings[2].key],
+    [plan.findings[1].key],
+  ]);
+  assert.equal(Object.hasOwn(plan, "clusters"), false);
+  assert.ok(plan.dispatches.every((entry) => !Object.hasOwn(entry, "files")));
+  assert.notEqual(plan.fingerprint, defaultPlan.fingerprint);
+
+  const { result, calls } = await run(plan);
+  assert.equal(result.dispatches.length, 2);
+  assert.deepEqual(calls.map((call) => assignedFindings(call.prompt).map((item) => item.id)), [
+    [findings[0].id, findings[2].id],
+    [findings[1].id],
+  ]);
+});
+
+test("invalid lead grouping fails closed before dispatch", async (t) => {
+  const findings = [finding("first", "High", "a.go", 1), finding("second", "Low", "b.go", 2)];
+  for (const testCase of [
+    { name: "malformed", grouping: null, reason: /fix grouping must be an object/ },
+    { name: "omitted", grouping: grouping([findings[0].id]), reason: /omits confirmed finding specialist:second/ },
+    { name: "unknown", grouping: grouping([findings[0].id, "specialist:unknown"], [findings[1].id]), reason: /names unknown finding specialist:unknown/ },
+    { name: "duplicate", grouping: grouping([findings[0].id], [findings[0].id, findings[1].id]), reason: /assigns finding specialist:first to more than one dispatch/ },
+  ]) {
+    await t.test(testCase.name, async () => {
+      const { result, calls } = await run(args(findings, { grouping: testCase.grouping }));
+      assert.equal(result.status, "incomplete");
+      assert.match(result.reason, testCase.reason);
+      assert.deepEqual(calls, []);
+    });
+  }
+});
+
+test("lead grouping rejects duplicate candidate ids before dispatch", async () => {
+  const duplicateID = "repository-review-design-md-claude:1";
+  const findings = [
+    finding("first", "Critical", "a.go", 1, duplicateID),
+    finding("second", "High", "b.go", 2, duplicateID),
+  ];
+  const { result, calls } = await run(args(findings, { grouping: grouping([duplicateID]) }));
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, "fix grouping has duplicate candidate finding id repository-review-design-md-claude:1");
+  assert.deepEqual(result.dispatches, []);
+  assert.deepEqual(calls, []);
+});
+
+test("terminal classification ignores grouping because it dispatches nothing", async () => {
+  const { result, calls } = await run(args([finding("wording", "Low", "a.go", 4)], { grouping: null }));
+  assert.equal(result.classification, "terminal");
+  assert.deepEqual(calls, []);
 });
 
 test("a wave records one lead push for all distinct agent commits", async () => {
   const findings = [finding("first", "High", "a.go", 1), finding("second", "Low", "b.go", 2)];
-  const { result } = await run(args(findings, { clusterCap: 1 }));
-  assert.deepEqual(result.integration.commits, ["fix-cluster-1-commit", "fix-cluster-2-commit"]);
+  const { result } = await run(args(findings));
+  assert.deepEqual(result.integration.commits, ["fix-dispatch-1-commit", "fix-dispatch-2-commit"]);
   assert.equal(result.integration.pushCount, 1);
   assert.deepEqual(result.integration.author, { name: "Minos", email: "minos@example.invalid" });
 });
@@ -192,7 +292,7 @@ test("fix assignments carry only the configured build and test obligations", asy
     );
     if (!expected.build) assert.doesNotMatch(prompt, /configured build/i);
     if (!expected.tests) assert.doesNotMatch(prompt, /configured test/i);
-    if (expected.whitespaceOnly) assert.doesNotMatch(prompt, /\b(?:build|test|configured)\b/i);
+    if (expected.whitespaceOnly) assert.doesNotMatch(prompt, /Run this configured (?:build|test) command/i);
   }
 });
 
@@ -206,9 +306,9 @@ test("fix write-ups keep the finding path and line", async () => {
   }]);
 });
 
-test("a twice-failed finding becomes confirmed-unfixed and is never redispatched", async () => {
+test("a lead grouping cannot redispatch a twice-failed finding across a round boundary", async () => {
   const original = finding("transition", "High", "internal/state.go", 41);
-  const first = await run(args([original]), (label, prompt) => ({
+  const first = await run(args([original], { grouping: grouping([original.id]) }), (label, prompt) => ({
     commit: "",
     fixes: assignedFindings(prompt).map((item) => ({ findingKey: item.key, status: "failed", writeUp: `${label} could not repair it` })),
   }));
@@ -216,20 +316,29 @@ test("a twice-failed finding becomes confirmed-unfixed and is never redispatched
   assert.equal(first.result.confirmedUnfixed.length, 1);
   assert.equal(first.result.confirmedUnfixed[0].attempts, 2);
 
-  const next = await run(args([original], { runRecord: first.result.runRecord }));
-  assert.equal(next.result.classification, "terminal");
+  const repairable = finding("other transition", "High", "internal/other.go", 12);
+  const next = await run(args([original, repairable], {
+    runRecord: first.result.runRecord,
+    grouping: grouping([original.id], [repairable.id]),
+  }));
+  assert.equal(next.result.classification, "working");
   assert.equal(next.result.round, 2);
   assert.notEqual(next.result.fingerprint, first.result.fingerprint);
-  assert.equal(next.result.dispatches.length, 0);
-  assert.equal(next.result.requestChanges.length, 1);
+  assert.equal(next.result.dispatches.length, 1);
+  assert.equal(next.calls.length, 1);
+  assert.deepEqual(assignedFindings(next.calls[0].prompt).map((item) => item.id), [repairable.id]);
   assert.equal(next.result.runRecord.confirmedUnfixed[0].attempts, 2);
-  assert.equal(next.result.requestChangesReview.verdict, "request-changes");
-  assert.deepEqual(next.result.requestChangesReview.comments[0], {
+
+  const terminal = await run(args([original], { runRecord: next.result.runRecord }));
+  assert.equal(terminal.result.classification, "terminal");
+  assert.equal(terminal.result.requestChanges.length, 1);
+  assert.equal(terminal.result.requestChangesReview.verdict, "request-changes");
+  assert.deepEqual(terminal.result.requestChangesReview.comments[0], {
     path: "internal/state.go",
     body: "**transition**\n\ntransition breaks the contract\n\nSeverity: High. Confidence: 90.",
     line: 41,
   });
-  assert.equal(next.calls.length, 0);
+  assert.equal(terminal.calls.length, 0);
 });
 
 test("the configured maximum rounds stops another fix dispatch", async () => {
@@ -249,7 +358,7 @@ test("single-wave mode dispatches every brief finding once and requests build an
     finding("material", "High", "a.go", 1),
     finding("minor", "Low", "b.go", 2),
   ];
-  const { result, calls } = await run(args(findings, { singleWave: true, clusterCap: 1 }));
+  const { result, calls } = await run(args(findings, { singleWave: true }));
   assert.equal(result.classification, "single-wave");
   assert.equal(calls.length, 2);
   assert.ok(result.dispatches.every((entry) => entry.attempt === 1));
@@ -296,7 +405,7 @@ test("a fix worker performs exactly the configured verification it is assigned",
       assert.deepEqual(actions, shape.expected);
       assert.equal(calls.length, 1);
       assert.equal(result.repairsComplete, true);
-      assert.deepEqual(result.integration.commits, ["brief-fix-cluster-1-verified-commit"]);
+      assert.deepEqual(result.integration.commits, ["brief-fix-dispatch-1-verified-commit"]);
     });
   }
 });
@@ -389,12 +498,13 @@ test("the deterministic fix input rejects empty and whitespace-only guidance", (
   }
 });
 
-test("the deterministic fix input carries configured loop knobs and the run record", () => {
+test("the deterministic fix input carries loop knobs, grouping judgement, and the run record", () => {
   const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-"));
   const guidancePath = join(root, "README.md");
   const orientationPath = join(root, "orientation.json");
   const reviewPath = join(root, "review.json");
   const recordPath = join(root, "record.json");
+  const groupingPath = join(root, "grouping.json");
   writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
   writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
   writeFileSync(reviewPath, JSON.stringify({
@@ -403,25 +513,74 @@ test("the deterministic fix input carries configured loop knobs and the run reco
     confirmedFindings: [],
   }));
   writeFileSync(recordPath, JSON.stringify({ round: 3, confirmedUnfixed: [] }));
-  const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, recordPath], {
+  const leadGrouping = grouping(["specialist:one"]);
+  writeFileSync(groupingPath, JSON.stringify(leadGrouping));
+  const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, "--grouping", groupingPath, reviewPath, recordPath], {
     encoding: "utf8",
     env: {
       ...process.env,
       MINOS_ORIENTATION: orientationPath,
       MINOS_WORKSPACE: root,
       MINOS_REVIEW_THRESHOLD: "Medium",
-      MINOS_FIX_CLUSTER_CAP: "4",
       MINOS_MAX_ROUNDS: "8",
       MINOS_BUILD_CMD: "make build",
       MINOS_TEST_CMD: "make test",
     },
   }));
   assert.equal(input.threshold, "Medium");
-  assert.equal(input.clusterCap, 4);
   assert.equal(input.maximumRounds, 8);
   assert.equal(input.runRecord.round, 3);
+  assert.deepEqual(input.grouping, leadGrouping);
   assert.deepEqual(input.verification, { build: "make build", tests: "make test" });
   assert.equal(input.guidance.content, "COMMISSION_VIOLET_719");
+});
+
+test("a malformed grouping file becomes an incomplete single-wave plan", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-grouping-"));
+  const guidancePath = join(root, "README.md");
+  const orientationPath = join(root, "orientation.json");
+  const reviewPath = join(root, "review.json");
+  const groupingPath = join(root, "grouping.json");
+  writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
+  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
+  writeFileSync(reviewPath, JSON.stringify({
+    status: "complete",
+    reviewed: { target: "target111", head: "head222" },
+    confirmedFindings: [finding("first", "High", "a.go", 1)],
+  }));
+  writeFileSync(groupingPath, "not JSON");
+  const plan = JSON.parse(execFileSync(
+    process.execPath,
+    [inputScriptPath, reviewPath, "--grouping", groupingPath, "--single-wave"],
+    { encoding: "utf8", env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root } },
+  ));
+  assert.equal(plan.status, "incomplete");
+  assert.match(plan.reason, /fix grouping must be an object/);
+  assert.deepEqual(plan.dispatches, []);
+});
+
+test("fix input option and unreadable grouping errors use the usage exit", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-errors-"));
+  const missingGroupingPath = join(root, "missing-grouping.json");
+  for (const testCase of [
+    {
+      name: "unknown option",
+      args: [inputScriptPath, "review.json", "--unknown"],
+      message: "unknown fix input option --unknown",
+    },
+    {
+      name: "unreadable grouping",
+      args: [inputScriptPath, "review.json", "--grouping", missingGroupingPath],
+      message: `fix grouping file is unreadable: ${missingGroupingPath}`,
+    },
+  ]) {
+    const result = spawnSync(process.execPath, testCase.args, { encoding: "utf8" });
+    assert.equal(result.status, 2, testCase.name);
+    assert.equal(result.stdout, "", testCase.name);
+    assert.ok(result.stderr.includes(testCase.message), testCase.name);
+    assert.match(result.stderr, /usage: node workflows\/fix-inputs\.mjs/, testCase.name);
+    assert.doesNotMatch(result.stderr, /\n\s+at /, testCase.name);
+  }
 });
 
 test("the deterministic fix input selects single-wave mode explicitly", () => {

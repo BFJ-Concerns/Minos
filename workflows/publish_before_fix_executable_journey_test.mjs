@@ -63,7 +63,7 @@ childProcess.spawn = function recordedSpawn(command, args, options) {
       child.stdout.end(JSON.stringify({
         status: "complete",
         classification: "working",
-        dispatches: [{ label: "fix-cluster-1" }],
+        dispatches: [{ label: "fix-dispatch-1" }],
         integration: { commits: [], pushCount: 0 },
         rerunReview: true,
         dispatchedSentinel: "EXECUTABLE-PUBLICATION-SENTINEL-719",
@@ -92,7 +92,6 @@ function input() {
       }],
     },
     threshold: "High",
-    clusterCap: 5,
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
     workspace: "/run/workspace",

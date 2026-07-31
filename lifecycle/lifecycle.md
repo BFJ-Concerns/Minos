@@ -247,20 +247,29 @@ as proof that there is no work or wake still pending.
    and replace the scratch record after every complete classification. Pass it
    back through `fix-inputs.mjs` when the build, tests and whole review re-enter
    this step on the next head; the operation is invoked once per round. The
-   configured threshold, cluster cap and optional maximum rounds arrive through
-   `$MINOS_REVIEW_THRESHOLD`, `$MINOS_FIX_CLUSTER_CAP`, and
-   `$MINOS_MAX_ROUNDS`.
+   configured threshold and optional maximum rounds arrive through
+   `$MINOS_REVIEW_THRESHOLD` and `$MINOS_MAX_ROUNDS`.
+
+   When related findings should be repaired together, write a grouping file
+   for that round and pass `--grouping FILE` to `fix-inputs.mjs`. Its shape is
+   `{"kind":"minos-fix-grouping-v1","groups":[{"findings":["FINDING_ID"]}]}`.
+   Every candidate finding must occur exactly once. Unknown, duplicate, omitted
+   or malformed membership makes preparation incomplete before any forge write.
+   Findings already recorded as confirmed-unfixed may remain in the file; the
+   mechanism removes them and drops any group left empty. Without a grouping
+   file, each candidate finding receives its own dispatch. Terminal
+   classification ignores grouping because it dispatches nothing.
 
    A `working` classification means at least one newly actionable confirmed
    finding is at or above the threshold and its sweep review was confirmed
    present before dispatch. The prepared wave contains every confirmed finding
    in the sweep, including those below threshold, as one review with inline
-   path/line comments. Its effectful dispatcher uses the prepared clusters,
-   grouped by overlapping files up to the configured cap. Fix agents use the
-   bootstrapped repository in isolated Codex worktrees, commit with the
-   configured Minos identity, and never push. A failed finding receives one
-   retry; after two failures it remains in the
-   loop record as confirmed-unfixed and later sweeps do not dispatch it again.
+   path/line comments. Each fix dispatch carries its assigned findings, grouped
+   only when the lead supplied that judgement. Fix agents may read and edit
+   whatever those repairs genuinely require in isolated Codex worktrees,
+   commit with the configured Minos identity, and never push. A failed finding
+   receives one retry; after two failures it remains in the loop record as
+   confirmed-unfixed and later sweeps do not dispatch it again.
    When `integration.commits` is non-empty, write that array unchanged to a
    file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
    "$MINOS_WORKSPACE" COMMITS_FILE`. That script verifies every commit's Minos

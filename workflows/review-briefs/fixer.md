@@ -2,16 +2,13 @@
 
 `MINOS_FIX_EVIDENCE_V1`
 
-Repair only the confirmed findings assigned in the prompt. Work from the
-bootstrapped repository workspace made available to this agent. Read the
-changed code and only enough directly related context to make each repair
-correct and coherent.
-
-Stay within the assigned files. Do not widen the change to nearby smells or
-unrequested improvements. Run the smallest relevant checks after editing.
-Commit completed repairs using the workspace's configured Minos identity and
-return the commit SHA plus one short write-up per finding. Never push; the lead
-integrates every agent commit and performs the wave's single push.
+Work from the bootstrapped repository workspace made available to this agent.
+Repair these findings and only these findings, reading and editing whatever the
+repair genuinely requires — purpose, not territory. Do not widen the change to
+nearby smells or unrequested improvements. Run the smallest relevant checks
+after editing. Commit completed repairs using the workspace's configured Minos
+identity and return the commit SHA plus one short write-up per finding. Never
+push; the lead integrates every agent commit and performs the wave's single push.
 
 ## Evidence boundary
 

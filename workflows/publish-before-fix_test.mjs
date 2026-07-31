@@ -104,7 +104,6 @@ function input(findings = [finding()], overrides = {}) {
       confirmedFindings: findings,
     },
     threshold: "High",
-    clusterCap: 5,
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
     workspace: "/run/workspace",

@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 
 const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 const DEFAULT_THRESHOLD = "High";
-const DEFAULT_CLUSTER_CAP = 5;
 const PLAN_KIND = "minos-fix-wave-plan-v1";
+const GROUPING_KIND = "minos-fix-grouping-v1";
 
 function normaliseTitle(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -25,26 +25,48 @@ function findingComment(finding) {
   };
 }
 
-function clustersFor(findings, cap) {
-  const byPath = new Map();
-  for (const finding of findings) {
-    if (!byPath.has(finding.path)) byPath.set(finding.path, []);
-    byPath.get(finding.path).push(finding);
+function dispatchesFor(candidates, allFindings, grouping, prefix = "") {
+  const dispatch = (findingGroups, source) => ({
+    source,
+    dispatches: findingGroups.map((findings, index) => {
+      const id = `${prefix}fix-dispatch-${index + 1}`;
+      return { id, label: id, attempt: 1, findingKeys: findings.map((finding) => finding.key) };
+    }),
+  });
+
+  if (grouping === undefined)
+    return dispatch(candidates.map((finding) => [finding]), "default");
+  if (!grouping || typeof grouping !== "object" || Array.isArray(grouping) ||
+      grouping.kind !== GROUPING_KIND || !Array.isArray(grouping.groups) || grouping.groups.length === 0)
+    return { reason: `fix grouping must be an object with kind ${GROUPING_KIND} and a non-empty groups array` };
+
+  const candidateIDs = new Set();
+  for (const finding of candidates) {
+    if (candidateIDs.has(finding.id))
+      return { reason: `fix grouping has duplicate candidate finding id ${String(finding.id)}` };
+    candidateIDs.add(finding.id);
   }
-  const components = [...byPath.entries()].map(([path, sameFile]) => ({ files: [path], findings: sameFile }));
-  const packed = [];
-  let current = null;
-  for (const component of components) {
-    if (!current || current.findings.length + component.findings.length > cap) {
-      if (current) packed.push(current);
-      current = { files: [...component.files], findings: [...component.findings] };
-    } else {
-      current.files.push(...component.files);
-      current.findings.push(...component.findings);
+  const allByID = new Map(allFindings.map((finding) => [finding.id, finding]));
+  const candidatesByID = new Map(candidates.map((finding) => [finding.id, finding]));
+  const assigned = new Set();
+  const groups = [];
+  for (const group of grouping.groups) {
+    if (!group || typeof group !== "object" || Array.isArray(group) || !Array.isArray(group.findings) || group.findings.length === 0)
+      return { reason: "fix grouping must contain groups with non-empty findings arrays" };
+    const findings = [];
+    for (const id of group.findings) {
+      if (typeof id !== "string" || !allByID.has(id))
+        return { reason: `fix grouping names unknown finding ${String(id)}` };
+      if (assigned.has(id))
+        return { reason: `fix grouping assigns finding ${id} to more than one dispatch` };
+      assigned.add(id);
+      if (candidatesByID.has(id)) findings.push(candidatesByID.get(id));
     }
+    if (findings.length > 0) groups.push(findings);
   }
-  if (current) packed.push(current);
-  return packed.map((cluster, index) => ({ id: `fix-cluster-${index + 1}`, ...cluster }));
+  for (const id of candidatesByID.keys())
+    if (!assigned.has(id)) return { reason: `fix grouping omits confirmed finding ${String(id)}` };
+  return dispatch(groups, "lead");
 }
 
 function invalidInputReason(input) {
@@ -95,7 +117,7 @@ function failedPlan(input, reason) {
   };
 }
 
-function fingerprintFor(input, round, findings) {
+function fingerprintFor(input, round, findings, dispatches = []) {
   const value = {
     reviewed: {
       target: input.review.reviewed.target,
@@ -103,9 +125,9 @@ function fingerprintFor(input, round, findings) {
     },
     round,
     threshold: input.threshold === undefined ? DEFAULT_THRESHOLD : input.threshold,
-    clusterCap: input.clusterCap === undefined ? DEFAULT_CLUSTER_CAP : input.clusterCap,
     maximumRounds: input.maximumRounds ?? null,
     singleWave: input.singleWave === true,
+    groups: dispatches.map((entry) => entry.findingKeys),
     priorConfirmedUnfixed: Array.isArray(input.runRecord && input.runRecord.confirmedUnfixed)
       ? input.runRecord.confirmedUnfixed.map((entry) => ({ key: entry.key, attempts: entry.attempts }))
       : [],
@@ -138,14 +160,11 @@ export function prepareFixWave(input) {
     return deepFreeze(failedPlan(input, inputFailure));
 
   const threshold = input.threshold === undefined ? DEFAULT_THRESHOLD : input.threshold;
-  const clusterCap = input.clusterCap === undefined ? DEFAULT_CLUSTER_CAP : input.clusterCap;
   const maximumRounds = input.maximumRounds === undefined || input.maximumRounds === null
     ? null
     : input.maximumRounds;
   if (!Object.hasOwn(SEVERITY, threshold))
     return deepFreeze(failedPlan(input, `unknown review threshold ${String(threshold)}`));
-  if (!Number.isInteger(clusterCap) || clusterCap < 1)
-    return deepFreeze(failedPlan(input, "fix cluster cap must be a positive integer"));
   if (maximumRounds !== null && (!Number.isInteger(maximumRounds) || maximumRounds < 1))
     return deepFreeze(failedPlan(input, "maximum rounds must be a positive integer when set"));
 
@@ -161,11 +180,18 @@ export function prepareFixWave(input) {
     }))
     : [];
   const findings = input.review.confirmedFindings.map(preparedFinding);
+  const findingKeys = new Set();
+  for (const finding of findings) {
+    if (findingKeys.has(finding.key))
+      return deepFreeze(failedPlan(input, `fix preparation has duplicate finding key ${finding.key}`));
+    findingKeys.add(finding.key);
+  }
 
   if (input.singleWave === true) {
     const round = 1;
-    const clusters = clustersFor(findings, clusterCap);
-    const fingerprint = fingerprintFor(input, round, findings);
+    const grouped = dispatchesFor(findings, findings, input.grouping, "brief-");
+    if (grouped.reason) return deepFreeze(failedPlan(input, grouped.reason));
+    const fingerprint = fingerprintFor(input, round, findings, grouped.dispatches);
     return deepFreeze({
       kind: PLAN_KIND,
       status: "complete",
@@ -180,14 +206,9 @@ export function prepareFixWave(input) {
         fixerBrief: { ...input.fixerBrief },
       },
       findings,
-      clusters,
+      grouping: { source: grouped.source },
       priorConfirmedUnfixed: [],
-      dispatches: clusters.map((cluster) => ({
-        label: `brief-${cluster.id}`,
-        attempt: 1,
-        files: cluster.files,
-        findingKeys: cluster.findings.map((finding) => finding.key),
-      })),
+      dispatches: grouped.dispatches,
       sweepReview: null,
       fixReview: null,
       requestChangesReview: null,
@@ -242,14 +263,16 @@ export function prepareFixWave(input) {
   }
 
   const candidates = findings.filter((finding) => !unfixedByKey.has(finding.key));
-  const clusters = clustersFor(candidates, clusterCap);
+  const grouped = dispatchesFor(candidates, findings, input.grouping);
+  if (grouped.reason) return deepFreeze(failedPlan(input, grouped.reason));
+  const workingFingerprint = fingerprintFor(input, round, findings, grouped.dispatches);
   return deepFreeze({
     kind: PLAN_KIND,
     status: "complete",
     classification: "working",
     threshold,
     round,
-    fingerprint,
+    fingerprint: workingFingerprint,
     input: {
       workspace: input.workspace,
       verification,
@@ -257,14 +280,9 @@ export function prepareFixWave(input) {
       fixerBrief: { ...input.fixerBrief },
     },
     findings,
-    clusters,
+    grouping: { source: grouped.source },
     priorConfirmedUnfixed: priorUnfixed,
-    dispatches: clusters.map((cluster) => ({
-      label: cluster.id,
-      attempt: 1,
-      files: cluster.files,
-      findingKeys: cluster.findings.map((finding) => finding.key),
-    })),
+    dispatches: grouped.dispatches,
     sweepReview: {
       verdict: "comment",
       body: "Confirmed findings in the reviewed code.",
