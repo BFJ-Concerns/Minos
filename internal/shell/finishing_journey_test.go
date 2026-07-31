@@ -14,10 +14,14 @@ func TestSnapshotWatcherReturnsTheTrustedChangedSnapshot(t *testing.T) {
 	baseline := map[string]any{
 		"head_sha": "head", "target_sha": "target",
 		"statuses": []any{}, "labels": []any{}, "check_decision": "pending",
+		"dependencies_available": true, "dependency_error": "", "open_dependencies": []any{},
 	}
 	baselinePath := writeJSONFixture(t, baseline)
 
-	for _, changedField := range []string{"head_sha", "target_sha", "statuses", "labels"} {
+	for _, changedField := range []string{
+		"head_sha", "target_sha", "statuses", "labels",
+		"dependencies_available", "dependency_error", "open_dependencies",
+	} {
 		t.Run(changedField, func(t *testing.T) {
 			changed := mapsClone(baseline)
 			switch changedField {
@@ -29,6 +33,12 @@ func TestSnapshotWatcherReturnsTheTrustedChangedSnapshot(t *testing.T) {
 				changed[changedField] = []any{map[string]any{"id": 2, "context": "build", "state": "success"}}
 			case "labels":
 				changed[changedField] = []any{"Flaky Test"}
+			case "dependencies_available":
+				changed[changedField] = false
+			case "dependency_error":
+				changed[changedField] = "forge returned HTTP 503"
+			case "open_dependencies":
+				changed[changedField] = []any{map[string]any{"repository": "owner/prerequisite", "number": 7}}
 			}
 			changedPath := writeJSONFixture(t, changed)
 			counter := filepath.Join(t.TempDir(), "counter")

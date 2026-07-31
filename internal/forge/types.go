@@ -59,31 +59,39 @@ type Review struct {
 	User     string `json:"user"`
 }
 
+type Dependency struct {
+	Repository string `json:"repository"`
+	Number     int64  `json:"number"`
+}
+
 type Snapshot struct {
-	AuthenticatedUser   string          `json:"authenticated_user"`
-	Repository          string          `json:"repository"`
-	PullRequest         int64           `json:"pull_request"`
-	State               string          `json:"state"`
-	Merged              bool            `json:"merged"`
-	Draft               bool            `json:"draft"`
-	Author              string          `json:"author"`
-	Mergeable           bool            `json:"mergeable"`
-	HeadSHA             string          `json:"head_sha"`
-	HeadBranch          string          `json:"head_branch"`
-	HeadRepository      string          `json:"head_repository"`
-	TargetSHA           string          `json:"target_sha"`
-	TargetBranch        string          `json:"target_branch"`
-	TargetRepository    string          `json:"target_repository"`
-	DefaultBranch       string          `json:"default_branch"`
-	SourceProtected     bool            `json:"source_protected"`
-	CanMerge            bool            `json:"can_merge"`
-	TargetSyncMethod    string          `json:"target_sync_method"`
-	RequiredChecks      []CheckIdentity `json:"required_checks"`
-	FailedChecks        []CheckIdentity `json:"failed_checks"`
-	Statuses            []Status        `json:"statuses"`
-	Labels              []string        `json:"labels"`
-	Reviews             []Review        `json:"reviews"`
-	AllowedMergeMethods []MergeMethod   `json:"allowed_merge_methods"`
+	AuthenticatedUser     string          `json:"authenticated_user"`
+	Repository            string          `json:"repository"`
+	PullRequest           int64           `json:"pull_request"`
+	State                 string          `json:"state"`
+	Merged                bool            `json:"merged"`
+	Draft                 bool            `json:"draft"`
+	Author                string          `json:"author"`
+	Mergeable             bool            `json:"mergeable"`
+	HeadSHA               string          `json:"head_sha"`
+	HeadBranch            string          `json:"head_branch"`
+	HeadRepository        string          `json:"head_repository"`
+	TargetSHA             string          `json:"target_sha"`
+	TargetBranch          string          `json:"target_branch"`
+	TargetRepository      string          `json:"target_repository"`
+	DefaultBranch         string          `json:"default_branch"`
+	SourceProtected       bool            `json:"source_protected"`
+	CanMerge              bool            `json:"can_merge"`
+	TargetSyncMethod      string          `json:"target_sync_method"`
+	RequiredChecks        []CheckIdentity `json:"required_checks"`
+	FailedChecks          []CheckIdentity `json:"failed_checks"`
+	Statuses              []Status        `json:"statuses"`
+	Labels                []string        `json:"labels"`
+	Reviews               []Review        `json:"reviews"`
+	DependenciesAvailable bool            `json:"dependencies_available"`
+	DependencyError       string          `json:"dependency_error,omitempty"`
+	OpenDependencies      []Dependency    `json:"open_dependencies"`
+	AllowedMergeMethods   []MergeMethod   `json:"allowed_merge_methods"`
 
 	CheckDecision CheckDecision `json:"check_decision"`
 }

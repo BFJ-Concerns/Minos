@@ -13,6 +13,39 @@ pr_json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}")"
 base_ref="$(printf '%s' "$pr_json" | jq -r '.base.ref')"
 base_json="$(api GET "/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$base_ref")")"
 
+dependencies='[]'
+dependency_error=''
+previous=''
+page=1
+while :; do
+  if ! api_with_status GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/dependencies?limit=50&page=${page}"; then
+    dependency_error='forge request failed'
+    break
+  fi
+  if [ "$api_status_code" != "200" ]; then
+    dependency_error="forge returned HTTP ${api_status_code}"
+    break
+  fi
+  current="$api_status_body"
+  if ! printf '%s' "$current" | jq -e '
+    type == "array" and all(.[];
+      (.number | type) == "number" and .number > 0 and
+      (.state | type) == "string" and
+      (.repository.full_name | type) == "string" and .repository.full_name != "")
+  ' >/dev/null 2>&1; then
+    dependency_error='forge returned an invalid dependencies response'
+    break
+  fi
+  [ "$current" != "$previous" ] || break
+  [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
+  dependencies="$(jq -cn --argjson all "$dependencies" --argjson page "$current" '$all + $page')"
+  previous="$current"
+  page=$((page + 1))
+done
+if [ -n "$dependency_error" ]; then
+  dependencies='[]'
+fi
+
 statuses='[]'
 previous=''
 page=1
@@ -59,6 +92,8 @@ jq -nc \
   --argjson base "$base_json" \
   --argjson statuses "$statuses" \
   --argjson reviews "$reviews" \
+  --argjson dependencies "$dependencies" \
+  --arg dependency_error "$dependency_error" \
   --arg head_branch "$head_branch" \
   --arg provider "forgejo" \
   --argjson source_protected "$source_protected" '
@@ -88,6 +123,10 @@ jq -nc \
       end] | sort_by(.id) | reverse,
     labels: [($pr.labels // [])[] | .name] | sort,
     reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // "")}],
+    dependencies_available: ($dependency_error == ""),
+    dependency_error: $dependency_error,
+    open_dependencies: [$dependencies[] | select(.state == "open") |
+      {repository:.repository.full_name, number:.number}] | sort_by(.repository, .number),
     allowed_merge_methods: ([
       if ($repository.allow_merge_commits // false) then "merge" else empty end,
       if ($repository.allow_rebase // false) then "rebase" else empty end,
