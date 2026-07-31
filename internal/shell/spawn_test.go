@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,56 @@ import (
 	"sync"
 	"testing"
 )
+
+func TestSpawnRunRemovesReadOnlyTreeWhenStartFails(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+
+	var runDir string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "systemctl":
+			return nil, nil
+		case "systemd-run":
+			for _, argument := range args {
+				if strings.HasPrefix(argument, "MINOS_RUN_DIR=") {
+					runDir = strings.TrimPrefix(argument, "MINOS_RUN_DIR=")
+					break
+				}
+			}
+			if runDir == "" {
+				t.Fatal("systemd-run arguments omitted MINOS_RUN_DIR")
+			}
+			readOnlyDir := filepath.Join(runDir, "cache", "go", "modules", "example.test", "module@v1.0.0")
+			if err := os.MkdirAll(readOnlyDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(readOnlyDir, "module.go"), []byte("package module\n"), 0o400); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(readOnlyDir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			return []byte("start failed"), errors.New("exit 1")
+		default:
+			t.Fatalf("unexpected command %q", name)
+			return nil, nil
+		}
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+	repo := RepoConfig{}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+
+	if _, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}); err == nil {
+		t.Fatal("SpawnRun succeeded despite systemd-run failure")
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("failed run directory still exists or stat failed unexpectedly: %v", err)
+	}
+}
 
 func TestSpawnRunReportsSuppressedForActiveUnit(t *testing.T) {
 	original := commandCombinedOutput

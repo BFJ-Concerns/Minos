@@ -24,8 +24,8 @@ func TestGoBuildCacheWarmsAcrossWorktrees(t *testing.T) {
 	if coldCompiles == 0 {
 		t.Fatalf("cold build performed no observed compile work:\n%s", cold)
 	}
-	if warmCompiles >= coldCompiles {
-		t.Fatalf("warm build compile count = %d, want less than cold count %d\ncold:\n%s\nwarm:\n%s", warmCompiles, coldCompiles, cold, warm)
+	if warmCompiles*4 >= coldCompiles {
+		t.Fatalf("warm build compile count = %d, want less than one quarter of cold count %d\ncold:\n%s\nwarm:\n%s", warmCompiles, coldCompiles, cold, warm)
 	}
 }
 

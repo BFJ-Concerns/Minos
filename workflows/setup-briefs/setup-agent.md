@@ -41,7 +41,10 @@ the workspace:
   the system package manager when appropriate, then configure the run-local
   Cargo home to use it. If `sccache` provisioning fails, warm the workspace's
   own target, leave it intact for later worktrees to copy as untracked
-  artefacts instead, and report the fallback and source path.
+  artefacts instead, and report the fallback and source path. After that warm
+  build succeeds, write the target directory's absolute path and a newline to
+  `$MINOS_RUN_DIR/rust-target-fallback`. Do not create that record when
+  `sccache` is active or the fallback build did not succeed.
 - Go build and module state belong in `$GOCACHE` and `$GOMODCACHE`.
 - npm's content cache belongs in `$npm_config_cache`; do not share
   `node_modules` or repository build output between worktrees.

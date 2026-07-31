@@ -175,6 +175,7 @@ test("setup input builder emits deterministic repository content and objections"
     "$npm_config_cache",
     "$XDG_STATE_HOME",
     "$HOME/.cargo/bin",
+    "$MINOS_RUN_DIR/rust-target-fallback",
     "$HOME/.local/bin",
   ]) {
     assert.ok(result.setupBrief.content.includes(required), `setup brief must name ${required}`);

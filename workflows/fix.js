@@ -38,6 +38,14 @@ function verificationInstruction(kind, command) {
   return `Run this configured ${kind} command before returning: ${JSON.stringify(command)}\n`;
 }
 
+function warmTargetInstruction(source) {
+  if (typeof source !== "string" || source.trim() === "") return "";
+  return (
+    `Before editing or verification, seed this isolated worktree's Rust target: create ./target and copy the contents of ` +
+    `${JSON.stringify(source)} into it without modifying the source. Do not share one CARGO_TARGET_DIR across worktrees.\n`
+  );
+}
+
 function fixPrompt(plan, dispatch, attempt) {
   const brief = plan.input.fixerBrief;
   const verification = plan.input.verification || { build: "", tests: "" };
@@ -50,6 +58,7 @@ function fixPrompt(plan, dispatch, attempt) {
     `Workspace: ${plan.input.workspace}\nAttempt: ${attempt} of ${plan.classification === "single-wave" ? 1 : 2}\n` +
     `Wave fingerprint: ${plan.fingerprint}\n` +
     `Confirmed findings: ${JSON.stringify(dispatch.findings)}\n` +
+    warmTargetInstruction(plan.input.warmTargetSource) +
     verificationInstruction("build", verification.build) +
     verificationInstruction("test", verification.tests) +
     `Return one result for every findingKey. Commit completed repairs, return the commit SHA, and do not push.`

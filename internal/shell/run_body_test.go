@@ -185,6 +185,19 @@ func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
 	fixture.assertProcessesStopped(t)
 }
 
+func TestRunBodyStopsRunScopedSccacheServer(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	sccacheSource := filepath.Join(fixture.root, "sccache")
+	writeScript(t, sccacheSource, `#!/usr/bin/env sh
+printf '%s\n' "$*" >"$MINOS_TEST_RECORD.sccache"
+exit 23
+`)
+
+	fixture.run(t, map[string]string{"MINOS_TEST_SCCACHE_SOURCE": sccacheSource})
+
+	assertContainsFile(t, fixture.record+".sccache", "--stop-server")
+}
+
 func TestRunBodyRejectsInvalidGatewayConfigurationBeforeLaunchingClaude(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -899,6 +912,9 @@ esac
 set -eu
 mkdir -p "$MINOS_WORKSPACE"
 install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
+if [ -n "${MINOS_TEST_SCCACHE_SOURCE:-}" ]; then
+  install -m 700 "$MINOS_TEST_SCCACHE_SOURCE" "$HOME/.local/bin/sccache"
+fi
 printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
 printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 `)
