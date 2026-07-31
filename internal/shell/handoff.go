@@ -37,6 +37,20 @@ func handoffPath(runsDir, unit string) string {
 }
 
 func readRunHandoff(path string, facts Facts) (*runHandoff, error) {
+	handoff, err := readRunHandoffStructure(path)
+	if err != nil {
+		return nil, err
+	}
+	if handoff.PullRequest.Owner != facts.Owner || handoff.PullRequest.Repo != facts.Repo ||
+		handoff.PullRequest.Number != facts.PR {
+		return nil, fmt.Errorf("pull request is %s/%s#%s, want %s/%s#%s",
+			handoff.PullRequest.Owner, handoff.PullRequest.Repo, handoff.PullRequest.Number,
+			facts.Owner, facts.Repo, facts.PR)
+	}
+	return handoff, nil
+}
+
+func readRunHandoffStructure(path string) (*runHandoff, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -48,11 +62,8 @@ func readRunHandoff(path string, facts Facts) (*runHandoff, error) {
 	if handoff.Kind != runHandoffKind {
 		return nil, fmt.Errorf("kind is %q, want %q", handoff.Kind, runHandoffKind)
 	}
-	if handoff.PullRequest.Owner != facts.Owner || handoff.PullRequest.Repo != facts.Repo ||
-		handoff.PullRequest.Number != facts.PR {
-		return nil, fmt.Errorf("pull request is %s/%s#%s, want %s/%s#%s",
-			handoff.PullRequest.Owner, handoff.PullRequest.Repo, handoff.PullRequest.Number,
-			facts.Owner, facts.Repo, facts.PR)
+	if handoff.PullRequest.Owner == "" || handoff.PullRequest.Repo == "" || handoff.PullRequest.Number == "" {
+		return nil, fmt.Errorf("pull request identity must be complete")
 	}
 	var record handoffRunRecord
 	if err := json.Unmarshal(handoff.RunRecord, &record); err != nil {

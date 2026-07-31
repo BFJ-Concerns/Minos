@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 
 import { attachBriefPartitionDetails } from "./brief-partition-details.mjs";
 import { adjudicate } from "./run-record-adjudicator.mjs";
@@ -83,6 +83,15 @@ try {
   verdict = incomplete(error.message, envelope);
 } finally {
   if (recordDir) {
+    if (process.env.MINOS_RUN_DIR) {
+      try {
+        const evidenceDir = join(process.env.MINOS_RUN_DIR, "ensemble-records");
+        mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
+        cpSync(recordDir, join(evidenceDir, basename(recordDir)), { recursive: true });
+      } catch (error) {
+        process.stderr.write(`adjudicated-review: could not retain run record for archival: ${error.message}\n`);
+      }
+    }
     try {
       rmSync(recordDir, { recursive: true, force: true });
     } catch (error) {

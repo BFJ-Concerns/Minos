@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+set -eu
+
+usage() {
+  echo "usage: provision-archive-transport client KNOWN_HOSTS_SOURCE CONFIG_DIR OWNER | destination PUBLIC_KEY DESTINATION AUTHORIZED_KEYS" >&2
+  exit 2
+}
+
+mode="${1:-}"
+case "$mode" in
+  client)
+    [ "$#" -eq 4 ] || usage
+    known_hosts_source="$2"
+    config_dir="$3"
+    owner="$4"
+    [ -s "$known_hosts_source" ] || {
+      echo "provision-archive-transport: known-hosts source is missing or empty" >&2
+      exit 1
+    }
+    install -d -m 0700 "$config_dir"
+    install -m 0600 "$known_hosts_source" "$config_dir/known_hosts"
+    if [ ! -f "$config_dir/id_ed25519" ]; then
+      ssh-keygen -q -t ed25519 -N '' -f "$config_dir/id_ed25519"
+    fi
+    chmod 0600 "$config_dir/id_ed25519"
+    chmod 0644 "$config_dir/id_ed25519.pub"
+    chown -R "$owner" "$config_dir"
+    ;;
+  destination)
+    [ "$#" -eq 4 ] || usage
+    public_key="$2"
+    destination="$3"
+    authorised_keys="$4"
+    [ -s "$public_key" ] || {
+      echo "provision-archive-transport: public key is missing or empty" >&2
+      exit 1
+    }
+    install -d -m 0700 "$(dirname "$authorised_keys")"
+    touch "$authorised_keys"
+    chmod 0600 "$authorised_keys"
+    key="$(sed -n '1p' "$public_key")"
+    grep -Fqx "$key" "$authorised_keys" || printf '%s\n' "$key" >>"$authorised_keys"
+    install -d -m 0700 "$destination"
+    ;;
+  *) usage ;;
+esac

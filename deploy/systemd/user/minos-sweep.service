@@ -6,5 +6,6 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=7d
 ExecStart=/usr/local/bin/minos sweep --config /etc/minos
 UMask=0077

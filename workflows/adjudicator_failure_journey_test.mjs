@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -179,6 +179,7 @@ function runWrapper(t, scenario) {
   const recorderPath = join(operationRoot, "ensemble-call.json");
   const argsPath = join(operationRoot, "review-args.json");
   const workflowPath = join(operationRoot, "review.js");
+  const runDir = join(operationRoot, "run");
   writeFileSync(preloadPath, preloadSource);
   writeFileSync(argsPath, "{}");
   writeFileSync(workflowPath, "export default {};\n");
@@ -194,6 +195,7 @@ function runWrapper(t, scenario) {
         NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
         MINOS_ADJUDICATOR_SCENARIO: scenario,
         MINOS_ADJUDICATOR_RECORDER: recorderPath,
+        MINOS_RUN_DIR: runDir,
       },
     },
   );
@@ -206,6 +208,20 @@ function runWrapper(t, scenario) {
     existsSync(launch.recordDir),
     false,
     "the executable wrapper removes the exact run-record directory supplied to Ensemble",
+  );
+  assert.equal(
+    existsSync(join(
+      runDir,
+      "ensemble-records",
+      basename(launch.recordDir),
+      "runs",
+      "cwd",
+      "namespace",
+      "run",
+      "manifest.json",
+    )),
+    true,
+    "the executable wrapper retains the Ensemble record inside the Minos run tree",
   );
   return { verdict, launch, result, argsPath, workflowPath };
 }
