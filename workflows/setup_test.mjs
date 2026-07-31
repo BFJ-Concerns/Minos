@@ -181,6 +181,10 @@ test("setup input builder emits deterministic repository content and objections"
     assert.ok(result.setupBrief.content.includes(required), `setup brief must name ${required}`);
   }
   assert.match(result.setupBrief.content, /untracked\s+artefacts instead/);
+  assert.match(
+    result.setupBrief.content,
+    /never execute the configured test command to completion/,
+  );
   assert.equal(result.objections[0].objection, "OBJECTION_SENTINEL_AUBURN_719");
   assert.equal(result.buildCommand, "npm run build");
   assert.equal(result.testCommand, "npm test");
