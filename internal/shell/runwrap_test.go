@@ -35,10 +35,18 @@ func TestRunCommandRemovesOwnedRunDirectory(t *testing.T) {
 	tests := []struct {
 		name      string
 		body      string
+		marker    string
+		handoff   bool
 		wantError bool
+		wantKept  bool
 	}{
 		{name: "body succeeds", body: "#!/bin/sh\nexit 0\n"},
 		{name: "body fails", body: "#!/bin/sh\nexit 1\n", wantError: true},
+		{name: "continuation with handoff", body: "#!/bin/sh\nexit 0\n", marker: "continuation\n", handoff: true, wantKept: true},
+		{name: "continuation without handoff", body: "#!/bin/sh\nexit 0\n", marker: "continuation\n"},
+		{name: "clean with handoff", body: "#!/bin/sh\nexit 0\n", marker: "clean\n", handoff: true},
+		{name: "non-clean with handoff", body: "#!/bin/sh\nexit 0\n", marker: "non-clean\n", handoff: true},
+		{name: "garbage with handoff", body: "#!/bin/sh\nexit 0\n", marker: "garbage\n", handoff: true},
 	}
 
 	for _, tt := range tests {
@@ -50,28 +58,46 @@ func TestRunCommandRemovesOwnedRunDirectory(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(runDir, runOwnerMarker), nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			readOnlyDir := filepath.Join(runDir, "cache", "go", "modules", "example.test", "module@v1.0.0")
-			if err := os.MkdirAll(readOnlyDir, 0o700); err != nil {
-				t.Fatal(err)
+			if !tt.wantKept {
+				readOnlyDir := filepath.Join(runDir, "cache", "go", "modules", "example.test", "module@v1.0.0")
+				if err := os.MkdirAll(readOnlyDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				readOnlyFile := filepath.Join(readOnlyDir, "module.go")
+				if err := os.WriteFile(readOnlyFile, []byte("package module\n"), 0o400); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(readOnlyDir, 0o500); err != nil {
+					t.Fatal(err)
+				}
 			}
-			readOnlyFile := filepath.Join(readOnlyDir, "module.go")
-			if err := os.WriteFile(readOnlyFile, []byte("package module\n"), 0o400); err != nil {
-				t.Fatal(err)
+			if tt.marker != "" {
+				if err := os.WriteFile(filepath.Join(runDir, "lead-complete"), []byte(tt.marker), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if err := os.Chmod(readOnlyDir, 0o500); err != nil {
-				t.Fatal(err)
+			handoff := filepath.Join(t.TempDir(), "handoff.json")
+			if tt.handoff {
+				if err := os.WriteFile(handoff, []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			body := filepath.Join(t.TempDir(), "body")
 			writeScript(t, body, tt.body)
 			t.Setenv("MINOS_RUN_DIR", runDir)
 			t.Setenv("MINOS_RUN_BODY", body)
+			t.Setenv("MINOS_HANDOFF", handoff)
 
 			err := RunCommand(t.Context(), nil)
 			if (err != nil) != tt.wantError {
 				t.Fatalf("RunCommand error = %v, wantError = %t", err, tt.wantError)
 			}
-			if _, err := os.Stat(runDir); !os.IsNotExist(err) {
-				t.Fatalf("owned run directory still exists or stat failed unexpectedly: %v", err)
+			_, statErr := os.Stat(runDir)
+			if tt.wantKept && statErr != nil {
+				t.Fatalf("continued run directory was removed: %v", statErr)
+			}
+			if !tt.wantKept && !os.IsNotExist(statErr) {
+				t.Fatalf("owned run directory still exists or stat failed unexpectedly: %v", statErr)
 			}
 		})
 	}

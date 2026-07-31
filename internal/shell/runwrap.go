@@ -4,9 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 func RunCommand(ctx context.Context, args []string) error {
@@ -22,11 +24,33 @@ func RunCommand(ctx context.Context, args []string) error {
 	if err := os.Remove(filepath.Join(runDir, runOwnerMarker)); err != nil {
 		return fmt.Errorf("refuse nested Minos run: this invocation does not own run directory %q: %w", runDir, err)
 	}
-	defer removeRunDir(runDir)
+	defer func() {
+		if preservesContinuation(runDir, os.Getenv("MINOS_HANDOFF")) {
+			return
+		}
+		_ = removeRunDir(runDir)
+	}()
 	cmd := exec.CommandContext(ctx, runBodyPath())
 	cmd.Dir = runDir
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func preservesContinuation(runDir, handoff string) bool {
+	if handoff == "" {
+		return false
+	}
+	marker, err := os.Open(filepath.Join(runDir, "lead-complete"))
+	if err != nil {
+		return false
+	}
+	data, readErr := io.ReadAll(io.LimitReader(marker, 65))
+	closeErr := marker.Close()
+	if readErr != nil || closeErr != nil || len(data) > 64 || strings.TrimSpace(string(data)) != "continuation" {
+		return false
+	}
+	info, err := os.Stat(handoff)
+	return err == nil && info.Mode().IsRegular()
 }

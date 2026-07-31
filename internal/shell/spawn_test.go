@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -85,6 +86,159 @@ func TestSpawnRunReportsSuppressedForActiveUnit(t *testing.T) {
 	}
 }
 
+func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return nil, nil
+		}
+		systemdArgs = append([]string(nil), args...)
+		return nil, nil
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
+	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runRecord := json.RawMessage(`{"round":3,"confirmedUnfixed":[{"key":"known"}]}`)
+	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 1, runRecord)
+
+	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != SpawnStarted {
+		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
+	}
+	for _, value := range []string{
+		"MINOS_RUN_DIR=" + runDir,
+		"MINOS_RESUME=true",
+		"MINOS_HANDOFF=" + handoffFile,
+		"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
+		"MINOS_CONTINUATION_ATTEMPT=2",
+	} {
+		assertArgument(t, systemdArgs, value)
+	}
+	seed, err := os.ReadFile(filepath.Join(runDir, "loop-record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(seed) != string(runRecord) {
+		t.Fatalf("seed = %s, want verbatim %s", seed, runRecord)
+	}
+	if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+		t.Fatalf("consumed handoff still exists or stat failed: %v", err)
+	}
+}
+
+func TestSpawnRunKeepsValidLoopRecordWhenHeadMoved(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return nil, nil
+		}
+		systemdArgs = append([]string(nil), args...)
+		return nil, nil
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "new-head"}
+	oldRunDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
+	if err := os.MkdirAll(filepath.Join(oldRunDir, "workspace", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runRecord := json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`)
+	writeTestHandoff(t, cfg, facts, oldRunDir, "old-head", 1, runRecord)
+
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err != nil {
+		t.Fatal(err)
+	}
+	runDir := argumentValue(systemdArgs, "MINOS_RUN_DIR")
+	if runDir == "" || runDir == oldRunDir {
+		t.Fatalf("fresh run directory = %q, old = %q", runDir, oldRunDir)
+	}
+	if slices.Contains(systemdArgs, "MINOS_RESUME=true") {
+		t.Fatalf("moved head unexpectedly resumed: %v", systemdArgs)
+	}
+	seed, err := os.ReadFile(filepath.Join(runDir, "loop-record.json"))
+	if err != nil || string(seed) != string(runRecord) {
+		t.Fatalf("fresh run seed = %s, err = %v", seed, err)
+	}
+}
+
+func TestSpawnRunRejectsMalformedHandoffAndStartsFresh(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return nil, nil
+		}
+		systemdArgs = append([]string(nil), args...)
+		return nil, nil
+	}
+	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+	handoffFile := handoffPath(cfg.Runs.Dir, UnitName(facts))
+	if err := os.MkdirAll(filepath.Dir(handoffFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(handoffFile, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(handoffFile + ".rejected"); err != nil {
+		t.Fatalf("rejected handoff was not preserved: %v", err)
+	}
+	runDir := argumentValue(systemdArgs, "MINOS_RUN_DIR")
+	if _, err := os.Stat(filepath.Join(runDir, "loop-record.json")); !os.IsNotExist(err) {
+		t.Fatalf("malformed handoff seeded a loop record or stat failed: %v", err)
+	}
+}
+
+func TestSpawnRunDoesNotDeleteAdoptedDirectoryWhenSystemdStartFails(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return nil, nil
+		}
+		return []byte("start failed"), errors.New("exit 1")
+	}
+	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
+	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 1, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err == nil {
+		t.Fatal("SpawnRun succeeded despite systemd-run failure")
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("adopted directory was deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, runOwnerMarker)); !os.IsNotExist(err) {
+		t.Fatalf("ownership marker remains after failed start or stat failed: %v", err)
+	}
+}
+
 func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
@@ -132,6 +286,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=ExitType=main")
 	assertArgument(t, systemdArgs, "--property=KillMode=control-group")
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=12h")
+	assertArgument(t, systemdArgs, "--property=MemoryMax=12G")
 	for _, value := range []string{
 		"MINOS_CONFIG=/etc/minos",
 		"MINOS_FORGE=forgejo",
@@ -165,6 +320,13 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	}
 	if runDir == "" {
 		t.Fatalf("systemd-run arguments omit MINOS_RUN_DIR: %v", systemdArgs)
+	}
+	for _, value := range []string{
+		"MINOS_HANDOFF=" + handoffPath(cfg.Runs.Dir, UnitName(facts)),
+		"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
+		"MINOS_CONTINUATION_ATTEMPT=0",
+	} {
+		assertArgument(t, systemdArgs, value)
 	}
 	if _, err := os.Stat(filepath.Join(runDir, runOwnerMarker)); err != nil {
 		t.Fatalf("run ownership marker was not created: %v", err)
@@ -251,4 +413,34 @@ func assertArgument(t *testing.T, arguments []string, want string) {
 	if !slices.Contains(arguments, want) {
 		t.Fatalf("arguments omit %q: %v", want, arguments)
 	}
+}
+
+func argumentValue(arguments []string, key string) string {
+	prefix := key + "="
+	for _, argument := range arguments {
+		if strings.HasPrefix(argument, prefix) {
+			return strings.TrimPrefix(argument, prefix)
+		}
+	}
+	return ""
+}
+
+func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head string, attempt int, record json.RawMessage) string {
+	t.Helper()
+	path := handoffPath(cfg.Runs.Dir, UnitName(facts))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(runHandoff{
+		Kind:        runHandoffKind,
+		PullRequest: handoffPull{Owner: facts.Owner, Repo: facts.Repo, Number: facts.PR},
+		Head:        head, RunDir: runDir, Attempt: attempt, RunRecord: record,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

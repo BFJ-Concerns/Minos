@@ -185,6 +185,7 @@ failure_cause="could not read lifecycle instruction $MINOS_LIFECYCLE_INSTRUCTION
 instruction="$(cat "$MINOS_LIFECYCLE_INSTRUCTION")"
 session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
 completion_marker="$MINOS_RUN_DIR/lead-complete"
+pressure_signal="$MINOS_RUN_DIR/memory-pressure"
 # During review the run tree may write only at phase transitions, measured
 # roughly 19–21 minutes apart on 2026-07-27. Do not tune this below about an
 # hour or a healthy review can hit the silence backstop.
@@ -208,10 +209,79 @@ elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
   echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT is out of range" >&2
   exit 1
 fi
+
+pressure_enabled=true
+pressure_latched=false
+pressure_samples=0
+if [ -n "${MINOS_CGROUP_DIR:-}" ]; then
+  cgroup_dir="$MINOS_CGROUP_DIR"
+else
+  cgroup_path="$(cut -d: -f3 /proc/self/cgroup 2>/dev/null | head -n 1)"
+  cgroup_dir="/sys/fs/cgroup${cgroup_path}"
+fi
+
+disable_pressure_watch() {
+  echo "run-body: memory-pressure watch disabled: $1" >&2
+  pressure_enabled=false
+}
+
+sample_memory_pressure() {
+  [ "$pressure_enabled" = true ] || return 0
+  [ "$pressure_latched" = false ] || return 0
+  if [ ! -r "$cgroup_dir/memory.current" ]; then
+    disable_pressure_watch "memory.current is unavailable in $cgroup_dir"
+    return 0
+  fi
+  IFS= read -r memory_current <"$cgroup_dir/memory.current" || memory_current=""
+  IFS= read -r memory_max <"$cgroup_dir/memory.max" || memory_max=""
+  if [ "$memory_max" = "max" ]; then
+    disable_pressure_watch "memory.max has no ceiling"
+    return 0
+  fi
+  inactive_file="$(awk '$1 == "inactive_file" { print $2; exit }' "$cgroup_dir/memory.stat" 2>/dev/null || true)"
+  for memory_counter in "$memory_current" "$memory_max" "$inactive_file"; do
+    case "$memory_counter" in
+      *[!0-9]*|'')
+        disable_pressure_watch "cgroup memory counters are unavailable or malformed"
+        return 0
+        ;;
+    esac
+  done
+  memory_pressure=$((memory_current - inactive_file))
+  if [ "$memory_pressure" -lt 0 ]; then
+    memory_pressure=0
+  fi
+  pressure_threshold=$((memory_max / 100 * 75))
+  if [ "$memory_pressure" -ge "$pressure_threshold" ]; then
+    pressure_samples=$((pressure_samples + 1))
+  else
+    pressure_samples=0
+  fi
+  [ "$pressure_samples" -ge 2 ] || return 0
+
+  swap_current=0
+  if [ -r "$cgroup_dir/memory.swap.current" ]; then
+    IFS= read -r swap_current <"$cgroup_dir/memory.swap.current" || swap_current=0
+    case "$swap_current" in *[!0-9]*|'') swap_current=0 ;; esac
+  fi
+  pressure_gib="$(awk -v bytes="$memory_pressure" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
+  maximum_gib="$(awk -v bytes="$memory_max" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
+  swap_gib="$(awk -v bytes="$swap_current" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
+  if ! printf 'memory approaching the run ceiling: %s GiB of %s GiB in use after reclaimable cache, %s GiB swap in use — finish this stage and hand off\n' \
+    "$pressure_gib" "$maximum_gib" "$swap_gib" >"$pressure_signal"; then
+    supervisor_failure=true
+    failure_stage="memory-pressure-watch"
+    failure_cause="could not write memory-pressure signal $pressure_signal"
+    return 1
+  fi
+  pressure_latched=true
+}
+
 failure_stage="lead-launch"
 failure_cause="Claude lead launch failed"
 last_activity_signature="$(
-  find "$MINOS_RUN_DIR" -path "$HOME" -prune -o -printf '%T@:%i:%s\n' 2>/dev/null |
+  find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" \) -prune \
+    -o -printf '%T@:%i:%s\n' 2>/dev/null |
     LC_ALL=C sort -rn |
     head -n 1
 )"
@@ -248,21 +318,26 @@ while :; do
   # 1. The lead has declared that all terminal obligations are complete. The
   #    result is scratch; the forge and failure log carry the durable outcome.
   if [ -f "$completion_marker" ] &&
-    grep -Eqx 'clean|non-clean' "$completion_marker" 2>/dev/null; then
+    grep -Eqx 'clean|non-clean|continuation' "$completion_marker" 2>/dev/null; then
+    if grep -Eqx 'continuation' "$completion_marker" 2>/dev/null; then
+      echo "run-body: lead ended this run as a continuation"
+    fi
     break
   fi
+
+  sample_memory_pressure
 
   # 2. Work by the lead and its subprocesses changes the run tree outside the
   #    isolated home. Exclude home because both this supervisor's roster poll
   #    and Claude's daemon can update config, job state, caches and updater
   #    downloads there without useful lead work.
   activity_signature="$(
-    find "$MINOS_RUN_DIR" -path "$HOME" -prune -o -printf '%T@:%i:%s\n' 2>/dev/null |
+    find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" \) -prune \
+      -o -printf '%T@:%i:%s\n' 2>/dev/null |
       LC_ALL=C sort -rn |
       head -n 1
   )"
-  if [ -n "$activity_signature" ] &&
-    [ "$activity_signature" != "$last_activity_signature" ]; then
+  if [ "$activity_signature" != "$last_activity_signature" ]; then
     last_activity_signature="$activity_signature"
     lead_activity_seen=true
     last_activity_at="$(date +%s)"
