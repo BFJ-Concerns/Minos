@@ -40,8 +40,136 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("open dependency defers until the dependency closes", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setDependencies([]map[string]any{{
+			"number": 7, "state": "open",
+			"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+		}})
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		var commands []string
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			commands = append(commands, name)
+			return nil, nil
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "deferred: open dependencies: minos-e2e-owner/prerequisite#7" {
+			t.Fatalf("result = %q", result)
+		}
+		if len(commands) != 0 {
+			t.Fatalf("deferred pull request ran commands: %v", commands)
+		}
+
+		state.setDependencies([]map[string]any{{
+			"number": 7, "state": "closed",
+			"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+		}})
+		result, err = reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "started" || !slices.Equal(commands, []string{"systemctl", "systemd-run"}) {
+			t.Fatalf("result after close = %q, commands = %v", result, commands)
+		}
+	})
+
+	t.Run("cross-repository dependency is carried by the snapshot and deferred", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setDependencies([]map[string]any{{
+			"number": 42, "state": "open",
+			"repository": map[string]any{"full_name": "another-owner/another-repo"},
+		}})
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("dependency-blocked pull request reached %s", name)
+			return nil, nil
+		}
+
+		snapshot, err := currentSnapshot(t.Context(), cfg, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !snapshot.DependenciesAvailable || len(snapshot.OpenDependencies) != 1 ||
+			snapshot.OpenDependencies[0].Repository != "another-owner/another-repo" ||
+			snapshot.OpenDependencies[0].Number != 42 {
+			t.Fatalf("dependency snapshot = %#v", snapshot)
+		}
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "deferred: open dependencies: another-owner/another-repo#42" {
+			t.Fatalf("result = %q", result)
+		}
+	})
+
+	t.Run("open dependency on a later page is deferred", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setDependencyPages([][]map[string]any{
+			{{
+				"number": 7, "state": "closed",
+				"repository": map[string]any{"full_name": "minos-e2e-owner/closed-first"},
+			}},
+			{{
+				"number": 8, "state": "open",
+				"repository": map[string]any{"full_name": "minos-e2e-owner/open-second"},
+			}},
+		})
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("dependency-blocked pull request reached %s", name)
+			return nil, nil
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "deferred: open dependencies: minos-e2e-owner/open-second#8" {
+			t.Fatalf("result = %q", result)
+		}
+	})
+
+	t.Run("unreadable dependencies defer with visible uncertainty", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setDependenciesFailure(http.StatusServiceUnavailable)
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("dependency-uncertain pull request reached %s", name)
+			return nil, nil
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "deferred: dependency state unavailable: forge returned HTTP 503" {
+			t.Fatalf("result = %q", result)
+		}
+	})
+
 	t.Run("Minos review with a missing terminal status is repaired without a new run", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
+		state.setDependencies([]map[string]any{{
+			"number": 7, "state": "open",
+			"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+		}})
 		state.setReviews([]map[string]any{{
 			"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
 			"body": "ordinary review", "user": map[string]any{"login": "Minos"},
@@ -928,17 +1056,20 @@ func installAnchoredWorkspace(t *testing.T, state *forgejoFixtureState, path str
 }
 
 type forgejoFixtureState struct {
-	t              *testing.T
-	pullRequest    map[string]any
-	repository     map[string]any
-	reviews        []map[string]any
-	statuses       []map[string]any
-	actionRuns     []map[string]any
-	actionJobs     map[int64][]map[string]any
-	actionLogs     map[int64]string
-	server         *httptest.Server
-	tokenPath      string
-	adaptationPath string
+	t               *testing.T
+	pullRequest     map[string]any
+	repository      map[string]any
+	reviews         []map[string]any
+	statuses        []map[string]any
+	dependencies    []map[string]any
+	dependencyPages [][]map[string]any
+	dependencyCode  int
+	actionRuns      []map[string]any
+	actionJobs      map[int64][]map[string]any
+	actionLogs      map[int64]string
+	server          *httptest.Server
+	tokenPath       string
+	adaptationPath  string
 
 	mu                       sync.Mutex
 	assignees                []string
@@ -990,7 +1121,7 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any),
 		diffNewSide: make(map[string][][2]int64), positionRewrites: make(map[string]map[int64]int64),
 		actionJobs: make(map[int64][]map[string]any), actionLogs: make(map[int64]string),
-		sourceBranchExists: true,
+		dependencies: []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
 	}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
@@ -1087,6 +1218,27 @@ func (s *forgejoFixtureState) setStatuses(statuses []map[string]any) {
 	s.statuses = statuses
 }
 
+func (s *forgejoFixtureState) setDependencies(dependencies []map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dependencies = dependencies
+	s.dependencyPages = nil
+	s.dependencyCode = http.StatusOK
+}
+
+func (s *forgejoFixtureState) setDependencyPages(pages [][]map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dependencyPages = pages
+	s.dependencyCode = http.StatusOK
+}
+
+func (s *forgejoFixtureState) setDependenciesFailure(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dependencyCode = status
+}
+
 func (s *forgejoFixtureState) setAnnexeCloneURL(cloneURL string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1145,6 +1297,24 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.annexeCloneURL})
 	case r.Method == http.MethodGet && path == pullPath:
 		writeFixtureJSON(s.t, w, s.pullRequest)
+	case r.Method == http.MethodGet && path == issuePath+"/dependencies":
+		if s.dependencyCode != http.StatusOK {
+			http.Error(w, "dependency fixture failure", s.dependencyCode)
+			return
+		}
+		if s.dependencyPages != nil {
+			page, err := strconv.Atoi(r.URL.Query().Get("page"))
+			if err != nil || page < 1 {
+				page = 1
+			}
+			if page > len(s.dependencyPages) {
+				writeFixtureJSON(s.t, w, []map[string]any{})
+				return
+			}
+			writeFixtureJSON(s.t, w, s.dependencyPages[page-1])
+			return
+		}
+		writeFixtureJSON(s.t, w, s.dependencies)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/branches/main"):
 		base := s.pullRequest["base"].(map[string]any)
 		writeFixtureJSON(s.t, w, map[string]any{
