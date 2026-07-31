@@ -63,7 +63,6 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo.Adaptation.Test = "make test"
 	repo.Policy.AutoMerge = true
 	repo.Review.Threshold = "Medium"
-	repo.Review.ClusterCap = 4
 	repo.Review.MaximumRounds = 7
 	facts := Facts{
 		Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7",
@@ -97,7 +96,6 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_RUN_BODY=/opt/minos/run-body/run-body",
 		"MINOS_AUTO_MERGE=true",
 		"MINOS_REVIEW_THRESHOLD=Medium",
-		"MINOS_FIX_CLUSTER_CAP=4",
 		"MINOS_MAX_ROUNDS=7",
 	} {
 		assertArgument(t, systemdArgs, "--setenv")

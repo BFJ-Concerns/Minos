@@ -12,4 +12,3 @@ auto-merge = true
 
 [review]
 threshold = "High"
-cluster-cap = 5

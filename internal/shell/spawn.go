@@ -74,7 +74,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_RUN_BODY":         repo.Adaptation.RunBody,
 		"MINOS_AUTO_MERGE":       fmt.Sprintf("%t", repo.Policy.AutoMerge),
 		"MINOS_REVIEW_THRESHOLD": repo.Review.Threshold,
-		"MINOS_FIX_CLUSTER_CAP":  strconv.Itoa(repo.Review.ClusterCap),
 		"MINOS_MAX_ROUNDS":       maximumRounds,
 	}
 	exe, err := os.Executable()

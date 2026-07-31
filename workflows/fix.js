@@ -1,7 +1,7 @@
 export const meta = {
   name: "minos-fix-wave-dispatch",
   description: "Dispatch one prepared fix wave and retry ordinary failures once",
-  phases: [{ title: "Fix", detail: "repair prepared clusters and retry ordinary failures once" }],
+  phases: [{ title: "Fix", detail: "repair prepared findings and retry ordinary failures once" }],
 };
 
 const FIX_MODEL = "gpt-5.6-sol";
@@ -38,7 +38,7 @@ function verificationInstruction(kind, command) {
   return `Run this configured ${kind} command before returning: ${JSON.stringify(command)}\n`;
 }
 
-function fixPrompt(plan, cluster, attempt) {
+function fixPrompt(plan, dispatch, attempt) {
   const brief = plan.input.fixerBrief;
   const verification = plan.input.verification || { build: "", tests: "" };
   return (
@@ -49,8 +49,7 @@ function fixPrompt(plan, cluster, attempt) {
     `${plan.input.guidance.content}\n</project-guidance>\n\n` +
     `Workspace: ${plan.input.workspace}\nAttempt: ${attempt} of ${plan.classification === "single-wave" ? 1 : 2}\n` +
     `Wave fingerprint: ${plan.fingerprint}\n` +
-    `Assigned files: ${cluster.files.join(", ")}\n` +
-    `Confirmed findings: ${JSON.stringify(cluster.findings)}\n` +
+    `Confirmed findings: ${JSON.stringify(dispatch.findings)}\n` +
     verificationInstruction("build", verification.build) +
     verificationInstruction("test", verification.tests) +
     `Return one result for every findingKey. Commit completed repairs, return the commit SHA, and do not push.`
@@ -89,7 +88,6 @@ function validPlan(plan) {
     plan.input.guidance &&
     plan.input.fixerBrief &&
     Array.isArray(plan.findings) &&
-    Array.isArray(plan.clusters) &&
     Array.isArray(plan.dispatches) &&
     Array.isArray(plan.priorConfirmedUnfixed)
   );
@@ -106,27 +104,38 @@ if (!validPlan(plan))
 
 phase("Fix");
 
+const findingsByKey = new Map(plan.findings.map((finding) => [finding.key, finding]));
+const preparedDispatches = plan.dispatches.map((dispatch) => ({
+  ...dispatch,
+  findings: Array.isArray(dispatch.findingKeys)
+    ? dispatch.findingKeys.map((key) => findingsByKey.get(key))
+    : [],
+}));
+if (preparedDispatches.some((dispatch) =>
+  dispatch.findings.length !== dispatch.findingKeys?.length || dispatch.findings.some((finding) => !finding)))
+  return failedResult(plan, "fix dispatch names a finding absent from the prepared plan");
+
 if (plan.classification === "single-wave") {
-  const results = await parallel(plan.clusters.map((cluster, index) => () =>
-    agent(fixPrompt(plan, cluster, 1), {
+  const results = await parallel(preparedDispatches.map((dispatch) => () =>
+    agent(fixPrompt(plan, dispatch, 1), {
       engine: "codex",
       schema: fixResultSchema,
       model: FIX_MODEL,
       effort: "high",
       isolation: "worktree",
-      label: plan.dispatches[index].label,
+      label: dispatch.label,
       phase: "Fix",
     })));
   const commits = [];
   const fixed = [];
   const confirmedUnfixed = [];
-  plan.clusters.forEach((cluster, index) => {
+  preparedDispatches.forEach((dispatch, index) => {
     const result = results[index];
     const returned = new Map(Array.isArray(result && result.fixes)
       ? result.fixes.map((entry) => [entry.findingKey, entry])
       : []);
     let usedCommit = false;
-    for (const finding of cluster.findings) {
+    for (const finding of dispatch.findings) {
       const entry = returned.get(finding.key);
       if (result && result.commit && entry && entry.status === "fixed" && entry.writeUp) {
         usedCommit = true;
@@ -173,64 +182,70 @@ if (plan.classification === "single-wave") {
 }
 
 const dispatches = [...plan.dispatches];
-const firstResults = await parallel(plan.clusters.map((cluster) => () =>
-  agent(fixPrompt(plan, cluster, 1), {
+const firstResults = await parallel(preparedDispatches.map((dispatch) => () =>
+  agent(fixPrompt(plan, dispatch, 1), {
     engine: "codex",
     schema: fixResultSchema,
     model: FIX_MODEL,
     effort: "high",
     isolation: "worktree",
-    label: cluster.id,
+    label: dispatch.label,
     phase: "Fix",
   })));
 
 const fixed = new Map();
 const commits = [];
-const retryClusters = [];
-plan.clusters.forEach((cluster, index) => {
+const retryDispatches = [];
+preparedDispatches.forEach((dispatch, index) => {
   const result = firstResults[index];
   const returned = new Map(Array.isArray(result && result.fixes)
     ? result.fixes.map((entry) => [entry.findingKey, entry])
     : []);
   const failed = [];
-  for (const finding of cluster.findings) {
+  for (const finding of dispatch.findings) {
     const entry = returned.get(finding.key);
     if (result && result.commit && entry && entry.status === "fixed" && entry.writeUp) {
       fixed.set(finding.key, { finding, writeUp: entry.writeUp, commit: result.commit });
     } else failed.push(finding);
   }
-  if (result && result.commit && cluster.findings.some((finding) => fixed.has(finding.key)))
+  if (result && result.commit && dispatch.findings.some((finding) => fixed.has(finding.key)))
     commits.push(result.commit);
   if (failed.length > 0)
-    retryClusters.push({ ...cluster, id: `${cluster.id}-retry`, findings: failed });
+    retryDispatches.push({
+      id: `${dispatch.id}-retry`,
+      label: `${dispatch.label}-retry`,
+      attempt: 2,
+      findingKeys: failed.map((finding) => finding.key),
+      findings: failed,
+    });
 });
 
-for (const cluster of retryClusters)
+for (const dispatch of retryDispatches)
   dispatches.push({
-    label: cluster.id,
-    attempt: 2,
-    files: cluster.files,
-    findingKeys: cluster.findings.map((finding) => finding.key),
+    id: dispatch.id,
+    label: dispatch.label,
+    attempt: dispatch.attempt,
+    findingKeys: dispatch.findingKeys,
   });
-const retryResults = await parallel(retryClusters.map((cluster) => () =>
-  agent(fixPrompt(plan, cluster, 2), {
+const retryResults = await parallel(retryDispatches.map((dispatch) => () =>
+  agent(fixPrompt(plan, dispatch, 2), {
     engine: "codex",
     schema: fixResultSchema,
     model: FIX_MODEL,
     effort: "high",
     isolation: "worktree",
-    label: cluster.id,
+    label: dispatch.label,
     phase: "Fix",
   })));
 
 const newlyUnfixed = [];
-retryClusters.forEach((cluster, index) => {
+retryDispatches.forEach((dispatch, index) => {
   const result = retryResults[index];
   const returned = new Map(Array.isArray(result && result.fixes)
     ? result.fixes.map((entry) => [entry.findingKey, entry])
     : []);
   let usedCommit = false;
-  for (const finding of cluster.findings) {
+  for (const finding of dispatch.findings) {
     const entry = returned.get(finding.key);
     if (result && result.commit && entry && entry.status === "fixed" && entry.writeUp) {
       fixed.set(finding.key, { finding, writeUp: entry.writeUp, commit: result.commit });

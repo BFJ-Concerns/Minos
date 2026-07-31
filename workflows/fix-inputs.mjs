@@ -6,11 +6,26 @@ import { fileURLToPath } from "node:url";
 
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 
-const reviewPath = process.argv[2];
-const recordPath = process.argv[3];
-const singleWave = process.argv.includes("--single-wave");
+const positionals = [];
+let singleWave = false;
+let groupingPath = null;
+let groupingRequested = false;
+for (let index = 2; index < process.argv.length; index += 1) {
+  const value = process.argv[index];
+  if (value === "--single-wave") singleWave = true;
+  else if (value === "--grouping") {
+    groupingRequested = true;
+    const candidate = process.argv[index + 1];
+    if (candidate && !candidate.startsWith("--")) {
+      groupingPath = candidate;
+      index += 1;
+    }
+  } else if (value.startsWith("--")) throw new Error(`unknown fix input option ${value}`);
+  else positionals.push(value);
+}
+const [reviewPath, recordPath] = positionals;
 if (!reviewPath) {
-  process.stderr.write("usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave]\n");
+  process.stderr.write("usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave] [--grouping FILE]\n");
   process.exitCode = 2;
 } else {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -31,13 +46,21 @@ if (!reviewPath) {
   const runRecord = recordPath && existsSync(recordPath)
     ? JSON.parse(readFileSync(recordPath, "utf8"))
     : { round: 0, confirmedUnfixed: [] };
+  let grouping;
+  if (groupingRequested) {
+    try {
+      grouping = JSON.parse(readFileSync(groupingPath, "utf8"));
+    } catch {
+      grouping = null;
+    }
+  }
   const result = {
     review: JSON.parse(readFileSync(reviewPath, "utf8")),
     threshold: process.env.MINOS_REVIEW_THRESHOLD || "High",
-    clusterCap: Number.parseInt(process.env.MINOS_FIX_CLUSTER_CAP || "5", 10),
     maximumRounds,
     runRecord,
     singleWave,
+    ...(groupingRequested ? { grouping } : {}),
     workspace: process.env.MINOS_WORKSPACE || orientation.repository,
     verification: {
       build: process.env.MINOS_BUILD_CMD || "",

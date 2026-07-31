@@ -55,7 +55,7 @@ func TestLoadRepoConfigDefaultsReviewLoopKnobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repos) != 1 || repos[0].Review.Threshold != "High" || repos[0].Review.ClusterCap != 5 || repos[0].Review.MaximumRounds != 0 {
+	if len(repos) != 1 || repos[0].Review.Threshold != "High" || repos[0].Review.MaximumRounds != 0 {
 		t.Fatalf("review defaults = %+v", repos)
 	}
 }
@@ -67,7 +67,6 @@ func TestLoadRepoConfigValidatesReviewLoopKnobs(t *testing.T) {
 		want   string
 	}{
 		{name: "threshold", review: "threshold = \"Urgent\"", want: "review.threshold"},
-		{name: "cluster cap", review: "cluster-cap = -1", want: "review.cluster-cap"},
 		{name: "maximum rounds", review: "maximum-rounds = -1", want: "review.maximum-rounds"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

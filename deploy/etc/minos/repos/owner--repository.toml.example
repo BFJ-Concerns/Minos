@@ -14,5 +14,4 @@ auto-merge = false
 
 [review]
 threshold = "High"
-cluster-cap = 5
 # maximum-rounds is optional and defaults unset.
