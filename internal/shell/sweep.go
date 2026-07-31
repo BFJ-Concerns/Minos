@@ -54,6 +54,13 @@ func SweepCommand(ctx context.Context, args []string) error {
 			candidates = append(candidates, sweepCandidate{repo: repo, facts: facts, priority: priority})
 		}
 	}
+	factsByUnit := make(map[string]Facts, len(candidates))
+	for _, candidate := range candidates {
+		factsByUnit[UnitName(candidate.facts)] = candidate.facts
+	}
+	if err := sweepRunResidue(ctx, cfg, factsByUnit); err != nil {
+		log.Printf("sweep run residue: %v", err)
+	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].priority < candidates[j].priority
 	})

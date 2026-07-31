@@ -10,7 +10,9 @@ machine itself is the containment boundary.
    `scripts/run-body/` under `/opt/minos/run-body` with the same basename and
    executable mode: `run-body`, `setup-workspace`, `pre-push-guard`,
    `reconcile-target`, `complete-reconciliation`, `reopen-conflict`,
-   `show-resolutions`, `sync-target` and `watch-snapshot`. Install `lifecycle`
+   `show-resolutions`, `sync-target`, `watch-snapshot`, `archive-run` and
+   `forgejo-askpass`. Install `scripts/provision-archive-transport` under
+   `/opt/minos`, with executable mode. Install `lifecycle`
    under `/opt/minos/lifecycle`, and `skills/foundry/root-cause` under
    `/opt/minos/skills/foundry/root-cause`.
 3. Run `scripts/install-review-runtime /opt/minos`. It installs the complete
@@ -28,7 +30,9 @@ machine itself is the containment boundary.
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
      non-interactive Codex ChatGPT authentication state; and
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
-     `MINOS_ROOT_CAUSE_SKILL` and the other installed paths match the deployment.
+   `MINOS_ROOT_CAUSE_SKILL`, `MINOS_ARCHIVE_RUN` and the other installed paths
+   match the deployment. Configure `archive.env` with the archive SSH host,
+   destination, identity and pinned known-hosts file.
 
    `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
    3600-second no-output backstop. Keep the lifecycle's fallback wake shorter
@@ -88,6 +92,15 @@ finding carries a verdict. Fix workflows
 use the same launcher directly. The foreground run body waits for the exact
 background session and stops it at one of those terminal conditions. The
 transient systemd unit bounds a wedged run at 12 hours.
+
+After the lead has finished its forge writes, `run-body` streams its report,
+Claude transcripts, Codex rollout JSONLs and Ensemble run records as a zstd tar
+archive to the configured destination. This presentation archive is
+best-effort and cannot change the run result. Before each reconciliation pass,
+the sweep also salvages dead run directories into the dedicated Minos annexe
+checkout configured by `runs.failures-repo`, attempts to commit and push the
+digest, archives their transcripts, and removes the scratch tree. Active units
+and directories named by valid pending continuation handoffs are preserved.
 
 When a required check is genuinely red or the pull request carries the
 `Flaky Test` label, the lead dispatches a fix agent with the vendored root-cause

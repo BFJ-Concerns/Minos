@@ -850,6 +850,25 @@ func TestProcessStatusIsZombie(t *testing.T) {
 	}
 }
 
+func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	archive, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "archive-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.appendConfig(t, map[string]string{
+		"MINOS_ARCHIVE_RUN":    archive,
+		"MINOS_ARCHIVE_CONFIG": filepath.Join(fixture.root, "missing-archive.env"),
+	})
+	out, err := fixture.execute(map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+	if err != nil {
+		t.Fatalf("run-body failed because archiving failed: %v\n%s", err, out)
+	}
+	if got := strings.Count(string(out), "minos: could not archive run evidence"); got != 1 {
+		t.Fatalf("archive diagnostics = %d, want one\n%s", got, out)
+	}
+}
+
 type runBodyFixture struct {
 	root              string
 	configRoot        string

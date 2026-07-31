@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+
+: "${MINOS_FORGE_CREDENTIAL_FILE:?MINOS_FORGE_CREDENTIAL_FILE is required}"
+case "${1:-}" in
+  *Username*) printf '%s\n' 'minos' ;;
+  *Password*) sed -n '1p' "$MINOS_FORGE_CREDENTIAL_FILE" ;;
+  *) exit 1 ;;
+esac

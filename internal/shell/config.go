@@ -25,7 +25,11 @@ type ServiceConfig struct {
 	} `toml:"listener"`
 	Forges map[string]ForgeConfig `toml:"forges"`
 	Runs   struct {
-		Dir string `toml:"dir"`
+		Dir                    string `toml:"dir"`
+		FailuresRepo           string `toml:"failures-repo"`
+		FailuresCredentialFile string `toml:"failures-credential-file"`
+		GitAskPass             string `toml:"git-askpass"`
+		ArchiveCommand         string `toml:"archive-command"`
 	} `toml:"runs"`
 	Ensemble struct {
 		ConcurrencyClaude int `toml:"concurrency-claude"`
