@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+
+import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-inputs.mjs", import.meta.url));
@@ -93,11 +95,27 @@ function specialistResult(
   return { applicability, findings, outOfScopeObservations };
 }
 
+function findingsFromVerifierPrompt(prompt) {
+  const marker = "Findings: ";
+  const offset = prompt.lastIndexOf(marker);
+  assert.notEqual(offset, -1, "verifier prompt carries a findings array");
+  return JSON.parse(prompt.slice(offset + marker.length));
+}
+
+function verifierResult(prompt, verdictFor = () => ({ verdict: "upheld", confidence: 91, reason: "reproduced" })) {
+  return {
+    verdicts: findingsFromVerifierPrompt(prompt).map((entry) => ({
+      findingId: entry.id,
+      ...verdictFor(entry),
+    })),
+  };
+}
+
 function responder({ exploration = explorationFixture(), specialist, verify } = {}) {
   return (label, prompt, opts) => {
     if (label === "exploration") return typeof exploration === "function" ? exploration(label, prompt, opts) : exploration;
     if (label.startsWith("verify-"))
-      return verify ? verify(label, prompt, opts) : { verdict: "upheld", confidence: 91, reason: "reproduced" };
+      return verify ? verify(label, prompt, opts) : verifierResult(prompt);
     if (specialist) return specialist(label, prompt, opts);
     return specialistResult();
   };
@@ -105,6 +123,30 @@ function responder({ exploration = explorationFixture(), specialist, verify } = 
 
 function specialistCalls(calls) {
   return calls.filter((call) => call.opts.label?.startsWith("specialist-"));
+}
+
+function orientationPacketFromPrompt(prompt) {
+  const match = prompt.match(/Orientation packet: (.+)\nAssigned concern:/);
+  assert.ok(match, "specialist prompt carries a serialised orientation packet");
+  return match[1];
+}
+
+async function adjudicateEnvelope(t, envelope) {
+  const recordDir = mkdtempSync(join(tmpdir(), "minos-review-batch-record-"));
+  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
+  const archiveDir = join(recordDir, "runs", "cwd", "synthetic", "run");
+  mkdirSync(join(archiveDir, "agents"), { recursive: true });
+  writeFileSync(join(archiveDir, "manifest.json"), JSON.stringify({ status: "complete" }));
+  envelope.requiredModelEvidence.forEach((leg, index) => {
+    const agentDir = join(archiveDir, "agents", String(index + 1).padStart(6, "0"));
+    mkdirSync(agentDir);
+    writeFileSync(join(agentDir, "agent.json"), JSON.stringify({
+      label: leg.label,
+      status: "complete",
+      resolved_model: leg.pinnedModel,
+    }));
+  });
+  return adjudicate({ envelope, recordDir });
 }
 
 test("the script emits an envelope with every routed leg and raw verifier output", async () => {
@@ -187,6 +229,14 @@ test("each finding is verified by the family opposite its specialist", async () 
   assert.deepEqual([securityVerifier.opts.engine, securityVerifier.opts.model], ["codex", "gpt-5.6-sol"]);
 });
 
+test("specialists and verifiers use medium effort while exploration keeps its pin", async () => {
+  const { calls } = await runScript(ARGS, responder());
+  assert.equal(calls.find((call) => call.opts.label === "exploration").opts.effort, "high");
+  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "medium"));
+  assert.ok(calls.filter((call) => call.opts.label?.startsWith("verify-"))
+    .every((call) => call.opts.effort === "medium"));
+});
+
 test("a missing verifier result stays raw null for post-run adjudication", async () => {
   const { result } = await runScript(ARGS, responder({ verify: () => null }));
   assert.equal(result.proposedFindings.length, 1);
@@ -231,7 +281,7 @@ test("the review plan dispatches every requested specialist and retains the corr
   assert.deepEqual(specialistCalls(calls).map((call) => call.opts.label), result.dispatches.map((entry) => entry.label));
 });
 
-test("every specialist finding reaches opposite-family verification beyond the former bound", async () => {
+test("every specialist finding reaches its opposite-family verifier batch", async () => {
   const { result, calls } = await runScript(ARGS, responder({
     specialist: () => specialistResult([
       finding({ title: "one" }),
@@ -241,9 +291,179 @@ test("every specialist finding reaches opposite-family verification beyond the f
     ]),
   }));
   assert.deepEqual(result.proposedFindings.map((entry) => entry.title), ["one", "two", "three survives", "four survives"]);
-  const beyondBoundVerifier = calls.find((call) => call.opts.label === "verify-1-4-claude");
-  assert.ok(beyondBoundVerifier);
-  assert.match(beyondBoundVerifier.prompt, /"title":"four survives"/);
+  const verifier = calls.find((call) => call.opts.label === "verify-1-1-claude");
+  assert.ok(verifier);
+  assert.match(verifier.prompt, /"title":"four survives"/);
+});
+
+test("verifier dispatch groups seven specialists independently and caps batches at six", async () => {
+  const counts = [7, 1, 2, 3, 4, 5, 6];
+  const types = ["correctness", "security", "testing", "design", "correctness", "security", "testing"];
+  const plan = counts.map((_, index) => unit(`unit-${index + 1}`, types[index], [`pkg/f${index + 1}.go`]));
+  const { result, calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({ plan }),
+    specialist: (label) => {
+      const unitIndex = Number(label.split("-")[1]) - 1;
+      return specialistResult(Array.from({ length: counts[unitIndex] }, (_, findingIndex) => finding({
+        title: `unit ${unitIndex + 1} finding ${findingIndex + 1}`,
+        line: findingIndex + 1,
+      })));
+    },
+  }));
+
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-"));
+  assert.equal(result.proposedFindings.length, counts.reduce((total, count) => total + count, 0));
+  assert.equal(verifierCalls.length, 8);
+  assert.deepEqual(verifierCalls.map((call) => findingsFromVerifierPrompt(call.prompt).length), [6, 1, 1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(
+    result.requiredModelEvidence.filter((leg) => leg.role === "verifier").map((leg) => leg.findingIds.length),
+    [6, 1, 1, 2, 3, 4, 5, 6],
+  );
+  assert.deepEqual(verifierCalls.map((call) => call.opts.label), [
+    "verify-1-1-claude", "verify-1-2-claude", "verify-2-1-gpt", "verify-3-1-claude",
+    "verify-4-1-gpt", "verify-5-1-claude", "verify-6-1-gpt", "verify-7-1-claude",
+  ]);
+});
+
+for (const responseCase of [
+  {
+    name: "missing ids",
+    response(findings) {
+      return { verdicts: [findings[0], findings[2]].map((entry) => ({
+        findingId: entry.id, verdict: "upheld", confidence: 91, reason: "checked",
+      })) };
+    },
+    present: [true, false, true],
+  },
+  {
+    name: "duplicate ids",
+    response(findings) {
+      return { verdicts: [findings[0], findings[0], findings[1], findings[2]].map((entry) => ({
+        findingId: entry.id, verdict: "upheld", confidence: 91, reason: "checked",
+      })) };
+    },
+    present: [false, true, true],
+  },
+  {
+    name: "unknown ids",
+    response(findings) {
+      return { verdicts: [...findings, { id: "unknown-finding" }].map((entry) => ({
+        findingId: entry.id, verdict: "upheld", confidence: 91, reason: "checked",
+      })) };
+    },
+    present: [false, false, false],
+  },
+]) {
+  test(`a batched verifier response fails closed on ${responseCase.name}`, async () => {
+    const { result } = await runScript(ARGS, responder({
+      specialist: () => specialistResult([
+        finding({ title: "one" }),
+        finding({ title: "two", line: 4 }),
+        finding({ title: "three", line: 5 }),
+      ]),
+      verify: (_label, prompt) => responseCase.response(findingsFromVerifierPrompt(prompt)),
+    }));
+    assert.deepEqual(result.proposedFindings.map((entry) => Boolean(entry.rawVerifier)), responseCase.present);
+  });
+}
+
+test("a full synthetic batched run preserves per-finding adjudication", async (t) => {
+  const { result } = await runScript(ARGS, responder({
+    specialist: () => specialistResult([
+      finding({ title: "upheld one" }),
+      finding({ title: "refuted", line: 4 }),
+      finding({ title: "upheld two", line: 5 }),
+    ]),
+    verify: (_label, prompt) => verifierResult(prompt, (entry) => entry.title === "refuted"
+      ? { verdict: "refuted", confidence: 84, reason: "caller rejects the state" }
+      : { verdict: "upheld", confidence: 93, reason: "path remains reachable" }),
+  }));
+
+  assert.deepEqual(result.proposedFindings.map(({ id, rawVerifier }) => ({ id, rawVerifier })), [
+    {
+      id: "specialist-1-correctness-gpt:1",
+      rawVerifier: { verdict: "upheld", confidence: 93, reason: "path remains reachable" },
+    },
+    {
+      id: "specialist-1-correctness-gpt:2",
+      rawVerifier: { verdict: "refuted", confidence: 84, reason: "caller rejects the state" },
+    },
+    {
+      id: "specialist-1-correctness-gpt:3",
+      rawVerifier: { verdict: "upheld", confidence: 93, reason: "path remains reachable" },
+    },
+  ]);
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.deepEqual(verdict.confirmedFindings.map((entry) => entry.id), [
+    "specialist-1-correctness-gpt:1",
+    "specialist-1-correctness-gpt:3",
+  ]);
+  assert.deepEqual(
+    verdict.modelEvidence.find((entry) => entry.role === "verifier").findingIds,
+    result.proposedFindings.map((entry) => entry.id),
+  );
+});
+
+test("every specialist prompt carries the compact exploration orientation packet", async () => {
+  const exploration = explorationFixture({
+    files: [
+      { path: "cmd/minos/main.go", added: 12, deleted: 3 },
+      { path: "internal/review.go", added: 7, deleted: 11 },
+    ],
+    plan: [
+      unit("entrypoint", "correctness", ["cmd/minos/main.go"]),
+      unit("review", "design", ["internal/review.go"]),
+    ],
+  });
+  const { calls } = await runScript(enumeratedArgs("target-orientation", "head-orientation"), responder({ exploration }));
+  for (const call of specialistCalls(calls)) {
+    assert.match(call.prompt, /"commitRange":"target-orientation\.\.\.head-orientation"/);
+    assert.match(call.prompt, /"path":"cmd\/minos\/main\.go","added":12,"deleted":3/);
+    assert.match(call.prompt, /"path":"internal\/review\.go","added":7,"deleted":11/);
+    assert.match(call.prompt, /"unit":"entrypoint"/);
+    assert.match(call.prompt, /"unit":"review"/);
+  }
+});
+
+test("large exploration results keep every orientation packet within 32 KiB", async () => {
+  const files = Array.from({ length: 166 }, (_, index) => ({
+    path: `packages/${String(index).padStart(3, "0")}-${"changed-component-".repeat(9)}.js`,
+    added: index + 1,
+    deleted: index,
+  }));
+  const plan = Array.from({ length: 20 }, (_, index) => unit(
+    `unit-${index + 1}`,
+    ["correctness", "security", "testing", "design"][index % 4],
+    files.filter((_, fileIndex) => fileIndex % 20 === index).map((file) => file.path),
+  ));
+  const { calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({ files, plan }),
+    specialist: () => specialistResult([]),
+  }));
+
+  for (const call of specialistCalls(calls)) {
+    const packet = orientationPacketFromPrompt(call.prompt);
+    assert.ok(Buffer.byteLength(packet, "utf8") <= 32 * 1024, `packet is ${Buffer.byteLength(packet, "utf8")} bytes`);
+    assert.match(packet, /\+\d+ more files/);
+    assert.match(packet, /"scopeCount":\d+/);
+    assert.doesNotMatch(packet, /"scope":\[/);
+  }
+});
+
+test("specialist and verifier briefs pin the review-stage discipline", async () => {
+  const specialistBriefs = ["correctness", "security", "testing", "design", "repository"];
+  for (const brief of specialistBriefs) {
+    const content = await readFile(fileURLToPath(new URL(`./review-briefs/${brief}.md`, import.meta.url)), "utf8");
+    assert.match(content, /do not investigate outside your assigned boundary/i);
+    assert.match(content, /Do not build side experiments during proposal/);
+    if (brief !== "repository")
+      assert.match(content, /Trust the packet for orientation; read the diff for your scope directly\./);
+  }
+  const verifierBrief = await readFile(fileURLToPath(new URL("./review-briefs/verifier.md", import.meta.url)), "utf8");
+  assert.match(verifierBrief, /return exactly one verdict keyed by\s+finding id for every member/i);
+  assert.match(verifierBrief, /run the focused\s+confirming experiment described by the specialist/i);
+  assert.match(verifierBrief, /Return one structured verdict with an\s+independent confidence integer from 0 to 100\./);
 });
 
 test("the deterministic input binds shipped role prose and project guidance into every judgement leg", async () => {
