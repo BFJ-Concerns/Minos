@@ -1,10 +1,14 @@
 package shell
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -14,6 +18,8 @@ type sweepCandidate struct {
 	facts    Facts
 	priority int
 }
+
+var inspectHandoffSnapshot = currentSnapshot
 
 func SweepCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
@@ -54,6 +60,13 @@ func SweepCommand(ctx context.Context, args []string) error {
 			candidates = append(candidates, sweepCandidate{repo: repo, facts: facts, priority: priority})
 		}
 	}
+	factsByUnit := make(map[string]Facts, len(candidates))
+	for _, candidate := range candidates {
+		factsByUnit[UnitName(candidate.facts)] = candidate.facts
+	}
+	if err := sweepRunResidue(ctx, cfg, factsByUnit); err != nil {
+		log.Printf("sweep run residue: %v", err)
+	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].priority < candidates[j].priority
 	})
@@ -66,6 +79,76 @@ func SweepCommand(ctx context.Context, args []string) error {
 		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
 			log.Print(message)
 		}
+	}
+	if err := expireInactiveRunHandoffs(ctx, cfg, repos); err != nil {
+		log.Printf("expire inactive run handoffs: %v", err)
+	}
+	return nil
+}
+
+func expireInactiveRunHandoffs(ctx context.Context, cfg ServiceConfig, repos []RepoConfig) error {
+	configured := make(map[string]RepoConfig, len(repos))
+	for _, repo := range repos {
+		configured[repo.Owner+"\x00"+repo.Repo] = repo
+	}
+	paths, err := filepath.Glob(filepath.Join(cfg.Runs.Dir, ".handoffs", "*.json"))
+	if err != nil {
+		return fmt.Errorf("list continuation handoffs: %w", err)
+	}
+	var expiryErrors []error
+	for _, path := range paths {
+		original, err := os.ReadFile(path)
+		if err != nil {
+			expiryErrors = append(expiryErrors, fmt.Errorf("read continuation handoff %s: %w", filepath.Base(path), err))
+			continue
+		}
+		handoff, err := readRunHandoffStructure(path)
+		if err != nil {
+			continue
+		}
+		facts := Facts{Owner: handoff.PullRequest.Owner, Repo: handoff.PullRequest.Repo, PR: handoff.PullRequest.Number, HeadSHA: handoff.Head}
+		if UnitName(facts) != strings.TrimSuffix(filepath.Base(path), ".json") {
+			continue
+		}
+		repo, isConfigured := configured[facts.Owner+"\x00"+facts.Repo]
+		shouldExpire := !isConfigured
+		if isConfigured {
+			facts.Forge = repo.Forge
+			snapshot, snapshotErr := inspectHandoffSnapshot(ctx, cfg, facts)
+			if snapshotErr != nil {
+				expiryErrors = append(expiryErrors, fmt.Errorf("inspect continuation handoff %s: %w", filepath.Base(path), snapshotErr))
+				continue
+			}
+			shouldExpire = snapshot.Merged || snapshot.State == "closed"
+		}
+		if !shouldExpire {
+			continue
+		}
+		if err := removeUnchangedHandoff(cfg.Runs.Dir, path, original); err != nil {
+			expiryErrors = append(expiryErrors, err)
+		}
+	}
+	return errors.Join(expiryErrors...)
+}
+
+func removeUnchangedHandoff(runsDir, path string, original []byte) error {
+	unlock, err := lockAdmission(runsDir)
+	if err != nil {
+		return fmt.Errorf("lock continuation handoff expiry for %s: %w", filepath.Base(path), err)
+	}
+	defer unlock()
+	current, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("re-read continuation handoff %s: %w", filepath.Base(path), err)
+	}
+	if !bytes.Equal(current, original) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("expire continuation handoff %s: %w", filepath.Base(path), err)
 	}
 	return nil
 }

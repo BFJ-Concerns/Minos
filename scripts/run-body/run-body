@@ -18,6 +18,22 @@ stop_sccache() {
   sccache --stop-server >/dev/null 2>&1 || true
 }
 
+archive_run() {
+  [ -n "${MINOS_RUN_DIR:-}" ] || return 0
+  archive_command="${MINOS_ARCHIVE_RUN:-}"
+  if [ -z "$archive_command" ] && [ -n "${MINOS_CONFIG:-}" ]; then
+    archive_config="${MINOS_ARCHIVE_CONFIG:-${MINOS_CONFIG%/}/archive.env}"
+    if [ -r "$archive_config" ]; then
+      archive_command="$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-run"
+      MINOS_ARCHIVE_CONFIG="$archive_config"
+      export MINOS_ARCHIVE_CONFIG
+    fi
+  fi
+  [ -n "$archive_command" ] || return 0
+  "$archive_command" "$MINOS_RUN_DIR" \
+    "${MINOS_OWNER:-unknown}-${MINOS_REPO_NAME:-unknown}-pr${MINOS_PR:-unknown}" || true
+}
+
 append_failure() {
   [ -n "${MINOS_FAILURE_LOG:-}" ] || return 0
 
@@ -42,6 +58,7 @@ on_exit() {
   fi
   stop_session
   stop_sccache
+  archive_run
   exit "$status"
 }
 trap 'on_exit $?' 0

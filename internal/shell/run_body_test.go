@@ -850,6 +850,64 @@ func TestProcessStatusIsZombie(t *testing.T) {
 	}
 }
 
+func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	archive, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "archive-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(fixture.root, "archive-bin")
+	destination := filepath.Join(fixture.root, "archive-destination")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nexit 3\n")
+	writeScript(t, filepath.Join(bin, "ssh"), `#!/usr/bin/env sh
+last=""
+for argument in "$@"; do last="$argument"; done
+exec sh -c "$last"
+`)
+	identity := filepath.Join(fixture.root, "archive-identity")
+	knownHosts := filepath.Join(fixture.root, "archive-known-hosts")
+	for _, path := range []string{identity, knownHosts} {
+		if err := os.WriteFile(path, []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archiveConfig := filepath.Join(fixture.root, "archive.env")
+	config := strings.Join([]string{
+		`MINOS_ARCHIVE_HOST="fixture"`,
+		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
+		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
+		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(archiveConfig, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.appendConfig(t, map[string]string{
+		"MINOS_ARCHIVE_RUN":    archive,
+		"MINOS_ARCHIVE_CONFIG": archiveConfig,
+	})
+	out, err := fixture.execute(map[string]string{
+		"MINOS_TEST_COMPLETION_MARKER": "clean",
+		"PATH":                         bin + ":" + os.Getenv("PATH"),
+	})
+	if err != nil {
+		t.Fatalf("run-body failed because archiving failed: %v\n%s", err, out)
+	}
+	if got := strings.Count(string(out), "minos: could not archive run evidence"); got != 1 {
+		t.Fatalf("archive diagnostics = %d, want one\n%s", got, out)
+	}
+	if matches, err := filepath.Glob(filepath.Join(destination, "*.tar.zst")); err != nil {
+		t.Fatal(err)
+	} else if len(matches) != 0 {
+		t.Fatalf("failed archive was promoted: %v", matches)
+	}
+}
+
 type runBodyFixture struct {
 	root              string
 	configRoot        string

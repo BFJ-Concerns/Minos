@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+run_dir="${1:-}"
+label="${2:-run}"
+config="${MINOS_ARCHIVE_CONFIG:-/etc/minos/archive.env}"
+
+archive_failed() {
+  printf 'minos: could not archive run evidence for %s\n' "$label" >&2
+  exit 1
+}
+
+[ -d "$run_dir" ] || archive_failed
+[ -r "$config" ] || archive_failed
+
+set -a
+# shellcheck source=/dev/null
+. "$config" 2>/dev/null || archive_failed
+set +a
+
+[ -n "${MINOS_ARCHIVE_HOST:-}" ] || archive_failed
+[ -n "${MINOS_ARCHIVE_DESTINATION:-}" ] || archive_failed
+[ -r "${MINOS_ARCHIVE_IDENTITY_FILE:-}" ] || archive_failed
+[ -r "${MINOS_ARCHIVE_KNOWN_HOSTS:-}" ] || archive_failed
+case "$MINOS_ARCHIVE_DESTINATION" in
+  *"'"*|*"
+"*) archive_failed ;;
+esac
+
+safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '-')"
+timestamp="$(date -u '+%Y%m%dT%H%M%SZ' 2>/dev/null)" || archive_failed
+archive_name="${timestamp}-${safe_label}-$(basename "$run_dir").tar.zst"
+remote_path="${MINOS_ARCHIVE_DESTINATION%/}/${archive_name}"
+partial_path="${remote_path}.partial"
+
+archive_ssh() {
+  ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
+    -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \
+    -o IdentitiesOnly=yes -o "IdentityFile=$MINOS_ARCHIVE_IDENTITY_FILE" \
+    -o "UserKnownHostsFile=$MINOS_ARCHIVE_KNOWN_HOSTS" \
+    "$MINOS_ARCHIVE_HOST" "$1"
+}
+
+(
+  cd "$run_dir" || exit 1
+  find . -type f \( \
+    -path './run-report.md' -o -path './report.md' -o -path './failure.log' -o -path './failures.log' -o \
+    -path './home/.claude/projects/*' -o -path './home/.codex/sessions/*.jsonl' -o \
+    -path './ensemble-records/*' -o -path './loop-record.json' \
+  \) -print0 2>/dev/null |
+    tar --null --files-from=- -cf - 2>/dev/null |
+    zstd -q -T0 -c 2>/dev/null |
+    archive_ssh "cat > '$partial_path'" >/dev/null 2>&1 || exit 1
+  archive_ssh "test -s '$partial_path'" >/dev/null 2>&1 || exit 1
+  archive_ssh "mv -- '$partial_path' '$remote_path'" >/dev/null 2>&1 || exit 1
+) || archive_failed
