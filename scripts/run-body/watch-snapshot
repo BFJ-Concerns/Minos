@@ -23,7 +23,7 @@ trap 'exit 143' 15
 started="$(date +%s)"
 
 snapshot_key() {
-  jq -cS '{head_sha,target_sha,statuses,labels}' "$1"
+  jq -cS '{head_sha,target_sha,statuses,labels,dependencies_available,dependency_error,open_dependencies}' "$1"
 }
 baseline_key="$(snapshot_key "$baseline")"
 
