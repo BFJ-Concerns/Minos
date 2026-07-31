@@ -13,3 +13,7 @@ signature-header = "X-Forgejo-Signature"
 
 [runs]
 dir = "/var/lib/minos/runs"
+
+[ensemble]
+concurrency-claude = 10
+concurrency-codex = 6

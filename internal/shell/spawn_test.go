@@ -105,6 +105,8 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 
 	cfg := ServiceConfig{Root: "/etc/minos"}
 	cfg.Runs.Dir = t.TempDir()
+	cfg.Ensemble.ConcurrencyClaude = 10
+	cfg.Ensemble.ConcurrencyCodex = 6
 	cfg.Forges = map[string]ForgeConfig{
 		"forgejo": {APIBase: "http://forge.local", CredentialFile: "/etc/minos/forge.token"},
 	}
@@ -148,6 +150,8 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_AUTO_MERGE=true",
 		"MINOS_REVIEW_THRESHOLD=Medium",
 		"MINOS_MAX_ROUNDS=7",
+		"ENSEMBLE_CONCURRENCY_CLAUDE=10",
+		"ENSEMBLE_CONCURRENCY_CODEX=6",
 	} {
 		assertArgument(t, systemdArgs, "--setenv")
 		assertArgument(t, systemdArgs, value)

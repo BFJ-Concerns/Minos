@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -659,6 +660,60 @@ func TestVendoredEnsembleBundleRunsWithoutRepositoryDependencies(t *testing.T) {
 	})
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("vendored Ensemble bundle is not self-contained: %v\n%s", err, output)
+	}
+}
+
+func TestVendoredEnsembleResolvesConfiguredConcurrencyFromRunEnvironment(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	bundle, err := filepath.Abs(filepath.Join("..", "..", "runtime", "ensemble.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	workflow := filepath.Join(root, "workflow.mjs")
+	if err := os.WriteFile(workflow, []byte("export default {};\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordDir := filepath.Join(root, "records")
+	cmd := exec.Command("node", bundle, workflow)
+	cmd.Dir = root
+	cmd.Env = environmentWithOverrides(map[string]string{
+		"HOME":                        filepath.Join(root, "home"),
+		"XDG_CONFIG_HOME":             filepath.Join(root, "config"),
+		"ENSEMBLE_CONCURRENCY_CLAUDE": "10",
+		"ENSEMBLE_CONCURRENCY_CODEX":  "6",
+		"ENSEMBLE_RUN_RECORD":         "on",
+		"ENSEMBLE_RUN_RECORD_DIR":     recordDir,
+	})
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("vendored Ensemble accepted invalid probe workflow\n%s", output)
+	}
+	manifests, err := filepath.Glob(filepath.Join(recordDir, "runs", "*", "*", "*", "manifest.json"))
+	if err != nil || len(manifests) != 1 {
+		t.Fatalf("run manifests = %v, error = %v; want one manifest", manifests, err)
+	}
+	data, err := os.ReadFile(manifests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Concurrency struct {
+			Engines map[string]struct {
+				Layer string `json:"layer"`
+				Value int    `json:"value"`
+			} `json:"engines"`
+		} `json:"concurrency"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for engine, want := range map[string]int{"claude": 10, "codex": 6} {
+		got, ok := manifest.Concurrency.Engines[engine]
+		if !ok || got.Value != want || got.Layer != "env" {
+			t.Fatalf("%s concurrency = %+v, present = %t; want env value %d", engine, got, ok, want)
+		}
 	}
 }
 
