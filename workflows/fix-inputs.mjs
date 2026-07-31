@@ -6,10 +6,12 @@ import { fileURLToPath } from "node:url";
 
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 
+const usage = "usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave] [--grouping FILE]\n";
 const positionals = [];
 let singleWave = false;
 let groupingPath = null;
 let groupingRequested = false;
+let argumentError = null;
 for (let index = 2; index < process.argv.length; index += 1) {
   const value = process.argv[index];
   if (value === "--single-wave") singleWave = true;
@@ -19,13 +21,35 @@ for (let index = 2; index < process.argv.length; index += 1) {
     if (candidate && !candidate.startsWith("--")) {
       groupingPath = candidate;
       index += 1;
+    } else {
+      argumentError = "fix input option --grouping requires a file";
+      break;
     }
-  } else if (value.startsWith("--")) throw new Error(`unknown fix input option ${value}`);
-  else positionals.push(value);
+  } else if (value.startsWith("--")) {
+    argumentError = `unknown fix input option ${value}`;
+    break;
+  } else positionals.push(value);
+}
+let grouping;
+if (!argumentError && groupingRequested) {
+  let groupingContent;
+  try {
+    groupingContent = readFileSync(groupingPath, "utf8");
+  } catch {
+    argumentError = `fix grouping file is unreadable: ${groupingPath}`;
+  }
+  if (!argumentError) {
+    try {
+      grouping = JSON.parse(groupingContent);
+    } catch {
+      grouping = null;
+    }
+  }
 }
 const [reviewPath, recordPath] = positionals;
-if (!reviewPath) {
-  process.stderr.write("usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave] [--grouping FILE]\n");
+if (argumentError || !reviewPath) {
+  if (argumentError) process.stderr.write(`${argumentError}\n`);
+  process.stderr.write(usage);
   process.exitCode = 2;
 } else {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -46,14 +70,6 @@ if (!reviewPath) {
   const runRecord = recordPath && existsSync(recordPath)
     ? JSON.parse(readFileSync(recordPath, "utf8"))
     : { round: 0, confirmedUnfixed: [] };
-  let grouping;
-  if (groupingRequested) {
-    try {
-      grouping = JSON.parse(readFileSync(groupingPath, "utf8"));
-    } catch {
-      grouping = null;
-    }
-  }
   const result = {
     review: JSON.parse(readFileSync(reviewPath, "utf8")),
     threshold: process.env.MINOS_REVIEW_THRESHOLD || "High",

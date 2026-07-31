@@ -40,6 +40,12 @@ function dispatchesFor(candidates, allFindings, grouping, prefix = "") {
       grouping.kind !== GROUPING_KIND || !Array.isArray(grouping.groups) || grouping.groups.length === 0)
     return { reason: `fix grouping must be an object with kind ${GROUPING_KIND} and a non-empty groups array` };
 
+  const candidateIDs = new Set();
+  for (const finding of candidates) {
+    if (candidateIDs.has(finding.id))
+      return { reason: `fix grouping has duplicate candidate finding id ${String(finding.id)}` };
+    candidateIDs.add(finding.id);
+  }
   const allByID = new Map(allFindings.map((finding) => [finding.id, finding]));
   const candidatesByID = new Map(candidates.map((finding) => [finding.id, finding]));
   const assigned = new Set();
@@ -174,6 +180,12 @@ export function prepareFixWave(input) {
     }))
     : [];
   const findings = input.review.confirmedFindings.map(preparedFinding);
+  const findingKeys = new Set();
+  for (const finding of findings) {
+    if (findingKeys.has(finding.key))
+      return deepFreeze(failedPlan(input, `fix preparation has duplicate finding key ${finding.key}`));
+    findingKeys.add(finding.key);
+  }
 
   if (input.singleWave === true) {
     const round = 1;

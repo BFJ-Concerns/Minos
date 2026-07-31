@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -180,6 +180,18 @@ test("default dispatch keeps every finding whole and carries purpose scope witho
   }
 });
 
+test("duplicate finding keys fail closed before dispatch", async () => {
+  const first = finding("race", "Critical", "a.go", 7, "specialist:first");
+  first.explanation = "critical explanation";
+  const second = finding(" Race ", "Low", "a.go", 7, "specialist:second");
+  second.explanation = "low explanation";
+  const { result, calls } = await run(args([first, second]));
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, 'fix preparation has duplicate finding key ["a.go",7,"race"]');
+  assert.deepEqual(result.dispatches, []);
+  assert.deepEqual(calls, []);
+});
+
 test("lead grouping flows through validation to findings-scoped dispatch intact", async () => {
   const findings = [
     finding("first", "High", "a.go", 1),
@@ -221,6 +233,19 @@ test("invalid lead grouping fails closed before dispatch", async (t) => {
       assert.deepEqual(calls, []);
     });
   }
+});
+
+test("lead grouping rejects duplicate candidate ids before dispatch", async () => {
+  const duplicateID = "repository-review-design-md-claude:1";
+  const findings = [
+    finding("first", "Critical", "a.go", 1, duplicateID),
+    finding("second", "High", "b.go", 2, duplicateID),
+  ];
+  const { result, calls } = await run(args(findings, { grouping: grouping([duplicateID]) }));
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, "fix grouping has duplicate candidate finding id repository-review-design-md-claude:1");
+  assert.deepEqual(result.dispatches, []);
+  assert.deepEqual(calls, []);
 });
 
 test("terminal classification ignores grouping because it dispatches nothing", async () => {
@@ -532,6 +557,30 @@ test("a malformed grouping file becomes an incomplete single-wave plan", () => {
   assert.equal(plan.status, "incomplete");
   assert.match(plan.reason, /fix grouping must be an object/);
   assert.deepEqual(plan.dispatches, []);
+});
+
+test("fix input option and unreadable grouping errors use the usage exit", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-errors-"));
+  const missingGroupingPath = join(root, "missing-grouping.json");
+  for (const testCase of [
+    {
+      name: "unknown option",
+      args: [inputScriptPath, "review.json", "--unknown"],
+      message: "unknown fix input option --unknown",
+    },
+    {
+      name: "unreadable grouping",
+      args: [inputScriptPath, "review.json", "--grouping", missingGroupingPath],
+      message: `fix grouping file is unreadable: ${missingGroupingPath}`,
+    },
+  ]) {
+    const result = spawnSync(process.execPath, testCase.args, { encoding: "utf8" });
+    assert.equal(result.status, 2, testCase.name);
+    assert.equal(result.stdout, "", testCase.name);
+    assert.ok(result.stderr.includes(testCase.message), testCase.name);
+    assert.match(result.stderr, /usage: node workflows\/fix-inputs\.mjs/, testCase.name);
+    assert.doesNotMatch(result.stderr, /\n\s+at /, testCase.name);
+  }
 });
 
 test("the deterministic fix input selects single-wave mode explicitly", () => {

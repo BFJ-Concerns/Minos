@@ -2,10 +2,7 @@
 
 `MINOS_FIX_EVIDENCE_V1`
 
-Repair only the confirmed findings assigned in the prompt. Work from the
-bootstrapped repository workspace made available to this agent. Read whatever
-each repair requires, wherever that context lives.
-
+Work from the bootstrapped repository workspace made available to this agent.
 Repair these findings and only these findings, reading and editing whatever the
 repair genuinely requires — purpose, not territory. Do not widen the change to
 nearby smells or unrequested improvements. Run the smallest relevant checks
