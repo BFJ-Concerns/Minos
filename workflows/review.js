@@ -12,6 +12,7 @@ const GPT_SPECIALIST_MODEL = "gpt-5.6-sol";
 const GPT_EXPLORER_MODEL = "gpt-5.6-terra";
 const CLAUDE_MODEL = "claude-opus-5";
 const MAX_FINDINGS_PER_VERIFIER = 6;
+const MAX_ORIENTATION_PACKET_BYTES = 32 * 1024;
 
 const ROLE_BRIEFS = {
   exploration: "workflows/review-briefs/exploration.md",
@@ -111,7 +112,7 @@ function normalisePlan(plan, files) {
 }
 
 function orientationPacket(target, head, files, units) {
-  return {
+  const full = {
     commitRange: `${target}...${head}`,
     changedFiles: files.map(({ path, added, deleted }) => ({ path, added, deleted })),
     ownership: units.map(({ id, concern, scope, specialistType }) => ({
@@ -121,6 +122,52 @@ function orientationPacket(target, head, files, units) {
       specialistType,
     })),
   };
+  const serialised = JSON.stringify(full);
+  if (Buffer.byteLength(serialised, "utf8") <= MAX_ORIENTATION_PACKET_BYTES)
+    return serialised;
+
+  const ownership = units.map(({ id, scope }) => ({
+    unit: id,
+    scopeCount: scope.length,
+  }));
+  function candidate(fileCount, ownershipCount) {
+    const changedFiles = full.changedFiles.slice(0, fileCount);
+    if (fileCount < full.changedFiles.length)
+      changedFiles.push(`+${full.changedFiles.length - fileCount} more files`);
+    const ownershipSummary = ownership.slice(0, ownershipCount);
+    if (ownershipCount < ownership.length)
+      ownershipSummary.push(`+${ownership.length - ownershipCount} more units`);
+    return JSON.stringify({
+      commitRange: full.commitRange,
+      changedFiles,
+      ownership: ownershipSummary,
+    });
+  }
+  function largestFittingPrefix(maximum, build) {
+    let low = 0;
+    let high = maximum;
+    let best = 0;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      if (Buffer.byteLength(build(middle), "utf8") <= MAX_ORIENTATION_PACKET_BYTES) {
+        best = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    return best;
+  }
+
+  const ownershipCount = largestFittingPrefix(
+    ownership.length,
+    (count) => candidate(0, count),
+  );
+  const fileCount = largestFittingPrefix(
+    full.changedFiles.length,
+    (count) => candidate(count, ownershipCount),
+  );
+  return candidate(fileCount, ownershipCount);
 }
 
 const findingShape = {
@@ -293,7 +340,7 @@ function specialistPrompt(unit) {
     roleBriefs,
     projectGuidance,
     unit.roleBrief,
-    `Orientation packet: ${JSON.stringify(orientation)}\n` +
+    `Orientation packet: ${orientation}\n` +
       `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
   );
 }

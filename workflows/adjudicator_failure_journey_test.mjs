@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readlinkSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -19,13 +22,51 @@ const wrapperPath = join(workflowsDir, "adjudicated-review");
 const preloadSource = String.raw`
 import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { PassThrough } from "node:stream";
 
 const scenario = process.env.MINOS_ADJUDICATOR_SCENARIO;
 const recorderPath = process.env.MINOS_ADJUDICATOR_RECORDER;
+let activeRecordDir = null;
+let retentionShapeInjected = false;
+const originalMkdirSync = fs.mkdirSync;
+
+fs.mkdirSync = function retentionShapeMkdir(path, options) {
+  const result = originalMkdirSync(path, options);
+  const evidenceDir = process.env.MINOS_RUN_DIR && join(process.env.MINOS_RUN_DIR, "ensemble-records");
+  if (!retentionShapeInjected && activeRecordDir && path === evidenceDir) {
+    retentionShapeInjected = true;
+    if (scenario === "retention-mode-zero") {
+      const unreadable = join(activeRecordDir, "mode-zero");
+      originalMkdirSync(unreadable);
+      writeFileSync(join(unreadable, "evidence.txt"), "unreadable evidence\n");
+      chmodSync(unreadable, 0o000);
+      let modeZeroUnreadable = false;
+      try {
+        readdirSync(unreadable);
+      } catch {
+        modeZeroUnreadable = true;
+      }
+      writeFileSync(process.env.MINOS_RETENTION_SHAPE_RECORDER, JSON.stringify({ modeZeroUnreadable }));
+    } else if (scenario === "retention-symlink-loop") {
+      symlinkSync(".", join(activeRecordDir, "symlink-loop"));
+    } else if (scenario === "retention-partial") {
+      const collision = join(
+        evidenceDir,
+        basename(activeRecordDir),
+        "runs",
+        "cwd",
+        "namespace",
+        "run",
+        "manifest.json",
+      );
+      originalMkdirSync(collision, { recursive: true });
+    }
+  }
+  return result;
+};
 
 function envelope() {
   const result = {
@@ -151,6 +192,7 @@ function writeArchive(recordDir) {
 
 childProcess.spawn = function recordedSpawn(command, args, options) {
   const recordDir = options.env.ENSEMBLE_RUN_RECORD_DIR;
+  activeRecordDir = recordDir;
   writeFileSync(recorderPath, JSON.stringify({
     command,
     args,
@@ -182,6 +224,7 @@ function runWrapper(t, scenario, { retention = "unset" } = {}) {
   t.after(() => rmSync(operationRoot, { recursive: true, force: true }));
   const preloadPath = join(operationRoot, "record-ensemble.mjs");
   const recorderPath = join(operationRoot, "ensemble-call.json");
+  const retentionShapePath = join(operationRoot, "retention-shape.json");
   const argsPath = join(operationRoot, "review-args.json");
   const workflowPath = join(operationRoot, "review.js");
   writeFileSync(preloadPath, preloadSource);
@@ -207,21 +250,30 @@ function runWrapper(t, scenario, { retention = "unset" } = {}) {
         NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
         MINOS_ADJUDICATOR_SCENARIO: scenario,
         MINOS_ADJUDICATOR_RECORDER: recorderPath,
+        MINOS_RETENTION_SHAPE_RECORDER: retentionShapePath,
         ...(minosRunDir ? { MINOS_RUN_DIR: minosRunDir } : {}),
       },
     },
   );
 
+  const launch = JSON.parse(readFileSync(recorderPath, "utf8"));
+  t.after(() => {
+    if (!existsSync(launch.recordDir)) return;
+    try { chmodSync(join(launch.recordDir, "mode-zero"), 0o700); } catch {}
+    rmSync(launch.recordDir, { recursive: true, force: true });
+  });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.signal, null);
   const verdict = JSON.parse(result.stdout);
-  const launch = JSON.parse(readFileSync(recorderPath, "utf8"));
   assert.equal(
     existsSync(launch.recordDir),
     false,
     "the executable wrapper removes the exact run-record directory supplied to Ensemble",
   );
-  return { verdict, launch, result, argsPath, workflowPath, minosRunDir };
+  const retentionShape = existsSync(retentionShapePath)
+    ? JSON.parse(readFileSync(retentionShapePath, "utf8"))
+    : null;
+  return { verdict, launch, result, argsPath, workflowPath, minosRunDir, retentionShape };
 }
 
 function assertWithheld(verdict) {
@@ -290,6 +342,31 @@ test("record retention failure emits one diagnostic without changing the verdict
   assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
   assert.equal(diagnostics.length, 1);
   assert.match(result.stderr, /\[workflow\] complete/);
+});
+
+test("record retention survives a mode-zero subdirectory", (t) => {
+  const { verdict, result, retentionShape } = runWrapper(t, "retention-mode-zero", { retention: "success" });
+  if (!retentionShape.modeZeroUnreadable)
+    return t.skip("the current user can read mode-zero directories");
+  assert.equal(verdict.status, "complete");
+  assert.match(result.stderr, /could not retain run-record entry "mode-zero"/);
+});
+
+test("record retention copies a symlink loop without following it", (t) => {
+  const { verdict, launch, minosRunDir } = runWrapper(t, "retention-symlink-loop", { retention: "success" });
+  const retainedLink = join(minosRunDir, "ensemble-records", basename(launch.recordDir), "symlink-loop");
+  assert.equal(verdict.status, "complete");
+  assert.equal(lstatSync(retainedLink).isSymbolicLink(), true);
+  assert.equal(readlinkSync(retainedLink), ".");
+});
+
+test("a partial retained record carries an incompleteness marker", (t) => {
+  const { verdict, launch, minosRunDir, result } = runWrapper(t, "retention-partial", { retention: "success" });
+  const retained = join(minosRunDir, "ensemble-records", basename(launch.recordDir));
+  const marker = readFileSync(join(retained, "RETENTION-INCOMPLETE"), "utf8");
+  assert.equal(verdict.status, "complete");
+  assert.match(marker, /runs\/cwd\/namespace\/run\/manifest\.json/);
+  assert.match(result.stderr, /could not retain run-record entry/);
 });
 
 test("the adjudicated verdict distinguishes a misconfigured brief that ran from one that skipped", (t) => {

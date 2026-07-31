@@ -6,6 +6,7 @@ Review only the assigned concern and scope. Look for incorrect behaviour, broken
 invariants, edge cases, unsafe ordering, and errors that are lost or mishandled.
 Ground every finding in the changed code and enough directly related context to show
 that the pull request introduced it.
+Trust the packet for orientation; read the diff for your scope directly.
 
 If you notice a real defect outside those bounds, do not return it as a finding.
 Record the lead and move on; do not investigate outside your assigned boundary.

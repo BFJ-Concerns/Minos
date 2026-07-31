@@ -1,7 +1,18 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 
@@ -10,6 +21,99 @@ import { adjudicate } from "./run-record-adjudicator.mjs";
 import { attachOutOfScopeObservations } from "./out-of-scope-observations.mjs";
 
 const LAUNCHER = "/opt/minos/runtime/ensemble.mjs";
+
+function noteRetentionFailure(failures, relativePath, error) {
+  const detail = `${relativePath}: ${error.message}`;
+  failures.push(detail);
+  process.stderr.write(
+    `adjudicated-review: could not retain run-record entry "${relativePath}" for archival: ${error.message}\n`,
+  );
+}
+
+function retainEntry(source, destination, relativePath, failures) {
+  try {
+    const stat = lstatSync(source);
+    if (stat.isDirectory()) {
+      mkdirSync(destination, { recursive: true, mode: 0o700 });
+      let entries;
+      try {
+        entries = readdirSync(source, { withFileTypes: true });
+      } catch (error) {
+        noteRetentionFailure(failures, relativePath, error);
+        return;
+      }
+      for (const entry of entries) {
+        retainEntry(
+          join(source, entry.name),
+          join(destination, entry.name),
+          join(relativePath, entry.name),
+          failures,
+        );
+      }
+      return;
+    }
+    if (stat.isFile()) {
+      copyFileSync(source, destination);
+      return;
+    }
+    if (stat.isSymbolicLink()) {
+      symlinkSync(readlinkSync(source), destination);
+      return;
+    }
+    throw new Error("unsupported filesystem entry type");
+  } catch (error) {
+    noteRetentionFailure(failures, relativePath, error);
+  }
+}
+
+function retainRunRecord(recordDir, minosRunDir) {
+  const evidenceDir = join(minosRunDir, "ensemble-records");
+  const retainedRoot = join(evidenceDir, basename(recordDir));
+  mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
+  chmodSync(evidenceDir, 0o700);
+  mkdirSync(retainedRoot, { recursive: true, mode: 0o700 });
+  chmodSync(retainedRoot, 0o700);
+  const failures = [];
+  let entries;
+  try {
+    entries = readdirSync(recordDir, { withFileTypes: true });
+  } catch (error) {
+    noteRetentionFailure(failures, ".", error);
+    entries = [];
+  }
+  for (const entry of entries) {
+    retainEntry(
+      join(recordDir, entry.name),
+      join(retainedRoot, entry.name),
+      entry.name,
+      failures,
+    );
+  }
+  if (failures.length > 0) {
+    try {
+      writeFileSync(
+        join(retainedRoot, "RETENTION-INCOMPLETE"),
+        `Retention was incomplete.\n${failures.map((failure) => `- ${failure}`).join("\n")}\n`,
+        { mode: 0o600 },
+      );
+    } catch (error) {
+      process.stderr.write(
+        `adjudicated-review: could not write retained-record incompleteness marker: ${error.message}\n`,
+      );
+    }
+  }
+}
+
+function makeTreeRemovable(path) {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory()) return;
+    try { chmodSync(path, 0o700); } catch {}
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      if (entry.isDirectory()) makeTreeRemovable(join(path, entry.name));
+    }
+  } catch {}
+}
 
 function incomplete(reason, envelope = null) {
   const reviewed = envelope && envelope.reviewed && typeof envelope.reviewed === "object"
@@ -85,14 +189,13 @@ try {
   if (recordDir) {
     if (process.env.MINOS_RUN_DIR) {
       try {
-        const evidenceDir = join(process.env.MINOS_RUN_DIR, "ensemble-records");
-        mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
-        cpSync(recordDir, join(evidenceDir, basename(recordDir)), { recursive: true });
+        retainRunRecord(recordDir, process.env.MINOS_RUN_DIR);
       } catch (error) {
         process.stderr.write(`adjudicated-review: could not retain run record for archival: ${error.message}\n`);
       }
     }
     try {
+      makeTreeRemovable(recordDir);
       rmSync(recordDir, { recursive: true, force: true });
     } catch (error) {
       process.stderr.write(`adjudicated-review: could not remove run-record directory: ${error.message}\n`);

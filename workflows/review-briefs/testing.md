@@ -6,6 +6,7 @@ Review only the assigned concern and scope. Find behaviour the change leaves
 unproved, assertions that can pass while the feature is broken, and important
 failure or integration paths the tests do not exercise. A missing test is a finding
 only when it permits a concrete defect or contract regression to survive.
+Trust the packet for orientation; read the diff for your scope directly.
 
 If you notice a real defect outside those bounds, do not return it as a finding.
 Record the lead and move on; do not investigate outside your assigned boundary.

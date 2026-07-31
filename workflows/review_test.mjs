@@ -125,6 +125,12 @@ function specialistCalls(calls) {
   return calls.filter((call) => call.opts.label?.startsWith("specialist-"));
 }
 
+function orientationPacketFromPrompt(prompt) {
+  const match = prompt.match(/Orientation packet: (.+)\nAssigned concern:/);
+  assert.ok(match, "specialist prompt carries a serialised orientation packet");
+  return match[1];
+}
+
 async function adjudicateEnvelope(t, envelope) {
   const recordDir = mkdtempSync(join(tmpdir(), "minos-review-batch-record-"));
   t.after(() => rmSync(recordDir, { recursive: true, force: true }));
@@ -420,16 +426,44 @@ test("every specialist prompt carries the compact exploration orientation packet
   }
 });
 
+test("large exploration results keep every orientation packet within 32 KiB", async () => {
+  const files = Array.from({ length: 166 }, (_, index) => ({
+    path: `packages/${String(index).padStart(3, "0")}-${"changed-component-".repeat(9)}.js`,
+    added: index + 1,
+    deleted: index,
+  }));
+  const plan = Array.from({ length: 20 }, (_, index) => unit(
+    `unit-${index + 1}`,
+    ["correctness", "security", "testing", "design"][index % 4],
+    files.filter((_, fileIndex) => fileIndex % 20 === index).map((file) => file.path),
+  ));
+  const { calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({ files, plan }),
+    specialist: () => specialistResult([]),
+  }));
+
+  for (const call of specialistCalls(calls)) {
+    const packet = orientationPacketFromPrompt(call.prompt);
+    assert.ok(Buffer.byteLength(packet, "utf8") <= 32 * 1024, `packet is ${Buffer.byteLength(packet, "utf8")} bytes`);
+    assert.match(packet, /\+\d+ more files/);
+    assert.match(packet, /"scopeCount":\d+/);
+    assert.doesNotMatch(packet, /"scope":\[/);
+  }
+});
+
 test("specialist and verifier briefs pin the review-stage discipline", async () => {
   const specialistBriefs = ["correctness", "security", "testing", "design", "repository"];
   for (const brief of specialistBriefs) {
     const content = await readFile(fileURLToPath(new URL(`./review-briefs/${brief}.md`, import.meta.url)), "utf8");
     assert.match(content, /do not investigate outside your assigned boundary/i);
     assert.match(content, /Do not build side experiments during proposal/);
+    if (brief !== "repository")
+      assert.match(content, /Trust the packet for orientation; read the diff for your scope directly\./);
   }
   const verifierBrief = await readFile(fileURLToPath(new URL("./review-briefs/verifier.md", import.meta.url)), "utf8");
   assert.match(verifierBrief, /return exactly one verdict keyed by\s+finding id for every member/i);
   assert.match(verifierBrief, /run the focused\s+confirming experiment described by the specialist/i);
+  assert.match(verifierBrief, /Return one structured verdict with an\s+independent confidence integer from 0 to 100\./);
 });
 
 test("the deterministic input binds shipped role prose and project guidance into every judgement leg", async () => {

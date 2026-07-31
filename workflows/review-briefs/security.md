@@ -5,6 +5,7 @@
 Review only the assigned concern and scope. Test trust boundaries, authentication,
 authorisation, validation, secret handling, injection surfaces, and failure paths.
 Report concrete defects introduced by the change, not generic hardening advice.
+Trust the packet for orientation; read the diff for your scope directly.
 
 If you notice a real defect outside those bounds, do not return it as a finding.
 Record the lead and move on; do not investigate outside your assigned boundary.

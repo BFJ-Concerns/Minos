@@ -6,6 +6,7 @@ Review only the assigned concern and scope. Look for unnecessary coupling,
 misplaced responsibility, duplicated mechanisms, and complexity that obscures or
 breaks the intended behaviour. Report only a concrete defect or maintainability
 risk introduced by the change, with a materially simpler direction where relevant.
+Trust the packet for orientation; read the diff for your scope directly.
 
 If you notice a real defect outside those bounds, do not return it as a finding.
 Record the lead and move on; do not investigate outside your assigned boundary.
