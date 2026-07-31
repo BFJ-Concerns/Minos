@@ -10,9 +10,10 @@ is `$MINOS_HEAD_SHA`; the target is `$MINOS_TARGET_SHA` on `$MINOS_BASE_REF`.
 The forge root is `$MINOS_API_BASE`, and `$MINOS_CREDENTIAL_FILE` contains the
 token. Work in `$MINOS_RUN_DIR/workspace`.
 
-Whenever you stop at a terminal outcome that is not a clean, converged pass,
+Whenever you stop at a terminal outcome that is neither a clean, converged pass
+nor a planned continuation,
 append one line to `$MINOS_FAILURE_LOG` before you stop — and before any cleanup
-or reaction removal. This covers **every** non-clean exit you make, not only the
+or reaction removal. This covers **every failed** non-clean exit you make, not only the
 ones that set a status: a stop that sets `incomplete` or `attention`, and equally
 a setup or finishing head/target move, a failed build or test, an unparseable
 workflow result, or any other unrecovered error that ends the run short of a
@@ -35,8 +36,39 @@ terminal marker. Run it only after all final forge writes and cleanup have
 succeeded, as your last action before ending the turn; the supervisor treats it
 as proof that there is no work or wake still pending.
 
-1. The setup script has cloned the repository at the observed pull-request head
-   into `$MINOS_WORKSPACE`, refused setup if that head moved while cloning, and
+`$MINOS_RUN_DIR/memory-pressure` is a one-shot signal from the supervisor that
+the run is approaching its memory ceiling. Check for it only at the named
+boundaries below. When it exists, finish the current lifecycle stage; do not
+interrupt a workflow or leave a forge write half-finished. Then continue the run
+only through the handoff procedure below. The signal is latched for this attempt.
+
+At a pressure boundary, first inspect `$MINOS_CONTINUATION_ATTEMPT`. When it is
+`3` or greater, do not continue again: append a failure line naming sustained
+memory pressure, set `incomplete` on the fresh head and target, remove 👀, write
+the non-clean terminal marker, and stop. Otherwise take a fresh `"$MINOS_BIN"
+forge snapshot`; use its
+`head_sha` and `target_sha` for every remaining action. Run
+`"$MINOS_BIN" forge status FRESH_HEAD FRESH_TARGET continuation`. Keep 👀 in
+place: the successor claims idempotently, and the reaction remains true across
+the handoff.
+
+The handoff is `$MINOS_HANDOFF`. It must be written before the terminal marker
+and contain `kind: "minos-run-handoff-v1"`, this pull request's owner, repository
+and number, the fresh snapshot's `head_sha`, `$MINOS_RUN_DIR`, the continuation
+attempt, a concise `stoppedAt` description, an RFC 3339 `writtenAt`, and the
+complete JSON object from `$MINOS_LOOP_RECORD` as `runRecord`. If the loop record
+does not yet exist, first write `{"round":0,"confirmedUnfixed":[]}` to it. The
+snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the head this attempt
+started from and may already be stale after a repair push. Write the complete
+handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
+`"$MINOS_HANDOFF"`. Use attempt `1` when
+`$MINOS_CONTINUATION_ATTEMPT` is `0`; otherwise carry the current attempt value.
+Finally run `printf 'continuation\n' > "$MINOS_RUN_DIR/lead-complete"` as the
+last action and end the turn. A continuation writes no failure-log line.
+
+1. The setup script has prepared the repository at the observed pull-request head
+   in `$MINOS_WORKSPACE`, either from a fresh clone or a validated preserved
+   workspace. It refused setup if that head moved, and
    recorded its orientation in
    `$MINOS_ORIENTATION`. Read that record. When its `grounding` is `annexe`,
    read the commission in the recorded annexe README as the driving statement
@@ -47,6 +79,14 @@ as proof that there is no work or wake still pending.
    safe to repeat). If the snapshot now shows that the head or target has moved
    since setup, remove 👀 against that fresh head and target, write the
    non-clean terminal marker, and stop without publishing.
+
+   Check for `$MINOS_RUN_DIR/memory-pressure` after the claim and snapshot
+   checks. If `$MINOS_LOOP_RECORD` already exists, a predecessor handed off:
+   its round continues and its confirmed-unfixed findings are already
+   suppressed from later dispatch. The loop record is the only inherited
+   decision state. Other preserved files are reusable workspace material, not
+   authority; the orientation and reconciliation records describe the state to
+   trust in this attempt.
 
    Read `$MINOS_RUN_DIR/reconciliation.json`. Setup has fetched the target from
    the base repository, verified its observed SHA and pinned it at
@@ -158,6 +198,10 @@ as proof that there is no work or wake still pending.
    watcher and fallback wake. When the task completion notification arrives,
    cancel the fallback with `ScheduleWakeup`'s `stop: true`.
 
+   Check for `$MINOS_RUN_DIR/memory-pressure` at every completion notification
+   or fallback wake, after confirming the background process's state. Finish a
+   process that is still running before handing off.
+
    If you believe `ScheduleWakeup` is unavailable to you, record that belief in
    `$MINOS_FAILURE_LOG` and fall back to a `CronCreate` timer at the same
    interval, cancelling it with `CronDelete`. Never respond to a tool you
@@ -205,6 +249,9 @@ as proof that there is no work or wake still pending.
    adjudicated verdict. Do not read the archive, judge the workflow's engine
    pairing, resume the workflow, or duplicate its findings yourself.
 
+   After the background process exits and the adjudicated verdict parses,
+   check for `$MINOS_RUN_DIR/memory-pressure` before acting on that verdict.
+
    Any adjudicated verdict may also contain `outOfScopeObservations`. These are
    unverified observations, not findings, and carry no verifier verdict. Keep
    them in the saved verdict, but do not publish them through this lifecycle;
@@ -220,7 +267,7 @@ as proof that there is no work or wake still pending.
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs" \
-     REVIEW_RESULT LOOP_RECORD \
+     REVIEW_RESULT "$MINOS_LOOP_RECORD" \
      > "$MINOS_RUN_DIR/fix-args.json"
    ```
 
@@ -243,8 +290,11 @@ as proof that there is no work or wake still pending.
    write the non-clean terminal marker, and stop.
 
    The operation's returned `runRecord` is the run-scoped loop record, including
-   the round count and confirmed-unfixed findings. Start with an absent record
-   and replace the scratch record after every complete classification. Pass it
+   the round count and confirmed-unfixed findings. `$MINOS_LOOP_RECORD` is its
+   only path; an absent file means round zero. After every complete
+   classification, write the returned `runRecord` to
+   `"$MINOS_LOOP_RECORD.tmp"` and atomically move it over
+   `$MINOS_LOOP_RECORD`. Pass it
    back through `fix-inputs.mjs` when the build, tests and whole review re-enter
    this step on the next head; the operation is invoked once per round. The
    configured threshold and optional maximum rounds arrive through
@@ -286,6 +336,8 @@ as proof that there is no work or wake still pending.
    flow on the new head. Do the same fresh build, test, and review even when
    every attempted fix failed and no commit was integrated. Continue from
    classification; do not substitute your own judgement for the threshold.
+   After each complete re-review verdict, check for
+   `$MINOS_RUN_DIR/memory-pressure` before preparing another round.
 6. A `terminal` classification means no finding at or above the threshold
    remains beyond entries already confirmed-unfixed, or the configured maximum
    rounds has been reached. Do not post the terminal sweep's sub-threshold
