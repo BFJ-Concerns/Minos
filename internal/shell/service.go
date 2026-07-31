@@ -72,9 +72,6 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return "nothing", nil
 	}
-	if reason, deferred := dependencyDeferral(snapshot); deferred {
-		return "deferred: " + reason, nil
-	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA
 	facts.BaseRef = snapshot.TargetBranch
@@ -99,6 +96,9 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 				return "", fmt.Errorf("restore terminal Minos status: %s", result.Reason)
 			}
 		}
+	}
+	if reason, deferred := dependencyDeferral(snapshot); deferred {
+		return "deferred: " + reason, nil
 	}
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)
 	if err != nil {

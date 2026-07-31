@@ -113,6 +113,36 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("open dependency on a later page is deferred", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setDependencyPages([][]map[string]any{
+			{{
+				"number": 7, "state": "closed",
+				"repository": map[string]any{"full_name": "minos-e2e-owner/closed-first"},
+			}},
+			{{
+				"number": 8, "state": "open",
+				"repository": map[string]any{"full_name": "minos-e2e-owner/open-second"},
+			}},
+		})
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("dependency-blocked pull request reached %s", name)
+			return nil, nil
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "deferred: open dependencies: minos-e2e-owner/open-second#8" {
+			t.Fatalf("result = %q", result)
+		}
+	})
+
 	t.Run("unreadable dependencies defer with visible uncertainty", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setDependenciesFailure(http.StatusServiceUnavailable)
@@ -136,6 +166,10 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 
 	t.Run("Minos review with a missing terminal status is repaired without a new run", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
+		state.setDependencies([]map[string]any{{
+			"number": 7, "state": "open",
+			"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+		}})
 		state.setReviews([]map[string]any{{
 			"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
 			"body": "ordinary review", "user": map[string]any{"login": "Minos"},
@@ -1022,19 +1056,20 @@ func installAnchoredWorkspace(t *testing.T, state *forgejoFixtureState, path str
 }
 
 type forgejoFixtureState struct {
-	t              *testing.T
-	pullRequest    map[string]any
-	repository     map[string]any
-	reviews        []map[string]any
-	statuses       []map[string]any
-	dependencies   []map[string]any
-	dependencyCode int
-	actionRuns     []map[string]any
-	actionJobs     map[int64][]map[string]any
-	actionLogs     map[int64]string
-	server         *httptest.Server
-	tokenPath      string
-	adaptationPath string
+	t               *testing.T
+	pullRequest     map[string]any
+	repository      map[string]any
+	reviews         []map[string]any
+	statuses        []map[string]any
+	dependencies    []map[string]any
+	dependencyPages [][]map[string]any
+	dependencyCode  int
+	actionRuns      []map[string]any
+	actionJobs      map[int64][]map[string]any
+	actionLogs      map[int64]string
+	server          *httptest.Server
+	tokenPath       string
+	adaptationPath  string
 
 	mu                       sync.Mutex
 	assignees                []string
@@ -1187,6 +1222,14 @@ func (s *forgejoFixtureState) setDependencies(dependencies []map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dependencies = dependencies
+	s.dependencyPages = nil
+	s.dependencyCode = http.StatusOK
+}
+
+func (s *forgejoFixtureState) setDependencyPages(pages [][]map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dependencyPages = pages
 	s.dependencyCode = http.StatusOK
 }
 
@@ -1257,6 +1300,18 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == issuePath+"/dependencies":
 		if s.dependencyCode != http.StatusOK {
 			http.Error(w, "dependency fixture failure", s.dependencyCode)
+			return
+		}
+		if s.dependencyPages != nil {
+			page, err := strconv.Atoi(r.URL.Query().Get("page"))
+			if err != nil || page < 1 {
+				page = 1
+			}
+			if page > len(s.dependencyPages) {
+				writeFixtureJSON(s.t, w, []map[string]any{})
+				return
+			}
+			writeFixtureJSON(s.t, w, s.dependencyPages[page-1])
 			return
 		}
 		writeFixtureJSON(s.t, w, s.dependencies)

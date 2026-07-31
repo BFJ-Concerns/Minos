@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -9,6 +10,38 @@ import (
 
 	"bfj/minos/internal/product"
 )
+
+func TestSnapshotNormalisesEmptyDependenciesForEncoding(t *testing.T) {
+	runner := &recordingRunner{outputs: [][]byte{[]byte(`{
+		"authenticated_user":"Minos",
+		"repository":"owner/repo",
+		"target_repository":"owner/repo",
+		"pull_request":17,
+		"author":"author",
+		"head_sha":"head",
+		"target_sha":"target",
+		"target_branch":"main",
+		"dependencies_available":true
+	}`)}, errors: []error{nil}}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := adapter.Snapshot(t.Context(), Repository{Owner: "owner", Name: "repo"}, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.OpenDependencies == nil {
+		t.Fatal("OpenDependencies is nil")
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"open_dependencies":[]`) {
+		t.Fatalf("snapshot JSON = %s", encoded)
+	}
+}
 
 func TestSetProductStatusRejectsInvalidState(t *testing.T) {
 	runner := &recordingRunner{}

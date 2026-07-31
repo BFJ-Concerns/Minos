@@ -35,6 +35,9 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	if err := json.Unmarshal(out, &snapshot); err != nil {
 		return Snapshot{}, fmt.Errorf("decode forge snapshot: %w", err)
 	}
+	if snapshot.OpenDependencies == nil {
+		snapshot.OpenDependencies = make([]Dependency, 0)
+	}
 	if err := validateSnapshot(snapshot, repository, pullRequest); err != nil {
 		return Snapshot{}, err
 	}

@@ -15,21 +15,35 @@ base_json="$(api GET "/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$base
 
 dependencies='[]'
 dependency_error=''
-if api_with_status GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/dependencies"; then
+previous=''
+page=1
+while :; do
+  if ! api_with_status GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/dependencies?limit=50&page=${page}"; then
+    dependency_error='forge request failed'
+    break
+  fi
   if [ "$api_status_code" != "200" ]; then
     dependency_error="forge returned HTTP ${api_status_code}"
-  elif ! printf '%s' "$api_status_body" | jq -e '
+    break
+  fi
+  current="$api_status_body"
+  if ! printf '%s' "$current" | jq -e '
     type == "array" and all(.[];
       (.number | type) == "number" and .number > 0 and
       (.state | type) == "string" and
       (.repository.full_name | type) == "string" and .repository.full_name != "")
   ' >/dev/null 2>&1; then
     dependency_error='forge returned an invalid dependencies response'
-  else
-    dependencies="$api_status_body"
+    break
   fi
-else
-  dependency_error='forge request failed'
+  [ "$current" != "$previous" ] || break
+  [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
+  dependencies="$(jq -cn --argjson all "$dependencies" --argjson page "$current" '$all + $page')"
+  previous="$current"
+  page=$((page + 1))
+done
+if [ -n "$dependency_error" ]; then
+  dependencies='[]'
 fi
 
 statuses='[]'
