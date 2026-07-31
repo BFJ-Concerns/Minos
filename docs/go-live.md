@@ -10,9 +10,10 @@ machine itself is the containment boundary.
    `scripts/run-body/` under `/opt/minos/run-body` with the same basename and
    executable mode: `run-body`, `setup-workspace`, `pre-push-guard`,
    `reconcile-target`, `complete-reconciliation`, `reopen-conflict`,
-   `show-resolutions`, `sync-target`, `watch-snapshot`, `archive-run` and
-   `forgejo-askpass`. Install `scripts/provision-archive-transport` under
-   `/opt/minos`, with executable mode. Install `lifecycle`
+   `show-resolutions`, `sync-target`, `watch-snapshot` and `archive-run`.
+   Install `scripts/provision-archive-transport` and
+   `scripts/provision-failure-checkout` under `/opt/minos`, with executable
+   mode. Install `lifecycle`
    under `/opt/minos/lifecycle`, and `skills/foundry/root-cause` under
    `/opt/minos/skills/foundry/root-cause`.
 3. Run `scripts/install-review-runtime /opt/minos`. It installs the complete
@@ -101,6 +102,10 @@ the sweep also salvages dead run directories into the dedicated Minos annexe
 checkout configured by `runs.failures-repo`, attempts to commit and push the
 digest, archives their transcripts, and removes the scratch tree. Active units
 and directories named by valid pending continuation handoffs are preserved.
+Each digest is limited to 256 KiB and reads only the run-local report and
+failure log, Claude transcripts, Codex rollouts and exact Ensemble record tree.
+The sweep fetches and rebases its append-only commit onto `origin/main` before
+pushing with the configured Forgejo token header.
 
 When a required check is genuinely red or the pull request carries the
 `Flaky Test` label, the lead dispatches a fix agent with the vendored root-cause

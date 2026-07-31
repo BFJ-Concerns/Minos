@@ -15,7 +15,6 @@ signature-header = "X-Forgejo-Signature"
 dir = "/var/lib/minos/runs"
 failures-repo = "/var/lib/minos/Minos-Annexe"
 failures-credential-file = "/etc/minos/forgejo.token"
-git-askpass = "/opt/minos/run-body/forgejo-askpass"
 archive-command = "/opt/minos/run-body/archive-run"
 
 [ensemble]

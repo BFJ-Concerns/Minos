@@ -2,22 +2,35 @@ package shell
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const salvageTailBytes = 64 * 1024
 
+const (
+	salvageDigestBytes = 256 * 1024
+	archiveRunTimeout  = 30 * time.Minute
+)
+
+var walkEvidenceRoot = filepath.WalkDir
+
 func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[string]Facts) error {
+	if cfg.Runs.ArchiveCommand == "" {
+		return fmt.Errorf("runs.archive-command is not configured; preserve run residue until archiving is provisioned")
+	}
 	active, err := activeRunUnits(ctx)
 	if err != nil {
 		return err
@@ -36,20 +49,75 @@ func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[str
 		if preserved[runDir] || runDirectoryHasActiveUnit(entry.Name(), active) {
 			continue
 		}
-		if err := appendFailureDigest(runDir, cfg.Runs.FailuresRepo); err != nil {
+		dead, err := confirmRunDirDead(ctx, cfg, factsByUnit, runDir, entry.Name())
+		if err != nil {
+			sweepErrors = append(sweepErrors, err)
+			continue
+		}
+		if !dead {
+			continue
+		}
+		appended, err := appendFailureDigest(runDir, cfg.Runs.FailuresRepo)
+		if err != nil {
 			sweepErrors = append(sweepErrors, fmt.Errorf("preserve %s after salvage failed: %w", entry.Name(), err))
 			continue
 		}
-		archiveRunEvidence(ctx, cfg.Runs.ArchiveCommand, runDir, entry.Name())
-		if err := removeRunDir(runDir); err != nil {
-			sweepErrors = append(sweepErrors, fmt.Errorf("remove %s: %w", entry.Name(), err))
-			continue
+		if !appended {
+			log.Printf("run %s: no salvage evidence found; no FAILURES.md digest appended", entry.Name())
 		}
-		if err := publishFailureDigest(ctx, cfg); err != nil {
-			sweepErrors = append(sweepErrors, fmt.Errorf("publish salvaged failure for %s: %w", entry.Name(), err))
+		_ = archiveRunEvidence(ctx, cfg.Runs.ArchiveCommand, runDir, entry.Name())
+		_, removeErr := removeRunDirIfStillDead(ctx, cfg, factsByUnit, runDir, entry.Name())
+		if removeErr != nil {
+			sweepErrors = append(sweepErrors, removeErr)
+		}
+		if appended {
+			if err := publishFailureDigest(ctx, cfg); err != nil {
+				sweepErrors = append(sweepErrors, fmt.Errorf("publish salvaged failure for %s: %w", entry.Name(), err))
+			}
 		}
 	}
 	return errors.Join(sweepErrors...)
+}
+
+func confirmRunDirDead(ctx context.Context, cfg ServiceConfig, factsByUnit map[string]Facts, runDir, name string) (bool, error) {
+	unlock, err := lockAdmission(cfg.Runs.Dir)
+	if err != nil {
+		return false, fmt.Errorf("lock residue inspection for %s: %w", name, err)
+	}
+	defer unlock()
+	return runDirIsDead(ctx, cfg, factsByUnit, runDir, name)
+}
+
+func removeRunDirIfStillDead(ctx context.Context, cfg ServiceConfig, factsByUnit map[string]Facts, runDir, name string) (bool, error) {
+	unlock, err := lockAdmission(cfg.Runs.Dir)
+	if err != nil {
+		return false, fmt.Errorf("lock residue deletion for %s: %w", name, err)
+	}
+	defer unlock()
+	dead, err := runDirIsDead(ctx, cfg, factsByUnit, runDir, name)
+	if err != nil || !dead {
+		return false, err
+	}
+	if err := removeRunDir(runDir); err != nil {
+		return false, fmt.Errorf("remove %s: %w", name, err)
+	}
+	return true, nil
+}
+
+func runDirIsDead(ctx context.Context, cfg ServiceConfig, factsByUnit map[string]Facts, runDir, name string) (bool, error) {
+	active, err := activeRunUnits(ctx)
+	if err != nil {
+		return false, fmt.Errorf("recheck liveness for %s: %w", name, err)
+	}
+	if runDirectoryHasActiveUnit(name, active) || validHandoffRunDirs(cfg, factsByUnit)[runDir] {
+		return false, nil
+	}
+	if _, err := os.Lstat(filepath.Join(runDir, runOwnerMarker)); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("inspect run owner marker for %s: %w", name, err)
+	}
+	return true, nil
 }
 
 func activeRunUnits(ctx context.Context) (map[string]bool, error) {
@@ -82,13 +150,28 @@ func validHandoffRunDirs(cfg ServiceConfig, factsByUnit map[string]Facts) map[st
 	paths, _ := filepath.Glob(filepath.Join(cfg.Runs.Dir, ".handoffs", "*.json"))
 	for _, path := range paths {
 		unit := strings.TrimSuffix(filepath.Base(path), ".json")
-		facts, ok := factsByUnit[unit]
-		if !ok {
-			continue
-		}
-		handoff, err := readRunHandoff(path, facts)
+		handoff, err := readRunHandoffStructure(path)
 		if err != nil {
 			continue
+		}
+		embeddedFacts := Facts{
+			Owner:   handoff.PullRequest.Owner,
+			Repo:    handoff.PullRequest.Repo,
+			PR:      handoff.PullRequest.Number,
+			HeadSHA: handoff.Head,
+		}
+		if UnitName(embeddedFacts) != unit {
+			continue
+		}
+		facts, found := factsByUnit[unit]
+		if found {
+			validated, err := readRunHandoff(path, facts)
+			if err != nil {
+				continue
+			}
+			handoff = validated
+		} else {
+			facts = embeddedFacts
 		}
 		if _, valid := adoptableRunDirectory(cfg, unit, facts, handoff); valid {
 			preserved[handoff.RunDir] = true
@@ -97,56 +180,40 @@ func validHandoffRunDirs(cfg ServiceConfig, factsByUnit map[string]Facts) map[st
 	return preserved
 }
 
-func appendFailureDigest(runDir, failuresRepo string) error {
+func appendFailureDigest(runDir, failuresRepo string) (bool, error) {
 	if failuresRepo == "" {
-		return fmt.Errorf("runs.failures-repo is not configured")
+		return false, fmt.Errorf("runs.failures-repo is not configured")
 	}
 	if insideDirectory(failuresRepo, filepath.Dir(runDir)) {
-		return fmt.Errorf("failures repository must be outside runs.dir")
+		return false, fmt.Errorf("failures repository must be outside runs.dir")
 	}
 	failuresPath := filepath.Join(failuresRepo, "FAILURES.md")
 	info, err := os.Stat(failuresPath)
 	if err != nil {
-		return fmt.Errorf("inspect Minos FAILURES.md: %w", err)
+		return false, fmt.Errorf("inspect Minos FAILURES.md: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("Minos FAILURES.md is not a regular file")
+		return false, fmt.Errorf("Minos FAILURES.md is not a regular file")
 	}
-	evidence, err := salvageEvidence(runDir)
+	digest, found, err := buildFailureDigest(runDir)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if !found {
+		return false, nil
 	}
 	file, err := os.OpenFile(failuresPath, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
-		return fmt.Errorf("open Minos FAILURES.md: %w", err)
+		return false, fmt.Errorf("open Minos FAILURES.md: %w", err)
 	}
 	defer file.Close()
-	stamp := time.Now().UTC().Format(time.RFC3339)
-	if _, err := fmt.Fprintf(file, "\n## %s — %s\n\n", stamp, filepath.Base(runDir)); err != nil {
-		return err
-	}
-	if len(evidence) == 0 {
-		if _, err := io.WriteString(file, "No readable failure log, lead transcript, run report, or Ensemble run record was found.\n"); err != nil {
-			return err
-		}
-	}
-	for _, item := range evidence {
-		if _, err := fmt.Fprintf(file, "### %s\n\n", item.path); err != nil {
-			return err
-		}
-		for _, line := range strings.Split(strings.TrimSuffix(string(item.data), "\n"), "\n") {
-			if _, err := fmt.Fprintf(file, "    %s\n", line); err != nil {
-				return err
-			}
-		}
-		if _, err := io.WriteString(file, "\n"); err != nil {
-			return err
-		}
+	if _, err := file.Write(digest); err != nil {
+		return false, err
 	}
 	if err := file.Sync(); err != nil {
-		return fmt.Errorf("flush Minos FAILURES.md: %w", err)
+		return false, fmt.Errorf("flush Minos FAILURES.md: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func insideDirectory(path, directory string) bool {
@@ -154,49 +221,132 @@ func insideDirectory(path, directory string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-type salvagedEvidence struct {
-	path string
-	data []byte
-}
-
-func salvageEvidence(runDir string) ([]salvagedEvidence, error) {
-	var paths []string
-	err := filepath.WalkDir(runDir, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() && entry.Name() == ".git" {
-			return filepath.SkipDir
-		}
-		if !entry.Type().IsRegular() {
-			return nil
-		}
-		rel, err := filepath.Rel(runDir, path)
-		if err != nil {
-			return err
-		}
-		base := strings.ToLower(entry.Name())
-		if base == "failure.log" || base == "failures.log" || base == "run-report.md" || base == "report.md" ||
-			(strings.HasPrefix(filepath.ToSlash(rel), "home/.claude/projects/") && strings.HasSuffix(base, ".jsonl")) ||
-			strings.Contains(strings.ToLower(filepath.ToSlash(rel)), "ensemble-record") {
-			paths = append(paths, path)
-		}
-		return nil
-	})
+func buildFailureDigest(runDir string) ([]byte, bool, error) {
+	paths, skipped, err := salvageEvidencePaths(runDir)
 	if err != nil {
-		return nil, fmt.Errorf("extract failure evidence: %w", err)
+		return nil, false, err
 	}
-	sort.Strings(paths)
-	items := make([]salvagedEvidence, 0, len(paths))
+	if len(paths) == 0 && len(skipped) == 0 {
+		return nil, false, nil
+	}
+	var digest bytes.Buffer
+	appendDigestText(&digest, fmt.Sprintf("\n## %s — %s\n\n", time.Now().UTC().Format(time.RFC3339), filepath.Base(runDir)))
+	sort.Strings(skipped)
+	for _, note := range skipped {
+		if !appendDigestText(&digest, fmt.Sprintf("- Evidence skipped: `%s`\n", note)) {
+			return digest.Bytes(), true, nil
+		}
+	}
+	if len(skipped) > 0 {
+		if !appendDigestText(&digest, "\n") {
+			return digest.Bytes(), true, nil
+		}
+	}
 	for _, path := range paths {
 		data, err := readTail(path, salvageTailBytes)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
+		rel, relErr := filepath.Rel(runDir, path)
+		if relErr != nil {
+			rel = path
 		}
-		rel, _ := filepath.Rel(runDir, path)
-		items = append(items, salvagedEvidence{path: filepath.ToSlash(rel), data: data})
+		rel = filepath.ToSlash(rel)
+		if err != nil {
+			if !errors.Is(err, fs.ErrPermission) {
+				return nil, false, fmt.Errorf("read salvage evidence %s: %w", rel, err)
+			}
+			if !appendDigestText(&digest, fmt.Sprintf("- Evidence skipped: `%s` (%v)\n", rel, err)) {
+				return digest.Bytes(), true, nil
+			}
+			continue
+		}
+		var section strings.Builder
+		fmt.Fprintf(&section, "### %s\n\n", rel)
+		for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+			fmt.Fprintf(&section, "    %s\n", line)
+		}
+		section.WriteString("\n")
+		if !appendDigestText(&digest, section.String()) {
+			return digest.Bytes(), true, nil
+		}
 	}
-	return items, nil
+	return digest.Bytes(), true, nil
+}
+
+func appendDigestText(digest *bytes.Buffer, text string) bool {
+	const truncated = "\n[Digest truncated at 256 KiB.]\n"
+	remaining := salvageDigestBytes - digest.Len()
+	if len(text) <= remaining {
+		digest.WriteString(text)
+		return true
+	}
+	contentBytes := remaining - len(truncated)
+	if contentBytes > 0 {
+		digest.WriteString(text[:contentBytes])
+	}
+	if digest.Len() < salvageDigestBytes {
+		digest.WriteString(truncated[:min(len(truncated), salvageDigestBytes-digest.Len())])
+	}
+	return false
+}
+
+func salvageEvidencePaths(runDir string) ([]string, []string, error) {
+	var paths []string
+	var skipped []string
+	for _, name := range []string{"failure.log", "failures.log", "run-report.md", "report.md"} {
+		path := filepath.Join(runDir, name)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			if !errors.Is(err, fs.ErrPermission) {
+				return nil, nil, fmt.Errorf("inspect salvage evidence %s: %w", name, err)
+			}
+			skipped = append(skipped, name+": "+err.Error())
+			continue
+		}
+		if info.Mode().IsRegular() {
+			paths = append(paths, path)
+		}
+	}
+	roots := []struct {
+		path   string
+		accept func(string) bool
+	}{
+		{path: filepath.Join(runDir, "home", ".claude", "projects"), accept: func(string) bool { return true }},
+		{path: filepath.Join(runDir, "home", ".codex", "sessions"), accept: func(path string) bool { return strings.HasSuffix(strings.ToLower(path), ".jsonl") }},
+		{path: filepath.Join(runDir, "ensemble-records"), accept: func(string) bool { return true }},
+	}
+	for _, root := range roots {
+		if _, err := os.Lstat(root.path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			if !errors.Is(err, fs.ErrPermission) {
+				return nil, nil, fmt.Errorf("inspect salvage evidence root %s: %w", root.path, err)
+			}
+			rel, _ := filepath.Rel(runDir, root.path)
+			skipped = append(skipped, filepath.ToSlash(rel)+": "+err.Error())
+			continue
+		}
+		walkErr := walkEvidenceRoot(root.path, func(path string, entry fs.DirEntry, walkErr error) error {
+			rel, _ := filepath.Rel(runDir, path)
+			rel = filepath.ToSlash(rel)
+			if walkErr != nil {
+				if !errors.Is(walkErr, fs.ErrPermission) {
+					return walkErr
+				}
+				skipped = append(skipped, rel+": "+walkErr.Error())
+				return nil
+			}
+			if entry.Type().IsRegular() && root.accept(path) {
+				paths = append(paths, path)
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return nil, nil, fmt.Errorf("walk salvage evidence root %s: %w", root.path, walkErr)
+		}
+	}
+	return paths, skipped, nil
 }
 
 func readTail(path string, maximum int64) ([]byte, error) {
@@ -219,40 +369,76 @@ func readTail(path string, maximum int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(file, maximum))
 }
 
-func archiveRunEvidence(ctx context.Context, command, runDir, label string) {
+func archiveRunEvidence(ctx context.Context, command, runDir, label string) error {
 	if command == "" {
-		return
+		return fmt.Errorf("archive command is not configured")
 	}
-	cmd := exec.CommandContext(ctx, command, runDir, label)
+	archiveCtx, cancel := context.WithTimeout(ctx, archiveRunTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(archiveCtx, command, runDir, label)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
 	cmd.Env = os.Environ()
 	cmd.Stdout = io.Discard
-	cmd.Stderr = os.Stderr
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		var execErr *exec.Error
-		if errors.As(err, &execErr) {
-			fmt.Fprintf(os.Stderr, "minos: archive run evidence: %v\n", err)
+		diagnostic := strings.TrimSpace(stderr.String())
+		if line, _, found := strings.Cut(diagnostic, "\n"); found {
+			diagnostic = line
 		}
+		if diagnostic == "" {
+			diagnostic = fmt.Sprintf("minos: could not archive run evidence for %s", label)
+		}
+		fmt.Fprintln(os.Stderr, diagnostic)
+		return err
 	}
+	return nil
 }
 
 func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
-	if cfg.Runs.FailuresRepo == "" || cfg.Runs.FailuresCredentialFile == "" || cfg.Runs.GitAskPass == "" {
+	if cfg.Runs.FailuresRepo == "" || cfg.Runs.FailuresCredentialFile == "" {
 		return fmt.Errorf("Minos annexe push is not fully configured; durable local append retained")
 	}
+	tokenBytes, err := os.ReadFile(cfg.Runs.FailuresCredentialFile)
+	if err != nil {
+		return fmt.Errorf("read Minos annexe credential: %w", err)
+	}
+	token := strings.TrimSpace(string(tokenBytes))
+	if token == "" {
+		return fmt.Errorf("Minos annexe credential is empty")
+	}
 	env := append(os.Environ(),
-		"GIT_ASKPASS="+cfg.Runs.GitAskPass,
 		"GIT_TERMINAL_PROMPT=0",
-		"MINOS_FORGE_CREDENTIAL_FILE="+cfg.Runs.FailuresCredentialFile,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraHeader",
+		"GIT_CONFIG_VALUE_0=Authorization: token "+token,
 	)
 	commands := [][]string{
 		{"add", "--", "FAILURES.md"},
 		{"commit", "--only", "--quiet", "-m", "docs: record salvaged Minos run failure", "--", "FAILURES.md"},
+		{"fetch", "origin", "main"},
+		{"rebase", "origin/main"},
 		{"push", "origin", "HEAD:main"},
 	}
 	for _, arguments := range commands {
 		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", cfg.Runs.FailuresRepo}, arguments...)...)
 		cmd.Env = env
 		if out, err := cmd.CombinedOutput(); err != nil {
+			if arguments[0] == "rebase" {
+				abort := exec.CommandContext(ctx, "git", "-C", cfg.Runs.FailuresRepo, "rebase", "--abort")
+				abort.Env = env
+				if abortOut, abortErr := abort.CombinedOutput(); abortErr != nil {
+					return fmt.Errorf("git rebase: %w: %s; preserve local commit but rebase abort failed: %v: %s",
+						err, strings.TrimSpace(string(out)), abortErr, strings.TrimSpace(string(abortOut)))
+				}
+			}
 			return fmt.Errorf("git %s: %w: %s", arguments[0], err, strings.TrimSpace(string(out)))
 		}
 	}

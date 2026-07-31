@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+set -eu
+umask 077
+
+if [ "$#" -ne 3 ]; then
+  echo "usage: provision-failure-checkout HTTPS_CLONE_URL DESTINATION CREDENTIAL_FILE" >&2
+  exit 2
+fi
+
+clone_url="$1"
+destination="$2"
+credential_file="$3"
+
+[ ! -e "$destination" ] || {
+  echo "provision-failure-checkout: destination already exists: $destination" >&2
+  exit 1
+}
+forge_token="$(sed -n '1p' "$credential_file")"
+[ -n "$forge_token" ] || {
+  echo "provision-failure-checkout: credential file is missing or empty" >&2
+  exit 1
+}
+
+mkdir -p "$(dirname "$destination")"
+GIT_CONFIG_COUNT=1
+GIT_CONFIG_KEY_0="http.extraHeader"
+GIT_CONFIG_VALUE_0="Authorization: token $forge_token"
+GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT
+git clone "$clone_url" "$destination"
+git -C "$destination" config user.name Minos
+git -C "$destination" config user.email minos@example.invalid
+git -C "$destination" push --dry-run origin HEAD:main

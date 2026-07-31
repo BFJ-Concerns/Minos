@@ -28,7 +28,6 @@ type ServiceConfig struct {
 		Dir                    string `toml:"dir"`
 		FailuresRepo           string `toml:"failures-repo"`
 		FailuresCredentialFile string `toml:"failures-credential-file"`
-		GitAskPass             string `toml:"git-askpass"`
 		ArchiveCommand         string `toml:"archive-command"`
 	} `toml:"runs"`
 	Ensemble struct {

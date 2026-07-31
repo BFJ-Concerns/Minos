@@ -44,13 +44,13 @@ archive_ssh() {
 (
   cd "$run_dir" || exit 1
   find . -type f \( \
-    -name 'run-report.md' -o -name 'report.md' -o -name 'failure.log' -o -name 'failures.log' -o \
+    -path './run-report.md' -o -path './report.md' -o -path './failure.log' -o -path './failures.log' -o \
     -path './home/.claude/projects/*' -o -path './home/.codex/sessions/*.jsonl' -o \
-    -path './home/.codex/sessions/*/*.jsonl' -o -path './home/.codex/sessions/*/*/*.jsonl' -o \
-    -path './ensemble-records/*' -o -name 'loop-record.json' \
+    -path './ensemble-records/*' -o -path './loop-record.json' \
   \) -print0 2>/dev/null |
     tar --null --files-from=- -cf - 2>/dev/null |
     zstd -q -T0 -c 2>/dev/null |
-    archive_ssh "cat > '$partial_path'" >/dev/null 2>&1
-  archive_ssh "mv -- '$partial_path' '$remote_path'" >/dev/null 2>&1
+    archive_ssh "cat > '$partial_path'" >/dev/null 2>&1 || exit 1
+  archive_ssh "test -s '$partial_path'" >/dev/null 2>&1 || exit 1
+  archive_ssh "mv -- '$partial_path' '$remote_path'" >/dev/null 2>&1 || exit 1
 ) || archive_failed
