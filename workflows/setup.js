@@ -80,7 +80,8 @@ Build command: ${JSON.stringify(input.buildCommand)}
 Test command: ${JSON.stringify(input.testCommand)}
 Judge requirements from repository pins, manifests, and lockfiles. Verify working tools before installing anything.
 Install missing global toolchains and per-checkout dependencies only when evidenced by those commands and repository files.
-Do not modify repository files, regenerate a lockfile, invent a build or test command, or run either configured command.
+Do not modify repository files, regenerate a lockfile, or invent a build or test command.
+Run a configured build or test command only when needed to warm the selected cache; cache warming does not prove verification passed.
 When no tool or dependency action is needed, report the environment ready with an empty actions list.
 When a requirement cannot be provisioned, return environment.ready false and state exactly what was needed, tried, and failed.`;
 

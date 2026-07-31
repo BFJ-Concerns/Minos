@@ -27,6 +27,10 @@ type ServiceConfig struct {
 	Runs   struct {
 		Dir string `toml:"dir"`
 	} `toml:"runs"`
+	Ensemble struct {
+		ConcurrencyClaude int `toml:"concurrency-claude"`
+		ConcurrencyCodex  int `toml:"concurrency-codex"`
+	} `toml:"ensemble"`
 }
 
 type ForgeConfig struct {
@@ -72,6 +76,13 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		if forge.Adaptation == "" || forge.APIBase == "" || forge.WebhookSecretFile == "" || forge.CredentialFile == "" {
 			return ServiceConfig{}, fmt.Errorf("service.toml: forge %s is incomplete", name)
 		}
+	}
+	if cfg.Ensemble.ConcurrencyClaude == 0 && cfg.Ensemble.ConcurrencyCodex == 0 {
+		cfg.Ensemble.ConcurrencyClaude = 2
+		cfg.Ensemble.ConcurrencyCodex = 2
+	}
+	if cfg.Ensemble.ConcurrencyClaude < 1 || cfg.Ensemble.ConcurrencyCodex < 1 {
+		return ServiceConfig{}, fmt.Errorf("service.toml: ensemble concurrency-claude and concurrency-codex must be positive")
 	}
 	return cfg, nil
 }

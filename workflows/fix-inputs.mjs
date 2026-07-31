@@ -1,12 +1,26 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 
 const usage = "usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave] [--grouping FILE]\n";
+const rustTargetFallbackRecord = "rust-target-fallback";
+
+function readWarmTargetSource(runDir) {
+  if (!runDir) return null;
+  const recordPath = resolve(runDir, rustTargetFallbackRecord);
+  if (!existsSync(recordPath)) return null;
+  const source = readFileSync(recordPath, "utf8").trim();
+  if (source === "" || /[\r\n]/.test(source) || !isAbsolute(source))
+    throw new Error(`${rustTargetFallbackRecord} must contain one absolute path`);
+  const sourceStat = statSync(source);
+  if (!sourceStat.isDirectory())
+    throw new Error(`${rustTargetFallbackRecord} source must be a directory: ${source}`);
+  return resolve(source);
+}
 const positionals = [];
 let singleWave = false;
 let groupingPath = null;
@@ -70,6 +84,7 @@ if (argumentError || !reviewPath) {
   const runRecord = recordPath && existsSync(recordPath)
     ? JSON.parse(readFileSync(recordPath, "utf8"))
     : { round: 0, confirmedUnfixed: [] };
+  const warmTargetSource = readWarmTargetSource(process.env.MINOS_RUN_DIR);
   const result = {
     review: JSON.parse(readFileSync(reviewPath, "utf8")),
     threshold: process.env.MINOS_REVIEW_THRESHOLD || "High",
@@ -78,6 +93,7 @@ if (argumentError || !reviewPath) {
     singleWave,
     ...(groupingRequested ? { grouping } : {}),
     workspace: process.env.MINOS_WORKSPACE || orientation.repository,
+    ...(warmTargetSource ? { warmTargetSource } : {}),
     verification: {
       build: process.env.MINOS_BUILD_CMD || "",
       tests: process.env.MINOS_TEST_CMD || "",

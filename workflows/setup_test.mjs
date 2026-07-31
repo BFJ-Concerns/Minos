@@ -167,6 +167,24 @@ test("setup input builder emits deterministic repository content and objections"
   assert.deepEqual(result.conflicts, ["package.json"]);
   assert.equal(result.guidance.content, "INPUT_GUIDANCE_SENTINEL_SIENNA_719\n");
   assert.match(result.setupBrief.content, /Prepare the reviewed repository/);
+  for (const required of [
+    "$MINOS_SHARED_CACHE_DIR",
+    "$SCCACHE_DIR",
+    "$GOCACHE",
+    "$GOMODCACHE",
+    "$npm_config_cache",
+    "$XDG_STATE_HOME",
+    "$HOME/.cargo/bin",
+    "$MINOS_RUN_DIR/rust-target-fallback",
+    "$HOME/.local/bin",
+  ]) {
+    assert.ok(result.setupBrief.content.includes(required), `setup brief must name ${required}`);
+  }
+  assert.match(result.setupBrief.content, /untracked\s+artefacts instead/);
+  assert.match(
+    result.setupBrief.content,
+    /never execute the configured test command to completion/,
+  );
   assert.equal(result.objections[0].objection, "OBJECTION_SENTINEL_AUBURN_719");
   assert.equal(result.buildCommand, "npm run build");
   assert.equal(result.testCommand, "npm test");

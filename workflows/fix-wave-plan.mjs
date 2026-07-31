@@ -94,6 +94,9 @@ function invalidInputReason(input) {
     return "fix preparation needs non-empty project guidance";
   if (typeof input.workspace !== "string" || input.workspace.trim() === "")
     return "fix preparation needs a workspace";
+  if (input.warmTargetSource !== undefined &&
+      (typeof input.warmTargetSource !== "string" || input.warmTargetSource.trim() === ""))
+    return "fix preparation warmTargetSource must be a non-empty string when set";
   return null;
 }
 
@@ -127,6 +130,7 @@ function fingerprintFor(input, round, findings, dispatches = []) {
     threshold: input.threshold === undefined ? DEFAULT_THRESHOLD : input.threshold,
     maximumRounds: input.maximumRounds ?? null,
     singleWave: input.singleWave === true,
+    warmTargetSource: input.warmTargetSource ?? null,
     groups: dispatches.map((entry) => entry.findingKeys),
     priorConfirmedUnfixed: Array.isArray(input.runRecord && input.runRecord.confirmedUnfixed)
       ? input.runRecord.confirmedUnfixed.map((entry) => ({ key: entry.key, attempts: entry.attempts }))
@@ -201,6 +205,7 @@ export function prepareFixWave(input) {
       fingerprint,
       input: {
         workspace: input.workspace,
+        ...(input.warmTargetSource ? { warmTargetSource: input.warmTargetSource } : {}),
         verification,
         guidance: { ...input.guidance },
         fixerBrief: { ...input.fixerBrief },
@@ -275,6 +280,7 @@ export function prepareFixWave(input) {
     fingerprint: workingFingerprint,
     input: {
       workspace: input.workspace,
+      ...(input.warmTargetSource ? { warmTargetSource: input.warmTargetSource } : {}),
       verification,
       guidance: { ...input.guidance },
       fixerBrief: { ...input.fixerBrief },

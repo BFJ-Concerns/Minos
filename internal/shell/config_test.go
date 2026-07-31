@@ -18,6 +18,9 @@ webhook-secret-file = "/tmp/secret"
 credential-file = "/tmp/token"
 [runs]
 dir = "/tmp/runs"
+[ensemble]
+concurrency-claude = 10
+concurrency-codex = 6
 `
 
 func TestLoadServiceConfig(t *testing.T) {
@@ -26,8 +29,41 @@ func TestLoadServiceConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, err := LoadServiceConfig(root)
-	if err != nil || cfg.Service.BotLogin != "Minos" || cfg.Runs.Dir != "/tmp/runs" {
+	if err != nil || cfg.Service.BotLogin != "Minos" || cfg.Runs.Dir != "/tmp/runs" || cfg.Ensemble.ConcurrencyClaude != 10 || cfg.Ensemble.ConcurrencyCodex != 6 {
 		t.Fatalf("config = %#v, error = %v", cfg, err)
+	}
+}
+
+func TestLoadServiceConfigRequiresPositiveEnsembleConcurrency(t *testing.T) {
+	for _, setting := range []string{
+		"concurrency-claude = 0\nconcurrency-codex = 6\n",
+		"concurrency-claude = 10\nconcurrency-codex = 0\n",
+	} {
+		t.Run(strings.TrimSpace(setting), func(t *testing.T) {
+			root := t.TempDir()
+			contents := strings.Replace(testServiceConfig,
+				"concurrency-claude = 10\nconcurrency-codex = 6\n", setting, 1)
+			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadServiceConfig(root)
+			if err == nil || !strings.Contains(err.Error(), "ensemble concurrency") {
+				t.Fatalf("error = %v, want ensemble concurrency validation", err)
+			}
+		})
+	}
+}
+
+func TestLoadServiceConfigDefaultsEnsembleConcurrency(t *testing.T) {
+	root := t.TempDir()
+	contents := strings.Replace(testServiceConfig,
+		"[ensemble]\nconcurrency-claude = 10\nconcurrency-codex = 6\n", "", 1)
+	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServiceConfig(root)
+	if err != nil || cfg.Ensemble.ConcurrencyClaude != 2 || cfg.Ensemble.ConcurrencyCodex != 2 {
+		t.Fatalf("ensemble defaults = %+v, error = %v", cfg.Ensemble, err)
 	}
 }
 

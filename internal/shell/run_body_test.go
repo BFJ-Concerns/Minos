@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	codexConfigDir := filepath.Join(homeDir, ".codex")
 	projectsDir := filepath.Join(homeDir, ".claude", "projects")
 	stateDir := filepath.Join(fixture.runDir, "state")
+	cacheDir := filepath.Join(fixture.runDir, "cache")
 	info, err := os.Stat(configDir)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +66,22 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	assertContainsFile(t, filepath.Join(stateDir, "worker-state"), "worker wrote state")
 	assertContainsFile(t, fixture.record+".worker-tool", filepath.Join(homeDir, ".local", "bin", "minos-worker-probe"))
 	assertContainsFile(t, fixture.record+".worker-env", "XDG_STATE_HOME="+stateDir)
+	for name, path := range map[string]string{
+		"MINOS_SHARED_CACHE_DIR": cacheDir,
+		"SCCACHE_DIR":            filepath.Join(cacheDir, "rust", "sccache"),
+		"GOCACHE":                filepath.Join(cacheDir, "go", "build"),
+		"GOMODCACHE":             filepath.Join(cacheDir, "go", "modules"),
+		"npm_config_cache":       filepath.Join(cacheDir, "node", "npm"),
+	} {
+		assertContainsFile(t, fixture.record+".worker-env", name+"="+path)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("shared cache directory %s mode = %s, want directory 700", path, info.Mode())
+		}
+	}
 	assertContainsFile(
 		t,
 		fixture.record+".worker-env",
@@ -166,6 +184,19 @@ func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "180000",
 	})
 	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyStopsRunScopedSccacheServer(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	sccacheSource := filepath.Join(fixture.root, "sccache")
+	writeScript(t, sccacheSource, `#!/usr/bin/env sh
+printf '%s\n' "$*" >"$MINOS_TEST_RECORD.sccache"
+exit 23
+`)
+
+	fixture.run(t, map[string]string{"MINOS_TEST_SCCACHE_SOURCE": sccacheSource})
+
+	assertContainsFile(t, fixture.record+".sccache", "--stop-server")
 }
 
 func TestRunBodyRejectsInvalidGatewayConfigurationBeforeLaunchingClaude(t *testing.T) {
@@ -299,7 +330,7 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 				return nil
 			},
 			wantStage: "runtime-home",
-			wantCause: "could not create isolated runtime home, state and tool directories",
+			wantCause: "could not create isolated runtime home, state, cache and tool directories",
 		},
 		{
 			name: "root-cause skill copy",
@@ -632,6 +663,60 @@ func TestVendoredEnsembleBundleRunsWithoutRepositoryDependencies(t *testing.T) {
 	}
 }
 
+func TestVendoredEnsembleResolvesConfiguredConcurrencyFromRunEnvironment(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	bundle, err := filepath.Abs(filepath.Join("..", "..", "runtime", "ensemble.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	workflow := filepath.Join(root, "workflow.mjs")
+	if err := os.WriteFile(workflow, []byte("export default {};\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordDir := filepath.Join(root, "records")
+	cmd := exec.Command("node", bundle, workflow)
+	cmd.Dir = root
+	cmd.Env = environmentWithOverrides(map[string]string{
+		"HOME":                        filepath.Join(root, "home"),
+		"XDG_CONFIG_HOME":             filepath.Join(root, "config"),
+		"ENSEMBLE_CONCURRENCY_CLAUDE": "10",
+		"ENSEMBLE_CONCURRENCY_CODEX":  "6",
+		"ENSEMBLE_RUN_RECORD":         "on",
+		"ENSEMBLE_RUN_RECORD_DIR":     recordDir,
+	})
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("vendored Ensemble accepted invalid probe workflow\n%s", output)
+	}
+	manifests, err := filepath.Glob(filepath.Join(recordDir, "runs", "*", "*", "*", "manifest.json"))
+	if err != nil || len(manifests) != 1 {
+		t.Fatalf("run manifests = %v, error = %v; want one manifest", manifests, err)
+	}
+	data, err := os.ReadFile(manifests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Concurrency struct {
+			Engines map[string]struct {
+				Layer string `json:"layer"`
+				Value int    `json:"value"`
+			} `json:"engines"`
+		} `json:"concurrency"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for engine, want := range map[string]int{"claude": 10, "codex": 6} {
+		got, ok := manifest.Concurrency.Engines[engine]
+		if !ok || got.Value != want || got.Layer != "env" {
+			t.Fatalf("%s concurrency = %+v, present = %t; want env value %d", engine, got, ok, want)
+		}
+	}
+}
+
 func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *testing.T) {
 	sourceRoot := t.TempDir()
 	for _, directory := range []string{"scripts", "runtime", "workflows"} {
@@ -882,6 +967,9 @@ esac
 set -eu
 mkdir -p "$MINOS_WORKSPACE"
 install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
+if [ -n "${MINOS_TEST_SCCACHE_SOURCE:-}" ]; then
+  install -m 700 "$MINOS_TEST_SCCACHE_SOURCE" "$HOME/.local/bin/sccache"
+fi
 printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
 printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 `)

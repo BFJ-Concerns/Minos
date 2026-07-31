@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -294,6 +294,50 @@ test("fix assignments carry only the configured build and test obligations", asy
     if (!expected.tests) assert.doesNotMatch(prompt, /configured test/i);
     if (expected.whitespaceOnly) assert.doesNotMatch(prompt, /Run this configured (?:build|test) command/i);
   }
+});
+
+test("a recorded Rust target fallback reaches composed fix prompts only while present", async () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-fix-rust-target-fallback-"));
+  const workspace = join(root, "workspace");
+  const target = join(workspace, "target");
+  const guidancePath = join(root, "README.md");
+  const orientationPath = join(root, "orientation.json");
+  const reviewPath = join(root, "review.json");
+  const fallbackRecord = join(root, "rust-target-fallback");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
+  writeFileSync(orientationPath, JSON.stringify({ repository: workspace, grounding: "annexe", guidance: guidancePath }));
+  writeFileSync(reviewPath, JSON.stringify({
+    status: "complete",
+    reviewed: { target: "target111", head: "head222" },
+    confirmedFindings: [finding("Rust repair", "High", "src/lib.rs", 7)],
+  }));
+  writeFileSync(fallbackRecord, `${target}\n`);
+  const environment = {
+    ...process.env,
+    MINOS_RUN_DIR: root,
+    MINOS_ORIENTATION: orientationPath,
+    MINOS_WORKSPACE: workspace,
+  };
+
+  const recordedPlan = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, "--single-wave"], {
+    encoding: "utf8",
+    env: environment,
+  }));
+  assert.equal(recordedPlan.input.warmTargetSource, target);
+  const recorded = await run(recordedPlan);
+  assert.match(recorded.calls[0].prompt, /seed this isolated worktree's Rust target/);
+  assert.ok(recorded.calls[0].prompt.includes(JSON.stringify(target)));
+
+  unlinkSync(fallbackRecord);
+  const ordinaryPlan = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, "--single-wave"], {
+    encoding: "utf8",
+    env: environment,
+  }));
+  assert.equal(ordinaryPlan.input.warmTargetSource, undefined);
+  const ordinary = await run(ordinaryPlan);
+  assert.doesNotMatch(ordinary.calls[0].prompt, /seed this isolated worktree's Rust target/);
+  assert.ok(!ordinary.calls[0].prompt.includes(target));
 });
 
 test("fix write-ups keep the finding path and line", async () => {
