@@ -11,3 +11,14 @@ func TestIncompleteStateExtendsProductVocabulary(t *testing.T) {
 		t.Fatal("incomplete state is not part of the product vocabulary")
 	}
 }
+
+func TestContinuationStateExtendsProductVocabulary(t *testing.T) {
+	state := Continuation()
+	if state.Name() != "continuation" || state.ForgeState() != "pending" ||
+		state.Description() != "Review continuing in a fresh run" {
+		t.Fatalf("continuation state = %#v", state)
+	}
+	if !state.Valid() {
+		t.Fatal("continuation state is not valid")
+	}
+}

@@ -456,7 +456,7 @@ func TestRunBodyRecordsBlockedLeadBeforeFirstRunActivity(t *testing.T) {
 }
 
 func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
-	for _, outcome := range []string{"clean", "non-clean"} {
+	for _, outcome := range []string{"clean", "non-clean", "continuation"} {
 		t.Run(outcome, func(t *testing.T) {
 			fixture := newRunBodyFixture(t)
 			fixture.run(t, map[string]string{
@@ -476,9 +476,58 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 				t.Fatalf("Claude agent queries = %s, want exactly 1", attempts)
 			}
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+			assertFileEmpty(t, fixture.failureLog)
 			fixture.assertProcessesStopped(t)
 		})
 	}
+}
+
+func TestRunBodySignalsSustainedMemoryPressureAtLeadReadSurface(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 800_000_000, 1_000_000_000, 0)
+	fixture.run(t, map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "memory approaching the run ceiling")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "after reclaimable cache")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "finish this stage and hand off")
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyDoesNotSignalReclaimablePageCache(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 1_072_668_082, 1_073_741_824, 1_060_000_000)
+	fixture.run(t, map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "memory-pressure")); !os.IsNotExist(err) {
+		t.Fatalf("reclaimable page cache produced a pressure signal or stat failed: %v", err)
+	}
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyPressureSignalDoesNotCountAsLeadActivity(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 800_000_000, 1_000_000_000, 0)
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":           cgroup,
+		"MINOS_TEST_NO_WORKER_PROBE": "1",
+		"MINOS_TEST_PENDING_STATE":   "done",
+		"MINOS_TEST_WAIT_POLLS":      "1",
+		"MINOS_TEST_TERMINAL_STATE":  "blocked",
+	})
+	if err == nil {
+		t.Fatalf("run-body accepted a blocked lead after its own pressure write\n%s", output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "finish this stage and hand off")
+	assertFailureLine(t, fixture.failureLog, "stage=lead-supervision", "blocked state before producing run activity")
+	fixture.assertProcessesStopped(t)
 }
 
 func TestRunBodyIgnoresUnrecognisedCompletionMarker(t *testing.T) {
@@ -1108,6 +1157,26 @@ func assertFileEmpty(t *testing.T, path string) {
 	if len(data) != 0 {
 		t.Fatalf("%s = %q, want empty", path, data)
 	}
+}
+
+func writeTestCgroup(t *testing.T, root string, current, maximum, inactiveFile int64) string {
+	t.Helper()
+	directory := filepath.Join(root, "cgroup")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"memory.current":      fmt.Sprintf("%d\n", current),
+		"memory.max":          fmt.Sprintf("%d\n", maximum),
+		"memory.stat":         fmt.Sprintf("anon 0\ninactive_file %d\n", inactiveFile),
+		"memory.swap.current": "0\n",
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return directory
 }
 
 func assertFailureLine(t *testing.T, path string, fragments ...string) {

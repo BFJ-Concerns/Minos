@@ -91,7 +91,9 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		t.Fatalf("first admission = %q, starts = %d; want one start", result, len(starts))
 	}
 	firstEnvironment := systemdEnvironment(t, starts[0])
+	firstEnvironment["MINOS_TEST_CONTINUATION_FINISH"] = "1"
 	runRecordedBody(t, runBody, firstEnvironment)
+	assertContainsFile(t, filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "lead-complete"), "continuation")
 
 	workspace := firstEnvironment["MINOS_WORKSPACE"]
 	orientationPath := firstEnvironment["MINOS_ORIENTATION"]
@@ -683,7 +685,15 @@ case "$1" in
     printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
     guidance="$(jq -r '.guidance' "$MINOS_ORIENTATION")"
     cat "$guidance" >"$record.grounding"
-    if [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
+    if [ "${MINOS_TEST_CONTINUATION_FINISH:-}" = "1" ]; then
+      jq -n \
+        --arg owner "$MINOS_OWNER" --arg repo "$MINOS_REPO_NAME" --arg number "$MINOS_PR" \
+        --arg head "$MINOS_HEAD_SHA" --arg run_dir "$MINOS_RUN_DIR" \
+        '{kind:"minos-run-handoff-v1",pullRequest:{owner:$owner,repo:$repo,number:$number},head:$head,runDir:$run_dir,attempt:1,stoppedAt:"estate fixture",writtenAt:"fixture",runRecord:{round:0,confirmedUnfixed:[]}}' \
+        >"$MINOS_HANDOFF.tmp"
+      mv "$MINOS_HANDOFF.tmp" "$MINOS_HANDOFF"
+      printf 'continuation\n' >"$MINOS_RUN_DIR/lead-complete"
+    elif [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
       printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=brief-fix cause=repairs-incomplete\n' \
         >>"$MINOS_FAILURE_LOG"
       printf 'non-clean\n' >"$MINOS_RUN_DIR/lead-complete"

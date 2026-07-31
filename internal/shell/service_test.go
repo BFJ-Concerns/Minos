@@ -62,6 +62,14 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 			want: 0,
 		},
 		{
+			name: "continued current head",
+			statuses: []forge.Status{{
+				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Creator: "Minos", Description: product.Continuation().Description(),
+			}},
+			want: 0,
+		},
+		{
 			name: "other account does not claim continuation",
 			statuses: []forge.Status{{
 				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,

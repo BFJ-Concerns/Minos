@@ -51,7 +51,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		return emitForgeResult(stdout, "claim", adapter.Claim(ctx, guard.Repository, guard.PullRequest))
 	case "status":
 		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|incomplete|clean|merged")
+			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|incomplete|clean|merged|continuation")
 		}
 		state, ok := namedProductState(args[3])
 		if !ok {

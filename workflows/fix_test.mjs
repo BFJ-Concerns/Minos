@@ -579,6 +579,44 @@ test("the deterministic fix input carries loop knobs, grouping judgement, and th
   assert.equal(input.guidance.content, "COMMISSION_VIOLET_719");
 });
 
+test("a seeded continuation record reaches the first fix-wave ledger", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-continuation-"));
+  const guidancePath = join(root, "README.md");
+  const orientationPath = join(root, "orientation.json");
+  const reviewPath = join(root, "review.json");
+  const recordPath = join(root, "loop-record.json");
+  const predecessorFinding = finding("transition", "High", "internal/state.go", 41);
+  const newFinding = finding("other transition", "High", "internal/other.go", 12);
+  writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
+  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "annexe", guidance: guidancePath }));
+  writeFileSync(reviewPath, JSON.stringify({
+    status: "complete",
+    reviewed: { target: "target111", head: "head222" },
+    confirmedFindings: [predecessorFinding, newFinding],
+  }));
+  writeFileSync(recordPath, JSON.stringify({
+    round: 3,
+    confirmedUnfixed: [{
+      key: JSON.stringify([predecessorFinding.path, predecessorFinding.line, predecessorFinding.title]),
+      finding: predecessorFinding,
+      attempts: 2,
+      reason: "two attempts failed",
+    }],
+  }));
+
+  const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, recordPath], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root },
+  }));
+  const plan = prepareFixWave(input);
+  assert.equal(plan.round, 4);
+  assert.equal(plan.priorConfirmedUnfixed.length, 1);
+  assert.equal(plan.priorConfirmedUnfixed[0].attempts, 2);
+  assert.deepEqual(plan.dispatches.flatMap((dispatch) => dispatch.findingKeys), [
+    JSON.stringify([newFinding.path, newFinding.line, newFinding.title]),
+  ]);
+});
+
 test("a malformed grouping file becomes an incomplete single-wave plan", () => {
   const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-grouping-"));
   const guidancePath = join(root, "README.md");

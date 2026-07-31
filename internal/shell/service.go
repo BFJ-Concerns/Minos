@@ -58,7 +58,8 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 		}
 	}
 	if found && (latest.Description == product.Incomplete().Description() ||
-		latest.Description == product.Working().Description()) {
+		latest.Description == product.Working().Description() ||
+		latest.Description == product.Continuation().Description()) {
 		return 0
 	}
 	return 1
