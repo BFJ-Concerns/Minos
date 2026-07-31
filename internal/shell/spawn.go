@@ -41,13 +41,59 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	if strings.TrimSpace(string(out)) != "" {
 		return SpawnSuppressed, nil
 	}
-	runDir, err := os.MkdirTemp(cfg.Runs.Dir, unit+"-")
-	if err != nil {
-		return "", err
+	if err := os.MkdirAll(filepath.Join(cfg.Runs.Dir, ".handoffs"), 0o700); err != nil {
+		return "", fmt.Errorf("create continuation handoff directory: %w", err)
+	}
+	handoffFile := handoffPath(cfg.Runs.Dir, unit)
+	var handoff *runHandoff
+	if _, statErr := os.Stat(handoffFile); statErr == nil {
+		handoff, err = readRunHandoff(handoffFile, facts)
+		if err != nil {
+			rejectRunHandoff(handoffFile, err)
+			handoff = nil
+		}
+	} else if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("inspect continuation handoff: %w", statErr)
+	}
+
+	runDir := ""
+	adopted := false
+	if handoff != nil {
+		if reason, valid := adoptableRunDirectory(cfg, unit, facts, handoff); valid {
+			runDir = handoff.RunDir
+			adopted = true
+		} else {
+			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
+		}
+	}
+	if !adopted {
+		runDir, err = os.MkdirTemp(cfg.Runs.Dir, unit+"-")
+		if err != nil {
+			return "", err
+		}
+	}
+	cleanupSpawnFailure := func() {
+		if adopted {
+			_ = os.Remove(filepath.Join(runDir, runOwnerMarker))
+			return
+		}
+		_ = os.RemoveAll(runDir)
 	}
 	if err := os.WriteFile(filepath.Join(runDir, runOwnerMarker), nil, 0o600); err != nil {
-		_ = os.RemoveAll(runDir)
+		cleanupSpawnFailure()
 		return "", fmt.Errorf("create run ownership marker: %w", err)
+	}
+	continuationAttempt := 0
+	if handoff != nil {
+		continuationAttempt = handoff.Attempt + 1
+		if err := os.WriteFile(filepath.Join(runDir, "loop-record.json"), handoff.RunRecord, 0o600); err != nil {
+			cleanupSpawnFailure()
+			return "", fmt.Errorf("seed continuation loop record: %w", err)
+		}
+		if err := os.Remove(handoffFile); err != nil {
+			cleanupSpawnFailure()
+			return "", fmt.Errorf("consume continuation handoff: %w", err)
+		}
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
 	maximumRounds := ""
@@ -55,30 +101,36 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		maximumRounds = strconv.Itoa(repo.Review.MaximumRounds)
 	}
 	env := map[string]string{
-		"MINOS_RUN_DIR":          runDir,
-		"MINOS_CONFIG":           cfg.Root,
-		"MINOS_FORGE":            facts.Forge,
-		"MINOS_WORKSPACE":        filepath.Join(runDir, "workspace"),
-		"MINOS_ORIENTATION":      filepath.Join(runDir, "orientation.json"),
-		"MINOS_OWNER":            facts.Owner,
-		"MINOS_REPO_NAME":        facts.Repo,
-		"MINOS_PR":               facts.PR,
-		"MINOS_HEAD_SHA":         facts.HeadSHA,
-		"MINOS_TARGET_SHA":       facts.BaseSHA,
-		"MINOS_BASE_REF":         facts.BaseRef,
-		"MINOS_HEAD_BRANCH":      facts.HeadRef,
-		"MINOS_API_BASE":         forgeConfig.APIBase,
-		"MINOS_CREDENTIAL_FILE":  forgeConfig.CredentialFile,
-		"MINOS_BUILD_CMD":        repo.Adaptation.Build,
-		"MINOS_TEST_CMD":         repo.Adaptation.Test,
-		"MINOS_RUN_BODY":         repo.Adaptation.RunBody,
-		"MINOS_AUTO_MERGE":       fmt.Sprintf("%t", repo.Policy.AutoMerge),
-		"MINOS_REVIEW_THRESHOLD": repo.Review.Threshold,
-		"MINOS_MAX_ROUNDS":       maximumRounds,
+		"MINOS_RUN_DIR":              runDir,
+		"MINOS_CONFIG":               cfg.Root,
+		"MINOS_FORGE":                facts.Forge,
+		"MINOS_WORKSPACE":            filepath.Join(runDir, "workspace"),
+		"MINOS_ORIENTATION":          filepath.Join(runDir, "orientation.json"),
+		"MINOS_HANDOFF":              handoffFile,
+		"MINOS_LOOP_RECORD":          filepath.Join(runDir, "loop-record.json"),
+		"MINOS_CONTINUATION_ATTEMPT": strconv.Itoa(continuationAttempt),
+		"MINOS_OWNER":                facts.Owner,
+		"MINOS_REPO_NAME":            facts.Repo,
+		"MINOS_PR":                   facts.PR,
+		"MINOS_HEAD_SHA":             facts.HeadSHA,
+		"MINOS_TARGET_SHA":           facts.BaseSHA,
+		"MINOS_BASE_REF":             facts.BaseRef,
+		"MINOS_HEAD_BRANCH":          facts.HeadRef,
+		"MINOS_API_BASE":             forgeConfig.APIBase,
+		"MINOS_CREDENTIAL_FILE":      forgeConfig.CredentialFile,
+		"MINOS_BUILD_CMD":            repo.Adaptation.Build,
+		"MINOS_TEST_CMD":             repo.Adaptation.Test,
+		"MINOS_RUN_BODY":             repo.Adaptation.RunBody,
+		"MINOS_AUTO_MERGE":           fmt.Sprintf("%t", repo.Policy.AutoMerge),
+		"MINOS_REVIEW_THRESHOLD":     repo.Review.Threshold,
+		"MINOS_MAX_ROUNDS":           maximumRounds,
+	}
+	if adopted {
+		env["MINOS_RESUME"] = "true"
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		_ = os.RemoveAll(runDir)
+		cleanupSpawnFailure()
 		return "", err
 	}
 	args := []string{
@@ -86,6 +138,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
 		"--property=RuntimeMaxSec=12h",
+		"--property=MemoryMax=12G",
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)
@@ -93,7 +146,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	args = append(args, exe, "run", "--config", cfg.Root)
 	out, err = commandCombinedOutput(ctx, "systemd-run", args...)
 	if err != nil {
-		_ = os.RemoveAll(runDir)
+		cleanupSpawnFailure()
 		if strings.Contains(string(out), "already exists") {
 			return SpawnSuppressed, nil
 		}

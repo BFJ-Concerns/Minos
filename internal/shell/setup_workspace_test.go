@@ -60,6 +60,60 @@ func TestSetupWorkspaceChecksOutHeadClonesAnnexeAndConfiguresAuthor(t *testing.T
 	}
 }
 
+func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testing.T) {
+	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
+	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
+	server := newSetupForge(t, head, repository, annexe)
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	orientation := filepath.Join(runDir, "orientation.json")
+	runSetupWorkspace(t, server.URL, runDir, workspace, orientation, head)
+
+	if err := os.WriteFile(filepath.Join(workspace, "code.txt"), []byte("unfinished tracked change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(workspace, "target", "warm-cache")
+	if err := os.MkdirAll(filepath.Dir(cache), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte("preserved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	rerere := filepath.Join(commonDir, "rr-cache", "fixture", "postimage")
+	if err := os.MkdirAll(filepath.Dir(rerere), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rerere, []byte("resolution\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orientation, []byte(`{"stale":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := setupWorkspaceCommand(t, server.URL, runDir, workspace, orientation, head)
+	cmd.Env = append(cmd.Env, "MINOS_RESUME=true")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("warm setup-workspace failed: %v\n%s", err, output)
+	}
+
+	assertContainsFile(t, filepath.Join(workspace, "code.txt"), "reviewed code")
+	assertContainsFile(t, cache, "preserved")
+	assertContainsFile(t, rerere, "resolution")
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("resumed workspace head = %q, want %q", got, head)
+	}
+	state := readOrientation(t, orientation)
+	if state.Head != head || state.Grounding != "annexe" {
+		t.Fatalf("rewritten orientation = %+v", state)
+	}
+	publication := filepath.Join(runDir, "publication")
+	if got := gitOutput(t, publication, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("resumed publication head = %q, want %q", got, head)
+	}
+	assertContainsFile(t, filepath.Join(commonDir, "hooks", "pre-push"), "minos-protected-ref")
+}
+
 func TestSetupWorkspaceRecordsRepositoryGuidanceFallbackWithoutAnnexe(t *testing.T) {
 	repository, head := createGitRepository(t, "AGENTS.md", "MINOS_REPOSITORY_GUIDANCE_OCHRE_719\n")
 	server := newSetupForge(t, head, repository, "")
