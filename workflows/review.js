@@ -111,6 +111,20 @@ function normalisePlan(plan, files) {
   return { requested, dispatched, clamps };
 }
 
+// The Ensemble sandbox exposes no Buffer or TextEncoder global, so byte
+// lengths must be computed in plain JavaScript.
+function utf8ByteLength(text) {
+  let bytes = 0;
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code <= 0xffff) bytes += 3;
+    else bytes += 4;
+  }
+  return bytes;
+}
+
 function orientationPacket(target, head, files, units) {
   const full = {
     commitRange: `${target}...${head}`,
@@ -123,7 +137,7 @@ function orientationPacket(target, head, files, units) {
     })),
   };
   const serialised = JSON.stringify(full);
-  if (Buffer.byteLength(serialised, "utf8") <= MAX_ORIENTATION_PACKET_BYTES)
+  if (utf8ByteLength(serialised) <= MAX_ORIENTATION_PACKET_BYTES)
     return serialised;
 
   const ownership = units.map(({ id, scope }) => ({
@@ -149,7 +163,7 @@ function orientationPacket(target, head, files, units) {
     let best = 0;
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
-      if (Buffer.byteLength(build(middle), "utf8") <= MAX_ORIENTATION_PACKET_BYTES) {
+      if (utf8ByteLength(build(middle)) <= MAX_ORIENTATION_PACKET_BYTES) {
         best = middle;
         low = middle + 1;
       } else {
