@@ -286,7 +286,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=ExitType=main")
 	assertArgument(t, systemdArgs, "--property=KillMode=control-group")
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=12h")
-	assertArgument(t, systemdArgs, "--property=MemoryMax=12G")
+	assertArgument(t, systemdArgs, "--property=MemoryMax=14G")
 	for _, value := range []string{
 		"MINOS_CONFIG=/etc/minos",
 		"MINOS_FORGE=forgejo",

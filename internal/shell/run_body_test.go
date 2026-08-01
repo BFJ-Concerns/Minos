@@ -484,7 +484,7 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 
 func TestRunBodySignalsSustainedMemoryPressureAtLeadReadSurface(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	cgroup := writeTestCgroup(t, fixture.root, 800_000_000, 1_000_000_000, 0)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0)
 	fixture.run(t, map[string]string{
 		"MINOS_CGROUP_DIR":          cgroup,
 		"MINOS_TEST_PENDING_STATE":  "done",
@@ -514,7 +514,7 @@ func TestRunBodyDoesNotSignalReclaimablePageCache(t *testing.T) {
 
 func TestRunBodyPressureSignalDoesNotCountAsLeadActivity(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	cgroup := writeTestCgroup(t, fixture.root, 800_000_000, 1_000_000_000, 0)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0)
 	output, err := fixture.execute(map[string]string{
 		"MINOS_CGROUP_DIR":           cgroup,
 		"MINOS_TEST_NO_WORKER_PROBE": "1",

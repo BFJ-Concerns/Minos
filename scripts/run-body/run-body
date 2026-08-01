@@ -268,7 +268,7 @@ sample_memory_pressure() {
   if [ "$memory_pressure" -lt 0 ]; then
     memory_pressure=0
   fi
-  pressure_threshold=$((memory_max / 100 * 75))
+  pressure_threshold=$((memory_max / 100 * 85))
   if [ "$memory_pressure" -ge "$pressure_threshold" ]; then
     pressure_samples=$((pressure_samples + 1))
   else
