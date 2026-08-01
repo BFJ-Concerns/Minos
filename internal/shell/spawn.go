@@ -147,7 +147,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
 		"--property=RuntimeMaxSec=12h",
-		"--property=MemoryMax=12G",
+		"--property=MemoryMax=14G",
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)

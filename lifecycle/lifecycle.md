@@ -53,11 +53,26 @@ place: the successor claims idempotently, and the reaction remains true across
 the handoff.
 
 The handoff is `$MINOS_HANDOFF`. It must be written before the terminal marker
-and contain `kind: "minos-run-handoff-v1"`, this pull request's owner, repository
-and number, the fresh snapshot's `head_sha`, `$MINOS_RUN_DIR`, the continuation
-attempt, a concise `stoppedAt` description, an RFC 3339 `writtenAt`, and the
-complete JSON object from `$MINOS_LOOP_RECORD` as `runRecord`. If the loop record
-does not yet exist, first write `{"round":0,"confirmedUnfixed":[]}` to it. The
+and match this exact JSON shape — field names and nesting are validated
+strictly, and a handoff in any other shape is rejected, which costs the
+successor the preserved workspace:
+
+```json
+{
+  "kind": "minos-run-handoff-v1",
+  "pullRequest": { "owner": "OWNER", "repo": "REPOSITORY", "number": "NUMBER" },
+  "head": "FRESH_SNAPSHOT_HEAD_SHA",
+  "runDir": "$MINOS_RUN_DIR value",
+  "attempt": CONTINUATION_ATTEMPT,
+  "stoppedAt": "concise description of the stopping point",
+  "writtenAt": "RFC 3339 timestamp",
+  "runRecord": { the complete JSON object from $MINOS_LOOP_RECORD }
+}
+```
+
+`pullRequest.number` is a JSON string; `attempt` is a JSON integer. `head` is
+the fresh snapshot's `head_sha`. If the loop record does not yet exist, first
+write `{"round":0,"confirmedUnfixed":[]}` to it. The
 snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the head this attempt
 started from and may already be stale after a repair push. Write the complete
 handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
