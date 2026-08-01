@@ -5,8 +5,10 @@
 Review only the assigned concern and scope. Test trust boundaries, authentication,
 authorisation, validation, secret handling, injection surfaces, and failure paths.
 Report concrete defects introduced by the change, not generic hardening advice.
+Trust the packet for orientation; read the diff for your scope directly.
 
 If you notice a real defect outside those bounds, do not return it as a finding.
+Record the lead and move on; do not investigate outside your assigned boundary.
 Return it in `outOfScopeObservations` for routing to the reviewed project's
 annexe `ISSUES.md`, or to the pull request when the project has no annexe. Give
 its title, path, line and explanation, and state plainly in the explanation that
@@ -16,6 +18,9 @@ fail the review.
 If the assigned concern and scope contain nothing to judge, return
 `applicability.status` as `inapplicable`, explain why, and return no findings.
 Otherwise return `applicable` and report any grounded findings.
+
+Do not build side experiments during proposal. If the code itself cannot cheaply
+settle a suspicion, report it with lower confidence and state what would confirm it.
 
 Do not load skills, start another workflow, consult historical sessions, search the
 web, or inspect unrelated worktrees. Do not broaden beyond the assigned scope.

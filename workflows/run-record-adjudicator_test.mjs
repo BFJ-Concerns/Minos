@@ -128,6 +128,47 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   );
 });
 
+for (const [description, findingIds, expectedFindingIds] of [
+  ["an omitted findingIds field", undefined, undefined],
+  ["a valid findingIds array", ["specialist-1:1"], ["specialist-1:1"]],
+]) {
+  test(`${description} preserves a complete model-evidence leg`, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t);
+    const verifierLeg = { ...legs[2] };
+    if (findingIds !== undefined) verifierLeg.findingIds = findingIds;
+    const findingIdsEnvelope = {
+      ...envelope,
+      requiredModelEvidence: [...legs.slice(0, 2), verifierLeg],
+    };
+    const adapterVerdict = await adjudicate({ envelope: findingIdsEnvelope, recordDir: fixtureArchiveDir });
+    assert.equal(adapterVerdict.status, "complete", adapterVerdict.incomplete.join("\n"));
+    assert.deepEqual(adapterVerdict.modelEvidence[2].findingIds, expectedFindingIds);
+  });
+}
+
+for (const [description, findingIds] of [
+  ["an empty array", []],
+  ["duplicate ids", ["specialist-1:1", "specialist-1:1"]],
+  ["an empty id", [""]],
+  ["a non-string id", [42]],
+  ["a string instead of an array", "specialist-1:1"],
+  ["null", null],
+  ["an object instead of an array", { id: "specialist-1:1" }],
+]) {
+  test(`findingIds with ${description} makes its model-evidence leg incomplete`, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t);
+    const findingIdsEnvelope = {
+      ...envelope,
+      requiredModelEvidence: [
+        ...legs.slice(0, 2),
+        { ...legs[2], findingIds },
+      ],
+    };
+    const adapterVerdict = await adjudicate({ envelope: findingIdsEnvelope, recordDir: fixtureArchiveDir });
+    assertWithheld(adapterVerdict, /required model-evidence leg 3 is malformed/);
+  });
+}
+
 test("a refuted verifier completes the run without publishing a finding", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t);
   const refutedEnvelope = {

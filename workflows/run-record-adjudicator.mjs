@@ -49,11 +49,18 @@ function emptyVerdict(envelope, reason) {
 }
 
 function validLeg(leg) {
+  const findingIds = leg && leg.findingIds;
   return Boolean(
     leg &&
     typeof leg.label === "string" && leg.label !== "" &&
     typeof leg.role === "string" && leg.role !== "" &&
-    typeof leg.pinnedModel === "string" && leg.pinnedModel !== ""
+    typeof leg.pinnedModel === "string" && leg.pinnedModel !== "" &&
+    (findingIds === undefined || (
+      Array.isArray(findingIds) &&
+      findingIds.length > 0 &&
+      findingIds.every((id) => typeof id === "string" && id !== "") &&
+      new Set(findingIds).size === findingIds.length
+    ))
   );
 }
 
@@ -251,13 +258,15 @@ export async function adjudicate({ envelope, recordDir }) {
     const status = record && typeof record.status === "string" ? record.status : "absent";
     if (!record) incomplete.push(`agent record for ${leg.label} is absent or ambiguous`);
     else if (status !== "complete") incomplete.push(`agent ${leg.label} has status ${status}; expected complete`);
-    return {
+    const evidence = {
       label: leg.label,
       role: leg.role,
       pinnedModel: leg.pinnedModel,
       resolvedModel,
       status,
     };
+    if (Array.isArray(leg.findingIds)) evidence.findingIds = leg.findingIds;
+    return evidence;
   });
 
   const evidenceByLabel = new Map(modelEvidence.map((entry) => [entry.label, entry]));
