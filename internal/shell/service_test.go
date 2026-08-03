@@ -112,10 +112,11 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 }
 
 func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
+	const targetURL = "https://forge.example/owner/repo/pulls/1#minos-target-base"
 	ownedStatus := func(id int64, description string) forge.Status {
 		return forge.Status{
 			ID: id, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-			Creator: "Minos", Description: description,
+			Creator: "Minos", Description: description, TargetURL: targetURL,
 		}
 	}
 	tests := []struct {
@@ -143,13 +144,21 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 				Creator: "SomeBot", Description: product.Clean().Description(),
 			}},
 		},
+		{
+			name: "another pull request's clean status is not a marker",
+			statuses: []forge.Status{{
+				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Creator: "Minos", Description: product.Clean().Description(),
+				TargetURL: "https://forge.example/owner/repo/pulls/2#minos-target-base",
+			}},
+		},
 		{name: "no statuses"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{Statuses: test.statuses}
-			if got := completedRunStatus(snapshot, "Minos"); got != test.want {
+			if got := completedRunStatus(snapshot, "Minos", targetURL); got != test.want {
 				t.Fatalf("completedRunStatus() = %t, want %t", got, test.want)
 			}
 		})

@@ -74,9 +74,9 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 // completed run even when no terminal review exists: a converged clean run
 // posts no approve review (the 👍 reaction carries all-clear), so the status
 // is the head's only durable completion marker on that path.
-func completedRunStatus(snapshot forge.Snapshot, botLogin string) bool {
+func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) bool {
 	latest, found := latestOwnedStatus(snapshot, botLogin)
-	if !found {
+	if !found || latest.TargetURL != targetURL {
 		return false
 	}
 	return latest.Description == product.Clean().Description() ||
@@ -117,7 +117,7 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 			}
 		}
 	}
-	if completedRunStatus(snapshot, cfg.Service.BotLogin) {
+	if completedRunStatus(snapshot, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts)) {
 		return "nothing", nil
 	}
 	if reason, deferred := dependencyDeferral(snapshot); deferred {
