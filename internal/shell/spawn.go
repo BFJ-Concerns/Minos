@@ -217,7 +217,7 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string
 		return "", fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
 	}
 	if runDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir); contained {
-		if err := os.WriteFile(filepath.Join(runDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(runDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
 			return "", fmt.Errorf("mark stalled continuation terminal: %w", err)
 		}
 	}

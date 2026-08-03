@@ -58,14 +58,14 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		}
 	})
 
-	t.Run("missing workspace still ends as attention", func(t *testing.T) {
+	t.Run("missing run directory still ends as attention", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		cfg, repo, facts := state.service(t)
 		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 		state.reactions = []string{"eyes"}
 		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
 		runDir, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
-		if err := os.RemoveAll(filepath.Join(runDir, "workspace")); err != nil {
+		if err := os.RemoveAll(runDir); err != nil {
 			t.Fatal(err)
 		}
 		failureLog := filepath.Join(t.TempDir(), "failures.log")
@@ -77,7 +77,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			if name == "systemctl" {
 				return nil, nil
 			}
-			t.Fatalf("stalled continuation with missing workspace invoked %s", name)
+			t.Fatalf("stalled continuation with missing run directory invoked %s", name)
 			return nil, nil
 		}
 
