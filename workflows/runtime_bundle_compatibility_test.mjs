@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -93,6 +94,75 @@ export { assertRecognisedAgentOptions as minosAssertRecognisedAgentOptions };
   return module.minosAssertRecognisedAgentOptions;
 }
 
+function sandboxBindingKeys(runtimeSource) {
+  const match = runtimeSource.match(
+    /function createSandboxContext\(hooks, meta\) \{[\s\S]*?\n  const bindings = \{\n(?<bindings>[\s\S]*?)\n  \};\n  const context = vm\.createContext\(bindings,/,
+  );
+  assert.ok(
+    match?.groups?.bindings,
+    "installed runtime createSandboxContext binding block changed shape; update the gate deliberately",
+  );
+
+  const keys = [];
+  for (const line of match.groups.bindings.split("\n")) {
+    const property = /^    ([A-Za-z_$][A-Za-z0-9_$]*):/.exec(line);
+    const shorthand = /^    ([A-Za-z_$][A-Za-z0-9_$]*),$/.exec(line);
+    if (property !== null || shorthand !== null) {
+      keys.push((property ?? shorthand)[1]);
+    }
+  }
+  assert.ok(keys.length > 0, "installed runtime sandbox binding block has no recognisable keys");
+  assert.equal(
+    new Set(keys).size,
+    keys.length,
+    "installed runtime sandbox binding block contains duplicate keys",
+  );
+  return keys;
+}
+
+function shippedWorkflowSources() {
+  return readdirSync(workflowsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
+    .map((entry) => ({
+      filename: entry.name,
+      source: readFileSync(join(workflowsDir, entry.name), "utf8"),
+    }))
+    .sort((left, right) => left.filename.localeCompare(right.filename));
+}
+
+async function installedFreeIdentifierValidator(t) {
+  const root = operationRoot(t, "minos-installed-runtime-globals-");
+  const installation = spawnSync(installerPath, [root], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  });
+  assert.equal(installation.status, 0, installation.stderr);
+  assert.match(installation.stdout, /ensemble\.mjs: OK/);
+
+  const installedRuntime = join(root, "runtime", "ensemble.mjs");
+  const runtimeSource = readFileSync(installedRuntime, "utf8");
+  const probeRuntime = join(root, "runtime-global-probe.mjs");
+  writeFileSync(
+    probeRuntime,
+    `${runtimeSource}
+export {
+  assertKnownFreeIdentifiers as minosAssertKnownFreeIdentifiers,
+  buildWrappedSource as minosBuildWrappedSource,
+  extractWorkflowSource as minosExtractWorkflowSource,
+};
+`,
+  );
+  const module = await import(`${pathToFileURL(probeRuntime).href}?probe=${Date.now()}`);
+  const context = Object.fromEntries(
+    sandboxBindingKeys(runtimeSource).map((key) => [key, undefined]),
+  );
+  return (source, filename) => module.minosAssertKnownFreeIdentifiers(
+    module.minosBuildWrappedSource(module.minosExtractWorkflowSource(source)),
+    context,
+    filename,
+  );
+}
+
 test("the installed runtime recognises every agent option key used by shipped workflows", async (t) => {
   const validate = await installedOptionValidator(t);
   const callSites = optionKeySetsFromShippedWorkflows();
@@ -125,6 +195,36 @@ test("the installed runtime rejects removed and unknown agent options before exe
     () => validate({ ...base, unrecognisedMinosOption: true }),
     (error) => error?.name === "UnrecognisedAgentOptionError" &&
       error.message.includes("unrecognisedMinosOption"),
+  );
+});
+
+test("the installed runtime accepts the free identifiers in every shipped workflow", async (t) => {
+  const validate = await installedFreeIdentifierValidator(t);
+
+  for (const { filename, source } of shippedWorkflowSources()) {
+    assert.doesNotThrow(
+      () => validate(source, filename),
+      `${filename} uses only identifiers available in the installed runtime sandbox`,
+    );
+  }
+});
+
+test("the installed runtime free-identifier rule reports absent globals and rejects dynamic imports", async (t) => {
+  const validate = await installedFreeIdentifierValidator(t);
+  const workflow = (body) => `export const meta = { name: "probe" };\n${body}\n`;
+
+  assert.doesNotThrow(() => validate(workflow("return typeof Buffer;"), "typeof-probe.js"));
+  assert.throws(
+    () => validate(workflow("return Buffer.from('probe');"), "buffer-probe.js"),
+    (error) => error?.name === "WorkflowScriptError" &&
+      error.message.includes("buffer-probe.js") &&
+      error.message.includes("Buffer"),
+  );
+  assert.throws(
+    () => validate(workflow("return import('probe');"), "import-probe.js"),
+    (error) => error?.name === "WorkflowScriptError" &&
+      error.message.includes("import-probe.js") &&
+      error.message.includes("dynamic import()"),
   );
 });
 
