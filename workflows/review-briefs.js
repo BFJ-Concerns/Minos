@@ -583,11 +583,11 @@ verifierGroups.forEach((group, groupIndex) => {
     existing.push(verdict);
     verdictsById.set(verdict.findingId, existing);
   }
-  for (const findingId of group.findingIds) {
-    const matches = verdictsById.get(findingId) || [];
+  for (const id of group.findingIds) {
+    const matches = verdictsById.get(id) || [];
     if (matches.length !== 1) continue;
     const { findingId: omittedFindingId, ...rawVerifier } = matches[0];
-    verifierByFinding.set(findingId, rawVerifier);
+    verifierByFinding.set(id, rawVerifier);
   }
 });
 
