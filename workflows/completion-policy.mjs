@@ -35,6 +35,8 @@ function invalidDigestInputReason(input) {
   if (!input || typeof input !== "object") return "sweep digest needs an input object";
   if (!input.review || typeof input.review !== "object" || !Array.isArray(input.review.confirmedFindings))
     return "sweep digest needs a review with confirmedFindings";
+  if (input.review.status !== "complete")
+    return "sweep digest needs a complete review";
   const threshold = input.threshold === undefined ? DEFAULT_THRESHOLD : input.threshold;
   if (!Object.hasOwn(SEVERITY, threshold))
     return `unknown review threshold ${String(threshold)}`;

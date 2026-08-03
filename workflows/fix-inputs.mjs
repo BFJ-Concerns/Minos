@@ -61,6 +61,8 @@ for (let index = 2; index < process.argv.length; index += 1) {
 }
 if (!argumentError && digestOnly && (singleWave || decisionRequested || groupingRequested))
   argumentError = "fix input option --digest stands alone";
+if (!argumentError && positionals.length > 2)
+  argumentError = `unexpected fix input argument ${positionals[2]}`;
 let grouping;
 if (!argumentError && groupingRequested) {
   let groupingContent;

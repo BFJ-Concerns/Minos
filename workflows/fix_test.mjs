@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { sweepDigest } from "./completion-policy.mjs";
 import { DECISION_KIND, isFixWavePlan, prepareFixWave } from "./fix-wave-plan.mjs";
 
 const scriptPath = fileURLToPath(new URL("./fix.js", import.meta.url));
@@ -30,21 +31,18 @@ function decision(classification, basis = "recorded grounds for this sweep's cal
   return { kind: DECISION_KIND, classification, basis };
 }
 
-const SEVERITY_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4 };
-
-// The default decision mirrors the digest's threshold indication — what a
-// lead following the indication records. Tests exercising judgement against
-// the indication pass their own decision.
+// The default decision follows the digest's own threshold indication — what
+// a lead following the indication records — computed through the seam, never
+// re-derived. Tests exercising judgement against the indication pass their
+// own decision.
 function indicatedDecision(findings, overrides) {
-  const threshold = overrides.threshold || "High";
-  const record = overrides.runRecord || { round: 0, confirmedUnfixed: [] };
-  const unfixed = new Set((record.confirmedUnfixed || []).map((entry) => entry.key));
-  const round = (Number.isInteger(record.round) ? record.round : 0) + 1;
-  const capped = overrides.maximumRounds != null && round > overrides.maximumRounds;
-  const actionable = findings.some((entry) =>
-    SEVERITY_RANK[entry.severity] >= SEVERITY_RANK[threshold] &&
-    !unfixed.has(JSON.stringify([entry.path, entry.line, entry.title.trim().toLowerCase().replace(/\s+/g, " ")])));
-  return decision(actionable && !capped ? "working" : "terminal");
+  const digest = sweepDigest({
+    review: { status: "complete", confirmedFindings: findings },
+    threshold: overrides.threshold ?? "High",
+    maximumRounds: overrides.maximumRounds ?? null,
+    runRecord: overrides.runRecord ?? { round: 0, confirmedUnfixed: [] },
+  });
+  return decision(digest.status === "complete" ? digest.thresholdIndication : "terminal");
 }
 
 function args(findings, overrides = {}) {
@@ -753,6 +751,11 @@ test("fix input option and unreadable grouping errors use the usage exit", () =>
       name: "digest stands alone",
       args: [inputScriptPath, "review.json", "--digest", "--single-wave"],
       message: "fix input option --digest stands alone",
+    },
+    {
+      name: "surplus positional",
+      args: [inputScriptPath, "review.json", "record.json", "stray.json", "--single-wave"],
+      message: "unexpected fix input argument stray.json",
     },
   ]) {
     const result = spawnSync(process.execPath, testCase.args, { encoding: "utf8" });

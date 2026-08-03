@@ -76,6 +76,7 @@ test("the digest fails closed on malformed input", () => {
   for (const [input, reason] of [
     [null, /needs an input object/],
     [{ review: {} }, /confirmedFindings/],
+    [digestInput([], { review: { status: "incomplete", confirmedFindings: [] } }), /complete review/],
     [digestInput([], { threshold: "P1" }), /unknown review threshold P1/],
     [digestInput([], { maximumRounds: 0 }), /positive integer/],
   ]) {

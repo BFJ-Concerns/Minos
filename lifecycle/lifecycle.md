@@ -398,11 +398,22 @@ last action and end the turn. A continuation writes no failure-log line.
    the threshold warrants another wave beyond entries already
    confirmed-unfixed, or the configured maximum
    rounds has been reached. Do not post the terminal sweep's sub-threshold
-   findings and do not dispatch fix agents for them. Pass `overflow` to
-   `publish-overflow.mjs` with `$MINOS_ORIENTATION`: with an annexe it appends
-   each finding once to `ISSUES.md`, commits and pushes the annexe; without an
-   annexe it returns the one review body/comments payload that must be posted
-   to the pull request, still without fix agents.
+   findings and do not dispatch fix agents for them. Write the plan's
+   `overflow` array unchanged to a file and run:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/publish-overflow.mjs" \
+     "$MINOS_ORIENTATION" OVERFLOW_FILE \
+     > "$MINOS_RUN_DIR/overflow-result.json"
+   ```
+
+   With an annexe it appends each finding once to `ISSUES.md`, commits and
+   pushes the annexe itself. Without an annexe its result is
+   `destination: "pull-request"` with one `body`/`comments` payload:
+   materialise those to files and post them as one `comment` review with
+   `"$MINOS_BIN" forge review HEAD TARGET comment BODY_FILE COMMENTS_FILE`,
+   still without fix agents. Overflow publication is presentation-class:
+   its failure never fails the run.
 
    If `requestChangesReview` is present, materialise it exactly, post it with
    `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE
