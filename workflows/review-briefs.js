@@ -9,9 +9,9 @@ export const meta = {
   ],
 };
 
-const GPT_MODEL = "gpt-5.6-sol";
 const GPT_PLANNER_MODEL = "gpt-5.6-terra";
-const CLAUDE_MODEL = "claude-opus-5";
+const PROPOSER_MODEL = "gpt-5.6-terra";
+const VERIFIER_MODEL = "claude-opus-5";
 
 function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
@@ -353,7 +353,7 @@ function makeUnit(candidate, files, suffix, concern) {
     scope: brief.scope,
     files,
     concern,
-    label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-claude`,
+    label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-gpt`,
   };
 }
 
@@ -421,7 +421,7 @@ for (const candidate of runnable) {
 }
 
 phase("Review");
-for (const unit of dispatched) addLeg(unit.label, "specialist", CLAUDE_MODEL);
+for (const unit of dispatched) addLeg(unit.label, "specialist", PROPOSER_MODEL);
 const specialistResults = await parallel(dispatched.map((unit) => () => {
   const scope = unit.scope ? `${unit.scope}/` : "the whole repository";
   const files = unit.files.length > 0 ? `\nAssigned files: ${unit.files.join(", ")}` : "";
@@ -433,9 +433,9 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
       `Assigned scope: ${scope}.${concern}${files}\n` +
       (unit.extent === "full" ? "Audit the assigned scope regardless of what the diff changed." : `Judge only what ${input.target}...${input.head} changed in the assigned scope.`),
   ), {
-    engine: "claude",
+    engine: "codex",
     schema: specialistSchema,
-    model: CLAUDE_MODEL,
+    model: PROPOSER_MODEL,
     effort: "high",
     label: unit.label,
     phase: "Review",
@@ -452,8 +452,8 @@ dispatched.forEach((unit, unitIndex) => {
     label: unit.label,
     role: "specialist",
     brief: unit.brief,
-    family: "claude",
-    pinnedModel: CLAUDE_MODEL,
+    family: "gpt",
+    pinnedModel: PROPOSER_MODEL,
     status: result ? "done" : "no-result",
   });
   if (!result) {
@@ -524,8 +524,8 @@ for (const [brief, inapplicable] of inapplicableByBrief) {
 
 phase("Verify");
 for (const item of proposed) {
-  item.verifyLabel = `verify-brief-${item.unitIndex + 1}-${item.findingIndex + 1}-gpt`;
-  addLeg(item.verifyLabel, "verifier", GPT_MODEL);
+  item.verifyLabel = `verify-brief-${item.unitIndex + 1}-${item.findingIndex + 1}-claude`;
+  addLeg(item.verifyLabel, "verifier", VERIFIER_MODEL);
 }
 const verifierResults = await parallel(proposed.map((item) => () => agent(
   groundedPrompt(
@@ -535,9 +535,9 @@ const verifierResults = await parallel(proposed.map((item) => () => agent(
       `Concern: ${item.unit.title}\nProposing specialist: ${item.unit.label}\nFinding data: ${JSON.stringify(item.finding)}`,
   ),
   {
-    engine: "codex",
+    engine: "claude",
     schema: verifierSchema,
-    model: GPT_MODEL,
+    model: VERIFIER_MODEL,
     effort: "high",
     label: item.verifyLabel,
     phase: "Verify",

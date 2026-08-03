@@ -165,10 +165,10 @@ test("the script emits an envelope with every routed leg and raw verifier output
     result.requiredModelEvidence.map(({ role, pinnedModel }) => ({ role, pinnedModel })),
     [
       { role: "exploration", pinnedModel: "gpt-5.6-terra" },
-      { role: "specialist", pinnedModel: "gpt-5.6-sol" },
-      { role: "specialist", pinnedModel: "claude-opus-5" },
+      { role: "specialist", pinnedModel: "gpt-5.6-terra" },
+      { role: "specialist", pinnedModel: "gpt-5.6-terra" },
       { role: "verifier", pinnedModel: "claude-opus-5" },
-      { role: "verifier", pinnedModel: "gpt-5.6-sol" },
+      { role: "verifier", pinnedModel: "claude-opus-5" },
     ],
   );
   assert.ok(calls.every((call) => call.opts.engine === "codex" || call.opts.engine === "claude"));
@@ -216,17 +216,20 @@ test("a specialist may omit an empty observation array", async () => {
   assert.ok(!schema.required.includes("outOfScopeObservations"));
 });
 
-test("each finding is verified by the family opposite its specialist", async () => {
+test("all findings are proposed on Terra and verified cross-family on Claude", async () => {
   const plan = [unit("correct", "correctness"), unit("secure", "security")];
   const { calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
   const correctness = calls.find((call) => call.opts.label === "specialist-1-correctness-gpt");
-  const security = calls.find((call) => call.opts.label === "specialist-2-security-claude");
+  const security = calls.find((call) => call.opts.label === "specialist-2-security-gpt");
   const correctnessVerifier = calls.find((call) => call.opts.label === "verify-1-1-claude");
-  const securityVerifier = calls.find((call) => call.opts.label === "verify-2-1-gpt");
-  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-5.6-sol"]);
-  assert.deepEqual([security.opts.engine, security.opts.model], ["claude", "claude-opus-5"]);
+  const securityVerifier = calls.find((call) => call.opts.label === "verify-2-1-claude");
+  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-5.6-terra"]);
   assert.deepEqual([correctnessVerifier.opts.engine, correctnessVerifier.opts.model], ["claude", "claude-opus-5"]);
-  assert.deepEqual([securityVerifier.opts.engine, securityVerifier.opts.model], ["codex", "gpt-5.6-sol"]);
+  assert.deepEqual([securityVerifier.opts.engine, securityVerifier.opts.model], ["claude", "claude-opus-5"]);
+  assert.ok(specialistCalls(calls).every((call) => call.opts.engine !== "claude"));
+  assert.ok(calls.filter((call) => call.opts.label?.startsWith("verify-"))
+    .every((call) => call.opts.engine !== "codex"));
 });
 
 test("specialists and verifiers use medium effort while exploration keeps its pin", async () => {
@@ -320,8 +323,8 @@ test("verifier dispatch groups seven specialists independently and caps batches 
     [6, 1, 1, 2, 3, 4, 5, 6],
   );
   assert.deepEqual(verifierCalls.map((call) => call.opts.label), [
-    "verify-1-1-claude", "verify-1-2-claude", "verify-2-1-gpt", "verify-3-1-claude",
-    "verify-4-1-gpt", "verify-5-1-claude", "verify-6-1-gpt", "verify-7-1-claude",
+    "verify-1-1-claude", "verify-1-2-claude", "verify-2-1-claude", "verify-3-1-claude",
+    "verify-4-1-claude", "verify-5-1-claude", "verify-6-1-claude", "verify-7-1-claude",
   ]);
 });
 

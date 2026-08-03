@@ -236,7 +236,7 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
   assert.deepEqual(result.dispatches, [{
     brief: candidate.path,
     title: "Scoped",
-    label: "repository-review-missing-scoped-md-claude",
+    label: "repository-review-missing-scoped-md-gpt",
     extent: "full",
     scope: "missing",
     files: [],
@@ -350,12 +350,12 @@ test("a mixed partition is one durable run disposition with its inapplicable uni
     title: "Full",
     inapplicableUnits: [
       {
-        label: "repository-review-full-md-2-claude",
+        label: "repository-review-full-md-2-gpt",
         concern: "UI behaviour",
         reason: "the UI partition contains no changed behaviour to judge",
       },
       {
-        label: "repository-review-full-md-3-claude",
+        label: "repository-review-full-md-3-gpt",
         concern: "Job behaviour",
         reason: "the job partition contains no changed behaviour to judge",
       },
@@ -400,12 +400,12 @@ test("an entirely inapplicable partition is one durable skipped disposition", as
     reason: "all 2 partition units were inapplicable",
     inapplicableUnits: [
       {
-        label: "repository-review-full-md-1-claude",
+        label: "repository-review-full-md-1-gpt",
         concern: "API behaviour",
         reason: "the API partition has no relevant change",
       },
       {
-        label: "repository-review-full-md-2-claude",
+        label: "repository-review-full-md-2-gpt",
         concern: "UI behaviour",
         reason: "the UI partition has no relevant change",
       },
@@ -487,12 +487,13 @@ test("specialist inapplicability is recorded and never reaches verification", as
   assert.equal(result.briefs.find((entry) => entry.skipKind === "inapplicable").reason, "the diff gives this concern nothing to judge");
 });
 
-test("an applicable finding emits opposite-family routing and raw verifier output", async () => {
+test("all applicable findings are proposed on Terra and verified cross-family on Claude", async () => {
   const { result, calls } = await run(args());
   const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
   const verifier = calls.find((call) => call.opts.label?.startsWith("verify-"));
-  assert.deepEqual([specialist.opts.engine, specialist.opts.model], ["claude", "claude-opus-5"]);
-  assert.deepEqual([verifier.opts.engine, verifier.opts.model], ["codex", "gpt-5.6-sol"]);
+  assert.deepEqual([specialist.opts.engine, specialist.opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([verifier.opts.engine, verifier.opts.model], ["claude", "claude-opus-5"]);
+  assert.notEqual(specialist.opts.engine, verifier.opts.engine);
   assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 92, reason: "confirmed" });
   // The fixture brief sits under pkg/ and pkg/x.go changed, so its path-scope
   // trigger fires and relevance is moot: a specialist and its verifier only.
@@ -507,13 +508,13 @@ test("a repository observation is returned separately and never reaches verifica
   assert.deepEqual(result.proposedFindings, []);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
   assert.deepEqual(result.outOfScopeObservations, [{
-    id: "repository-review-pkg-errors-md-claude:observation:1",
+    id: "repository-review-pkg-errors-md-gpt:observation:1",
     source: "Errors",
     title: "pre-existing repository defect",
     path: "pkg/legacy.go",
     line: 11,
     explanation: "Unverified observation: unchanged code violates the repository concern.",
-    observingLabel: "repository-review-pkg-errors-md-claude",
+    observingLabel: "repository-review-pkg-errors-md-gpt",
     verified: false,
   }]);
   const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
@@ -576,7 +577,7 @@ test("every repository-brief finding reaches verification beyond the former boun
     ]),
   }));
   assert.deepEqual(result.proposedFindings.map((entry) => entry.title), ["one", "two", "three survives", "four survives"]);
-  const beyondBoundVerifier = calls.find((call) => call.opts.label === "verify-brief-1-4-gpt");
+  const beyondBoundVerifier = calls.find((call) => call.opts.label === "verify-brief-1-4-claude");
   assert.ok(beyondBoundVerifier);
   assert.match(beyondBoundVerifier.prompt, /"title":"four survives"/);
 });
