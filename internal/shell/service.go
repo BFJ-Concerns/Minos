@@ -45,7 +45,7 @@ func currentReview(snapshot forge.Snapshot, botLogin string) (forge.Review, bool
 	return latest, found
 }
 
-func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
+func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, bool) {
 	var latest forge.Status
 	found := false
 	for _, status := range snapshot.Statuses {
@@ -57,12 +57,40 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 			found = true
 		}
 	}
+	return latest, found
+}
+
+func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
+	latest, found := latestOwnedStatus(snapshot, botLogin)
 	if found && (latest.Description == product.Incomplete().Description() ||
 		latest.Description == product.Working().Description() ||
 		latest.Description == product.Continuation().Description()) {
 		return 0
 	}
 	return 1
+}
+
+// A clean, attention, or merged Minos status on the current head marks a
+// completed run even when no terminal review exists: a converged clean run
+// posts no approve review (the 👍 reaction carries all-clear), so the status
+// is the head's only durable completion marker on that path.
+func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) bool {
+	var latest forge.Status
+	found := false
+	for _, status := range snapshot.Statuses {
+		if status.Provider == forge.ForgejoProvider && status.Context == forge.OwnedStatusContext &&
+			status.Creator == botLogin && status.TargetURL == targetURL &&
+			(!found || status.ID > latest.ID) {
+			latest = status
+			found = true
+		}
+	}
+	if !found {
+		return false
+	}
+	return latest.Description == product.Clean().Description() ||
+		latest.Description == product.Attention().Description() ||
+		latest.Description == product.Merged().Description()
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (string, error) {
@@ -97,6 +125,9 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 				return "", fmt.Errorf("restore terminal Minos status: %s", result.Reason)
 			}
 		}
+	}
+	if completedRunStatus(snapshot, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts)) {
+		return "nothing", nil
 	}
 	if reason, deferred := dependencyDeferral(snapshot); deferred {
 		return "deferred: " + reason, nil

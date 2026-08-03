@@ -324,7 +324,11 @@ last action and end the turn. A continuation writes no failure-log line.
    A decision that fails validation — a missing basis, `working` with
    nothing to dispatch, or `working` past the configured maximum rounds —
    makes preparation incomplete before any forge write; correct the
-   decision and rebuild the input rather than working around it.
+   decision and rebuild the input rather than working around it. Tell the
+   two incomplete shapes apart by the `publication` field: a rejected
+   preparation carries none (nothing touched the forge — correct and
+   retry), while an incomplete result bearing `publication` means a forge
+   write was attempted, and the stop below applies.
 
    Invoke the publication-before-fix operation once for this round:
 

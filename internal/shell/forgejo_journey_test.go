@@ -246,6 +246,37 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("this pull request status on the current target suppresses a new run", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		state.setStatuses([]map[string]any{{
+			"id": 7, "context": "Minos", "status": "success", "description": "Changes approved",
+			"target_url": statusTargetURL(cfg.Forges["forgejo"].APIBase, Facts{
+				Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: state.targetSHA(),
+			}),
+			"creator": map[string]any{"login": "Minos"},
+		}, {
+			"id": 8, "context": "Minos", "status": "pending", "description": product.Working().Description(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2#minos-target-" + state.targetSHA(),
+			"creator":    map[string]any{"login": "Minos"},
+		}})
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("completed pull request reached %s", name)
+			return nil, nil
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "nothing" {
+			t.Fatalf("result = %q, want nothing", result)
+		}
+	})
+
 	t.Run("incomplete pull request with a comment review starts a fresh attempt", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setReviews([]map[string]any{{

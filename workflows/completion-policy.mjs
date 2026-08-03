@@ -18,7 +18,10 @@ function normaliseTitle(value) {
 // One finding, one key, everywhere: the loop record's confirmed-unfixed
 // entries, dispatch assignment, and the digest all recognise a finding by
 // this identity, so a re-reported finding cannot re-enter the loop under a
-// cosmetic retitle.
+// cosmetic retitle. Known limit: the key includes the line, so a repair
+// elsewhere in the file can shift a confirmed-unfixed finding's line and
+// give its rediscovery a fresh key — do not treat this identity as
+// drift-proof when suppression matters.
 export function findingKey(finding) {
   return JSON.stringify([finding.path, finding.line, normaliseTitle(finding.title)]);
 }
