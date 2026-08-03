@@ -23,6 +23,10 @@ type requestedReviewComment struct {
 	Body string `json:"body"`
 }
 
+func validRequestedReviewComment(comment requestedReviewComment) bool {
+	return comment.Path != "" && comment.Body != "" && comment.Line > 0
+}
+
 func readRequestedComments(path string) ([]requestedReviewComment, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -40,7 +44,7 @@ func readRequestedComments(path string) ([]requestedReviewComment, error) {
 		return nil, fmt.Errorf("decode review comments: trailing JSON content")
 	}
 	for index, comment := range comments {
-		if comment.Path == "" || comment.Body == "" || comment.Line < 1 {
+		if !validRequestedReviewComment(comment) {
 			return nil, fmt.Errorf("review comment %d needs path, body and a positive line", index+1)
 		}
 	}

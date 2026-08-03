@@ -34,7 +34,7 @@ func readFixReview(path string) (fixReview, error) {
 		return fixReview{}, fmt.Errorf("fix review needs a body")
 	}
 	for index, comment := range review.Comments {
-		if comment.Path == "" || comment.Body == "" || comment.Line < 1 {
+		if !validRequestedReviewComment(comment) {
 			return fixReview{}, fmt.Errorf("fix review comment %d needs path, body and a positive line", index+1)
 		}
 	}
