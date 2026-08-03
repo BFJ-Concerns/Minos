@@ -4,9 +4,10 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { sweepDigest } from "./completion-policy.mjs";
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 
-const usage = "usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--single-wave] [--grouping FILE]\n";
+const usage = "usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--digest] [--decision FILE] [--single-wave] [--grouping FILE]\n";
 const rustTargetFallbackRecord = "rust-target-fallback";
 
 function readWarmTargetSource(runDir) {
@@ -23,13 +24,27 @@ function readWarmTargetSource(runDir) {
 }
 const positionals = [];
 let singleWave = false;
+let digestOnly = false;
+let decisionPath = null;
+let decisionRequested = false;
 let groupingPath = null;
 let groupingRequested = false;
 let argumentError = null;
 for (let index = 2; index < process.argv.length; index += 1) {
   const value = process.argv[index];
   if (value === "--single-wave") singleWave = true;
-  else if (value === "--grouping") {
+  else if (value === "--digest") digestOnly = true;
+  else if (value === "--decision") {
+    decisionRequested = true;
+    const candidate = process.argv[index + 1];
+    if (candidate && !candidate.startsWith("--")) {
+      decisionPath = candidate;
+      index += 1;
+    } else {
+      argumentError = "fix input option --decision requires a file";
+      break;
+    }
+  } else if (value === "--grouping") {
     groupingRequested = true;
     const candidate = process.argv[index + 1];
     if (candidate && !candidate.startsWith("--")) {
@@ -44,6 +59,10 @@ for (let index = 2; index < process.argv.length; index += 1) {
     break;
   } else positionals.push(value);
 }
+if (!argumentError && digestOnly && (singleWave || decisionRequested || groupingRequested))
+  argumentError = "fix input option --digest stands alone";
+if (!argumentError && positionals.length > 2)
+  argumentError = `unexpected fix input argument ${positionals[2]}`;
 let grouping;
 if (!argumentError && groupingRequested) {
   let groupingContent;
@@ -60,11 +79,42 @@ if (!argumentError && groupingRequested) {
     }
   }
 }
+let decision;
+if (!argumentError && decisionRequested) {
+  let decisionContent;
+  try {
+    decisionContent = readFileSync(decisionPath, "utf8");
+  } catch {
+    argumentError = `sweep decision file is unreadable: ${decisionPath}`;
+  }
+  if (!argumentError) {
+    try {
+      decision = JSON.parse(decisionContent);
+    } catch {
+      decision = null;
+    }
+  }
+}
 const [reviewPath, recordPath] = positionals;
 if (argumentError || !reviewPath) {
   if (argumentError) process.stderr.write(`${argumentError}\n`);
   process.stderr.write(usage);
   process.exitCode = 2;
+} else if (digestOnly) {
+  // The digest needs no guidance or brief: it is the mechanical facts the
+  // lead's classification judgement reads before recording its decision.
+  const runRecord = recordPath && existsSync(recordPath)
+    ? JSON.parse(readFileSync(recordPath, "utf8"))
+    : { round: 0, confirmedUnfixed: [] };
+  const digest = sweepDigest({
+    review: JSON.parse(readFileSync(reviewPath, "utf8")),
+    threshold: process.env.MINOS_REVIEW_THRESHOLD || "High",
+    maximumRounds: process.env.MINOS_MAX_ROUNDS
+      ? Number.parseInt(process.env.MINOS_MAX_ROUNDS, 10)
+      : null,
+    runRecord,
+  });
+  process.stdout.write(JSON.stringify(digest) + "\n");
 } else {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const orientationPath = process.env.MINOS_ORIENTATION;
@@ -91,6 +141,7 @@ if (argumentError || !reviewPath) {
     maximumRounds,
     runRecord,
     singleWave,
+    ...(decisionRequested ? { decision } : {}),
     ...(groupingRequested ? { grouping } : {}),
     workspace: process.env.MINOS_WORKSPACE || orientation.repository,
     ...(warmTargetSource ? { warmTargetSource } : {}),

@@ -1,21 +1,20 @@
 import { createHash } from "node:crypto";
 
-const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
-const DEFAULT_THRESHOLD = "High";
+import {
+  DECISION_KIND,
+  DIGEST_KIND,
+  SEVERITY,
+  DEFAULT_THRESHOLD,
+  atOrAboveThreshold,
+  preparedFinding,
+  sweepDigest,
+  validateSweepDecision,
+} from "./completion-policy.mjs";
+
 const PLAN_KIND = "minos-fix-wave-plan-v1";
 const GROUPING_KIND = "minos-fix-grouping-v1";
 
-function normaliseTitle(value) {
-  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function findingKey(finding) {
-  return JSON.stringify([finding.path, finding.line, normaliseTitle(finding.title)]);
-}
-
-function preparedFinding(finding) {
-  return { ...finding, key: findingKey(finding) };
-}
+export { DECISION_KIND, DIGEST_KIND };
 
 function findingComment(finding) {
   return {
@@ -131,6 +130,9 @@ function fingerprintFor(input, round, findings, dispatches = []) {
     maximumRounds: input.maximumRounds ?? null,
     singleWave: input.singleWave === true,
     warmTargetSource: input.warmTargetSource ?? null,
+    decision: input.decision
+      ? { classification: input.decision.classification, basis: input.decision.basis }
+      : null,
     groups: dispatches.map((entry) => entry.findingKeys),
     priorConfirmedUnfixed: Array.isArray(input.runRecord && input.runRecord.confirmedUnfixed)
       ? input.runRecord.confirmedUnfixed.map((entry) => ({ key: entry.key, attempts: entry.attempts }))
@@ -191,6 +193,8 @@ export function prepareFixWave(input) {
     findingKeys.add(finding.key);
   }
 
+  // The brief stage's single wave is mechanical by construction: one wave,
+  // every confirmed finding, no judgement seam and no loop to converge.
   if (input.singleWave === true) {
     const round = 1;
     const grouped = dispatchesFor(findings, findings, input.grouping, "brief-");
@@ -226,30 +230,38 @@ export function prepareFixWave(input) {
     });
   }
 
-  const round = (Number.isInteger(prior.round) && prior.round >= 0 ? prior.round : 0) + 1;
-  const unfixedByKey = new Map(priorUnfixed.map((entry) => [entry.key, entry]));
-  const newAboveThreshold = findings.filter((finding) =>
-    SEVERITY[finding.severity] >= SEVERITY[threshold] && !unfixedByKey.has(finding.key));
-  const maximumReached = maximumRounds !== null && round > maximumRounds;
-  const fingerprint = fingerprintFor(input, round, findings);
+  // The main loop's classification is the lead's recorded decision, not an
+  // arithmetic here: the digest supplies the mechanical facts, the decision
+  // supplies the judgement, and validation holds the coherence line.
+  const digest = sweepDigest(input);
+  if (digest.status !== "complete")
+    return deepFreeze(failedPlan(input, digest.reason));
+  const decisionCheck = validateSweepDecision(input.decision, digest);
+  if (!decisionCheck.ok)
+    return deepFreeze(failedPlan(input, decisionCheck.reason));
 
-  if (newAboveThreshold.length === 0 || maximumReached) {
+  const round = digest.round;
+  const unfixedByKey = new Map(priorUnfixed.map((entry) => [entry.key, entry]));
+  const decision = input.decision;
+
+  if (decision.classification === "terminal") {
     const overflow = findings.filter((finding) =>
-      SEVERITY[finding.severity] < SEVERITY[threshold] && !unfixedByKey.has(finding.key));
+      !atOrAboveThreshold(finding, threshold) && !unfixedByKey.has(finding.key));
     const requestChanges = [...priorUnfixed];
-    if (maximumReached) {
-      for (const finding of findings.filter((candidate) => SEVERITY[candidate.severity] >= SEVERITY[threshold]))
-        if (!unfixedByKey.has(finding.key))
-          requestChanges.push({ key: finding.key, finding, attempts: 0, reason: "maximum rounds reached" });
-    }
+    // Judgement may stop the loop with above-threshold findings still on the
+    // table (or the maximum-rounds ceiling may force it to); either way those
+    // findings are published as request-changes material, never dropped.
+    for (const finding of findings.filter((candidate) => atOrAboveThreshold(candidate, threshold)))
+      if (!unfixedByKey.has(finding.key))
+        requestChanges.push({ key: finding.key, finding, attempts: 0, reason: decision.basis });
     return deepFreeze({
       kind: PLAN_KIND,
       status: "complete",
       classification: "terminal",
-      terminalReason: maximumReached ? "maximum-rounds" : "below-threshold",
+      decision: { classification: decision.classification, basis: decision.basis },
       threshold,
       round,
-      fingerprint,
+      fingerprint: fingerprintFor(input, round, findings),
       dispatches: [],
       sweepReview: null,
       fixReview: null,
@@ -275,6 +287,7 @@ export function prepareFixWave(input) {
     kind: PLAN_KIND,
     status: "complete",
     classification: "working",
+    decision: { classification: decision.classification, basis: decision.basis },
     threshold,
     round,
     fingerprint: workingFingerprint,

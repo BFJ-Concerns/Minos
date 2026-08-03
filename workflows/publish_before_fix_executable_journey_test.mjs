@@ -94,6 +94,11 @@ function input() {
     threshold: "High",
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
+    decision: {
+      kind: "minos-sweep-decision-v1",
+      classification: "working",
+      basis: "one new High finding warrants a wave",
+    },
     workspace: "/run/workspace",
     guidance: {
       grounding: "annexe",

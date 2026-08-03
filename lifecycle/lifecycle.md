@@ -278,13 +278,53 @@ last action and end the turn. A continuation writes no failure-log line.
    `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
    terminal marker, and stop.
-5. Save each complete review verdict and build the action input:
+5. Save each complete review verdict, then read this sweep's mechanical
+   digest:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs" \
+     REVIEW_RESULT "$MINOS_LOOP_RECORD" --digest \
+     > "$MINOS_RUN_DIR/sweep-digest.json"
+   ```
+
+   The digest reports the round number, the configured threshold, which
+   confirmed findings are dispatchable (not already confirmed-unfixed),
+   which of those sit at or above the threshold, whether the configured
+   maximum rounds has been reached, and a `thresholdIndication` — what the
+   threshold alone would say. Classifying the sweep is your judgement,
+   informed by the threshold rather than mechanically bound to it: judge
+   the sweep `working` when its findings genuinely warrant another fix
+   wave, and `terminal` when nothing new at or above the threshold remains
+   beyond entries already confirmed-unfixed — or when, in your judgement,
+   another wave would not move the pull request forward. Follow the
+   indication unless you can state a concrete reason not to; the reason
+   travels in the decision. Two bounds are mechanical, not judgement: a
+   reached maximum rounds is always terminal, and `working` needs at least
+   one dispatchable finding. Write your decision to
+   `$MINOS_RUN_DIR/sweep-decision.json`:
+
+   ```json
+   {
+     "kind": "minos-sweep-decision-v1",
+     "classification": "working",
+     "basis": "one sentence stating the concrete grounds for this call"
+   }
+   ```
+
+   Then build the action input from the verdict, the loop record and your
+   decision:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs" \
      REVIEW_RESULT "$MINOS_LOOP_RECORD" \
+     --decision "$MINOS_RUN_DIR/sweep-decision.json" \
      > "$MINOS_RUN_DIR/fix-args.json"
    ```
+
+   A decision that fails validation — a missing basis, `working` with
+   nothing to dispatch, or `working` past the configured maximum rounds —
+   makes preparation incomplete before any forge write; correct the
+   decision and rebuild the input rather than working around it.
 
    Invoke the publication-before-fix operation once for this round:
 
@@ -325,9 +365,9 @@ last action and end the turn. A continuation writes no failure-log line.
    file, each candidate finding receives its own dispatch. Terminal
    classification ignores grouping because it dispatches nothing.
 
-   A `working` classification means at least one newly actionable confirmed
-   finding is at or above the threshold and its sweep review was confirmed
-   present before dispatch. The prepared wave contains every confirmed finding
+   A `working` classification means you judged the sweep to warrant another
+   fix wave and its sweep review was confirmed present before dispatch. The
+   prepared wave contains every confirmed finding
    in the sweep, including those below threshold, as one review with inline
    path/line comments. Each fix dispatch carries its assigned findings, grouped
    only when the lead supplied that judgement. Fix agents may read and edit
@@ -350,17 +390,30 @@ last action and end the turn. A continuation writes no failure-log line.
    commands again and run the complete input-builder and adjudication-wrapper
    flow on the new head. Do the same fresh build, test, and review even when
    every attempted fix failed and no commit was integrated. Continue from
-   classification; do not substitute your own judgement for the threshold.
+   the digest and a fresh sweep decision — every round's classification is
+   recorded the same way, and the decision file is per round, never reused.
    After each complete re-review verdict, check for
    `$MINOS_RUN_DIR/memory-pressure` before preparing another round.
-6. A `terminal` classification means no finding at or above the threshold
-   remains beyond entries already confirmed-unfixed, or the configured maximum
+6. A `terminal` classification means you judged that no finding at or above
+   the threshold warrants another wave beyond entries already
+   confirmed-unfixed, or the configured maximum
    rounds has been reached. Do not post the terminal sweep's sub-threshold
-   findings and do not dispatch fix agents for them. Pass `overflow` to
-   `publish-overflow.mjs` with `$MINOS_ORIENTATION`: with an annexe it appends
-   each finding once to `ISSUES.md`, commits and pushes the annexe; without an
-   annexe it returns the one review body/comments payload that must be posted
-   to the pull request, still without fix agents.
+   findings and do not dispatch fix agents for them. Write the plan's
+   `overflow` array unchanged to a file and run:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/publish-overflow.mjs" \
+     "$MINOS_ORIENTATION" OVERFLOW_FILE \
+     > "$MINOS_RUN_DIR/overflow-result.json"
+   ```
+
+   With an annexe it appends each finding once to `ISSUES.md`, commits and
+   pushes the annexe itself. Without an annexe its result is
+   `destination: "pull-request"` with one `body`/`comments` payload:
+   materialise those to files and post them as one `comment` review with
+   `"$MINOS_BIN" forge review HEAD TARGET comment BODY_FILE COMMENTS_FILE`,
+   still without fix agents. Overflow publication is presentation-class:
+   its failure never fails the run.
 
    If `requestChangesReview` is present, materialise it exactly, post it with
    `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE

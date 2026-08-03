@@ -506,6 +506,12 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
     lifecycle,
     /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*do not publish them through this lifecycle/,
   );
+  assert.match(lifecycle, /--digest[\s\S]*sweep-digest\.json/);
+  assert.match(
+    lifecycle,
+    /Classifying the sweep is your judgement[\s\S]*informed by the threshold rather than mechanically bound to it/,
+  );
+  assert.match(lifecycle, /minos-sweep-decision-v1[\s\S]*--decision[\s\S]*fix-args\.json/);
   assert.match(lifecycle, /publish-before-fix[\s\S]*fix-args\.json[\s\S]*HEAD TARGET/);
   assert.match(lifecycle, /starts the effectful `fix\.js`[\s\S]*only after[\s\S]*`outcome: "applied"`/);
   assert.match(lifecycle, /Do not post the terminal sweep's sub-threshold[\s\S]*findings/);

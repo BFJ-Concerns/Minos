@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { sweepDigest } from "./completion-policy.mjs";
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 import { publishBeforeFix } from "./publish-before-fix.mjs";
 
@@ -96,6 +97,26 @@ function finding(overrides = {}) {
   };
 }
 
+// The fixture decision follows the digest's own indication, computed through
+// the seam rather than re-derived; a test needing judgement against the
+// indication overrides `decision` itself.
+function sweepDecision(findings, overrides) {
+  const digest = sweepDigest({
+    review: { status: "complete", confirmedFindings: findings },
+    threshold: overrides.threshold ?? "High",
+    maximumRounds: overrides.maximumRounds ?? null,
+    runRecord: overrides.runRecord ?? { round: 0, confirmedUnfixed: [] },
+  });
+  const classification = digest.status === "complete" ? digest.thresholdIndication : "terminal";
+  return {
+    kind: "minos-sweep-decision-v1",
+    classification,
+    basis: classification === "working"
+      ? "new findings at or above the threshold warrant a wave"
+      : "nothing at or above the threshold remains",
+  };
+}
+
 function input(findings = [finding()], overrides = {}) {
   return {
     review: {
@@ -106,6 +127,7 @@ function input(findings = [finding()], overrides = {}) {
     threshold: "High",
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
+    decision: sweepDecision(findings, overrides),
     workspace: "/run/workspace",
     guidance: {
       grounding: "annexe",

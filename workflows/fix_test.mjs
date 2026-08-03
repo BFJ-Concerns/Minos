@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isFixWavePlan, prepareFixWave } from "./fix-wave-plan.mjs";
+import { sweepDigest } from "./completion-policy.mjs";
+import { DECISION_KIND, isFixWavePlan, prepareFixWave } from "./fix-wave-plan.mjs";
 
 const scriptPath = fileURLToPath(new URL("./fix.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./fix-inputs.mjs", import.meta.url));
@@ -26,6 +27,24 @@ function grouping(...groups) {
   return { kind: "minos-fix-grouping-v1", groups: groups.map((findings) => ({ findings })) };
 }
 
+function decision(classification, basis = "recorded grounds for this sweep's call") {
+  return { kind: DECISION_KIND, classification, basis };
+}
+
+// The default decision follows the digest's own threshold indication — what
+// a lead following the indication records — computed through the seam, never
+// re-derived. Tests exercising judgement against the indication pass their
+// own decision.
+function indicatedDecision(findings, overrides) {
+  const digest = sweepDigest({
+    review: { status: "complete", confirmedFindings: findings },
+    threshold: overrides.threshold ?? "High",
+    maximumRounds: overrides.maximumRounds ?? null,
+    runRecord: overrides.runRecord ?? { round: 0, confirmedUnfixed: [] },
+  });
+  return decision(digest.status === "complete" ? digest.thresholdIndication : "terminal");
+}
+
 function args(findings, overrides = {}) {
   return {
     review: {
@@ -36,11 +55,11 @@ function args(findings, overrides = {}) {
     threshold: "High",
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
+    decision: indicatedDecision(findings, overrides),
     workspace: "/run/workspace",
     verification: { build: "make build", tests: "make test" },
     guidance: { grounding: "annexe", path: "/run/subject-Annexe/README.md", content: "COMMISSION_VIOLET_719" },
     fixerBrief: { path: "workflows/review-briefs/fixer.md", readPath: fixerBriefPath, content: fixerBriefContent },
-    verification: { build: "make build", tests: "make test" },
     ...overrides,
   };
 }
@@ -137,7 +156,7 @@ test("a sweep containing only Lows is terminal and dispatches or posts nothing",
   const findings = [finding("wording", "Low", "a.go", 4), finding("small edge", "Low", "b.go", 7)];
   const { result, calls } = await run(args(findings));
   assert.equal(result.classification, "terminal");
-  assert.equal(result.terminalReason, "below-threshold");
+  assert.equal(result.decision.classification, "terminal");
   assert.equal(result.sweepReview, null);
   assert.equal(result.dispatches.length, 0);
   assert.equal(result.overflow.length, 2);
@@ -392,8 +411,51 @@ test("the configured maximum rounds stops another fix dispatch", async () => {
     runRecord: { round: 1, confirmedUnfixed: [] },
   }));
   assert.equal(result.classification, "terminal");
-  assert.equal(result.terminalReason, "maximum-rounds");
   assert.equal(result.requestChanges.length, 1);
+  assert.equal(calls.length, 0);
+});
+
+test("a working decision past the maximum rounds fails closed before any dispatch", async () => {
+  const original = finding("transition", "High", "internal/state.go", 41);
+  const { result, calls } = await run(args([original], {
+    maximumRounds: 1,
+    runRecord: { round: 1, confirmedUnfixed: [] },
+    decision: decision("working", "another wave would repair the finding"),
+  }));
+  assert.equal(result.status, "incomplete");
+  assert.match(result.reason, /maximum rounds has been reached/);
+  assert.deepEqual(result.dispatches, []);
+  assert.equal(calls.length, 0);
+});
+
+test("judgement may end the loop against the threshold indication", async () => {
+  const findings = [finding("restated ground", "High", "a.go", 4)];
+  const { result, calls } = await run(args(findings, {
+    decision: decision("terminal", "the finding restates already-adjudicated ground"),
+  }));
+  assert.equal(result.classification, "terminal");
+  assert.equal(result.decision.basis, "the finding restates already-adjudicated ground");
+  assert.equal(result.requestChanges.length, 1);
+  assert.equal(result.requestChanges[0].attempts, 0);
+  assert.equal(result.requestChangesReview.verdict, "request-changes");
+  assert.equal(calls.length, 0);
+});
+
+test("a decision without a stated basis fails closed before any forge write", async () => {
+  const findings = [finding("transition", "High", "a.go", 4)];
+  const { result, calls } = await run(args(findings, {
+    decision: { kind: DECISION_KIND, classification: "working", basis: "   " },
+  }));
+  assert.equal(result.status, "incomplete");
+  assert.match(result.reason, /non-empty basis/);
+  assert.equal(calls.length, 0);
+});
+
+test("a missing decision fails closed before any forge write", async () => {
+  const findings = [finding("transition", "High", "a.go", 4)];
+  const { result, calls } = await run(args(findings, { decision: undefined }));
+  assert.equal(result.status, "incomplete");
+  assert.match(result.reason, /sweep decision must be an object/);
   assert.equal(calls.length, 0);
 });
 
@@ -559,32 +621,41 @@ test("the deterministic fix input carries loop knobs, grouping judgement, and th
   writeFileSync(recordPath, JSON.stringify({ round: 3, confirmedUnfixed: [] }));
   const leadGrouping = grouping(["specialist:one"]);
   writeFileSync(groupingPath, JSON.stringify(leadGrouping));
-  const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, "--grouping", groupingPath, reviewPath, recordPath], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      MINOS_ORIENTATION: orientationPath,
-      MINOS_WORKSPACE: root,
-      MINOS_REVIEW_THRESHOLD: "Medium",
-      MINOS_MAX_ROUNDS: "8",
-      MINOS_BUILD_CMD: "make build",
-      MINOS_TEST_CMD: "make test",
+  const decisionPath = join(root, "sweep-decision.json");
+  const leadDecision = decision("terminal", "nothing dispatchable remains");
+  writeFileSync(decisionPath, JSON.stringify(leadDecision));
+  const input = JSON.parse(execFileSync(
+    process.execPath,
+    [inputScriptPath, "--grouping", groupingPath, "--decision", decisionPath, reviewPath, recordPath],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MINOS_ORIENTATION: orientationPath,
+        MINOS_WORKSPACE: root,
+        MINOS_REVIEW_THRESHOLD: "Medium",
+        MINOS_MAX_ROUNDS: "8",
+        MINOS_BUILD_CMD: "make build",
+        MINOS_TEST_CMD: "make test",
+      },
     },
-  }));
+  ));
   assert.equal(input.threshold, "Medium");
   assert.equal(input.maximumRounds, 8);
   assert.equal(input.runRecord.round, 3);
   assert.deepEqual(input.grouping, leadGrouping);
+  assert.deepEqual(input.decision, leadDecision);
   assert.deepEqual(input.verification, { build: "make build", tests: "make test" });
   assert.equal(input.guidance.content, "COMMISSION_VIOLET_719");
 });
 
-test("a seeded continuation record reaches the first fix-wave ledger", () => {
+test("a seeded continuation record reaches the digest and the first fix-wave ledger", () => {
   const root = mkdtempSync(join(tmpdir(), "minos-fix-inputs-continuation-"));
   const guidancePath = join(root, "README.md");
   const orientationPath = join(root, "orientation.json");
   const reviewPath = join(root, "review.json");
   const recordPath = join(root, "loop-record.json");
+  const decisionPath = join(root, "sweep-decision.json");
   const predecessorFinding = finding("transition", "High", "internal/state.go", 41);
   const newFinding = finding("other transition", "High", "internal/other.go", 12);
   writeFileSync(guidancePath, "COMMISSION_VIOLET_719");
@@ -603,11 +674,27 @@ test("a seeded continuation record reaches the first fix-wave ledger", () => {
       reason: "two attempts failed",
     }],
   }));
+  writeFileSync(decisionPath, JSON.stringify(decision("working", "one new High finding is dispatchable")));
 
-  const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, recordPath], {
+  const digest = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, recordPath, "--digest"], {
     encoding: "utf8",
     env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root },
   }));
+  assert.equal(digest.round, 4);
+  assert.equal(digest.thresholdIndication, "working");
+  assert.deepEqual(digest.aboveThresholdKeys, [
+    JSON.stringify([newFinding.path, newFinding.line, newFinding.title]),
+  ]);
+  assert.deepEqual(digest.priorConfirmedUnfixed, [{
+    key: JSON.stringify([predecessorFinding.path, predecessorFinding.line, predecessorFinding.title]),
+    attempts: 2,
+  }]);
+
+  const input = JSON.parse(execFileSync(
+    process.execPath,
+    [inputScriptPath, reviewPath, recordPath, "--decision", decisionPath],
+    { encoding: "utf8", env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root } },
+  ));
   const plan = prepareFixWave(input);
   assert.equal(plan.round, 4);
   assert.equal(plan.priorConfirmedUnfixed.length, 1);
@@ -654,6 +741,21 @@ test("fix input option and unreadable grouping errors use the usage exit", () =>
       name: "unreadable grouping",
       args: [inputScriptPath, "review.json", "--grouping", missingGroupingPath],
       message: `fix grouping file is unreadable: ${missingGroupingPath}`,
+    },
+    {
+      name: "unreadable decision",
+      args: [inputScriptPath, "review.json", "--decision", missingGroupingPath],
+      message: `sweep decision file is unreadable: ${missingGroupingPath}`,
+    },
+    {
+      name: "digest stands alone",
+      args: [inputScriptPath, "review.json", "--digest", "--single-wave"],
+      message: "fix input option --digest stands alone",
+    },
+    {
+      name: "surplus positional",
+      args: [inputScriptPath, "review.json", "record.json", "stray.json", "--single-wave"],
+      message: "unexpected fix input argument stray.json",
     },
   ]) {
     const result = spawnSync(process.execPath, testCase.args, { encoding: "utf8" });

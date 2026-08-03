@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const target = process.argv[2];
 const head = process.argv[3];
-if (!target || !head) {
+if (!target || !head || process.argv.length > 4) {
+  if (process.argv.length > 4)
+    process.stderr.write(`unexpected review input argument ${process.argv[4]}\n`);
   process.stderr.write("usage: node workflows/review-inputs.mjs TARGET HEAD\n");
   process.exitCode = 2;
 } else {
