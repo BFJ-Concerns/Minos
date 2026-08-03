@@ -53,11 +53,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	handoffFile := handoffPath(cfg.Runs.Dir, unit)
 	var handoff *runHandoff
+	handoffRejected := false
 	if _, statErr := os.Stat(handoffFile); statErr == nil {
 		handoff, err = readRunHandoff(handoffFile, facts)
 		if err != nil {
 			rejectRunHandoff(handoffFile, err)
 			handoff = nil
+			handoffRejected = true
 		}
 	} else if !os.IsNotExist(statErr) {
 		return "", fmt.Errorf("inspect continuation handoff: %w", statErr)
@@ -71,6 +73,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	runDir := ""
 	adopted := false
+	var reviewResult []byte
 	if handoff != nil {
 		if reason, valid := adoptableRunDirectory(cfg, unit, facts, handoff); valid {
 			runDir = handoff.RunDir
@@ -78,6 +81,17 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		} else {
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
+	}
+	if adopted {
+		var valid bool
+		reviewResult, valid = adoptableReviewResult(runDir, facts.HeadSHA)
+		if !valid {
+			if err := os.Remove(filepath.Join(runDir, "review-result.json")); err != nil && !os.IsNotExist(err) {
+				return "", fmt.Errorf("discard untrusted predecessor review result: %w", err)
+			}
+		}
+	} else if handoffRejected {
+		reviewResult, _ = containedPredecessorReviewResult(cfg, unit, facts.HeadSHA)
 	}
 	if progressDecision == continuationProgressStalled {
 		return stopStalledContinuation(ctx, cfg, unit, facts, handoffFile, handoff)
@@ -104,6 +118,15 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			return
 		}
 		_ = removeRunDir(runDir)
+	}
+	if reviewResult != nil {
+		if !adopted {
+			if err := os.WriteFile(filepath.Join(runDir, "review-result.json"), reviewResult, 0o600); err != nil {
+				cleanupSpawnFailure()
+				return "", fmt.Errorf("carry predecessor review result: %w", err)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "minos: adopted completed review verdict for %s at head %s\n", unit, facts.HeadSHA)
 	}
 	if err := os.WriteFile(filepath.Join(runDir, runOwnerMarker), nil, 0o600); err != nil {
 		cleanupSpawnFailure()

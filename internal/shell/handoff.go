@@ -42,6 +42,13 @@ type handoffRunRecord struct {
 	ConfirmedUnfixed *[]json.RawMessage `json:"confirmedUnfixed"`
 }
 
+type savedReviewResult struct {
+	Status   string `json:"status"`
+	Reviewed struct {
+		Head string `json:"head"`
+	} `json:"reviewed"`
+}
+
 func handoffPath(runsDir, unit string) string {
 	return filepath.Join(runsDir, ".handoffs", unit+".json")
 }
@@ -199,4 +206,46 @@ func containedRunDirectory(cfg ServiceConfig, unit, runDir string) (string, bool
 		return "", false
 	}
 	return cleanRunDir, true
+}
+
+func adoptableReviewResult(runDir, head string) ([]byte, bool) {
+	data, err := os.ReadFile(filepath.Join(runDir, "review-result.json"))
+	if err != nil {
+		return nil, false
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope == nil {
+		return nil, false
+	}
+	var result savedReviewResult
+	if err := json.Unmarshal(data, &result); err != nil || result.Status != "complete" || result.Reviewed.Head != head {
+		return nil, false
+	}
+	return data, true
+}
+
+func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) ([]byte, bool) {
+	entries, err := os.ReadDir(cfg.Runs.Dir)
+	if err != nil {
+		return nil, false
+	}
+	var adopted []byte
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		runDir := filepath.Join(cfg.Runs.Dir, entry.Name())
+		if _, contained := containedRunDirectory(cfg, unit, runDir); !contained {
+			continue
+		}
+		result, valid := adoptableReviewResult(runDir, head)
+		if !valid {
+			continue
+		}
+		if adopted != nil {
+			return nil, false
+		}
+		adopted = result
+	}
+	return adopted, adopted != nil
 }

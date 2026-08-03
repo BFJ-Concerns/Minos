@@ -625,6 +625,10 @@ test("an exploration null still emits its required leg for archive adjudication"
 });
 
 test("the lifecycle uses one adjudicated review call and publication-owned fix waves", () => {
+  assert.match(
+    lifecycle,
+    /review-result\.json` already exists[\s\S]*complete predecessor verdict[\s\S]*exactly `\$MINOS_HEAD_SHA`[\s\S]*do not invoke the review workflow again[\s\S]*Otherwise[\s\S]*invoke the adjudication wrapper once/,
+  );
   assert.match(lifecycle, /invoke the adjudication wrapper once[\s\S]*review\.js[\s\S]*--json-args/);
   assert.match(lifecycle, /review-inputs\.mjs[\s\S]*--loop-record "\$MINOS_LOOP_RECORD"/);
   assert.match(
