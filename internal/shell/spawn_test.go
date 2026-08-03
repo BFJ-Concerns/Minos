@@ -121,7 +121,6 @@ func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
 		"MINOS_RESUME=true",
 		"MINOS_HANDOFF=" + handoffFile,
 		"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
-		"MINOS_CONTINUATION_ATTEMPT=2",
 	} {
 		assertArgument(t, systemdArgs, value)
 	}
@@ -324,7 +323,6 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	for _, value := range []string{
 		"MINOS_HANDOFF=" + handoffPath(cfg.Runs.Dir, UnitName(facts)),
 		"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
-		"MINOS_CONTINUATION_ATTEMPT=0",
 	} {
 		assertArgument(t, systemdArgs, value)
 	}
@@ -434,7 +432,8 @@ func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head
 	data, err := json.Marshal(runHandoff{
 		Kind:        runHandoffKind,
 		PullRequest: handoffPull{Owner: facts.Owner, Repo: facts.Repo, Number: facts.PR},
-		Head:        head, RunDir: runDir, Attempt: attempt, RunRecord: record,
+		Head:        head, RunDir: runDir, Attempt: attempt, StoppedAt: "test boundary",
+		WrittenAt: "2026-08-03T21:00:00Z", RunRecord: record,
 	})
 	if err != nil {
 		t.Fatal(err)
