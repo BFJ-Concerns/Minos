@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -18,6 +19,8 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		state.reactions = []string{"eyes"}
 		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
 		runDir, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+		failureLog := filepath.Join(t.TempDir(), "failures.log")
+		t.Setenv("MINOS_FAILURE_LOG", failureLog)
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })
@@ -39,9 +42,56 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
 			t.Fatalf("guarded writes = %v", state.writeSequence)
 		}
-		assertContainsFile(t, filepath.Join(runDir, "failure.log"), "stage=continuation-progress")
-		assertContainsFile(t, filepath.Join(runDir, "failure.log"), "published no new head or review")
+		assertContainsFile(t, failureLog, "pull_request="+facts.Owner+"/"+facts.Repo+"#"+facts.PR)
+		assertContainsFile(t, failureLog, "stage=continuation-progress")
+		assertContainsFile(t, failureLog, "published no new head or review")
+		failureData, err := os.ReadFile(failureLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !regexp.MustCompile(`^timestamp=[^ ]+ pull_request=[^ ]+ head=[^ ]+ stage=continuation-progress cause=.+\n$`).Match(failureData) {
+			t.Fatalf("failure line has unexpected shape: %q", failureData)
+		}
 		assertContainsFile(t, filepath.Join(runDir, "lead-complete"), "non-clean")
+		if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+			t.Fatalf("stalled handoff remains or stat failed: %v", err)
+		}
+	})
+
+	t.Run("missing workspace still ends as attention", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		state.reactions = []string{"eyes"}
+		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		runDir, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+		if err := os.RemoveAll(runDir); err != nil {
+			t.Fatal(err)
+		}
+		failureLog := filepath.Join(t.TempDir(), "failures.log")
+		t.Setenv("MINOS_FAILURE_LOG", failureLog)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			t.Fatalf("stalled continuation with missing workspace invoked %s", name)
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome != SpawnAttention {
+			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+		}
+		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
+			t.Fatalf("guarded writes = %v", state.writeSequence)
+		}
+		assertContainsFile(t, failureLog, "stage=continuation-progress")
 		if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
 			t.Fatalf("stalled handoff remains or stat failed: %v", err)
 		}
@@ -105,7 +155,7 @@ func writeProgressHandoff(t *testing.T, cfg ServiceConfig, facts Facts, progress
 	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 0, json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`))
+	path := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`))
 	data, err := json.Marshal(runHandoff{
 		Kind: runHandoffKind, PullRequest: handoffPull{Owner: facts.Owner, Repo: facts.Repo, Number: facts.PR},
 		Head: facts.HeadSHA, RunDir: runDir, StoppedAt: progress.Stage, WrittenAt: "2026-08-03T21:00:00Z",
@@ -143,7 +193,7 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	handoff := writeTestHandoff(
-		t, cfg, facts, runDir, facts.HeadSHA, 1,
+		t, cfg, facts, runDir, facts.HeadSHA,
 		json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`),
 	)
 

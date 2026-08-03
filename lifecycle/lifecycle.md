@@ -93,8 +93,7 @@ write `{"round":0,"confirmedUnfixed":[]}` to it. The
 snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the head this attempt
 started from and may already be stale after a repair push. Write the complete
 handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
-`"$MINOS_HANDOFF"`. The reader still accepts the old `attempt` field for
-compatibility, but it is no longer written or used. Finally run
+`"$MINOS_HANDOFF"`. Finally run
 `printf 'continuation\n' > "$MINOS_RUN_DIR/lead-complete"` as the
 last action and end the turn. A continuation writes no failure-log line.
 

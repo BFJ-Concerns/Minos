@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"bfj/minos/internal/forge"
 	"bfj/minos/internal/product"
@@ -75,7 +76,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
 	}
-	if adopted && progressDecision == continuationProgressStalled {
+	if progressDecision == continuationProgressStalled {
 		return stopStalledContinuation(ctx, cfg, facts, handoffFile, handoff)
 	}
 	if !adopted {
@@ -189,8 +190,12 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 
 func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, facts Facts, handoffFile string, handoff *runHandoff) (SpawnOutcome, error) {
 	cause := fmt.Sprintf("successor made no progress beyond stage %q round %d and published no new head or review", handoff.Progress.Stage, handoff.Progress.Round)
-	failureLog := filepath.Join(handoff.RunDir, "failure.log")
-	failureLine := fmt.Sprintf("pull=%s/%s#%s head=%s stage=continuation-progress cause=%s\n", facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
+	failureLog := os.Getenv("MINOS_FAILURE_LOG")
+	if failureLog == "" {
+		return "", fmt.Errorf("record stalled continuation: MINOS_FAILURE_LOG is not configured")
+	}
+	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
+		time.Now().UTC().Format(time.RFC3339), facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
 	file, err := os.OpenFile(failureLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("record stalled continuation: %w", err)
@@ -221,7 +226,7 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, facts Facts
 	if result := adapter.RemoveReaction(ctx, guard, "eyes"); result.Outcome != forge.WriteApplied {
 		return "", fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
 	}
-	if err := os.WriteFile(filepath.Join(handoff.RunDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(handoff.RunDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("mark stalled continuation terminal: %w", err)
 	}
 	if err := os.Remove(handoffFile); err != nil {

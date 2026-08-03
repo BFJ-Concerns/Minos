@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 const runHandoffKind = "minos-run-handoff-v1"
@@ -18,7 +16,6 @@ type runHandoff struct {
 	PullRequest handoffPull      `json:"pullRequest"`
 	Head        string           `json:"head"`
 	RunDir      string           `json:"runDir"`
-	Attempt     int              `json:"attempt"`
 	StoppedAt   string           `json:"stoppedAt"`
 	WrittenAt   string           `json:"writtenAt"`
 	RunRecord   json.RawMessage  `json:"runRecord"`
@@ -69,24 +66,14 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 	}
 	var handoff runHandoff
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&handoff); err != nil {
 		return nil, fmt.Errorf("parse JSON: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("parse JSON: trailing content")
 	}
 	if handoff.Kind != runHandoffKind {
 		return nil, fmt.Errorf("kind is %q, want %q", handoff.Kind, runHandoffKind)
 	}
 	if handoff.PullRequest.Owner == "" || handoff.PullRequest.Repo == "" || handoff.PullRequest.Number == "" {
 		return nil, fmt.Errorf("pull request identity must be complete")
-	}
-	if strings.TrimSpace(handoff.Head) == "" || strings.TrimSpace(handoff.RunDir) == "" || strings.TrimSpace(handoff.StoppedAt) == "" {
-		return nil, fmt.Errorf("head, runDir and stoppedAt must be non-empty")
-	}
-	if _, err := time.Parse(time.RFC3339, handoff.WrittenAt); err != nil {
-		return nil, fmt.Errorf("writtenAt must be RFC 3339: %w", err)
 	}
 	var record handoffRunRecord
 	if err := json.Unmarshal(handoff.RunRecord, &record); err != nil {
@@ -97,9 +84,6 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 	}
 	if record.ConfirmedUnfixed == nil {
 		return nil, fmt.Errorf("runRecord.confirmedUnfixed must be an array")
-	}
-	if handoff.Attempt < 0 {
-		return nil, fmt.Errorf("attempt must be a non-negative integer")
 	}
 	if handoff.Progress != nil {
 		if err := validateHandoffProgress("progress", handoff.Progress); err != nil {
