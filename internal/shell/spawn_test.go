@@ -107,7 +107,7 @@ func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	runRecord := json.RawMessage(`{"round":3,"confirmedUnfixed":[{"key":"known"}]}`)
-	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 1, runRecord)
+	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, runRecord)
 
 	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts)
 	if err != nil {
@@ -121,7 +121,6 @@ func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
 		"MINOS_RESUME=true",
 		"MINOS_HANDOFF=" + handoffFile,
 		"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
-		"MINOS_CONTINUATION_ATTEMPT=2",
 	} {
 		assertArgument(t, systemdArgs, value)
 	}
@@ -158,7 +157,7 @@ func TestSpawnRunKeepsValidLoopRecordWhenHeadMoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	runRecord := json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`)
-	writeTestHandoff(t, cfg, facts, oldRunDir, "old-head", 1, runRecord)
+	writeTestHandoff(t, cfg, facts, oldRunDir, "old-head", runRecord)
 
 	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err != nil {
 		t.Fatal(err)
@@ -227,7 +226,7 @@ func TestSpawnRunDoesNotDeleteAdoptedDirectoryWhenSystemdStartFails(t *testing.T
 	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 1, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
+	writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
 	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err == nil {
 		t.Fatal("SpawnRun succeeded despite systemd-run failure")
 	}
@@ -324,7 +323,6 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	for _, value := range []string{
 		"MINOS_HANDOFF=" + handoffPath(cfg.Runs.Dir, UnitName(facts)),
 		"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
-		"MINOS_CONTINUATION_ATTEMPT=0",
 	} {
 		assertArgument(t, systemdArgs, value)
 	}
@@ -425,7 +423,7 @@ func argumentValue(arguments []string, key string) string {
 	return ""
 }
 
-func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head string, attempt int, record json.RawMessage) string {
+func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head string, record json.RawMessage) string {
 	t.Helper()
 	path := handoffPath(cfg.Runs.Dir, UnitName(facts))
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -434,7 +432,8 @@ func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head
 	data, err := json.Marshal(runHandoff{
 		Kind:        runHandoffKind,
 		PullRequest: handoffPull{Owner: facts.Owner, Repo: facts.Repo, Number: facts.PR},
-		Head:        head, RunDir: runDir, Attempt: attempt, RunRecord: record,
+		Head:        head, RunDir: runDir, StoppedAt: "test boundary",
+		WrittenAt: "2026-08-03T21:00:00Z", RunRecord: record,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -443,4 +442,78 @@ func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestRunHandoffKeepsExistingShapeCompatibility(t *testing.T) {
+	base := `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"head","runDir":"/runs/run","stoppedAt":"stage","writtenAt":"fixture","runRecord":{"round":0,"confirmedUnfixed":[]}}`
+	tests := map[string]string{
+		"unknown field":       strings.TrimSuffix(base, "}") + `,"futureField":true}`,
+		"trailing content":    base + ` {"ignored":true}`,
+		"empty existing data": `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"","runDir":"","stoppedAt":"","writtenAt":"fixture","runRecord":{"round":0,"confirmedUnfixed":[]}}`,
+		"non-RFC timestamp":   base,
+	}
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "handoff.json")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readRunHandoffStructure(path); err != nil {
+				t.Fatalf("existing handoff shape rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunHandoffRejectsInvalidProgress(t *testing.T) {
+	base := `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"head","runDir":"/runs/run","stoppedAt":"stage","writtenAt":"fixture","runRecord":{"round":2,"confirmedUnfixed":[]},"progress":{"stage":"review","round":2,"head":"head","latestReview":7}}`
+	tests := map[string]struct {
+		old  string
+		new  string
+		want string
+	}{
+		"empty progress stage":         {`"stage":"review"`, `"stage":" "`, "progress.stage must be non-empty"},
+		"negative progress round":      {`"progress":{"stage":"review","round":2`, `"progress":{"stage":"review","round":-1`, "progress.round must be a non-negative integer"},
+		"empty progress head":          {`"head":"head","latestReview"`, `"head":" ","latestReview"`, "progress.head must be non-empty"},
+		"negative latest review":       {`"latestReview":7`, `"latestReview":-1`, "progress.latestReview must be a non-negative integer"},
+		"progress round mismatch":      {`"progress":{"stage":"review","round":2`, `"progress":{"stage":"review","round":3`, "progress.round must match runRecord.round"},
+		"progress head mismatch":       {`"head":"head","latestReview"`, `"head":"other","latestReview"`, "progress.head must match head"},
+		"predecessor without progress": {`"progress":`, `"predecessorProgress":`, "predecessorProgress requires progress"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertRejectedHandoff(t, strings.Replace(base, test.old, test.new, 1), test.want)
+		})
+	}
+}
+
+func TestRunHandoffRejectsInvalidPredecessorProgress(t *testing.T) {
+	base := `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"head","runDir":"/runs/run","stoppedAt":"stage","writtenAt":"fixture","runRecord":{"round":2,"confirmedUnfixed":[]},"progress":{"stage":"review","round":2,"head":"head","latestReview":7},"predecessorProgress":{"stage":"review","round":1,"head":"old-head","latestReview":6}}`
+	tests := map[string]struct {
+		old  string
+		new  string
+		want string
+	}{
+		"empty stage":            {`"stage":"review","round":1`, `"stage":" ","round":1`, "predecessorProgress.stage must be non-empty"},
+		"negative round":         {`"round":1,"head":"old-head"`, `"round":-1,"head":"old-head"`, "predecessorProgress.round must be a non-negative integer"},
+		"empty head":             {`"head":"old-head","latestReview":6}}`, `"head":" ","latestReview":6}}`, "predecessorProgress.head must be non-empty"},
+		"negative latest review": {`"latestReview":6}}`, `"latestReview":-1}}`, "predecessorProgress.latestReview must be a non-negative integer"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertRejectedHandoff(t, strings.Replace(base, test.old, test.new, 1), test.want)
+		})
+	}
+}
+
+func assertRejectedHandoff(t *testing.T, content, want string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "handoff.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := readRunHandoffStructure(path)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
 }

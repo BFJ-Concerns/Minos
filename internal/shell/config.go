@@ -26,6 +26,7 @@ type ServiceConfig struct {
 	Forges map[string]ForgeConfig `toml:"forges"`
 	Runs   struct {
 		Dir                    string `toml:"dir"`
+		FailureLog             string `toml:"failure-log"`
 		FailuresRepo           string `toml:"failures-repo"`
 		FailuresCredentialFile string `toml:"failures-credential-file"`
 		ArchiveCommand         string `toml:"archive-command"`

@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+
+	"bfj/minos/internal/forge"
+	"bfj/minos/internal/product"
 )
 
 var unitSafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
@@ -21,7 +26,9 @@ type SpawnOutcome string
 
 const (
 	SpawnStarted    SpawnOutcome = "started"
+	SpawnContinued  SpawnOutcome = "continued"
 	SpawnSuppressed SpawnOutcome = "suppressed"
+	SpawnAttention  SpawnOutcome = "attention"
 	runOwnerMarker               = ".runwrap-owner"
 )
 
@@ -55,7 +62,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	} else if !os.IsNotExist(statErr) {
 		return "", fmt.Errorf("inspect continuation handoff: %w", statErr)
 	}
-
+	progressDecision := continuationProgressUnknown
+	if handoff != nil {
+		progressDecision = compareContinuationProgress(handoff)
+		if handoff.Head != facts.HeadSHA {
+			progressDecision = continuationProgressAdvanced
+		}
+	}
 	runDir := ""
 	adopted := false
 	if handoff != nil {
@@ -65,6 +78,12 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		} else {
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
+	}
+	if progressDecision == continuationProgressStalled {
+		return stopStalledContinuation(ctx, cfg, unit, facts, handoffFile, handoff)
+	}
+	if !adopted {
+		progressDecision = continuationProgressUnknown
 	}
 	if adopted {
 		for _, stale := range []string{"lead-complete", "memory-pressure"} {
@@ -90,9 +109,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		cleanupSpawnFailure()
 		return "", fmt.Errorf("create run ownership marker: %w", err)
 	}
-	continuationAttempt := 0
 	if handoff != nil {
-		continuationAttempt = handoff.Attempt + 1
 		if err := os.WriteFile(filepath.Join(runDir, "loop-record.json"), handoff.RunRecord, 0o600); err != nil {
 			cleanupSpawnFailure()
 			return "", fmt.Errorf("seed continuation loop record: %w", err)
@@ -115,7 +132,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_ORIENTATION":           filepath.Join(runDir, "orientation.json"),
 		"MINOS_HANDOFF":               handoffFile,
 		"MINOS_LOOP_RECORD":           filepath.Join(runDir, "loop-record.json"),
-		"MINOS_CONTINUATION_ATTEMPT":  strconv.Itoa(continuationAttempt),
 		"MINOS_OWNER":                 facts.Owner,
 		"MINOS_REPO_NAME":             facts.Repo,
 		"MINOS_PR":                    facts.PR,
@@ -133,6 +149,14 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_MAX_ROUNDS":            maximumRounds,
 		"ENSEMBLE_CONCURRENCY_CLAUDE": strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
 		"ENSEMBLE_CONCURRENCY_CODEX":  strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
+	}
+	if handoff != nil && handoff.Progress != nil {
+		progress, marshalErr := json.Marshal(handoff.Progress)
+		if marshalErr != nil {
+			cleanupSpawnFailure()
+			return "", fmt.Errorf("encode predecessor continuation progress: %w", marshalErr)
+		}
+		env["MINOS_PREDECESSOR_PROGRESS"] = string(progress)
 	}
 	if adopted {
 		env["MINOS_RESUME"] = "true"
@@ -161,7 +185,65 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		}
 		return "", fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	if progressDecision == continuationProgressAdvanced {
+		return SpawnContinued, nil
+	}
 	return SpawnStarted, nil
+}
+
+func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnOutcome, error) {
+	cause := fmt.Sprintf("successor made no progress beyond stage %q round %d and published no new head or review", handoff.Progress.Stage, handoff.Progress.Round)
+	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
+		time.Now().UTC().Format(time.RFC3339), facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
+	appendStalledContinuationFailure(cfg.Runs.FailureLog, failureLine)
+
+	adapter, err := newBehaviouralForge(cfg, facts.Forge)
+	if err != nil {
+		return "", err
+	}
+	pullRequest, err := strconv.ParseInt(facts.PR, 10, 64)
+	if err != nil {
+		return "", err
+	}
+	guard := forge.Guard{
+		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+		PullRequest: pullRequest, HeadSHA: facts.HeadSHA, TargetSHA: facts.BaseSHA,
+	}
+	if result := adapter.SetProductStatus(ctx, guard, product.Attention()); result.Outcome != forge.WriteApplied {
+		return "", fmt.Errorf("set stalled continuation attention: %s: %s", result.Outcome, result.Reason)
+	}
+	if result := adapter.RemoveReaction(ctx, guard, "eyes"); result.Outcome != forge.WriteApplied {
+		return "", fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
+	}
+	if runDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir); contained {
+		if err := os.WriteFile(filepath.Join(runDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("mark stalled continuation terminal: %w", err)
+		}
+	}
+	if err := os.Remove(handoffFile); err != nil {
+		return "", fmt.Errorf("consume stalled continuation handoff: %w", err)
+	}
+	return SpawnAttention, nil
+}
+
+func appendStalledContinuationFailure(path, line string) {
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "minos: runs.failure-log (%s) parent is not writable: %v\n", path, err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "minos: runs.failure-log (%s) is not writable: %v\n", path, err)
+		return
+	}
+	if _, err := file.WriteString(line); err != nil {
+		fmt.Fprintf(os.Stderr, "minos: runs.failure-log (%s) is not writable: %v\n", path, err)
+	}
+	if err := file.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "minos: runs.failure-log (%s) could not be closed: %v\n", path, err)
+	}
 }
 
 func lockAdmission(runsDir string) (func(), error) {

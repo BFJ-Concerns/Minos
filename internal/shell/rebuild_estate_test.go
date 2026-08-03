@@ -689,7 +689,7 @@ case "$1" in
       jq -n \
         --arg owner "$MINOS_OWNER" --arg repo "$MINOS_REPO_NAME" --arg number "$MINOS_PR" \
         --arg head "$MINOS_HEAD_SHA" --arg run_dir "$MINOS_RUN_DIR" \
-        '{kind:"minos-run-handoff-v1",pullRequest:{owner:$owner,repo:$repo,number:$number},head:$head,runDir:$run_dir,attempt:1,stoppedAt:"estate fixture",writtenAt:"fixture",runRecord:{round:0,confirmedUnfixed:[]}}' \
+        '{kind:"minos-run-handoff-v1",pullRequest:{owner:$owner,repo:$repo,number:$number},head:$head,runDir:$run_dir,stoppedAt:"estate fixture",writtenAt:"fixture",runRecord:{round:0,confirmedUnfixed:[]}}' \
         >"$MINOS_HANDOFF.tmp"
       mv "$MINOS_HANDOFF.tmp" "$MINOS_HANDOFF"
       printf 'continuation\n' >"$MINOS_RUN_DIR/lead-complete"

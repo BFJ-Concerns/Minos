@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,14 +12,22 @@ import (
 const runHandoffKind = "minos-run-handoff-v1"
 
 type runHandoff struct {
-	Kind        string          `json:"kind"`
-	PullRequest handoffPull     `json:"pullRequest"`
-	Head        string          `json:"head"`
-	RunDir      string          `json:"runDir"`
-	Attempt     int             `json:"attempt"`
-	StoppedAt   string          `json:"stoppedAt"`
-	WrittenAt   string          `json:"writtenAt"`
-	RunRecord   json.RawMessage `json:"runRecord"`
+	Kind        string           `json:"kind"`
+	PullRequest handoffPull      `json:"pullRequest"`
+	Head        string           `json:"head"`
+	RunDir      string           `json:"runDir"`
+	StoppedAt   string           `json:"stoppedAt"`
+	WrittenAt   string           `json:"writtenAt"`
+	RunRecord   json.RawMessage  `json:"runRecord"`
+	Predecessor *handoffProgress `json:"predecessorProgress,omitempty"`
+	Progress    *handoffProgress `json:"progress,omitempty"`
+}
+
+type handoffProgress struct {
+	Stage        string `json:"stage"`
+	Round        int    `json:"round"`
+	Head         string `json:"head"`
+	LatestReview int64  `json:"latestReview"`
 }
 
 type handoffPull struct {
@@ -56,7 +65,8 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 		return nil, err
 	}
 	var handoff runHandoff
-	if err := json.Unmarshal(data, &handoff); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&handoff); err != nil {
 		return nil, fmt.Errorf("parse JSON: %w", err)
 	}
 	if handoff.Kind != runHandoffKind {
@@ -75,10 +85,67 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 	if record.ConfirmedUnfixed == nil {
 		return nil, fmt.Errorf("runRecord.confirmedUnfixed must be an array")
 	}
-	if handoff.Attempt < 0 {
-		return nil, fmt.Errorf("attempt must be a non-negative integer")
+	if handoff.Progress != nil {
+		if err := validateHandoffProgress("progress", handoff.Progress); err != nil {
+			return nil, err
+		}
+		if handoff.Progress.Round != *record.Round {
+			return nil, fmt.Errorf("progress.round must match runRecord.round")
+		}
+		if handoff.Progress.Head != handoff.Head {
+			return nil, fmt.Errorf("progress.head must match head")
+		}
+	}
+	if handoff.Predecessor != nil {
+		if handoff.Progress == nil {
+			return nil, fmt.Errorf("predecessorProgress requires progress")
+		}
+		if err := validateHandoffProgress("predecessorProgress", handoff.Predecessor); err != nil {
+			return nil, err
+		}
 	}
 	return &handoff, nil
+}
+
+func validateHandoffProgress(name string, progress *handoffProgress) error {
+	if strings.TrimSpace(progress.Stage) == "" {
+		return fmt.Errorf("%s.stage must be non-empty", name)
+	}
+	if progress.Round < 0 {
+		return fmt.Errorf("%s.round must be a non-negative integer", name)
+	}
+	if strings.TrimSpace(progress.Head) == "" {
+		return fmt.Errorf("%s.head must be non-empty", name)
+	}
+	if progress.LatestReview < 0 {
+		return fmt.Errorf("%s.latestReview must be a non-negative integer", name)
+	}
+	return nil
+}
+
+type continuationProgressDecision string
+
+const (
+	continuationProgressUnknown  continuationProgressDecision = "unknown"
+	continuationProgressAdvanced continuationProgressDecision = "advanced"
+	continuationProgressStalled  continuationProgressDecision = "stalled"
+)
+
+func compareContinuationProgress(handoff *runHandoff) continuationProgressDecision {
+	if handoff.Predecessor == nil || handoff.Progress == nil {
+		return continuationProgressUnknown
+	}
+	previous, current := handoff.Predecessor, handoff.Progress
+	if current.Head != previous.Head || current.LatestReview > previous.LatestReview ||
+		current.Round > previous.Round ||
+		(current.Round == previous.Round && current.Stage != previous.Stage) {
+		return continuationProgressAdvanced
+	}
+	if current.Round == previous.Round && current.Stage == previous.Stage &&
+		current.Head == previous.Head && current.LatestReview == previous.LatestReview {
+		return continuationProgressStalled
+	}
+	return continuationProgressUnknown
 }
 
 func rejectRunHandoff(path string, reason error) {
@@ -92,11 +159,8 @@ func rejectRunHandoff(path string, reason error) {
 }
 
 func adoptableRunDirectory(cfg ServiceConfig, unit string, facts Facts, handoff *runHandoff) (string, bool) {
-	runDir := handoff.RunDir
-	cleanRunDir := filepath.Clean(runDir)
-	cleanRunsDir := filepath.Clean(cfg.Runs.Dir)
-	if runDir == "" || !filepath.IsAbs(runDir) || cleanRunDir != runDir ||
-		filepath.Dir(cleanRunDir) != cleanRunsDir || !strings.HasPrefix(filepath.Base(cleanRunDir), unit+"-") {
+	cleanRunDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir)
+	if !contained {
 		return "runDir is not a direct, unit-named child of runs.dir", false
 	}
 	info, err := os.Stat(cleanRunDir)
@@ -118,4 +182,14 @@ func adoptableRunDirectory(cfg ServiceConfig, unit string, facts Facts, handoff 
 		return "workspace is not a Git repository", false
 	}
 	return "", true
+}
+
+func containedRunDirectory(cfg ServiceConfig, unit, runDir string) (string, bool) {
+	cleanRunDir := filepath.Clean(runDir)
+	cleanRunsDir := filepath.Clean(cfg.Runs.Dir)
+	if runDir == "" || !filepath.IsAbs(runDir) || cleanRunDir != runDir ||
+		filepath.Dir(cleanRunDir) != cleanRunsDir || !strings.HasPrefix(filepath.Base(cleanRunDir), unit+"-") {
+		return "", false
+	}
+	return cleanRunDir, true
 }

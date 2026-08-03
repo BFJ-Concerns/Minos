@@ -42,15 +42,25 @@ boundaries below. When it exists, finish the current lifecycle stage; do not
 interrupt a workflow or leave a forge write half-finished. Then continue the run
 only through the handoff procedure below. The signal is latched for this attempt.
 
-At a pressure boundary, first inspect `$MINOS_CONTINUATION_ATTEMPT`. When it is
-`3` or greater, do not continue again: append a failure line naming sustained
-memory pressure, set `incomplete` on the fresh head and target, remove 👀, write
-the non-clean terminal marker, and stop. Otherwise take a fresh `"$MINOS_BIN"
-forge snapshot`; use its
+At a pressure boundary, take a fresh `"$MINOS_BIN" forge snapshot`; use its
 `head_sha` and `target_sha` for every remaining action. Run
 `"$MINOS_BIN" forge status FRESH_HEAD FRESH_TARGET continuation`. Keep 👀 in
 place: the successor claims idempotently, and the reaction remains true across
-the handoff.
+the handoff. There is no numerical continuation ceiling.
+
+Record one progress observation from durable facts only. `stage` is the concise,
+stable name of the lifecycle stage just completed; use the same name whenever a
+successor stops at that boundary. `round` is the current loop record's round.
+`head` is the fresh snapshot's head. `latestReview` is the greatest review ID in
+that snapshot authored by its `authenticated_user` on that head, or `0` when
+there is none. These forge facts name publication progress without trusting
+scratch files or process state. Copy `$MINOS_PREDECESSOR_PROGRESS` as
+`predecessorProgress` when it exists; otherwise omit that field. Missing legacy
+progress therefore means the successor cannot compare and is allowed to start.
+The successor admission compares this predecessor/current pair: the same stage
+and round with the same head and latest review ends the chain as `attention`,
+records the cause, removes 👀 and does not spawn; a changed publication, a later
+round, or a different stage may continue.
 
 The handoff is `$MINOS_HANDOFF`. It must be written before the terminal marker
 and match this exact JSON shape — field names and nesting are validated
@@ -63,22 +73,28 @@ successor the preserved workspace:
   "pullRequest": { "owner": "OWNER", "repo": "REPOSITORY", "number": "NUMBER" },
   "head": "FRESH_SNAPSHOT_HEAD_SHA",
   "runDir": "$MINOS_RUN_DIR value",
-  "attempt": CONTINUATION_ATTEMPT,
   "stoppedAt": "concise description of the stopping point",
   "writtenAt": "RFC 3339 timestamp",
-  "runRecord": { the complete JSON object from $MINOS_LOOP_RECORD }
+  "runRecord": { the complete JSON object from $MINOS_LOOP_RECORD },
+  "predecessorProgress": { the complete JSON object from $MINOS_PREDECESSOR_PROGRESS, when set },
+  "progress": {
+    "stage": "stable name of the lifecycle stage just completed",
+    "round": CURRENT_ROUND,
+    "head": "FRESH_SNAPSHOT_HEAD_SHA",
+    "latestReview": LATEST_CURRENT_HEAD_REVIEW_ID_OR_ZERO
+  }
 }
 ```
 
-`pullRequest.number` is a JSON string; `attempt` is a JSON integer. `head` is
-the fresh snapshot's `head_sha`. If the loop record does not yet exist, first
+`pullRequest.number` is a JSON string. The top-level and progress `head` values
+are both the fresh snapshot's `head_sha`, and the progress and loop-record
+`round` values are equal. If the loop record does not yet exist, first
 write `{"round":0,"confirmedUnfixed":[]}` to it. The
 snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the head this attempt
 started from and may already be stale after a repair push. Write the complete
 handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
-`"$MINOS_HANDOFF"`. Use attempt `1` when
-`$MINOS_CONTINUATION_ATTEMPT` is `0`; otherwise carry the current attempt value.
-Finally run `printf 'continuation\n' > "$MINOS_RUN_DIR/lead-complete"` as the
+`"$MINOS_HANDOFF"`. Finally run
+`printf 'continuation\n' > "$MINOS_RUN_DIR/lead-complete"` as the
 last action and end the turn. A continuation writes no failure-log line.
 
 1. The setup script has prepared the repository at the observed pull-request head
