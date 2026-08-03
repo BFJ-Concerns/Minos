@@ -627,8 +627,14 @@ test("an exploration null still emits its required leg for archive adjudication"
 test("the lifecycle uses one adjudicated review call and publication-owned fix waves", () => {
   assert.match(
     lifecycle,
-    /review-result\.json` already exists[\s\S]*complete predecessor verdict[\s\S]*exactly `\$MINOS_HEAD_SHA`[\s\S]*do not invoke the review workflow again[\s\S]*Otherwise[\s\S]*invoke the adjudication wrapper once/,
+    /carried-review-result\.json` exists[\s\S]*complete predecessor verdict[\s\S]*one-time carry[\s\S]*moving it to `\$MINOS_RUN_DIR\/review-result\.json`[\s\S]*do not invoke the review workflow for this first review/,
   );
+  assert.match(lifecycle, /mv "\$MINOS_RUN_DIR\/carried-review-result\.json"[\s\S]*"\$MINOS_RUN_DIR\/review-result\.json"/);
+  assert.match(
+    lifecycle,
+    /ordinary[\s\S]*`review-result\.json` is never a carry signal[\s\S]*after a fix wave, invoke the[\s\S]*workflow again for the fresh head/,
+  );
+  assert.doesNotMatch(lifecycle, /If `\$MINOS_RUN_DIR\/review-result\.json` (?:already )?exists/);
   assert.match(lifecycle, /invoke the adjudication wrapper once[\s\S]*review\.js[\s\S]*--json-args/);
   assert.match(lifecycle, /review-inputs\.mjs[\s\S]*--loop-record "\$MINOS_LOOP_RECORD"/);
   assert.match(

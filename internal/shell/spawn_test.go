@@ -168,9 +168,12 @@ func TestSpawnRunCarriesCompleteReviewVerdictAcrossContinuation(t *testing.T) {
 			if rejectedHandoff && successor == predecessor {
 				t.Fatalf("rejected handoff reused predecessor directory %q", predecessor)
 			}
-			carried, err := os.ReadFile(filepath.Join(successor, "review-result.json"))
+			carried, err := os.ReadFile(filepath.Join(successor, "carried-review-result.json"))
 			if err != nil || string(carried) != string(verdict) {
 				t.Fatalf("successor verdict = %s, err = %v; want %s", carried, err, verdict)
+			}
+			if _, err := os.Stat(filepath.Join(successor, "review-result.json")); !os.IsNotExist(err) {
+				t.Fatalf("ordinary round result can still masquerade as a carried verdict: %v", err)
 			}
 			if rejectedHandoff {
 				if _, err := os.Stat(handoffFile + ".rejected"); err != nil {
@@ -178,6 +181,39 @@ func TestSpawnRunCarriesCompleteReviewVerdictAcrossContinuation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSpawnRunRefusesAmbiguousPredecessorReviewVerdicts(t *testing.T) {
+	cfg, facts, predecessor, systemdArgs := reviewContinuationFixture(t)
+	verdict := []byte(`{"status":"complete","reviewed":{"head":"head"},"findings":[]}`)
+	for _, runDir := range []string{
+		predecessor,
+		filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-second-predecessor"),
+	} {
+		if err := os.MkdirAll(runDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "review-result.json"), verdict, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handoffFile := writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1}`))
+	if err := os.WriteFile(handoffFile, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr := captureStderr(t, func() {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(stderr, "adopted completed review verdict") {
+		t.Fatalf("stderr falsely reports ambiguous verdict adoption: %q", stderr)
+	}
+	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	if _, err := os.Stat(filepath.Join(successor, "carried-review-result.json")); !os.IsNotExist(err) {
+		t.Fatalf("ambiguous verdict remains successor-visible or stat failed: %v", err)
 	}
 }
 

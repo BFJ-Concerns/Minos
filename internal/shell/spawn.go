@@ -112,16 +112,27 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			return "", err
 		}
 	}
+	reviewResultCarried := false
 	cleanupSpawnFailure := func() {
 		if adopted {
+			if reviewResultCarried {
+				_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), filepath.Join(runDir, "review-result.json"))
+			}
 			_ = os.Remove(filepath.Join(runDir, runOwnerMarker))
 			return
 		}
 		_ = removeRunDir(runDir)
 	}
 	if reviewResult != nil {
-		if !adopted {
-			if err := os.WriteFile(filepath.Join(runDir, "review-result.json"), reviewResult, 0o600); err != nil {
+		carriedResult := filepath.Join(runDir, "carried-review-result.json")
+		if adopted {
+			if err := os.Rename(filepath.Join(runDir, "review-result.json"), carriedResult); err != nil {
+				cleanupSpawnFailure()
+				return "", fmt.Errorf("mark predecessor review result for one-time carry: %w", err)
+			}
+			reviewResultCarried = true
+		} else {
+			if err := os.WriteFile(carriedResult, reviewResult, 0o600); err != nil {
 				cleanupSpawnFailure()
 				return "", fmt.Errorf("carry predecessor review result: %w", err)
 			}

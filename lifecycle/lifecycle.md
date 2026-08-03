@@ -273,11 +273,20 @@ last action and end the turn. A continuation writes no failure-log line.
    that content with the shipped role briefs. Do not ask an agent to reproduce
    it or hand-author its `guidance` or `instructionBriefs` entries.
 
-   If `$MINOS_RUN_DIR/review-result.json` already exists, the service validated
-   it as a complete predecessor verdict for exactly `$MINOS_HEAD_SHA`; consume
-   that saved verdict and do not invoke the review workflow again. Otherwise,
-   from `$MINOS_WORKSPACE`, invoke the adjudication wrapper once and save its
-   verdict:
+   If `$MINOS_RUN_DIR/carried-review-result.json` exists, the service validated
+   it as a complete predecessor verdict for exactly `$MINOS_HEAD_SHA`. Consume
+   the one-time carry by moving it to `$MINOS_RUN_DIR/review-result.json`, and
+   do not invoke the review workflow for this first review. An ordinary
+   `review-result.json` is never a carry signal; after a fix wave, invoke the
+   workflow again for the fresh head. When there is no carried result, from
+   `$MINOS_WORKSPACE`, invoke the adjudication wrapper once and save its verdict:
+
+   ```sh
+   mv "$MINOS_RUN_DIR/carried-review-result.json" \
+     "$MINOS_RUN_DIR/review-result.json"
+   ```
+
+   Run that move only for the carried-result branch. Otherwise invoke:
 
    ```sh
    "$MINOS_REVIEW_WORKFLOW" \
