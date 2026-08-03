@@ -84,8 +84,18 @@ function responder({ relevance, partition, specialist, verify } = {}) {
       const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
       return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
     }
-    if (label.startsWith("verify-"))
-      return verify ? verify(label, prompt, opts) : { verdict: "upheld", confidence: 92, reason: "confirmed" };
+    if (label.startsWith("verify-")) {
+      if (verify) return verify(label, prompt, opts);
+      const findings = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      return {
+        verdicts: findings.map((entry) => ({
+          findingId: entry.id,
+          verdict: "upheld",
+          confidence: 92,
+          reason: "confirmed",
+        })),
+      };
+    }
     if (specialist) return specialist(label, prompt, opts);
     return specialistResult();
   };
@@ -489,11 +499,14 @@ test("specialist inapplicability is recorded and never reaches verification", as
 
 test("all applicable findings are proposed on Terra and verified cross-family on Claude", async () => {
   const { result, calls } = await run(args());
-  const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
-  const verifier = calls.find((call) => call.opts.label?.startsWith("verify-"));
-  assert.deepEqual([specialist.opts.engine, specialist.opts.model], ["codex", "gpt-5.6-terra"]);
-  assert.deepEqual([verifier.opts.engine, verifier.opts.model], ["claude", "claude-opus-5"]);
-  assert.notEqual(specialist.opts.engine, verifier.opts.engine);
+  const specialists = calls.filter((call) => call.opts.label?.startsWith("repository-"));
+  const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
+  assert.ok(specialists.every((call) =>
+    call.opts.engine === "codex" && call.opts.model === "gpt-5.6-terra"));
+  assert.ok(verifiers.every((call) =>
+    call.opts.engine === "claude" && call.opts.model === "claude-opus-5"));
+  assert.ok(specialists.every((specialist) =>
+    verifiers.every((verifier) => specialist.opts.engine !== verifier.opts.engine)));
   assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 92, reason: "confirmed" });
   // The fixture brief sits under pkg/ and pkg/x.go changed, so its path-scope
   // trigger fires and relevance is moot: a specialist and its verifier only.
@@ -574,12 +587,22 @@ test("every repository-brief finding reaches verification beyond the former boun
       finding({ title: "two", line: 8 }),
       finding({ title: "three survives", severity: "Medium", line: 9 }),
       finding({ title: "four survives", severity: "Low", line: 10 }),
+      finding({ title: "five survives", line: 11 }),
+      finding({ title: "six survives", line: 12 }),
+      finding({ title: "seven survives", line: 13 }),
     ]),
   }));
-  assert.deepEqual(result.proposedFindings.map((entry) => entry.title), ["one", "two", "three survives", "four survives"]);
-  const beyondBoundVerifier = calls.find((call) => call.opts.label === "verify-brief-1-4-claude");
-  assert.ok(beyondBoundVerifier);
-  assert.match(beyondBoundVerifier.prompt, /"title":"four survives"/);
+  assert.deepEqual(result.proposedFindings.map((entry) => entry.title), [
+    "one", "two", "three survives", "four survives", "five survives", "six survives", "seven survives",
+  ]);
+  assert.ok(result.proposedFindings.every((entry) => entry.rawVerifier?.verdict === "upheld"));
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
+  assert.deepEqual(verifierCalls.map((call) => call.opts.label), [
+    "verify-brief-1-1-claude", "verify-brief-1-2-claude",
+  ]);
+  assert.match(verifierCalls[0].prompt, /"title":"six survives"/);
+  assert.doesNotMatch(verifierCalls[0].prompt, /"title":"seven survives"/);
+  assert.match(verifierCalls[1].prompt, /"title":"seven survives"/);
 });
 
 test("a missing specialist result is a not-run disposition with a required archive leg", async () => {
