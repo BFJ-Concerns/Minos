@@ -110,3 +110,48 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		})
 	}
 }
+
+func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
+	ownedStatus := func(id int64, description string) forge.Status {
+		return forge.Status{
+			ID: id, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+			Creator: "Minos", Description: description,
+		}
+	}
+	tests := []struct {
+		name     string
+		statuses []forge.Status
+		want     bool
+	}{
+		{name: "clean status completes the run", statuses: []forge.Status{ownedStatus(1, product.Clean().Description())}, want: true},
+		{name: "attention status completes the run", statuses: []forge.Status{ownedStatus(1, product.Attention().Description())}, want: true},
+		{name: "merged status completes the run", statuses: []forge.Status{ownedStatus(1, product.Merged().Description())}, want: true},
+		{name: "incomplete status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Incomplete().Description())}},
+		{name: "working status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Working().Description())}},
+		{name: "continuation status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Continuation().Description())}},
+		{
+			name: "later working status supersedes an older clean marker",
+			statuses: []forge.Status{
+				ownedStatus(11, product.Clean().Description()),
+				ownedStatus(12, product.Working().Description()),
+			},
+		},
+		{
+			name: "another account's clean status is not a marker",
+			statuses: []forge.Status{{
+				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Creator: "SomeBot", Description: product.Clean().Description(),
+			}},
+		},
+		{name: "no statuses"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := forge.Snapshot{Statuses: test.statuses}
+			if got := completedRunStatus(snapshot, "Minos"); got != test.want {
+				t.Fatalf("completedRunStatus() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
