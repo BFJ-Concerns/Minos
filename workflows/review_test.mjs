@@ -523,6 +523,21 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
 });
 
+test("configured command failures stop before initial or repeated review", () => {
+  const initialGate = lifecycle.slice(lifecycle.indexOf("3. Read"), lifecycle.indexOf("4. Run"));
+  assert.match(
+    initialGate,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*non-zero exit status[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*status HEAD TARGET incomplete[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean[\s\S]*stop before starting any review/,
+  );
+  assert.match(initialGate, /empty, no test command is configured[\s\S]*skip it/);
+
+  const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
+  assert.match(
+    repeatedGate,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*non-zero exit status[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*incomplete[\s\S]*reaction-remove[\s\S]*non-clean[\s\S]*stop before another review round or merge action[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
+  );
+});
+
 test("only an unchanged or verified tests-only finishing result may reach the merge path", () => {
   const finishing = lifecycle.slice(lifecycle.indexOf("8. Enter finishing"), lifecycle.indexOf("9. If"));
   assert.match(

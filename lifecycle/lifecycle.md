@@ -182,6 +182,15 @@ last action and end the turn. A continuation writes no failure-log line.
    command string exactly as configured — never a repository-native guess or
    substitute of your own — to completion before any review starts; when it is
    empty, no test command is configured, so skip it rather than inventing one.
+   For each command, run `node
+   "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`,
+   passing the configured string and its exit status. Read the CLI's one-line
+   JSON `status` field. A `skipped` or `passed` status may continue. On a
+   `failed` status, append the command and its non-zero exit status to
+   `$MINOS_FAILURE_LOG`, set
+   `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
+   `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
+   terminal marker, and stop before starting any review.
 4. Run every Ensemble workflow in this lifecycle from this accountable lead
    session. Never delegate its invocation to an agent or subagent;
    responsibility for orchestration remains with the lead. Launch each such
@@ -391,11 +400,21 @@ last action and end the turn. A continuation writes no failure-log line.
    finding's path and line, and the posting command anchors it where that head's
    diff still carries the line — a write-up the diff cannot carry inline is
    named in the review body instead. Then run the exact configured build and test
-   commands again and run the complete input-builder and adjudication-wrapper
-   flow on the new head. Do the same fresh build, test, and review even when
-   every attempted fix failed and no commit was integrated. Continue from
-   the digest and a fresh sweep decision — every round's classification is
-   recorded the same way, and the decision file is per round, never reused.
+   commands again. Run `node
+   "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`
+   for each configured string and its exit status, just as in step 3, and read
+   the CLI's one-line JSON `status` field; empty strings are skipped. On a
+   `failed` status, append the command and its non-zero exit status to
+   `$MINOS_FAILURE_LOG`, set `"$MINOS_BIN" forge status CURRENT_HEAD
+   "$MINOS_TARGET_SHA" incomplete`, remove the 👀 with `"$MINOS_BIN" forge
+   reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`, write the non-clean
+   terminal marker, and stop before another review round or merge action.
+   Only after both gates pass or skip, run the complete input-builder and
+   adjudication-wrapper flow on the new head. Do the same fresh build, test,
+   and gated review even when every attempted fix failed and no commit was
+   integrated. Continue from the digest and a fresh sweep decision — every
+   round's classification is recorded the same way, and the decision file is
+   per round, never reused.
    After each complete re-review verdict, check for
    `$MINOS_RUN_DIR/memory-pressure` before preparing another round.
 6. A `terminal` classification means you judged that no finding at or above
