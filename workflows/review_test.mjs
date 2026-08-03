@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,14 +8,21 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { adjudicate } from "./run-record-adjudicator.mjs";
+import { DECISION_KIND, prepareFixWave } from "./fix-wave-plan.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-inputs.mjs", import.meta.url));
+const fixScriptPath = fileURLToPath(new URL("./fix.js", import.meta.url));
 const source = await readFile(scriptPath, "utf8");
+const fixSource = await readFile(fixScriptPath, "utf8");
 const lifecycle = await readFile(fileURLToPath(new URL("../lifecycle/lifecycle.md", import.meta.url)), "utf8");
 const body = source.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
+const fixScript = new AsyncFunction(
+  "agent", "parallel", "pipeline", "phase", "log", "args",
+  fixSource.replace(/^export const meta =/m, "const meta ="),
+);
 
 async function runScript(args, respond) {
   const calls = [];
@@ -36,7 +43,13 @@ async function runScript(args, respond) {
 function enumeratedArgs(
   target = "aaa111",
   head = "bbb222",
-  { grounding = "annexe", guidanceName = "README.md", guidanceContent = "MINOS_TEST_COMMISSION_INDIGO" } = {},
+  {
+    grounding = "annexe",
+    guidanceName = "README.md",
+    guidanceContent = "MINOS_TEST_COMMISSION_INDIGO",
+    loopRecord,
+    absentLoopRecord = false,
+  } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
   const workspace = join(root, "workspace");
@@ -45,11 +58,23 @@ function enumeratedArgs(
   writeFileSync(guidancePath, guidanceContent);
   const orientationPath = join(root, "orientation.json");
   writeFileSync(orientationPath, JSON.stringify({ repository: workspace, grounding, guidance: guidancePath }));
-  return JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], {
+  const cliArgs = [inputScriptPath, target, head];
+  if (loopRecord !== undefined || absentLoopRecord) {
+    const recordPath = join(root, "loop-record.json");
+    if (!absentLoopRecord)
+      writeFileSync(recordPath, typeof loopRecord === "string" ? loopRecord : JSON.stringify(loopRecord));
+    cliArgs.push("--loop-record", recordPath);
+  }
+  return JSON.parse(execFileSync(process.execPath, cliArgs, {
     encoding: "utf8",
     env: { ...process.env, MINOS_ORIENTATION: orientationPath },
     stdio: ["ignore", "pipe", "pipe"],
   }));
+}
+
+async function runFixPlan(plan, respond) {
+  const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
+  return fixScript(respond, parallel, async (items) => items, () => {}, () => {}, plan);
 }
 
 const ARGS = enumeratedArgs();
@@ -479,6 +504,102 @@ test("the deterministic input binds shipped role prose and project guidance into
   assert.match(judgementCalls.find((call) => call.opts.label?.startsWith("specialist-")).prompt, /MINOS_CORRECTNESS_EVIDENCE_V1/);
 });
 
+test("a two-round journey carries fixed and unfixed findings into later specialist judgement", async () => {
+  const fixedSentinel = finding({
+    id: "round-one-fixed",
+    title: "ROUND_ONE_FIXED_SENTINEL",
+    path: "internal/fixed.go",
+    line: 11,
+    explanation: "ROUND_ONE_FIXED_EXPLANATION_SENTINEL",
+  });
+  const unfixedSentinel = finding({
+    id: "round-one-unfixed",
+    title: "ROUND_ONE_UNFIXED_SENTINEL",
+    path: "internal/unfixed.go",
+    line: 22,
+    explanation: "ROUND_ONE_UNFIXED_EXPLANATION_SENTINEL",
+  });
+  const input = {
+    review: {
+      status: "complete",
+      reviewed: { target: "target-round-one", head: "head-round-one" },
+      confirmedFindings: [fixedSentinel, unfixedSentinel],
+    },
+    threshold: "High",
+    maximumRounds: null,
+    runRecord: { round: 0, confirmedFixed: [], confirmedUnfixed: [] },
+    decision: {
+      kind: DECISION_KIND,
+      classification: "working",
+      basis: "both confirmed findings warrant one repair wave",
+    },
+    workspace: "/run/workspace",
+    verification: { build: "", tests: "" },
+    guidance: ARGS.guidance,
+    fixerBrief: ARGS.instructionBriefs.find((entry) => entry.path.endsWith("correctness.md")),
+  };
+  const plan = prepareFixWave(input);
+  const roundOne = await runFixPlan(plan, async (_prompt, options) => {
+    const dispatch = plan.dispatches.find((entry) => entry.label === options.label);
+    const key = dispatch.findingKeys[0];
+    const isFixed = plan.findings.find((entry) => entry.key === key).title === fixedSentinel.title;
+    return {
+      commit: isFixed ? "fixed-sentinel-commit" : "",
+      fixes: [{ findingKey: key, status: isFixed ? "fixed" : "failed", writeUp: isFixed ? "fixed sentinel repair" : "still unfixed" }],
+    };
+  });
+  assert.equal(roundOne.runRecord.confirmedFixed[0].finding.title, fixedSentinel.title);
+  assert.equal(roundOne.runRecord.confirmedUnfixed[0].finding.title, unfixedSentinel.title);
+
+  const roundTwoArgs = enumeratedArgs("target-round-two", "head-round-two", {
+    loopRecord: roundOne.runRecord,
+  });
+  const newSentinel = "ROUND_TWO_GENUINELY_NEW_SENTINEL";
+  async function assertHistoryReachesSpecialists(args) {
+    const { result, calls } = await runScript(args, responder({
+      specialist: (_label, prompt) => specialistResult(
+        prompt.includes("a genuinely new finding remains reportable")
+          ? [finding({ title: newSentinel, path: "internal/new.go", line: 33 })]
+          : [],
+      ),
+    }));
+    const prompts = specialistCalls(calls).map((call) => call.prompt);
+    assert.ok(prompts.length > 0);
+    assert.ok(prompts.every((prompt) => prompt.includes(fixedSentinel.title)), "fixed sentinel reaches every specialist");
+    assert.ok(prompts.every((prompt) => prompt.includes(unfixedSentinel.title)), "unfixed sentinel reaches every specialist");
+    assert.ok(result.proposedFindings.some((entry) => entry.title === newSentinel), "new sentinel remains reportable");
+  }
+  await assertHistoryReachesSpecialists(roundTwoArgs);
+  await assert.rejects(
+    assertHistoryReachesSpecialists({
+      ...roundTwoArgs,
+      priorFindings: { confirmedFixed: [], confirmedUnfixed: [] },
+    }),
+    /fixed sentinel reaches every specialist/,
+  );
+});
+
+test("review inputs provide stable empty context and fail closed on malformed records", async () => {
+  assert.deepEqual(enumeratedArgs().priorFindings, { confirmedFixed: [], confirmedUnfixed: [] });
+  assert.deepEqual(
+    enumeratedArgs("target", "head", { absentLoopRecord: true }).priorFindings,
+    { confirmedFixed: [], confirmedUnfixed: [] },
+  );
+  const malformed = enumeratedArgs("target", "head", { loopRecord: "not JSON" });
+  await assert.rejects(runScript(malformed, responder()), /needs priorFindings/);
+
+  const unreadable = mkdtempSync(join(tmpdir(), "minos-unreadable-loop-record-"));
+  const result = spawnSync(process.execPath, [inputScriptPath, "target", "head", "--loop-record", unreadable], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: "unused" },
+  });
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /review loop record is unreadable/);
+  assert.match(result.stderr, /usage: node workflows\/review-inputs\.mjs/);
+  assert.doesNotMatch(result.stderr, /^\s+at /m);
+});
+
 test("the deterministic review input rejects empty guidance", () => {
   for (const guidanceContent of ["", " \n\t"])
     assert.throws(() => enumeratedArgs("aaa111", "bbb222", { guidanceContent }), /guidance document is empty/);
@@ -505,6 +626,7 @@ test("an exploration null still emits its required leg for archive adjudication"
 
 test("the lifecycle uses one adjudicated review call and publication-owned fix waves", () => {
   assert.match(lifecycle, /invoke the adjudication wrapper once[\s\S]*review\.js[\s\S]*--json-args/);
+  assert.match(lifecycle, /review-inputs\.mjs[\s\S]*--loop-record "\$MINOS_LOOP_RECORD"/);
   assert.match(
     lifecycle,
     /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*do not publish them through this lifecycle/,

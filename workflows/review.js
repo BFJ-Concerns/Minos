@@ -284,6 +284,22 @@ if (missingBriefs.length > 0)
   throw new Error(`deterministic input omitted shipped role briefs: ${missingBriefs.join(", ")}`);
 const projectGuidance = projectGuidanceFromInput(input);
 if (!projectGuidance) throw new Error("deterministic input omitted reviewed-project guidance");
+const priorFindings = input && input.priorFindings;
+const validPriorEntry = (entry) => Boolean(
+  entry && typeof entry === "object" && !Array.isArray(entry) &&
+  typeof entry.key === "string" && entry.key !== "" &&
+  entry.finding && typeof entry.finding === "object" && !Array.isArray(entry.finding) &&
+  typeof entry.finding.title === "string" &&
+  typeof entry.finding.path === "string" &&
+  Number.isInteger(entry.finding.line) && entry.finding.line >= 1 &&
+  typeof entry.finding.explanation === "string"
+);
+if (!priorFindings || typeof priorFindings !== "object" || Array.isArray(priorFindings) ||
+    !Array.isArray(priorFindings.confirmedFixed) ||
+    !Array.isArray(priorFindings.confirmedUnfixed) ||
+    !priorFindings.confirmedFixed.every(validPriorEntry) ||
+    !priorFindings.confirmedUnfixed.every(validPriorEntry))
+  throw new Error("deterministic input needs priorFindings with valid confirmedFixed and confirmedUnfixed arrays");
 
 const legs = [];
 function addLeg(label, role, pinnedModel, findingIds = null) {
@@ -334,12 +350,20 @@ for (const unit of specialistUnits)
   addLeg(unit.label, "specialist", PROPOSER_MODEL);
 
 function specialistPrompt(unit) {
+  const hasPriorFindings = priorFindings.confirmedFixed.length > 0 ||
+    priorFindings.confirmedUnfixed.length > 0;
+  const suppressionContext = hasPriorFindings
+    ? `\nPrior findings from earlier rounds: ${JSON.stringify(priorFindings)}\n` +
+      "Do not present a substantially equivalent, already-dispositioned finding as a fresh discovery. " +
+      "You must judge equivalence from the current code and evidence. A regression of a repair, a materially different nearby defect, or a genuinely new finding remains reportable."
+    : "";
   return rolePrompt(
     roleBriefs,
     projectGuidance,
     unit.roleBrief,
     `Orientation packet: ${orientation}\n` +
-      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
+      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.` +
+      suppressionContext
   );
 }
 
