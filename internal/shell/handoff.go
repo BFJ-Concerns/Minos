@@ -208,8 +208,8 @@ func containedRunDirectory(cfg ServiceConfig, unit, runDir string) (string, bool
 	return cleanRunDir, true
 }
 
-func adoptableReviewResult(runDir, head string) ([]byte, bool) {
-	data, err := os.ReadFile(filepath.Join(runDir, "review-result.json"))
+func adoptableReviewResult(path, head string) ([]byte, bool) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
@@ -224,12 +224,12 @@ func adoptableReviewResult(runDir, head string) ([]byte, bool) {
 	return data, true
 }
 
-func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) ([]byte, bool) {
+func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) (string, bool, error) {
 	entries, err := os.ReadDir(cfg.Runs.Dir)
 	if err != nil {
-		return nil, false
+		return "", false, nil
 	}
-	var adopted []byte
+	adopted := ""
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -238,14 +238,23 @@ func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) ([]b
 		if _, contained := containedRunDirectory(cfg, unit, runDir); !contained {
 			continue
 		}
-		result, valid := adoptableReviewResult(runDir, head)
+		carried := filepath.Join(runDir, "carried-review-result.json")
+		result := carried
+		_, valid := adoptableReviewResult(carried, head)
+		if !valid {
+			if err := os.Remove(carried); err != nil && !os.IsNotExist(err) {
+				return "", false, fmt.Errorf("discard untrusted predecessor review result: %w", err)
+			}
+			result = filepath.Join(runDir, "review-result.json")
+			_, valid = adoptableReviewResult(result, head)
+		}
 		if !valid {
 			continue
 		}
-		if adopted != nil {
-			return nil, false
+		if adopted != "" {
+			return "", false, nil
 		}
 		adopted = result
 	}
-	return adopted, adopted != nil
+	return adopted, adopted != "", nil
 }

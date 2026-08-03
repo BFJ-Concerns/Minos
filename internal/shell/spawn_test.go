@@ -217,6 +217,117 @@ func TestSpawnRunRefusesAmbiguousPredecessorReviewVerdicts(t *testing.T) {
 	}
 }
 
+func TestSpawnRunCarriesVerdictThroughSuccessiveRejectedHandoffs(t *testing.T) {
+	cfg, facts, firstPredecessor, systemdArgs := reviewContinuationFixture(t)
+	verdict := []byte(`{"status":"complete","reviewed":{"head":"head"},"findings":[]}`)
+	if err := os.WriteFile(filepath.Join(firstPredecessor, "review-result.json"), verdict, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstHandoff := writeTestHandoff(t, cfg, facts, firstPredecessor, facts.HeadSHA, json.RawMessage(`{"round":1}`))
+	if err := os.WriteFile(firstHandoff, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err != nil {
+		t.Fatal(err)
+	}
+	firstSuccessor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	if err := os.Rename(
+		filepath.Join(firstSuccessor, "carried-review-result.json"),
+		filepath.Join(firstSuccessor, "review-result.json"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(firstSuccessor, runOwnerMarker)); err != nil {
+		t.Fatal(err)
+	}
+
+	secondHandoff := writeTestHandoff(t, cfg, facts, firstSuccessor, facts.HeadSHA, json.RawMessage(`{"round":2}`))
+	if err := os.WriteFile(secondHandoff, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr := captureStderr(t, func() {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stderr, "adopted completed review verdict") {
+		t.Fatalf("second successor did not adopt the chain's verdict: %q", stderr)
+	}
+	secondSuccessor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	if _, err := os.Stat(filepath.Join(secondSuccessor, "carried-review-result.json")); err != nil {
+		t.Fatalf("second successor lacks carried verdict: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(firstPredecessor, "review-result.json")); !os.IsNotExist(err) {
+		t.Fatalf("consumed first predecessor still competes as a candidate: %v", err)
+	}
+}
+
+func TestSpawnRunRemovesStaleCarriedVerdictBeforeSuccessorLaunch(t *testing.T) {
+	for _, rejectedHandoff := range []bool{false, true} {
+		name := "accepted handoff"
+		if rejectedHandoff {
+			name = "rejected handoff"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg, facts, predecessor, systemdArgs := reviewContinuationFixture(t)
+			stale := filepath.Join(predecessor, "carried-review-result.json")
+			if err := os.WriteFile(stale, []byte(`{"status":"complete","reviewed":{"head":"old-head"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			handoff := writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
+			if rejectedHandoff {
+				if err := os.WriteFile(handoff, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			stderr := captureStderr(t, func() {
+				if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if strings.Contains(stderr, "adopted completed review verdict") {
+				t.Fatalf("stderr falsely reports stale carry adoption: %q", stderr)
+			}
+			successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+			if !rejectedHandoff && successor != predecessor {
+				t.Fatalf("successor = %q, want adopted directory %q", successor, predecessor)
+			}
+			if _, err := os.Stat(stale); !os.IsNotExist(err) {
+				t.Fatalf("stale carry remains after admission or stat failed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(successor, "carried-review-result.json")); !os.IsNotExist(err) {
+				t.Fatalf("stale carry remains successor-visible or stat failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestSpawnRunRestoresMovedVerdictWhenRejectedHandoffSpawnFails(t *testing.T) {
+	cfg, facts, predecessor, _ := reviewContinuationFixture(t)
+	verdictPath := filepath.Join(predecessor, "review-result.json")
+	if err := os.WriteFile(verdictPath, []byte(`{"status":"complete","reviewed":{"head":"head"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handoff := writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1}`))
+	if err := os.WriteFile(handoff, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return nil, nil
+		}
+		return []byte("failed"), errors.New("spawn failed")
+	}
+
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err == nil {
+		t.Fatal("SpawnRun succeeded, want systemd-run failure")
+	}
+	if _, err := os.Stat(verdictPath); err != nil {
+		t.Fatalf("spawn failure did not restore predecessor verdict: %v", err)
+	}
+}
+
 func TestSpawnRunRefusesUntrustedReviewVerdicts(t *testing.T) {
 	tests := []struct {
 		name    string
