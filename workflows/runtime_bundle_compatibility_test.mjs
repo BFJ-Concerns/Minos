@@ -172,6 +172,7 @@ export {
   buildWrappedSource as minosBuildWrappedSource,
   compileWorkflowScript as minosCompileWorkflowScript,
   extractWorkflowSource as minosExtractWorkflowSource,
+  WorkflowScriptError as MinosWorkflowScriptError,
 };
 `,
   );
@@ -184,6 +185,12 @@ export {
     try {
       module.minosCompileWorkflowScript(extracted, filename);
     } catch (error) {
+      if (error instanceof module.MinosWorkflowScriptError) {
+        throw error;
+      }
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
       throw new SyntaxError(
         `Workflow ${filename} could not be parsed: ${error.message}`,
         { cause: error },
@@ -280,6 +287,16 @@ test("the installed runtime free-identifier rule reports absent globals and reje
     (error) => error instanceof SyntaxError &&
       error.message.includes("unparseable-probe.js") &&
       error.message.includes("could not be parsed"),
+  );
+  assert.throws(
+    () => validate(
+      `${workflow("const intervening = true;")}export const defaults = {};\n`,
+      "misplaced-defaults-probe.js",
+    ),
+    (error) => error?.name === "WorkflowScriptError" &&
+      error.message.includes("export const defaults") &&
+      error.message.includes("must follow `meta`") &&
+      !error.message.includes("could not be parsed"),
   );
 });
 
