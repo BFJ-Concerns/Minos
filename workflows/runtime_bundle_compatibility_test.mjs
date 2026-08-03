@@ -20,6 +20,7 @@ import test from "node:test";
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = dirname(workflowsDir);
 const installerPath = join(repositoryRoot, "scripts", "install-review-runtime");
+const pinnedRuntimePath = join(repositoryRoot, "runtime", "ensemble.mjs");
 
 const optionBlockPattern =
   /\{\s*\n\s*engine:\s*[^,\n]+,\s*\n\s*schema:\s*[^,\n]+,\s*\n\s*model:\s*[^,\n]+,\s*\n\s*effort:\s*[^,\n]+,\s*\n(?:\s*isolation:\s*[^,\n]+,\s*\n)?\s*label:\s*[^,\n]+,\s*\n\s*phase:\s*[^,\n]+,\s*\n\s*\}/g;
@@ -120,6 +121,26 @@ function sandboxBindingKeys(runtimeSource) {
   return keys;
 }
 
+function sandboxRuntimeSource(bindings) {
+  return `function createSandboxContext(hooks, meta) {
+  const bindings = {
+${bindings}
+  };
+  const context = vm.createContext(bindings, {});
+}`;
+}
+
+function assertPinnedRuntimeUnchanged(t) {
+  const original = readFileSync(pinnedRuntimePath);
+  t.after(() => {
+    assert.deepEqual(
+      readFileSync(pinnedRuntimePath),
+      original,
+      "the compatibility gate leaves the pinned runtime byte-identical",
+    );
+  });
+}
+
 function shippedWorkflowSources() {
   return readdirSync(workflowsDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
@@ -131,6 +152,7 @@ function shippedWorkflowSources() {
 }
 
 async function installedFreeIdentifierValidator(t) {
+  assertPinnedRuntimeUnchanged(t);
   const root = operationRoot(t, "minos-installed-runtime-globals-");
   const installation = spawnSync(installerPath, [root], {
     cwd: repositoryRoot,
@@ -148,6 +170,7 @@ async function installedFreeIdentifierValidator(t) {
 export {
   assertKnownFreeIdentifiers as minosAssertKnownFreeIdentifiers,
   buildWrappedSource as minosBuildWrappedSource,
+  compileWorkflowScript as minosCompileWorkflowScript,
   extractWorkflowSource as minosExtractWorkflowSource,
 };
 `,
@@ -156,12 +179,38 @@ export {
   const context = Object.fromEntries(
     sandboxBindingKeys(runtimeSource).map((key) => [key, undefined]),
   );
-  return (source, filename) => module.minosAssertKnownFreeIdentifiers(
-    module.minosBuildWrappedSource(module.minosExtractWorkflowSource(source)),
-    context,
-    filename,
-  );
+  return (source, filename) => {
+    const extracted = module.minosExtractWorkflowSource(source);
+    try {
+      module.minosCompileWorkflowScript(extracted, filename);
+    } catch (error) {
+      throw new SyntaxError(
+        `Workflow ${filename} could not be parsed: ${error.message}`,
+        { cause: error },
+      );
+    }
+    module.minosAssertKnownFreeIdentifiers(
+      module.minosBuildWrappedSource(extracted),
+      context,
+      filename,
+    );
+  };
 }
+
+test("sandbox binding extraction fails loudly when the installed runtime shape drifts", () => {
+  assert.throws(
+    () => sandboxBindingKeys("function createSandboxContext() {}"),
+    /createSandboxContext binding block changed shape/,
+  );
+  assert.throws(
+    () => sandboxBindingKeys(sandboxRuntimeSource("    // no bindings")),
+    /sandbox binding block has no recognisable keys/,
+  );
+  assert.throws(
+    () => sandboxBindingKeys(sandboxRuntimeSource("    repeated: hooks.first,\n    repeated: hooks.second,")),
+    /sandbox binding block contains duplicate keys/,
+  );
+});
 
 test("the installed runtime recognises every agent option key used by shipped workflows", async (t) => {
   const validate = await installedOptionValidator(t);
@@ -225,6 +274,12 @@ test("the installed runtime free-identifier rule reports absent globals and reje
     (error) => error?.name === "WorkflowScriptError" &&
       error.message.includes("import-probe.js") &&
       error.message.includes("dynamic import()"),
+  );
+  assert.throws(
+    () => validate(workflow("Buffer.from('probe'); const broken = (((;"), "unparseable-probe.js"),
+    (error) => error instanceof SyntaxError &&
+      error.message.includes("unparseable-probe.js") &&
+      error.message.includes("could not be parsed"),
   );
 });
 
