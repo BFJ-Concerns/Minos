@@ -6,7 +6,6 @@ After=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/minos/run-body.env
 ExecStart=/usr/local/bin/minos receive --config /etc/minos
 Restart=on-failure
 RestartSec=5s

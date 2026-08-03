@@ -18,6 +18,7 @@ webhook-secret-file = "/tmp/secret"
 credential-file = "/tmp/token"
 [runs]
 dir = "/tmp/runs"
+failure-log = "/tmp/failures.log"
 [ensemble]
 concurrency-claude = 10
 concurrency-codex = 6
@@ -29,7 +30,7 @@ func TestLoadServiceConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, err := LoadServiceConfig(root)
-	if err != nil || cfg.Service.BotLogin != "Minos" || cfg.Runs.Dir != "/tmp/runs" || cfg.Ensemble.ConcurrencyClaude != 10 || cfg.Ensemble.ConcurrencyCodex != 6 {
+	if err != nil || cfg.Service.BotLogin != "Minos" || cfg.Runs.Dir != "/tmp/runs" || cfg.Runs.FailureLog != "/tmp/failures.log" || cfg.Ensemble.ConcurrencyClaude != 10 || cfg.Ensemble.ConcurrencyCodex != 6 {
 		t.Fatalf("config = %#v, error = %v", cfg, err)
 	}
 }

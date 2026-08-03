@@ -20,7 +20,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
 		runDir, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
 		failureLog := filepath.Join(t.TempDir(), "failures.log")
-		t.Setenv("MINOS_FAILURE_LOG", failureLog)
+		cfg.Runs.FailureLog = failureLog
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })
@@ -69,7 +69,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			t.Fatal(err)
 		}
 		failureLog := filepath.Join(t.TempDir(), "failures.log")
-		t.Setenv("MINOS_FAILURE_LOG", failureLog)
+		cfg.Runs.FailureLog = failureLog
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })
@@ -144,7 +144,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 				state.reactions = []string{"eyes"}
 				progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
 				_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
-				t.Setenv("MINOS_FAILURE_LOG", test.path(t))
+				cfg.Runs.FailureLog = test.path(t)
 
 				original := commandCombinedOutput
 				t.Cleanup(func() { commandCombinedOutput = original })
@@ -196,7 +196,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if err := os.WriteFile(handoffFile, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("MINOS_FAILURE_LOG", "")
+		cfg.Runs.FailureLog = ""
 		workDir := t.TempDir()
 		t.Chdir(workDir)
 
@@ -249,7 +249,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if err := os.WriteFile(handoffFile, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("MINOS_FAILURE_LOG", "")
+		cfg.Runs.FailureLog = ""
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })

@@ -193,10 +193,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 
 func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnOutcome, error) {
 	cause := fmt.Sprintf("successor made no progress beyond stage %q round %d and published no new head or review", handoff.Progress.Stage, handoff.Progress.Round)
-	failureLog := os.Getenv("MINOS_FAILURE_LOG")
 	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
 		time.Now().UTC().Format(time.RFC3339), facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
-	appendStalledContinuationFailure(failureLog, failureLine)
+	appendStalledContinuationFailure(cfg.Runs.FailureLog, failureLine)
 
 	adapter, err := newBehaviouralForge(cfg, facts.Forge)
 	if err != nil {
@@ -232,18 +231,18 @@ func appendStalledContinuationFailure(path, line string) {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "minos: MINOS_FAILURE_LOG (%s) parent is not writable: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "minos: runs.failure-log (%s) parent is not writable: %v\n", path, err)
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "minos: MINOS_FAILURE_LOG (%s) is not writable: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "minos: runs.failure-log (%s) is not writable: %v\n", path, err)
 		return
 	}
 	if _, err := file.WriteString(line); err != nil {
-		fmt.Fprintf(os.Stderr, "minos: MINOS_FAILURE_LOG (%s) is not writable: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "minos: runs.failure-log (%s) is not writable: %v\n", path, err)
 	}
 	if err := file.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "minos: MINOS_FAILURE_LOG (%s) could not be closed: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "minos: runs.failure-log (%s) could not be closed: %v\n", path, err)
 	}
 }
 
