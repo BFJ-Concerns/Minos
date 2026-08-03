@@ -367,6 +367,11 @@ test("fix write-ups keep the finding path and line", async () => {
     body: "Repaired transition.",
     line: 41,
   }]);
+  assert.deepEqual(result.runRecord.confirmedFixed, [{
+    key: result.runRecord.confirmedFixed[0].key,
+    finding: { ...original, key: result.runRecord.confirmedFixed[0].key },
+    writeUp: "Repaired transition.",
+  }]);
 });
 
 test("a lead grouping cannot redispatch a twice-failed finding across a round boundary", async () => {

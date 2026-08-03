@@ -98,6 +98,7 @@ function validPlan(plan) {
     plan.input.fixerBrief &&
     Array.isArray(plan.findings) &&
     Array.isArray(plan.dispatches) &&
+    Array.isArray(plan.priorConfirmedFixed) &&
     Array.isArray(plan.priorConfirmedUnfixed)
   );
 }
@@ -186,7 +187,7 @@ if (plan.classification === "single-wave") {
     repairsComplete: confirmedUnfixed.length === 0,
     buildAndTestsRequired: uniqueCommits.length > 0,
     rerunReview: false,
-    runRecord: { round: plan.round, confirmedUnfixed },
+    runRecord: { round: plan.round, confirmedFixed: [], confirmedUnfixed },
   };
 }
 
@@ -272,6 +273,10 @@ retryDispatches.forEach((dispatch, index) => {
 });
 
 const confirmedUnfixed = [...plan.priorConfirmedUnfixed, ...newlyUnfixed];
+const confirmedFixed = [
+  ...plan.priorConfirmedFixed,
+  ...[...fixed.entries()].map(([key, { finding, writeUp }]) => ({ key, finding, writeUp })),
+];
 const uniqueCommits = [...new Set(commits)];
 const writeUps = [...fixed.values()];
 return {
@@ -297,5 +302,5 @@ return {
   overflow: [],
   requestChanges: [],
   rerunReview: true,
-  runRecord: { round: plan.round, confirmedUnfixed },
+  runRecord: { round: plan.round, confirmedFixed, confirmedUnfixed },
 };

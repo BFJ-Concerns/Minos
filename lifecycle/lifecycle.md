@@ -89,7 +89,7 @@ successor the preserved workspace:
 `pullRequest.number` is a JSON string. The top-level and progress `head` values
 are both the fresh snapshot's `head_sha`, and the progress and loop-record
 `round` values are equal. If the loop record does not yet exist, first
-write `{"round":0,"confirmedUnfixed":[]}` to it. The
+write `{"round":0,"confirmedFixed":[],"confirmedUnfixed":[]}` to it. The
 snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the head this attempt
 started from and may already be stale after a repair push. Write the complete
 handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
@@ -264,6 +264,7 @@ last action and end the turn. A continuation writes no failure-log line.
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-inputs.mjs" \
      "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
+     --loop-record "$MINOS_LOOP_RECORD" \
      > "$MINOS_RUN_DIR/review-args.json"
    ```
 
@@ -374,7 +375,10 @@ last action and end the turn. A continuation writes no failure-log line.
    write the non-clean terminal marker, and stop.
 
    The operation's returned `runRecord` is the run-scoped loop record, including
-   the round count and confirmed-unfixed findings. `$MINOS_LOOP_RECORD` is its
+   the round count and both confirmed-fixed and confirmed-unfixed findings.
+   The same record supplies later review specialists with prior-finding context;
+   they judge equivalence and may still report regressions, materially different
+   nearby defects, and genuinely new findings. `$MINOS_LOOP_RECORD` is its
    only path; an absent file means round zero. After every complete
    classification, write the returned `runRecord` to
    `"$MINOS_LOOP_RECORD.tmp"` and atomically move it over

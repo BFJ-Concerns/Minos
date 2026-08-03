@@ -137,6 +137,9 @@ function fingerprintFor(input, round, findings, dispatches = []) {
     priorConfirmedUnfixed: Array.isArray(input.runRecord && input.runRecord.confirmedUnfixed)
       ? input.runRecord.confirmedUnfixed.map((entry) => ({ key: entry.key, attempts: entry.attempts }))
       : [],
+    priorConfirmedFixed: Array.isArray(input.runRecord && input.runRecord.confirmedFixed)
+      ? input.runRecord.confirmedFixed.map((entry) => ({ key: entry.key }))
+      : [],
     findings: findings.map((finding) => ({
       key: finding.key,
       severity: finding.severity,
@@ -185,6 +188,12 @@ export function prepareFixWave(input) {
       finding: entry && entry.finding ? { ...entry.finding } : entry.finding,
     }))
     : [];
+  const priorFixed = Array.isArray(prior.confirmedFixed)
+    ? prior.confirmedFixed.map((entry) => ({
+      ...entry,
+      finding: entry && entry.finding ? { ...entry.finding } : entry.finding,
+    }))
+    : [];
   const findings = input.review.confirmedFindings.map(preparedFinding);
   const findingKeys = new Set();
   for (const finding of findings) {
@@ -217,6 +226,7 @@ export function prepareFixWave(input) {
       findings,
       grouping: { source: grouped.source },
       priorConfirmedUnfixed: [],
+      priorConfirmedFixed: [],
       dispatches: grouped.dispatches,
       sweepReview: null,
       fixReview: null,
@@ -226,7 +236,7 @@ export function prepareFixWave(input) {
       overflow: [],
       requestChanges: [],
       rerunReview: false,
-      runRecord: { round, confirmedUnfixed: [] },
+      runRecord: { round, confirmedFixed: [], confirmedUnfixed: [] },
     });
   }
 
@@ -275,7 +285,7 @@ export function prepareFixWave(input) {
       overflow,
       requestChanges,
       rerunReview: false,
-      runRecord: { round, confirmedUnfixed: requestChanges },
+      runRecord: { round, confirmedFixed: priorFixed, confirmedUnfixed: requestChanges },
     });
   }
 
@@ -301,6 +311,7 @@ export function prepareFixWave(input) {
     findings,
     grouping: { source: grouped.source },
     priorConfirmedUnfixed: priorUnfixed,
+    priorConfirmedFixed: priorFixed,
     dispatches: grouped.dispatches,
     sweepReview: {
       verdict: "comment",
@@ -314,6 +325,6 @@ export function prepareFixWave(input) {
     overflow: [],
     requestChanges: [],
     rerunReview: true,
-    runRecord: { round, confirmedUnfixed: priorUnfixed },
+    runRecord: { round, confirmedFixed: priorFixed, confirmedUnfixed: priorUnfixed },
   });
 }
