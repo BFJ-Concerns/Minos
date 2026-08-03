@@ -184,9 +184,9 @@ last action and end the turn. A continuation writes no failure-log line.
    empty, no test command is configured, so skip it rather than inventing one.
    For each command, run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`,
-   passing the configured string and its exit status. Read its one-line JSON
-   `configuredCommandResult`. A skipped or passed result may continue. On a
-   failed result, append the command and its non-zero exit status to
+   passing the configured string and its exit status. Read the CLI's one-line
+   JSON `status` field. A `skipped` or `passed` status may continue. On a
+   `failed` status, append the command and its non-zero exit status to
    `$MINOS_FAILURE_LOG`, set
    `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
@@ -403,8 +403,8 @@ last action and end the turn. A continuation writes no failure-log line.
    commands again. Run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`
    for each configured string and its exit status, just as in step 3, and read
-   its one-line JSON `configuredCommandResult`; empty strings are skipped. On a
-   failed result, append the command and its non-zero exit status to
+   the CLI's one-line JSON `status` field; empty strings are skipped. On a
+   `failed` status, append the command and its non-zero exit status to
    `$MINOS_FAILURE_LOG`, set `"$MINOS_BIN" forge status CURRENT_HEAD
    "$MINOS_TARGET_SHA" incomplete`, remove the 👀 with `"$MINOS_BIN" forge
    reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`, write the non-clean
