@@ -174,6 +174,26 @@ func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestCommentUsesGuardedPullRequestIdentity(t *testing.T) {
+	runner := &recordingRunner{outputs: [][]byte{[]byte(`{"outcome":"applied"}`)}, errors: []error{nil}}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := Guard{Repository: Repository{Owner: "owner", Name: "repo"}, PullRequest: 17, HeadSHA: "head-sha", TargetSHA: "target-sha"}
+	if result := adapter.PostComment(t.Context(), guard, "Repair at `src/code.go` line 9."); result.Outcome != WriteApplied {
+		t.Fatalf("result = %#v", result)
+	}
+	request := runner.requests[0]
+	if request.Operation != "guarded-post-comment" {
+		t.Fatalf("operation = %q, want guarded-post-comment", request.Operation)
+	}
+	want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos"}
+	if !slices.Equal(request.Arguments, want) {
+		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
+	}
+}
+
 func TestFinishingWritesUseGuardedPullRequestIdentity(t *testing.T) {
 	guard := Guard{
 		Repository: Repository{Owner: "owner", Name: "repo"}, PullRequest: 17,

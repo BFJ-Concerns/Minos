@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|check-logs|claim|status|review|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge snapshot|check-logs|claim|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
 	adapter, guard, err := leadForge()
 	if err != nil {
@@ -99,6 +99,21 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		text := strings.TrimRight(string(body), "\r\n") + addendum + "\n\n" + record
 		return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text, comments))
+	case "comment":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge comment HEAD TARGET FIX_REVIEW_FILE")
+		}
+		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
+		fixReview, err := readFixReview(args[3])
+		if err != nil {
+			return err
+		}
+		record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA})
+		if err != nil {
+			return err
+		}
+		text := renderFixReview(fixReview) + "\n\n" + record
+		return emitForgeResult(stdout, "comment", adapter.PostComment(ctx, guard, text))
 	case "reaction":
 		if len(args) != 4 {
 			return fmt.Errorf("usage: minos forge reaction HEAD TARGET CONTENT")

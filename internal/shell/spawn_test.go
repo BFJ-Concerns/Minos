@@ -106,7 +106,7 @@ func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runRecord := json.RawMessage(`{"round":3,"confirmedUnfixed":[{"key":"known"}]}`)
+	runRecord := json.RawMessage(`{"round":3,"confirmedFixed":[{"key":"repaired"}],"confirmedUnfixed":[{"key":"known"}]}`)
 	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, runRecord)
 
 	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts)
@@ -485,6 +485,11 @@ func TestRunHandoffRejectsInvalidProgress(t *testing.T) {
 			assertRejectedHandoff(t, strings.Replace(base, test.old, test.new, 1), test.want)
 		})
 	}
+}
+
+func TestRunHandoffRejectsMalformedConfirmedFixed(t *testing.T) {
+	base := `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"head","runDir":"/runs/run","stoppedAt":"stage","writtenAt":"fixture","runRecord":{"round":0,"confirmedFixed":null,"confirmedUnfixed":[]}}`
+	assertRejectedHandoff(t, base, "runRecord.confirmedFixed must be an array")
 }
 
 func TestRunHandoffRejectsInvalidPredecessorProgress(t *testing.T) {

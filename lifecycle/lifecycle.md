@@ -89,7 +89,7 @@ successor the preserved workspace:
 `pullRequest.number` is a JSON string. The top-level and progress `head` values
 are both the fresh snapshot's `head_sha`, and the progress and loop-record
 `round` values are equal. If the loop record does not yet exist, first
-write `{"round":0,"confirmedUnfixed":[]}` to it. The
+write `{"round":0,"confirmedFixed":[],"confirmedUnfixed":[]}` to it. The
 snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the head this attempt
 started from and may already be stale after a repair push. Write the complete
 handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
@@ -264,6 +264,7 @@ last action and end the turn. A continuation writes no failure-log line.
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-inputs.mjs" \
      "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
+     --loop-record "$MINOS_LOOP_RECORD" \
      > "$MINOS_RUN_DIR/review-args.json"
    ```
 
@@ -374,7 +375,10 @@ last action and end the turn. A continuation writes no failure-log line.
    write the non-clean terminal marker, and stop.
 
    The operation's returned `runRecord` is the run-scoped loop record, including
-   the round count and confirmed-unfixed findings. `$MINOS_LOOP_RECORD` is its
+   the round count and both confirmed-fixed and confirmed-unfixed findings.
+   The same record supplies later review specialists with prior-finding context;
+   they judge equivalence and may still report regressions, materially different
+   nearby defects, and genuinely new findings. `$MINOS_LOOP_RECORD` is its
    only path; an absent file means round zero. After every complete
    classification, write the returned `runRecord` to
    `"$MINOS_LOOP_RECORD.tmp"` and atomically move it over
@@ -411,11 +415,11 @@ last action and end the turn. A continuation writes no failure-log line.
    `$MINOS_HEAD_BRANCH`. No fix agent may push.
 
    After the push, read a fresh forge snapshot and use its current head. When
-   `fixReview` is present, materialise its body and comments and post one
-   `comment` review on that head; each write-up is requested at its original
-   finding's path and line, and the posting command anchors it where that head's
-   diff still carries the line — a write-up the diff cannot carry inline is
-   named in the review body instead. Then run the exact configured build and test
+   `fixReview` is present, write that object unchanged to a file, then post it
+   with `"$MINOS_BIN" forge comment CURRENT_HEAD "$MINOS_TARGET_SHA"
+   FIX_REVIEW_FILE`. This durable pull-request comment is not a
+   review group; the guarded command binds it to that exact head and target,
+   deduplicates retries, and reads it back before reporting success. Then run the exact configured build and test
    commands again. Run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`
    for each configured string and its exit status, just as in step 3, and read
@@ -525,8 +529,9 @@ last action and end the turn. A continuation writes no failure-log line.
    requests a second brief review or fix wave. If its
    `integration.commits` is non-empty, integrate them through `integrate-wave`
    exactly as in the main loop, then take a fresh forge snapshot and use its
-   current head. When `fixReview` is present, materialise its body and comments
-   and post one `comment` review on that fresh head. Run `$MINOS_BUILD_CMD` and
+   current head. When `fixReview` is present, write that object unchanged and
+   post the same location-bearing guarded pull-request comment described in
+   step 5 on that fresh head. Run `$MINOS_BUILD_CMD` and
    `$MINOS_TEST_CMD` exactly as configured and to completion when each is
    non-empty; do not substitute or invent commands. If the single wave leaves
    `confirmedUnfixed` entries, or integration, build or tests fail, add no 👍,

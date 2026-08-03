@@ -38,6 +38,7 @@ type handoffPull struct {
 
 type handoffRunRecord struct {
 	Round            *int               `json:"round"`
+	ConfirmedFixed   json.RawMessage    `json:"confirmedFixed"`
 	ConfirmedUnfixed *[]json.RawMessage `json:"confirmedUnfixed"`
 }
 
@@ -81,6 +82,12 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 	}
 	if record.Round == nil || *record.Round < 0 {
 		return nil, fmt.Errorf("runRecord.round must be a non-negative integer")
+	}
+	if len(record.ConfirmedFixed) > 0 {
+		var confirmedFixed []json.RawMessage
+		if err := json.Unmarshal(record.ConfirmedFixed, &confirmedFixed); err != nil || confirmedFixed == nil {
+			return nil, fmt.Errorf("runRecord.confirmedFixed must be an array")
+		}
 	}
 	if record.ConfirmedUnfixed == nil {
 		return nil, fmt.Errorf("runRecord.confirmedUnfixed must be an array")

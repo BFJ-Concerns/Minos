@@ -1,15 +1,36 @@
 #!/usr/bin/env node
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const target = process.argv[2];
 const head = process.argv[3];
-if (!target || !head || process.argv.length > 4) {
-  if (process.argv.length > 4)
-    process.stderr.write(`unexpected review input argument ${process.argv[4]}\n`);
-  process.stderr.write("usage: node workflows/review-inputs.mjs TARGET HEAD\n");
+let recordPath;
+let recordContent;
+let argumentError = null;
+for (let index = 4; index < process.argv.length; index += 1) {
+  const argument = process.argv[index];
+  if (argument === "--loop-record") {
+    if (recordPath !== undefined) argumentError = "review loop record was supplied more than once";
+    const value = process.argv[index + 1];
+    if (!value || value.startsWith("--")) argumentError = "--loop-record requires a file";
+    else {
+      recordPath = value;
+      index += 1;
+    }
+  } else argumentError = `unexpected review input argument ${argument}`;
+}
+if (recordPath !== undefined && existsSync(recordPath)) {
+  try {
+    recordContent = readFileSync(recordPath, "utf8");
+  } catch {
+    argumentError = `review loop record is unreadable: ${recordPath}`;
+  }
+}
+if (!target || !head || argumentError) {
+  if (argumentError) process.stderr.write(`${argumentError}\n`);
+  process.stderr.write("usage: node workflows/review-inputs.mjs TARGET HEAD [--loop-record FILE]\n");
   process.exitCode = 2;
 } else {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,5 +65,19 @@ if (!target || !head || process.argv.length > 4) {
     readPath: resolve(repositoryRoot, path),
     content: readFileSync(resolve(repositoryRoot, path), "utf8"),
   }));
-  process.stdout.write(JSON.stringify({ target, head, guidance, instructionBriefs }) + "\n");
+  let priorFindings = { confirmedFixed: [], confirmedUnfixed: [] };
+  if (recordContent !== undefined) {
+    try {
+      const record = JSON.parse(recordContent);
+      priorFindings = record && typeof record === "object" && !Array.isArray(record)
+        ? {
+          confirmedFixed: record.confirmedFixed === undefined ? [] : record.confirmedFixed,
+          confirmedUnfixed: record.confirmedUnfixed,
+        }
+        : null;
+    } catch {
+      priorFindings = null;
+    }
+  }
+  process.stdout.write(JSON.stringify({ target, head, guidance, instructionBriefs, priorFindings }) + "\n");
 }

@@ -105,7 +105,7 @@ if (argumentError || !reviewPath) {
   // lead's classification judgement reads before recording its decision.
   const runRecord = recordPath && existsSync(recordPath)
     ? JSON.parse(readFileSync(recordPath, "utf8"))
-    : { round: 0, confirmedUnfixed: [] };
+    : { round: 0, confirmedFixed: [], confirmedUnfixed: [] };
   const digest = sweepDigest({
     review: JSON.parse(readFileSync(reviewPath, "utf8")),
     threshold: process.env.MINOS_REVIEW_THRESHOLD || "High",
@@ -133,7 +133,7 @@ if (argumentError || !reviewPath) {
     : null;
   const runRecord = recordPath && existsSync(recordPath)
     ? JSON.parse(readFileSync(recordPath, "utf8"))
-    : { round: 0, confirmedUnfixed: [] };
+    : { round: 0, confirmedFixed: [], confirmedUnfixed: [] };
   const warmTargetSource = readWarmTargetSource(process.env.MINOS_RUN_DIR);
   const result = {
     review: JSON.parse(readFileSync(reviewPath, "utf8")),
