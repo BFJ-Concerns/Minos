@@ -4,10 +4,31 @@ import assert from "node:assert/strict";
 import {
   DECISION_KIND,
   DIGEST_KIND,
+  configuredCommandResult,
   findingKey,
   sweepDigest,
   validateSweepDecision,
 } from "./completion-policy.mjs";
+
+test("configured commands expose pass, skip, and terminal failure results", () => {
+  assert.deepEqual(configuredCommandResult("go test ./...", 0), {
+    status: "passed",
+    terminal: false,
+    reviewAllowed: true,
+  });
+  assert.deepEqual(configuredCommandResult("", undefined), {
+    status: "skipped",
+    terminal: false,
+    reviewAllowed: true,
+  });
+  assert.deepEqual(configuredCommandResult("go test ./...", 1), {
+    status: "failed",
+    exitStatus: 1,
+    terminal: true,
+    reviewAllowed: false,
+    forgeStatus: "incomplete",
+  });
+});
 
 function finding(title, severity, path, line) {
   return { id: `specialist:${title}`, title, severity, confidence: 90, path, line, explanation: `${title} breaks the contract` };

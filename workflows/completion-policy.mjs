@@ -11,6 +11,21 @@ export const DECISION_KIND = "minos-sweep-decision-v1";
 export const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 export const DEFAULT_THRESHOLD = "High";
 
+// A configured command's exit status is a mechanical gate, not a lead
+// judgement. Empty commands are valid skips; a non-zero result is terminal
+// and cannot feed another review round.
+export function configuredCommandResult(command, exitStatus) {
+  if (command === "") return { status: "skipped", terminal: false, reviewAllowed: true };
+  if (exitStatus === 0) return { status: "passed", terminal: false, reviewAllowed: true };
+  return {
+    status: "failed",
+    exitStatus,
+    terminal: true,
+    reviewAllowed: false,
+    forgeStatus: "incomplete",
+  };
+}
+
 function normaliseTitle(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
