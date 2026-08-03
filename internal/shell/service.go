@@ -74,8 +74,17 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 // completed run even when no terminal review exists: a converged clean run
 // posts no approve review (the 👍 reaction carries all-clear), so the status
 // is the head's only durable completion marker on that path.
-func completedRunStatus(snapshot forge.Snapshot, botLogin string) bool {
-	latest, found := latestOwnedStatus(snapshot, botLogin)
+func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) bool {
+	var latest forge.Status
+	found := false
+	for _, status := range snapshot.Statuses {
+		if status.Provider == forge.ForgejoProvider && status.Context == forge.OwnedStatusContext &&
+			status.Creator == botLogin && status.TargetURL == targetURL &&
+			(!found || status.ID > latest.ID) {
+			latest = status
+			found = true
+		}
+	}
 	if !found {
 		return false
 	}
@@ -117,7 +126,7 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 			}
 		}
 	}
-	if completedRunStatus(snapshot, cfg.Service.BotLogin) {
+	if completedRunStatus(snapshot, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts)) {
 		return "nothing", nil
 	}
 	if reason, deferred := dependencyDeferral(snapshot); deferred {

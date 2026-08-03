@@ -112,10 +112,11 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 }
 
 func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
+	const targetURL = "https://forge.example/owner/repo/pulls/1#minos-target-base"
 	ownedStatus := func(id int64, description string) forge.Status {
 		return forge.Status{
 			ID: id, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-			Creator: "Minos", Description: description,
+			Creator: "Minos", Description: description, TargetURL: targetURL,
 		}
 	}
 	tests := []struct {
@@ -137,10 +138,30 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 			},
 		},
 		{
+			name: "newer foreign status does not mask this pull request's clean marker",
+			statuses: []forge.Status{
+				ownedStatus(11, product.Clean().Description()),
+				{
+					ID: 12, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+					Creator: "Minos", Description: product.Working().Description(),
+					TargetURL: "https://forge.example/owner/repo/pulls/2#minos-target-base",
+				},
+			},
+			want: true,
+		},
+		{
 			name: "another account's clean status is not a marker",
 			statuses: []forge.Status{{
 				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
 				Creator: "SomeBot", Description: product.Clean().Description(),
+			}},
+		},
+		{
+			name: "another pull request's clean status is not a marker",
+			statuses: []forge.Status{{
+				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Creator: "Minos", Description: product.Clean().Description(),
+				TargetURL: "https://forge.example/owner/repo/pulls/2#minos-target-base",
 			}},
 		},
 		{name: "no statuses"},
@@ -149,7 +170,7 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{Statuses: test.statuses}
-			if got := completedRunStatus(snapshot, "Minos"); got != test.want {
+			if got := completedRunStatus(snapshot, "Minos", targetURL); got != test.want {
 				t.Fatalf("completedRunStatus() = %t, want %t", got, test.want)
 			}
 		})
