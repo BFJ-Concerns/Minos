@@ -96,6 +96,17 @@ function finding(overrides = {}) {
   };
 }
 
+function sweepDecision(findings) {
+  const working = findings.some((entry) => entry.severity === "High" || entry.severity === "Critical");
+  return {
+    kind: "minos-sweep-decision-v1",
+    classification: working ? "working" : "terminal",
+    basis: working
+      ? "new findings at or above the threshold warrant a wave"
+      : "nothing at or above the threshold remains",
+  };
+}
+
 function input(findings = [finding()], overrides = {}) {
   return {
     review: {
@@ -106,6 +117,7 @@ function input(findings = [finding()], overrides = {}) {
     threshold: "High",
     maximumRounds: null,
     runRecord: { round: 0, confirmedUnfixed: [] },
+    decision: sweepDecision(findings),
     workspace: "/run/workspace",
     guidance: {
       grounding: "annexe",

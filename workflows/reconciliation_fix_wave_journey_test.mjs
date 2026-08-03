@@ -181,6 +181,11 @@ test("setup, fix dispatch, publication and round reconciliation preserve their s
       threshold: "High",
       maximumRounds: null,
       runRecord: { round: 0, confirmedUnfixed: [] },
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "working",
+        basis: "one new High finding warrants a wave",
+      },
       workspace: reading,
       guidance: {
         grounding: "repository",
