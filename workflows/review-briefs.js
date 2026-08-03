@@ -369,6 +369,10 @@ function makeUnit(candidate, files, suffix, concern) {
   };
 }
 
+function findingId(item) {
+  return `repository-brief-unit-${item.unitIndex + 1}:finding:${item.findingIndex + 1}`;
+}
+
 const partitionRequests = runnable.map((candidate, index) => {
   const { brief, front } = candidate;
   const inventory = front.extent === "full" ? scopeInventory(brief.scope) : [];
@@ -542,7 +546,7 @@ for (const unit of dispatched) {
     const items = unitFindings.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
     const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
     const label = `verify-brief-${items[0].unitIndex + 1}-${groupIndex}-claude`;
-    const findingIds = items.map((item) => `${item.unit.label}:${item.findingIndex + 1}`);
+    const findingIds = items.map(findingId);
     const group = { items, label, findingIds };
     verifierGroups.push(group);
     items.forEach((item) => { item.verifyLabel = label; });
@@ -567,7 +571,7 @@ const verifierResults = await parallel(verifierGroups.map((group) => () => agent
   },
 )));
 
-const verifierByFinding = new Map(proposed.map((item) => [`${item.unit.label}:${item.findingIndex + 1}`, null]));
+const verifierByFinding = new Map(proposed.map((item) => [findingId(item), null]));
 verifierGroups.forEach((group, groupIndex) => {
   const response = verifierResults[groupIndex];
   if (!response || !Array.isArray(response.verdicts)) return;
@@ -588,12 +592,12 @@ verifierGroups.forEach((group, groupIndex) => {
 });
 
 const proposedFindings = proposed.map((item) => ({
-  id: `${item.unit.label}:${item.findingIndex + 1}`,
+  id: findingId(item),
   source: item.unit.title,
   ...item.finding,
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
-  rawVerifier: verifierByFinding.get(`${item.unit.label}:${item.findingIndex + 1}`),
+  rawVerifier: verifierByFinding.get(findingId(item)),
 }));
 
 return {

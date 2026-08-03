@@ -605,6 +605,47 @@ test("every repository-brief finding reaches verification beyond the former boun
   assert.match(verifierCalls[1].prompt, /"title":"seven survives"/);
 });
 
+test("slug-colliding brief labels retain verdicts for their own findings", async () => {
+  const first = brief(".review/pkg/check.one.md", "# First\nJudge the first concern.");
+  const second = brief(".review/pkg/check-one.md", "# Second\nJudge the second concern.");
+  const { result, calls } = await run(args({ briefs: [first, second] }), responder({
+    specialist: (_label, prompt) => specialistResult([
+      finding({ title: prompt.includes(first.path) ? "first finding" : "second finding" }),
+    ]),
+    verify: (_label, prompt) => {
+      const [entry] = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      return {
+        verdicts: [{
+          findingId: entry.id,
+          verdict: entry.title === "first finding" ? "upheld" : "refuted",
+          confidence: 92,
+          reason: `verdict for ${entry.title}`,
+        }],
+      };
+    },
+  }));
+
+  const specialistLabels = calls
+    .filter((call) => call.opts.label?.startsWith("repository-"))
+    .map((call) => call.opts.label);
+  assert.deepEqual(specialistLabels, [
+    "repository-review-pkg-check-one-md-gpt",
+    "repository-review-pkg-check-one-md-gpt",
+  ]);
+  assert.deepEqual(result.proposedFindings.map(({ id, title, rawVerifier }) => ({ id, title, rawVerifier })), [
+    {
+      id: "repository-brief-unit-1:finding:1",
+      title: "first finding",
+      rawVerifier: { verdict: "upheld", confidence: 92, reason: "verdict for first finding" },
+    },
+    {
+      id: "repository-brief-unit-2:finding:1",
+      title: "second finding",
+      rawVerifier: { verdict: "refuted", confidence: 92, reason: "verdict for second finding" },
+    },
+  ]);
+});
+
 test("a missing specialist result is a not-run disposition with a required archive leg", async () => {
   const { result } = await run(args(), responder({ specialist: () => null }));
   assert.equal(result.briefs.find((entry) => entry.status === "not-run").reason, "specialist returned no result");
