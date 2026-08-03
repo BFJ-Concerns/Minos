@@ -255,6 +255,10 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 				Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: state.targetSHA(),
 			}),
 			"creator": map[string]any{"login": "Minos"},
+		}, {
+			"id": 8, "context": "Minos", "status": "pending", "description": product.Working().Description(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2#minos-target-" + state.targetSHA(),
+			"creator":    map[string]any{"login": "Minos"},
 		}})
 
 		original := commandCombinedOutput

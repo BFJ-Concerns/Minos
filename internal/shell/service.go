@@ -75,8 +75,17 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 // posts no approve review (the 👍 reaction carries all-clear), so the status
 // is the head's only durable completion marker on that path.
 func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) bool {
-	latest, found := latestOwnedStatus(snapshot, botLogin)
-	if !found || latest.TargetURL != targetURL {
+	var latest forge.Status
+	found := false
+	for _, status := range snapshot.Statuses {
+		if status.Provider == forge.ForgejoProvider && status.Context == forge.OwnedStatusContext &&
+			status.Creator == botLogin && status.TargetURL == targetURL &&
+			(!found || status.ID > latest.ID) {
+			latest = status
+			found = true
+		}
+	}
+	if !found {
 		return false
 	}
 	return latest.Description == product.Clean().Description() ||

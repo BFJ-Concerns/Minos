@@ -138,6 +138,18 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 			},
 		},
 		{
+			name: "newer foreign status does not mask this pull request's clean marker",
+			statuses: []forge.Status{
+				ownedStatus(11, product.Clean().Description()),
+				{
+					ID: 12, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+					Creator: "Minos", Description: product.Working().Description(),
+					TargetURL: "https://forge.example/owner/repo/pulls/2#minos-target-base",
+				},
+			},
+			want: true,
+		},
+		{
 			name: "another account's clean status is not a marker",
 			statuses: []forge.Status{{
 				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
