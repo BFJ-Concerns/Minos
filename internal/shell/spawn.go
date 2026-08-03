@@ -65,6 +65,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	progressDecision := continuationProgressUnknown
 	if handoff != nil {
 		progressDecision = compareContinuationProgress(handoff)
+		if handoff.Head != facts.HeadSHA {
+			progressDecision = continuationProgressAdvanced
+		}
 	}
 	runDir := ""
 	adopted := false
@@ -191,22 +194,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, facts Facts, handoffFile string, handoff *runHandoff) (SpawnOutcome, error) {
 	cause := fmt.Sprintf("successor made no progress beyond stage %q round %d and published no new head or review", handoff.Progress.Stage, handoff.Progress.Round)
 	failureLog := os.Getenv("MINOS_FAILURE_LOG")
-	if failureLog == "" {
-		return "", fmt.Errorf("record stalled continuation: MINOS_FAILURE_LOG is not configured")
-	}
 	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
 		time.Now().UTC().Format(time.RFC3339), facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
-	file, err := os.OpenFile(failureLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return "", fmt.Errorf("record stalled continuation: %w", err)
-	}
-	if _, err := file.WriteString(failureLine); err != nil {
-		_ = file.Close()
-		return "", fmt.Errorf("record stalled continuation: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return "", fmt.Errorf("record stalled continuation: %w", err)
-	}
+	appendStalledContinuationFailure(failureLog, failureLine)
 
 	adapter, err := newBehaviouralForge(cfg, facts.Forge)
 	if err != nil {
@@ -226,13 +216,35 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, facts Facts
 	if result := adapter.RemoveReaction(ctx, guard, "eyes"); result.Outcome != forge.WriteApplied {
 		return "", fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
 	}
-	if err := os.WriteFile(filepath.Join(handoff.RunDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("mark stalled continuation terminal: %w", err)
+	if handoff.RunDir != "" {
+		if err := os.WriteFile(filepath.Join(handoff.RunDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("mark stalled continuation terminal: %w", err)
+		}
 	}
 	if err := os.Remove(handoffFile); err != nil {
 		return "", fmt.Errorf("consume stalled continuation handoff: %w", err)
 	}
 	return SpawnAttention, nil
+}
+
+func appendStalledContinuationFailure(path, line string) {
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "minos: MINOS_FAILURE_LOG (%s) parent is not writable: %v\n", path, err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "minos: MINOS_FAILURE_LOG (%s) is not writable: %v\n", path, err)
+		return
+	}
+	if _, err := file.WriteString(line); err != nil {
+		fmt.Fprintf(os.Stderr, "minos: MINOS_FAILURE_LOG (%s) is not writable: %v\n", path, err)
+	}
+	if err := file.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "minos: MINOS_FAILURE_LOG (%s) could not be closed: %v\n", path, err)
+	}
 }
 
 func lockAdmission(runsDir string) (func(), error) {

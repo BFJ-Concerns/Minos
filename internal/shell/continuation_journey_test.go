@@ -97,6 +97,131 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		}
 	})
 
+	t.Run("moved pull request head permits a successor", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		oldFacts := facts
+		oldFacts.HeadSHA = "old-head-sha"
+		progress := handoffProgress{Stage: "review", Round: 2, Head: oldFacts.HeadSHA, LatestReview: 7}
+		_, _ = writeProgressHandoff(t, cfg, oldFacts, progress, &progress)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		starts := 0
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			starts++
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome != SpawnStarted || starts != 1 {
+			t.Fatalf("moved-head outcome = %q, starts = %d; want %q and one start", outcome, starts, SpawnStarted)
+		}
+		if len(state.writeSequence) != 0 {
+			t.Fatalf("moved-head continuation wrote terminal products: %v", state.writeSequence)
+		}
+	})
+
+	t.Run("failure log is best effort", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			path func(*testing.T) string
+		}{
+			{name: "unset", path: func(*testing.T) string { return "" }},
+			{name: "unwritable", path: func(t *testing.T) string { return t.TempDir() }},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				state := newForgejoFixtureState(t)
+				cfg, repo, facts := state.service(t)
+				facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+				state.reactions = []string{"eyes"}
+				progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+				_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+				t.Setenv("MINOS_FAILURE_LOG", test.path(t))
+
+				original := commandCombinedOutput
+				t.Cleanup(func() { commandCombinedOutput = original })
+				commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+					if name == "systemctl" {
+						return nil, nil
+					}
+					t.Fatalf("stalled continuation invoked %s", name)
+					return nil, nil
+				}
+
+				outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if outcome != SpawnAttention {
+					t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+				}
+				if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
+					t.Fatalf("guarded writes = %v", state.writeSequence)
+				}
+				if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+					t.Fatalf("stalled handoff remains or stat failed: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("empty run directory writes no completion marker", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		state.reactions = []string{"eyes"}
+		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+		data, err := os.ReadFile(handoffFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var handoff runHandoff
+		if err := json.Unmarshal(data, &handoff); err != nil {
+			t.Fatal(err)
+		}
+		handoff.RunDir = ""
+		data, err = json.Marshal(handoff)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(handoffFile, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MINOS_FAILURE_LOG", "")
+		workDir := t.TempDir()
+		t.Chdir(workDir)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			t.Fatalf("stalled continuation invoked %s", name)
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome != SpawnAttention {
+			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+		}
+		if _, err := os.Stat(filepath.Join(workDir, "lead-complete")); !os.IsNotExist(err) {
+			t.Fatalf("empty run directory wrote lead-complete in the working directory: %v", err)
+		}
+	})
+
 	tests := []struct {
 		name        string
 		predecessor *handoffProgress
