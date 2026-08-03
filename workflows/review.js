@@ -8,9 +8,9 @@ export const meta = {
   ],
 };
 
-const GPT_SPECIALIST_MODEL = "gpt-5.6-sol";
 const GPT_EXPLORER_MODEL = "gpt-5.6-terra";
-const CLAUDE_MODEL = "claude-opus-5";
+const PROPOSER_MODEL = "gpt-5.6-terra";
+const VERIFIER_MODEL = "claude-opus-5";
 const MAX_FINDINGS_PER_VERIFIER = 6;
 const MAX_ORIENTATION_PACKET_BYTES = 32 * 1024;
 
@@ -22,21 +22,6 @@ const ROLE_BRIEFS = {
   design: "workflows/review-briefs/design.md",
   verifier: "workflows/review-briefs/verifier.md",
 };
-
-const SPECIALIST_FAMILY = {
-  correctness: "gpt",
-  security: "claude",
-  testing: "gpt",
-  design: "claude",
-};
-
-function modelForFamily(family) {
-  return family === "gpt" ? GPT_SPECIALIST_MODEL : CLAUDE_MODEL;
-}
-
-function engineForFamily(family) {
-  return family === "gpt" ? "codex" : "claude";
-}
 
 function roleBriefsFromInput(input) {
   const entries = Array.isArray(input && input.instructionBriefs) ? input.instructionBriefs : [];
@@ -99,13 +84,12 @@ function normalisePlan(plan, files) {
     ordered = [fallback, ...requested];
   }
   const dispatched = ordered.map((unit, index) => {
-    const family = SPECIALIST_FAMILY[unit.specialistType];
     return {
       ...unit,
       kind: "planned",
-      family,
+      family: "gpt",
       roleBrief: ROLE_BRIEFS[unit.specialistType],
-      label: `specialist-${index + 1}-${unit.specialistType}-${family}`,
+      label: `specialist-${index + 1}-${unit.specialistType}-gpt`,
     };
   });
   return { requested, dispatched, clamps };
@@ -347,7 +331,7 @@ const specialistUnits = planned.dispatched;
 const orientation = orientationPacket(target, head, exploration.files, specialistUnits);
 phase("Specialise");
 for (const unit of specialistUnits)
-  addLeg(unit.label, "specialist", modelForFamily(unit.family));
+  addLeg(unit.label, "specialist", PROPOSER_MODEL);
 
 function specialistPrompt(unit) {
   return rolePrompt(
@@ -362,9 +346,9 @@ function specialistPrompt(unit) {
 const specialistResults = await parallel(
   specialistUnits.map((unit) => () =>
     agent(specialistPrompt(unit), {
-      engine: engineForFamily(unit.family),
+      engine: "codex",
       schema: specialistSchema,
-      model: modelForFamily(unit.family),
+      model: PROPOSER_MODEL,
       effort: "medium",
       label: unit.label,
       phase: "Specialise",
@@ -385,7 +369,7 @@ specialistUnits.forEach((unit, unitIndex) => {
     concern: unit.concern,
     scope: unit.scope,
     family: unit.family,
-    pinnedModel: modelForFamily(unit.family),
+    pinnedModel: PROPOSER_MODEL,
     status: result ? "done" : "no-result",
   });
   if (!result) return;
@@ -428,14 +412,13 @@ for (const unit of specialistUnits) {
   const unitFindings = proposed.filter((item) => item.unit === unit);
   for (let offset = 0; offset < unitFindings.length; offset += MAX_FINDINGS_PER_VERIFIER) {
     const items = unitFindings.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
-    const verifierFamily = unit.family === "gpt" ? "claude" : "gpt";
     const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
-    const label = `verify-${items[0].unitIndex + 1}-${groupIndex}-${verifierFamily}`;
+    const label = `verify-${items[0].unitIndex + 1}-${groupIndex}-claude`;
     const findingIds = items.map((item) => item.id);
-    const group = { items, verifierFamily, label, findingIds };
+    const group = { items, label, findingIds };
     verifierGroups.push(group);
     items.forEach((item) => { item.verifyLabel = label; });
-    addLeg(label, "verifier", modelForFamily(verifierFamily), findingIds);
+    addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
   }
 }
 
@@ -451,9 +434,9 @@ const verifierResults = await parallel(
           `Findings: ${JSON.stringify(group.items.map((item) => ({ id: item.id, ...item.finding })))}`
       ),
       {
-        engine: engineForFamily(group.verifierFamily),
+        engine: "claude",
         schema: verifierSchema,
-        model: modelForFamily(group.verifierFamily),
+        model: VERIFIER_MODEL,
         effort: "medium",
         label: group.label,
         phase: "Verify",

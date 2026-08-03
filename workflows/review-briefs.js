@@ -9,9 +9,10 @@ export const meta = {
   ],
 };
 
-const GPT_MODEL = "gpt-5.6-sol";
 const GPT_PLANNER_MODEL = "gpt-5.6-terra";
-const CLAUDE_MODEL = "claude-opus-5";
+const PROPOSER_MODEL = "gpt-5.6-terra";
+const VERIFIER_MODEL = "claude-opus-5";
+const MAX_FINDINGS_PER_VERIFIER = 6;
 
 function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
@@ -176,14 +177,24 @@ const specialistSchema = {
   },
 };
 
-const verifierSchema = {
+const verifierVerdictShape = {
   type: "object",
   additionalProperties: false,
-  required: ["verdict", "confidence", "reason"],
+  required: ["findingId", "verdict", "confidence", "reason"],
   properties: {
+    findingId: { type: "string" },
     verdict: { type: "string", enum: ["upheld", "refuted"] },
     confidence: { type: "integer", minimum: 0, maximum: 100 },
     reason: { type: "string" },
+  },
+};
+
+const verifierSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdicts"],
+  properties: {
+    verdicts: { type: "array", items: verifierVerdictShape },
   },
 };
 
@@ -271,8 +282,9 @@ if (!repositoryInstruction || !verifierInstruction)
 if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
 
 const legs = [];
-const addLeg = (label, role, pinnedModel) => {
+const addLeg = (label, role, pinnedModel, findingIds = null) => {
   const leg = { label, role, pinnedModel };
+  if (findingIds) leg.findingIds = findingIds;
   legs.push(leg);
   return leg;
 };
@@ -353,8 +365,12 @@ function makeUnit(candidate, files, suffix, concern) {
     scope: brief.scope,
     files,
     concern,
-    label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-claude`,
+    label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-gpt`,
   };
+}
+
+function findingId(item) {
+  return `repository-brief-unit-${item.unitIndex + 1}:finding:${item.findingIndex + 1}`;
 }
 
 const partitionRequests = runnable.map((candidate, index) => {
@@ -421,7 +437,7 @@ for (const candidate of runnable) {
 }
 
 phase("Review");
-for (const unit of dispatched) addLeg(unit.label, "specialist", CLAUDE_MODEL);
+for (const unit of dispatched) addLeg(unit.label, "specialist", PROPOSER_MODEL);
 const specialistResults = await parallel(dispatched.map((unit) => () => {
   const scope = unit.scope ? `${unit.scope}/` : "the whole repository";
   const files = unit.files.length > 0 ? `\nAssigned files: ${unit.files.join(", ")}` : "";
@@ -433,9 +449,9 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
       `Assigned scope: ${scope}.${concern}${files}\n` +
       (unit.extent === "full" ? "Audit the assigned scope regardless of what the diff changed." : `Judge only what ${input.target}...${input.head} changed in the assigned scope.`),
   ), {
-    engine: "claude",
+    engine: "codex",
     schema: specialistSchema,
-    model: CLAUDE_MODEL,
+    model: PROPOSER_MODEL,
     effort: "high",
     label: unit.label,
     phase: "Review",
@@ -452,8 +468,8 @@ dispatched.forEach((unit, unitIndex) => {
     label: unit.label,
     role: "specialist",
     brief: unit.brief,
-    family: "claude",
-    pinnedModel: CLAUDE_MODEL,
+    family: "gpt",
+    pinnedModel: PROPOSER_MODEL,
     status: result ? "done" : "no-result",
   });
   if (!result) {
@@ -523,34 +539,65 @@ for (const [brief, inapplicable] of inapplicableByBrief) {
 }
 
 phase("Verify");
-for (const item of proposed) {
-  item.verifyLabel = `verify-brief-${item.unitIndex + 1}-${item.findingIndex + 1}-gpt`;
-  addLeg(item.verifyLabel, "verifier", GPT_MODEL);
+const verifierGroups = [];
+for (const unit of dispatched) {
+  const unitFindings = proposed.filter((item) => item.unit === unit);
+  for (let offset = 0; offset < unitFindings.length; offset += MAX_FINDINGS_PER_VERIFIER) {
+    const items = unitFindings.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
+    const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
+    const label = `verify-brief-${items[0].unitIndex + 1}-${groupIndex}-claude`;
+    const findingIds = items.map(findingId);
+    const group = { items, label, findingIds };
+    verifierGroups.push(group);
+    items.forEach((item) => { item.verifyLabel = label; });
+    addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
+  }
 }
-const verifierResults = await parallel(proposed.map((item) => () => agent(
+const verifierResults = await parallel(verifierGroups.map((group) => () => agent(
   groundedPrompt(
     verifierInstruction,
     guidance,
-    `Try to disprove this repository-brief finding against ${input.target}...${input.head} and the cited code.\n` +
-      `Concern: ${item.unit.title}\nProposing specialist: ${item.unit.label}\nFinding data: ${JSON.stringify(item.finding)}`,
+    `Try to disprove each repository-brief finding against ${input.target}...${input.head} and the cited code.\n` +
+      `Concern: ${group.items[0].unit.title}\nProposing specialist: ${group.items[0].unit.label}\n` +
+      `Findings: ${JSON.stringify(group.items.map((item, index) => ({ id: group.findingIds[index], ...item.finding })))}`,
   ),
   {
-    engine: "codex",
+    engine: "claude",
     schema: verifierSchema,
-    model: GPT_MODEL,
+    model: VERIFIER_MODEL,
     effort: "high",
-    label: item.verifyLabel,
+    label: group.label,
     phase: "Verify",
   },
 )));
 
-const proposedFindings = proposed.map((item, index) => ({
-  id: `${item.unit.label}:${item.findingIndex + 1}`,
+const verifierByFinding = new Map(proposed.map((item) => [findingId(item), null]));
+verifierGroups.forEach((group, groupIndex) => {
+  const response = verifierResults[groupIndex];
+  if (!response || !Array.isArray(response.verdicts)) return;
+  const expected = new Set(group.findingIds);
+  if (response.verdicts.some((verdict) => !expected.has(verdict && verdict.findingId))) return;
+  const verdictsById = new Map();
+  for (const verdict of response.verdicts) {
+    const existing = verdictsById.get(verdict.findingId) || [];
+    existing.push(verdict);
+    verdictsById.set(verdict.findingId, existing);
+  }
+  for (const id of group.findingIds) {
+    const matches = verdictsById.get(id) || [];
+    if (matches.length !== 1) continue;
+    const { findingId: omittedFindingId, ...rawVerifier } = matches[0];
+    verifierByFinding.set(id, rawVerifier);
+  }
+});
+
+const proposedFindings = proposed.map((item) => ({
+  id: findingId(item),
   source: item.unit.title,
   ...item.finding,
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
-  rawVerifier: verifierResults[index] || null,
+  rawVerifier: verifierByFinding.get(findingId(item)),
 }));
 
 return {
