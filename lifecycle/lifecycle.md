@@ -182,10 +182,12 @@ last action and end the turn. A continuation writes no failure-log line.
    command string exactly as configured — never a repository-native guess or
    substitute of your own — to completion before any review starts; when it is
    empty, no test command is configured, so skip it rather than inventing one.
-   For each command, apply `configuredCommandResult` from
-   `workflows/completion-policy.mjs` to the configured string and its exit
-   status. A skipped or passed result may continue. On a failed result, append
-   the command and its non-zero exit status to `$MINOS_FAILURE_LOG`, set
+   For each command, run `node
+   "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`,
+   passing the configured string and its exit status. Read its one-line JSON
+   `configuredCommandResult`. A skipped or passed result may continue. On a
+   failed result, append the command and its non-zero exit status to
+   `$MINOS_FAILURE_LOG`, set
    `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
    terminal marker, and stop before starting any review.
@@ -398,8 +400,10 @@ last action and end the turn. A continuation writes no failure-log line.
    finding's path and line, and the posting command anchors it where that head's
    diff still carries the line — a write-up the diff cannot carry inline is
    named in the review body instead. Then run the exact configured build and test
-   commands again. Apply `configuredCommandResult` to each configured string
-   and its exit status, just as in step 3; empty strings are skipped. On a
+   commands again. Run `node
+   "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`
+   for each configured string and its exit status, just as in step 3, and read
+   its one-line JSON `configuredCommandResult`; empty strings are skipped. On a
    failed result, append the command and its non-zero exit status to
    `$MINOS_FAILURE_LOG`, set `"$MINOS_BIN" forge status CURRENT_HEAD
    "$MINOS_TARGET_SHA" incomplete`, remove the 👀 with `"$MINOS_BIN" forge

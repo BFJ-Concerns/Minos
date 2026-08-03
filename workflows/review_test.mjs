@@ -527,14 +527,14 @@ test("configured command failures stop before initial or repeated review", () =>
   const initialGate = lifecycle.slice(lifecycle.indexOf("3. Read"), lifecycle.indexOf("4. Run"));
   assert.match(
     initialGate,
-    /configuredCommandResult[\s\S]*non-zero exit status[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*status HEAD TARGET incomplete[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean[\s\S]*stop before starting any review/,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*configuredCommandResult[\s\S]*non-zero exit status[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*status HEAD TARGET incomplete[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean[\s\S]*stop before starting any review/,
   );
   assert.match(initialGate, /empty, no test command is configured[\s\S]*skip it/);
 
   const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
   assert.match(
     repeatedGate,
-    /configuredCommandResult[\s\S]*empty strings are skipped[\s\S]*non-zero exit status[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*incomplete[\s\S]*reaction-remove[\s\S]*non-clean[\s\S]*stop before another review round or merge action[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*configuredCommandResult[\s\S]*empty strings are skipped[\s\S]*non-zero exit status[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*incomplete[\s\S]*reaction-remove[\s\S]*non-clean[\s\S]*stop before another review round or merge action[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
   );
 });
 
