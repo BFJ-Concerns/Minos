@@ -411,10 +411,9 @@ last action and end the turn. A continuation writes no failure-log line.
    `$MINOS_HEAD_BRANCH`. No fix agent may push.
 
    After the push, read a fresh forge snapshot and use its current head. When
-   `fixReview` is present, materialise one Markdown body containing its body and
-   every comment as readable prose in the form ``- `PATH` line LINE: WRITE_UP``,
-   then post it with `"$MINOS_BIN" forge comment CURRENT_HEAD
-   "$MINOS_TARGET_SHA" BODY_FILE`. This durable pull-request comment is not a
+   `fixReview` is present, write that object unchanged to a file, then post it
+   with `"$MINOS_BIN" forge comment CURRENT_HEAD "$MINOS_TARGET_SHA"
+   FIX_REVIEW_FILE`. This durable pull-request comment is not a
    review group; the guarded command binds it to that exact head and target,
    deduplicates retries, and reads it back before reporting success. Then run the exact configured build and test
    commands again. Run `node
@@ -526,9 +525,9 @@ last action and end the turn. A continuation writes no failure-log line.
    requests a second brief review or fix wave. If its
    `integration.commits` is non-empty, integrate them through `integrate-wave`
    exactly as in the main loop, then take a fresh forge snapshot and use its
-   current head. When `fixReview` is present, materialise and post the same
-   location-bearing guarded pull-request comment described in step 5 on that
-   fresh head. Run `$MINOS_BUILD_CMD` and
+   current head. When `fixReview` is present, write that object unchanged and
+   post the same location-bearing guarded pull-request comment described in
+   step 5 on that fresh head. Run `$MINOS_BUILD_CMD` and
    `$MINOS_TEST_CMD` exactly as configured and to completion when each is
    non-empty; do not substitute or invent commands. If the single wave leaves
    `confirmedUnfixed` entries, or integration, build or tests fail, add no 👍,

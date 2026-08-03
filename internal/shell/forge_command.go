@@ -101,10 +101,10 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text, comments))
 	case "comment":
 		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge comment HEAD TARGET BODY_FILE")
+			return fmt.Errorf("usage: minos forge comment HEAD TARGET FIX_REVIEW_FILE")
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		body, err := os.ReadFile(args[3])
+		fixReview, err := readFixReview(args[3])
 		if err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		text := strings.TrimRight(string(body), "\r\n") + "\n\n" + record
+		text := renderFixReview(fixReview) + "\n\n" + record
 		return emitForgeResult(stdout, "comment", adapter.PostComment(ctx, guard, text))
 	case "reaction":
 		if len(args) != 4 {

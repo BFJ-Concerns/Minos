@@ -478,13 +478,9 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     );
 
     const materialised = mkdtempSync(join(tmpdir(), "minos-brief-fix-review-"));
-    const bodyPath = join(materialised, "body.md");
-    const repairBody = [
-      fixResult.fixReview.body,
-      ...fixResult.fixReview.comments.map((comment) =>
-        `- \`${comment.path}\` line ${comment.line}: ${comment.body}`),
-    ].join("\n\n");
-    writeFileSync(bodyPath, repairBody, { mode: 0o600 });
+    const inputPaths = [join(materialised, "fix-review-compact.json"), join(materialised, "fix-review-pretty.json")];
+    writeFileSync(inputPaths[0], JSON.stringify(fixResult.fixReview), { mode: 0o600 });
+    writeFileSync(inputPaths[1], JSON.stringify(fixResult.fixReview, null, 2), { mode: 0o600 });
 
     const fixture = await forgeFixture();
     try {
@@ -497,10 +493,10 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       );
       const repairedHead = "cccccccccccccccccccccccccccccccccccccccc";
       fixture.state.actualHead = repairedHead;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      for (const inputPath of inputPaths) {
         const { stdout } = await execFileAsync(
           minosBin,
-          ["forge", "comment", repairedHead, TARGET, bodyPath],
+          ["forge", "comment", repairedHead, TARGET, inputPath],
           { encoding: "utf8", env: fixture.env },
         );
         assert.equal(JSON.parse(stdout).outcome, "applied");
@@ -512,6 +508,11 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.match(fixture.state.reviews[0].body, new RegExp(SENTINEL));
       assert.doesNotMatch(fixture.state.reviews[0].body, new RegExp(writeUp));
       const durableComment = fixture.state.issueComments[0];
+      const expectedRepairBody = `${fixResult.fixReview.body}\n\n- \`src/brief-scope.rs\` line 73: ${writeUp}`;
+      assert.equal(
+        durableComment.body,
+        `${expectedRepairBody}\n\n<!-- Minos: head=${repairedHead} target=${TARGET} -->`,
+      );
       assert.match(durableComment.body, new RegExp(writeUp));
       assert.match(durableComment.body, /src\/brief-scope\.rs/);
       assert.match(durableComment.body, /\b73\b/);
@@ -526,8 +527,11 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     ["mismatched repair-comment read-back fails closed", { mismatchedIssueCommentReadback: true }],
   ]) {
     await t.test(name, async () => {
-      const bodyPath = join(mkdtempSync(join(tmpdir(), "minos-repair-comment-")), "body.md");
-      writeFileSync(bodyPath, "Fixed the defect at `src/brief-scope.rs` line 73.\n", { mode: 0o600 });
+      const bodyPath = join(mkdtempSync(join(tmpdir(), "minos-repair-comment-")), "fix-review.json");
+      writeFileSync(bodyPath, JSON.stringify({
+        body: "Implemented repairs.",
+        comments: [{ path: "src/brief-scope.rs", line: 73, body: "Fixed the defect." }],
+      }), { mode: 0o600 });
       const fixture = await forgeFixture(options);
       try {
         await assert.rejects(
