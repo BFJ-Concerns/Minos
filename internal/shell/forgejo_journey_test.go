@@ -1155,6 +1155,7 @@ type forgejoFixtureState struct {
 	diffNewSide              map[string][][2]int64
 	positionRewrites         map[string]map[int64]int64
 	statusReadCommits        []string
+	writeSequence            []string
 	virtualRefLookups        int
 	annexeCloneURL           string
 }
@@ -1461,6 +1462,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		payload["creator"] = map[string]any{"login": "Minos"}
 		s.statuses = append([]map[string]any{payload}, s.statuses...)
 		s.statusWrites++
+		s.writeSequence = append(s.writeSequence, "status:"+fmt.Sprint(payload["description"]))
 		head := strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/statuses/")
 		s.statusPostRequests = append(s.statusPostRequests, statusPostRequest{Head: head, Payload: mapsClone(payload)})
 		writeFixtureJSON(s.t, w, payload)
@@ -1574,6 +1576,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.reactionDeleteWrites++
+		s.writeSequence = append(s.writeSequence, "reaction-remove:"+payload.Content)
 		writeFixtureJSON(s.t, w, map[string]any{})
 	case r.Method == http.MethodGet && path == issuePath+"/labels":
 		writeFixtureJSON(s.t, w, s.pullRequest["labels"])

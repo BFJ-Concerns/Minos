@@ -34,7 +34,7 @@ func TestTerminalPullRequestExpiresHandoffBeforeFollowingResidueSweep(t *testing
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "21", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 0, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
 
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestOpenPullRequestMissingFromListingKeepsHandoff(t *testing.T) {
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "22", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 0, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
 
 	if err := expireInactiveRunHandoffs(t.Context(), cfg, []RepoConfig{{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo}}); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestUnconfiguredRepositoryExpiresHandoff(t *testing.T) {
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "removed-repository", PR: "23", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 0, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
 
 	if err := expireInactiveRunHandoffs(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)

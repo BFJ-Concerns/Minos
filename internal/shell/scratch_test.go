@@ -62,7 +62,7 @@ func TestSweepRunResidueProtectsOnlyDirectoryNamedByValidHandoff(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeTestHandoff(t, cfg, facts, preserved, facts.HeadSHA, 0, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	writeTestHandoff(t, cfg, facts, preserved, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
 
 	_ = sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts})
 	if _, err := os.Stat(preserved); err != nil {
@@ -84,7 +84,7 @@ func TestSweepRunResidueDoesNotProtectInvalidHandoff(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeTestHandoff(t, cfg, facts, runDir, "stale-head", 0, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	writeTestHandoff(t, cfg, facts, runDir, "stale-head", []byte(`{"round":0,"confirmedUnfixed":[]}`))
 
 	_ = sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts})
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
@@ -419,7 +419,7 @@ func TestSweepRunResiduePreservesStructurallyValidHandoffWithoutCurrentFacts(t *
 	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, 0, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
 	}

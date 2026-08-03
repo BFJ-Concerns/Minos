@@ -5,9 +5,352 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
+	t.Run("same stage round and publication ends as attention", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		state.reactions = []string{"eyes"}
+		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		runDir, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+		failureLog := filepath.Join(t.TempDir(), "failures.log")
+		cfg.Runs.FailureLog = failureLog
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			t.Fatalf("stalled continuation invoked %s", name)
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome != SpawnAttention {
+			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+		}
+		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
+			t.Fatalf("guarded writes = %v", state.writeSequence)
+		}
+		assertContainsFile(t, failureLog, "pull_request="+facts.Owner+"/"+facts.Repo+"#"+facts.PR)
+		assertContainsFile(t, failureLog, "stage=continuation-progress")
+		assertContainsFile(t, failureLog, "published no new head or review")
+		failureData, err := os.ReadFile(failureLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !regexp.MustCompile(`^timestamp=[^ ]+ pull_request=[^ ]+ head=[^ ]+ stage=continuation-progress cause=.+\n$`).Match(failureData) {
+			t.Fatalf("failure line has unexpected shape: %q", failureData)
+		}
+		assertContainsFile(t, filepath.Join(runDir, "lead-complete"), "non-clean")
+		if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+			t.Fatalf("stalled handoff remains or stat failed: %v", err)
+		}
+	})
+
+	t.Run("missing run directory still ends as attention", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		state.reactions = []string{"eyes"}
+		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		runDir, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+		if err := os.RemoveAll(runDir); err != nil {
+			t.Fatal(err)
+		}
+		failureLog := filepath.Join(t.TempDir(), "failures.log")
+		cfg.Runs.FailureLog = failureLog
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			t.Fatalf("stalled continuation with missing run directory invoked %s", name)
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome != SpawnAttention {
+			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+		}
+		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
+			t.Fatalf("guarded writes = %v", state.writeSequence)
+		}
+		assertContainsFile(t, failureLog, "stage=continuation-progress")
+		if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+			t.Fatalf("stalled handoff remains or stat failed: %v", err)
+		}
+	})
+
+	t.Run("moved pull request head permits a successor", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		oldFacts := facts
+		oldFacts.HeadSHA = "old-head-sha"
+		progress := handoffProgress{Stage: "review", Round: 2, Head: oldFacts.HeadSHA, LatestReview: 7}
+		_, _ = writeProgressHandoff(t, cfg, oldFacts, progress, &progress)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		starts := 0
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			starts++
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome != SpawnStarted || starts != 1 {
+			t.Fatalf("moved-head outcome = %q, starts = %d; want %q and one start", outcome, starts, SpawnStarted)
+		}
+		if len(state.writeSequence) != 0 {
+			t.Fatalf("moved-head continuation wrote terminal products: %v", state.writeSequence)
+		}
+	})
+
+	t.Run("failure log is best effort", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			path func(*testing.T) string
+		}{
+			{name: "unset", path: func(*testing.T) string { return "" }},
+			{name: "unwritable", path: func(t *testing.T) string { return t.TempDir() }},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				state := newForgejoFixtureState(t)
+				cfg, repo, facts := state.service(t)
+				facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+				state.reactions = []string{"eyes"}
+				progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+				_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+				cfg.Runs.FailureLog = test.path(t)
+
+				original := commandCombinedOutput
+				t.Cleanup(func() { commandCombinedOutput = original })
+				commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+					if name == "systemctl" {
+						return nil, nil
+					}
+					t.Fatalf("stalled continuation invoked %s", name)
+					return nil, nil
+				}
+
+				outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if outcome != SpawnAttention {
+					t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+				}
+				if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
+					t.Fatalf("guarded writes = %v", state.writeSequence)
+				}
+				if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+					t.Fatalf("stalled handoff remains or stat failed: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("empty run directory writes no completion marker", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		state.reactions = []string{"eyes"}
+		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+		data, err := os.ReadFile(handoffFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var handoff runHandoff
+		if err := json.Unmarshal(data, &handoff); err != nil {
+			t.Fatal(err)
+		}
+		handoff.RunDir = ""
+		data, err = json.Marshal(handoff)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(handoffFile, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg.Runs.FailureLog = ""
+		workDir := t.TempDir()
+		t.Chdir(workDir)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			t.Fatalf("stalled continuation invoked %s", name)
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome != SpawnAttention {
+			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+		}
+		if _, err := os.Stat(filepath.Join(workDir, "lead-complete")); !os.IsNotExist(err) {
+			t.Fatalf("empty run directory wrote lead-complete in the working directory: %v", err)
+		}
+	})
+
+	t.Run("foreign run directory writes no completion marker", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg, repo, facts := state.service(t)
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		state.reactions = []string{"eyes"}
+		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
+		foreignRunDir := filepath.Join(cfg.Runs.Dir, "foreign-unit-existing")
+		if err := os.MkdirAll(foreignRunDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(handoffFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var handoff runHandoff
+		if err := json.Unmarshal(data, &handoff); err != nil {
+			t.Fatal(err)
+		}
+		handoff.RunDir = foreignRunDir
+		data, err = json.Marshal(handoff)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(handoffFile, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg.Runs.FailureLog = ""
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			t.Fatalf("stalled continuation invoked %s", name)
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome != SpawnAttention {
+			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+		}
+		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
+			t.Fatalf("guarded writes = %v", state.writeSequence)
+		}
+		if _, err := os.Stat(filepath.Join(foreignRunDir, "lead-complete")); !os.IsNotExist(err) {
+			t.Fatalf("foreign run directory received lead-complete: %v", err)
+		}
+		if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+			t.Fatalf("stalled handoff remains or stat failed: %v", err)
+		}
+	})
+
+	tests := []struct {
+		name        string
+		predecessor *handoffProgress
+		current     handoffProgress
+	}{
+		{name: "later round", predecessor: &handoffProgress{Stage: "review", Round: 1, Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}},
+		{name: "different stage", predecessor: &handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "fix", Round: 2, Head: "head", LatestReview: 7}},
+		{name: "published head", predecessor: &handoffProgress{Stage: "review", Round: 2, Head: "old-head", LatestReview: 7}, current: handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}},
+		{name: "published review", predecessor: &handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 8}},
+		{name: "legacy progress is unknown", current: handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}},
+	}
+	for _, test := range tests {
+		t.Run(test.name+" permits a successor", func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, repo, facts := state.service(t)
+			facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+			test.current.Head = facts.HeadSHA
+			if test.predecessor != nil && test.predecessor.Head == "head" {
+				test.predecessor.Head = facts.HeadSHA
+			}
+			_, _ = writeProgressHandoff(t, cfg, facts, test.current, test.predecessor)
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			starts := 0
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				if name == "systemctl" {
+					return nil, nil
+				}
+				starts++
+				return nil, nil
+			}
+			outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.predecessor != nil && outcome != SpawnContinued {
+				t.Fatalf("outcome = %q, want %q", outcome, SpawnContinued)
+			}
+			if test.predecessor == nil && outcome != SpawnStarted {
+				t.Fatalf("unknown legacy outcome = %q, want %q", outcome, SpawnStarted)
+			}
+			if starts != 1 {
+				t.Fatalf("outcome = %q, starts = %d", outcome, starts)
+			}
+			if len(state.writeSequence) != 0 {
+				t.Fatalf("advancing continuation wrote terminal products: %v", state.writeSequence)
+			}
+		})
+	}
+}
+
+func writeProgressHandoff(t *testing.T, cfg ServiceConfig, facts Facts, progress handoffProgress, predecessor *handoffProgress) (string, string) {
+	t.Helper()
+	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
+	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`))
+	data, err := json.Marshal(runHandoff{
+		Kind: runHandoffKind, PullRequest: handoffPull{Owner: facts.Owner, Repo: facts.Repo, Number: facts.PR},
+		Head: facts.HeadSHA, RunDir: runDir, StoppedAt: progress.Stage, WrittenAt: "2026-08-03T21:00:00Z",
+		RunRecord: json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`), Predecessor: predecessor, Progress: &progress,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return runDir, path
+}
 
 func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	fixture := newRunBodyFixture(t)
@@ -32,7 +375,7 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	handoff := writeTestHandoff(
-		t, cfg, facts, runDir, facts.HeadSHA, 1,
+		t, cfg, facts, runDir, facts.HeadSHA,
 		json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`),
 	)
 
