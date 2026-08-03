@@ -159,11 +159,8 @@ func rejectRunHandoff(path string, reason error) {
 }
 
 func adoptableRunDirectory(cfg ServiceConfig, unit string, facts Facts, handoff *runHandoff) (string, bool) {
-	runDir := handoff.RunDir
-	cleanRunDir := filepath.Clean(runDir)
-	cleanRunsDir := filepath.Clean(cfg.Runs.Dir)
-	if runDir == "" || !filepath.IsAbs(runDir) || cleanRunDir != runDir ||
-		filepath.Dir(cleanRunDir) != cleanRunsDir || !strings.HasPrefix(filepath.Base(cleanRunDir), unit+"-") {
+	cleanRunDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir)
+	if !contained {
 		return "runDir is not a direct, unit-named child of runs.dir", false
 	}
 	info, err := os.Stat(cleanRunDir)
@@ -185,4 +182,14 @@ func adoptableRunDirectory(cfg ServiceConfig, unit string, facts Facts, handoff 
 		return "workspace is not a Git repository", false
 	}
 	return "", true
+}
+
+func containedRunDirectory(cfg ServiceConfig, unit, runDir string) (string, bool) {
+	cleanRunDir := filepath.Clean(runDir)
+	cleanRunsDir := filepath.Clean(cfg.Runs.Dir)
+	if runDir == "" || !filepath.IsAbs(runDir) || cleanRunDir != runDir ||
+		filepath.Dir(cleanRunDir) != cleanRunsDir || !strings.HasPrefix(filepath.Base(cleanRunDir), unit+"-") {
+		return "", false
+	}
+	return cleanRunDir, true
 }

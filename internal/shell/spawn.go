@@ -80,7 +80,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		}
 	}
 	if progressDecision == continuationProgressStalled {
-		return stopStalledContinuation(ctx, cfg, facts, handoffFile, handoff)
+		return stopStalledContinuation(ctx, cfg, unit, facts, handoffFile, handoff)
 	}
 	if !adopted {
 		progressDecision = continuationProgressUnknown
@@ -191,7 +191,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	return SpawnStarted, nil
 }
 
-func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, facts Facts, handoffFile string, handoff *runHandoff) (SpawnOutcome, error) {
+func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnOutcome, error) {
 	cause := fmt.Sprintf("successor made no progress beyond stage %q round %d and published no new head or review", handoff.Progress.Stage, handoff.Progress.Round)
 	failureLog := os.Getenv("MINOS_FAILURE_LOG")
 	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
@@ -216,8 +216,8 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, facts Facts
 	if result := adapter.RemoveReaction(ctx, guard, "eyes"); result.Outcome != forge.WriteApplied {
 		return "", fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
 	}
-	if handoff.RunDir != "" {
-		if err := os.WriteFile(filepath.Join(handoff.RunDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
+	if runDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir); contained {
+		if err := os.WriteFile(filepath.Join(runDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil {
 			return "", fmt.Errorf("mark stalled continuation terminal: %w", err)
 		}
 	}
