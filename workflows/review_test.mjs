@@ -48,6 +48,7 @@ function enumeratedArgs(
     guidanceName = "README.md",
     guidanceContent = "MINOS_TEST_COMMISSION_INDIGO",
     loopRecord,
+    absentLoopRecord = false,
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
@@ -58,9 +59,10 @@ function enumeratedArgs(
   const orientationPath = join(root, "orientation.json");
   writeFileSync(orientationPath, JSON.stringify({ repository: workspace, grounding, guidance: guidancePath }));
   const cliArgs = [inputScriptPath, target, head];
-  if (loopRecord !== undefined) {
+  if (loopRecord !== undefined || absentLoopRecord) {
     const recordPath = join(root, "loop-record.json");
-    writeFileSync(recordPath, typeof loopRecord === "string" ? loopRecord : JSON.stringify(loopRecord));
+    if (!absentLoopRecord)
+      writeFileSync(recordPath, typeof loopRecord === "string" ? loopRecord : JSON.stringify(loopRecord));
     cliArgs.push("--loop-record", recordPath);
   }
   return JSON.parse(execFileSync(process.execPath, cliArgs, {
@@ -555,7 +557,11 @@ test("a two-round journey carries fixed and unfixed findings into later speciali
   const newSentinel = "ROUND_TWO_GENUINELY_NEW_SENTINEL";
   async function assertHistoryReachesSpecialists(args) {
     const { result, calls } = await runScript(args, responder({
-      specialist: () => specialistResult([finding({ title: newSentinel, path: "internal/new.go", line: 33 })]),
+      specialist: (_label, prompt) => specialistResult(
+        prompt.includes("a genuinely new finding remains reportable")
+          ? [finding({ title: newSentinel, path: "internal/new.go", line: 33 })]
+          : [],
+      ),
     }));
     const prompts = specialistCalls(calls).map((call) => call.prompt);
     assert.ok(prompts.length > 0);
@@ -575,11 +581,15 @@ test("a two-round journey carries fixed and unfixed findings into later speciali
 
 test("review inputs provide stable empty context and fail closed on malformed records", async () => {
   assert.deepEqual(enumeratedArgs().priorFindings, { confirmedFixed: [], confirmedUnfixed: [] });
+  assert.deepEqual(
+    enumeratedArgs("target", "head", { absentLoopRecord: true }).priorFindings,
+    { confirmedFixed: [], confirmedUnfixed: [] },
+  );
   const malformed = enumeratedArgs("target", "head", { loopRecord: "not JSON" });
   await assert.rejects(runScript(malformed, responder()), /needs priorFindings/);
 
-  const missing = join(tmpdir(), `minos-missing-loop-record-${process.pid}.json`);
-  const result = spawnSync(process.execPath, [inputScriptPath, "target", "head", "--loop-record", missing], {
+  const unreadable = mkdtempSync(join(tmpdir(), "minos-unreadable-loop-record-"));
+  const result = spawnSync(process.execPath, [inputScriptPath, "target", "head", "--loop-record", unreadable], {
     encoding: "utf8",
     env: { ...process.env, MINOS_ORIENTATION: "unused" },
   });

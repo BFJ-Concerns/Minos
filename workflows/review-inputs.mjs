@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const target = process.argv[2];
 const head = process.argv[3];
 let recordPath;
+let recordContent;
 let argumentError = null;
 for (let index = 4; index < process.argv.length; index += 1) {
   const argument = process.argv[index];
@@ -20,9 +21,9 @@ for (let index = 4; index < process.argv.length; index += 1) {
     }
   } else argumentError = `unexpected review input argument ${argument}`;
 }
-if (recordPath !== undefined) {
+if (recordPath !== undefined && existsSync(recordPath)) {
   try {
-    readFileSync(recordPath, "utf8");
+    recordContent = readFileSync(recordPath, "utf8");
   } catch {
     argumentError = `review loop record is unreadable: ${recordPath}`;
   }
@@ -65,9 +66,9 @@ if (!target || !head || argumentError) {
     content: readFileSync(resolve(repositoryRoot, path), "utf8"),
   }));
   let priorFindings = { confirmedFixed: [], confirmedUnfixed: [] };
-  if (recordPath !== undefined) {
+  if (recordContent !== undefined) {
     try {
-      const record = JSON.parse(readFileSync(recordPath, "utf8"));
+      const record = JSON.parse(recordContent);
       priorFindings = record && typeof record === "object" && !Array.isArray(record)
         ? {
           confirmedFixed: record.confirmedFixed === undefined ? [] : record.confirmedFixed,
