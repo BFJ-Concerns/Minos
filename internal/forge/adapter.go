@@ -93,6 +93,21 @@ func (a *Adapter) PostReview(ctx context.Context, guard Guard, verdict ReviewVer
 	return decodeWriteResult(out, runErr)
 }
 
+func (a *Adapter) PostComment(ctx context.Context, guard Guard, body string) WriteResult {
+	payload, err := json.Marshal(struct {
+		Body string `json:"body"`
+	}{Body: body})
+	if err != nil {
+		return WriteResult{Outcome: WriteRejected, Reason: "encode comment: " + err.Error()}
+	}
+	out, runErr := a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-post-comment",
+		Arguments: a.guardArguments(guard),
+		Stdin:     bytes.NewReader(payload),
+	})
+	return decodeWriteResult(out, runErr)
+}
+
 func (a *Adapter) AddReaction(ctx context.Context, guard Guard, content string) WriteResult {
 	if strings.TrimSpace(content) == "" {
 		return WriteResult{Outcome: WriteRejected, Reason: "reaction content is required"}

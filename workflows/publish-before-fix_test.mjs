@@ -184,8 +184,11 @@ async function forgeFixture(options = {}) {
   const state = {
     reviews: [],
     comments: new Map(),
+    issueComments: [],
     postCount: 0,
     commentReadCount: 0,
+    issueCommentPostCount: 0,
+    issueCommentReadCount: 0,
     actualHead: options.actualHead || HEAD,
     storePost: options.storePost !== false,
     diffNewSide: options.diffNewSide || JOURNEY_REPOSITORY.diffNewSide,
@@ -217,6 +220,23 @@ async function forgeFixture(options = {}) {
     }
     if (request.method === "GET" && url.pathname === `${pullPath}/reviews`) {
       response.end(JSON.stringify(state.reviews));
+      return;
+    }
+    const issueCommentsPath = "/api/v1/repos/minos-e2e-owner/subject/issues/1/comments";
+    if (request.method === "GET" && url.pathname === issueCommentsPath) {
+      state.issueCommentReadCount += 1;
+      const visible = options.mismatchedIssueCommentReadback
+        ? state.issueComments.map((comment) => ({ ...comment, body: `${comment.body} mismatch` }))
+        : state.issueComments;
+      response.end(JSON.stringify(visible));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === issueCommentsPath) {
+      state.issueCommentPostCount += 1;
+      const payload = JSON.parse(await requestBody(request));
+      const comment = { id: state.issueComments.length + 1, body: payload.body, user: { login: "Minos" } };
+      if (options.storeIssueComment !== false) state.issueComments.push(comment);
+      response.end(JSON.stringify(comment));
       return;
     }
     if (request.method === "POST" && url.pathname === `${pullPath}/reviews`) {
@@ -435,12 +455,12 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
-  await t.test("a single-wave fixer write-up reaches the durable review surface", async () => {
+  await t.test("a successful fix-wave write-up reaches one durable non-review comment on the repaired head", async () => {
     const writeUp = "BRIEF-FIX-WRITE-UP-SENTINEL-719";
     const preparedInput = input([finding({
       path: "src/brief-scope.rs",
       line: 73,
-    })], { singleWave: true });
+    })]);
     const plan = prepareFixWave(preparedInput);
     const agent = async (prompt, options) => ({
       commit: `${options.label}-commit`,
@@ -458,32 +478,75 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     );
 
     const materialised = mkdtempSync(join(tmpdir(), "minos-brief-fix-review-"));
-    const bodyPath = join(materialised, "body.md");
-    const commentsPath = join(materialised, "comments.json");
-    writeFileSync(bodyPath, fixResult.fixReview.body, { mode: 0o600 });
-    writeFileSync(commentsPath, JSON.stringify(fixResult.fixReview.comments), { mode: 0o600 });
+    const inputPaths = [join(materialised, "fix-review-compact.json"), join(materialised, "fix-review-pretty.json")];
+    writeFileSync(inputPaths[0], JSON.stringify(fixResult.fixReview), { mode: 0o600 });
+    writeFileSync(inputPaths[1], JSON.stringify(fixResult.fixReview, null, 2), { mode: 0o600 });
 
     const fixture = await forgeFixture();
     try {
-      const { stdout } = await execFileAsync(
-        minosBin,
-        ["forge", "review", HEAD, TARGET, "comment", bodyPath, commentsPath],
-        { encoding: "utf8", env: fixture.env },
+      const events = [];
+      const { result: publicationResult } = await runCase({ minosBin, fixture, preparedInput, events });
+      assert.equal(publicationResult.status, "complete");
+      assert.deepEqual(
+        events.slice(1).map((event) => event.split(":")[0]),
+        ["forge-review-confirmed", "fix-dispatch-started", "fix-agent-called"],
       );
-      const publication = JSON.parse(stdout);
-      const durableReview = fixture.state.reviews[0];
-      const durableComments = fixture.state.comments.get(1) || [];
-      assert.equal(publication.outcome, "applied");
-      assert.equal(fixture.state.postCount, 1);
-      assert.ok(fixture.state.commentReadCount > 0);
-      assert.deepEqual(durableComments, []);
-      assert.match(durableReview.body, new RegExp(writeUp));
-      assert.match(durableReview.body, /src\/brief-scope\.rs/);
-      assert.match(durableReview.body, /\b73\b/);
+      const repairedHead = "cccccccccccccccccccccccccccccccccccccccc";
+      fixture.state.actualHead = repairedHead;
+      for (const inputPath of inputPaths) {
+        const { stdout } = await execFileAsync(
+          minosBin,
+          ["forge", "comment", repairedHead, TARGET, inputPath],
+          { encoding: "utf8", env: fixture.env },
+        );
+        assert.equal(JSON.parse(stdout).outcome, "applied");
+      }
+      assert.equal(fixture.state.issueCommentPostCount, 1);
+      assert.ok(fixture.state.issueCommentReadCount > 0);
+      assert.equal(fixture.state.issueComments.length, 1);
+      assert.equal(fixture.state.reviews.length, 1, "only the findings review belongs in the review collection");
+      assert.match(fixture.state.reviews[0].body, new RegExp(SENTINEL));
+      assert.doesNotMatch(fixture.state.reviews[0].body, new RegExp(writeUp));
+      const durableComment = fixture.state.issueComments[0];
+      const expectedRepairBody = `${fixResult.fixReview.body}\n\n- \`src/brief-scope.rs\` line 73: ${writeUp}`;
+      assert.equal(
+        durableComment.body,
+        `${expectedRepairBody}\n\n<!-- Minos: head=${repairedHead} target=${TARGET} -->`,
+      );
+      assert.match(durableComment.body, new RegExp(writeUp));
+      assert.match(durableComment.body, /src\/brief-scope\.rs/);
+      assert.match(durableComment.body, /\b73\b/);
+      assert.match(durableComment.body, new RegExp(`head=${repairedHead} target=${TARGET}`));
     } finally {
       await fixture.close();
     }
   });
+
+  for (const [name, options] of [
+    ["missing repair-comment read-back fails closed", { storeIssueComment: false }],
+    ["mismatched repair-comment read-back fails closed", { mismatchedIssueCommentReadback: true }],
+  ]) {
+    await t.test(name, async () => {
+      const bodyPath = join(mkdtempSync(join(tmpdir(), "minos-repair-comment-")), "fix-review.json");
+      writeFileSync(bodyPath, JSON.stringify({
+        body: "Implemented repairs.",
+        comments: [{ path: "src/brief-scope.rs", line: 73, body: "Fixed the defect." }],
+      }), { mode: 0o600 });
+      const fixture = await forgeFixture(options);
+      try {
+        await assert.rejects(
+          execFileAsync(minosBin, ["forge", "comment", HEAD, TARGET, bodyPath], { encoding: "utf8", env: fixture.env }),
+          (error) => {
+            assert.equal(JSON.parse(error.stdout).outcome, "uncertain");
+            return true;
+          },
+        );
+        assert.equal(fixture.state.reviews.length, 0);
+      } finally {
+        await fixture.close();
+      }
+    });
+  }
 
   await t.test("an exact pre-existing review crosses the barrier without another POST", async () => {
     const preparedInput = input();

@@ -1,0 +1,58 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
+input="$(cat)"
+
+if ! printf '%s' "$input" | jq -e '(.body | type) == "string" and (.body | length) > 0' >/dev/null; then
+  write_result rejected "invalid pull-request comment payload"
+  exit 0
+fi
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+body="$(printf '%s' "$input" | jq -r '.body')"
+
+comment_presence() {
+  previous=''
+  page=1
+  while :; do
+    current="$(api GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/comments?limit=50&page=${page}" 2>/dev/null)" || return 2
+    [ "$current" != "$previous" ] || break
+    if printf '%s' "$current" | jq -e --arg body "$body" --arg login "$login" '
+      any(.[]; (.body // "") == $body and (.user.login // .user.username // "") == $login)' >/dev/null; then
+      return 0
+    fi
+    [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
+    previous="$current"
+    page=$((page + 1))
+  done
+  return 1
+}
+
+if comment_presence; then
+  write_result applied "comment already present"
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "comment read-back could not be confirmed"
+    exit 0
+  fi
+fi
+
+api POST "/api/v1/repos/${owner}/${repo}/issues/${pr}/comments" -H "Content-Type: application/json" --data "$input" >/dev/null 2>&1 || true
+
+if comment_presence; then
+  write_result applied
+else
+  write_result uncertain "comment write could not be discovered"
+fi
