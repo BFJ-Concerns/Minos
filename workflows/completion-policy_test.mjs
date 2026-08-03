@@ -1,13 +1,92 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   DECISION_KIND,
   DIGEST_KIND,
+  configuredCommandResult,
   findingKey,
   sweepDigest,
   validateSweepDecision,
 } from "./completion-policy.mjs";
+
+const policyScriptPath = fileURLToPath(new URL("./completion-policy.mjs", import.meta.url));
+
+test("configured commands expose pass, skip, and terminal failure results", () => {
+  assert.deepEqual(configuredCommandResult("go test ./...", 0), {
+    status: "passed",
+    terminal: false,
+    reviewAllowed: true,
+  });
+  assert.deepEqual(configuredCommandResult("", undefined), {
+    status: "skipped",
+    terminal: false,
+    reviewAllowed: true,
+  });
+  assert.deepEqual(configuredCommandResult("go test ./...", 1), {
+    status: "failed",
+    exitStatus: 1,
+    terminal: true,
+    reviewAllowed: false,
+    forgeStatus: "incomplete",
+  });
+});
+
+test("all absent command forms skip regardless of exit status", () => {
+  for (const command of [undefined, null, "", "   "])
+    for (const exitStatus of [0, 1])
+      assert.deepEqual(configuredCommandResult(command, exitStatus), {
+        status: "skipped",
+        terminal: false,
+        reviewAllowed: true,
+      });
+});
+
+test("the configured command policy CLI runs from an install-like layout", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-completion-policy-"));
+  const installedWorkflows = join(root, "installed", "workflows");
+  mkdirSync(installedWorkflows, { recursive: true });
+  const installedScript = join(installedWorkflows, "completion-policy.mjs");
+  copyFileSync(policyScriptPath, installedScript);
+
+  const output = execFileSync(process.execPath, [installedScript, "go test ./...", "1"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(output.endsWith("\n"), true);
+  assert.equal(output.trim().split("\n").length, 1);
+  assert.deepEqual(JSON.parse(output), {
+    status: "failed",
+    exitStatus: 1,
+    terminal: true,
+    reviewAllowed: false,
+    forgeStatus: "incomplete",
+  });
+
+  assert.deepEqual(JSON.parse(execFileSync(process.execPath, [installedScript, "", "0"], {
+    cwd: root,
+    encoding: "utf8",
+  })), {
+    status: "skipped",
+    terminal: false,
+    reviewAllowed: true,
+  });
+});
+
+test("the configured command policy CLI rejects malformed input with usage exit 2", () => {
+  for (const args of [[], ["go test ./..."], ["go test ./...", "not-an-exit"], ["cmd", "0", "extra"]]) {
+    const result = spawnSync(process.execPath, [policyScriptPath, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /^usage: node workflows\/completion-policy\.mjs COMMAND EXIT_STATUS\n$/);
+    assert.doesNotMatch(result.stderr, /\n\s+at /);
+  }
+});
 
 function finding(title, severity, path, line) {
   return { id: `specialist:${title}`, title, severity, confidence: 90, path, line, explanation: `${title} breaks the contract` };

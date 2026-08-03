@@ -6,10 +6,44 @@
 // publication structure live in fix-wave-plan.mjs, which consumes a validated
 // decision and never re-derives a classification.
 
+import { fileURLToPath } from "node:url";
+
 export const DIGEST_KIND = "minos-sweep-digest-v1";
 export const DECISION_KIND = "minos-sweep-decision-v1";
 export const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 export const DEFAULT_THRESHOLD = "High";
+
+// A configured command's exit status is a mechanical gate, not a lead
+// judgement. Empty commands are valid skips; a non-zero result is terminal
+// and cannot feed another review round.
+export function configuredCommandResult(command, exitStatus) {
+  if (command === undefined || command === null ||
+      (typeof command === "string" && command.trim() === ""))
+    return { status: "skipped", terminal: false, reviewAllowed: true };
+  if (exitStatus === 0) return { status: "passed", terminal: false, reviewAllowed: true };
+  return {
+    status: "failed",
+    exitStatus,
+    terminal: true,
+    reviewAllowed: false,
+    forgeStatus: "incomplete",
+  };
+}
+
+function runConfiguredCommandCli(argv) {
+  const usage = "usage: node workflows/completion-policy.mjs COMMAND EXIT_STATUS\n";
+  const [command, exitStatusText, ...surplus] = argv;
+  if (command === undefined || exitStatusText === undefined || surplus.length > 0 ||
+      !/^\d+$/.test(exitStatusText)) {
+    process.stderr.write(usage);
+    process.exitCode = 2;
+    return;
+  }
+  process.stdout.write(`${JSON.stringify(configuredCommandResult(command, Number(exitStatusText)))}\n`);
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1])
+  runConfiguredCommandCli(process.argv.slice(2));
 
 function normaliseTitle(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
