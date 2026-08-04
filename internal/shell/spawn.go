@@ -85,7 +85,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	if adopted {
 		carriedResult := filepath.Join(runDir, "carried-review-result.json")
-		if _, valid := adoptableReviewResult(carriedResult, facts.HeadSHA); valid {
+		if adoptableReviewResult(carriedResult, facts.HeadSHA) {
 			reviewResultPath = carriedResult
 			reviewResultAlreadyCarried = true
 		} else {
@@ -93,7 +93,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 				return "", fmt.Errorf("discard untrusted predecessor review result: %w", err)
 			}
 			ordinaryResult := filepath.Join(runDir, "review-result.json")
-			if _, valid := adoptableReviewResult(ordinaryResult, facts.HeadSHA); valid {
+			if adoptableReviewResult(ordinaryResult, facts.HeadSHA) {
 				reviewResultPath = ordinaryResult
 			} else if err := os.Remove(ordinaryResult); err != nil && !os.IsNotExist(err) {
 				return "", fmt.Errorf("discard untrusted predecessor review result: %w", err)
@@ -101,10 +101,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		}
 	} else if handoffRejected {
 		var valid bool
-		reviewResultPath, valid, err = containedPredecessorReviewResult(cfg, unit, facts.HeadSHA)
-		if err != nil {
-			return "", err
-		}
+		reviewResultPath, valid = containedPredecessorReviewResult(cfg, unit, facts.HeadSHA)
 		if !valid {
 			reviewResultPath = ""
 		}

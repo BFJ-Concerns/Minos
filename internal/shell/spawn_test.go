@@ -361,6 +361,28 @@ func TestSpawnRunRestoresMovedVerdictWhenRejectedHandoffSpawnFails(t *testing.T)
 	}
 }
 
+func TestSpawnRunRestoresMovedVerdictWhenAcceptedHandoffSpawnFails(t *testing.T) {
+	cfg, facts, predecessor, _ := reviewContinuationFixture(t)
+	verdictPath := filepath.Join(predecessor, "review-result.json")
+	if err := os.WriteFile(verdictPath, []byte(`{"status":"complete","reviewed":{"head":"head"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return nil, nil
+		}
+		return []byte("failed"), errors.New("spawn failed")
+	}
+
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err == nil {
+		t.Fatal("SpawnRun succeeded, want systemd-run failure")
+	}
+	if _, err := os.Stat(verdictPath); err != nil {
+		t.Fatalf("spawn failure did not restore predecessor verdict: %v", err)
+	}
+}
+
 func TestSpawnRunRefusesUntrustedReviewVerdicts(t *testing.T) {
 	tests := []struct {
 		name    string

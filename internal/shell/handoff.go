@@ -208,26 +208,26 @@ func containedRunDirectory(cfg ServiceConfig, unit, runDir string) (string, bool
 	return cleanRunDir, true
 }
 
-func adoptableReviewResult(path, head string) ([]byte, bool) {
+func adoptableReviewResult(path, head string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false
+		return false
 	}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil || envelope == nil {
-		return nil, false
+		return false
 	}
 	var result savedReviewResult
 	if err := json.Unmarshal(data, &result); err != nil || result.Status != "complete" || result.Reviewed.Head != head {
-		return nil, false
+		return false
 	}
-	return data, true
+	return true
 }
 
-func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) (string, bool, error) {
+func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) (string, bool) {
 	entries, err := os.ReadDir(cfg.Runs.Dir)
 	if err != nil {
-		return "", false, nil
+		return "", false
 	}
 	adopted := ""
 	for _, entry := range entries {
@@ -240,21 +240,21 @@ func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) (str
 		}
 		carried := filepath.Join(runDir, "carried-review-result.json")
 		result := carried
-		_, valid := adoptableReviewResult(carried, head)
+		valid := adoptableReviewResult(carried, head)
 		if !valid {
 			if err := os.Remove(carried); err != nil && !os.IsNotExist(err) {
 				continue
 			}
 			result = filepath.Join(runDir, "review-result.json")
-			_, valid = adoptableReviewResult(result, head)
+			valid = adoptableReviewResult(result, head)
 		}
 		if !valid {
 			continue
 		}
 		if adopted != "" {
-			return "", false, nil
+			return "", false
 		}
 		adopted = result
 	}
-	return adopted, adopted != "", nil
+	return adopted, adopted != ""
 }
