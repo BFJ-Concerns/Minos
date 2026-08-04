@@ -778,10 +778,14 @@ func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// Interleaved A/B runs under 12 parallel builds made this interval
+	// load-bearing: the 1s calibration failed 2/8, 5/10, and 2/10 runs at the
+	// write-count assertion, while the otherwise identical 2s calibration
+	// failed 0/8 and 0/10. Keep the measured margin rather than shortening it.
 	output, err := fixture.executeContext(ctx, map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":   "done",
 		"MINOS_TEST_POLL_WORK_WRITES": "12",
-		"MINOS_LEAD_SILENCE_TIMEOUT":  "1",
+		"MINOS_LEAD_SILENCE_TIMEOUT":  "2",
 		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
 	})
 	if ctx.Err() == context.DeadlineExceeded {
