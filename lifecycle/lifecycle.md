@@ -535,8 +535,11 @@ last action and end the turn. A continuation writes no failure-log line.
    The script applies extent, sweep, occasion, path-scope, and relevance
    conditions. A brief with no condition is skipped. A specialist that finds
    nothing applicable records that disposition separately from findings, so it
-   never reaches a verifier or becomes a published defect. Every skip remains
-   in the verdict's `skipped` array and is never published on the pull request.
+   never reaches a verifier or becomes a published defect. A whole-brief skip
+   remains in the verdict's `skipped` array; partition-level inapplicability
+   remains as `inapplicableUnits` on its brief's disposition — under a `ran`
+   entry when other partition units ran, or under the `skipped` entry when
+   every unit was inapplicable. None of it is published on the pull request.
    A `not-run` concern, missing result, incomplete leg, or missing or invalid
    verifier result makes this stage incomplete: publish no brief review, add no
    👍, set `"$MINOS_BIN" forge status CURRENT_HEAD "$MINOS_TARGET_SHA"

@@ -546,6 +546,87 @@ for (const [description, briefDisposition, condition] of [
     },
     /envelope contains a malformed skipped disposition/,
   ],
+  [
+    "run disposition with a non-array inapplicable-unit list",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "run",
+      reason: "applicable concern reviewed",
+      inapplicableUnits: "unit-1",
+    },
+    /brief "Error handling" carries an unreadable inapplicable-unit list/,
+  ],
+  [
+    "run disposition with a null inapplicable-unit element",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "run",
+      reason: "applicable concern reviewed",
+      inapplicableUnits: [null],
+    },
+    /brief "Error handling" carries a malformed inapplicable-unit record/,
+  ],
+  [
+    "run disposition with an inapplicable unit missing its reason",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "run",
+      reason: "applicable concern reviewed",
+      inapplicableUnits: [{ label: "unit-1", concern: "API behaviour" }],
+    },
+    /brief "Error handling" carries a malformed inapplicable-unit record/,
+  ],
+  [
+    "run disposition with an empty inapplicable-unit reason",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "run",
+      reason: "applicable concern reviewed",
+      inapplicableUnits: [{ label: "unit-1", concern: "API behaviour", reason: "" }],
+    },
+    /brief "Error handling" carries a malformed inapplicable-unit record/,
+  ],
+  [
+    "run disposition with a whitespace-only inapplicable-unit reason",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "run",
+      reason: "applicable concern reviewed",
+      inapplicableUnits: [{ label: "unit-1", concern: "API behaviour", reason: "  \n\t" }],
+    },
+    /brief "Error handling" carries a malformed inapplicable-unit record/,
+  ],
+  [
+    "run disposition with an empty inapplicable-unit label",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "run",
+      reason: "applicable concern reviewed",
+      inapplicableUnits: [{ label: "", concern: "API behaviour", reason: "no changed behaviour" }],
+    },
+    /brief "Error handling" carries a malformed inapplicable-unit record/,
+  ],
+  [
+    "skipped disposition with a malformed inapplicable unit",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "skipped",
+      skipKind: "inapplicable",
+      reason: "all 2 partition units were inapplicable",
+      inapplicableUnits: [
+        { label: "unit-1", concern: "API behaviour", reason: "no relevant change" },
+        { label: "unit-2", concern: 7, reason: "no relevant change" },
+      ],
+    },
+    /brief "Error handling" carries a malformed inapplicable-unit record/,
+  ],
 ]) {
   test(`a malformed ${description} cannot become publishable`, { timeout: 1000 }, async (t) => {
     const fixtureArchiveDir = fixtureArchive(t);
@@ -557,6 +638,81 @@ for (const [description, briefDisposition, condition] of [
     assertWithheld(adapterVerdict, condition);
   });
 }
+
+test("valid inapplicable units are carried onto their dispositions, projected to label, concern, and reason", { timeout: 1000 }, async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const partitionedEnvelope = {
+    ...envelope,
+    briefs: [
+      {
+        brief: ".review/errors.md",
+        title: "Error handling",
+        status: "run",
+        reason: "applicable concern reviewed",
+        inapplicableUnits: [{
+          label: "repository-review-errors-md-2-gpt",
+          concern: "UI behaviour",
+          reason: "the UI partition contains no changed behaviour to judge",
+          extra: "discarded",
+        }],
+      },
+      {
+        brief: ".review/full.md",
+        title: "Full",
+        status: "skipped",
+        skipKind: "inapplicable",
+        reason: "all 1 partition units were inapplicable",
+        inapplicableUnits: [{
+          label: "repository-review-full-md-1-gpt",
+          concern: null,
+          reason: "the whole scope has no relevant change",
+        }],
+      },
+    ],
+  };
+  const adapterVerdict = await adjudicate({ envelope: partitionedEnvelope, recordDir: fixtureArchiveDir });
+
+  assert.equal(adapterVerdict.status, "complete");
+  assert.deepEqual(adapterVerdict.ran, [{
+    brief: ".review/errors.md",
+    title: "Error handling",
+    inapplicableUnits: [{
+      label: "repository-review-errors-md-2-gpt",
+      concern: "UI behaviour",
+      reason: "the UI partition contains no changed behaviour to judge",
+    }],
+  }]);
+  assert.deepEqual(adapterVerdict.skipped, [{
+    brief: ".review/full.md",
+    title: "Full",
+    skipKind: "inapplicable",
+    reason: "all 1 partition units were inapplicable",
+    inapplicableUnits: [{
+      label: "repository-review-full-md-1-gpt",
+      concern: null,
+      reason: "the whole scope has no relevant change",
+    }],
+  }]);
+});
+
+test("a disposition without partition detail carries no inapplicable-unit field", { timeout: 1000 }, async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const plainEnvelope = {
+    ...envelope,
+    briefs: [
+      { brief: ".review/errors.md", title: "Error handling", status: "run", reason: "applicable concern reviewed" },
+      { brief: ".review/full.md", title: "Full", status: "run", reason: "applicable concern reviewed", inapplicableUnits: [] },
+    ],
+  };
+  const adapterVerdict = await adjudicate({ envelope: plainEnvelope, recordDir: fixtureArchiveDir });
+
+  assert.equal(adapterVerdict.status, "complete");
+  assert.deepEqual(adapterVerdict.ran, [
+    { brief: ".review/errors.md", title: "Error handling" },
+    { brief: ".review/full.md", title: "Full" },
+  ]);
+  assert.equal(adapterVerdict.ran.some((entry) => "inapplicableUnits" in entry), false);
+});
 
 test("a malformed misconfigurations field cannot become publishable", { timeout: 1000 }, async (t) => {
   const fixtureArchiveDir = fixtureArchive(t);

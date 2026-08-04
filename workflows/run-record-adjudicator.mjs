@@ -64,6 +64,34 @@ function validLeg(leg) {
   );
 }
 
+function validInapplicableUnit(unit) {
+  return Boolean(
+    unit && typeof unit === "object" &&
+    typeof unit.label === "string" && unit.label !== "" &&
+    (unit.concern === null || typeof unit.concern === "string") &&
+    typeof unit.reason === "string" && unit.reason.trim() !== ""
+  );
+}
+
+function inapplicableUnitsFrom(entry, incomplete) {
+  if (entry.inapplicableUnits === undefined) return undefined;
+  const name = entry.title || entry.brief || "unknown";
+  if (!Array.isArray(entry.inapplicableUnits)) {
+    incomplete.push(`brief "${name}" carries an unreadable inapplicable-unit list`);
+    return undefined;
+  }
+  if (entry.inapplicableUnits.some((unit) => !validInapplicableUnit(unit))) {
+    incomplete.push(`brief "${name}" carries a malformed inapplicable-unit record`);
+    return undefined;
+  }
+  if (entry.inapplicableUnits.length === 0) return undefined;
+  return entry.inapplicableUnits.map((unit) => ({
+    label: unit.label,
+    concern: unit.concern,
+    reason: unit.reason,
+  }));
+}
+
 function dispositionsFrom(briefs, incomplete) {
   const ran = [];
   const skipped = [];
@@ -79,11 +107,15 @@ function dispositionsFrom(briefs, incomplete) {
     if (entry.status === "run") {
       if (typeof entry.brief !== "string" || entry.brief === "" || typeof entry.title !== "string" || entry.title === "")
         incomplete.push("envelope contains a malformed run disposition");
-      else
-        ran.push({
+      else {
+        const disposition = {
           brief: entry.brief,
           title: entry.title,
-        });
+        };
+        const units = inapplicableUnitsFrom(entry, incomplete);
+        if (units) disposition.inapplicableUnits = units;
+        ran.push(disposition);
+      }
       continue;
     }
     if (entry.status !== "skipped") {
@@ -99,12 +131,15 @@ function dispositionsFrom(briefs, incomplete) {
       incomplete.push("envelope contains a malformed skipped disposition");
       continue;
     }
-    skipped.push({
+    const disposition = {
       brief: entry.brief,
       title: entry.title,
       skipKind: entry.skipKind,
       reason: entry.reason,
-    });
+    };
+    const units = inapplicableUnitsFrom(entry, incomplete);
+    if (units) disposition.inapplicableUnits = units;
+    skipped.push(disposition);
   }
   return { ran, skipped };
 }

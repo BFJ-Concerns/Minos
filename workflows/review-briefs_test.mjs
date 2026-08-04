@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { attachBriefPartitionDetails } from "./brief-partition-details.mjs";
 import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
@@ -130,10 +129,7 @@ async function adjudicateEnvelope(t, envelope) {
       resolved_model: leg.pinnedModel,
     }));
   });
-  return attachBriefPartitionDetails(
-    await adjudicate({ envelope, recordDir }),
-    envelope,
-  );
+  return adjudicate({ envelope, recordDir });
 }
 
 test("an absent .review directory emits a complete-stage envelope with no legs", async () => {
