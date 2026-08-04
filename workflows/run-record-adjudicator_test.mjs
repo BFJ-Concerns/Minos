@@ -479,6 +479,9 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
 });
 
 for (const [description, findingField] of [
+  ["an empty source", { source: "" }],
+  ["an empty title", { title: "" }],
+  ["an empty explanation", { explanation: "" }],
   ["an unknown severity", { severity: "Wibble" }],
   ["an out-of-range confidence", { confidence: 999 }],
   ["an invalid line number", { line: -5 }],
@@ -522,6 +525,17 @@ for (const [description, briefDisposition, condition] of [
     /envelope contains a malformed run disposition/,
   ],
   [
+    "skipped disposition with an empty title",
+    {
+      brief: ".review/errors.md",
+      title: "",
+      status: "skipped",
+      skipKind: "inapplicable",
+      reason: "concern does not apply",
+    },
+    /envelope contains a malformed skipped disposition/,
+  ],
+  [
     "skipped disposition with an empty reason",
     {
       brief: ".review/errors.md",
@@ -540,11 +554,7 @@ for (const [description, briefDisposition, condition] of [
       briefs: [briefDisposition],
     };
     const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
-    assert.equal(adapterVerdict.status, "incomplete");
-    assert.deepEqual(adapterVerdict.confirmedFindings, []);
-    assert.equal(adapterVerdict.reviewBody, null);
-    assert.equal(adapterVerdict.fixRequired, false);
-    assert.match(adapterVerdict.incomplete.join("\n"), condition);
+    assertWithheld(adapterVerdict, condition);
   });
 }
 
