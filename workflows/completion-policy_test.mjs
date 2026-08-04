@@ -150,6 +150,28 @@ test("legacy and identity-absent records retain exact-key matching", () => {
   assert.equal(sweepDigest(digestInput([{ ...original, line: 41 }], { runRecord })).candidates.length, 1);
 });
 
+test("blank explanations retain exact-key matching instead of collapsing same-path defects", () => {
+  const absent = finding("unsafe deletion", "High", "a.go", 32);
+  delete absent.explanation;
+  assert.equal(Object.hasOwn(preparedFinding(absent), "identity"), false);
+
+  const original = finding("unsafe transition", "High", "a.go", 40);
+  original.explanation = "";
+  const recorded = preparedFinding(original);
+  assert.equal(Object.hasOwn(recorded, "identity"), false);
+
+  const distinct = finding("unsafe cleanup", "High", "a.go", 47);
+  distinct.explanation = "   \n\t";
+  assert.equal(Object.hasOwn(preparedFinding(distinct), "identity"), false);
+
+  const runRecord = {
+    round: 1,
+    confirmedUnfixed: [{ key: recorded.key, finding: recorded, attempts: 2 }],
+  };
+  const digest = sweepDigest(digestInput([original, distinct], { runRecord }));
+  assert.deepEqual(digest.candidates.map((entry) => entry.title), [distinct.title]);
+});
+
 test("the digest separates dispatchable findings by threshold and suppresses confirmed-unfixed", () => {
   const high = finding("unsafe transition", "High", "a.go", 4);
   const low = finding("weak wording", "Low", "b.go", 7);

@@ -50,8 +50,10 @@ function normaliseTitle(value) {
 }
 
 function findingIdentity(finding) {
+  const explanation = typeof finding.explanation === "string" ? finding.explanation.trim() : "";
+  if (explanation === "") return undefined;
   return JSON.stringify(["minos-finding-identity-v1", finding.path,
-    String(finding.explanation || "").trim().toLowerCase().replace(/\s+/g, " ")]);
+    explanation.toLowerCase().replace(/\s+/g, " ")]);
 }
 
 // The legacy exact key remains the dispatch identifier and compatibility
@@ -62,7 +64,9 @@ export function findingKey(finding) {
 }
 
 export function preparedFinding(finding) {
-  return { ...finding, key: findingKey(finding), identity: findingIdentity(finding) };
+  const prepared = { ...finding, key: findingKey(finding) };
+  const identity = findingIdentity(finding);
+  return identity === undefined ? prepared : { ...prepared, identity };
 }
 
 // Persisted predecessors may predate drift-aware identity. Those records keep
