@@ -132,6 +132,14 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 		t.Fatal(err)
 	}
 	runGit(t, workspace, "add", "shared.txt")
+	setupResultPath := filepath.Join(runDir, "setup-result.json")
+	setupRetryResultPath := filepath.Join(runDir, "setup-retry-result.json")
+	if err := os.WriteFile(setupResultPath, []byte("stale setup result\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(setupRetryResultPath, []byte("accepted retry result\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	complete = exec.Command(filepath.Join("..", "..", "scripts", "run-body", "complete-reconciliation"), workspace)
 	complete.Env = append(os.Environ(), "MINOS_RUN_DIR="+runDir, "MINOS_BASE_REF=main")
 	if completeOutput, err = complete.CombinedOutput(); err != nil {
@@ -140,6 +148,10 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 	accepted := readReconciliationState(t, statePath)
 	if accepted.Outcome != "reconciled" || accepted.Merge == nil {
 		t.Fatalf("accepted state = %+v", accepted)
+	}
+	assertContainsFile(t, setupResultPath, "accepted retry result")
+	if _, err := os.Stat(setupRetryResultPath); !os.IsNotExist(err) {
+		t.Fatalf("setup retry result survived completed reconciliation: %v", err)
 	}
 	if got := gitOutput(t, workspace, "show", "HEAD:sibling.txt"); got != "clean target content" {
 		t.Fatalf("completed reconciliation dropped clean target content: %q", got)

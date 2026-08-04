@@ -178,16 +178,10 @@ last action and end the turn. A continuation writes no failure-log line.
    bounded resolution diff. A second unacceptable resolution ends the run
    incomplete with the specific objection recorded. Write the non-clean
    terminal marker and stop. Once every resolution stands, run
-
-   ```sh
-   mv "$MINOS_RUN_DIR/setup-retry-result.json" "$MINOS_RUN_DIR/setup-result.json"
-   ```
-
-   The retry changed the reconciled tree, so its non-reusable
-   reconciliation-only command outcomes supersede the original full setup
-   outcomes. Then run
    `"${MINOS_SETUP_WORKSPACE%/*}/complete-reconciliation"
-   "$MINOS_WORKSPACE"`.
+   "$MINOS_WORKSPACE"`. Completion also supersedes the original full setup
+   result with the retry's non-reusable reconciliation-only command outcomes,
+   because the retry changed the reconciled tree.
 
    The same check, one-retry and completion rule applies when a later Minos
    script reports `reconcile-conflict`: redispatch the setup workflow in

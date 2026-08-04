@@ -49,15 +49,19 @@ the workspace:
 - npm's content cache belongs in `$npm_config_cache`; do not share
   `node_modules` or repository build output between worktrees.
 
-Use the repository's configured commands and manifests to choose which caches
-to warm. Run each configured build and test command exactly once to completion;
-their exit statuses are returned as evidence so the lead can avoid repeating
-successful verification. The caches last for this Minos run, including its fix
-worktrees, and are removed with the run directory. `$XDG_STATE_HOME` remains
-separate state, not a build cache. Provisioned executables must land in an
-inherited PATH location: `$HOME/.cargo/bin` or `$HOME/.local/bin`. Passwordless
-`sudo` is available when an evidenced system package is the appropriate
-installation.
+In full mode, use the repository's configured commands and manifests to choose
+which caches to warm, then run each configured build and test command exactly
+once to completion. Return their exit statuses as evidence so the lead can
+avoid repeating successful verification. In reconciliation-only mode, resolve
+the rejected conflicts without inspecting, provisioning, or changing the
+environment and without running either configured command; return null exit
+statuses for both commands.
+
+The caches last for this Minos run, including its fix worktrees, and are removed
+with the run directory. `$XDG_STATE_HOME` remains separate state, not a build
+cache. Provisioned executables must land in an inherited PATH location:
+`$HOME/.cargo/bin` or `$HOME/.local/bin`. Passwordless `sudo` is available when
+an evidenced system package is the appropriate installation.
 
 Never modify a repository file, regenerate a lockfile, invent a build or test
 command, commit, or push. If the environment cannot be made ready, report the

@@ -220,7 +220,11 @@ test("setup input builder emits deterministic repository content and objections"
   assert.match(result.setupBrief.content, /untracked\s+artefacts instead/);
   assert.match(
     result.setupBrief.content,
-    /Run each configured build and test command exactly once to completion/,
+    /run each configured build and test command exactly\s+once to completion/i,
+  );
+  assert.match(
+    result.setupBrief.content,
+    /In reconciliation-only mode[\s\S]*without running either configured command/,
   );
   assert.equal(result.objections[0].objection, "OBJECTION_SENTINEL_AUBURN_719");
   assert.equal(result.buildCommand, "npm run build");
@@ -260,11 +264,7 @@ test("lifecycle runs setup every time and keeps resolution checking with the lea
   assert.match(stageOne, /environment\.ready: false[\s\S]*incomplete terminal/);
   assert.match(stageOne, /show-resolutions[\s\S]*preserves\s+both parents' intent/);
   assert.match(stageOne, /reopen-conflict[\s\S]*redispatch once/);
-  assert.match(
-    stageOne,
-    /mv "\$MINOS_RUN_DIR\/setup-retry-result\.json" "\$MINOS_RUN_DIR\/setup-result\.json"[\s\S]*non-reusable[\s\S]*supersede/,
-  );
-  assert.match(stageOne, /complete-reconciliation/);
+  assert.match(stageOne, /complete-reconciliation[\s\S]*supersedes[\s\S]*non-reusable/);
   assert.match(stageOne, /merge-base-to-head comment geometry/);
   assert.match(stageOne, /pinned target-to-current-pull-request-head range/);
   assert.match(stageOne, /Never edit\s+a conflicted file yourself/);
