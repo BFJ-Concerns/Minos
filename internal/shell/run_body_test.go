@@ -199,20 +199,29 @@ func TestRunBodySharesPersistentCachesOnlyWithinARepository(t *testing.T) {
 
 func TestRunBodyRejectsCachePathTraversal(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	escapeDir := filepath.Join(fixture.root, "escape")
+	escapeDir := filepath.Join(fixture.root, "cache", "escape")
 	out, err := fixture.execute(map[string]string{
 		"MINOS_OWNER": "../escape",
 	})
 	if err == nil {
 		t.Fatalf("run-body accepted a traversing cache identity\n%s", out)
 	}
-	if !strings.Contains(string(out), "cache path components must not start with a dot or contain a slash") {
+	if !strings.Contains(string(out), "cache path components must not be empty, equal dot or dot-dot, or contain a slash") {
 		t.Fatalf("run-body output did not explain rejected cache identity\n%s", out)
 	}
 	if _, err := os.Stat(escapeDir); !os.IsNotExist(err) {
 		t.Fatalf("traversing cache identity created %s: %v", escapeDir, err)
 	}
-	assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not start with a dot or contain a slash")
+	assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not be empty, equal dot or dot-dot, or contain a slash")
+}
+
+func TestRunBodyAllowsDotNamedRepository(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, map[string]string{"MINOS_REPO_NAME": ".github"})
+
+	cacheDir := fixture.cacheDir("forgejo", "owner", ".github")
+	assertContainsFile(t, fixture.record+".worker-env", "MINOS_SHARED_CACHE_DIR="+cacheDir)
+	assertFileEmpty(t, fixture.failureLog)
 }
 
 func TestRunBodyRecordsMissingCacheIdentity(t *testing.T) {
