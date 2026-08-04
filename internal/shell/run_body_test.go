@@ -206,13 +206,34 @@ func TestRunBodyRejectsCachePathTraversal(t *testing.T) {
 	if err == nil {
 		t.Fatalf("run-body accepted a traversing cache identity\n%s", out)
 	}
-	if !strings.Contains(string(out), "cache path components must not be empty, equal dot or dot-dot, or contain a slash") {
+	if !strings.Contains(string(out), "cache path components must not equal dot or dot-dot, or contain a slash") {
 		t.Fatalf("run-body output did not explain rejected cache identity\n%s", out)
 	}
 	if _, err := os.Stat(escapeDir); !os.IsNotExist(err) {
 		t.Fatalf("traversing cache identity created %s: %v", escapeDir, err)
 	}
-	assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not be empty, equal dot or dot-dot, or contain a slash")
+	assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash")
+}
+
+func TestRunBodyRejectsExactDotCachePathComponents(t *testing.T) {
+	for _, variable := range []string{"MINOS_FORGE", "MINOS_OWNER", "MINOS_REPO_NAME"} {
+		for _, component := range []string{".", ".."} {
+			t.Run(variable+"="+component, func(t *testing.T) {
+				fixture := newRunBodyFixture(t)
+				out, err := fixture.execute(map[string]string{variable: component})
+				if err == nil {
+					t.Fatalf("run-body accepted %s=%q\n%s", variable, component, out)
+				}
+				if !strings.Contains(string(out), "cache path components must not equal dot or dot-dot, or contain a slash") {
+					t.Fatalf("run-body output did not explain rejected cache identity\n%s", out)
+				}
+				if _, err := os.Stat(fixture.record + ".worker-env"); !os.IsNotExist(err) {
+					t.Fatalf("rejected cache identity launched worker: %v", err)
+				}
+				assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash")
+			})
+		}
+	}
 }
 
 func TestRunBodyAllowsDotNamedRepository(t *testing.T) {

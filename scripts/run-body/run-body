@@ -159,8 +159,8 @@ failure_cause="MINOS_REPO_NAME is required for the shared cache path"
 : "${MINOS_REPO_NAME:?MINOS_REPO_NAME is required for the shared cache path}"
 for cache_component in "$MINOS_FORGE" "$MINOS_OWNER" "$MINOS_REPO_NAME"; do
   case "$cache_component" in
-  "" | . | .. | */*)
-    failure_cause="forge, owner and repository cache path components must not be empty, equal dot or dot-dot, or contain a slash"
+  . | .. | */*)
+    failure_cause="forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash"
     echo "run-body: $failure_cause" >&2
     exit 1
     ;;
