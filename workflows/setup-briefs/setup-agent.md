@@ -31,8 +31,8 @@ an already working toolchain merely to chase current. Install a missing global
 toolchain only when the configured commands and repository evidence require
 it. Do not make speculative or language-specific installations.
 
-Every worker inherits run-scoped shared build-cache locations prepared outside
-the workspace:
+Every worker inherits persistent per-repository build-cache locations prepared
+outside the workspace:
 
 - `$MINOS_SHARED_CACHE_DIR` is the cache root.
 - Rust compiler-cache state belongs in `$SCCACHE_DIR`. Keep each worktree's
