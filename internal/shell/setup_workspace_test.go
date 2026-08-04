@@ -192,6 +192,64 @@ func TestSetupWorkspaceRejectsEmptyRepositoryGuidanceFallback(t *testing.T) {
 	}
 }
 
+func TestSetupResultReuseRunsCommandsOnlyWhenCurrentHeadEvidenceIsUnavailable(t *testing.T) {
+	policy := filepath.Join("..", "..", "workflows", "completion-policy.mjs")
+	result := func(head string) map[string]any {
+		return map[string]any{
+			"status":      "complete",
+			"environment": map[string]any{"ready": true},
+			"commandExecutions": map[string]any{
+				"head":  head,
+				"build": map[string]any{"command": "make build", "exitStatus": 0},
+				"test":  map[string]any{"command": "make test", "exitStatus": 0},
+			},
+		}
+	}
+
+	for _, test := range []struct {
+		name      string
+		record    any
+		head      string
+		wantReuse bool
+	}{
+		{name: "current head", record: result("head-719"), head: "head-719", wantReuse: true},
+		{name: "moved head", record: result("head-719"), head: "head-720"},
+		{name: "absent", record: nil, head: "head-719"},
+		{name: "partial", record: map[string]any{"status": "complete", "environment": map[string]any{"ready": true}}, head: "head-719"},
+		{name: "non-pass", record: func() any {
+			record := result("head-719")
+			record["commandExecutions"].(map[string]any)["test"] = map[string]any{"command": "make test", "exitStatus": 1}
+			return record
+		}(), head: "head-719"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recordPath := filepath.Join(t.TempDir(), "setup-result.json")
+			if test.record != nil {
+				data, err := json.Marshal(test.record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(recordPath, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output, err := exec.Command("node", policy, "--setup-result", recordPath, test.head, "make build", "make test").Output()
+			if err != nil {
+				t.Fatalf("setup reuse policy failed: %v", err)
+			}
+			var decision struct {
+				Reusable bool `json:"reusable"`
+			}
+			if err := json.Unmarshal(output, &decision); err != nil {
+				t.Fatal(err)
+			}
+			if decision.Reusable != test.wantReuse {
+				t.Fatalf("reusable = %v, want %v; current-head passing evidence must be the only no-execution path", decision.Reusable, test.wantReuse)
+			}
+		})
+	}
+}
+
 type orientationState struct {
 	Repository string `json:"repository"`
 	Head       string `json:"head"`

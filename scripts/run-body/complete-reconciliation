@@ -10,6 +10,8 @@ workspace="$1"
 : "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 : "${MINOS_BASE_REF:?MINOS_BASE_REF is required}"
 state_file="${MINOS_RUN_DIR}/reconciliation.json"
+setup_result="${MINOS_RUN_DIR}/setup-result.json"
+setup_retry_result="${MINOS_RUN_DIR}/setup-retry-result.json"
 
 if [ ! -f "$state_file" ]; then
   echo "complete-reconciliation: reconciliation state is missing: $state_file" >&2
@@ -83,4 +85,7 @@ jq --arg merge "$reconciliation_sha" \
   '. + {outcome:"reconciled",merge:$merge}' \
   "$state_file" >"$state_tmp"
 mv "$state_tmp" "$state_file"
+if [ -f "$setup_retry_result" ]; then
+  mv "$setup_retry_result" "$setup_result"
+fi
 jq -nc --arg merge "$reconciliation_sha" '{outcome:"reconciled",merge:$merge}'

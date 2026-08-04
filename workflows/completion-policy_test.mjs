@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import {
   configuredCommandResult,
   findingKey,
   preparedFinding,
+  reusableSetupCommandResults,
   sweepDigest,
   validateSweepDecision,
 } from "./completion-policy.mjs";
@@ -46,6 +47,70 @@ test("all absent command forms skip regardless of exit status", () => {
         terminal: false,
         reviewAllowed: true,
       });
+});
+
+function completeSetupResult(overrides = {}) {
+  return {
+    status: "complete",
+    environment: { ready: true, actions: [], cause: null },
+    commandExecutions: {
+      head: "head-719",
+      build: { command: "make build", exitStatus: 0 },
+      test: { command: "make test", exitStatus: 0 },
+    },
+    ...overrides,
+  };
+}
+
+test("setup command results are reusable only as a complete exact-head pair", () => {
+  assert.deepEqual(
+    reusableSetupCommandResults(completeSetupResult(), "head-719", "make build", "make test"),
+    {
+      reusable: true,
+      results: {
+        build: { status: "passed", terminal: false, reviewAllowed: true },
+        test: { status: "passed", terminal: false, reviewAllowed: true },
+      },
+    },
+  );
+
+  for (const [name, result] of [
+    ["absent", null],
+    ["malformed shape", { status: "complete", environment: { ready: true } }],
+    ["partial", completeSetupResult({ commandExecutions: {
+      head: "head-719", build: { command: "make build", exitStatus: 0 },
+    } })],
+    ["non-pass", completeSetupResult({ commandExecutions: {
+      ...completeSetupResult().commandExecutions,
+      test: { command: "make test", exitStatus: 1 },
+    } })],
+    ["stale head", completeSetupResult({ commandExecutions: {
+      ...completeSetupResult().commandExecutions, head: "old-head",
+    } })],
+    ["changed command", completeSetupResult({ commandExecutions: {
+      ...completeSetupResult().commandExecutions,
+      build: { command: "make something-else", exitStatus: 0 },
+    } })],
+  ]) {
+    assert.deepEqual(
+      reusableSetupCommandResults(result, "head-719", "make build", "make test"),
+      { reusable: false },
+      name,
+    );
+  }
+});
+
+test("setup result CLI refuses malformed JSON and accepts genuine current-head passes", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-setup-result-policy-"));
+  const record = join(root, "setup-result.json");
+  writeFileSync(record, JSON.stringify(completeSetupResult()));
+  const args = ["--setup-result", record, "head-719", "make build", "make test"];
+  assert.equal(JSON.parse(execFileSync(process.execPath, [policyScriptPath, ...args])).reusable, true);
+
+  writeFileSync(record, "not JSON");
+  assert.deepEqual(JSON.parse(execFileSync(process.execPath, [policyScriptPath, ...args])), {
+    reusable: false,
+  });
 });
 
 test("the configured command policy CLI runs from an install-like layout", () => {

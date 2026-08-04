@@ -5,25 +5,27 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
-const reconcileOnly = argv.includes("--reconcile-only");
+const head = argv[0];
+const optionArgv = argv.slice(1);
+const reconcileOnly = optionArgv.includes("--reconcile-only");
 const recognised = new Set(["--reconcile-only", "--objections"]);
 let objectionsPath = null;
 let invalid = false;
-for (let index = 0; index < argv.length; index += 1) {
-  const argument = argv[index];
+for (let index = 0; index < optionArgv.length; index += 1) {
+  const argument = optionArgv[index];
   if (!recognised.has(argument)) {
     invalid = true;
     break;
   }
   if (argument === "--objections") {
-    objectionsPath = argv[index + 1] || null;
+    objectionsPath = optionArgv[index + 1] || null;
     index += 1;
     if (!objectionsPath) invalid = true;
   }
 }
 
-if (invalid) {
-  process.stderr.write("usage: node workflows/setup-inputs.mjs [--reconcile-only] [--objections FILE]\n");
+if (!head || head.startsWith("--") || invalid) {
+  process.stderr.write("usage: node workflows/setup-inputs.mjs HEAD [--reconcile-only] [--objections FILE]\n");
   process.exitCode = 2;
 } else {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -66,6 +68,7 @@ if (invalid) {
 
   process.stdout.write(`${JSON.stringify({
     mode: reconcileOnly ? "reconcile-only" : "full",
+    head,
     workspace,
     conflicts: reconciliation.conflicts,
     preimageDir: reconciliation.preimageDir,

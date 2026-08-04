@@ -6,6 +6,7 @@
 // publication structure live in fix-wave-plan.mjs, which consumes a validated
 // decision and never re-derives a classification.
 
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export const DIGEST_KIND = "minos-sweep-digest-v1";
@@ -30,7 +31,49 @@ export function configuredCommandResult(command, exitStatus) {
   };
 }
 
+export function reusableSetupCommandResults(setupResult, head, buildCommand, testCommand) {
+  const executions = setupResult?.commandExecutions;
+  if (setupResult?.status !== "complete" || setupResult?.environment?.ready !== true ||
+      !executions || executions.head !== head)
+    return { reusable: false };
+
+  const commands = [
+    ["build", buildCommand],
+    ["test", testCommand],
+  ];
+  const results = {};
+  for (const [name, command] of commands) {
+    const execution = executions[name];
+    if (!execution || execution.command !== command) return { reusable: false };
+    const unconfigured = typeof command === "string" && command.trim() === "";
+    if (unconfigured ? execution.exitStatus !== null :
+      !Number.isInteger(execution.exitStatus) || execution.exitStatus < 0)
+      return { reusable: false };
+    const result = configuredCommandResult(command, execution.exitStatus);
+    if (!unconfigured && result.status !== "passed") return { reusable: false };
+    results[name] = result;
+  }
+  return { reusable: true, results };
+}
+
 function runConfiguredCommandCli(argv) {
+  if (argv[0] === "--setup-result") {
+    const [flag, path, head, buildCommand, testCommand, ...surplus] = argv;
+    if (flag !== "--setup-result" || !path || !head || buildCommand === undefined ||
+        testCommand === undefined || surplus.length > 0) {
+      process.stderr.write("usage: node workflows/completion-policy.mjs --setup-result FILE HEAD BUILD_COMMAND TEST_COMMAND\n");
+      process.exitCode = 2;
+      return;
+    }
+    let setupResult = null;
+    try {
+      setupResult = JSON.parse(readFileSync(path, "utf8"));
+    } catch {}
+    process.stdout.write(`${JSON.stringify(reusableSetupCommandResults(
+      setupResult, head, buildCommand, testCommand,
+    ))}\n`);
+    return;
+  }
   const usage = "usage: node workflows/completion-policy.mjs COMMAND EXIT_STATUS\n";
   const [command, exitStatusText, ...surplus] = argv;
   if (command === undefined || exitStatusText === undefined || surplus.length > 0 ||
