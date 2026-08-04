@@ -31,8 +31,8 @@ an already working toolchain merely to chase current. Install a missing global
 toolchain only when the configured commands and repository evidence require
 it. Do not make speculative or language-specific installations.
 
-Every worker inherits run-scoped shared build-cache locations prepared outside
-the workspace:
+Every worker inherits persistent per-repository build-cache locations prepared
+outside the workspace:
 
 - `$MINOS_SHARED_CACHE_DIR` is the cache root.
 - Rust compiler-cache state belongs in `$SCCACHE_DIR`. Keep each worktree's
@@ -49,21 +49,20 @@ the workspace:
 - npm's content cache belongs in `$npm_config_cache`; do not share
   `node_modules` or repository build output between worktrees.
 
-Use the repository's configured commands and manifests to choose which caches
-to warm. Warming is compilation, never execution: run the configured build
-command, and where the toolchain can compile test artefacts without running
-them (`cargo test --no-run`, `go test -run '^$'`, or the equivalent), do that
-too — but never execute the configured test command to completion. Test runs
-warm nothing that their compilation does not, and the lead re-runs the
-configured commands itself as verification, so an executed suite here is pure
-duplication. The caches last for this Minos run, including its fix worktrees,
-and are removed with the run directory. `$XDG_STATE_HOME` remains separate state,
-not a build cache. Provisioned executables must land in an inherited PATH
-location: `$HOME/.cargo/bin` or `$HOME/.local/bin`. Passwordless `sudo` is
-available when an evidenced system package is the appropriate installation.
+In full mode, use the repository's configured commands and manifests to choose
+which caches to warm, then run each configured build and test command exactly
+once to completion. Return their exit statuses as evidence so the lead can
+avoid repeating successful verification. In reconciliation-only mode, resolve
+the rejected conflicts without inspecting, provisioning, or changing the
+environment and without running either configured command; return null exit
+statuses for both commands.
+
+The caches persist across Minos runs of this repository and are shared with
+their fix worktrees. `$XDG_STATE_HOME` remains separate state, not a build
+cache. Provisioned executables must land in an inherited PATH location:
+`$HOME/.cargo/bin` or `$HOME/.local/bin`. Passwordless `sudo` is available when
+an evidenced system package is the appropriate installation.
 
 Never modify a repository file, regenerate a lockfile, invent a build or test
-command, commit, or push. Run the configured build command only when it is
-needed to warm the selected cache; this is cache preparation, not a claim
-that verification passed. If the environment cannot be made ready, report the
+command, commit, or push. If the environment cannot be made ready, report the
 exact requirement, attempted action, and failure.

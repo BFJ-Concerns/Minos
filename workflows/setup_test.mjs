@@ -17,6 +17,7 @@ const setupWorkflow = new AsyncFunction("agent", "parallel", "pipeline", "phase"
 function setupInput(overrides = {}) {
   return {
     mode: "full",
+    head: "head-setup-719",
     workspace: "/run/workspace",
     conflicts: ["package.json"],
     preimageDir: "/run/reconciliation/preimages",
@@ -48,6 +49,11 @@ test("setup workflow binds inputs and dispatches one non-isolated Opus leg", asy
           resolutions: [{ path: "package.json", note: "preserved both dependency updates" }],
         },
         environment: { ready: true, actions: ["npm ci"], cause: null },
+        commandExecutions: {
+          head: "head-setup-719",
+          build: { command: "npm run build", exitStatus: 0 },
+          test: { command: "npm test", exitStatus: 0 },
+        },
       };
     },
     async () => [],
@@ -68,6 +74,8 @@ test("setup workflow binds inputs and dispatches one non-isolated Opus leg", asy
   assert.match(calls[0].prompt, /package\.json/);
   assert.match(calls[0].prompt, /npm run build/);
   assert.match(calls[0].prompt, /npm test/);
+  assert.match(calls[0].prompt, /run each non-empty configured command exactly once to completion/);
+  assert.match(calls[0].prompt, /raw outcomes are evidence only; do not classify/);
   assert.match(calls[0].prompt, /Do not commit, push/);
 });
 
@@ -82,6 +90,11 @@ test("reconciliation-only retry carries objections and excludes provisioning wor
           resolutions: [{ path: "package.json", note: "retained the target engine floor" }],
         },
         environment: { ready: true, actions: [], cause: null },
+        commandExecutions: {
+          head: "head-setup-719",
+          build: { command: "npm run build", exitStatus: null },
+          test: { command: "npm test", exitStatus: null },
+        },
       };
     },
     async () => [],
@@ -123,6 +136,29 @@ test("setup workflow fails closed when its input or leg result is absent", async
   assert.deepEqual(missing, { status: "incomplete", reason: "setup agent returned no result" });
 });
 
+test("setup workflow refuses command evidence outside the requested envelope", async () => {
+  const result = await setupWorkflow(
+    async () => ({
+      reconciliation: { attempted: false, resolutions: [] },
+      environment: { ready: true, actions: [], cause: null },
+      commandExecutions: {
+        head: "different-head",
+        build: { command: "npm run build", exitStatus: 0 },
+        test: { command: "npm test", exitStatus: 0 },
+      },
+    }),
+    async () => [],
+    async () => [],
+    () => {},
+    () => {},
+    setupInput(),
+  );
+  assert.deepEqual(result, {
+    status: "incomplete",
+    reason: "setup agent returned command outcomes outside the requested head and commands",
+  });
+});
+
 test("setup input builder emits deterministic repository content and objections", () => {
   const runDir = mkdtempSync(join(tmpdir(), "minos-setup-inputs-"));
   const workspace = join(runDir, "workspace");
@@ -148,7 +184,7 @@ test("setup input builder emits deterministic repository content and objections"
 
   const stdout = execFileSync(
     process.execPath,
-    [join(workflowsDir, "setup-inputs.mjs"), "--reconcile-only", "--objections", objections],
+    [join(workflowsDir, "setup-inputs.mjs"), "head-builder-719", "--reconcile-only", "--objections", objections],
     {
       encoding: "utf8",
       env: {
@@ -163,6 +199,7 @@ test("setup input builder emits deterministic repository content and objections"
   );
   const result = JSON.parse(stdout);
   assert.equal(result.mode, "reconcile-only");
+  assert.equal(result.head, "head-builder-719");
   assert.equal(result.workspace, workspace);
   assert.deepEqual(result.conflicts, ["package.json"]);
   assert.equal(result.guidance.content, "INPUT_GUIDANCE_SENTINEL_SIENNA_719\n");
@@ -183,7 +220,11 @@ test("setup input builder emits deterministic repository content and objections"
   assert.match(result.setupBrief.content, /untracked\s+artefacts instead/);
   assert.match(
     result.setupBrief.content,
-    /never execute the configured test command to completion/,
+    /run each configured build and test command exactly\s+once to completion/i,
+  );
+  assert.match(
+    result.setupBrief.content,
+    /In reconciliation-only mode[\s\S]*without running either configured command/,
   );
   assert.equal(result.objections[0].objection, "OBJECTION_SENTINEL_AUBURN_719");
   assert.equal(result.buildCommand, "npm run build");
@@ -196,7 +237,7 @@ test("setup input builder loudly rejects a missing reconciliation record", () =>
   writeFileSync(guidance, "# Guidance\n");
   const orientation = join(runDir, "orientation.json");
   writeFileSync(orientation, JSON.stringify({ repository: runDir, guidance }));
-  const result = spawnSync(process.execPath, [join(workflowsDir, "setup-inputs.mjs")], {
+  const result = spawnSync(process.execPath, [join(workflowsDir, "setup-inputs.mjs"), "head-missing-719"], {
     encoding: "utf8",
     env: { ...process.env, MINOS_RUN_DIR: runDir, MINOS_ORIENTATION: orientation },
   });
@@ -204,15 +245,36 @@ test("setup input builder loudly rejects a missing reconciliation record", () =>
   assert.match(result.stderr, /reconciliation\.json/);
 });
 
+test("setup input builder rejects an option in place of the head", () => {
+  const result = spawnSync(
+    process.execPath,
+    [join(workflowsDir, "setup-inputs.mjs"), "--reconcile-only"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /^usage:/);
+  assert.equal(result.stdout, "");
+});
+
 test("lifecycle runs setup every time and keeps resolution checking with the lead", () => {
   const stageOne = lifecycle.slice(lifecycle.indexOf("1. The setup script"), lifecycle.indexOf("2. Publish"));
   assert.match(stageOne, /Run the setup workflow on every run/);
   assert.match(stageOne, /setup-inputs\.mjs[\s\S]*setup\.js/);
+  assert.match(stageOne, /setup-inputs\.mjs" "\$MINOS_HEAD_SHA"/);
   assert.match(stageOne, /environment\.ready: false[\s\S]*incomplete terminal/);
   assert.match(stageOne, /show-resolutions[\s\S]*preserves\s+both parents' intent/);
   assert.match(stageOne, /reopen-conflict[\s\S]*redispatch once/);
-  assert.match(stageOne, /complete-reconciliation/);
+  assert.match(stageOne, /complete-reconciliation[\s\S]*supersedes[\s\S]*non-reusable/);
   assert.match(stageOne, /merge-base-to-head comment geometry/);
   assert.match(stageOne, /pinned target-to-current-pull-request-head range/);
   assert.match(stageOne, /Never edit\s+a conflicted file yourself/);
+});
+
+test("lifecycle reuses only current-head genuine setup passes and preserves fresh failure handling", () => {
+  const stageThree = lifecycle.slice(lifecycle.indexOf("3. Read the repository guidance"), lifecycle.indexOf("4. Run every Ensemble"));
+  assert.match(stageThree, /--setup-result[\s\S]*setup-result\.json[\s\S]*\$MINOS_HEAD_SHA/);
+  assert.match(stageThree, /Only then consume its build and test results and do\s+not execute either command again/);
+  assert.match(stageThree, /absent, malformed, partial,[\s\S]*non-passing,[\s\S]*stale-head[\s\S]*execute both configured commands normally/);
+  assert.match(stageThree, /Never reuse a\s+`skipped` outcome for a configured command/);
+  assert.match(stageThree, /On a\s+`failed` status,[\s\S]*\$MINOS_FAILURE_LOG[\s\S]*status HEAD TARGET incomplete[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean[\s\S]*stop before starting any review/);
 });

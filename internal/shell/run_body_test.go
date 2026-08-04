@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	codexConfigDir := filepath.Join(homeDir, ".codex")
 	projectsDir := filepath.Join(homeDir, ".claude", "projects")
 	stateDir := filepath.Join(fixture.runDir, "state")
-	cacheDir := filepath.Join(fixture.runDir, "cache")
+	cacheDir := fixture.cacheDir("forgejo", "owner", "repository")
 	info, err := os.Stat(configDir)
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +156,159 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	assertFileEmpty(t, fixture.failureLog)
 
 	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodySharesPersistentCachesOnlyWithinARepository(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	first := fixture.withRun("first", "first-record")
+	second := fixture.withRun("second", "second-record")
+
+	first.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+	cacheDir := environmentValue(t, first.record+".worker-env", "MINOS_SHARED_CACHE_DIR")
+	wantCacheDir := first.cacheDir("forgejo", "owner", "repository")
+	if cacheDir != wantCacheDir {
+		t.Fatalf("persistent cache = %q, want repository-scoped path %q", cacheDir, wantCacheDir)
+	}
+	if strings.HasPrefix(cacheDir, filepath.Clean(filepath.Join(fixture.root, "runs"))+string(os.PathSeparator)) {
+		t.Fatalf("persistent cache %q is inside runs directory %q", cacheDir, filepath.Join(fixture.root, "runs"))
+	}
+	assertContainsFile(t, first.record+".setup", "setup invoked")
+	if err := os.WriteFile(filepath.Join(cacheDir, "warm-marker"), []byte("first run cache\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	second.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+	assertContainsFile(t, second.record+".worker-env", "MINOS_SHARED_CACHE_DIR="+cacheDir)
+	assertContainsFile(t, second.record+".setup", "setup invoked")
+	assertContainsFile(t, filepath.Join(cacheDir, "warm-marker"), "first run cache")
+
+	otherRepository := fixture.withRun("other-repository", "other-record")
+	otherRepository.run(t, map[string]string{
+		"MINOS_REPO_NAME":              "another-repository",
+		"MINOS_TEST_COMPLETION_MARKER": "clean",
+	})
+	otherCacheDir := environmentValue(t, otherRepository.record+".worker-env", "MINOS_SHARED_CACHE_DIR")
+	assertContainsFile(t, otherRepository.record+".worker-env", "MINOS_SHARED_CACHE_DIR="+otherCacheDir)
+	if otherCacheDir == cacheDir {
+		t.Fatalf("repositories resolved to the same persistent cache %q", cacheDir)
+	}
+	if _, err := os.Stat(filepath.Join(otherCacheDir, "warm-marker")); !os.IsNotExist(err) {
+		t.Fatalf("other repository inherited cache marker: %v", err)
+	}
+}
+
+func TestRunBodyRejectsCachePathTraversal(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	escapeDir := filepath.Join(fixture.root, "cache", "escape")
+	out, err := fixture.execute(map[string]string{
+		"MINOS_OWNER": "../escape",
+	})
+	if err == nil {
+		t.Fatalf("run-body accepted a traversing cache identity\n%s", out)
+	}
+	if !strings.Contains(string(out), "cache path components must not equal dot or dot-dot, or contain a slash") {
+		t.Fatalf("run-body output did not explain rejected cache identity\n%s", out)
+	}
+	if _, err := os.Stat(escapeDir); !os.IsNotExist(err) {
+		t.Fatalf("traversing cache identity created %s: %v", escapeDir, err)
+	}
+	assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash")
+}
+
+func TestRunBodyRejectsExactDotCachePathComponents(t *testing.T) {
+	for _, variable := range []string{"MINOS_FORGE", "MINOS_OWNER", "MINOS_REPO_NAME"} {
+		for _, component := range []string{".", ".."} {
+			t.Run(variable+"="+component, func(t *testing.T) {
+				fixture := newRunBodyFixture(t)
+				out, err := fixture.execute(map[string]string{variable: component})
+				if err == nil {
+					t.Fatalf("run-body accepted %s=%q\n%s", variable, component, out)
+				}
+				if !strings.Contains(string(out), "cache path components must not equal dot or dot-dot, or contain a slash") {
+					t.Fatalf("run-body output did not explain rejected cache identity\n%s", out)
+				}
+				if _, err := os.Stat(fixture.record + ".worker-env"); !os.IsNotExist(err) {
+					t.Fatalf("rejected cache identity launched worker: %v", err)
+				}
+				assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash")
+			})
+		}
+	}
+}
+
+func TestRunBodyAllowsDotNamedRepository(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, map[string]string{"MINOS_REPO_NAME": ".github"})
+
+	cacheDir := fixture.cacheDir("forgejo", "owner", ".github")
+	assertContainsFile(t, fixture.record+".worker-env", "MINOS_SHARED_CACHE_DIR="+cacheDir)
+	assertFileEmpty(t, fixture.failureLog)
+}
+
+func TestRunBodyRecordsMissingCacheIdentity(t *testing.T) {
+	for _, variable := range []string{"MINOS_FORGE", "MINOS_OWNER", "MINOS_REPO_NAME"} {
+		t.Run(variable, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			out, err := fixture.execute(map[string]string{variable: ""})
+			if err == nil {
+				t.Fatalf("run-body accepted missing %s\n%s", variable, out)
+			}
+			assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause="+variable+" is required for the shared cache path")
+		})
+	}
+}
+
+func TestRunBodyCreatesPersistentCacheSafelyForConcurrentRuns(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	first := fixture.withRun("concurrent-first", "concurrent-first-record")
+	second := fixture.withRun("concurrent-second", "concurrent-second-record")
+	cacheDir := first.cacheDir("forgejo", "owner", "repository")
+	if err := os.RemoveAll(cacheDir); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		name string
+		out  []byte
+		err  error
+	}
+	results := make(chan result, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	start := make(chan struct{})
+	for name, current := range map[string]runBodyFixture{"first": first, "second": second} {
+		go func(name string, current runBodyFixture) {
+			ready.Done()
+			<-start
+			out, err := current.execute(map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+			results <- result{name: name, out: out, err: err}
+		}(name, current)
+	}
+	ready.Wait()
+	close(start)
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent %s run failed: %v\n%s", result.name, result.err, result.out)
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(cacheDir, "rust", "sccache"),
+		filepath.Join(cacheDir, "go", "build"),
+		filepath.Join(cacheDir, "go", "modules"),
+		filepath.Join(cacheDir, "node", "npm"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("concurrent cache directory %s mode = %s, want directory 700", path, info.Mode())
+		}
+	}
+	assertContainsFile(t, first.record+".setup", "setup invoked")
+	assertContainsFile(t, second.record+".setup", "setup invoked")
 }
 
 func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
@@ -926,7 +1080,7 @@ func newRunBodyFixture(t *testing.T) runBodyFixture {
 	root := t.TempDir()
 	fixture := runBodyFixture{
 		root: root, configRoot: filepath.Join(root, "config"),
-		runDir: filepath.Join(root, "run"), record: filepath.Join(root, "claude-record"),
+		runDir: filepath.Join(root, "runs", "run"), record: filepath.Join(root, "claude-record"),
 		failureLog:      filepath.Join(root, "failures.log"),
 		instructionPath: filepath.Join(root, "lifecycle.md"),
 		claudeStub:      filepath.Join(root, "claude"),
@@ -1108,6 +1262,16 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 		t.Fatal(err)
 	}
 	return fixture
+}
+
+func (f runBodyFixture) withRun(name, record string) runBodyFixture {
+	f.runDir = filepath.Join(f.root, "runs", name)
+	f.record = filepath.Join(f.root, record)
+	return f
+}
+
+func (f runBodyFixture) cacheDir(forge, owner, repository string) string {
+	return filepath.Join(f.root, "cache", forge, owner, repository)
 }
 
 func (f runBodyFixture) appendConfig(t *testing.T, values map[string]string) {
@@ -1304,6 +1468,22 @@ func assertEnvironmentValues(t *testing.T, path string, want map[string]string) 
 			t.Errorf("%s = %q, want %q", name, got[name], value)
 		}
 	}
+}
+
+func environmentValue(t *testing.T, path, wantedName string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		name, value, found := strings.Cut(line, "=")
+		if found && name == wantedName {
+			return value
+		}
+	}
+	t.Fatalf("%s does not contain %s", path, wantedName)
+	return ""
 }
 
 func snapshotDirectory(t *testing.T, root string) map[string]string {

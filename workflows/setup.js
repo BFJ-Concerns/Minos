@@ -7,7 +7,7 @@ export const meta = {
 const resultSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["reconciliation", "environment"],
+  required: ["reconciliation", "environment", "commandExecutions"],
   properties: {
     reconciliation: {
       type: "object",
@@ -39,6 +39,32 @@ const resultSchema = {
         cause: { type: ["string", "null"] },
       },
     },
+    commandExecutions: {
+      type: "object",
+      additionalProperties: false,
+      required: ["head", "build", "test"],
+      properties: {
+        head: { type: "string" },
+        build: {
+          type: "object",
+          additionalProperties: false,
+          required: ["command", "exitStatus"],
+          properties: {
+            command: { type: "string" },
+            exitStatus: { type: ["integer", "null"], minimum: 0 },
+          },
+        },
+        test: {
+          type: "object",
+          additionalProperties: false,
+          required: ["command", "exitStatus"],
+          properties: {
+            command: { type: "string" },
+            exitStatus: { type: ["integer", "null"], minimum: 0 },
+          },
+        },
+      },
+    },
   },
 };
 
@@ -46,6 +72,8 @@ function validInput(input) {
   return Boolean(
     input &&
     (input.mode === "full" || input.mode === "reconcile-only") &&
+    typeof input.head === "string" &&
+    input.head !== "" &&
     typeof input.workspace === "string" &&
     input.workspace !== "" &&
     Array.isArray(input.conflicts) &&
@@ -74,14 +102,15 @@ Do not re-implement either side or add logic that exists in neither parent.`;
     ? "There are no lead objections from an earlier attempt."
     : `The lead rejected the earlier resolutions for these reasons: ${JSON.stringify(input.objections)}`;
   const environmentJob = input.mode === "reconcile-only"
-    ? "This is a reconciliation-only retry. Do not inspect, install, upgrade, or otherwise alter the environment."
+    ? `This is a reconciliation-only retry. Do not inspect, install, upgrade, or otherwise alter the environment.
+Return commandExecutions with head ${JSON.stringify(input.head)}, both exact configured command strings, and null exit statuses; this retry record is not reusable execution evidence.`
     : `After conflict resolution, verify and ready only what these configured commands need:
 Build command: ${JSON.stringify(input.buildCommand)}
 Test command: ${JSON.stringify(input.testCommand)}
 Judge requirements from repository pins, manifests, and lockfiles. Verify working tools before installing anything.
 Install missing global toolchains and per-checkout dependencies only when evidenced by those commands and repository files.
 Do not modify repository files, regenerate a lockfile, or invent a build or test command.
-Run a configured build or test command only when needed to warm the selected cache; cache warming does not prove verification passed.
+After provisioning, run each non-empty configured command exactly once to completion, build first and then test. Record commandExecutions with head ${JSON.stringify(input.head)}, each exact command string, and its integer exit status. For an empty command, record its exact empty string and a null exit status without running anything. These raw outcomes are evidence only; do not classify them as passed, failed, or skipped.
 When no tool or dependency action is needed, report the environment ready with an empty actions list.
 When a requirement cannot be provisioned, return environment.ready false and state exactly what was needed, tried, and failed.`;
 
@@ -126,4 +155,14 @@ const result = await agent(promptFor(input), {
 
 if (!result)
   return { status: "incomplete", reason: "setup agent returned no result" };
+const executions = result.commandExecutions;
+const validExecution = (execution, command) =>
+  execution && execution.command === command &&
+  (input.mode === "reconcile-only" || command.trim() === ""
+    ? execution.exitStatus === null
+    : Number.isInteger(execution.exitStatus) && execution.exitStatus >= 0);
+if (!executions || executions.head !== input.head ||
+    !validExecution(executions.build, input.buildCommand) ||
+    !validExecution(executions.test, input.testCommand))
+  return { status: "incomplete", reason: "setup agent returned command outcomes outside the requested head and commands" };
 return { status: "complete", ...result };

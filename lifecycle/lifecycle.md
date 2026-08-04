@@ -134,7 +134,7 @@ last action and end the turn. A continuation writes no failure-log line.
    workflow discipline, with diagnostics beside the result:
 
    ```sh
-   node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" \
+   node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" "$MINOS_HEAD_SHA" \
      > "$MINOS_RUN_DIR/setup-args.json"
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-args.json" \
@@ -164,7 +164,7 @@ last action and end the turn. A continuation writes no failure-log line.
    objections, then redispatch once:
 
    ```sh
-   node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" \
+   node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" "$MINOS_HEAD_SHA" \
      --reconcile-only --objections "$MINOS_RUN_DIR/setup-objections.json" \
      > "$MINOS_RUN_DIR/setup-retry-args.json"
    node /opt/minos/runtime/ensemble.mjs \
@@ -179,7 +179,9 @@ last action and end the turn. A continuation writes no failure-log line.
    incomplete with the specific objection recorded. Write the non-clean
    terminal marker and stop. Once every resolution stands, run
    `"${MINOS_SETUP_WORKSPACE%/*}/complete-reconciliation"
-   "$MINOS_WORKSPACE"`.
+   "$MINOS_WORKSPACE"`. Completion also supersedes the original full setup
+   result with the retry's non-reusable reconciliation-only command outcomes,
+   because the retry changed the reconciled tree.
 
    The same check, one-retry and completion rule applies when a later Minos
    script reports `reconcile-conflict`: redispatch the setup workflow in
@@ -190,7 +192,26 @@ last action and end the turn. A continuation writes no failure-log line.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you
-   in `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD`. When `$MINOS_BUILD_CMD` is
+   in `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD`. First run:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" \
+     --setup-result "$MINOS_RUN_DIR/setup-result.json" "$MINOS_HEAD_SHA" \
+     "$MINOS_BUILD_CMD" "$MINOS_TEST_CMD" \
+     > "$MINOS_RUN_DIR/setup-reuse.json"
+   ```
+
+   Read its one-line JSON `reusable` field. It is true only when the setup
+   result is valid and complete, its recorded head is exactly
+   `$MINOS_HEAD_SHA`, both recorded command strings exactly match the configured
+   strings, and every configured command has a genuine `passed` outcome from
+   the completion policy. Only then consume its build and test results and do
+   not execute either command again. An absent, malformed, partial,
+   command-mismatched, non-passing, or stale-head setup result has `reusable:
+   false`; execute both configured commands normally as follows. Never reuse a
+   `skipped` outcome for a configured command.
+
+   When `$MINOS_BUILD_CMD` is
    non-empty, run that exact command string exactly as configured — never a
    repository-native guess or substitute of your own — to completion before any
    review starts; when it is empty, no build command is configured, so skip it
