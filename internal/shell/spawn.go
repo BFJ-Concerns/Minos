@@ -100,7 +100,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			}
 		}
 	} else if handoffRejected {
-		reviewResultPath, _ = containedPredecessorReviewResult(cfg, unit, facts.HeadSHA)
+		reviewResultPath = containedPredecessorReviewResult(cfg, unit, facts.HeadSHA)
 	}
 	if progressDecision == continuationProgressStalled {
 		return stopStalledContinuation(ctx, cfg, unit, facts, handoffFile, handoff)

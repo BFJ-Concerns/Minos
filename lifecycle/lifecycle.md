@@ -452,6 +452,15 @@ last action and end the turn. A continuation writes no failure-log line.
    author, cherry-picks the wave and performs exactly one push to
    `$MINOS_HEAD_BRANCH`. No fix agent may push.
 
+   The workspace's pre-push guard protects the recorded pull-request ref by
+   destination ref name, regardless of the remote name or whether Git was
+   invoked with a short refspec. Updates require the matching one-use permit,
+   including forced updates and deletion attempts. It also refuses any
+   non-deletion update containing a recorded local reconciliation commit. An
+   unreadable or invalid record fails closed; in particular, an empty
+   `minos-protected-ref` is invalid. The hook covers checkouts sharing this Git
+   directory, not separate clones.
+
    After the push, read a fresh forge snapshot and use its current head. When
    `fixReview` is present, write that object unchanged to a file, then post it
    with `"$MINOS_BIN" forge comment CURRENT_HEAD "$MINOS_TARGET_SHA"

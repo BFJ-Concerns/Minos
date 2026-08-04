@@ -235,6 +235,31 @@ func TestPrePushGuardScopesAndConsumesControlledPushPermits(t *testing.T) {
 	if err := os.WriteFile(integratePermit, []byte("refs/heads/feature "+repair+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	reconciliation := gitOutput(t, workspace, "commit-tree", base+"^{tree}", "-p", base, "-m", "local reconciliation")
+	runGit(t, workspace, "update-ref", "refs/heads/reconciliation", reconciliation)
+	if err := os.WriteFile(filepath.Join(commonDir, "minos-unpushable"), []byte(reconciliation+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	push = exec.Command(
+		"git", "-C", workspace, "push", "origin",
+		"HEAD:refs/heads/feature",
+		"refs/heads/reconciliation:refs/heads/rejected",
+	)
+	push.Env = append(os.Environ(), "MINOS_INTEGRATE_WAVE_PUSH_PERMIT="+integratePermit)
+	output, err = push.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "contains local reconciliation commit") {
+		t.Fatalf("multi-ref refusal result = %v\n%s", err, output)
+	}
+	if _, err := os.Stat(integratePermit); err != nil {
+		t.Fatalf("multi-ref refusal consumed the controlled-push permit: %v", err)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != base {
+		t.Fatalf("remote feature = %q after multi-ref refusal, want %q", got, base)
+	}
+	if err := exec.Command("git", "--git-dir", remote, "rev-parse", "--verify", "refs/heads/rejected").Run(); err == nil {
+		t.Fatal("multi-ref refusal still created the rejected remote ref")
+	}
+
 	push = exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/feature")
 	push.Env = append(os.Environ(), "MINOS_INTEGRATE_WAVE_PUSH_PERMIT="+integratePermit)
 	if output, err := push.CombinedOutput(); err != nil {

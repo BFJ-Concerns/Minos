@@ -776,17 +776,20 @@ func TestRunBodyRejectsOutOfRangeSilenceTimeout(t *testing.T) {
 
 func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// Interleaved A/B runs under 12 parallel builds made this interval
+	// load-bearing: the 1s calibration failed 2/8, 5/10, and 2/10 runs at the
+	// write-count assertion, while the otherwise identical 2s calibration
+	// failed 0/8 and 0/10. Keep the measured margin rather than shortening it.
 	output, err := fixture.executeContext(ctx, map[string]string{
-		"MINOS_TEST_TERMINAL_STATE":  "done",
-		"MINOS_TEST_WORK_WRITES":     "20",
-		"MINOS_TEST_WORK_INTERVAL":   "0.1",
-		"MINOS_LEAD_SILENCE_TIMEOUT": "1",
-		"MINOS_CLAUDE_POLL_SECONDS":  "0.25",
+		"MINOS_TEST_TERMINAL_STATE":   "done",
+		"MINOS_TEST_POLL_WORK_WRITES": "12",
+		"MINOS_LEAD_SILENCE_TIMEOUT":  "2",
+		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
 	})
 	if ctx.Err() == context.DeadlineExceeded {
-		t.Fatalf("run-body did not finish within 6s\n%s", output)
+		t.Fatalf("run-body did not finish within 10s\n%s", output)
 	}
 	if err == nil {
 		t.Fatalf("run-body succeeded after the silence backstop stopped the lead\n%s", output)
@@ -796,8 +799,8 @@ func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if writes := strings.Count(string(workData), "\n"); writes != 20 {
-		t.Fatalf("lead work writes = %d, want 20 before the silence deadline stops the lead", writes)
+	if writes := strings.Count(string(workData), "\n"); writes != 12 {
+		t.Fatalf("lead work writes = %d, want all 12 poll-observed activity events", writes)
 	}
 	assertContainsFile(t, fixture.record+".terminal", `"state":"done"`)
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
@@ -1168,17 +1171,6 @@ case "$1" in
       task_pid=$!
       printf '%s\n' "$task_pid" >>"$record.pids"
     fi
-    if [ "${MINOS_TEST_WORK_WRITES:-0}" -gt 0 ]; then
-      (
-        write=1
-        while [ "$write" -le "$MINOS_TEST_WORK_WRITES" ]; do
-          sleep "${MINOS_TEST_WORK_INTERVAL:-0.25}"
-          printf 'work %s\n' "$write" >>"$MINOS_WORKSPACE/lead-work.log"
-          write=$((write + 1))
-        done
-      ) </dev/null >/dev/null 2>&1 &
-      printf '%s\n' "$!" >>"$record.pids"
-    fi
     if [ -n "${MINOS_TEST_COMPLETION_MARKER:-}" ]; then
       printf '%s\n' "$MINOS_TEST_COMPLETION_MARKER" >"$MINOS_RUN_DIR/lead-complete"
     fi
@@ -1196,6 +1188,9 @@ case "$1" in
       exit 1
     fi
     printf 'agents\n' >>"$record.calls"
+    if [ "$attempts" -le "${MINOS_TEST_POLL_WORK_WRITES:-0}" ]; then
+      printf 'work %s\n' "$attempts" >>"$MINOS_WORKSPACE/lead-work.log"
+    fi
     if [ "${MINOS_TEST_POLL_HOME_WRITES:-}" = "1" ]; then
       printf 'poll %s\n' "$attempts" >"$CLAUDE_CONFIG_DIR/daemon.status.json"
     fi
