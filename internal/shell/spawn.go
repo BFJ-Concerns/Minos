@@ -53,11 +53,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	handoffFile := handoffPath(cfg.Runs.Dir, unit)
 	var handoff *runHandoff
+	handoffRejected := false
 	if _, statErr := os.Stat(handoffFile); statErr == nil {
 		handoff, err = readRunHandoff(handoffFile, facts)
 		if err != nil {
 			rejectRunHandoff(handoffFile, err)
 			handoff = nil
+			handoffRejected = true
 		}
 	} else if !os.IsNotExist(statErr) {
 		return "", fmt.Errorf("inspect continuation handoff: %w", statErr)
@@ -71,6 +73,8 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	runDir := ""
 	adopted := false
+	reviewResultPath := ""
+	reviewResultAlreadyCarried := false
 	if handoff != nil {
 		if reason, valid := adoptableRunDirectory(cfg, unit, facts, handoff); valid {
 			runDir = handoff.RunDir
@@ -78,6 +82,25 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		} else {
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
+	}
+	if adopted {
+		carriedResult := filepath.Join(runDir, "carried-review-result.json")
+		if adoptableReviewResult(carriedResult, facts.HeadSHA) {
+			reviewResultPath = carriedResult
+			reviewResultAlreadyCarried = true
+		} else {
+			if err := os.Remove(carriedResult); err != nil && !os.IsNotExist(err) {
+				return "", fmt.Errorf("discard untrusted predecessor review result: %w", err)
+			}
+			ordinaryResult := filepath.Join(runDir, "review-result.json")
+			if adoptableReviewResult(ordinaryResult, facts.HeadSHA) {
+				reviewResultPath = ordinaryResult
+			} else if err := os.Remove(ordinaryResult); err != nil && !os.IsNotExist(err) {
+				return "", fmt.Errorf("discard untrusted predecessor review result: %w", err)
+			}
+		}
+	} else if handoffRejected {
+		reviewResultPath, _ = containedPredecessorReviewResult(cfg, unit, facts.HeadSHA)
 	}
 	if progressDecision == continuationProgressStalled {
 		return stopStalledContinuation(ctx, cfg, unit, facts, handoffFile, handoff)
@@ -98,12 +121,30 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			return "", err
 		}
 	}
+	reviewResultCarried := false
 	cleanupSpawnFailure := func() {
 		if adopted {
+			if reviewResultCarried && !reviewResultAlreadyCarried {
+				_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), filepath.Join(runDir, "review-result.json"))
+			}
 			_ = os.Remove(filepath.Join(runDir, runOwnerMarker))
 			return
 		}
+		if reviewResultCarried {
+			_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), reviewResultPath)
+		}
 		_ = removeRunDir(runDir)
+	}
+	if reviewResultPath != "" {
+		carriedResult := filepath.Join(runDir, "carried-review-result.json")
+		if !reviewResultAlreadyCarried {
+			if err := os.Rename(reviewResultPath, carriedResult); err != nil {
+				cleanupSpawnFailure()
+				return "", fmt.Errorf("mark predecessor review result for one-time carry: %w", err)
+			}
+			reviewResultCarried = true
+		}
+		fmt.Fprintf(os.Stderr, "minos: adopted completed review verdict for %s at head %s\n", unit, facts.HeadSHA)
 	}
 	if err := os.WriteFile(filepath.Join(runDir, runOwnerMarker), nil, 0o600); err != nil {
 		cleanupSpawnFailure()
