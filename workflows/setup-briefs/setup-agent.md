@@ -31,8 +31,8 @@ an already working toolchain merely to chase current. Install a missing global
 toolchain only when the configured commands and repository evidence require
 it. Do not make speculative or language-specific installations.
 
-Every worker inherits run-scoped shared build-cache locations prepared outside
-the workspace:
+Every worker inherits persistent per-repository build-cache locations prepared
+outside the workspace:
 
 - `$MINOS_SHARED_CACHE_DIR` is the cache root.
 - Rust compiler-cache state belongs in `$SCCACHE_DIR`. Keep each worktree's
@@ -57,8 +57,8 @@ the rejected conflicts without inspecting, provisioning, or changing the
 environment and without running either configured command; return null exit
 statuses for both commands.
 
-The caches last for this Minos run, including its fix worktrees, and are removed
-with the run directory. `$XDG_STATE_HOME` remains separate state, not a build
+The caches persist across Minos runs of this repository and are shared with
+their fix worktrees. `$XDG_STATE_HOME` remains separate state, not a build
 cache. Provisioned executables must land in an inherited PATH location:
 `$HOME/.cargo/bin` or `$HOME/.local/bin`. Passwordless `sudo` is available when
 an evidenced system package is the appropriate installation.

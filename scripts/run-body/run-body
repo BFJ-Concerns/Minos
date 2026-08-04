@@ -150,7 +150,24 @@ HOME="${MINOS_RUN_DIR%/}/home"
 CLAUDE_CONFIG_DIR="$HOME/.claude"
 CODEX_HOME="$HOME/.codex"
 XDG_STATE_HOME="${MINOS_RUN_DIR%/}/state"
-MINOS_SHARED_CACHE_DIR="${MINOS_RUN_DIR%/}/cache"
+failure_stage="runtime-home"
+failure_cause="MINOS_FORGE is required for the shared cache path"
+: "${MINOS_FORGE:?MINOS_FORGE is required for the shared cache path}"
+failure_cause="MINOS_OWNER is required for the shared cache path"
+: "${MINOS_OWNER:?MINOS_OWNER is required for the shared cache path}"
+failure_cause="MINOS_REPO_NAME is required for the shared cache path"
+: "${MINOS_REPO_NAME:?MINOS_REPO_NAME is required for the shared cache path}"
+for cache_component in "$MINOS_FORGE" "$MINOS_OWNER" "$MINOS_REPO_NAME"; do
+  case "$cache_component" in
+  . | .. | */*)
+    failure_cause="forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash"
+    echo "run-body: $failure_cause" >&2
+    exit 1
+    ;;
+  esac
+done
+MINOS_RUNS_DIR="$(dirname "${MINOS_RUN_DIR%/}")"
+MINOS_SHARED_CACHE_DIR="$(dirname "$MINOS_RUNS_DIR")/cache/$MINOS_FORGE/$MINOS_OWNER/$MINOS_REPO_NAME"
 SCCACHE_DIR="$MINOS_SHARED_CACHE_DIR/rust/sccache"
 GOCACHE="$MINOS_SHARED_CACHE_DIR/go/build"
 GOMODCACHE="$MINOS_SHARED_CACHE_DIR/go/modules"
