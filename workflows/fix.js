@@ -171,7 +171,6 @@ if (plan.classification === "single-wave") {
     dispatches: plan.dispatches,
     sweepReview: null,
     fixReview: fixed.length > 0 ? {
-      verdict: "comment",
       body: "Implemented repairs for confirmed findings.",
       comments: fixed.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
     } : null,
@@ -288,7 +287,6 @@ return {
   dispatches,
   sweepReview: plan.sweepReview,
   fixReview: writeUps.length > 0 ? {
-    verdict: "comment",
     body: "Implemented repairs for confirmed findings.",
     comments: writeUps.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
   } : null,

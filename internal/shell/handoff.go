@@ -224,10 +224,10 @@ func adoptableReviewResult(path, head string) bool {
 	return true
 }
 
-func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) (string, bool) {
+func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) string {
 	entries, err := os.ReadDir(cfg.Runs.Dir)
 	if err != nil {
-		return "", false
+		return ""
 	}
 	adopted := ""
 	for _, entry := range entries {
@@ -252,9 +252,9 @@ func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) (str
 			continue
 		}
 		if adopted != "" {
-			return "", false
+			return ""
 		}
 		adopted = result
 	}
-	return adopted, adopted != ""
+	return adopted
 }

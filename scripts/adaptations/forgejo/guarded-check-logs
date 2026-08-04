@@ -28,7 +28,7 @@ statuses="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${expected_head}/sta
 run_indexes="$(printf '%s' "$statuses" | jq -r '
   [sort_by(.context, .id) | group_by(.context)[] | max_by(.id) |
     .target_url // "" |
-    capture("/actions/runs/(?<run>[0-9]+)/jobs/[0-9]+")?.run //
+    try capture("/actions/runs/(?<run>[0-9]+)/jobs/[0-9]+").run catch empty //
     empty] |
   unique[]
 ')"

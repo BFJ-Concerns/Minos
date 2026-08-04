@@ -362,11 +362,14 @@ test("a recorded Rust target fallback reaches composed fix prompts only while pr
 test("fix write-ups keep the finding path and line", async () => {
   const original = finding("transition", "High", "internal/state.go", 41);
   const { result } = await run(args([original]));
-  assert.deepEqual(result.fixReview.comments, [{
-    path: "internal/state.go",
-    body: "Repaired transition.",
-    line: 41,
-  }]);
+  assert.deepEqual(result.fixReview, {
+    body: "Implemented repairs for confirmed findings.",
+    comments: [{
+      path: "internal/state.go",
+      body: "Repaired transition.",
+      line: 41,
+    }],
+  });
   assert.deepEqual(result.runRecord.confirmedFixed, [{
     key: result.runRecord.confirmedFixed[0].key,
     finding: {
@@ -538,10 +541,13 @@ test("single-wave mode dispatches every brief finding once and requests build an
   assert.equal(result.buildAndTestsRequired, true);
   assert.equal(result.rerunReview, false);
   assert.equal(result.sweepReview, null);
-  assert.deepEqual(result.fixReview.comments, [
-    { path: "a.go", body: "Repaired material.", line: 1 },
-    { path: "b.go", body: "Repaired minor.", line: 2 },
-  ]);
+  assert.deepEqual(result.fixReview, {
+    body: "Implemented repairs for confirmed findings.",
+    comments: [
+      { path: "a.go", body: "Repaired material.", line: 1 },
+      { path: "b.go", body: "Repaired minor.", line: 2 },
+    ],
+  });
 });
 
 test("a fix worker performs exactly the configured verification it is assigned", async (t) => {

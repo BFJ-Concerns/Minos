@@ -6,6 +6,8 @@ common_dir_resolved="$(CDPATH= cd -P -- "$common_dir" && pwd -P)"
 unpushable_file="${common_dir}/minos-unpushable"
 protected_ref_file="${common_dir}/minos-protected-ref"
 protected_ref=""
+controlled_permit=""
+expected_permitted_update=""
 
 permit_is_in_common_dir() {
   permit_path="$1"
@@ -110,18 +112,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       exit 1
     fi
 
-    claimed_permit="${permit}.claimed.$$"
-    if ! mv "$permit" "$claimed_permit" 2>/dev/null; then
+    if [ ! -e "$permit" ]; then
       echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the controlled-push permit is absent or already used" >&2
       exit 1
     fi
-    trap 'rm -f "$claimed_permit"' 0 1 2 3 15
-
-    if [ ! -f "$claimed_permit" ] || [ ! -r "$claimed_permit" ]; then
+    if [ ! -f "$permit" ] || [ ! -r "$permit" ]; then
       echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the controlled-push permit is unreadable" >&2
       exit 1
     fi
-    if ! recorded_permitted_update="$(cat "$claimed_permit")"; then
+    if ! recorded_permitted_update="$(cat "$permit")"; then
       echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the controlled-push permit could not be read" >&2
       exit 1
     fi
@@ -129,5 +128,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the controlled-push permit authorises a different ref update" >&2
       exit 1
     fi
+    controlled_permit="$permit"
   fi
 done
+
+if [ -n "$controlled_permit" ]; then
+  claimed_permit="${controlled_permit}.claimed.$$"
+  if ! mv "$controlled_permit" "$claimed_permit" 2>/dev/null; then
+    echo "pre-push-guard: refusing controlled update: the controlled-push permit is absent or already used" >&2
+    exit 1
+  fi
+  trap 'rm -f "$claimed_permit"' 0 1 2 3 15
+  if ! recorded_permitted_update="$(cat "$claimed_permit")" ||
+    [ "$recorded_permitted_update" != "$expected_permitted_update" ]; then
+    echo "pre-push-guard: refusing controlled update: the claimed controlled-push permit no longer matches the validated ref update" >&2
+    exit 1
+  fi
+fi
