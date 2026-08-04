@@ -49,19 +49,34 @@ function normaliseTitle(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// One finding, one key, everywhere: the loop record's confirmed-unfixed
-// entries, dispatch assignment, and the digest all recognise a finding by
-// this identity, so a re-reported finding cannot re-enter the loop under a
-// cosmetic retitle. Known limit: the key includes the line, so a repair
-// elsewhere in the file can shift a confirmed-unfixed finding's line and
-// give its rediscovery a fresh key — do not treat this identity as
-// drift-proof when suppression matters.
+function findingIdentity(finding) {
+  const explanation = typeof finding.explanation === "string" ? finding.explanation.trim() : "";
+  if (explanation === "") return undefined;
+  return JSON.stringify(["minos-finding-identity-v1", finding.path,
+    explanation.toLowerCase().replace(/\s+/g, " ")]);
+}
+
+// The legacy exact key remains the dispatch identifier and compatibility
+// fallback. Prepared findings also carry an explanation-based identity for
+// suppression across line movement or a changed title.
 export function findingKey(finding) {
   return JSON.stringify([finding.path, finding.line, normaliseTitle(finding.title)]);
 }
 
 export function preparedFinding(finding) {
-  return { ...finding, key: findingKey(finding) };
+  const prepared = { ...finding, key: findingKey(finding) };
+  const identity = findingIdentity(finding);
+  return identity === undefined ? prepared : { ...prepared, identity };
+}
+
+// Persisted predecessors may predate drift-aware identity. Those records keep
+// today's exact-key semantics; only records written with a valid identity can
+// suppress a rediscovery whose title or line has changed.
+export function matchesRecordedFinding(finding, entry) {
+  if (finding.key === entry?.key) return true;
+  return typeof finding.identity === "string" && finding.identity !== "" &&
+    typeof entry?.finding?.identity === "string" &&
+    finding.identity === entry.finding.identity;
 }
 
 export function atOrAboveThreshold(finding, threshold) {
@@ -102,9 +117,9 @@ export function sweepDigest(input) {
   const prior = input.runRecord && typeof input.runRecord === "object" ? input.runRecord : {};
   const priorConfirmedUnfixed = Array.isArray(prior.confirmedUnfixed) ? prior.confirmedUnfixed : [];
   const round = (Number.isInteger(prior.round) && prior.round >= 0 ? prior.round : 0) + 1;
-  const unfixedKeys = new Set(priorConfirmedUnfixed.map((entry) => entry.key));
   const findings = input.review.confirmedFindings.map(preparedFinding);
-  const candidates = findings.filter((finding) => !unfixedKeys.has(finding.key));
+  const candidates = findings.filter((finding) =>
+    !priorConfirmedUnfixed.some((entry) => matchesRecordedFinding(finding, entry)));
   const aboveThreshold = candidates.filter((finding) => atOrAboveThreshold(finding, threshold));
   const belowThreshold = candidates.filter((finding) => !atOrAboveThreshold(finding, threshold));
   const maximumRoundsReached = maximumRounds !== null && round > maximumRounds;
