@@ -43,7 +43,7 @@ function emptyVerdict(envelope, reason) {
     ran: [],
     skipped: [],
     misconfigurations: [],
-    fixRequired: false,
+    briefFixRequired: false,
     modelEvidence: [],
   };
 }
@@ -349,7 +349,7 @@ export async function adjudicate({ envelope, recordDir }) {
     ran,
     skipped,
     misconfigurations,
-    fixRequired: isBriefReview && complete && confirmedFindings.length > 0,
+    briefFixRequired: isBriefReview && complete && confirmedFindings.length > 0,
     modelEvidence,
   };
 }

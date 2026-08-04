@@ -542,9 +542,9 @@ last action and end the turn. A continuation writes no failure-log line.
    command makes that group idempotent. Do not publish a review when there are
    no confirmed brief findings, and never publish an all-clear comment.
 
-   When `fixRequired` is false, the brief stage has passed: add the 👍 with
+   When `briefFixRequired` is false, the brief stage has passed: add the 👍 with
    `"$MINOS_BIN" forge reaction CURRENT_HEAD "$MINOS_TARGET_SHA" +1` and
-   continue to finishing. When `fixRequired` is true, save the complete brief
+   continue to finishing. When `briefFixRequired` is true, save the complete brief
    verdict and build the single-wave input:
 
    ```sh
