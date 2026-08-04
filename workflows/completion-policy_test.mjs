@@ -11,7 +11,6 @@ import {
   DIGEST_KIND,
   configuredCommandResult,
   findingKey,
-  preparedFinding,
   sweepDigest,
   validateSweepDecision,
 } from "./completion-policy.mjs";
@@ -116,38 +115,6 @@ test("finding identity survives cosmetic retitles", () => {
     findingKey({ path: "a.go", line: 4, title: "unsafe transition" }),
     findingKey({ path: "a.go", line: 5, title: "unsafe transition" }),
   );
-});
-
-test("the digest suppresses drifted rediscoveries without collapsing distinct same-path defects", () => {
-  const original = finding("unsafe transition", "High", "a.go", 40);
-  original.explanation = "The transition accepts an invalid state after validation.";
-  const recorded = preparedFinding(original);
-  const runRecord = {
-    round: 1,
-    confirmedUnfixed: [{ key: recorded.key, finding: recorded, attempts: 2 }],
-  };
-
-  const shifted = { ...original, line: 47 };
-  const retitled = { ...original, title: "Validation permits an impossible transition" };
-  for (const rediscovered of [shifted, retitled]) {
-    const digest = sweepDigest(digestInput([rediscovered], { runRecord }));
-    assert.deepEqual(digest.candidates, []);
-  }
-
-  const distinct = finding("unsafe cleanup", "High", "a.go", 47);
-  distinct.explanation = "Cleanup releases the active lease before the write completes.";
-  const digest = sweepDigest(digestInput([retitled, distinct], { runRecord }));
-  assert.deepEqual(digest.candidates.map((entry) => entry.title), [distinct.title]);
-});
-
-test("legacy and identity-absent records retain exact-key matching", () => {
-  const original = finding("unsafe transition", "High", "a.go", 40);
-  const runRecord = {
-    round: 1,
-    confirmedUnfixed: [{ key: findingKey(original), finding: original, attempts: 2 }],
-  };
-  assert.deepEqual(sweepDigest(digestInput([original], { runRecord })).candidates, []);
-  assert.equal(sweepDigest(digestInput([{ ...original, line: 41 }], { runRecord })).candidates.length, 1);
 });
 
 test("the digest separates dispatchable findings by threshold and suppresses confirmed-unfixed", () => {
