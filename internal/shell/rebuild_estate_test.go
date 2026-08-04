@@ -157,6 +157,67 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 }
 
 func TestRebuildEstateStopsNonCleanLeadWithoutHoldingItForSilence(t *testing.T) {
+	runBody, record, environment := startEstateRunBody(t)
+	environment["MINOS_TEST_NON_CLEAN_FINISH"] = "1"
+	environment["MINOS_LEAD_SILENCE_TIMEOUT"] = "1"
+	environment["MINOS_FAILURE_LOG"] = filepath.Join(environment["MINOS_RUN_DIR"], "failures.log")
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runBody)
+	cmd.Env = environmentWithOverrides(environment)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("non-clean run body reached the outer timeout: %v\n%s", ctx.Err(), output)
+	}
+	if err != nil {
+		t.Fatalf("non-clean run body failed: %v\n%s", err, output)
+	}
+
+	assertContainsFile(t, filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete"), "non-clean")
+	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=brief-fix cause=repairs-incomplete")
+	assertContainsFile(t, record+".terminal", `"state":"done"`)
+	assertContainsFile(t, record+".calls", "stop abcdef12")
+	attemptsData, err := os.ReadFile(record + ".attempts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := strconv.Atoi(strings.TrimSpace(string(attemptsData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("agent terminal observations = %d, want one before stopping the non-clean lead", attempts)
+	}
+}
+
+func TestRebuildEstateSupervisesTerminalLeadWithoutCompletionMarker(t *testing.T) {
+	runBody, record, environment := startEstateRunBody(t)
+	environment["MINOS_TEST_UNMARKED_FINISH"] = "1"
+	environment["MINOS_LEAD_SILENCE_TIMEOUT"] = "2"
+	environment["MINOS_CLAUDE_POLL_SECONDS"] = "0.1"
+	environment["MINOS_FAILURE_LOG"] = filepath.Join(environment["MINOS_RUN_DIR"], "failures.log")
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runBody)
+	cmd.Env = environmentWithOverrides(environment)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("unmarked run body reached the outer timeout instead of its supervision timeout: %v\n%s", ctx.Err(), output)
+	}
+	if err == nil {
+		t.Fatalf("unmarked terminal lead succeeded without a completion marker\n%s", output)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete")); !os.IsNotExist(statErr) {
+		t.Fatalf("unmarked terminal lead wrote a completion marker or stat failed: %v", statErr)
+	}
+	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=lead-supervision cause=Claude lead produced no run activity for 2 seconds (last state: done)")
+	assertContainsFile(t, record+".terminal", `"state":"done"`)
+	assertContainsFile(t, record+".calls", "stop abcdef12")
+}
+
+func startEstateRunBody(t *testing.T) (string, string, map[string]string) {
+	t.Helper()
 	codeRepository, head := createGitRepository(t, "AGENTS.md", "NON_CLEAN_TERMINAL_SENTINEL_719\n")
 	annexeRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n")
 	state := newForgejoFixtureState(t)
@@ -200,38 +261,7 @@ func TestRebuildEstateStopsNonCleanLeadWithoutHoldingItForSilence(t *testing.T) 
 	if result != "started" || len(startArguments) == 0 {
 		t.Fatalf("admission = %q, systemd arguments = %v; want recorded start", result, startArguments)
 	}
-
-	environment := systemdEnvironment(t, startArguments)
-	environment["MINOS_TEST_NON_CLEAN_FINISH"] = "1"
-	environment["MINOS_LEAD_SILENCE_TIMEOUT"] = "1"
-	environment["MINOS_FAILURE_LOG"] = filepath.Join(environment["MINOS_RUN_DIR"], "failures.log")
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, runBody)
-	cmd.Env = environmentWithOverrides(environment)
-	output, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("non-clean run body reached the outer timeout: %v\n%s", ctx.Err(), output)
-	}
-	if err != nil {
-		t.Fatalf("non-clean run body failed: %v\n%s", err, output)
-	}
-
-	assertContainsFile(t, filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete"), "non-clean")
-	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=brief-fix cause=repairs-incomplete")
-	assertContainsFile(t, record+".terminal", `"state":"done"`)
-	assertContainsFile(t, record+".calls", "stop abcdef12")
-	attemptsData, err := os.ReadFile(record + ".attempts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	attempts, err := strconv.Atoi(strings.TrimSpace(string(attemptsData)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if attempts != 1 {
-		t.Fatalf("agent terminal observations = %d, want one before stopping the non-clean lead", attempts)
-	}
+	return runBody, record, systemdEnvironment(t, startArguments)
 }
 
 func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
@@ -697,6 +727,8 @@ case "$1" in
       printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=brief-fix cause=repairs-incomplete\n' \
         >>"$MINOS_FAILURE_LOG"
       printf 'non-clean\n' >"$MINOS_RUN_DIR/lead-complete"
+    elif [ "${MINOS_TEST_UNMARKED_FINISH:-}" = "1" ]; then
+      :
     else
       printf 'clean\n' >"$MINOS_RUN_DIR/lead-complete"
     fi
