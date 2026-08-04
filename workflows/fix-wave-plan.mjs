@@ -6,6 +6,7 @@ import {
   SEVERITY,
   DEFAULT_THRESHOLD,
   atOrAboveThreshold,
+  matchesRecordedFinding,
   preparedFinding,
   sweepDigest,
   validateSweepDecision,
@@ -251,18 +252,19 @@ export function prepareFixWave(input) {
     return deepFreeze(failedPlan(input, decisionCheck.reason));
 
   const round = digest.round;
-  const unfixedByKey = new Map(priorUnfixed.map((entry) => [entry.key, entry]));
+  const isPriorUnfixed = (finding) =>
+    priorUnfixed.some((entry) => matchesRecordedFinding(finding, entry));
   const decision = input.decision;
 
   if (decision.classification === "terminal") {
     const overflow = findings.filter((finding) =>
-      !atOrAboveThreshold(finding, threshold) && !unfixedByKey.has(finding.key));
+      !atOrAboveThreshold(finding, threshold) && !isPriorUnfixed(finding));
     const requestChanges = [...priorUnfixed];
     // Judgement may stop the loop with above-threshold findings still on the
     // table (or the maximum-rounds ceiling may force it to); either way those
     // findings are published as request-changes material, never dropped.
     for (const finding of findings.filter((candidate) => atOrAboveThreshold(candidate, threshold)))
-      if (!unfixedByKey.has(finding.key))
+      if (!isPriorUnfixed(finding))
         requestChanges.push({ key: finding.key, finding, attempts: 0, reason: decision.basis });
     return deepFreeze({
       kind: PLAN_KIND,
@@ -289,7 +291,7 @@ export function prepareFixWave(input) {
     });
   }
 
-  const candidates = findings.filter((finding) => !unfixedByKey.has(finding.key));
+  const candidates = findings.filter((finding) => !isPriorUnfixed(finding));
   const grouped = dispatchesFor(candidates, findings, input.grouping);
   if (grouped.reason) return deepFreeze(failedPlan(input, grouped.reason));
   const workingFingerprint = fingerprintFor(input, round, findings, grouped.dispatches);

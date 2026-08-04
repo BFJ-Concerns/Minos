@@ -369,7 +369,11 @@ test("fix write-ups keep the finding path and line", async () => {
   }]);
   assert.deepEqual(result.runRecord.confirmedFixed, [{
     key: result.runRecord.confirmedFixed[0].key,
-    finding: { ...original, key: result.runRecord.confirmedFixed[0].key },
+    finding: {
+      ...original,
+      key: result.runRecord.confirmedFixed[0].key,
+      identity: result.runRecord.confirmedFixed[0].finding.identity,
+    },
     writeUp: "Repaired transition.",
   }]);
 });
@@ -407,6 +411,63 @@ test("a lead grouping cannot redispatch a twice-failed finding across a round bo
     line: 41,
   });
   assert.equal(terminal.calls.length, 0);
+});
+
+test("confirmed-unfixed identity drift stays suppressed across round-boundary planning", async () => {
+  const original = finding("transition corrupts state", "High", "internal/state.go", 41);
+  original.explanation = "The transition stores the new state before validation completes.";
+  const first = await run(args([original]), (_label, prompt) => ({
+    commit: "",
+    fixes: assignedFindings(prompt).map((item) => ({
+      findingKey: item.key,
+      status: "failed",
+      writeUp: "could not repair it",
+    })),
+  }));
+  assert.equal(first.result.confirmedUnfixed[0].attempts, 2);
+
+  const distinct = finding("transition drops audit event", "High", "internal/state.go", 48);
+  distinct.explanation = "The transition returns before appending its audit event.";
+  for (const drifted of [
+    { ...original, line: 48 },
+    { ...original, title: "Validation happens after the state write" },
+  ]) {
+    const next = await run(args([drifted, distinct], { runRecord: first.result.runRecord }));
+    assert.equal(next.result.classification, "working");
+    assert.equal(next.calls.length, 1, "the confirmed-unfixed finding was re-dispatched");
+    assert.deepEqual(
+      assignedFindings(next.calls[0].prompt).map((item) => item.title),
+      [distinct.title],
+      "same-path findings with different defect explanations must remain distinct",
+    );
+  }
+});
+
+test("rewording a confirmed-unfixed explanation remains a new dispatch", async () => {
+  const original = finding("transition corrupts state", "High", "internal/state.go", 41);
+  original.explanation = "The transition stores the new state before validation completes.";
+  const first = await run(args([original]), (_label, prompt) => ({
+    commit: "",
+    fixes: assignedFindings(prompt).map((item) => ({
+      findingKey: item.key,
+      status: "failed",
+      writeUp: "could not repair it",
+    })),
+  }));
+  assert.equal(first.result.confirmedUnfixed[0].attempts, 2);
+
+  const reworded = {
+    ...original,
+    line: 48,
+    explanation: "Validation completes only after the transition has stored the new state.",
+  };
+  const next = await run(args([reworded], { runRecord: first.result.runRecord }));
+  assert.equal(next.result.classification, "working");
+  assert.equal(next.calls.length, 1);
+  assert.deepEqual(
+    assignedFindings(next.calls[0].prompt).map((item) => item.explanation),
+    [reworded.explanation],
+  );
 });
 
 test("the configured maximum rounds stops another fix dispatch", async () => {
