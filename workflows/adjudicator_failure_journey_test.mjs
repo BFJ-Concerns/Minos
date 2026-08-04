@@ -281,7 +281,7 @@ function assertWithheld(verdict) {
   assert.equal(verdict.complete, false);
   assert.deepEqual(verdict.confirmedFindings, []);
   assert.equal(verdict.reviewBody, null);
-  assert.equal(verdict.fixRequired, false);
+  assert.equal(verdict.briefFixRequired, false);
 }
 
 function machineReadableBriefStatus(verdict, brief) {
