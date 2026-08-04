@@ -558,6 +558,17 @@ for (const [description, briefDisposition, condition] of [
     /brief "Error handling" carries an unreadable inapplicable-unit list/,
   ],
   [
+    "run disposition with a null inapplicable-unit element",
+    {
+      brief: ".review/errors.md",
+      title: "Error handling",
+      status: "run",
+      reason: "applicable concern reviewed",
+      inapplicableUnits: [null],
+    },
+    /brief "Error handling" carries a malformed inapplicable-unit record/,
+  ],
+  [
     "run disposition with an inapplicable unit missing its reason",
     {
       brief: ".review/errors.md",
