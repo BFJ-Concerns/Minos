@@ -633,6 +633,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
     lifecycle,
     /\*\*No carried result:\*\*[\s\S]*invoke the adjudication[\s\S]*review\.js[\s\S]*> "\$MINOS_RUN_DIR\/review-result\.json"/,
   );
+  assert.match(lifecycle, /invoke the adjudication\s+wrapper once and save its verdict:/);
   assert.match(
     lifecycle,
     /An ordinary `review-result\.json` is never a carry signal[\s\S]*After a fix wave,[\s\S]*invoke the workflow again for the fresh head/,

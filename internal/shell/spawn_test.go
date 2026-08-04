@@ -303,6 +303,39 @@ func TestSpawnRunRemovesStaleCarriedVerdictBeforeSuccessorLaunch(t *testing.T) {
 	}
 }
 
+func TestSpawnRunLaunchesWhenSiblingStaleCarryCannotBeRemoved(t *testing.T) {
+	cfg, facts, predecessor, systemdArgs := reviewContinuationFixture(t)
+	stale := filepath.Join(predecessor, "carried-review-result.json")
+	if err := os.Mkdir(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "undeletable"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handoff := writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1}`))
+	if err := os.WriteFile(handoff, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts)
+	if err != nil {
+		t.Fatalf("SpawnRun failed on an untrusted sibling carry: %v", err)
+	}
+	if outcome != SpawnStarted {
+		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
+	}
+	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	if successor == "" || successor == predecessor {
+		t.Fatalf("successor = %q, want a fresh launched run directory", successor)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("scan-side stale carry was unexpectedly removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(successor, "carried-review-result.json")); !os.IsNotExist(err) {
+		t.Fatalf("stale sibling carry became successor-visible or stat failed: %v", err)
+	}
+}
+
 func TestSpawnRunRestoresMovedVerdictWhenRejectedHandoffSpawnFails(t *testing.T) {
 	cfg, facts, predecessor, _ := reviewContinuationFixture(t)
 	verdictPath := filepath.Join(predecessor, "review-result.json")

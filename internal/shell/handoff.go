@@ -243,7 +243,7 @@ func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) (str
 		_, valid := adoptableReviewResult(carried, head)
 		if !valid {
 			if err := os.Remove(carried); err != nil && !os.IsNotExist(err) {
-				return "", false, fmt.Errorf("discard untrusted predecessor review result: %w", err)
+				continue
 			}
 			result = filepath.Join(runDir, "review-result.json")
 			_, valid = adoptableReviewResult(result, head)
