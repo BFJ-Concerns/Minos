@@ -220,7 +220,7 @@ test("setup input builder emits deterministic repository content and objections"
   assert.match(result.setupBrief.content, /untracked\s+artefacts instead/);
   assert.match(
     result.setupBrief.content,
-    /never execute the configured test command to completion/,
+    /Run each configured build and test command exactly once to completion/,
   );
   assert.equal(result.objections[0].objection, "OBJECTION_SENTINEL_AUBURN_719");
   assert.equal(result.buildCommand, "npm run build");
@@ -241,6 +241,17 @@ test("setup input builder loudly rejects a missing reconciliation record", () =>
   assert.match(result.stderr, /reconciliation\.json/);
 });
 
+test("setup input builder rejects an option in place of the head", () => {
+  const result = spawnSync(
+    process.execPath,
+    [join(workflowsDir, "setup-inputs.mjs"), "--reconcile-only"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /^usage:/);
+  assert.equal(result.stdout, "");
+});
+
 test("lifecycle runs setup every time and keeps resolution checking with the lead", () => {
   const stageOne = lifecycle.slice(lifecycle.indexOf("1. The setup script"), lifecycle.indexOf("2. Publish"));
   assert.match(stageOne, /Run the setup workflow on every run/);
@@ -249,6 +260,10 @@ test("lifecycle runs setup every time and keeps resolution checking with the lea
   assert.match(stageOne, /environment\.ready: false[\s\S]*incomplete terminal/);
   assert.match(stageOne, /show-resolutions[\s\S]*preserves\s+both parents' intent/);
   assert.match(stageOne, /reopen-conflict[\s\S]*redispatch once/);
+  assert.match(
+    stageOne,
+    /mv "\$MINOS_RUN_DIR\/setup-retry-result\.json" "\$MINOS_RUN_DIR\/setup-result\.json"[\s\S]*non-reusable[\s\S]*supersede/,
+  );
   assert.match(stageOne, /complete-reconciliation/);
   assert.match(stageOne, /merge-base-to-head comment geometry/);
   assert.match(stageOne, /pinned target-to-current-pull-request-head range/);

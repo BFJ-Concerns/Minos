@@ -24,7 +24,7 @@ for (let index = 0; index < optionArgv.length; index += 1) {
   }
 }
 
-if (!head || invalid) {
+if (!head || head.startsWith("--") || invalid) {
   process.stderr.write("usage: node workflows/setup-inputs.mjs HEAD [--reconcile-only] [--objections FILE]\n");
   process.exitCode = 2;
 } else {

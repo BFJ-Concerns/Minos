@@ -115,7 +115,6 @@ When no tool or dependency action is needed, report the environment ready with a
 When a requirement cannot be provisioned, return environment.ready false and state exactly what was needed, tried, and failed.`;
 
   return `Read and follow the shipped setup brief at ${input.setupBrief.readPath}.
-For configured command execution, the second job below replaces the brief's older cache-only instruction.
 
 <setup-brief path="${input.setupBrief.path}">
 ${input.setupBrief.content}
