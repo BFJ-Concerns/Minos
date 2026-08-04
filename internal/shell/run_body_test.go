@@ -781,7 +781,7 @@ func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	output, err := fixture.executeContext(ctx, map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":   "done",
 		"MINOS_TEST_POLL_WORK_WRITES": "12",
-		"MINOS_LEAD_SILENCE_TIMEOUT":  "2",
+		"MINOS_LEAD_SILENCE_TIMEOUT":  "1",
 		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
 	})
 	if ctx.Err() == context.DeadlineExceeded {
@@ -1167,17 +1167,6 @@ case "$1" in
       task_pid=$!
       printf '%s\n' "$task_pid" >>"$record.pids"
     fi
-    if [ "${MINOS_TEST_WORK_WRITES:-0}" -gt 0 ]; then
-      (
-        write=1
-        while [ "$write" -le "$MINOS_TEST_WORK_WRITES" ]; do
-          sleep "${MINOS_TEST_WORK_INTERVAL:-0.25}"
-          printf 'work %s\n' "$write" >>"$MINOS_WORKSPACE/lead-work.log"
-          write=$((write + 1))
-        done
-      ) </dev/null >/dev/null 2>&1 &
-      printf '%s\n' "$!" >>"$record.pids"
-    fi
     if [ -n "${MINOS_TEST_COMPLETION_MARKER:-}" ]; then
       printf '%s\n' "$MINOS_TEST_COMPLETION_MARKER" >"$MINOS_RUN_DIR/lead-complete"
     fi
@@ -1195,9 +1184,9 @@ case "$1" in
       exit 1
     fi
     printf 'agents\n' >>"$record.calls"
-	if [ "$attempts" -le "${MINOS_TEST_POLL_WORK_WRITES:-0}" ]; then
-	  printf 'work %s\n' "$attempts" >>"$MINOS_WORKSPACE/lead-work.log"
-	fi
+    if [ "$attempts" -le "${MINOS_TEST_POLL_WORK_WRITES:-0}" ]; then
+      printf 'work %s\n' "$attempts" >>"$MINOS_WORKSPACE/lead-work.log"
+    fi
     if [ "${MINOS_TEST_POLL_HOME_WRITES:-}" = "1" ]; then
       printf 'poll %s\n' "$attempts" >"$CLAUDE_CONFIG_DIR/daemon.status.json"
     fi
