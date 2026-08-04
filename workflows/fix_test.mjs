@@ -443,6 +443,33 @@ test("confirmed-unfixed identity drift stays suppressed across round-boundary pl
   }
 });
 
+test("rewording a confirmed-unfixed explanation remains a new dispatch", async () => {
+  const original = finding("transition corrupts state", "High", "internal/state.go", 41);
+  original.explanation = "The transition stores the new state before validation completes.";
+  const first = await run(args([original]), (_label, prompt) => ({
+    commit: "",
+    fixes: assignedFindings(prompt).map((item) => ({
+      findingKey: item.key,
+      status: "failed",
+      writeUp: "could not repair it",
+    })),
+  }));
+  assert.equal(first.result.confirmedUnfixed[0].attempts, 2);
+
+  const reworded = {
+    ...original,
+    line: 48,
+    explanation: "Validation completes only after the transition has stored the new state.",
+  };
+  const next = await run(args([reworded], { runRecord: first.result.runRecord }));
+  assert.equal(next.result.classification, "working");
+  assert.equal(next.calls.length, 1);
+  assert.deepEqual(
+    assignedFindings(next.calls[0].prompt).map((item) => item.explanation),
+    [reworded.explanation],
+  );
+});
+
 test("the configured maximum rounds stops another fix dispatch", async () => {
   const original = finding("transition", "High", "internal/state.go", 41);
   const { result, calls } = await run(args([original], {
