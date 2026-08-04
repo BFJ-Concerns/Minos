@@ -132,7 +132,7 @@ function incomplete(reason, envelope = null) {
       ran: [],
       skipped: [],
       misconfigurations: [],
-      fixRequired: false,
+      briefFixRequired: false,
       modelEvidence: [],
     }, envelope),
     envelope,

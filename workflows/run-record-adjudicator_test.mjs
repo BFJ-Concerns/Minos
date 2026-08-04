@@ -90,7 +90,7 @@ function assertWithheld(adapterVerdict, condition) {
     );
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
   assert.equal(adapterVerdict.reviewBody, null);
-  assert.equal(adapterVerdict.fixRequired, false);
+  assert.equal(adapterVerdict.briefFixRequired, false);
 }
 
 function missingRecordDirectory(t) {
@@ -114,7 +114,7 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   );
   assert.equal("new_position" in adapterVerdict.reviewBody.comments[0], false);
   assert.equal(adapterVerdict.reviewBody.body, "Repository review brief findings.");
-  assert.equal(adapterVerdict.fixRequired, true);
+  assert.equal(adapterVerdict.briefFixRequired, true);
   assert.deepEqual(adapterVerdict.ran, [{ brief: ".review/errors.md", title: "Error handling" }]);
   assert.deepEqual(adapterVerdict.skipped, []);
   assert.deepEqual(adapterVerdict.misconfigurations, []);
@@ -184,7 +184,7 @@ test("a refuted verifier completes the run without publishing a finding", async 
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
   assert.equal(adapterVerdict.reviewBody, null);
-  assert.equal(adapterVerdict.fixRequired, false);
+  assert.equal(adapterVerdict.briefFixRequired, false);
 });
 
 test("operator attention follows the combined-confidence threshold", async (t) => {
@@ -594,7 +594,7 @@ for (const [description, misconfiguration] of [
     assert.equal(adapterVerdict.status, "incomplete");
     assert.deepEqual(adapterVerdict.confirmedFindings, []);
     assert.equal(adapterVerdict.reviewBody, null);
-    assert.equal(adapterVerdict.fixRequired, false);
+    assert.equal(adapterVerdict.briefFixRequired, false);
     assert.match(adapterVerdict.incomplete.join("\n"), /envelope contains a malformed brief misconfiguration/);
   });
 }
