@@ -197,6 +197,37 @@ func TestRunBodySharesPersistentCachesOnlyWithinARepository(t *testing.T) {
 	}
 }
 
+func TestRunBodyRejectsCachePathTraversal(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	escapeDir := filepath.Join(fixture.root, "escape")
+	out, err := fixture.execute(map[string]string{
+		"MINOS_OWNER": "../escape",
+	})
+	if err == nil {
+		t.Fatalf("run-body accepted a traversing cache identity\n%s", out)
+	}
+	if !strings.Contains(string(out), "cache path components must not start with a dot or contain a slash") {
+		t.Fatalf("run-body output did not explain rejected cache identity\n%s", out)
+	}
+	if _, err := os.Stat(escapeDir); !os.IsNotExist(err) {
+		t.Fatalf("traversing cache identity created %s: %v", escapeDir, err)
+	}
+	assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not start with a dot or contain a slash")
+}
+
+func TestRunBodyRecordsMissingCacheIdentity(t *testing.T) {
+	for _, variable := range []string{"MINOS_FORGE", "MINOS_OWNER", "MINOS_REPO_NAME"} {
+		t.Run(variable, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			out, err := fixture.execute(map[string]string{variable: ""})
+			if err == nil {
+				t.Fatalf("run-body accepted missing %s\n%s", variable, out)
+			}
+			assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause="+variable+" is required for the shared cache path")
+		})
+	}
+}
+
 func TestRunBodyCreatesPersistentCacheSafelyForConcurrentRuns(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	first := fixture.withRun("concurrent-first", "concurrent-first-record")

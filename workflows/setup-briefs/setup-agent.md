@@ -56,8 +56,8 @@ them (`cargo test --no-run`, `go test -run '^$'`, or the equivalent), do that
 too — but never execute the configured test command to completion. Test runs
 warm nothing that their compilation does not, and the lead re-runs the
 configured commands itself as verification, so an executed suite here is pure
-duplication. The caches last for this Minos run, including its fix worktrees,
-and are removed with the run directory. `$XDG_STATE_HOME` remains separate state,
+duplication. The caches persist across Minos runs of this repository and are
+shared with their fix worktrees. `$XDG_STATE_HOME` remains separate state,
 not a build cache. Provisioned executables must land in an inherited PATH
 location: `$HOME/.cargo/bin` or `$HOME/.local/bin`. Passwordless `sudo` is
 available when an evidenced system package is the appropriate installation.
