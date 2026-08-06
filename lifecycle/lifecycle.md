@@ -296,12 +296,29 @@ last action and end the turn. A continuation writes no failure-log line.
    action, the fresh whole review on the repaired head. Entered from
    step 7 — after both review stages — the re-run build and tests are the
    repair's whole verification, exactly as they are for the brief wave's
-   own fixes; no review loop reopens. An empty `commit` means the
-   isolated agent made no mutation; there is nothing to re-run the gate
-   against, so that dispatch counts as a failed attempt.
+   own fixes; no review loop reopens.
 
-   A `failed` status after the first repair permits exactly one more repair
-   dispatch. When two repair attempts have failed — or the dispatch was
+   The repair ladder is bounded by progress, not a count. After each
+   integrated repair, compare the re-run gate's result with the red result
+   that repair was dispatched against — the failure immediately before it,
+   never the one that first entered the discipline: a repair that changes
+   that failing gate's outcome — a different failing command, a different
+   failure, or a green gate — is progress and earns another repair
+   dispatch, built from the fresh failure's captured output; a repair that
+   leaves the same command failing the same way is a stall and ends the run
+   below. Whether two red results are the same failure is your judgement —
+   weigh what each failure actually is, never a string comparison of gate
+   output: output differing only in line numbers, ordering, or timing can
+   carry the same failure, and the same command can fail for a genuinely
+   new reason. Before acting on each comparison, append its basis as one
+   sentence to `$MINOS_RUN_DIR/gate-repair-ladder.log`. An empty `commit`
+   means the isolated agent made no mutation; there is nothing to re-run
+   the gate against, so the red result it was dispatched against stands
+   unchanged and that dispatch is a stall. No counted ceiling sits behind
+   the progress rule; the run unit's hard timeout is the failsafe against
+   a runaway ladder.
+
+   When the ladder stalls — or the dispatch was
    skipped on a fork — the gate stays red and the run ends as **attention**,
    never incomplete: append each failed command and its non-zero exit status
    to `$MINOS_FAILURE_LOG`, publish one request-changes review with
@@ -319,8 +336,9 @@ last action and end the turn. A continuation writes no failure-log line.
    apply to it. Where this discipline applies, `incomplete` remains the
    outcome only for genuine inability
    to assess — infrastructure failure, an incomplete leg, a missing
-   verdict — never for the red gate itself. Finishing's own red outcomes
-   (step 8) are outside this discipline and keep their stated handling.
+   verdict — never for the red gate itself. Finishing's root-cause repair
+   (step 8) runs its own dispatch on forge check evidence rather than this
+   discipline, but sits under the same progress bound, as step 8 states.
 4. Run every Ensemble workflow in this lifecycle from this accountable lead
    session. Never delegate its invocation to an agent or subagent;
    responsibility for orchestration remains with the lead. Launch each such
@@ -587,7 +605,8 @@ last action and end the turn. A continuation writes no failure-log line.
    the CLI's one-line JSON `status` field; empty strings are skipped. A
    `failed` status enters step 3's gate repair discipline against the current
    head: dispatch, integrate through the controlled path, re-run the exact
-   configured commands; two failed repair attempts end the run as attention
+   configured commands, under the same progress bound — a repair that leaves
+   the same command failing the same way ends the run as attention
    with the honest request-changes report, exactly as step 3 describes, and
    no further review round or merge action happens on the red head.
    Only after both gates pass or skip, run the complete input-builder and
@@ -704,7 +723,8 @@ last action and end the turn. A continuation writes no failure-log line.
    result after the wave enters step 3's gate repair discipline against the
    fresh head: dispatch, integrate through the controlled path, and re-run the
    configured commands with the same explicit capture, exit-status
-   preservation, and overwrite requirements; two failed repair attempts end
+   preservation, and overwrite requirements, under the same progress bound —
+   a repair that leaves the same command failing the same way ends
    the run as attention
    with the honest request-changes report, exactly as step 3 describes. If
    the single wave leaves `confirmedUnfixed` entries, or integration fails,
@@ -821,14 +841,24 @@ last action and end the turn. A continuation writes no failure-log line.
    the same attempt: like the brief stage's wave and setup's conflict
    resolution, the repair triggers no re-review and no successor run. After
    the configured commands pass, add the 👍 on `FRESH_HEAD` and continue to
-   step 9 using that fresh head and target. Any failed integration,
-   publication, build or test stops
-   incomplete; never carry a failing repair to merge.
+   step 9 using that fresh head and target. Never carry a failing repair to
+   merge. This repair sits under the same progress bound as every gate
+   repair: compare its red verification result — the failing configured
+   command, or the fresh evidence of the check that triggered the dispatch —
+   with the failure this repair was dispatched against, judging same-failure
+   and appending each comparison's one-sentence basis exactly as step 3
+   directs. Progress earns another helper dispatch on the fresh evidence; a
+   repair that leaves the same check or command failing the same way is a
+   stall and ends the run as **attention** with step 3's honest
+   request-changes report — an assessed unsuccessful repair, not an
+   inability to assess, so `incomplete` does not describe it. A failed
+   integration or publication is infrastructure, not an assessed repair,
+   and still stops incomplete.
 
-   When the helper returns no commit and no pushed head appears, it has made no
-   mutation. On the red-check path, leave the label when present, set
-   `incomplete`, remove 👀, write the non-clean terminal marker, and stop
-   exactly as before.
+   When the helper returns no commit and no pushed head appears, it has made
+   no mutation: the failure it was dispatched against stands unchanged, which
+   is a stall on the red-check path — leave the label when present and end as attention
+   exactly as above.
    Only on the label-only path may step 9 receive the unchanged verified head
    and target. Retain the `Flaky Test` label on that path. This clean
    continuation writes nothing to `$MINOS_FAILURE_LOG`. The retained label is

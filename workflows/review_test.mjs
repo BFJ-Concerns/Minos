@@ -726,7 +726,11 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
-    /two repair attempts have failed[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*blocks re-attempts until the head\s+moves/,
+    /bounded by progress, not a count[\s\S]*the red result\s+that repair was dispatched against[\s\S]*never the one that first entered the discipline[\s\S]*earns another repair\s+dispatch[\s\S]*same command failing the same way is a stall[\s\S]*your judgement[\s\S]*never a string comparison of gate\s+output[\s\S]*append its basis as one\s+sentence to `\$MINOS_RUN_DIR\/gate-repair-ladder\.log`[\s\S]*No counted ceiling[\s\S]*hard timeout is the failsafe/,
+  );
+  assert.match(
+    initialGate,
+    /When the ladder stalls[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*blocks re-attempts until the head\s+moves/,
   );
   assert.match(
     initialGate,
@@ -740,13 +744,13 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     repeatedGate,
-    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*same progress bound[\s\S]*same command failing the same way ends\s+the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
   );
 
   const briefWave = lifecycle.slice(lifecycle.indexOf("7. Once the main loop"), lifecycle.indexOf("8. Enter finishing"));
   assert.match(
     briefWave,
-    /capture their complete combined output[\s\S]*preserve each\s+command's exit status[\s\S]*overwrite its output file on every execution[\s\S]*red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*re-run the\s+configured commands with the same explicit capture, exit-status\s+preservation, and overwrite requirements[\s\S]*two failed repair attempts end\s+the run as attention/,
+    /capture their complete combined output[\s\S]*preserve each\s+command's exit status[\s\S]*overwrite its output file on every execution[\s\S]*red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*re-run the\s+configured commands with the same explicit capture, exit-status\s+preservation, and overwrite requirements, under the same progress bound[\s\S]*same command failing the same way ends\s+the run as attention/,
   );
 });
 
@@ -781,10 +785,14 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
-    /never carry a failing repair to merge/,
+    /Never carry a failing repair to\s+merge/,
   );
   assert.match(
     finishing,
-    /helper returns no commit and no pushed head appears[\s\S]*made no[\s\S]*mutation[\s\S]*red-check path[\s\S]*set[\s\S]*`incomplete`[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
+    /same progress bound as every gate\s+repair[\s\S]*the failure this repair was dispatched against[\s\S]*appending each comparison's one-sentence basis exactly as step 3\s+directs[\s\S]*stall and ends the run as \*\*attention\*\*[\s\S]*assessed unsuccessful repair, not an\s+inability to assess[\s\S]*failed\s+integration or publication is infrastructure[\s\S]*stops incomplete/,
+  );
+  assert.match(
+    finishing,
+    /helper returns no commit and no pushed head appears[\s\S]*made\s+no mutation[\s\S]*stall on\s+the red-check path[\s\S]*end as attention[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
   );
 });
