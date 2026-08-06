@@ -1,6 +1,6 @@
 # Review exploration
 
-<!-- contract-marker: MINOS_EXPLORATION_PLAN_V2 -->
+<!-- contract-marker: MINOS_EXPLORATION_PLAN_V3 -->
 
 Read the complete target-to-head change and return only grounded repository
 facts: the changed-file inventory exactly as the output schema requests, and a
@@ -19,6 +19,13 @@ A change that engages no reviewable concern gets an empty plan: return the
 file inventory with no units, and the review completes clean with no findings
 — a valid outcome, not a failure to plan. The plan is done when every unit it
 names earns its dispatch and no engaged concern lacks one.
+
+The output schema's `applicability.reason` field carries the judgement behind
+the plan's size: state, in a sentence or two, why the change earns exactly the
+units you named — which concerns it engages and which it does not. For an
+empty plan this reason is the whole review's record of why nothing was
+dispatched, so make it stand on its own: say what the change is and why no
+concern has real work, not merely "nothing applies".
 
 Enumerate the changed paths exactly as the output schema requests — the
 inventory is returned in full even when the plan is empty. Use Git and the
