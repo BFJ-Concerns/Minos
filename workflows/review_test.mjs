@@ -86,8 +86,9 @@ function unit(id = "logic", specialistType = "correctness", scope = ["internal/x
 function explorationFixture({
   files = [{ path: "internal/x.go", added: 30, deleted: 30 }],
   plan = [unit()],
+  applicability = { reason: "the change engages the planned review concerns" },
 } = {}) {
-  return { files, plan };
+  return { files, plan, applicability };
 }
 
 function finding(overrides = {}) {
@@ -179,7 +180,7 @@ test("the script emits an envelope with every routed leg and raw verifier output
   const { result, calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
 
   assert.deepEqual(Object.keys(result).sort(), [
-    "briefs", "dispatches", "misconfigurations", "outOfScopeObservations", "proposedFindings",
+    "briefs", "dispatches", "exploration", "misconfigurations", "outOfScopeObservations", "proposedFindings",
     "requiredModelEvidence", "reviewed", "reviewers", "stage",
   ]);
   assert.equal(result.stage, "present");
@@ -192,7 +193,6 @@ test("the script emits an envelope with every routed leg and raw verifier output
       { role: "exploration", pinnedModel: "gpt-5.6-terra" },
       { role: "specialist", pinnedModel: "gpt-5.6-terra" },
       { role: "specialist", pinnedModel: "gpt-5.6-terra" },
-      { role: "verifier", pinnedModel: "claude-opus-5" },
       { role: "verifier", pinnedModel: "claude-opus-5" },
     ],
   );
@@ -246,12 +246,11 @@ test("all findings are proposed on Terra and verified cross-family on Claude", a
   const { calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
   const correctness = calls.find((call) => call.opts.label === "specialist-1-correctness-gpt");
   const security = calls.find((call) => call.opts.label === "specialist-2-security-gpt");
-  const correctnessVerifier = calls.find((call) => call.opts.label === "verify-1-1-claude");
-  const securityVerifier = calls.find((call) => call.opts.label === "verify-2-1-claude");
+  const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
   assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-5.6-terra"]);
   assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-5.6-terra"]);
-  assert.deepEqual([correctnessVerifier.opts.engine, correctnessVerifier.opts.model], ["claude", "claude-opus-5"]);
-  assert.deepEqual([securityVerifier.opts.engine, securityVerifier.opts.model], ["claude", "claude-opus-5"]);
+  assert.ok(verifiers.length > 0);
+  assert.ok(verifiers.every((call) => call.opts.engine === "claude" && call.opts.model === "claude-opus-5"));
   assert.ok(specialistCalls(calls).every((call) => call.opts.engine !== "claude"));
   assert.ok(calls.filter((call) => call.opts.label?.startsWith("verify-"))
     .every((call) => call.opts.engine !== "codex"));
@@ -297,16 +296,46 @@ test("specialist inapplicability is a skip-like disposition and never reaches a 
   }]);
 });
 
-test("the review plan dispatches every requested specialist and retains the correctness floor", async () => {
+test("the review plan dispatches exactly every requested specialist", async () => {
   const requested = Array.from({ length: 9 }, (_, index) => unit(`security-${index}`, "security", [`pkg/f${index}.go`]));
   const { result, calls } = await runScript(ARGS, responder({
     exploration: explorationFixture({ plan: requested }),
     specialist: () => specialistResult([]),
   }));
-  assert.equal(result.dispatches.length, 10);
-  assert.equal(result.dispatches[0].specialistType, "correctness");
-  assert.equal(specialistCalls(calls).length, 10);
+  assert.equal(result.dispatches.length, 9);
+  assert.ok(result.dispatches.every((entry) => entry.specialistType === "security"));
+  assert.equal(specialistCalls(calls).length, 9);
   assert.deepEqual(specialistCalls(calls).map((call) => call.opts.label), result.dispatches.map((entry) => entry.label));
+  assert.deepEqual(result.exploration.applicability, {
+    status: "applicable",
+    reason: "the change engages the planned review concerns",
+  });
+});
+
+test("an empty plan completes through the adjudicator's no-findings path", async (t) => {
+  const exploration = explorationFixture({
+    plan: [],
+    applicability: { reason: "only generated documentation changed" },
+  });
+  const { result, calls } = await runScript(ARGS, responder({ exploration }));
+
+  assert.deepEqual(result.exploration, {
+    ...exploration,
+    applicability: { status: "inapplicable", reason: "only generated documentation changed" },
+  });
+  assert.deepEqual(result.dispatches, []);
+  assert.deepEqual(result.reviewers, []);
+  assert.deepEqual(result.proposedFindings, []);
+  assert.deepEqual(result.requiredModelEvidence.map((leg) => leg.role), ["exploration"]);
+  assert.equal(specialistCalls(calls).length, 0);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+  const explorationSchema = calls.find((call) => call.opts.label === "exploration").opts.schema;
+  assert.ok(explorationSchema.required.includes("applicability"));
+  assert.deepEqual(explorationSchema.properties.applicability.required, ["reason"]);
+  assert.equal(explorationSchema.properties.applicability.properties.status, undefined);
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.deepEqual(verdict.confirmedFindings, []);
 });
 
 test("every specialist finding reaches its opposite-family verifier batch", async () => {
@@ -319,12 +348,12 @@ test("every specialist finding reaches its opposite-family verifier batch", asyn
     ]),
   }));
   assert.deepEqual(result.proposedFindings.map((entry) => entry.title), ["one", "two", "three survives", "four survives"]);
-  const verifier = calls.find((call) => call.opts.label === "verify-1-1-claude");
+  const verifier = calls.find((call) => call.opts.label === "verify-1-claude");
   assert.ok(verifier);
   assert.match(verifier.prompt, /"title":"four survives"/);
 });
 
-test("verifier dispatch groups seven specialists independently and caps batches at six", async () => {
+test("verifier dispatch pools findings globally and caps batches at six", async () => {
   const counts = [7, 1, 2, 3, 4, 5, 6];
   const types = ["correctness", "security", "testing", "design", "correctness", "security", "testing"];
   const plan = counts.map((_, index) => unit(`unit-${index + 1}`, types[index], [`pkg/f${index + 1}.go`]));
@@ -341,16 +370,32 @@ test("verifier dispatch groups seven specialists independently and caps batches 
 
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-"));
   assert.equal(result.proposedFindings.length, counts.reduce((total, count) => total + count, 0));
-  assert.equal(verifierCalls.length, 8);
-  assert.deepEqual(verifierCalls.map((call) => findingsFromVerifierPrompt(call.prompt).length), [6, 1, 1, 2, 3, 4, 5, 6]);
+  assert.equal(verifierCalls.length, 5);
+  assert.deepEqual(verifierCalls.map((call) => findingsFromVerifierPrompt(call.prompt).length), [6, 6, 6, 6, 4]);
   assert.deepEqual(
     result.requiredModelEvidence.filter((leg) => leg.role === "verifier").map((leg) => leg.findingIds.length),
-    [6, 1, 1, 2, 3, 4, 5, 6],
+    [6, 6, 6, 6, 4],
   );
   assert.deepEqual(verifierCalls.map((call) => call.opts.label), [
-    "verify-1-1-claude", "verify-1-2-claude", "verify-2-1-claude", "verify-3-1-claude",
-    "verify-4-1-claude", "verify-5-1-claude", "verify-6-1-claude", "verify-7-1-claude",
+    "verify-1-claude", "verify-2-claude", "verify-3-claude", "verify-4-claude", "verify-5-claude",
   ]);
+});
+
+test("findings distributed across several units share one verifier leg", async () => {
+  const plan = [unit("one", "correctness"), unit("two", "security"), unit("three", "testing")];
+  const { result, calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({ plan }),
+    specialist: (label) => specialistResult([finding({ title: `finding from ${label}` })]),
+  }));
+
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-"));
+  assert.equal(verifierCalls.length, 1);
+  assert.equal(verifierCalls[0].opts.label, "verify-1-claude");
+  assert.equal(findingsFromVerifierPrompt(verifierCalls[0].prompt).length, 3);
+  assert.deepEqual(new Set(result.proposedFindings.map((entry) => entry.proposingLabel)), new Set([
+    "specialist-1-correctness-gpt", "specialist-2-security-gpt", "specialist-3-testing-gpt",
+  ]));
+  assert.ok(result.proposedFindings.every((entry) => entry.verifyLabel === "verify-1-claude"));
 });
 
 for (const responseCase of [
