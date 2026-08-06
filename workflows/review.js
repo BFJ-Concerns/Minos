@@ -68,8 +68,7 @@ function rolePrompt(roleBriefs, guidance, path, assignment) {
 }
 
 function normalisePlan(plan) {
-  const requested = Array.isArray(plan) ? plan : [];
-  const dispatched = requested.map((unit, index) => {
+  return (Array.isArray(plan) ? plan : []).map((unit, index) => {
     return {
       ...unit,
       kind: "planned",
@@ -78,7 +77,6 @@ function normalisePlan(plan) {
       label: `specialist-${index + 1}-${unit.specialistType}-gpt`,
     };
   });
-  return { requested, dispatched };
 }
 
 // The Ensemble sandbox exposes no Buffer or TextEncoder global, so byte
@@ -190,6 +188,15 @@ const applicabilityShape = {
   },
 };
 
+const explorationApplicabilityShape = {
+  type: "object",
+  additionalProperties: false,
+  required: ["reason"],
+  properties: {
+    reason: { type: "string" },
+  },
+};
+
 const specialistSchema = {
   type: "object",
   additionalProperties: false,
@@ -206,7 +213,7 @@ const explorationSchema = {
   additionalProperties: false,
   required: ["files", "plan", "applicability"],
   properties: {
-    applicability: applicabilityShape,
+    applicability: explorationApplicabilityShape,
     files: {
       type: "array",
       items: {
@@ -298,7 +305,7 @@ function addLeg(label, role, pinnedModel, findingIds = null) {
 
 phase("Explore");
 addLeg("exploration", "exploration", GPT_EXPLORER_MODEL);
-const exploration = await agent(
+const explorationResult = await agent(
   rolePrompt(
     roleBriefs,
     projectGuidance,
@@ -315,7 +322,7 @@ const exploration = await agent(
   }
 );
 
-if (!exploration) {
+if (!explorationResult) {
   return {
     reviewed: { target, head, occasion },
     stage: "present",
@@ -329,8 +336,14 @@ if (!exploration) {
   };
 }
 
-const planned = normalisePlan(exploration.plan);
-const specialistUnits = planned.dispatched;
+const exploration = {
+  ...explorationResult,
+  applicability: {
+    status: explorationResult.plan.length === 0 ? "inapplicable" : "applicable",
+    reason: explorationResult.applicability.reason,
+  },
+};
+const specialistUnits = normalisePlan(exploration.plan);
 const orientation = orientationPacket(target, head, exploration.files, specialistUnits);
 phase("Specialise");
 for (const unit of specialistUnits)
@@ -410,7 +423,6 @@ specialistUnits.forEach((unit, unitIndex) => {
     proposed.push({
       id: `${unit.label}:${findingIndex + 1}`,
       unit,
-      unitIndex,
       finding,
       findingIndex,
     });
@@ -491,7 +503,7 @@ return {
   outOfScopeObservations,
   briefs,
   misconfigurations: [],
-  dispatches: planned.dispatched.map((unit) => ({
+  dispatches: specialistUnits.map((unit) => ({
     id: unit.id,
     label: unit.label,
     concern: unit.concern,

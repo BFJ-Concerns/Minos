@@ -86,7 +86,7 @@ function unit(id = "logic", specialistType = "correctness", scope = ["internal/x
 function explorationFixture({
   files = [{ path: "internal/x.go", added: 30, deleted: 30 }],
   plan = [unit()],
-  applicability = { status: "applicable", reason: "the change engages the planned review concerns" },
+  applicability = { reason: "the change engages the planned review concerns" },
 } = {}) {
   return { files, plan, applicability };
 }
@@ -306,16 +306,23 @@ test("the review plan dispatches exactly every requested specialist", async () =
   assert.ok(result.dispatches.every((entry) => entry.specialistType === "security"));
   assert.equal(specialistCalls(calls).length, 9);
   assert.deepEqual(specialistCalls(calls).map((call) => call.opts.label), result.dispatches.map((entry) => entry.label));
+  assert.deepEqual(result.exploration.applicability, {
+    status: "applicable",
+    reason: "the change engages the planned review concerns",
+  });
 });
 
 test("an empty plan completes through the adjudicator's no-findings path", async (t) => {
   const exploration = explorationFixture({
     plan: [],
-    applicability: { status: "inapplicable", reason: "only generated documentation changed" },
+    applicability: { reason: "only generated documentation changed" },
   });
   const { result, calls } = await runScript(ARGS, responder({ exploration }));
 
-  assert.deepEqual(result.exploration, exploration);
+  assert.deepEqual(result.exploration, {
+    ...exploration,
+    applicability: { status: "inapplicable", reason: "only generated documentation changed" },
+  });
   assert.deepEqual(result.dispatches, []);
   assert.deepEqual(result.reviewers, []);
   assert.deepEqual(result.proposedFindings, []);
@@ -324,7 +331,8 @@ test("an empty plan completes through the adjudicator's no-findings path", async
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
   const explorationSchema = calls.find((call) => call.opts.label === "exploration").opts.schema;
   assert.ok(explorationSchema.required.includes("applicability"));
-  assert.deepEqual(explorationSchema.properties.applicability.required, ["status", "reason"]);
+  assert.deepEqual(explorationSchema.properties.applicability.required, ["reason"]);
+  assert.equal(explorationSchema.properties.applicability.properties.status, undefined);
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
   assert.deepEqual(verdict.confirmedFindings, []);
