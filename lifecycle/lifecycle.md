@@ -426,6 +426,9 @@ last action and end the turn. A continuation writes no failure-log line.
    configured threshold and optional maximum rounds arrive through
    `$MINOS_REVIEW_THRESHOLD` and `$MINOS_MAX_ROUNDS`.
 
+   Grouping is a proportionality judgement: aim for the fewest dispatches
+   that keep each repair coherent — file overlap is something you may weigh,
+   never a rule — since every dispatch has a real cost.
    When related findings should be repaired together, write a grouping file
    for that round and pass `--grouping FILE` to `fix-inputs.mjs`. Its shape is
    `{"kind":"minos-fix-grouping-v1","groups":[{"findings":["FINDING_ID"]}]}`.
