@@ -714,11 +714,12 @@ test("configured command failures enter the repair discipline, never a review on
     initialGate,
     /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*gate repair discipline[\s\S]*No review starts while the gate is red/,
   );
-  assert.match(initialGate, /empty, no test command is configured[\s\S]*skip it/);
+  assert.match(initialGate, /when it is empty, no test command is\s+configured, so skip it/);
   assert.match(
     initialGate,
-    /shipped `rootcause\.js`[\s\S]*--command FAILING_COMMAND --exit-status EXIT_STATUS[\s\S]*--evidence CAPTURED_OUTPUT_FILE[\s\S]*gate-repair-result\.json[\s\S]*background task[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again/,
+    /build-command-output\.log[\s\S]*test-command-output\.log[\s\S]*shipped `rootcause\.js`[\s\S]*matching absolute `build-command-output\.log` or\s+`test-command-output\.log`[\s\S]*--command FAILING_COMMAND --exit-status EXIT_STATUS[\s\S]*--evidence CAPTURED_OUTPUT_FILE[\s\S]*gate-repair-result\.json[\s\S]*background task[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again/,
   );
+  assert.doesNotMatch(initialGate, / &$/m);
   assert.match(
     initialGate,
     /fork pull request[\s\S]*skip the\s+repair dispatch/,
@@ -757,7 +758,7 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
-    /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Give the helper that file/,
+    /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Invoke the same shipped `rootcause\.js`/,
   );
   assert.match(
     finishing,
@@ -766,8 +767,9 @@ test("a verified finishing repair merges in the same attempt", () => {
   assert.doesNotMatch(finishing, /classify-finishing-change|tests-only|review-required|FINISHING_REVIEWED_HEAD/);
   assert.match(
     finishing,
-    /same shipped `rootcause\.js`[\s\S]*--evidence "\$MINOS_RUN_DIR\/check-logs\.json"[\s\S]*rootcause-result\.json/,
+    /same shipped `rootcause\.js`[\s\S]*forge check evidence rather[\s\S]*configured-command output files[\s\S]*--evidence "\$MINOS_RUN_DIR\/check-logs\.json"[\s\S]*rootcause-result\.json/,
   );
+  assert.doesNotMatch(finishing, /say so in the helper prompt/);
   assert.match(finishing, /foreground[\s\S]*empty `runs` array[\s\S]*do not\s+invent/);
   assert.match(
     finishing,

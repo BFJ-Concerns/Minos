@@ -214,11 +214,15 @@ last action and end the turn. A continuation writes no failure-log line.
    When `$MINOS_BUILD_CMD` is
    non-empty, run that exact command string exactly as configured — never a
    repository-native guess or substitute of your own — to completion before any
-   review starts; when it is empty, no build command is configured, so skip it
-   rather than inventing one. When `$MINOS_TEST_CMD` is non-empty, run that exact
-   command string exactly as configured — never a repository-native guess or
-   substitute of your own — to completion before any review starts; when it is
-   empty, no test command is configured, so skip it rather than inventing one.
+   review starts. Capture its complete combined output in the absolute path
+   `$MINOS_RUN_DIR/build-command-output.log` without changing the configured
+   command, and preserve the configured command's exit status. Overwrite that
+   file on every execution so it records the current result. When the build
+   command is empty, no build command is configured, so skip it rather than
+   inventing one. When `$MINOS_TEST_CMD` is non-empty, apply the same rules and
+   capture its complete combined output in
+   `$MINOS_RUN_DIR/test-command-output.log`; when it is empty, no test command is
+   configured, so skip it rather than inventing one.
    For each command, run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`,
    passing the configured string and its exit status. Read the CLI's one-line
@@ -238,8 +242,9 @@ last action and end the turn. A continuation writes no failure-log line.
    the run with the honest request-changes outcome described below. Otherwise
    Invoke the shipped `rootcause.js` workflow. Give its input builder the
    vendored root-cause skill path, the exact failing command string and exit
-   status, and the absolute path of the failure's captured output. The workflow
-   dispatches one repair agent on `codex` / `gpt-5.6-sol` with
+   status, and the matching absolute `build-command-output.log` or
+   `test-command-output.log` path containing the failure's captured output. The
+   workflow dispatches one repair agent on `codex` / `gpt-5.6-sol` with
    `effort: "high"` and `isolation: "worktree"`; it follows the skill, fixes
    only what it proves, commits with the configured Minos identity, and never
    pushes. Whether the break is the change's own defect or exists only against
@@ -257,7 +262,7 @@ last action and end the turn. A continuation writes no failure-log line.
      --json-args @"$MINOS_RUN_DIR/gate-repair-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
      > "$MINOS_RUN_DIR/gate-repair-result.json" \
-     2> "$MINOS_RUN_DIR/gate-repair-result.log" &
+     2> "$MINOS_RUN_DIR/gate-repair-result.log"
    ```
 
    Run it as a background task and wait exactly as step 4 directs.
@@ -759,19 +764,14 @@ last action and end the turn. A continuation writes no failure-log line.
      > "$MINOS_RUN_DIR/check-logs.json"
    ```
 
-   Give the helper that file and direct it to start from the recorded job
-   statuses and logs, including any retry or flaky-test lines. The evidence is
-   diagnostic input, not proof of a cause: the helper must still reproduce and
-   prove its diagnosis. If the forge has no Actions-backed status URL, the
-   command returns an empty `runs` array; say so in the helper prompt rather
-   than inventing log evidence.
-
    Invoke the same shipped `rootcause.js` workflow in the foreground, giving
    its input builder the vendored root-cause skill path and the absolute path
-   of `check-logs.json`. The workflow uses the same `codex` / `gpt-5.6-sol`,
-   `effort: "high"`, `isolation: "worktree"`, proof discipline, configured
-   Minos commit identity, code-only `writeUp`, and no-push rule as the gate
-   repair discipline. It starts from the recorded job statuses and logs,
+   of `check-logs.json`. This finishing path uses forge check evidence rather
+   than step 3's configured-command output files. The workflow uses the same
+   `codex` / `gpt-5.6-sol`, `effort: "high"`, `isolation: "worktree"`, proof
+   discipline, configured Minos commit identity, code-only `writeUp`, and
+   no-push rule as the gate repair discipline. It starts from the recorded job
+   statuses and logs,
    including retry and flaky-test lines, but treats that evidence as diagnostic
    input rather than proof and still reproduces and proves its diagnosis. An
    empty `runs` array means there is no Actions-backed log evidence; do not
