@@ -79,11 +79,40 @@ func TestSpawnRunReportsSuppressedForActiveUnit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome != SpawnSuppressed {
+	if outcome.Outcome != SpawnSuppressed {
 		t.Fatalf("outcome = %q, want %q", outcome, SpawnSuppressed)
+	}
+	if outcome.BlockingUnit != "minos-run-other-repo-pr9.service" {
+		t.Fatalf("blocking unit = %q", outcome.BlockingUnit)
 	}
 	if !slices.Equal(commands, []string{"systemctl"}) {
 		t.Fatalf("commands = %v, want only systemctl", commands)
+	}
+}
+
+func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return nil, nil
+		}
+		return []byte("Unit minos-run-owner-repo-pr1.service already exists."), errors.New("exit status 1")
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	repo := RepoConfig{}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+	result, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnSuppressed {
+		t.Fatalf("outcome = %q, want %q", result.Outcome, SpawnSuppressed)
+	}
+	if result.BlockingUnit != "minos-run-owner-repo-pr1.service" {
+		t.Fatalf("blocking unit = %q", result.BlockingUnit)
 	}
 }
 
@@ -114,7 +143,7 @@ func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome != SpawnStarted {
+	if outcome.Outcome != SpawnStarted {
 		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
 	}
 	for _, value := range []string{
@@ -321,7 +350,7 @@ func TestSpawnRunLaunchesWhenSiblingStaleCarryCannotBeRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpawnRun failed on an untrusted sibling carry: %v", err)
 	}
-	if outcome != SpawnStarted {
+	if outcome.Outcome != SpawnStarted {
 		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
 	}
 	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
@@ -614,7 +643,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome != SpawnStarted {
+	if outcome.Outcome != SpawnStarted {
 		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
 	}
 	assertArgument(t, systemdArgs, "--property=ExitType=main")
@@ -708,7 +737,7 @@ func TestSpawnRunSerialisesConcurrentAdmissionAgainstSystemdFacts(t *testing.T) 
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 
-	results := make(chan SpawnOutcome, 2)
+	results := make(chan SpawnResult, 2)
 	errors := make(chan error, 2)
 	var group sync.WaitGroup
 	for _, pr := range []string{"1", "2"} {
@@ -728,12 +757,12 @@ func TestSpawnRunSerialisesConcurrentAdmissionAgainstSystemdFacts(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	var outcomes []SpawnOutcome
+	var outcomes []ReconcileDecision
 	for outcome := range results {
-		outcomes = append(outcomes, outcome)
+		outcomes = append(outcomes, outcome.Outcome)
 	}
 	slices.Sort(outcomes)
-	if !slices.Equal(outcomes, []SpawnOutcome{SpawnStarted, SpawnSuppressed}) {
+	if !slices.Equal(outcomes, []ReconcileDecision{SpawnStarted, SpawnSuppressed}) {
 		t.Fatalf("outcomes = %v, want one start and one suppression", outcomes)
 	}
 	if starts != 1 {

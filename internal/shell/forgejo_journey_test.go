@@ -35,7 +35,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "nothing" {
+		if result.Decision != "nothing" {
 			t.Fatalf("result = %q, want nothing", result)
 		}
 	})
@@ -60,7 +60,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "deferred: open dependencies: minos-e2e-owner/prerequisite#7" {
+		if result.Decision != "deferred: open dependencies: minos-e2e-owner/prerequisite#7" {
 			t.Fatalf("result = %q", result)
 		}
 		if len(commands) != 0 {
@@ -75,7 +75,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "started" || !slices.Equal(commands, []string{"systemctl", "systemd-run"}) {
+		if result.Decision != "started" || !slices.Equal(commands, []string{"systemctl", "systemd-run"}) {
 			t.Fatalf("result after close = %q, commands = %v", result, commands)
 		}
 	})
@@ -108,7 +108,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "deferred: open dependencies: another-owner/another-repo#42" {
+		if result.Decision != "deferred: open dependencies: another-owner/another-repo#42" {
 			t.Fatalf("result = %q", result)
 		}
 	})
@@ -138,7 +138,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "deferred: open dependencies: minos-e2e-owner/open-second#8" {
+		if result.Decision != "deferred: open dependencies: minos-e2e-owner/open-second#8" {
 			t.Fatalf("result = %q", result)
 		}
 	})
@@ -159,7 +159,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "deferred: dependency state unavailable: forge returned HTTP 503" {
+		if result.Decision != "deferred: dependency state unavailable: forge returned HTTP 503" {
 			t.Fatalf("result = %q", result)
 		}
 	})
@@ -192,14 +192,14 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "recovered" {
+		if result.Decision != "recovered" {
 			t.Fatalf("result = %q, want recovered", result)
 		}
 		result, err = reconcilePullRequest(t.Context(), cfg, repo, facts)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "nothing" {
+		if result.Decision != "nothing" {
 			t.Fatalf("result after repair = %q, want nothing", result)
 		}
 		statusWrites, repairedTarget := state.statusWriteFacts()
@@ -241,7 +241,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "started" || !started {
+		if result.Decision != "started" || !started {
 			t.Fatalf("result = %q, started = %t; want an actual start", result, started)
 		}
 	})
@@ -272,7 +272,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "nothing" {
+		if result.Decision != "nothing" {
 			t.Fatalf("result = %q, want nothing", result)
 		}
 	})
@@ -311,7 +311,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "started" || !started {
+		if result.Decision != "started" || !started {
 			t.Fatalf("result = %q, started = %t; want a fresh attempt", result, started)
 		}
 	})
@@ -345,7 +345,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "started" || !started {
+		if result.Decision != "started" || !started {
 			t.Fatalf("result = %q, started = %t; want a successor start", result, started)
 		}
 	})
@@ -383,7 +383,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "started" {
+		if result.Decision != "started" {
 			t.Fatalf("result = %q, want started", result)
 		}
 		assertArgument(t, systemdArgs, "MINOS_HEAD_BRANCH=")
@@ -408,8 +408,11 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "suppressed" {
+		if result.Decision != "suppressed" {
 			t.Fatalf("result = %q, want suppressed", result)
+		}
+		if result.BlockingUnit != "minos-run-other-repo-pr9.service" {
+			t.Fatalf("blocking unit = %q", result.BlockingUnit)
 		}
 		if !slices.Equal(commands, []string{"systemctl"}) {
 			t.Fatalf("commands = %v, want only active-unit check", commands)
@@ -449,7 +452,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "started" {
+		if result.Decision != "started" {
 			t.Fatalf("first result = %q, want started", result)
 		}
 
@@ -460,8 +463,11 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "suppressed" {
+		if result.Decision != "suppressed" {
 			t.Fatalf("second result while first active = %q, want suppressed", result)
+		}
+		if result.BlockingUnit != activeUnit {
+			t.Fatalf("blocking unit = %q, want %q", result.BlockingUnit, activeUnit)
 		}
 		if len(startedUnits) != 1 {
 			t.Fatalf("started units while first active = %v, want one", startedUnits)
@@ -472,7 +478,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "started" {
+		if result.Decision != "started" {
 			t.Fatalf("second result after first exit = %q, want started", result)
 		}
 		if len(startedUnits) != 2 || !strings.Contains(startedUnits[1], "pr2") {
