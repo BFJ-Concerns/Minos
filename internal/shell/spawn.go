@@ -22,21 +22,12 @@ var commandCombinedOutput = func(ctx context.Context, name string, args ...strin
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-type SpawnOutcome string
-
 type SpawnResult struct {
-	Outcome      SpawnOutcome
+	Outcome      ReconcileDecision
 	BlockingUnit string
-	Detail       string
 }
 
-const (
-	SpawnStarted    SpawnOutcome = "started"
-	SpawnContinued  SpawnOutcome = "continued"
-	SpawnSuppressed SpawnOutcome = "suppressed"
-	SpawnAttention  SpawnOutcome = "attention"
-	runOwnerMarker               = ".runwrap-owner"
-)
+const runOwnerMarker = ".runwrap-owner"
 
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
 	unit := UnitName(facts)
@@ -270,7 +261,7 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string
 	if err := os.Remove(handoffFile); err != nil {
 		return SpawnResult{}, fmt.Errorf("consume stalled continuation handoff: %w", err)
 	}
-	return SpawnResult{Outcome: SpawnAttention, Detail: cause}, nil
+	return SpawnResult{Outcome: SpawnAttention}, nil
 }
 
 func appendStalledContinuationFailure(path, line string) {

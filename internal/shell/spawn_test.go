@@ -757,12 +757,12 @@ func TestSpawnRunSerialisesConcurrentAdmissionAgainstSystemdFacts(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	var outcomes []SpawnOutcome
+	var outcomes []ReconcileDecision
 	for outcome := range results {
 		outcomes = append(outcomes, outcome.Outcome)
 	}
 	slices.Sort(outcomes)
-	if !slices.Equal(outcomes, []SpawnOutcome{SpawnStarted, SpawnSuppressed}) {
+	if !slices.Equal(outcomes, []ReconcileDecision{SpawnStarted, SpawnSuppressed}) {
 		t.Fatalf("outcomes = %v, want one start and one suppression", outcomes)
 	}
 	if starts != 1 {

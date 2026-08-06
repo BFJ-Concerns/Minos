@@ -384,9 +384,9 @@ func TestRebuildEstateTerminalRecoveryBindsPullRequestHeadTargetAndStatus(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "nothing"
+			want := ReconcileNothing
 			if test.wantRecovered {
-				want = "recovered"
+				want = ReconcileRecovered
 			}
 			if result.Decision != want {
 				t.Fatalf("result = %q, want %q", result, want)
