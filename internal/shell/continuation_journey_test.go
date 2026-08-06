@@ -39,6 +39,10 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if outcome.Outcome != SpawnAttention {
 			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
 		}
+		wantDetail := `successor made no progress beyond stage "review" round 2 and published no new head or review`
+		if outcome.Detail != wantDetail {
+			t.Fatalf("detail = %q, want %q", outcome.Detail, wantDetail)
+		}
 		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
 			t.Fatalf("guarded writes = %v", state.writeSequence)
 		}

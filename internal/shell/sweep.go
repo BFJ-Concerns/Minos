@@ -171,7 +171,7 @@ func sweepDecisionMessage(facts Facts, result ReconcileResult) string {
 	case ReconcileNothing:
 		return pullRequest + ": nothing to do"
 	case SpawnAttention:
-		return pullRequest + ": attention: stopped stalled continuation because its successor made no progress and published no new head or review"
+		return fmt.Sprintf("%s: attention: stopped stalled continuation because its %s", pullRequest, result.Detail)
 	}
 	return ""
 }

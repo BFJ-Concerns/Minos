@@ -108,6 +108,7 @@ const (
 type ReconcileResult struct {
 	Decision     ReconcileDecision
 	BlockingUnit string
+	Detail       string
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
@@ -153,7 +154,7 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	if err != nil {
 		return ReconcileResult{}, err
 	}
-	return ReconcileResult{Decision: outcome.Outcome, BlockingUnit: outcome.BlockingUnit}, nil
+	return ReconcileResult{Decision: outcome.Outcome, BlockingUnit: outcome.BlockingUnit, Detail: outcome.Detail}, nil
 }
 
 func dependencyDeferral(snapshot forge.Snapshot) (string, bool) {

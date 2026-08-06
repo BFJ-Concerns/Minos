@@ -26,7 +26,7 @@ func TestSweepDecisionMessage(t *testing.T) {
 		{name: "continued", result: ReconcileResult{Decision: SpawnContinued}, want: "owner/repository#12: continued previous run"},
 		{name: "recovered", result: ReconcileResult{Decision: ReconcileRecovered}, want: "owner/repository#12: recovered terminal Minos status"},
 		{name: "nothing", result: ReconcileResult{Decision: ReconcileNothing}, want: "owner/repository#12: nothing to do"},
-		{name: "attention", result: ReconcileResult{Decision: SpawnAttention}, want: "owner/repository#12: attention: stopped stalled continuation because its successor made no progress and published no new head or review"},
+		{name: "attention", result: ReconcileResult{Decision: SpawnAttention, Detail: `successor made no progress beyond stage "review" round 2 and published no new head or review`}, want: `owner/repository#12: attention: stopped stalled continuation because its successor made no progress beyond stage "review" round 2 and published no new head or review`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -45,6 +45,8 @@ func TestSweepDecisionMessageCoversReachableVocabulary(t *testing.T) {
 		switch decision {
 		case SpawnSuppressed:
 			result.BlockingUnit = "minos-run-other-repo-pr9.service"
+		case SpawnAttention:
+			result.Detail = `successor made no progress beyond stage "review" round 2 and published no new head or review`
 		}
 		results = append(results, result)
 	}
