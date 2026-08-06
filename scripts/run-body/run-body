@@ -124,6 +124,13 @@ failure_cause="MINOS_GIT_AUTHOR_EMAIL is required"
 
 FORCE_COLOR=0
 export FORCE_COLOR
+# The harness reaps background shells under memory pressure, which on a run
+# unit reads as pressure whenever the workspace's build output fills the page
+# cache — a long setup or review stage is then killed mid-flight and reported
+# as an interrupted dispatch rather than a verdict. The run unit's own
+# MemoryMax ceiling and the continuation path are the backstop this removes.
+CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1
+export CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP
 GIT_AUTHOR_NAME="$MINOS_GIT_AUTHOR_NAME"
 GIT_AUTHOR_EMAIL="$MINOS_GIT_AUTHOR_EMAIL"
 GIT_COMMITTER_NAME="$MINOS_GIT_AUTHOR_NAME"
@@ -262,18 +269,20 @@ disable_pressure_watch() {
 sample_memory_pressure() {
   [ "$pressure_enabled" = true ] || return 0
   [ "$pressure_latched" = false ] || return 0
+  # Use memory.current as a cheap probe that this is a readable cgroup before
+  # attempting the counters that make up the pressure metric.
   if [ ! -r "$cgroup_dir/memory.current" ]; then
     disable_pressure_watch "memory.current is unavailable in $cgroup_dir"
     return 0
   fi
-  IFS= read -r memory_current <"$cgroup_dir/memory.current" || memory_current=""
   IFS= read -r memory_max <"$cgroup_dir/memory.max" || memory_max=""
   if [ "$memory_max" = "max" ]; then
     disable_pressure_watch "memory.max has no ceiling"
     return 0
   fi
-  inactive_file="$(awk '$1 == "inactive_file" { print $2; exit }' "$cgroup_dir/memory.stat" 2>/dev/null || true)"
-  for memory_counter in "$memory_current" "$memory_max" "$inactive_file"; do
+  anon="$(awk '$1 == "anon" { print $2; exit }' "$cgroup_dir/memory.stat" 2>/dev/null || true)"
+  IFS= read -r swap_current <"$cgroup_dir/memory.swap.current" || swap_current=""
+  for memory_counter in "$memory_max" "$anon" "$swap_current"; do
     case "$memory_counter" in
       *[!0-9]*|'')
         disable_pressure_watch "cgroup memory counters are unavailable or malformed"
@@ -281,10 +290,7 @@ sample_memory_pressure() {
         ;;
     esac
   done
-  memory_pressure=$((memory_current - inactive_file))
-  if [ "$memory_pressure" -lt 0 ]; then
-    memory_pressure=0
-  fi
+  memory_pressure=$((anon + swap_current))
   pressure_threshold=$((memory_max / 100 * 85))
   if [ "$memory_pressure" -ge "$pressure_threshold" ]; then
     pressure_samples=$((pressure_samples + 1))
@@ -293,15 +299,10 @@ sample_memory_pressure() {
   fi
   [ "$pressure_samples" -ge 2 ] || return 0
 
-  swap_current=0
-  if [ -r "$cgroup_dir/memory.swap.current" ]; then
-    IFS= read -r swap_current <"$cgroup_dir/memory.swap.current" || swap_current=0
-    case "$swap_current" in *[!0-9]*|'') swap_current=0 ;; esac
-  fi
   pressure_gib="$(awk -v bytes="$memory_pressure" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
   maximum_gib="$(awk -v bytes="$memory_max" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
   swap_gib="$(awk -v bytes="$swap_current" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
-  if ! printf 'memory approaching the run ceiling: %s GiB of %s GiB in use after reclaimable cache, %s GiB swap in use — finish this stage and hand off\n' \
+  if ! printf 'memory approaching the run ceiling: %s GiB of %s GiB in anonymous memory plus swap, %s GiB swap in use — finish this stage and hand off\n' \
     "$pressure_gib" "$maximum_gib" "$swap_gib" >"$pressure_signal"; then
     supervisor_failure=true
     failure_stage="memory-pressure-watch"
