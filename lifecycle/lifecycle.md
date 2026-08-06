@@ -241,44 +241,59 @@ last action and end the turn. A continuation writes no failure-log line.
    This governs every Ensemble command block below — the main review, fix
    waves, brief review and brief fix. Each block names its result JSON; redirect
    diagnostics to the same basename with `.log` instead of `.json`, then submit
-   the complete command as one background Bash task. Record its task ID and use
-   its completion notification as the primary watcher on process exit. Before
-   ending the turn, always call `ScheduleWakeup` with a delay of 1200 seconds
-   or more and a prompt naming the task to re-check. The completion
-   notification is the fast path, so this wake exists only to bound the
-   silence if that notification never arrives — a shorter delay polls for work
-   the harness already reports and costs a full context re-read each time. If
-   the wake fires first, inspect the task when useful, confirm whether it is
-   still running and re-arm the fallback before ending the turn again. Keep
-   every such delay comfortably below `MINOS_LEAD_SILENCE_TIMEOUT`
-   (3600 seconds by default): the supervisor treats a lead with no observed
-   turn activity for that long as ended, so a fallback at or beyond it would
-   let a live waiting lead be stopped. You may additionally create a
-   session-only inspection timer with `CronCreate` when progress merits a
-   closer look, but it supplements rather than replaces the process-exit
-   watcher and fallback wake. When the task completion notification arrives,
-   cancel the fallback with `ScheduleWakeup`'s `stop: true`.
+   the complete command as one background Bash task. Record its task ID.
+
+   Then wait by yielding, never by sleeping. Arm the fallback timer described
+   below, then **end the turn with no further tool call**. The harness resumes
+   this session the moment the background task exits — the completion
+   notification is the primary watcher on process exit, and an idle session
+   receives it within seconds. A lead that runs `sleep` instead defeats that
+   mechanism: sleeping holds the turn open, an open turn cannot receive the
+   notification, and the work sits finished and unread until the sleep
+   expires. A seven-second build behind a seven-minute sleep wastes seven
+   minutes; a yielded lead reads the same result at once. `sleep` has no role
+   in waiting for a background task, whatever duration seems safe.
+
+   The fallback that bounds the wait is a session-only recurring `CronCreate`
+   timer, armed before ending the turn, with an interval of 1200 seconds or
+   more and a prompt naming the task to re-check. Cron jobs fire only while
+   the session is idle — which is exactly the state a yielded lead is in, so
+   the timer works here. It exists only to bound the silence if the completion
+   notification never arrives; a shorter interval polls for work the harness
+   already reports and costs a full context re-read each time. When it fires
+   first, confirm the task's state. A task still running needs nothing more:
+   end the turn again, and the recurring timer stays armed without further
+   action. A task that has already exited means the notification was lost —
+   treat the wake exactly as you would that notification: cancel the timer
+   with `CronDelete` and proceed to the result, never end the turn with a
+   finished task unread. Keep the interval comfortably below
+   `MINOS_LEAD_SILENCE_TIMEOUT` (3600 seconds by default): the supervisor
+   treats a lead with no observed turn activity for that long as ended, so a
+   fallback at or beyond it would let a live waiting lead be stopped. If that
+   configured timeout is ever low enough to conflict with the 1200-second
+   floor, the ceiling wins — arm the timer at roughly half the timeout
+   instead. When the completion notification arrives, cancel the timer with
+   `CronDelete`.
+
+   Do not call `ScheduleWakeup` in this lifecycle. The tool is visible in this
+   session but inert: it schedules only inside a `/loop` context this run does
+   not have, and it answers with a refusal ("the loop has ended; do not
+   re-issue"). That refusal is expected, not a harness fault — do not log it
+   as a missing tool, and do not treat it as a reason to sleep. The
+   `CronCreate` timer above is the working fallback. Never respond to a
+   refused or missing tool by going silent: an unwatched wait is how a live
+   run reaches the silence backstop with work still in flight.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` at every completion notification
    or fallback wake, after confirming the background process's state. Finish a
    process that is still running before handing off.
 
-   If you believe `ScheduleWakeup` is unavailable to you, record that belief in
-   `$MINOS_FAILURE_LOG` and fall back to a `CronCreate` timer at the same
-   interval, cancelling it with `CronDelete`. Never respond to a tool you
-   think is missing by going silent: an unwatched wait is how a live run
-   reaches the silence backstop with work still in flight. The record matters
-   as much as the fallback — a lead that reports a tool missing has either met
-   a real harness fault worth fixing or misjudged its own capabilities, and
-   only the log line distinguishes them.
-
-   Do not sleep for a guessed duration and do not trust the result file merely
-   because it exists: redirection creates it immediately and it may be
-   half-written. Only once the background process has exited is the result file
-   complete; then read it and parse it as JSON before trusting the verdict. A
-   result file that does not parse, or a background task that exits non-zero, is
-   an infrastructure failure — treat it as an incomplete stop, never as a
-   verdict.
+   Do not trust the result file merely because it exists: redirection creates
+   it immediately and it may be half-written. Only once the background process
+   has exited is the result file complete; then read it and parse it as JSON
+   before trusting the verdict. A result file that does not parse, or a
+   background task that exits non-zero, is an infrastructure failure — treat
+   it as an incomplete stop, never as a verdict.
 
    Build the main review input from disk and write it to a file:
 
