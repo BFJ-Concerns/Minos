@@ -717,7 +717,7 @@ test("configured command failures enter the repair discipline, never a review on
   assert.match(initialGate, /when it is empty, no test command is\s+configured, so skip it/);
   assert.match(
     initialGate,
-    /build-command-output\.log[\s\S]*test-command-output\.log[\s\S]*shipped `rootcause\.js`[\s\S]*matching absolute `build-command-output\.log` or\s+`test-command-output\.log`[\s\S]*--command FAILING_COMMAND --exit-status EXIT_STATUS[\s\S]*--evidence CAPTURED_OUTPUT_FILE[\s\S]*gate-repair-result\.json[\s\S]*background task[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again/,
+    /build-command-output\.log[\s\S]*test-command-output\.log[\s\S]*shipped `rootcause\.js`[\s\S]*matching absolute `build-command-output\.log` or\s+`test-command-output\.log`[\s\S]*--command FAILING_COMMAND --exit-status EXIT_STATUS[\s\S]*--evidence CAPTURED_OUTPUT_FILE[\s\S]*gate-repair-result\.json[\s\S]*background task[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again[\s\S]*complete combined output[\s\S]*preserving[\s\S]*exit status[\s\S]*overwriting its output file on every\s+execution/,
   );
   assert.doesNotMatch(initialGate, / &$/m);
   assert.match(
@@ -736,13 +736,17 @@ test("configured command failures enter the repair discipline, never a review on
   const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
   assert.match(
     repeatedGate,
-    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
+    /exact configured build and test commands again,[\s\S]*complete\s+combined output[\s\S]*preserving each command's exit status[\s\S]*overwriting its output file on every execution/,
+  );
+  assert.match(
+    repeatedGate,
+    /completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
   );
 
   const briefWave = lifecycle.slice(lifecycle.indexOf("7. Once the main loop"), lifecycle.indexOf("8. Enter finishing"));
   assert.match(
     briefWave,
-    /red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention/,
+    /capture their complete combined output[\s\S]*preserve each\s+command's exit status[\s\S]*overwrite its output file on every execution[\s\S]*red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*re-run the\s+configured commands with the same explicit capture, exit-status\s+preservation, and overwrite requirements[\s\S]*two failed repair attempts end\s+the run as attention/,
   );
 });
 

@@ -277,7 +277,10 @@ last action and end the turn. A continuation writes no failure-log line.
    carries, comments omitted) and post it as one durable pull-request
    comment with `"$MINOS_BIN" forge comment CURRENT_HEAD TARGET FILE` —
    off the findings channel. Then run the exact configured
-   commands again and read the completion policy for each as above. A repair
+   commands again, capturing their complete combined output in the matching
+   absolute `build-command-output.log` or `test-command-output.log`, preserving
+   each command's exit status, and overwriting its output file on every
+   execution. Read the completion policy for each command. A repair
    push moves the head: from here on, the fresh snapshot's current head is
    the head — use it in place of `$MINOS_HEAD_SHA` for every later command,
    including step 4's review input and any carried-result validation, which
@@ -574,10 +577,13 @@ last action and end the turn. A continuation writes no failure-log line.
    with `"$MINOS_BIN" forge comment CURRENT_HEAD "$MINOS_TARGET_SHA"
    FIX_REVIEW_FILE`. This durable pull-request comment is not a
    review group; the guarded command binds it to that exact head and target,
-   deduplicates retries, and reads it back before reporting success. Then run the exact configured build and test
-   commands again. Run `node
+   deduplicates retries, and reads it back before reporting success. Then run
+   the exact configured build and test commands again, capturing their complete
+   combined output in the matching absolute `build-command-output.log` or
+   `test-command-output.log`, preserving each command's exit status, and
+   overwriting its output file on every execution. Run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`
-   for each configured string and its exit status, just as in step 3, and read
+   for each configured string and its exit status, and read
    the CLI's one-line JSON `status` field; empty strings are skipped. A
    `failed` status enters step 3's gate repair discipline against the current
    head: dispatch, integrate through the controlled path, re-run the exact
@@ -691,10 +697,15 @@ last action and end the turn. A continuation writes no failure-log line.
    post the same location-bearing guarded pull-request comment described in
    step 5 on that fresh head. Run `$MINOS_BUILD_CMD` and
    `$MINOS_TEST_CMD` exactly as configured and to completion when each is
-   non-empty; do not substitute or invent commands. A red build or test
+   non-empty; capture their complete combined output in the matching absolute
+   `build-command-output.log` or `test-command-output.log`, preserve each
+   command's exit status, and overwrite its output file on every execution. Do
+   not substitute or invent commands. A red build or test
    result after the wave enters step 3's gate repair discipline against the
-   fresh head: dispatch, integrate through the controlled path, re-run the
-   configured commands; two failed repair attempts end the run as attention
+   fresh head: dispatch, integrate through the controlled path, and re-run the
+   configured commands with the same explicit capture, exit-status
+   preservation, and overwrite requirements; two failed repair attempts end
+   the run as attention
    with the honest request-changes report, exactly as step 3 describes. If
    the single wave leaves `confirmedUnfixed` entries, or integration fails,
    add no 👍, set attention or incomplete to reflect the actual result,
