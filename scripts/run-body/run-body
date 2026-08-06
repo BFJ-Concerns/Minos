@@ -124,6 +124,13 @@ failure_cause="MINOS_GIT_AUTHOR_EMAIL is required"
 
 FORCE_COLOR=0
 export FORCE_COLOR
+# The harness reaps background shells under memory pressure, which on a run
+# unit reads as pressure whenever the workspace's build output fills the page
+# cache — a long setup or review stage is then killed mid-flight and reported
+# as an interrupted dispatch rather than a verdict. The run unit's own
+# MemoryMax ceiling and the continuation path are the backstop this removes.
+CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1
+export CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP
 GIT_AUTHOR_NAME="$MINOS_GIT_AUTHOR_NAME"
 GIT_AUTHOR_EMAIL="$MINOS_GIT_AUTHOR_EMAIL"
 GIT_COMMITTER_NAME="$MINOS_GIT_AUTHOR_NAME"
