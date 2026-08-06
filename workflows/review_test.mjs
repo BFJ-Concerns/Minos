@@ -728,7 +728,7 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
-    /`incomplete` remains the outcome only for genuine inability\s+to assess/,
+    /Where this discipline applies, `incomplete` remains the\s+outcome only for genuine inability\s+to assess/,
   );
 
   const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
