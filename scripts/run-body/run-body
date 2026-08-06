@@ -269,11 +269,12 @@ disable_pressure_watch() {
 sample_memory_pressure() {
   [ "$pressure_enabled" = true ] || return 0
   [ "$pressure_latched" = false ] || return 0
+  # Use memory.current as a cheap probe that this is a readable cgroup before
+  # attempting the counters that make up the pressure metric.
   if [ ! -r "$cgroup_dir/memory.current" ]; then
     disable_pressure_watch "memory.current is unavailable in $cgroup_dir"
     return 0
   fi
-  IFS= read -r memory_current <"$cgroup_dir/memory.current" || memory_current=""
   IFS= read -r memory_max <"$cgroup_dir/memory.max" || memory_max=""
   if [ "$memory_max" = "max" ]; then
     disable_pressure_watch "memory.max has no ceiling"
@@ -281,7 +282,7 @@ sample_memory_pressure() {
   fi
   anon="$(awk '$1 == "anon" { print $2; exit }' "$cgroup_dir/memory.stat" 2>/dev/null || true)"
   IFS= read -r swap_current <"$cgroup_dir/memory.swap.current" || swap_current=""
-  for memory_counter in "$memory_current" "$memory_max" "$anon" "$swap_current"; do
+  for memory_counter in "$memory_max" "$anon" "$swap_current"; do
     case "$memory_counter" in
       *[!0-9]*|'')
         disable_pressure_watch "cgroup memory counters are unavailable or malformed"

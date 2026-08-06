@@ -668,7 +668,7 @@ func TestRunBodyDoesNotSignalReclaimablePageCache(t *testing.T) {
 
 func TestRunBodyDoesNotSignalGrossUsageAtCeilingWithLowAnonymousMemory(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	cgroup := writeTestCgroup(t, fixture.root, 1_000_000_000, 1_000_000_000, 960_000_000, 40_000_000, 0)
+	cgroup := writeTestCgroup(t, fixture.root, 1_000_000_000, 1_000_000_000, 80_000_000, 85_000_000, 0)
 	fixture.run(t, map[string]string{
 		"MINOS_CGROUP_DIR":          cgroup,
 		"MINOS_TEST_PENDING_STATE":  "done",
@@ -683,7 +683,7 @@ func TestRunBodyDoesNotSignalGrossUsageAtCeilingWithLowAnonymousMemory(t *testin
 
 func TestRunBodySignalsWhenAnonymousMemoryPlusSwapCrossesThreshold(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 50_000_000, 700_000_000, 160_000_000)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 100_000_000, 700_000_000, 160_000_000)
 	fixture.run(t, map[string]string{
 		"MINOS_CGROUP_DIR":          cgroup,
 		"MINOS_TEST_PENDING_STATE":  "done",
