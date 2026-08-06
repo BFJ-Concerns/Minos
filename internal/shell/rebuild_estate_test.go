@@ -87,7 +87,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "started" || len(starts) != 1 {
+	if result.Decision != "started" || len(starts) != 1 {
 		t.Fatalf("first admission = %q, starts = %d; want one start", result, len(starts))
 	}
 	firstEnvironment := systemdEnvironment(t, starts[0])
@@ -143,7 +143,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "suppressed" || len(starts) != 1 {
+	if result.Decision != "suppressed" || len(starts) != 1 {
 		t.Fatalf("second admission while active = %q, starts = %d; want suppression", result, len(starts))
 	}
 	activeUnit = ""
@@ -151,7 +151,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "started" || len(starts) != 2 || !strings.Contains(activeUnit, "pr2") {
+	if result.Decision != "started" || len(starts) != 2 || !strings.Contains(activeUnit, "pr2") {
 		t.Fatalf("second admission after release = %q, active = %q, starts = %d", result, activeUnit, len(starts))
 	}
 }
@@ -258,7 +258,7 @@ func startEstateRunBody(t *testing.T) (string, string, map[string]string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "started" || len(startArguments) == 0 {
+	if result.Decision != "started" || len(startArguments) == 0 {
 		t.Fatalf("admission = %q, systemd arguments = %v; want recorded start", result, startArguments)
 	}
 	return runBody, record, systemdEnvironment(t, startArguments)
@@ -305,7 +305,7 @@ func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "started" || len(startArguments) == 0 {
+	if result.Decision != "started" || len(startArguments) == 0 {
 		t.Fatalf("admission = %q, systemd arguments = %v; want recorded start", result, startArguments)
 	}
 
@@ -384,11 +384,11 @@ func TestRebuildEstateTerminalRecoveryBindsPullRequestHeadTargetAndStatus(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "nothing"
+			want := ReconcileNothing
 			if test.wantRecovered {
-				want = "recovered"
+				want = ReconcileRecovered
 			}
-			if result != want {
+			if result.Decision != want {
 				t.Fatalf("result = %q, want %q", result, want)
 			}
 			writes, repairedTarget := state.statusWriteFacts()

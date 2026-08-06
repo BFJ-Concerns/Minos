@@ -22,34 +22,32 @@ var commandCombinedOutput = func(ctx context.Context, name string, args ...strin
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-type SpawnOutcome string
+type SpawnResult struct {
+	Outcome      ReconcileDecision
+	BlockingUnit string
+	Detail       string
+}
 
-const (
-	SpawnStarted    SpawnOutcome = "started"
-	SpawnContinued  SpawnOutcome = "continued"
-	SpawnSuppressed SpawnOutcome = "suppressed"
-	SpawnAttention  SpawnOutcome = "attention"
-	runOwnerMarker               = ".runwrap-owner"
-)
+const runOwnerMarker = ".runwrap-owner"
 
-func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnOutcome, error) {
+func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
 	if err != nil {
-		return "", err
+		return SpawnResult{}, err
 	}
 	defer unlock()
 
 	out, err := commandCombinedOutput(ctx, "systemctl", "--user", "list-units",
 		"--type=service", "--state=activating,active", "--no-legend", "--plain", "--full", "--no-pager", "minos-run-*.service")
 	if err != nil {
-		return "", fmt.Errorf("inspect active Minos units: %w: %s", err, strings.TrimSpace(string(out)))
+		return SpawnResult{}, fmt.Errorf("inspect active Minos units: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if strings.TrimSpace(string(out)) != "" {
-		return SpawnSuppressed, nil
+	if fields := strings.Fields(string(out)); len(fields) != 0 {
+		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: fields[0]}, nil
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.Runs.Dir, ".handoffs"), 0o700); err != nil {
-		return "", fmt.Errorf("create continuation handoff directory: %w", err)
+		return SpawnResult{}, fmt.Errorf("create continuation handoff directory: %w", err)
 	}
 	handoffFile := handoffPath(cfg.Runs.Dir, unit)
 	var handoff *runHandoff
@@ -62,7 +60,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			handoffRejected = true
 		}
 	} else if !os.IsNotExist(statErr) {
-		return "", fmt.Errorf("inspect continuation handoff: %w", statErr)
+		return SpawnResult{}, fmt.Errorf("inspect continuation handoff: %w", statErr)
 	}
 	progressDecision := continuationProgressUnknown
 	if handoff != nil {
@@ -90,13 +88,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			reviewResultAlreadyCarried = true
 		} else {
 			if err := os.Remove(carriedResult); err != nil && !os.IsNotExist(err) {
-				return "", fmt.Errorf("discard untrusted predecessor review result: %w", err)
+				return SpawnResult{}, fmt.Errorf("discard untrusted predecessor review result: %w", err)
 			}
 			ordinaryResult := filepath.Join(runDir, "review-result.json")
 			if adoptableReviewResult(ordinaryResult, facts.HeadSHA) {
 				reviewResultPath = ordinaryResult
 			} else if err := os.Remove(ordinaryResult); err != nil && !os.IsNotExist(err) {
-				return "", fmt.Errorf("discard untrusted predecessor review result: %w", err)
+				return SpawnResult{}, fmt.Errorf("discard untrusted predecessor review result: %w", err)
 			}
 		}
 	} else if handoffRejected {
@@ -111,14 +109,14 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	if adopted {
 		for _, stale := range []string{"lead-complete", "memory-pressure"} {
 			if err := os.Remove(filepath.Join(runDir, stale)); err != nil && !os.IsNotExist(err) {
-				return "", fmt.Errorf("clear predecessor %s before continuation: %w", stale, err)
+				return SpawnResult{}, fmt.Errorf("clear predecessor %s before continuation: %w", stale, err)
 			}
 		}
 	}
 	if !adopted {
 		runDir, err = os.MkdirTemp(cfg.Runs.Dir, unit+"-")
 		if err != nil {
-			return "", err
+			return SpawnResult{}, err
 		}
 	}
 	reviewResultCarried := false
@@ -140,7 +138,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		if !reviewResultAlreadyCarried {
 			if err := os.Rename(reviewResultPath, carriedResult); err != nil {
 				cleanupSpawnFailure()
-				return "", fmt.Errorf("mark predecessor review result for one-time carry: %w", err)
+				return SpawnResult{}, fmt.Errorf("mark predecessor review result for one-time carry: %w", err)
 			}
 			reviewResultCarried = true
 		}
@@ -148,16 +146,16 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	if err := os.WriteFile(filepath.Join(runDir, runOwnerMarker), nil, 0o600); err != nil {
 		cleanupSpawnFailure()
-		return "", fmt.Errorf("create run ownership marker: %w", err)
+		return SpawnResult{}, fmt.Errorf("create run ownership marker: %w", err)
 	}
 	if handoff != nil {
 		if err := os.WriteFile(filepath.Join(runDir, "loop-record.json"), handoff.RunRecord, 0o600); err != nil {
 			cleanupSpawnFailure()
-			return "", fmt.Errorf("seed continuation loop record: %w", err)
+			return SpawnResult{}, fmt.Errorf("seed continuation loop record: %w", err)
 		}
 		if err := os.Remove(handoffFile); err != nil {
 			cleanupSpawnFailure()
-			return "", fmt.Errorf("consume continuation handoff: %w", err)
+			return SpawnResult{}, fmt.Errorf("consume continuation handoff: %w", err)
 		}
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
@@ -195,7 +193,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		progress, marshalErr := json.Marshal(handoff.Progress)
 		if marshalErr != nil {
 			cleanupSpawnFailure()
-			return "", fmt.Errorf("encode predecessor continuation progress: %w", marshalErr)
+			return SpawnResult{}, fmt.Errorf("encode predecessor continuation progress: %w", marshalErr)
 		}
 		env["MINOS_PREDECESSOR_PROGRESS"] = string(progress)
 	}
@@ -205,7 +203,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	exe, err := os.Executable()
 	if err != nil {
 		cleanupSpawnFailure()
-		return "", err
+		return SpawnResult{}, err
 	}
 	args := []string{
 		"--user", "--collect", "--unit", unit,
@@ -222,17 +220,17 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	if err != nil {
 		cleanupSpawnFailure()
 		if strings.Contains(string(out), "already exists") {
-			return SpawnSuppressed, nil
+			return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: unit + ".service"}, nil
 		}
-		return "", fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
+		return SpawnResult{}, fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if progressDecision == continuationProgressAdvanced {
-		return SpawnContinued, nil
+		return SpawnResult{Outcome: SpawnContinued}, nil
 	}
-	return SpawnStarted, nil
+	return SpawnResult{Outcome: SpawnStarted}, nil
 }
 
-func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnOutcome, error) {
+func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {
 	cause := fmt.Sprintf("successor made no progress beyond stage %q round %d and published no new head or review", handoff.Progress.Stage, handoff.Progress.Round)
 	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
 		time.Now().UTC().Format(time.RFC3339), facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
@@ -240,31 +238,31 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string
 
 	adapter, err := newBehaviouralForge(cfg, facts.Forge)
 	if err != nil {
-		return "", err
+		return SpawnResult{}, err
 	}
 	pullRequest, err := strconv.ParseInt(facts.PR, 10, 64)
 	if err != nil {
-		return "", err
+		return SpawnResult{}, err
 	}
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
 		PullRequest: pullRequest, HeadSHA: facts.HeadSHA, TargetSHA: facts.BaseSHA,
 	}
 	if result := adapter.SetProductStatus(ctx, guard, product.Attention()); result.Outcome != forge.WriteApplied {
-		return "", fmt.Errorf("set stalled continuation attention: %s: %s", result.Outcome, result.Reason)
+		return SpawnResult{}, fmt.Errorf("set stalled continuation attention: %s: %s", result.Outcome, result.Reason)
 	}
 	if result := adapter.RemoveReaction(ctx, guard, "eyes"); result.Outcome != forge.WriteApplied {
-		return "", fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
+		return SpawnResult{}, fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
 	}
 	if runDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir); contained {
 		if err := os.WriteFile(filepath.Join(runDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
-			return "", fmt.Errorf("mark stalled continuation terminal: %w", err)
+			return SpawnResult{}, fmt.Errorf("mark stalled continuation terminal: %w", err)
 		}
 	}
 	if err := os.Remove(handoffFile); err != nil {
-		return "", fmt.Errorf("consume stalled continuation handoff: %w", err)
+		return SpawnResult{}, fmt.Errorf("consume stalled continuation handoff: %w", err)
 	}
-	return SpawnAttention, nil
+	return SpawnResult{Outcome: SpawnAttention, Detail: cause}, nil
 }
 
 func appendStalledContinuationFailure(path, line string) {

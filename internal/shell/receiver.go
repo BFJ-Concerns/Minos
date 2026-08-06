@@ -96,6 +96,6 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		return err
 	}
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = fmt.Fprintln(w, result)
+	_, _ = fmt.Fprintln(w, result.Decision)
 	return nil
 }

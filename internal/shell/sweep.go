@@ -153,12 +153,25 @@ func removeUnchangedHandoff(runsDir, path string, original []byte) error {
 	return nil
 }
 
-func sweepDecisionMessage(facts Facts, result string) string {
-	if result == "started" {
+func sweepDecisionMessage(facts Facts, result ReconcileResult) string {
+	if result.Decision == SpawnStarted {
 		return fmt.Sprintf("started %s#%s", facts.RepoSlug(), facts.PR)
 	}
-	if strings.HasPrefix(result, "deferred: ") {
-		return fmt.Sprintf("%s#%s: %s", facts.RepoSlug(), facts.PR, result)
+	if strings.HasPrefix(string(result.Decision), deferredDecisionPrefix) {
+		return fmt.Sprintf("%s#%s: %s", facts.RepoSlug(), facts.PR, result.Decision)
+	}
+	pullRequest := fmt.Sprintf("%s#%s", facts.RepoSlug(), facts.PR)
+	switch result.Decision {
+	case SpawnSuppressed:
+		return fmt.Sprintf("%s: suppressed by active unit %s", pullRequest, result.BlockingUnit)
+	case SpawnContinued:
+		return pullRequest + ": continued previous run"
+	case ReconcileRecovered:
+		return pullRequest + ": recovered terminal Minos status"
+	case ReconcileNothing:
+		return pullRequest + ": nothing to do"
+	case SpawnAttention:
+		return fmt.Sprintf("%s: attention: stopped stalled continuation because its %s", pullRequest, result.Detail)
 	}
 	return ""
 }
