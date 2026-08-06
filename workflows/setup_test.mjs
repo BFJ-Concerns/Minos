@@ -270,11 +270,10 @@ test("lifecycle runs setup every time and keeps resolution checking with the lea
   assert.match(stageOne, /Never edit\s+a conflicted file yourself/);
 });
 
-test("lifecycle reuses only current-head genuine setup passes and preserves fresh failure handling", () => {
+test("lifecycle reuses only current-head genuine setup passes", () => {
   const stageThree = lifecycle.slice(lifecycle.indexOf("3. Read the repository guidance"), lifecycle.indexOf("4. Run every Ensemble"));
   assert.match(stageThree, /--setup-result[\s\S]*setup-result\.json[\s\S]*\$MINOS_HEAD_SHA/);
   assert.match(stageThree, /Only then consume its build and test results and do\s+not execute either command again/);
   assert.match(stageThree, /absent, malformed, partial,[\s\S]*non-passing,[\s\S]*stale-head[\s\S]*execute both configured commands normally/);
   assert.match(stageThree, /Never reuse a\s+`skipped` outcome for a configured command/);
-  assert.match(stageThree, /On a\s+`failed` status,[\s\S]*\$MINOS_FAILURE_LOG[\s\S]*status HEAD TARGET incomplete[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean[\s\S]*stop before starting any review/);
 });

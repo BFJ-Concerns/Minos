@@ -707,22 +707,44 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
 });
 
-test("configured command failures stop before initial or repeated review", () => {
+test("configured command failures enter the repair discipline, never a review on a red head", () => {
   const initialGate = lifecycle.slice(lifecycle.indexOf("3. Read"), lifecycle.indexOf("4. Run"));
   assert.match(
     initialGate,
-    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*non-zero exit status[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*status HEAD TARGET incomplete[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean[\s\S]*stop before starting any review/,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*gate repair discipline[\s\S]*No review starts while the gate is red/,
   );
   assert.match(initialGate, /empty, no test command is configured[\s\S]*skip it/);
+  assert.match(
+    initialGate,
+    /root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*never\s+push[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again/,
+  );
+  assert.match(
+    initialGate,
+    /fork pull request[\s\S]*skip the\s+repair dispatch/,
+  );
+  assert.match(
+    initialGate,
+    /two repair attempts have failed[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*blocks re-attempts until the head\s+moves/,
+  );
+  assert.match(
+    initialGate,
+    /Where this discipline applies, `incomplete` remains the\s+outcome only for genuine inability\s+to assess/,
+  );
 
   const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
   assert.match(
     repeatedGate,
-    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*non-zero exit status[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*incomplete[\s\S]*reaction-remove[\s\S]*non-clean[\s\S]*stop before another review round or merge action[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
+  );
+
+  const briefWave = lifecycle.slice(lifecycle.indexOf("7. Once the main loop"), lifecycle.indexOf("8. Enter finishing"));
+  assert.match(
+    briefWave,
+    /red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention/,
   );
 });
 
-test("only an unchanged or verified tests-only finishing result may reach the merge path", () => {
+test("a verified finishing repair merges in the same attempt", () => {
   const finishing = lifecycle.slice(lifecycle.indexOf("8. Enter finishing"), lifecycle.indexOf("9. If"));
   assert.match(
     finishing,
@@ -738,12 +760,9 @@ test("only an unchanged or verified tests-only finishing result may reach the me
   );
   assert.match(
     finishing,
-    /classify-finishing-change\.mjs[\s\S]*`tests-only` classification[\s\S]*continue to step 9/,
+    /Build and tests are this repair's verification[\s\S]*merge proceeds in\s+the same attempt[\s\S]*no re-review and no successor run[\s\S]*continue to\s+step 9/,
   );
-  assert.match(
-    finishing,
-    /`review-required` classification[\s\S]*set `incomplete`[\s\S]*fresh whole review/,
-  );
+  assert.doesNotMatch(finishing, /classify-finishing-change|tests-only|review-required|FINISHING_REVIEWED_HEAD/);
   assert.match(
     finishing,
     /`writeUp`[\s\S]*rootcause-result\.json/,
@@ -751,6 +770,10 @@ test("only an unchanged or verified tests-only finishing result may reach the me
   assert.match(
     finishing,
     /helper's `writeUp`[\s\S]*post[\s\S]*one `comment` review/,
+  );
+  assert.match(
+    finishing,
+    /never carry a failing repair to merge/,
   );
   assert.match(
     finishing,

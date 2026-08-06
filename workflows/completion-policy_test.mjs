@@ -19,23 +19,16 @@ import {
 
 const policyScriptPath = fileURLToPath(new URL("./completion-policy.mjs", import.meta.url));
 
-test("configured commands expose pass, skip, and terminal failure results", () => {
+test("configured commands expose mechanical pass, skip, and failure results", () => {
   assert.deepEqual(configuredCommandResult("go test ./...", 0), {
     status: "passed",
-    terminal: false,
-    reviewAllowed: true,
   });
   assert.deepEqual(configuredCommandResult("", undefined), {
     status: "skipped",
-    terminal: false,
-    reviewAllowed: true,
   });
   assert.deepEqual(configuredCommandResult("go test ./...", 1), {
     status: "failed",
     exitStatus: 1,
-    terminal: true,
-    reviewAllowed: false,
-    forgeStatus: "incomplete",
   });
 });
 
@@ -44,8 +37,6 @@ test("all absent command forms skip regardless of exit status", () => {
     for (const exitStatus of [0, 1])
       assert.deepEqual(configuredCommandResult(command, exitStatus), {
         status: "skipped",
-        terminal: false,
-        reviewAllowed: true,
       });
 });
 
@@ -68,8 +59,8 @@ test("setup command results are reusable only as a complete exact-head pair", ()
     {
       reusable: true,
       results: {
-        build: { status: "passed", terminal: false, reviewAllowed: true },
-        test: { status: "passed", terminal: false, reviewAllowed: true },
+        build: { status: "passed" },
+        test: { status: "passed" },
       },
     },
   );
@@ -129,9 +120,6 @@ test("the configured command policy CLI runs from an install-like layout", () =>
   assert.deepEqual(JSON.parse(output), {
     status: "failed",
     exitStatus: 1,
-    terminal: true,
-    reviewAllowed: false,
-    forgeStatus: "incomplete",
   });
 
   assert.deepEqual(JSON.parse(execFileSync(process.execPath, [installedScript, "", "0"], {
@@ -139,8 +127,6 @@ test("the configured command policy CLI runs from an install-like layout", () =>
     encoding: "utf8",
   })), {
     status: "skipped",
-    terminal: false,
-    reviewAllowed: true,
   });
 });
 
