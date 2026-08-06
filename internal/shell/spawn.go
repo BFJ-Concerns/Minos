@@ -27,6 +27,7 @@ type SpawnOutcome string
 type SpawnResult struct {
 	Outcome      SpawnOutcome
 	BlockingUnit string
+	Detail       string
 }
 
 const (
@@ -269,7 +270,7 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string
 	if err := os.Remove(handoffFile); err != nil {
 		return SpawnResult{}, fmt.Errorf("consume stalled continuation handoff: %w", err)
 	}
-	return SpawnResult{Outcome: SpawnAttention}, nil
+	return SpawnResult{Outcome: SpawnAttention, Detail: cause}, nil
 }
 
 func appendStalledContinuationFailure(path, line string) {

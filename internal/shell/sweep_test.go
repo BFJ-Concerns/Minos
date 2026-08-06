@@ -2,8 +2,12 @@ package shell
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"bfj/minos/internal/forge"
@@ -22,7 +26,7 @@ func TestSweepDecisionMessage(t *testing.T) {
 		{name: "continued", result: ReconcileResult{Decision: "continued"}, want: "owner/repository#12: continued previous run"},
 		{name: "recovered", result: ReconcileResult{Decision: "recovered"}, want: "owner/repository#12: recovered terminal Minos status"},
 		{name: "nothing", result: ReconcileResult{Decision: "nothing"}, want: "owner/repository#12: nothing to do"},
-		{name: "attention", result: ReconcileResult{Decision: "attention"}, want: "owner/repository#12: attention: stopped stalled continuation because its successor made no progress and published no new head or review"},
+		{name: "attention", result: ReconcileResult{Decision: "attention", Detail: `successor made no progress beyond stage "review" round 2 and published no new head or review`}, want: `owner/repository#12: attention: stopped stalled continuation because its successor made no progress beyond stage "review" round 2 and published no new head or review`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -36,19 +40,58 @@ func TestSweepDecisionMessage(t *testing.T) {
 func TestSweepDecisionMessageCoversReachableVocabulary(t *testing.T) {
 	facts := Facts{Owner: "owner", Repo: "repository", PR: "12"}
 	results := []ReconcileResult{
-		{Decision: string(SpawnStarted)},
-		{Decision: string(SpawnContinued)},
-		{Decision: string(SpawnSuppressed), BlockingUnit: "minos-run-other-repo-pr9.service"},
-		{Decision: string(SpawnAttention)},
 		{Decision: "deferred: reason"},
 		{Decision: "recovered"},
 		{Decision: "nothing"},
+	}
+	for _, outcome := range declaredSpawnOutcomes(t) {
+		result := ReconcileResult{Decision: string(outcome)}
+		switch outcome {
+		case SpawnSuppressed:
+			result.BlockingUnit = "minos-run-other-repo-pr9.service"
+		case SpawnAttention:
+			result.Detail = `successor made no progress beyond stage "review" round 2 and published no new head or review`
+		}
+		results = append(results, result)
 	}
 	for _, result := range results {
 		if got := sweepDecisionMessage(facts, result); got == "" {
 			t.Errorf("decision %q returned an empty message", result.Decision)
 		}
 	}
+}
+
+func declaredSpawnOutcomes(t *testing.T) []SpawnOutcome {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "spawn.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcomes []SpawnOutcome
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.ValueSpec)
+		if !ok || len(spec.Names) != 1 || len(spec.Values) != 1 {
+			return true
+		}
+		typeName, ok := spec.Type.(*ast.Ident)
+		if !ok || typeName.Name != "SpawnOutcome" {
+			return true
+		}
+		literal, ok := spec.Values[0].(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			t.Fatalf("SpawnOutcome %s does not have a string literal value", spec.Names[0].Name)
+		}
+		value, err := strconv.Unquote(literal.Value)
+		if err != nil {
+			t.Fatalf("parse SpawnOutcome %s: %v", spec.Names[0].Name, err)
+		}
+		outcomes = append(outcomes, SpawnOutcome(value))
+		return true
+	})
+	if len(outcomes) == 0 {
+		t.Fatal("spawn.go declares no SpawnOutcome constants")
+	}
+	return outcomes
 }
 
 func TestTerminalPullRequestExpiresHandoffBeforeFollowingResidueSweep(t *testing.T) {
