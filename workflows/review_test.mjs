@@ -702,8 +702,9 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,
-    /rootcause\.js[\s\S]*root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*commit a repair[\s\S]*never push/,
+    /shipped `rootcause\.js`[\s\S]*`codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*configured Minos identity[\s\S]*never\s+push/,
   );
+  assert.doesNotMatch(lifecycle, /(?:write|construct)(?: the)? `rootcause\.js`/i);
   assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
 });
 
@@ -716,7 +717,7 @@ test("configured command failures enter the repair discipline, never a review on
   assert.match(initialGate, /empty, no test command is configured[\s\S]*skip it/);
   assert.match(
     initialGate,
-    /root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*never\s+push[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again/,
+    /shipped `rootcause\.js`[\s\S]*--command FAILING_COMMAND --exit-status EXIT_STATUS[\s\S]*--evidence CAPTURED_OUTPUT_FILE[\s\S]*gate-repair-result\.json[\s\S]*background task[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again/,
   );
   assert.match(
     initialGate,
@@ -765,8 +766,9 @@ test("a verified finishing repair merges in the same attempt", () => {
   assert.doesNotMatch(finishing, /classify-finishing-change|tests-only|review-required|FINISHING_REVIEWED_HEAD/);
   assert.match(
     finishing,
-    /`writeUp`[\s\S]*rootcause-result\.json/,
+    /same shipped `rootcause\.js`[\s\S]*--evidence "\$MINOS_RUN_DIR\/check-logs\.json"[\s\S]*rootcause-result\.json/,
   );
+  assert.match(finishing, /foreground[\s\S]*empty `runs` array[\s\S]*do not\s+invent/);
   assert.match(
     finishing,
     /helper's `writeUp`[\s\S]*post[\s\S]*one `comment` review/,

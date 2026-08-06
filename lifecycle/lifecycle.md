@@ -236,22 +236,31 @@ last action and end the turn. A continuation writes no failure-log line.
    whose `head_repository` differs from `target_repository` — skip the
    repair dispatch entirely: Minos cannot push to the source branch, so end
    the run with the honest request-changes outcome described below. Otherwise
-   write `rootcause.js` as a bare Ensemble workflow that dispatches one agent
-   with the vendored root-cause skill on `codex` / `gpt-5.6-sol`, using
-   `effort: "high"` and `isolation: "worktree"`. Give the agent a schema that
-   returns its diagnosis, a `commit` string and a concise code-only `writeUp`
-   explaining what it repaired. Direct it to read and follow
-   `$MINOS_ROOT_CAUSE_SKILL/SKILL.md`, diagnose the failing command's
-   recorded output — hand it the exact command string, exit status, and the
-   failure's captured output — fix only what it proves, commit a repair with
-   the configured Minos identity, return that commit and write-up, and never
-   push. Whether the break is the change's own defect or exists only against
+   Invoke the shipped `rootcause.js` workflow. Give its input builder the
+   vendored root-cause skill path, the exact failing command string and exit
+   status, and the absolute path of the failure's captured output. The workflow
+   dispatches one repair agent on `codex` / `gpt-5.6-sol` with
+   `effort: "high"` and `isolation: "worktree"`; it follows the skill, fixes
+   only what it proves, commits with the configured Minos identity, and never
+   pushes. Whether the break is the change's own defect or exists only against
    the reconciled target makes no difference to the dispatch: the repair
-   proves the actual cause either way, and its write-up may say which kind
-   it was. Invoke the workflow through the bare Ensemble launcher as a
-   background task and wait exactly as step 4 directs, saving its result as
-   `"$MINOS_RUN_DIR/gate-repair-result.json"` (diagnostics to the same
-   basename with `.log`).
+   proves the actual cause either way, and its write-up may say which kind it
+   was.
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \
+     --skill "$MINOS_ROOT_CAUSE_SKILL" \
+     --command FAILING_COMMAND --exit-status EXIT_STATUS \
+     --evidence CAPTURED_OUTPUT_FILE \
+     > "$MINOS_RUN_DIR/gate-repair-args.json"
+   node /opt/minos/runtime/ensemble.mjs \
+     --json-args @"$MINOS_RUN_DIR/gate-repair-args.json" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
+     > "$MINOS_RUN_DIR/gate-repair-result.json" \
+     2> "$MINOS_RUN_DIR/gate-repair-result.log" &
+   ```
+
+   Run it as a background task and wait exactly as step 4 directs.
 
    When the repair returns a non-empty commit, write that one commit as a
    JSON array and integrate it through
@@ -757,17 +766,29 @@ last action and end the turn. A continuation writes no failure-log line.
    command returns an empty `runs` array; say so in the helper prompt rather
    than inventing log evidence.
 
-   Write `rootcause.js` as a bare Ensemble workflow that dispatches one agent
-   with the vendored root-cause skill on `codex` / `gpt-5.6-sol`, using
-   `effort: "high"` and `isolation: "worktree"`. Give the agent a schema that
-   returns its diagnosis, a `commit` string and a concise code-only `writeUp`
-   explaining what it repaired. Direct it to read and follow
-   `$MINOS_ROOT_CAUSE_SKILL/SKILL.md`, diagnose the supplied failure, fix only
-   what it proves, commit a repair with the configured Minos identity, return
-   that commit and write-up, and never push. An empty `commit` means the isolated
-   helper made no mutation to integrate. Invoke the workflow through the bare
-   Ensemble launcher and save its result as
-   `"$MINOS_RUN_DIR/rootcause-result.json"`.
+   Invoke the same shipped `rootcause.js` workflow in the foreground, giving
+   its input builder the vendored root-cause skill path and the absolute path
+   of `check-logs.json`. The workflow uses the same `codex` / `gpt-5.6-sol`,
+   `effort: "high"`, `isolation: "worktree"`, proof discipline, configured
+   Minos commit identity, code-only `writeUp`, and no-push rule as the gate
+   repair discipline. It starts from the recorded job statuses and logs,
+   including retry and flaky-test lines, but treats that evidence as diagnostic
+   input rather than proof and still reproduces and proves its diagnosis. An
+   empty `runs` array means there is no Actions-backed log evidence; do not
+   invent any. An empty `commit` means the isolated helper made no mutation to
+   integrate.
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \
+     --skill "$MINOS_ROOT_CAUSE_SKILL" \
+     --evidence "$MINOS_RUN_DIR/check-logs.json" \
+     > "$MINOS_RUN_DIR/rootcause-args.json"
+   node /opt/minos/runtime/ensemble.mjs \
+     --json-args @"$MINOS_RUN_DIR/rootcause-args.json" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
+     > "$MINOS_RUN_DIR/rootcause-result.json" \
+     2> "$MINOS_RUN_DIR/rootcause-result.log"
+   ```
 
    When the helper returns a non-empty commit, write that one commit as a
    JSON array and
