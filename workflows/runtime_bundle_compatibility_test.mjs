@@ -30,6 +30,7 @@ const expectedCallSites = new Map([
   ["review-briefs.js", 4],
   ["fix.js", 3],
   ["setup.js", 1],
+  ["rootcause.js", 1],
 ]);
 
 function operationRoot(t, prefix) {

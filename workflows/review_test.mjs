@@ -702,8 +702,9 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,
-    /rootcause\.js[\s\S]*root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*commit a repair[\s\S]*never push/,
+    /shipped `rootcause\.js`[\s\S]*`codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*configured Minos identity[\s\S]*never\s+push/,
   );
+  assert.doesNotMatch(lifecycle, /(?:write|construct)(?: the)? `rootcause\.js`/i);
   assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
 });
 
@@ -713,11 +714,12 @@ test("configured command failures enter the repair discipline, never a review on
     initialGate,
     /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*gate repair discipline[\s\S]*No review starts while the gate is red/,
   );
-  assert.match(initialGate, /empty, no test command is configured[\s\S]*skip it/);
+  assert.match(initialGate, /when it is empty, no test command is\s+configured, so skip it/);
   assert.match(
     initialGate,
-    /root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*never\s+push[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again/,
+    /build-command-output\.log[\s\S]*test-command-output\.log[\s\S]*shipped `rootcause\.js`[\s\S]*matching absolute `build-command-output\.log` or\s+`test-command-output\.log`[\s\S]*--command FAILING_COMMAND --exit-status EXIT_STATUS[\s\S]*--evidence CAPTURED_OUTPUT_FILE[\s\S]*gate-repair-result\.json[\s\S]*background task[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again[\s\S]*complete combined output[\s\S]*preserving[\s\S]*exit status[\s\S]*overwriting its output file on every\s+execution/,
   );
+  assert.doesNotMatch(initialGate, / &$/m);
   assert.match(
     initialGate,
     /fork pull request[\s\S]*skip the\s+repair dispatch/,
@@ -734,13 +736,17 @@ test("configured command failures enter the repair discipline, never a review on
   const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
   assert.match(
     repeatedGate,
+    /exact configured build and test commands again,[\s\S]*complete\s+combined output[\s\S]*preserving each command's exit status[\s\S]*overwriting its output file on every execution/,
+  );
+  assert.match(
+    repeatedGate,
     /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
   );
 
   const briefWave = lifecycle.slice(lifecycle.indexOf("7. Once the main loop"), lifecycle.indexOf("8. Enter finishing"));
   assert.match(
     briefWave,
-    /red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention/,
+    /capture their complete combined output[\s\S]*preserve each\s+command's exit status[\s\S]*overwrite its output file on every execution[\s\S]*red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*re-run the\s+configured commands with the same explicit capture, exit-status\s+preservation, and overwrite requirements[\s\S]*two failed repair attempts end\s+the run as attention/,
   );
 });
 
@@ -756,7 +762,7 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
-    /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Give the helper that file/,
+    /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Invoke the same shipped `rootcause\.js`/,
   );
   assert.match(
     finishing,
@@ -765,8 +771,10 @@ test("a verified finishing repair merges in the same attempt", () => {
   assert.doesNotMatch(finishing, /classify-finishing-change|tests-only|review-required|FINISHING_REVIEWED_HEAD/);
   assert.match(
     finishing,
-    /`writeUp`[\s\S]*rootcause-result\.json/,
+    /same shipped `rootcause\.js`[\s\S]*forge check evidence rather[\s\S]*configured-command output files[\s\S]*--evidence "\$MINOS_RUN_DIR\/check-logs\.json"[\s\S]*rootcause-result\.json/,
   );
+  assert.doesNotMatch(finishing, /say so in the helper prompt/);
+  assert.match(finishing, /foreground[\s\S]*empty `runs` array[\s\S]*do not\s+invent/);
   assert.match(
     finishing,
     /helper's `writeUp`[\s\S]*post[\s\S]*one `comment` review/,
