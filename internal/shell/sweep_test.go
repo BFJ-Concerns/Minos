@@ -9,13 +9,45 @@ import (
 	"bfj/minos/internal/forge"
 )
 
-func TestSweepDecisionMessageExposesDeferrals(t *testing.T) {
+func TestSweepDecisionMessage(t *testing.T) {
 	facts := Facts{Owner: "owner", Repo: "repository", PR: "12"}
-	if got := sweepDecisionMessage(facts, "deferred: open dependencies: owner/prerequisite#7"); got != "owner/repository#12: deferred: open dependencies: owner/prerequisite#7" {
-		t.Fatalf("message = %q", got)
+	tests := []struct {
+		name   string
+		result ReconcileResult
+		want   string
+	}{
+		{name: "started", result: ReconcileResult{Decision: "started"}, want: "started owner/repository#12"},
+		{name: "deferred", result: ReconcileResult{Decision: "deferred: open dependencies: owner/prerequisite#7"}, want: "owner/repository#12: deferred: open dependencies: owner/prerequisite#7"},
+		{name: "suppressed", result: ReconcileResult{Decision: "suppressed", BlockingUnit: "minos-run-other-repo-pr9.service"}, want: "owner/repository#12: suppressed by active unit minos-run-other-repo-pr9.service"},
+		{name: "continued", result: ReconcileResult{Decision: "continued"}, want: "owner/repository#12: continued previous run"},
+		{name: "recovered", result: ReconcileResult{Decision: "recovered"}, want: "owner/repository#12: recovered terminal Minos status"},
+		{name: "nothing", result: ReconcileResult{Decision: "nothing"}, want: "owner/repository#12: nothing to do"},
+		{name: "attention", result: ReconcileResult{Decision: "attention"}, want: "owner/repository#12: attention: stopped stalled continuation because its successor made no progress and published no new head or review"},
 	}
-	if got := sweepDecisionMessage(facts, "nothing"); got != "" {
-		t.Fatalf("nothing message = %q, want empty", got)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sweepDecisionMessage(facts, test.result); got != test.want {
+				t.Fatalf("message = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSweepDecisionMessageCoversReachableVocabulary(t *testing.T) {
+	facts := Facts{Owner: "owner", Repo: "repository", PR: "12"}
+	results := []ReconcileResult{
+		{Decision: string(SpawnStarted)},
+		{Decision: string(SpawnContinued)},
+		{Decision: string(SpawnSuppressed), BlockingUnit: "minos-run-other-repo-pr9.service"},
+		{Decision: string(SpawnAttention)},
+		{Decision: "deferred: reason"},
+		{Decision: "recovered"},
+		{Decision: "nothing"},
+	}
+	for _, result := range results {
+		if got := sweepDecisionMessage(facts, result); got == "" {
+			t.Errorf("decision %q returned an empty message", result.Decision)
+		}
 	}
 }
 

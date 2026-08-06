@@ -36,7 +36,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if outcome != SpawnAttention {
+		if outcome.Outcome != SpawnAttention {
 			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
 		}
 		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
@@ -85,7 +85,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if outcome != SpawnAttention {
+		if outcome.Outcome != SpawnAttention {
 			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
 		}
 		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
@@ -121,7 +121,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if outcome != SpawnStarted || starts != 1 {
+		if outcome.Outcome != SpawnStarted || starts != 1 {
 			t.Fatalf("moved-head outcome = %q, starts = %d; want %q and one start", outcome, starts, SpawnStarted)
 		}
 		if len(state.writeSequence) != 0 {
@@ -160,7 +160,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if outcome != SpawnAttention {
+				if outcome.Outcome != SpawnAttention {
 					t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
 				}
 				if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
@@ -214,7 +214,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if outcome != SpawnAttention {
+		if outcome.Outcome != SpawnAttention {
 			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
 		}
 		if _, err := os.Stat(filepath.Join(workDir, "lead-complete")); !os.IsNotExist(err) {
@@ -265,7 +265,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if outcome != SpawnAttention {
+		if outcome.Outcome != SpawnAttention {
 			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
 		}
 		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "reaction-remove:eyes"}) {
@@ -315,10 +315,10 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.predecessor != nil && outcome != SpawnContinued {
+			if test.predecessor != nil && outcome.Outcome != SpawnContinued {
 				t.Fatalf("outcome = %q, want %q", outcome, SpawnContinued)
 			}
-			if test.predecessor == nil && outcome != SpawnStarted {
+			if test.predecessor == nil && outcome.Outcome != SpawnStarted {
 				t.Fatalf("unknown legacy outcome = %q, want %q", outcome, SpawnStarted)
 			}
 			if starts != 1 {

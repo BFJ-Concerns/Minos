@@ -93,13 +93,18 @@ func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) boo
 		latest.Description == product.Merged().Description()
 }
 
-func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (string, error) {
+type ReconcileResult struct {
+	Decision     string
+	BlockingUnit string
+}
+
+func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
 	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
 	if err != nil {
-		return "", err
+		return ReconcileResult{}, err
 	}
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
-		return "nothing", nil
+		return ReconcileResult{Decision: "nothing"}, nil
 	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA
@@ -109,7 +114,7 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 		state, terminal := terminalState(review)
 		if terminal {
 			if hasTerminalStatus(snapshot, cfg, facts, state) {
-				return "nothing", nil
+				return ReconcileResult{Decision: "nothing"}, nil
 			}
 			pr, _ := strconv.ParseInt(facts.PR, 10, 64)
 			result := adapter.SetProductStatus(ctx, forge.Guard{
@@ -118,25 +123,25 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 			}, state)
 			switch result.Outcome {
 			case forge.WriteApplied:
-				return "recovered", nil
+				return ReconcileResult{Decision: "recovered"}, nil
 			case forge.WriteRejected:
-				return "nothing", nil
+				return ReconcileResult{Decision: "nothing"}, nil
 			default:
-				return "", fmt.Errorf("restore terminal Minos status: %s", result.Reason)
+				return ReconcileResult{}, fmt.Errorf("restore terminal Minos status: %s", result.Reason)
 			}
 		}
 	}
 	if completedRunStatus(snapshot, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts)) {
-		return "nothing", nil
+		return ReconcileResult{Decision: "nothing"}, nil
 	}
 	if reason, deferred := dependencyDeferral(snapshot); deferred {
-		return "deferred: " + reason, nil
+		return ReconcileResult{Decision: "deferred: " + reason}, nil
 	}
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)
 	if err != nil {
-		return "", err
+		return ReconcileResult{}, err
 	}
-	return string(outcome), nil
+	return ReconcileResult{Decision: string(outcome.Outcome), BlockingUnit: outcome.BlockingUnit}, nil
 }
 
 func dependencyDeferral(snapshot forge.Snapshot) (string, bool) {
