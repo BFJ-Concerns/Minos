@@ -638,7 +638,7 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 
 func TestRunBodySignalsSustainedMemoryPressureAtLeadReadSurface(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, 900_000_000, 0)
 	fixture.run(t, map[string]string{
 		"MINOS_CGROUP_DIR":          cgroup,
 		"MINOS_TEST_PENDING_STATE":  "done",
@@ -646,14 +646,14 @@ func TestRunBodySignalsSustainedMemoryPressureAtLeadReadSurface(t *testing.T) {
 		"MINOS_TEST_TERMINAL_STATE": "failed",
 	})
 	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "memory approaching the run ceiling")
-	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "after reclaimable cache")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "anonymous memory plus swap")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "finish this stage and hand off")
 	fixture.assertProcessesStopped(t)
 }
 
 func TestRunBodyDoesNotSignalReclaimablePageCache(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	cgroup := writeTestCgroup(t, fixture.root, 1_072_668_082, 1_073_741_824, 1_060_000_000)
+	cgroup := writeTestCgroup(t, fixture.root, 1_072_668_082, 1_073_741_824, 1_060_000_000, 12_000_000, 0)
 	fixture.run(t, map[string]string{
 		"MINOS_CGROUP_DIR":          cgroup,
 		"MINOS_TEST_PENDING_STATE":  "done",
@@ -666,9 +666,87 @@ func TestRunBodyDoesNotSignalReclaimablePageCache(t *testing.T) {
 	fixture.assertProcessesStopped(t)
 }
 
+func TestRunBodyDoesNotSignalGrossUsageAtCeilingWithLowAnonymousMemory(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 1_000_000_000, 1_000_000_000, 80_000_000, 85_000_000, 0)
+	fixture.run(t, map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "memory-pressure")); !os.IsNotExist(err) {
+		t.Fatalf("gross usage with low anonymous memory produced a pressure signal or stat failed: %v", err)
+	}
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodySignalsWhenAnonymousMemoryPlusSwapCrossesThreshold(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 100_000_000, 700_000_000, 160_000_000)
+	fixture.run(t, map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "anonymous memory plus swap")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "finish this stage and hand off")
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyDisablesMemoryPressureWatchForInvalidUnreclaimableCounters(t *testing.T) {
+	tests := map[string]func(t *testing.T, cgroup string){
+		"missing anon": func(t *testing.T, cgroup string) {
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.stat"), []byte("inactive_file 0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"malformed anon": func(t *testing.T, cgroup string) {
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.stat"), []byte("anon unknown\ninactive_file 0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"missing swap": func(t *testing.T, cgroup string) {
+			if err := os.Remove(filepath.Join(cgroup, "memory.swap.current")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"malformed swap": func(t *testing.T, cgroup string) {
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.swap.current"), []byte("unknown\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+
+	for name, invalidate := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, 900_000_000, 0)
+			invalidate(t, cgroup)
+			output, err := fixture.execute(map[string]string{
+				"MINOS_CGROUP_DIR":          cgroup,
+				"MINOS_TEST_PENDING_STATE":  "done",
+				"MINOS_TEST_WAIT_POLLS":     "2",
+				"MINOS_TEST_TERMINAL_STATE": "failed",
+			})
+			if err != nil {
+				t.Fatalf("run-body failed after disabling the pressure watch: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), "memory-pressure watch disabled: cgroup memory counters are unavailable or malformed") {
+				t.Fatalf("run-body output did not report a disabled pressure watch:\n%s", output)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.runDir, "memory-pressure")); !os.IsNotExist(err) {
+				t.Fatalf("invalid unreclaimable counter produced a pressure signal or stat failed: %v", err)
+			}
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
 func TestRunBodyPressureSignalDoesNotCountAsLeadActivity(t *testing.T) {
 	fixture := newRunBodyFixture(t)
-	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, 900_000_000, 0)
 	output, err := fixture.execute(map[string]string{
 		"MINOS_CGROUP_DIR":           cgroup,
 		"MINOS_TEST_NO_WORKER_PROBE": "1",
@@ -1376,7 +1454,7 @@ func assertFileEmpty(t *testing.T, path string) {
 	}
 }
 
-func writeTestCgroup(t *testing.T, root string, current, maximum, inactiveFile int64) string {
+func writeTestCgroup(t *testing.T, root string, current, maximum, inactiveFile, anon, swap int64) string {
 	t.Helper()
 	directory := filepath.Join(root, "cgroup")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
@@ -1385,8 +1463,8 @@ func writeTestCgroup(t *testing.T, root string, current, maximum, inactiveFile i
 	files := map[string]string{
 		"memory.current":      fmt.Sprintf("%d\n", current),
 		"memory.max":          fmt.Sprintf("%d\n", maximum),
-		"memory.stat":         fmt.Sprintf("anon 0\ninactive_file %d\n", inactiveFile),
-		"memory.swap.current": "0\n",
+		"memory.stat":         fmt.Sprintf("anon %d\ninactive_file %d\n", anon, inactiveFile),
+		"memory.swap.current": fmt.Sprintf("%d\n", swap),
 	}
 	for name, contents := range files {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(contents), 0o644); err != nil {
