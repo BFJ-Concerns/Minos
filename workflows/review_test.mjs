@@ -740,7 +740,7 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     repeatedGate,
-    /completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
   );
 
   const briefWave = lifecycle.slice(lifecycle.indexOf("7. Once the main loop"), lifecycle.indexOf("8. Enter finishing"));
