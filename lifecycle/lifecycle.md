@@ -261,13 +261,19 @@ last action and end the turn. A continuation writes no failure-log line.
    the timer works here. It exists only to bound the silence if the completion
    notification never arrives; a shorter interval polls for work the harness
    already reports and costs a full context re-read each time. When it fires
-   first, confirm whether the task is still running, inspect it when useful,
-   and end the turn again; the timer is recurring, so it stays armed without
-   further action. Keep the interval comfortably below
+   first, confirm the task's state. A task still running needs nothing more:
+   end the turn again, and the recurring timer stays armed without further
+   action. A task that has already exited means the notification was lost —
+   treat the wake exactly as you would that notification: cancel the timer
+   with `CronDelete` and proceed to the result, never end the turn with a
+   finished task unread. Keep the interval comfortably below
    `MINOS_LEAD_SILENCE_TIMEOUT` (3600 seconds by default): the supervisor
    treats a lead with no observed turn activity for that long as ended, so a
-   fallback at or beyond it would let a live waiting lead be stopped. When the
-   completion notification arrives, cancel the timer with `CronDelete`.
+   fallback at or beyond it would let a live waiting lead be stopped. If that
+   configured timeout is ever low enough to conflict with the 1200-second
+   floor, the ceiling wins — arm the timer at roughly half the timeout
+   instead. When the completion notification arrives, cancel the timer with
+   `CronDelete`.
 
    Do not call `ScheduleWakeup` in this lifecycle. The tool is visible in this
    session but inert: it schedules only inside a `/loop` context this run does
