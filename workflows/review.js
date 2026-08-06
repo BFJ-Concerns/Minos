@@ -67,23 +67,8 @@ function rolePrompt(roleBriefs, guidance, path, assignment) {
   );
 }
 
-function normalisePlan(plan, files) {
-  const requested = Array.isArray(plan) ? plan : [];
-  const clamps = [];
-  const correctness = requested.find((unit) => unit.specialistType === "correctness");
-  const fallback = {
-    id: "correctness-floor",
-    concern: "Correctness, edge cases, and error handling",
-    scope: files.length > 0 ? files.map((file) => file.path) : ["the complete target-to-head diff"],
-    specialistType: "correctness",
-  };
-  let ordered;
-  if (correctness) ordered = [correctness, ...requested.filter((unit) => unit !== correctness)];
-  else {
-    clamps.push("added the mandatory correctness specialist");
-    ordered = [fallback, ...requested];
-  }
-  const dispatched = ordered.map((unit, index) => {
+function normalisePlan(plan) {
+  return plan.map((unit, index) => {
     return {
       ...unit,
       kind: "planned",
@@ -92,7 +77,6 @@ function normalisePlan(plan, files) {
       label: `specialist-${index + 1}-${unit.specialistType}-gpt`,
     };
   });
-  return { requested, dispatched, clamps };
 }
 
 // The Ensemble sandbox exposes no Buffer or TextEncoder global, so byte
@@ -204,6 +188,15 @@ const applicabilityShape = {
   },
 };
 
+const explorationApplicabilityShape = {
+  type: "object",
+  additionalProperties: false,
+  required: ["reason"],
+  properties: {
+    reason: { type: "string" },
+  },
+};
+
 const specialistSchema = {
   type: "object",
   additionalProperties: false,
@@ -218,8 +211,9 @@ const specialistSchema = {
 const explorationSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["files", "plan"],
+  required: ["files", "plan", "applicability"],
   properties: {
+    applicability: explorationApplicabilityShape,
     files: {
       type: "array",
       items: {
@@ -311,7 +305,7 @@ function addLeg(label, role, pinnedModel, findingIds = null) {
 
 phase("Explore");
 addLeg("exploration", "exploration", GPT_EXPLORER_MODEL);
-const exploration = await agent(
+const explorationResult = await agent(
   rolePrompt(
     roleBriefs,
     projectGuidance,
@@ -328,7 +322,7 @@ const exploration = await agent(
   }
 );
 
-if (!exploration) {
+if (!explorationResult) {
   return {
     reviewed: { target, head, occasion },
     stage: "present",
@@ -342,8 +336,14 @@ if (!exploration) {
   };
 }
 
-const planned = normalisePlan(exploration.plan, exploration.files);
-const specialistUnits = planned.dispatched;
+const exploration = {
+  ...explorationResult,
+  applicability: {
+    status: explorationResult.plan.length === 0 ? "inapplicable" : "applicable",
+    reason: explorationResult.applicability.reason,
+  },
+};
+const specialistUnits = normalisePlan(exploration.plan);
 const orientation = orientationPacket(target, head, exploration.files, specialistUnits);
 phase("Specialise");
 for (const unit of specialistUnits)
@@ -423,7 +423,6 @@ specialistUnits.forEach((unit, unitIndex) => {
     proposed.push({
       id: `${unit.label}:${findingIndex + 1}`,
       unit,
-      unitIndex,
       finding,
       findingIndex,
     });
@@ -432,18 +431,15 @@ specialistUnits.forEach((unit, unitIndex) => {
 
 phase("Verify");
 const verifierGroups = [];
-for (const unit of specialistUnits) {
-  const unitFindings = proposed.filter((item) => item.unit === unit);
-  for (let offset = 0; offset < unitFindings.length; offset += MAX_FINDINGS_PER_VERIFIER) {
-    const items = unitFindings.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
-    const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
-    const label = `verify-${items[0].unitIndex + 1}-${groupIndex}-claude`;
-    const findingIds = items.map((item) => item.id);
-    const group = { items, label, findingIds };
-    verifierGroups.push(group);
-    items.forEach((item) => { item.verifyLabel = label; });
-    addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
-  }
+for (let offset = 0; offset < proposed.length; offset += MAX_FINDINGS_PER_VERIFIER) {
+  const items = proposed.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
+  const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
+  const label = `verify-${groupIndex}-claude`;
+  const findingIds = items.map((item) => item.id);
+  const group = { items, label, findingIds };
+  verifierGroups.push(group);
+  items.forEach((item) => { item.verifyLabel = label; });
+  addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
 }
 
 const verifierResults = await parallel(
@@ -454,7 +450,7 @@ const verifierResults = await parallel(
         projectGuidance,
         ROLE_BRIEFS.verifier,
         `Try to disprove each proposed finding against ${target}...${head} and the cited code.\n` +
-          `Proposing specialist: ${group.items[0].unit.label}\n` +
+          `Proposing specialists: ${[...new Set(group.items.map((item) => item.unit.label))].join(", ")}\n` +
           `Findings: ${JSON.stringify(group.items.map((item) => ({ id: item.id, ...item.finding })))}`
       ),
       {
@@ -501,12 +497,13 @@ const proposedFindings = proposed.map((item) => ({
 return {
   reviewed: { target, head, occasion },
   stage: "present",
+  exploration,
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,
   briefs,
   misconfigurations: [],
-  dispatches: planned.dispatched.map((unit) => ({
+  dispatches: specialistUnits.map((unit) => ({
     id: unit.id,
     label: unit.label,
     concern: unit.concern,

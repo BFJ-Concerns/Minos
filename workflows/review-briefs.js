@@ -393,7 +393,8 @@ if (partitionRequests.length > 0) {
       `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
       `<repository-brief path="${request.candidate.brief.path}">\n${request.candidate.brief.content}\n</repository-brief>\n\n` +
       `Create a lossless partition of the assigned file inventory into coherent review units for this brief. Group paths by module, directory, or concern, whichever reflects the repository's actual structure. ` +
-      `Let that structure determine the unit count. Assign every listed path to exactly one unit; include no unlisted paths. Return at least one unit. Use no skills for this planning judgement.\n` +
+      `Each dispatched unit has a real cost, so the partition is the minimal one whose units each need a genuinely distinct reading for this brief's concern — merge groups one reading covers, and never split a unit to mirror directory structure for its own sake. ` +
+      `Assign every listed path to exactly one unit; include no unlisted paths. Use no skills for this planning judgement.\n` +
       `Assigned file inventory: ${JSON.stringify(request.inventory.map((entry) => entry.path))}`,
     {
       engine: "codex",
