@@ -68,7 +68,7 @@ function rolePrompt(roleBriefs, guidance, path, assignment) {
 }
 
 function normalisePlan(plan) {
-  return (Array.isArray(plan) ? plan : []).map((unit, index) => {
+  return plan.map((unit, index) => {
     return {
       ...unit,
       kind: "planned",
