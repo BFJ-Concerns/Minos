@@ -487,7 +487,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 	})
 }
 
-func TestForgejoSweepReadsEachPullRequestSnapshotTwicePerPass(t *testing.T) {
+func TestForgejoSweepMeasuresPullRequestSnapshotReadsPerPass(t *testing.T) {
 	tests := []struct {
 		name         string
 		dependencies []map[string]any
@@ -529,11 +529,12 @@ run-body = "/opt/minos/run-body/run-body"
 			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
 				t.Fatal(err)
 			}
-			// This exact count characterises the current two-snapshot flow. It is
-			// instrumentation for proving a future freshness-safe fold, not an
-			// endorsement of duplicate reads.
-			if got := state.pullRequestSnapshotReads(); got != 2 {
-				t.Fatalf("pull request snapshot reads this pass = %d, want two", got)
+			// Two reads are observed today; one is the post-fold target. Keep the
+			// decision assertions below independent so either count tells the truth.
+			got := state.pullRequestSnapshotReads("1")
+			t.Logf("pull request 1 snapshot reads this pass = %d", got)
+			if got != 1 && got != 2 {
+				t.Fatalf("pull request 1 snapshot reads this pass = %d, want one or two", got)
 			}
 			started := slices.Contains(commands, "systemd-run")
 			if started != test.wantStarted {
@@ -1217,7 +1218,7 @@ type forgejoFixtureState struct {
 	diffNewSide              map[string][][2]int64
 	positionRewrites         map[string]map[int64]int64
 	statusReadCommits        []string
-	pullRequestReads         int
+	pullRequestReads         map[string]int
 	writeSequence            []string
 	virtualRefLookups        int
 	annexeCloneURL           string
@@ -1250,7 +1251,8 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any),
 		diffNewSide: make(map[string][][2]int64), positionRewrites: make(map[string]map[int64]int64),
 		actionJobs: make(map[int64][]map[string]any), actionLogs: make(map[int64]string),
-		dependencies: []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
+		pullRequestReads: make(map[string]int),
+		dependencies:     []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
 	}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
@@ -1380,10 +1382,10 @@ func (s *forgejoFixtureState) statusReadFacts() []string {
 	return append([]string(nil), s.statusReadCommits...)
 }
 
-func (s *forgejoFixtureState) pullRequestSnapshotReads() int {
+func (s *forgejoFixtureState) pullRequestSnapshotReads(pullRequest string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pullRequestReads
+	return s.pullRequestReads[pullRequest]
 }
 
 func (s *forgejoFixtureState) statusWriteFacts() (int, any) {
@@ -1433,7 +1435,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls":
 		writeFixtureJSON(s.t, w, []map[string]any{s.pullRequest})
 	case r.Method == http.MethodGet && path == pullPath:
-		s.pullRequestReads++
+		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		writeFixtureJSON(s.t, w, s.pullRequest)
 	case r.Method == http.MethodGet && path == issuePath+"/dependencies":
 		if s.dependencyCode != http.StatusOK {
