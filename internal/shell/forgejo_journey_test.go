@@ -564,6 +564,53 @@ func TestForgeReactionUsesForgejo14ShapeAndReadBackIdempotency(t *testing.T) {
 	}
 }
 
+func TestForgeStatusReadBackIsScopedToPullRequest(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		includeOwned bool
+		wantPosts    int
+	}{
+		{name: "newer foreign status does not duplicate an owned status", includeOwned: true, wantPosts: 0},
+		{name: "foreign status does not hide genuine absence", wantPosts: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, _, facts := state.service(t)
+			writeServiceConfig(t, cfg)
+			t.Setenv("MINOS_CONFIG", cfg.Root)
+			t.Setenv("MINOS_FORGE", facts.Forge)
+			t.Setenv("MINOS_OWNER", facts.Owner)
+			t.Setenv("MINOS_REPO_NAME", facts.Repo)
+			t.Setenv("MINOS_PR", facts.PR)
+
+			head, target := state.headSHA(), state.targetSHA()
+			statuses := []map[string]any{{
+				"id": 8, "context": "Minos", "status": "pending", "description": product.Working().Description(),
+				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2#minos-target-" + target,
+				"creator":    map[string]any{"login": "Minos"},
+			}}
+			if test.includeOwned {
+				statuses = append(statuses, map[string]any{
+					"id": 7, "context": "Minos", "status": "pending", "description": product.Working().Description(),
+					"target_url": statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+						Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
+					}),
+					"creator": map[string]any{"login": "Minos"},
+				})
+			}
+			state.setStatuses(statuses)
+
+			var stdout strings.Builder
+			if err := ForgeCommand(t.Context(), []string{"status", head, target, "working"}, &stdout); err != nil {
+				t.Fatalf("status write: %v\n%s", err, stdout.String())
+			}
+			if posts := state.statusPostFacts(); len(posts) != test.wantPosts {
+				t.Fatalf("forge received %d status posts, want %d: %#v", len(posts), test.wantPosts, posts)
+			}
+		})
+	}
+}
+
 func TestSnapshotCarriesSortedLabelsAndForgeTargetSyncMethod(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
