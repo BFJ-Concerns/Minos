@@ -353,23 +353,38 @@ last action and end the turn. A continuation writes no failure-log line.
 
    This governs every Ensemble workflow invocation in this lifecycle —
    setup and the gate repair above as much as the main review, fix waves,
-   brief review, brief fix and finishing repair below. Each block names its result JSON; redirect
-   diagnostics to the same basename with `.log` instead of `.json`, and wrap
-   the whole invocation in the completion-flag wrapper so a flag file appears,
-   complete, only after the workflow command exits:
+   brief review, brief fix and finishing repair below. Each block names its
+   result JSON; redirect diagnostics to the same basename with `.log` instead
+   of `.json`. Wherever a block shows an Ensemble or adjudication-wrapper
+   invocation redirected to its result JSON, run it instead through both
+   run-scripts wrappers — the completion-flag wrapper outermost, so a flag
+   file appears, complete, only after the workflow command exits, and the
+   result-publication wrapper inside it, so the result file itself is
+   atomic. (The `*-inputs.mjs` builders and other sub-second foreground
+   commands keep their plain redirects — the wrappers exist for the
+   background waits.)
 
    ```sh
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
      "${MINOS_SETUP_WORKSPACE%/*}/flag-on-exit" "$MINOS_RUN_DIR/NAME.done" \
-     sh -c 'node /opt/minos/runtime/ensemble.mjs ... > RESULT.json 2> RESULT.log'
+     "${MINOS_SETUP_WORKSPACE%/*}/publish-on-exit" "$MINOS_RUN_DIR/NAME.json" \
+     sh -c 'node /opt/minos/runtime/ensemble.mjs ... 2> "$MINOS_RUN_DIR/NAME.log"'
    ```
+
+   `publish-on-exit` collects the command's stdout beside the result file
+   and renames it into place only on a clean exit, so `NAME.json` is never
+   observable half-written: it holds the complete stdout of a successful
+   command, or it does not exist. A failed or killed workflow leaves no
+   result file — its partial stdout stays in `NAME.json.partial` for
+   diagnosis — which is what lets a later reader distinguish "no verdict
+   yet" from "a verdict that is empty".
 
    Name each flag after its result file (`review-result.done` beside
    `review-result.json`). The flag is the only completion signal a watcher
-   may arm on: the result file itself is created empty by redirection at
-   launch and written iteratively, so its existence, size and mtime all lie
-   about completion; the wrapper's create-after-exit rename is atomic and
-   cannot be observed early. Submit the complete wrapped command as one
+   may arm on: the result file appears only on success, so its absence says
+   nothing about whether the workflow is still running; the flag's
+   create-after-exit rename is atomic, cannot be observed early, and appears
+   on failure as much as success. Submit the complete wrapped command as one
    background Bash task and record its task ID.
 
    Then wait by yielding, never by sleeping. Arm two watchers described
@@ -384,9 +399,13 @@ last action and end the turn. A continuation writes no failure-log line.
    seven minutes; a yielded lead reads the same result at once. `sleep` has
    no role in waiting for a background task, whatever duration seems safe.
 
-   **The flag watcher is the primary wake on completion.** Before ending the
-   turn, arm one additional background Bash task that exits when the flag
-   exists:
+   **The flag watcher is the primary wake on completion.** Remove any
+   leftover flag in the foreground with `rm -f "$MINOS_RUN_DIR/NAME.done"`
+   **before submitting the wrapped command**: the wrapper clears stale
+   flags itself, but it does so inside the background task, and a watcher
+   armed while an earlier invocation's flag still exists would fire on old
+   news. With the path clear, before ending the turn, arm one additional
+   background Bash task that exits when the flag exists:
 
    ```sh
    until [ -e "$MINOS_RUN_DIR/NAME.done" ]; do sleep 1; done
@@ -438,12 +457,14 @@ last action and end the turn. A continuation writes no failure-log line.
    or fallback wake, after confirming the background process's state. Finish a
    process that is still running before handing off.
 
-   Do not trust the result file merely because it exists: redirection creates
-   it immediately and it may be half-written. Only once the background process
-   has exited is the result file complete; then read it and parse it as JSON
-   before trusting the verdict. A result file that does not parse, or a
-   background task that exits non-zero, is an infrastructure failure — treat
-   it as an incomplete stop, never as a verdict.
+   Read the result only after the background process has exited. Under the
+   publication wrapper the result file exists only when the workflow command
+   exited cleanly — a wait that ends with a flag but no result file is a
+   failed or killed workflow, an infrastructure failure to diagnose from the
+   `.log` and `.partial` files, never a verdict. Still parse the result as
+   JSON before trusting it: a result that does not parse, or a background
+   task that exits non-zero, is likewise an incomplete stop, never a
+   verdict.
 
    Build the main review input from disk and write it to a file:
 

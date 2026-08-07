@@ -5,7 +5,7 @@ destination_root="${1:?usage: install-review-runtime DESTINATION_ROOT}"
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 source_root="$(dirname "$script_dir")"
 
-install -d -m 755 "$destination_root/runtime" "$destination_root/workflows"
+install -d -m 755 "$destination_root/runtime"
 install -m 644 "$source_root/runtime/ensemble.mjs" "$destination_root/runtime/ensemble.mjs"
 install -m 644 "$source_root/runtime/ensemble.mjs.sha256" "$destination_root/runtime/ensemble.mjs.sha256"
 install -m 644 "$source_root/runtime/ensemble.source-version" "$destination_root/runtime/ensemble.source-version"
@@ -15,17 +15,37 @@ install -m 644 "$source_root/runtime/ensemble.source-version" "$destination_root
   sha256sum -c ensemble.mjs.sha256
 )
 
-find "$destination_root/workflows" -type f -name '*_test.mjs' -exec rm -f {} +
+# The workflow tree is built fresh and swapped into place, so a workflow
+# deleted from the source tree is gone from the destination after the next
+# install — copying over the old tree would leave orphans behind, and an
+# orphaned workflow is live code on the box that no source file governs.
+staging="$destination_root/workflows.next"
+previous="$destination_root/workflows.previous"
+rm -rf "$staging" "$staging.listing" "$previous"
+install -d -m 755 "$staging"
 
-find "$source_root/workflows" -type f ! -name '*_test.mjs' -print |
-  while IFS= read -r source; do
-    relative_path="${source#"$source_root/workflows/"}"
-    destination="$destination_root/workflows/$relative_path"
-    install -d -m 755 "$(dirname "$destination")"
-    if [ -x "$source" ]; then
-      mode=755
-    else
-      mode=644
-    fi
-    install -m "$mode" "$source" "$destination"
-  done
+# The source listing is written to a file first so a failing find stops
+# the install under `set -e`: piped into the loop, its failure would be
+# masked by the pipeline and an incomplete staging tree would replace
+# the previous deployment.
+listing="$staging.listing"
+find "$source_root/workflows" -type f ! -name '*_test.mjs' -print > "$listing"
+
+while IFS= read -r source; do
+  relative_path="${source#"$source_root/workflows/"}"
+  destination="$staging/$relative_path"
+  install -d -m 755 "$(dirname "$destination")"
+  if [ -x "$source" ]; then
+    mode=755
+  else
+    mode=644
+  fi
+  install -m "$mode" "$source" "$destination"
+done < "$listing"
+rm -f "$listing"
+
+if [ -d "$destination_root/workflows" ]; then
+  mv "$destination_root/workflows" "$previous"
+fi
+mv "$staging" "$destination_root/workflows"
+rm -rf "$previous"
