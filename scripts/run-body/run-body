@@ -217,6 +217,17 @@ failure_stage="workspace-setup"
 failure_cause="workspace setup failed"
 "$MINOS_SETUP_WORKSPACE"
 
+# A mainline setup may publish its reconciliation merge. From this point the
+# run must bind every forge action to that pushed head, while local-only fork
+# and AGit setups retain the head that admitted the run.
+if jq -e '.publish == true and .outcome == "reconciled"' \
+  "$MINOS_RUN_DIR/reconciliation.json" >/dev/null; then
+  failure_cause="published reconciliation state omitted its merge head"
+  MINOS_HEAD_SHA="$(jq -er '.merge | select(type == "string" and length > 0)' \
+    "$MINOS_RUN_DIR/reconciliation.json")"
+  export MINOS_HEAD_SHA
+fi
+
 trap 'exit 129' 1
 trap 'exit 130' 2
 trap 'exit 143' 15

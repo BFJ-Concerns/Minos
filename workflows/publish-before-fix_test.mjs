@@ -633,12 +633,6 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
 
   await t.test("fix dispatch runs from the reconciled workspace", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "minos-publication-cwd-"));
-    const publication = join(runDir, "publication");
-    writeFileSync(
-      join(runDir, "reconciliation.json"),
-      JSON.stringify({ publication }),
-      { mode: 0o600 },
-    );
     let dispatchedFrom = null;
     const result = await publishBeforeFix({
       input: input(),

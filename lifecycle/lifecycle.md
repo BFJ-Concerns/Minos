@@ -90,26 +90,29 @@ successor the preserved workspace:
 are both the fresh snapshot's `head_sha`, and the progress and loop-record
 `round` values are equal. If the loop record does not yet exist, first
 write `{"round":0,"confirmedFixed":[],"confirmedUnfixed":[]}` to it. The
-snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the head this attempt
-started from and may already be stale after a repair push. Write the complete
-handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
+snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the current head
+established by setup and may already be stale after a later repair push. Write
+the complete handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
 `"$MINOS_HANDOFF"`. Finally run
 `printf 'continuation\n' > "$MINOS_RUN_DIR/lead-complete"` as the
 last action and end the turn. A continuation writes no failure-log line.
 
-1. The setup script has prepared the repository at the observed pull-request head
+1. The setup script has prepared the repository at the current pull-request head
    in `$MINOS_WORKSPACE`, either from a fresh clone or a validated preserved
-   workspace. It refused setup if that head moved, and
-   recorded its orientation in
+   workspace. It refused setup if the admitted head moved before setup. On a
+   mainline pull request it then pushed a completed target reconciliation merge
+   to the source branch and made that merge `$MINOS_HEAD_SHA`; on a fork or AGit
+   pull request the reconciliation stays local and `$MINOS_HEAD_SHA` remains the
+   admitted head. It recorded its orientation in
    `$MINOS_ORIENTATION`. Read that record. When its `grounding` is `annexe`,
    read the commission in the recorded annexe README as the driving statement
    of the project; when it is `repository`, no sibling annexe exists, so ground
    the work in the repository's own checked-in guidance. Then run
    `"$MINOS_BIN" forge snapshot` and claim the pull request with `"$MINOS_BIN"
    forge claim` (it assigns the Minos account and adds the 👀 reaction; it is
-   safe to repeat). If the snapshot now shows that the head or target has moved
-   since setup, remove 👀 against that fresh head and target, write the
-   non-clean terminal marker, and stop without publishing.
+   safe to repeat). If the snapshot now shows that the head or target differs
+   from those setup established, remove 👀 against that fresh head and target,
+   write the non-clean terminal marker, and stop without publishing.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` after the claim and snapshot
    checks. If `$MINOS_LOOP_RECORD` already exists, a predecessor handed off:
@@ -121,13 +124,14 @@ last action and end the turn. A continuation writes no failure-log line.
 
    Read `$MINOS_RUN_DIR/reconciliation.json`. Setup has fetched the target from
    the base repository, verified its observed SHA and pinned it at
-   `refs/minos/target` for the whole run. The record says whether merging that
-   target locally was unnecessary, completed cleanly, or left a conflict in
-   progress. A completed reconciliation merge exists only in the detached
-   reading workspace. Minos records it as unpushable, while every repair and
-   finishing push operates on the separate publication worktree recorded in
-   this file. Never move the pinned target during the review loop: it fixes
-   both the code context and the merge-base-to-head comment geometry.
+   `refs/minos/target` for the whole run. The record's `publish` field says
+   whether this is a mainline pull request whose source branch Minos may update.
+   It also says whether merging the target was unnecessary, completed cleanly,
+   or left a conflict in progress. A completed mainline reconciliation merge is
+   pushed to the source branch and becomes the run's current head. A fork or
+   AGit reconciliation remains only in the detached workspace; no downstream
+   stage may push it. Never move the pinned target during the review loop: it
+   fixes both the code context and the merge-base-to-head comment geometry.
 
    Run the setup workflow on every run, whatever the reconciliation outcome.
    Launch it from `$MINOS_WORKSPACE` as one background Bash task under step 4's
@@ -181,7 +185,11 @@ last action and end the turn. A continuation writes no failure-log line.
    `"${MINOS_SETUP_WORKSPACE%/*}/complete-reconciliation"
    "$MINOS_WORKSPACE"`. Completion also supersedes the original full setup
    result with the retry's non-reusable reconciliation-only command outcomes,
-   because the retry changed the reconciled tree.
+   because the retry changed the reconciled tree. If completion publishes a
+   mainline reconciliation, read its merge from `reconciliation.json`, export
+   that value as `MINOS_HEAD_SHA`, and require the next fresh snapshot to carry
+   it before any further forge action. Fork and AGit completion remains
+   local-only and does not change `$MINOS_HEAD_SHA`.
 
    The same check, one-retry and completion rule applies when a later Minos
    script reports `reconcile-conflict`: redispatch the setup workflow in
@@ -567,10 +575,9 @@ last action and end the turn. A continuation writes no failure-log line.
    A decision that fails validation — a missing basis, `working` with
    nothing to dispatch, or `working` past the configured maximum rounds —
    makes preparation incomplete before any forge write; correct the
-   decision and rebuild the input rather than working around it. Tell the
-   two incomplete shapes apart by the `publication` field: a rejected
-   preparation carries none (nothing touched the forge — correct and
-   retry), while an incomplete result bearing `publication` means a forge
+   decision and rebuild the input rather than working around it. A rejected
+   preparation means nothing touched the forge and may be corrected and
+   retried; an incomplete result from the publication operation means a forge
    write was attempted, and the stop below applies.
 
    Invoke the publication-before-fix operation once for this round:
@@ -637,9 +644,8 @@ last action and end the turn. A continuation writes no failure-log line.
    The workspace's pre-push guard protects the recorded pull-request ref by
    destination ref name, regardless of the remote name or whether Git was
    invoked with a short refspec. Updates require the matching one-use permit,
-   including forced updates and deletion attempts. It also refuses any
-   non-deletion update containing a recorded local reconciliation commit. An
-   unreadable or invalid record fails closed; in particular, an empty
+   including forced updates and deletion attempts. An unreadable or invalid
+   record fails closed; in particular, an empty
    `minos-protected-ref` is invalid. The hook covers checkouts sharing this Git
    directory, not separate clones.
 

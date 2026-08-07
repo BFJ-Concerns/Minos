@@ -158,6 +158,38 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	fixture.assertProcessesStopped(t)
 }
 
+func TestRunBodyUsesPublishedSetupMergeAsCurrentHead(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
+set -eu
+mkdir -p "$MINOS_WORKSPACE"
+install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
+printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
+printf '%s\n' '{"outcome":"reconciled","publish":true,"merge":"setup-merge-sha"}' >"$MINOS_RUN_DIR/reconciliation.json"
+`)
+
+	fixture.run(t, nil)
+	assertContainsFile(t, fixture.record+".worker-env", "MINOS_HEAD_SHA=setup-merge-sha")
+}
+
+func TestRunBodyKeepsAdmittedHeadForLocalOnlySetup(t *testing.T) {
+	for _, geometry := range []string{"fork", "agit"} {
+		t.Run(geometry, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
+set -eu
+mkdir -p "$MINOS_WORKSPACE"
+install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
+printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
+printf '%s\n' '{"outcome":"reconciled","publish":false,"merge":"local-merge-sha"}' >"$MINOS_RUN_DIR/reconciliation.json"
+`)
+
+			fixture.run(t, nil)
+			assertContainsFile(t, fixture.record+".worker-env", "MINOS_HEAD_SHA=head-sha")
+		})
+	}
+}
+
 func TestRunBodySharesPersistentCachesOnlyWithinARepository(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	first := fixture.withRun("first", "first-record")
@@ -1305,6 +1337,7 @@ if [ -n "${MINOS_TEST_SCCACHE_SOURCE:-}" ]; then
   install -m 700 "$MINOS_TEST_SCCACHE_SOURCE" "$HOME/.local/bin/sccache"
 fi
 printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
+printf '%s\n' '{"outcome":"unnecessary","publish":false,"merge":null}' >"$MINOS_RUN_DIR/reconciliation.json"
 printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 `)
 	t.Cleanup(func() { killRecordedProcesses(fixture.record + ".pids") })

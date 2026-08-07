@@ -23,7 +23,6 @@ type reconciliationState struct {
 	PreimageDir   *string  `json:"preimageDir"`
 	AutoMergeTree *string  `json:"autoMergeTree"`
 	Publish       bool     `json:"publish"`
-	Publication   *string  `json:"publication"`
 	TargetBranch  string   `json:"targetBranch"`
 	TargetRepoURL string   `json:"targetRepositoryUrl"`
 }
@@ -172,6 +171,21 @@ func TestSetupWorkspaceLeavesConflictForCheckedCompletionAndRerereReuse(t *testi
 }
 
 func TestSetupWorkspaceRefusesMovedTargetAndReconcilesForkWithoutPublication(t *testing.T) {
+	t.Run("moved head", func(t *testing.T) {
+		repository, head, target := createDivergedSetupRepository(t, false)
+		movedHead := gitOutput(t, repository, "rev-parse", "main")
+		server := newSetupForge(t, movedHead, repository, "")
+		runDir := t.TempDir()
+		cmd := setupWorkspaceCommandForTarget(
+			t, server.URL, runDir, filepath.Join(runDir, "workspace"),
+			filepath.Join(runDir, "orientation.json"), head, target,
+		)
+		output, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(output), "pull-request head moved") {
+			t.Fatalf("moved head result = %v\n%s", err, output)
+		}
+	})
+
 	t.Run("moved target", func(t *testing.T) {
 		repository, head, target := createDivergedSetupRepository(t, false)
 		server := newSetupForge(t, head, repository, "")
@@ -202,6 +216,7 @@ func TestSetupWorkspaceRefusesMovedTargetAndReconcilesForkWithoutPublication(t *
 		runGit(t, forkRepository, "add", "fork.txt", "AGENTS.md")
 		runGit(t, forkRepository, "commit", "-m", "fork feature")
 		head := gitOutput(t, forkRepository, "rev-parse", "HEAD")
+		remoteHeadBefore := gitOutput(t, forkRepository, "rev-parse", "feature")
 		server := newForkSetupForge(t, head, forkRepository, baseRepository)
 		runDir := t.TempDir()
 		workspace := filepath.Join(runDir, "workspace")
@@ -210,8 +225,11 @@ func TestSetupWorkspaceRefusesMovedTargetAndReconcilesForkWithoutPublication(t *
 			t.Fatalf("fork setup: %v\n%s", err, output)
 		}
 		state := readReconciliationState(t, filepath.Join(runDir, "reconciliation.json"))
-		if !state.Fork || state.Publication != nil || state.Outcome != "reconciled" {
+		if !state.Fork || state.Publish || state.Outcome != "reconciled" {
 			t.Fatalf("fork state = %+v", state)
+		}
+		if remoteHeadAfter := gitOutput(t, forkRepository, "rev-parse", "feature"); remoteHeadAfter != remoteHeadBefore {
+			t.Fatalf("fork remote head changed from %q to %q", remoteHeadBefore, remoteHeadAfter)
 		}
 		if got := gitOutput(t, workspace, "rev-parse", "refs/minos/target"); got != target {
 			t.Fatalf("fork pinned target = %q, want %q", got, target)
