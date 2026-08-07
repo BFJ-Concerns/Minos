@@ -21,21 +21,28 @@ install -m 644 "$source_root/runtime/ensemble.source-version" "$destination_root
 # orphaned workflow is live code on the box that no source file governs.
 staging="$destination_root/workflows.next"
 previous="$destination_root/workflows.previous"
-rm -rf "$staging" "$previous"
+rm -rf "$staging" "$staging.listing" "$previous"
 install -d -m 755 "$staging"
 
-find "$source_root/workflows" -type f ! -name '*_test.mjs' -print |
-  while IFS= read -r source; do
-    relative_path="${source#"$source_root/workflows/"}"
-    destination="$staging/$relative_path"
-    install -d -m 755 "$(dirname "$destination")"
-    if [ -x "$source" ]; then
-      mode=755
-    else
-      mode=644
-    fi
-    install -m "$mode" "$source" "$destination"
-  done
+# The source listing is written to a file first so a failing find stops
+# the install under `set -e`: piped into the loop, its failure would be
+# masked by the pipeline and an incomplete staging tree would replace
+# the previous deployment.
+listing="$staging.listing"
+find "$source_root/workflows" -type f ! -name '*_test.mjs' -print > "$listing"
+
+while IFS= read -r source; do
+  relative_path="${source#"$source_root/workflows/"}"
+  destination="$staging/$relative_path"
+  install -d -m 755 "$(dirname "$destination")"
+  if [ -x "$source" ]; then
+    mode=755
+  else
+    mode=644
+  fi
+  install -m "$mode" "$source" "$destination"
+done < "$listing"
+rm -f "$listing"
 
 if [ -d "$destination_root/workflows" ]; then
   mv "$destination_root/workflows" "$previous"

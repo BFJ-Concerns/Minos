@@ -355,23 +355,26 @@ last action and end the turn. A continuation writes no failure-log line.
    setup and the gate repair above as much as the main review, fix waves,
    brief review, brief fix and finishing repair below. Each block names its
    result JSON; redirect diagnostics to the same basename with `.log` instead
-   of `.json`. Wherever a block shows a plain `> RESULT.json` redirect, run
-   it instead through both run-scripts wrappers — the completion-flag wrapper
-   outermost, so a flag file appears, complete, only after the workflow
-   command exits, and the result-publication wrapper inside it, so the result
-   file itself is atomic:
+   of `.json`. Wherever a block shows an Ensemble or adjudication-wrapper
+   invocation redirected to its result JSON, run it instead through both
+   run-scripts wrappers — the completion-flag wrapper outermost, so a flag
+   file appears, complete, only after the workflow command exits, and the
+   result-publication wrapper inside it, so the result file itself is
+   atomic. (The `*-inputs.mjs` builders and other sub-second foreground
+   commands keep their plain redirects — the wrappers exist for the
+   background waits.)
 
    ```sh
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
      "${MINOS_SETUP_WORKSPACE%/*}/flag-on-exit" "$MINOS_RUN_DIR/NAME.done" \
      "${MINOS_SETUP_WORKSPACE%/*}/publish-on-exit" "$MINOS_RUN_DIR/NAME.json" \
-     sh -c 'node /opt/minos/runtime/ensemble.mjs ... 2> RESULT.log'
+     sh -c 'node /opt/minos/runtime/ensemble.mjs ... 2> "$MINOS_RUN_DIR/NAME.log"'
    ```
 
    `publish-on-exit` collects the command's stdout beside the result file
    and renames it into place only on a clean exit, so `NAME.json` is never
-   observable empty or half-written: it holds a whole, successfully produced
-   result, or it does not exist. A failed or killed workflow leaves no
+   observable half-written: it holds the complete stdout of a successful
+   command, or it does not exist. A failed or killed workflow leaves no
    result file — its partial stdout stays in `NAME.json.partial` for
    diagnosis — which is what lets a later reader distinguish "no verdict
    yet" from "a verdict that is empty".
@@ -396,9 +399,13 @@ last action and end the turn. A continuation writes no failure-log line.
    seven minutes; a yielded lead reads the same result at once. `sleep` has
    no role in waiting for a background task, whatever duration seems safe.
 
-   **The flag watcher is the primary wake on completion.** Before ending the
-   turn, arm one additional background Bash task that exits when the flag
-   exists:
+   **The flag watcher is the primary wake on completion.** Remove any
+   leftover flag in the foreground with `rm -f "$MINOS_RUN_DIR/NAME.done"`
+   **before submitting the wrapped command**: the wrapper clears stale
+   flags itself, but it does so inside the background task, and a watcher
+   armed while an earlier invocation's flag still exists would fire on old
+   news. With the path clear, before ending the turn, arm one additional
+   background Bash task that exits when the flag exists:
 
    ```sh
    until [ -e "$MINOS_RUN_DIR/NAME.done" ]; do sleep 1; done

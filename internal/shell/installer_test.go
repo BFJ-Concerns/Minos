@@ -78,9 +78,35 @@ func TestInstallReviewRuntimeMirrorsSourceDeletions(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(destination, "workflows.next")); !os.IsNotExist(err) {
 		t.Fatalf("staging directory left behind: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(destination, "workflows.next.listing")); !os.IsNotExist(err) {
+		t.Fatalf("source listing left behind: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(destination, "workflows.previous")); !os.IsNotExist(err) {
 		t.Fatalf("replaced tree left behind: %v", err)
 	}
+}
+
+func TestInstallReviewRuntimeStopsWhenTheSourceTreeIsUnreadable(t *testing.T) {
+	sourceRoot := installerSourceRoot(t)
+	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "review.js"), []byte("export const meta = {};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	destination := filepath.Join(t.TempDir(), "opt", "minos")
+	runInstaller(t, sourceRoot, destination)
+	assertRegularFile(t, filepath.Join(destination, "workflows", "review.js"))
+
+	// A source tree the installer cannot traverse must stop the install
+	// with the previous deployment intact — a masked find failure would
+	// swap an incomplete staging tree over the good one.
+	if err := os.Rename(filepath.Join(sourceRoot, "workflows"), filepath.Join(sourceRoot, "workflows.hidden")); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(sourceRoot, "scripts", "install-review-runtime"), destination)
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("installer succeeded against a missing source tree\n%s", output)
+	}
+	assertRegularFile(t, filepath.Join(destination, "workflows", "review.js"))
 }
 
 func TestInstallReviewRuntimeSweepsStaleStagingBeforeInstalling(t *testing.T) {

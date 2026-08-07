@@ -78,6 +78,20 @@ func TestResultPublicationWithholdsTheResultOnFailure(t *testing.T) {
 	}
 }
 
+func TestResultPublicationWithholdsTheResultWhenTheCommandIsKilled(t *testing.T) {
+	dir := t.TempDir()
+	result := filepath.Join(dir, "review-result.json")
+
+	output, err := runPublishOnExit(t, result, "sh", "-c",
+		`printf '{"stat'; kill -KILL $$`)
+	if err == nil {
+		t.Fatalf("wrapper exited 0 for a signal-killed command\n%s", output)
+	}
+	if _, err := os.Stat(result); !os.IsNotExist(err) {
+		t.Fatalf("signal-killed command published a result file: %v", err)
+	}
+}
+
 func TestResultPublicationLeavesNoResultWhenKilledMidCommand(t *testing.T) {
 	dir := t.TempDir()
 	result := filepath.Join(dir, "review-result.json")
@@ -108,7 +122,8 @@ func TestResultPublicationClearsStaleResultAndPartialBeforeRunning(t *testing.T)
 
 	// A stale result from an earlier invocation must be gone before the new
 	// command starts, or a supervisor would read old news as this run's
-	// verdict; a failing command must not resurrect it either.
+	// verdict; a failing command must not resurrect it, and the stale
+	// partial must not pollute the new command's collected output.
 	output, err := runPublishOnExit(t, result, "sh", "-c", "exit 1")
 	var exitError *exec.ExitError
 	if err == nil || !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
@@ -116,6 +131,13 @@ func TestResultPublicationClearsStaleResultAndPartialBeforeRunning(t *testing.T)
 	}
 	if _, err := os.Stat(result); !os.IsNotExist(err) {
 		t.Fatalf("stale result survived a failing re-run: %v", err)
+	}
+	partial, err := os.ReadFile(result + ".partial")
+	if err != nil {
+		t.Fatalf("partial file missing after the failing re-run: %v", err)
+	}
+	if got := string(partial); got != "" {
+		t.Fatalf("stale partial content survived into the new run: %q", got)
 	}
 }
 
