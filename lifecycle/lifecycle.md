@@ -351,39 +351,72 @@ last action and end the turn. A continuation writes no failure-log line.
 
    This governs every Ensemble command block below — the main review, fix
    waves, brief review and brief fix. Each block names its result JSON; redirect
-   diagnostics to the same basename with `.log` instead of `.json`, then submit
-   the complete command as one background Bash task. Record its task ID.
+   diagnostics to the same basename with `.log` instead of `.json`, and wrap
+   the whole invocation in the completion-flag wrapper so a flag file appears,
+   complete, only after the workflow command exits:
 
-   Then wait by yielding, never by sleeping. Arm the fallback timer described
-   below, then **end the turn with no further tool call**. The harness resumes
-   this session the moment the background task exits — the completion
-   notification is the primary watcher on process exit, and an idle session
-   receives it within seconds. A lead that runs `sleep` instead defeats that
-   mechanism: sleeping holds the turn open, an open turn cannot receive the
-   notification, and the work sits finished and unread until the sleep
-   expires. A seven-second build behind a seven-minute sleep wastes seven
-   minutes; a yielded lead reads the same result at once. `sleep` has no role
-   in waiting for a background task, whatever duration seems safe.
+   ```sh
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+     "${MINOS_SETUP_WORKSPACE%/*}/flag-on-exit" "$MINOS_RUN_DIR/NAME.done" \
+     sh -c 'node /opt/minos/runtime/ensemble.mjs ... > RESULT.json 2> RESULT.log'
+   ```
 
-   The fallback that bounds the wait is a session-only recurring `CronCreate`
-   timer, armed before ending the turn, with an interval of 1200 seconds or
-   more and a prompt naming the task to re-check. Cron jobs fire only while
-   the session is idle — which is exactly the state a yielded lead is in, so
-   the timer works here. It exists only to bound the silence if the completion
-   notification never arrives; a shorter interval polls for work the harness
-   already reports and costs a full context re-read each time. When it fires
-   first, confirm the task's state. A task still running needs nothing more:
-   end the turn again, and the recurring timer stays armed without further
-   action. A task that has already exited means the notification was lost —
-   treat the wake exactly as you would that notification: cancel the timer
-   with `CronDelete` and proceed to the result, never end the turn with a
-   finished task unread. Keep the interval comfortably below
+   Name each flag after its result file (`review-result.done` beside
+   `review-result.json`). The flag is the only completion signal a watcher
+   may arm on: the result file itself is created empty by redirection at
+   launch and written iteratively, so its existence, size and mtime all lie
+   about completion; the wrapper's create-after-exit rename is atomic and
+   cannot be observed early. Submit the complete wrapped command as one
+   background Bash task and record its task ID.
+
+   Then wait by yielding, never by sleeping. Arm two watchers described
+   below, then **end the turn with no further tool call**. The harness
+   resumes this session the moment the background task exits — that
+   completion notification is one wake signal — and the armed flag watcher
+   is the other, firing within a second of the flag appearing even when the
+   task notification is delayed or lost. A lead that runs `sleep` instead
+   defeats both: sleeping holds the turn open, an open turn cannot receive
+   either notification, and the work sits finished and unread until the
+   sleep expires. A seven-second build behind a seven-minute sleep wastes
+   seven minutes; a yielded lead reads the same result at once. `sleep` has
+   no role in waiting for a background task, whatever duration seems safe.
+
+   **The flag watcher is the primary wake on completion.** Before ending the
+   turn, arm one additional background Bash task that exits when the flag
+   exists:
+
+   ```sh
+   until [ -e "$MINOS_RUN_DIR/NAME.done" ]; do sleep 1; done
+   ```
+
+   Its completion notification arrives moments after the workflow command
+   exits, whatever became of the workflow task's own notification. Whichever
+   notification arrives first, confirm the workflow process has exited, then
+   proceed to the result; the other notification and the timer below are
+   then spent — cancel the timer with `CronDelete` and carry on.
+
+   **The recurring `CronCreate` timer is hang detection only, never the
+   expected wake.** Arm it before ending the turn with an interval of 1200
+   seconds or more and a prompt naming the task to re-check. Cron jobs fire
+   only while the session is idle — exactly the state a yielded lead is in.
+   With the flag watcher armed, a timer wake means something is wrong or
+   slow, so it never polls blind: read the Ensemble status snapshot the
+   launcher maintains at `$MINOS_RUN_DIR/ensemble.local.json` (the
+   `ENSEMBLE_STATUS_DIR` set on the wrapped command puts it there) —
+   its agent states and heartbeat say whether the workflow is still moving,
+   stalled, or gone — and check the flag. A workflow still progressing needs
+   nothing more: end the turn again, and the recurring timer stays armed. A
+   flag already present means both notifications were lost — proceed to the
+   result exactly as if one had arrived, never ending the turn with a
+   finished task unread. A stale heartbeat with no flag is a hung or reaped
+   workflow: treat it as the infrastructure failure it is rather than
+   waiting out the silence. Keep the interval comfortably below
    `MINOS_LEAD_SILENCE_TIMEOUT` (3600 seconds by default): the supervisor
    treats a lead with no observed turn activity for that long as ended, so a
    fallback at or beyond it would let a live waiting lead be stopped. If that
    configured timeout is ever low enough to conflict with the 1200-second
    floor, the ceiling wins — arm the timer at roughly half the timeout
-   instead. When the completion notification arrives, cancel the timer with
+   instead. When a completion notification arrives, cancel the timer with
    `CronDelete`.
 
    Do not call `ScheduleWakeup` in this lifecycle. The tool is visible in this
