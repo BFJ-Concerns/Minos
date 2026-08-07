@@ -112,9 +112,9 @@ common_dir="$(git -C "$MINOS_WORKSPACE" rev-parse --path-format=absolute --git-c
 mkdir -p "$common_dir/hooks"
 printf 'refs/heads/%s\n' "$MINOS_HEAD_BRANCH" >"$common_dir/minos-protected-ref"
 chmod 0600 "$common_dir/minos-protected-ref"
-# This hook binds every checkout sharing the common Git directory. It refuses
-# recorded reconciliation ancestry and requires a controlled-publisher permit
-# for the pull-request branch. A separate clone inherits neither protection.
+# This hook binds every checkout sharing the common Git directory and requires
+# a controlled-publisher permit for the pull-request branch. A separate clone
+# inherits neither protection.
 install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
 
 git -C "$MINOS_WORKSPACE" fetch --no-tags "$target_repository_url" \
@@ -184,31 +184,17 @@ case "$response_status" in
     ;;
 esac
 
-publication_path=""
-if [ "$has_publication" = true ]; then
-  publication_path="${MINOS_RUN_DIR}/publication"
-  if [ "$resume" = true ]; then
-    if [ ! -d "$publication_path" ]; then
-      echo "setup-workspace: preserved publication worktree is missing: $publication_path" >&2
-      exit 1
-    fi
-    git -C "$publication_path" checkout -B "$MINOS_HEAD_BRANCH" "$MINOS_HEAD_SHA"
-  else
-    git -C "$MINOS_WORKSPACE" worktree add -B "$MINOS_HEAD_BRANCH" \
-      "$publication_path" "$MINOS_HEAD_SHA"
-  fi
-fi
-
 jq -n \
   --argjson fork "$is_fork" \
+  --argjson publish "$has_publication" \
   --arg target "$MINOS_TARGET_SHA" \
   --arg target_branch "$MINOS_BASE_REF" \
   --arg target_repository_url "$target_repository_url" \
   --arg base_head "$MINOS_HEAD_SHA" \
-  --arg publication "$publication_path" \
   '{
     outcome:"unnecessary",
     fork:$fork,
+    publish:$publish,
     target:$target,
     targetBranch:$target_branch,
     targetRepositoryUrl:$target_repository_url,
@@ -216,8 +202,7 @@ jq -n \
     merge:null,
     conflicts:[],
     preimageDir:null,
-    autoMergeTree:null,
-    publication:(if $publication == "" then null else $publication end)
+    autoMergeTree:null
   }' >"${MINOS_RUN_DIR}/reconciliation.json"
 
 "$script_dir/reconcile-target" "$MINOS_WORKSPACE" "$MINOS_HEAD_SHA"
