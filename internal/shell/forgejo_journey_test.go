@@ -487,6 +487,63 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 	})
 }
 
+func TestForgejoSweepMeasuresPullRequestSnapshotReadsPerPass(t *testing.T) {
+	tests := []struct {
+		name         string
+		dependencies []map[string]any
+		wantStarted  bool
+	}{
+		{name: "started", dependencies: []map[string]any{}, wantStarted: true},
+		{name: "deferred", dependencies: []map[string]any{{
+			"number": 7, "state": "open",
+			"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+		}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			state.setDependencies(test.dependencies)
+			cfg, _, _ := state.service(t)
+			writeServiceConfig(t, cfg)
+			if err := os.MkdirAll(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			repoConfig := `forge = "forgejo"
+owner = "minos-e2e-owner"
+repo = "subject"
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`
+			if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var commands []string
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				commands = append(commands, name)
+				return nil, nil
+			}
+
+			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			// Two reads are observed today; one is the post-fold target. Keep the
+			// decision assertions below independent so either count tells the truth.
+			got := state.pullRequestSnapshotReads("1")
+			t.Logf("pull request 1 snapshot reads this pass = %d", got)
+			if got != 1 && got != 2 {
+				t.Fatalf("pull request 1 snapshot reads this pass = %d, want one or two", got)
+			}
+			started := slices.Contains(commands, "systemd-run")
+			if started != test.wantStarted {
+				t.Fatalf("systemd-run called = %t, want %t; commands = %v", started, test.wantStarted, commands)
+			}
+		})
+	}
+}
+
 func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, _ := state.service(t)
@@ -561,6 +618,53 @@ func TestForgeReactionUsesForgejo14ShapeAndReadBackIdempotency(t *testing.T) {
 	}
 	if state.reviewWrites != 0 {
 		t.Fatalf("reaction journey posted %d reviews, want none", state.reviewWrites)
+	}
+}
+
+func TestForgeStatusReadBackIsScopedToPullRequest(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		includeOwned bool
+		wantPosts    int
+	}{
+		{name: "newer foreign status does not duplicate an owned status", includeOwned: true, wantPosts: 0},
+		{name: "foreign status does not hide genuine absence", wantPosts: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, _, facts := state.service(t)
+			writeServiceConfig(t, cfg)
+			t.Setenv("MINOS_CONFIG", cfg.Root)
+			t.Setenv("MINOS_FORGE", facts.Forge)
+			t.Setenv("MINOS_OWNER", facts.Owner)
+			t.Setenv("MINOS_REPO_NAME", facts.Repo)
+			t.Setenv("MINOS_PR", facts.PR)
+
+			head, target := state.headSHA(), state.targetSHA()
+			statuses := []map[string]any{{
+				"id": 8, "context": "Minos", "status": "pending", "description": product.Working().Description(),
+				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2#minos-target-" + target,
+				"creator":    map[string]any{"login": "Minos"},
+			}}
+			if test.includeOwned {
+				statuses = append(statuses, map[string]any{
+					"id": 7, "context": "Minos", "status": "pending", "description": product.Working().Description(),
+					"target_url": statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+						Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
+					}),
+					"creator": map[string]any{"login": "Minos"},
+				})
+			}
+			state.setStatuses(statuses)
+
+			var stdout strings.Builder
+			if err := ForgeCommand(t.Context(), []string{"status", head, target, "working"}, &stdout); err != nil {
+				t.Fatalf("status write: %v\n%s", err, stdout.String())
+			}
+			if posts := state.statusPostFacts(); len(posts) != test.wantPosts {
+				t.Fatalf("forge received %d status posts, want %d: %#v", len(posts), test.wantPosts, posts)
+			}
+		})
 	}
 }
 
@@ -1161,6 +1265,7 @@ type forgejoFixtureState struct {
 	diffNewSide              map[string][][2]int64
 	positionRewrites         map[string]map[int64]int64
 	statusReadCommits        []string
+	pullRequestReads         map[string]int
 	writeSequence            []string
 	virtualRefLookups        int
 	annexeCloneURL           string
@@ -1193,7 +1298,8 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any),
 		diffNewSide: make(map[string][][2]int64), positionRewrites: make(map[string]map[int64]int64),
 		actionJobs: make(map[int64][]map[string]any), actionLogs: make(map[int64]string),
-		dependencies: []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
+		pullRequestReads: make(map[string]int),
+		dependencies:     []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
 	}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
@@ -1323,6 +1429,12 @@ func (s *forgejoFixtureState) statusReadFacts() []string {
 	return append([]string(nil), s.statusReadCommits...)
 }
 
+func (s *forgejoFixtureState) pullRequestSnapshotReads(pullRequest string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pullRequestReads[pullRequest]
+}
+
 func (s *forgejoFixtureState) statusWriteFacts() (int, any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1367,7 +1479,10 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.annexeCloneURL})
+	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls":
+		writeFixtureJSON(s.t, w, []map[string]any{s.pullRequest})
 	case r.Method == http.MethodGet && path == pullPath:
+		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		writeFixtureJSON(s.t, w, s.pullRequest)
 	case r.Method == http.MethodGet && path == issuePath+"/dependencies":
 		if s.dependencyCode != http.StatusOK {
