@@ -14,8 +14,7 @@ func TestReadAndRenderFixReview(t *testing.T) {
     {"body":"First repair.","line":73,"path":"src/first.rs"},
     {"path":"src/second.rs","line":9,"body":"Second repair."}
   ],
-  "body": "Implemented repairs.\n",
-  "verdict": "comment"
+  "body": "Implemented repairs.\n"
 }`
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)

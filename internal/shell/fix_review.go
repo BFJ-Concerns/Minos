@@ -9,7 +9,6 @@ import (
 )
 
 type fixReview struct {
-	Verdict  string                   `json:"verdict"`
 	Body     string                   `json:"body"`
 	Comments []requestedReviewComment `json:"comments"`
 }
