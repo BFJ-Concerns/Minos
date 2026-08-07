@@ -631,7 +631,7 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
-  await t.test("fix dispatch runs from the recorded publication worktree", async () => {
+  await t.test("fix dispatch runs from the reconciled workspace", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "minos-publication-cwd-"));
     const publication = join(runDir, "publication");
     writeFileSync(
@@ -671,10 +671,10 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       diagnostics: () => {},
     });
     assert.equal(result.status, "complete");
-    assert.equal(dispatchedFrom, publication);
+    assert.equal(dispatchedFrom, "/run/workspace");
   });
 
-  await t.test("a missing reconciliation record after publication returns a structured failure", async () => {
+  await t.test("fix dispatch does not depend on a reconciliation workspace record", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "minos-publication-missing-cwd-"));
     const events = [];
     let dispatchCalls = 0;
@@ -692,19 +692,27 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
         stdout: '{"outcome":"applied"}\n',
         stderr: "",
       }),
-      runDispatch: async () => {
-        dispatchCalls += 1;
-        throw new Error("must not dispatch");
+      runDispatch: async ({ cwd }) => {
+		dispatchCalls += 1;
+		assert.equal(cwd, "/run/workspace");
+		return {
+		  code: 0,
+		  signal: null,
+		  stdout: `${JSON.stringify({
+			status: "complete",
+			classification: "working",
+			integration: { commits: [], pushCount: 0 },
+		  })}\n`,
+		  stderr: "",
+		};
       },
       onEvent: (event) => events.push(event),
       diagnostics: () => {},
     });
-    assert.equal(result.status, "incomplete");
+    assert.equal(result.status, "complete");
     assert.equal(result.publication.outcome, "applied");
-    assert.match(result.reason, /fix dispatch workspace resolution failed/);
-    assert.match(result.reason, /reconciliation\.json/);
-    assert.equal(dispatchCalls, 0);
-    assert.equal(events.filter((event) => event.startsWith("fix-dispatch-started:")).length, 0);
+    assert.equal(dispatchCalls, 1);
+    assert.equal(events.filter((event) => event.startsWith("fix-dispatch-started:")).length, 1);
   });
 
   await t.test("terminal preparation refuses publication and dispatch", async () => {
