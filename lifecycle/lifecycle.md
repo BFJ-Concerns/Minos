@@ -847,7 +847,16 @@ last action and end the turn. A continuation writes no failure-log line.
    command, or the fresh evidence of the check that triggered the dispatch —
    with the failure this repair was dispatched against, judging same-failure
    and appending each comparison's one-sentence basis exactly as step 3
-   directs. Progress earns another helper dispatch on the fresh evidence; a
+   directs. A re-dispatch carries the evidence its own failure produced,
+   and the two shapes are distinct: a configured command that went red
+   during this repair's verification is a local failure, so build its input
+   with `--command`, `--exit-status` and the matching captured
+   `build-command-output.log` or `test-command-output.log`, exactly as
+   step 3's dispatch does; a required check red on the forge carries a
+   fresh `check-logs.json` retrieved for the exact current head and target.
+   Never hand a helper stale forge evidence for a failure that happened
+   locally, or the reverse — `rootcause-inputs.mjs` executes either shape
+   unchanged. Progress earns another helper dispatch on the fresh evidence; a
    repair that leaves the same check or command failing the same way is a
    stall and ends the run as **attention** with step 3's honest
    request-changes report — an assessed unsuccessful repair, not an
@@ -869,7 +878,20 @@ last action and end the turn. A continuation writes no failure-log line.
    merge: remove 👀, write the clean terminal marker, and stop. If it is `true`,
    keep using the watcher until the trusted snapshot has `check_decision`
    `pass`, reports both `mergeable` and `can_merge`, and still names the
-   verified finishing head and target. Select one of its
+   verified finishing head and target. A snapshot whose `failed_checks`
+   turns non-empty while waiting here — a required check going red again on
+   the verified head, including one red for the first time after a verified
+   repair — is not a merge-readiness wait: re-enter step 8's root-cause
+   helper on that fresh evidence. Retrieve a fresh `check-logs.json` for
+   the exact current head and target and dispatch exactly as step 8
+   directs, under the same progress bound — the comparison failure is the
+   one this dispatch answers, with its basis appended to
+   `$MINOS_RUN_DIR/gate-repair-ladder.log` as step 3 directs, and a repair
+   that leaves the same check failing the same way is a stall that ends
+   the run as **attention** with the honest request-changes report. A
+   verified repair from that re-entry returns here through step 8's
+   ordinary continuation on its fresh head; this loop has no counted
+   ceiling, the run unit's hard timeout being the failsafe. Select one of its
    `allowed_merge_methods` and call `"$MINOS_BIN" forge merge HEAD TARGET
    METHOD`. The guarded merge binds the exact head and is idempotent. Then set
    `merged`. For a non-empty, unprotected source branch whose `head_repository`

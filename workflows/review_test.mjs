@@ -795,4 +795,20 @@ test("a verified finishing repair merges in the same attempt", () => {
     finishing,
     /helper returns no commit and no pushed head appears[\s\S]*made\s+no mutation[\s\S]*stall on\s+the red-check path[\s\S]*end as attention[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
   );
+  assert.match(
+    finishing,
+    /re-dispatch carries the evidence its own failure produced[\s\S]*local failure[\s\S]*`--command`, `--exit-status`[\s\S]*captured[\s\S]*`build-command-output\.log` or `test-command-output\.log`[\s\S]*required check red on the forge carries a\s+fresh `check-logs\.json`[\s\S]*exact current head and target[\s\S]*Never hand a helper stale forge evidence[\s\S]*`rootcause-inputs\.mjs` executes either shape\s+unchanged/,
+  );
+});
+
+test("a check going red at step 9 re-enters the finishing repair under the progress bound", () => {
+  const merging = lifecycle.slice(lifecycle.indexOf("9. If"));
+  assert.match(
+    merging,
+    /`failed_checks`\s+turns non-empty while waiting here[\s\S]*not a merge-readiness wait[\s\S]*re-enter step 8's root-cause\s+helper on that fresh evidence[\s\S]*fresh `check-logs\.json` for\s+the exact current head and target[\s\S]*same progress bound[\s\S]*gate-repair-ladder\.log[\s\S]*same check failing the same way is a stall[\s\S]*\*\*attention\*\*[\s\S]*honest request-changes report/,
+  );
+  assert.match(
+    merging,
+    /verified repair from that re-entry returns here through step 8's\s+ordinary continuation on its fresh head[\s\S]*no counted\s+ceiling[\s\S]*hard timeout being the failsafe/,
+  );
 });
