@@ -62,6 +62,14 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
   assert.match(calls[0].prompt, /FAIL integration test/);
   assert.match(calls[0].prompt, /reconciled target[\s\S]*fix only what you prove/);
   assert.match(calls[0].prompt, /configured Minos identity[\s\S]*Never push/);
+  assert.match(
+    calls[0].prompt,
+    /Delivery geometry[\s\S]*delivered by pushing to the pull-request branch[\s\S]*files it must change exist on the branch[\s\S]*solely on the target side[\s\S]*cannot be delivered through this pull request[\s\S]*empty commit[\s\S]*never that the file does not exist[\s\S]*Do not author an undeliverable fix/,
+  );
+  assert.match(
+    calls[0].prompt,
+    /retargeting or removing a test expectation[\s\S]*name the superseding commit[\s\S]*coverage was reduced/,
+  );
 });
 
 test("finishing evidence needs no invented command and permits an empty commit", async () => {

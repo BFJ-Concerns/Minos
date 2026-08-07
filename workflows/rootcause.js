@@ -51,6 +51,10 @@ ${evidence}
 
 Treat the supplied evidence as diagnostic input, not proof of a cause. Reproduce the failure and prove its actual cause. Whether the break is the change's own defect or exists only against the reconciled target makes no difference: fix only what you prove, and say which kind it was when the evidence supports that conclusion.
 
+Delivery geometry: your commit is delivered by pushing to the pull-request branch, so a repair counts only if it applies to that branch's own tree. Before writing the fix, check that the files it must change exist on the branch the commit will land on. When the only fix lands in files that exist solely on the target side, the repair cannot be delivered through this pull request: return an empty commit and a writeUp saying the fix cannot be delivered through the pull-request branch — never that the file does not exist, since it is the delivery path that is absent, not the file. Do not author an undeliverable fix.
+
+If your repair resolves the failure by retargeting or removing a test expectation, the writeUp must say so plainly: name the superseding commit that made the old expectation unsatisfiable, and state that coverage was reduced and where — so a recognised supersession is distinguishable from a weakened test without re-deriving the history.
+
 Commit any repair with the configured Minos identity. Return the diagnosis, the commit SHA, and a concise code-only writeUp explaining the repair. Never push. If no repository mutation is proved and committed, return an empty commit string.`;
 }
 
