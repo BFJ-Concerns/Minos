@@ -46,11 +46,12 @@ type ForgeConfig struct {
 }
 
 type RepoConfig struct {
-	Path       string `toml:"-"`
-	Forge      string `toml:"forge"`
-	Owner      string `toml:"owner"`
-	Repo       string `toml:"repo"`
-	Adaptation struct {
+	Path                         string   `toml:"-"`
+	Forge                        string   `toml:"forge"`
+	Owner                        string   `toml:"owner"`
+	Repo                         string   `toml:"repo"`
+	WorkInProgressBranchPrefixes []string `toml:"work-in-progress-branch-prefixes"`
+	Adaptation                   struct {
 		Build   string `toml:"build"`
 		Test    string `toml:"test"`
 		RunBody string `toml:"run-body"`
@@ -114,6 +115,11 @@ func LoadRepoConfigs(root string) ([]RepoConfig, error) {
 		}
 		if repo.Review.MaximumRounds < 0 {
 			return nil, fmt.Errorf("%s: review.maximum-rounds cannot be negative", path)
+		}
+		for _, prefix := range repo.WorkInProgressBranchPrefixes {
+			if prefix == "" {
+				return nil, fmt.Errorf("%s: work-in-progress-branch-prefixes cannot contain an empty prefix", path)
+			}
 		}
 		repos = append(repos, repo)
 	}

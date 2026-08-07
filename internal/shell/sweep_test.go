@@ -22,6 +22,7 @@ func TestSweepDecisionMessage(t *testing.T) {
 	}{
 		{name: "started", result: ReconcileResult{Decision: SpawnStarted}, want: "started owner/repository#12"},
 		{name: "deferred", result: ReconcileResult{Decision: "deferred: open dependencies: owner/prerequisite#7"}, want: "owner/repository#12: deferred: open dependencies: owner/prerequisite#7"},
+		{name: "work in progress", result: ReconcileResult{Decision: `deferred: work-in-progress branch "structural/rework"`}, want: `owner/repository#12: deferred: work-in-progress branch "structural/rework"`},
 		{name: "suppressed", result: ReconcileResult{Decision: SpawnSuppressed, BlockingUnit: "minos-run-other-repo-pr9.service"}, want: "owner/repository#12: suppressed by active unit minos-run-other-repo-pr9.service"},
 		{name: "continued", result: ReconcileResult{Decision: SpawnContinued}, want: "owner/repository#12: continued previous run"},
 		{name: "recovered", result: ReconcileResult{Decision: ReconcileRecovered}, want: "owner/repository#12: recovered terminal Minos status"},
