@@ -815,12 +815,16 @@ last action and end the turn. A continuation writes no failure-log line.
    conflict, resolve only the merge or rebase conflict in the lead workspace,
    complete that Git operation, then run the same script again so it performs
    the guarded push. This is target reconciliation, not a new implementation:
-   do not dispatch another review. After a sync, take a fresh snapshot, require
-   its head to equal the script's pushed head and its target to remain the
+   do not dispatch another review. After a sync, take a fresh snapshot. For a
+   mainline pull request, require its head to equal the script's pushed head;
+   for a fork or AGit pull request, treat the script's `local-only` outcome as
+   success and require the snapshot head to remain the fetched head because no
+   pushed head exists. In both cases require the snapshot target to remain the
    fetched target, then run the exact configured build and test commands to
-   completion when each is non-empty. A failed sync, build, or test is an
-   incomplete terminal outcome: set `incomplete`, remove 👀, write the
-   non-clean terminal marker, and stop.
+   completion when each is non-empty. Fork and AGit reconciliation remains in
+   the lead workspace and nothing downstream pushes it. A failed sync, build,
+   or test is an incomplete terminal outcome: set `incomplete`, remove 👀,
+   write the non-clean terminal marker, and stop.
 
    Required checks, labels and merge readiness all come from that same trusted
    snapshot. When waiting for checks or forge readiness, write the complete

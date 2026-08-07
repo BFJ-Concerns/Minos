@@ -775,6 +775,10 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
+    /mainline pull request[\s\S]*script's pushed head[\s\S]*fork or AGit pull request[\s\S]*`local-only` outcome as\s+success[\s\S]*snapshot head to remain the fetched head[\s\S]*no\s+pushed head exists[\s\S]*exact configured build and test commands[\s\S]*nothing downstream pushes it/,
+  );
+  assert.match(
+    finishing,
     /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Invoke the same shipped `rootcause\.js`/,
   );
   assert.match(
