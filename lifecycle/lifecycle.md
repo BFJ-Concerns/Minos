@@ -250,7 +250,9 @@ last action and end the turn. A continuation writes no failure-log line.
    pushes. Whether the break is the change's own defect or exists only against
    the reconciled target makes no difference to the dispatch: the repair
    proves the actual cause either way, and its write-up may say which kind it
-   was.
+   was. Launch it from `$MINOS_WORKSPACE` — the workflow's worktree isolation
+   branches from the invoking directory's repository, so a launch from the
+   run directory has no repository to branch.
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \
@@ -349,8 +351,9 @@ last action and end the turn. A continuation writes no failure-log line.
    not relax any ordering or publication precondition elsewhere in this
    lifecycle.
 
-   This governs every Ensemble command block below — the main review, fix
-   waves, brief review and brief fix. Each block names its result JSON; redirect
+   This governs every Ensemble workflow invocation in this lifecycle —
+   setup and the gate repair above as much as the main review, fix waves,
+   brief review, brief fix and finishing repair below. Each block names its result JSON; redirect
    diagnostics to the same basename with `.log` instead of `.json`, and wrap
    the whole invocation in the completion-flag wrapper so a flag file appears,
    complete, only after the workflow command exits:
@@ -403,12 +406,15 @@ last action and end the turn. A continuation writes no failure-log line.
    slow, so it never polls blind: read the Ensemble status snapshot the
    launcher maintains at `$MINOS_RUN_DIR/ensemble.local.json` (the
    `ENSEMBLE_STATUS_DIR` set on the wrapped command puts it there) —
-   its agent states and heartbeat say whether the workflow is still moving,
-   stalled, or gone — and check the flag. A workflow still progressing needs
+   its per-agent states and its `updatedAt` timestamp, which the launcher
+   refreshes every few seconds while alive, say whether the workflow is
+   still moving, stalled, or gone — and check the flag. A workflow still
+   progressing needs
    nothing more: end the turn again, and the recurring timer stays armed. A
    flag already present means both notifications were lost — proceed to the
    result exactly as if one had arrived, never ending the turn with a
-   finished task unread. A stale heartbeat with no flag is a hung or reaped
+   finished task unread. An `updatedAt` minutes old with no flag is a hung
+   or reaped
    workflow: treat it as the infrastructure failure it is rather than
    waiting out the silence. Keep the interval comfortably below
    `MINOS_LEAD_SILENCE_TIMEOUT` (3600 seconds by default): the supervisor
@@ -828,7 +834,9 @@ last action and end the turn. A continuation writes no failure-log line.
      > "$MINOS_RUN_DIR/check-logs.json"
    ```
 
-   Invoke the same shipped `rootcause.js` workflow in the foreground, giving
+   Invoke the same shipped `rootcause.js` workflow — as a background task
+   under step 4's workflow discipline, like every other Ensemble
+   invocation — giving
    its input builder the vendored root-cause skill path and the absolute path
    of `check-logs.json`. This finishing path uses forge check evidence rather
    than step 3's configured-command output files. The workflow uses the same
@@ -840,7 +848,8 @@ last action and end the turn. A continuation writes no failure-log line.
    input rather than proof and still reproduces and proves its diagnosis. An
    empty `runs` array means there is no Actions-backed log evidence; do not
    invent any. An empty `commit` means the isolated helper made no mutation to
-   integrate.
+   integrate. Launch it from `$MINOS_WORKSPACE`, as step 3 directs for the
+   same workflow.
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \

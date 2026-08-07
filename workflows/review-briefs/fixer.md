@@ -5,9 +5,13 @@
 ## Delivery geometry
 
 Every commit you make is delivered by pushing to the pull-request branch, so
-a repair counts only if it applies to that branch's own tree. Before writing
-any fix, check that the files it must change exist on the branch you are
-committing to. A defect whose only fix lands in files that exist solely on
+a repair counts only if it applies to that branch's own tree. Your working
+tree may be a reconciliation merge of the pull-request head with its target,
+so a file being present in the working tree does not prove it is
+deliverable: before writing any fix, check the pull-request side of the
+history — `git log`/`git ls-tree` on the head being reviewed, not the
+working tree — for the files the fix must change. A defect whose only fix
+lands in files that exist solely on
 the target side — files the pull-request branch does not carry — cannot be
 delivered through this pull request: report that finding as failed with the
 reason that the fix cannot be delivered through the pull-request branch. Do
