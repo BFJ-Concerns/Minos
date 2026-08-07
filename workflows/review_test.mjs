@@ -778,7 +778,8 @@ test("a verified finishing repair merges in the same attempt", () => {
     /same shipped `rootcause\.js`[\s\S]*forge check evidence rather[\s\S]*configured-command output files[\s\S]*--evidence "\$MINOS_RUN_DIR\/check-logs\.json"[\s\S]*rootcause-result\.json/,
   );
   assert.doesNotMatch(finishing, /say so in the helper prompt/);
-  assert.match(finishing, /foreground[\s\S]*empty `runs` array[\s\S]*do not\s+invent/);
+  assert.match(finishing, /background task\s+under step 4's workflow discipline[\s\S]*empty `runs` array[\s\S]*do not\s+invent/);
+  assert.doesNotMatch(finishing, /in the foreground/);
   assert.match(
     finishing,
     /helper's `writeUp`[\s\S]*post[\s\S]*one `comment` review/,
