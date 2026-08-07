@@ -176,7 +176,7 @@ test("the publication executable carries the finding through forge confirmation 
     `@${calls[1].planPath}`,
   ]);
   assert.equal(calls[1].args[3], join(workflowsDir, "fix.js"));
-  assert.equal(calls[1].cwd, publication);
+  assert.equal(calls[1].cwd, "/run/workspace");
   assert.match(JSON.stringify(calls[1].plan), new RegExp(SENTINEL));
   assert.equal(
     [calls[0].bodyPath, calls[0].commentsPath, calls[1].planPath].every((path) => !existsSync(path)),
