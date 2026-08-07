@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: publish-on-exit RESULT_FILE COMMAND [ARG...]" >&2
+  exit 2
+fi
+
+result="$1"
+shift
+rm -f "$result" "${result}.partial"
+
+# The command's stdout accumulates beside the result, never at it, and is
+# renamed into place only when the command exits cleanly. A reader who
+# finds the result file therefore finds it whole and successful; a killed
+# or failed command leaves no result file — absence means "no verdict
+# yet", which a supervisor can tell apart from a verdict that is empty.
+# A failure's partial stdout stays in RESULT_FILE.partial for diagnosis.
+status=0
+"$@" >"${result}.partial" || status=$?
+
+if [ "$status" -eq 0 ]; then
+  mv "${result}.partial" "$result"
+fi
+exit "$status"
