@@ -687,18 +687,18 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
         stderr: "",
       }),
       runDispatch: async ({ cwd }) => {
-		dispatchCalls += 1;
-		assert.equal(cwd, "/run/workspace");
-		return {
-		  code: 0,
-		  signal: null,
-		  stdout: `${JSON.stringify({
-			status: "complete",
-			classification: "working",
-			integration: { commits: [], pushCount: 0 },
-		  })}\n`,
-		  stderr: "",
-		};
+        dispatchCalls += 1;
+        assert.equal(cwd, "/run/workspace");
+        return {
+          code: 0,
+          signal: null,
+          stdout: `${JSON.stringify({
+            status: "complete",
+            classification: "working",
+            integration: { commits: [], pushCount: 0 },
+          })}\n`,
+          stderr: "",
+        };
       },
       onEvent: (event) => events.push(event),
       diagnostics: () => {},
