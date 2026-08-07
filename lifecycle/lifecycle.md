@@ -214,11 +214,15 @@ last action and end the turn. A continuation writes no failure-log line.
    When `$MINOS_BUILD_CMD` is
    non-empty, run that exact command string exactly as configured — never a
    repository-native guess or substitute of your own — to completion before any
-   review starts; when it is empty, no build command is configured, so skip it
-   rather than inventing one. When `$MINOS_TEST_CMD` is non-empty, run that exact
-   command string exactly as configured — never a repository-native guess or
-   substitute of your own — to completion before any review starts; when it is
-   empty, no test command is configured, so skip it rather than inventing one.
+   review starts. Capture its complete combined output in the absolute path
+   `$MINOS_RUN_DIR/build-command-output.log` without changing the configured
+   command, and preserve the configured command's exit status. Overwrite that
+   file on every execution so it records the current result. When the build
+   command is empty, no build command is configured, so skip it rather than
+   inventing one. When `$MINOS_TEST_CMD` is non-empty, apply the same rules and
+   capture its complete combined output in
+   `$MINOS_RUN_DIR/test-command-output.log`; when it is empty, no test command is
+   configured, so skip it rather than inventing one.
    For each command, run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`,
    passing the configured string and its exit status. Read the CLI's one-line
@@ -236,22 +240,32 @@ last action and end the turn. A continuation writes no failure-log line.
    whose `head_repository` differs from `target_repository` — skip the
    repair dispatch entirely: Minos cannot push to the source branch, so end
    the run with the honest request-changes outcome described below. Otherwise
-   write `rootcause.js` as a bare Ensemble workflow that dispatches one agent
-   with the vendored root-cause skill on `codex` / `gpt-5.6-sol`, using
-   `effort: "high"` and `isolation: "worktree"`. Give the agent a schema that
-   returns its diagnosis, a `commit` string and a concise code-only `writeUp`
-   explaining what it repaired. Direct it to read and follow
-   `$MINOS_ROOT_CAUSE_SKILL/SKILL.md`, diagnose the failing command's
-   recorded output — hand it the exact command string, exit status, and the
-   failure's captured output — fix only what it proves, commit a repair with
-   the configured Minos identity, return that commit and write-up, and never
-   push. Whether the break is the change's own defect or exists only against
+   Invoke the shipped `rootcause.js` workflow. Give its input builder the
+   vendored root-cause skill path, the exact failing command string and exit
+   status, and the matching absolute `build-command-output.log` or
+   `test-command-output.log` path containing the failure's captured output. The
+   workflow dispatches one repair agent on `codex` / `gpt-5.6-sol` with
+   `effort: "high"` and `isolation: "worktree"`; it follows the skill, fixes
+   only what it proves, commits with the configured Minos identity, and never
+   pushes. Whether the break is the change's own defect or exists only against
    the reconciled target makes no difference to the dispatch: the repair
-   proves the actual cause either way, and its write-up may say which kind
-   it was. Invoke the workflow through the bare Ensemble launcher as a
-   background task and wait exactly as step 4 directs, saving its result as
-   `"$MINOS_RUN_DIR/gate-repair-result.json"` (diagnostics to the same
-   basename with `.log`).
+   proves the actual cause either way, and its write-up may say which kind it
+   was.
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \
+     --skill "$MINOS_ROOT_CAUSE_SKILL" \
+     --command FAILING_COMMAND --exit-status EXIT_STATUS \
+     --evidence CAPTURED_OUTPUT_FILE \
+     > "$MINOS_RUN_DIR/gate-repair-args.json"
+   node /opt/minos/runtime/ensemble.mjs \
+     --json-args @"$MINOS_RUN_DIR/gate-repair-args.json" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
+     > "$MINOS_RUN_DIR/gate-repair-result.json" \
+     2> "$MINOS_RUN_DIR/gate-repair-result.log"
+   ```
+
+   Run it as a background task and wait exactly as step 4 directs.
 
    When the repair returns a non-empty commit, write that one commit as a
    JSON array and integrate it through
@@ -263,7 +277,10 @@ last action and end the turn. A continuation writes no failure-log line.
    carries, comments omitted) and post it as one durable pull-request
    comment with `"$MINOS_BIN" forge comment CURRENT_HEAD TARGET FILE` —
    off the findings channel. Then run the exact configured
-   commands again and read the completion policy for each as above. A repair
+   commands again, capturing their complete combined output in the matching
+   absolute `build-command-output.log` or `test-command-output.log`, preserving
+   each command's exit status, and overwriting its output file on every
+   execution. Read the completion policy for each command. A repair
    push moves the head: from here on, the fresh snapshot's current head is
    the head — use it in place of `$MINOS_HEAD_SHA` for every later command,
    including step 4's review input and any carried-result validation, which
@@ -279,12 +296,29 @@ last action and end the turn. A continuation writes no failure-log line.
    action, the fresh whole review on the repaired head. Entered from
    step 7 — after both review stages — the re-run build and tests are the
    repair's whole verification, exactly as they are for the brief wave's
-   own fixes; no review loop reopens. An empty `commit` means the
-   isolated agent made no mutation; there is nothing to re-run the gate
-   against, so that dispatch counts as a failed attempt.
+   own fixes; no review loop reopens.
 
-   A `failed` status after the first repair permits exactly one more repair
-   dispatch. When two repair attempts have failed — or the dispatch was
+   The repair ladder is bounded by progress, not a count. After each
+   integrated repair, compare the re-run gate's result with the red result
+   that repair was dispatched against — the failure immediately before it,
+   never the one that first entered the discipline: a repair that changes
+   that failing gate's outcome — a different failing command, a different
+   failure, or a green gate — is progress and earns another repair
+   dispatch, built from the fresh failure's captured output; a repair that
+   leaves the same command failing the same way is a stall and ends the run
+   below. Whether two red results are the same failure is your judgement —
+   weigh what each failure actually is, never a string comparison of gate
+   output: output differing only in line numbers, ordering, or timing can
+   carry the same failure, and the same command can fail for a genuinely
+   new reason. Before acting on each comparison, append its basis as one
+   sentence to `$MINOS_RUN_DIR/gate-repair-ladder.log`. An empty `commit`
+   means the isolated agent made no mutation; there is nothing to re-run
+   the gate against, so the red result it was dispatched against stands
+   unchanged and that dispatch is a stall. No counted ceiling sits behind
+   the progress rule; the run unit's hard timeout is the failsafe against
+   a runaway ladder.
+
+   When the ladder stalls — or the dispatch was
    skipped on a fork — the gate stays red and the run ends as **attention**,
    never incomplete: append each failed command and its non-zero exit status
    to `$MINOS_FAILURE_LOG`, publish one request-changes review with
@@ -302,8 +336,9 @@ last action and end the turn. A continuation writes no failure-log line.
    apply to it. Where this discipline applies, `incomplete` remains the
    outcome only for genuine inability
    to assess — infrastructure failure, an incomplete leg, a missing
-   verdict — never for the red gate itself. Finishing's own red outcomes
-   (step 8) are outside this discipline and keep their stated handling.
+   verdict — never for the red gate itself. Finishing's root-cause repair
+   (step 8) runs its own dispatch on forge check evidence rather than this
+   discipline, but sits under the same progress bound, as step 8 states.
 4. Run every Ensemble workflow in this lifecycle from this accountable lead
    session. Never delegate its invocation to an agent or subagent;
    responsibility for orchestration remains with the lead. Launch each such
@@ -560,14 +595,18 @@ last action and end the turn. A continuation writes no failure-log line.
    with `"$MINOS_BIN" forge comment CURRENT_HEAD "$MINOS_TARGET_SHA"
    FIX_REVIEW_FILE`. This durable pull-request comment is not a
    review group; the guarded command binds it to that exact head and target,
-   deduplicates retries, and reads it back before reporting success. Then run the exact configured build and test
-   commands again. Run `node
+   deduplicates retries, and reads it back before reporting success. Then run
+   the exact configured build and test commands again, capturing their complete
+   combined output in the matching absolute `build-command-output.log` or
+   `test-command-output.log`, preserving each command's exit status, and
+   overwriting its output file on every execution. Run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`
-   for each configured string and its exit status, just as in step 3, and read
+   for each configured string and its exit status, and read
    the CLI's one-line JSON `status` field; empty strings are skipped. A
    `failed` status enters step 3's gate repair discipline against the current
    head: dispatch, integrate through the controlled path, re-run the exact
-   configured commands; two failed repair attempts end the run as attention
+   configured commands, under the same progress bound — a repair that leaves
+   the same command failing the same way ends the run as attention
    with the honest request-changes report, exactly as step 3 describes, and
    no further review round or merge action happens on the red head.
    Only after both gates pass or skip, run the complete input-builder and
@@ -677,10 +716,16 @@ last action and end the turn. A continuation writes no failure-log line.
    post the same location-bearing guarded pull-request comment described in
    step 5 on that fresh head. Run `$MINOS_BUILD_CMD` and
    `$MINOS_TEST_CMD` exactly as configured and to completion when each is
-   non-empty; do not substitute or invent commands. A red build or test
+   non-empty; capture their complete combined output in the matching absolute
+   `build-command-output.log` or `test-command-output.log`, preserve each
+   command's exit status, and overwrite its output file on every execution. Do
+   not substitute or invent commands. A red build or test
    result after the wave enters step 3's gate repair discipline against the
-   fresh head: dispatch, integrate through the controlled path, re-run the
-   configured commands; two failed repair attempts end the run as attention
+   fresh head: dispatch, integrate through the controlled path, and re-run the
+   configured commands with the same explicit capture, exit-status
+   preservation, and overwrite requirements, under the same progress bound —
+   a repair that leaves the same command failing the same way ends
+   the run as attention
    with the honest request-changes report, exactly as step 3 describes. If
    the single wave leaves `confirmedUnfixed` entries, or integration fails,
    add no 👍, set attention or incomplete to reflect the actual result,
@@ -750,24 +795,31 @@ last action and end the turn. A continuation writes no failure-log line.
      > "$MINOS_RUN_DIR/check-logs.json"
    ```
 
-   Give the helper that file and direct it to start from the recorded job
-   statuses and logs, including any retry or flaky-test lines. The evidence is
-   diagnostic input, not proof of a cause: the helper must still reproduce and
-   prove its diagnosis. If the forge has no Actions-backed status URL, the
-   command returns an empty `runs` array; say so in the helper prompt rather
-   than inventing log evidence.
+   Invoke the same shipped `rootcause.js` workflow in the foreground, giving
+   its input builder the vendored root-cause skill path and the absolute path
+   of `check-logs.json`. This finishing path uses forge check evidence rather
+   than step 3's configured-command output files. The workflow uses the same
+   `codex` / `gpt-5.6-sol`, `effort: "high"`, `isolation: "worktree"`, proof
+   discipline, configured Minos commit identity, code-only `writeUp`, and
+   no-push rule as the gate repair discipline. It starts from the recorded job
+   statuses and logs,
+   including retry and flaky-test lines, but treats that evidence as diagnostic
+   input rather than proof and still reproduces and proves its diagnosis. An
+   empty `runs` array means there is no Actions-backed log evidence; do not
+   invent any. An empty `commit` means the isolated helper made no mutation to
+   integrate.
 
-   Write `rootcause.js` as a bare Ensemble workflow that dispatches one agent
-   with the vendored root-cause skill on `codex` / `gpt-5.6-sol`, using
-   `effort: "high"` and `isolation: "worktree"`. Give the agent a schema that
-   returns its diagnosis, a `commit` string and a concise code-only `writeUp`
-   explaining what it repaired. Direct it to read and follow
-   `$MINOS_ROOT_CAUSE_SKILL/SKILL.md`, diagnose the supplied failure, fix only
-   what it proves, commit a repair with the configured Minos identity, return
-   that commit and write-up, and never push. An empty `commit` means the isolated
-   helper made no mutation to integrate. Invoke the workflow through the bare
-   Ensemble launcher and save its result as
-   `"$MINOS_RUN_DIR/rootcause-result.json"`.
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \
+     --skill "$MINOS_ROOT_CAUSE_SKILL" \
+     --evidence "$MINOS_RUN_DIR/check-logs.json" \
+     > "$MINOS_RUN_DIR/rootcause-args.json"
+   node /opt/minos/runtime/ensemble.mjs \
+     --json-args @"$MINOS_RUN_DIR/rootcause-args.json" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
+     > "$MINOS_RUN_DIR/rootcause-result.json" \
+     2> "$MINOS_RUN_DIR/rootcause-result.log"
+   ```
 
    When the helper returns a non-empty commit, write that one commit as a
    JSON array and
@@ -789,14 +841,33 @@ last action and end the turn. A continuation writes no failure-log line.
    the same attempt: like the brief stage's wave and setup's conflict
    resolution, the repair triggers no re-review and no successor run. After
    the configured commands pass, add the 👍 on `FRESH_HEAD` and continue to
-   step 9 using that fresh head and target. Any failed integration,
-   publication, build or test stops
-   incomplete; never carry a failing repair to merge.
+   step 9 using that fresh head and target. Never carry a failing repair to
+   merge. This repair sits under the same progress bound as every gate
+   repair: compare its red verification result — the failing configured
+   command, or the fresh evidence of the check that triggered the dispatch —
+   with the failure this repair was dispatched against, judging same-failure
+   and appending each comparison's one-sentence basis exactly as step 3
+   directs. A re-dispatch carries the evidence its own failure produced,
+   and the two shapes are distinct: a configured command that went red
+   during this repair's verification is a local failure, so build its input
+   with `--command`, `--exit-status` and the matching captured
+   `build-command-output.log` or `test-command-output.log`, exactly as
+   step 3's dispatch does; a required check red on the forge carries a
+   fresh `check-logs.json` retrieved for the exact current head and target.
+   Never hand a helper stale forge evidence for a failure that happened
+   locally, or the reverse — `rootcause-inputs.mjs` executes either shape
+   unchanged. Progress earns another helper dispatch on the fresh evidence; a
+   repair that leaves the same check or command failing the same way is a
+   stall and ends the run as **attention** with step 3's honest
+   request-changes report — an assessed unsuccessful repair, not an
+   inability to assess, so `incomplete` does not describe it. A failed
+   integration or publication is infrastructure, not an assessed repair,
+   and still stops incomplete.
 
-   When the helper returns no commit and no pushed head appears, it has made no
-   mutation. On the red-check path, leave the label when present, set
-   `incomplete`, remove 👀, write the non-clean terminal marker, and stop
-   exactly as before.
+   When the helper returns no commit and no pushed head appears, it has made
+   no mutation: the failure it was dispatched against stands unchanged, which
+   is a stall on the red-check path — leave the label when present and end as attention
+   exactly as above.
    Only on the label-only path may step 9 receive the unchanged verified head
    and target. Retain the `Flaky Test` label on that path. This clean
    continuation writes nothing to `$MINOS_FAILURE_LOG`. The retained label is
@@ -807,7 +878,20 @@ last action and end the turn. A continuation writes no failure-log line.
    merge: remove 👀, write the clean terminal marker, and stop. If it is `true`,
    keep using the watcher until the trusted snapshot has `check_decision`
    `pass`, reports both `mergeable` and `can_merge`, and still names the
-   verified finishing head and target. Select one of its
+   verified finishing head and target. A snapshot whose `failed_checks`
+   turns non-empty while waiting here — a required check going red again on
+   the verified head, including one red for the first time after a verified
+   repair — is not a merge-readiness wait: re-enter step 8's root-cause
+   helper on that fresh evidence. Retrieve a fresh `check-logs.json` for
+   the exact current head and target and dispatch exactly as step 8
+   directs, under the same progress bound — the comparison failure is the
+   one this dispatch answers, with its basis appended to
+   `$MINOS_RUN_DIR/gate-repair-ladder.log` as step 3 directs, and a repair
+   that leaves the same check failing the same way is a stall that ends
+   the run as **attention** with the honest request-changes report. A
+   verified repair from that re-entry returns here through step 8's
+   ordinary continuation on its fresh head; this loop has no counted
+   ceiling, the run unit's hard timeout being the failsafe. Select one of its
    `allowed_merge_methods` and call `"$MINOS_BIN" forge merge HEAD TARGET
    METHOD`. The guarded merge binds the exact head and is idempotent. Then set
    `merged`. For a non-empty, unprotected source branch whose `head_repository`

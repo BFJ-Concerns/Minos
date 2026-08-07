@@ -702,8 +702,9 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,
-    /rootcause\.js[\s\S]*root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*commit a repair[\s\S]*never push/,
+    /shipped `rootcause\.js`[\s\S]*`codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*configured Minos identity[\s\S]*never\s+push/,
   );
+  assert.doesNotMatch(lifecycle, /(?:write|construct)(?: the)? `rootcause\.js`/i);
   assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
 });
 
@@ -713,18 +714,23 @@ test("configured command failures enter the repair discipline, never a review on
     initialGate,
     /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*gate repair discipline[\s\S]*No review starts while the gate is red/,
   );
-  assert.match(initialGate, /empty, no test command is configured[\s\S]*skip it/);
+  assert.match(initialGate, /when it is empty, no test command is\s+configured, so skip it/);
   assert.match(
     initialGate,
-    /root-cause skill on `codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*never\s+push[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again/,
+    /build-command-output\.log[\s\S]*test-command-output\.log[\s\S]*shipped `rootcause\.js`[\s\S]*matching absolute `build-command-output\.log` or\s+`test-command-output\.log`[\s\S]*--command FAILING_COMMAND --exit-status EXIT_STATUS[\s\S]*--evidence CAPTURED_OUTPUT_FILE[\s\S]*gate-repair-result\.json[\s\S]*background task[\s\S]*integrate-wave[\s\S]*run the exact configured\s+commands again[\s\S]*complete combined output[\s\S]*preserving[\s\S]*exit status[\s\S]*overwriting its output file on every\s+execution/,
   );
+  assert.doesNotMatch(initialGate, / &$/m);
   assert.match(
     initialGate,
     /fork pull request[\s\S]*skip the\s+repair dispatch/,
   );
   assert.match(
     initialGate,
-    /two repair attempts have failed[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*blocks re-attempts until the head\s+moves/,
+    /bounded by progress, not a count[\s\S]*the red result\s+that repair was dispatched against[\s\S]*never the one that first entered the discipline[\s\S]*earns another repair\s+dispatch[\s\S]*same command failing the same way is a stall[\s\S]*your judgement[\s\S]*never a string comparison of gate\s+output[\s\S]*append its basis as one\s+sentence to `\$MINOS_RUN_DIR\/gate-repair-ladder\.log`[\s\S]*No counted ceiling[\s\S]*hard timeout is the failsafe/,
+  );
+  assert.match(
+    initialGate,
+    /When the ladder stalls[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*blocks re-attempts until the head\s+moves/,
   );
   assert.match(
     initialGate,
@@ -734,13 +740,17 @@ test("configured command failures enter the repair discipline, never a review on
   const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
   assert.match(
     repeatedGate,
-    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
+    /exact configured build and test commands again,[\s\S]*complete\s+combined output[\s\S]*preserving each command's exit status[\s\S]*overwriting its output file on every execution/,
+  );
+  assert.match(
+    repeatedGate,
+    /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*empty strings are skipped[\s\S]*step 3's gate repair discipline[\s\S]*same progress bound[\s\S]*same command failing the same way ends\s+the run as attention[\s\S]*no further review round or merge action happens on the red head[\s\S]*Only after both gates pass or skip[\s\S]*adjudication-wrapper/,
   );
 
   const briefWave = lifecycle.slice(lifecycle.indexOf("7. Once the main loop"), lifecycle.indexOf("8. Enter finishing"));
   assert.match(
     briefWave,
-    /red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*two failed repair attempts end the run as attention/,
+    /capture their complete combined output[\s\S]*preserve each\s+command's exit status[\s\S]*overwrite its output file on every execution[\s\S]*red build or test\s+result after the wave enters step 3's gate repair discipline[\s\S]*re-run the\s+configured commands with the same explicit capture, exit-status\s+preservation, and overwrite requirements, under the same progress bound[\s\S]*same command failing the same way ends\s+the run as attention/,
   );
 });
 
@@ -756,7 +766,7 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
-    /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Give the helper that file/,
+    /forge check-logs HEAD TARGET[\s\S]*check-logs\.json[\s\S]*Invoke the same shipped `rootcause\.js`/,
   );
   assert.match(
     finishing,
@@ -765,18 +775,40 @@ test("a verified finishing repair merges in the same attempt", () => {
   assert.doesNotMatch(finishing, /classify-finishing-change|tests-only|review-required|FINISHING_REVIEWED_HEAD/);
   assert.match(
     finishing,
-    /`writeUp`[\s\S]*rootcause-result\.json/,
+    /same shipped `rootcause\.js`[\s\S]*forge check evidence rather[\s\S]*configured-command output files[\s\S]*--evidence "\$MINOS_RUN_DIR\/check-logs\.json"[\s\S]*rootcause-result\.json/,
   );
+  assert.doesNotMatch(finishing, /say so in the helper prompt/);
+  assert.match(finishing, /foreground[\s\S]*empty `runs` array[\s\S]*do not\s+invent/);
   assert.match(
     finishing,
     /helper's `writeUp`[\s\S]*post[\s\S]*one `comment` review/,
   );
   assert.match(
     finishing,
-    /never carry a failing repair to merge/,
+    /Never carry a failing repair to\s+merge/,
   );
   assert.match(
     finishing,
-    /helper returns no commit and no pushed head appears[\s\S]*made no[\s\S]*mutation[\s\S]*red-check path[\s\S]*set[\s\S]*`incomplete`[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
+    /same progress bound as every gate\s+repair[\s\S]*the failure this repair was dispatched against[\s\S]*appending each comparison's one-sentence basis exactly as step 3\s+directs[\s\S]*stall and ends the run as \*\*attention\*\*[\s\S]*assessed unsuccessful repair, not an\s+inability to assess[\s\S]*failed\s+integration or publication is infrastructure[\s\S]*stops incomplete/,
+  );
+  assert.match(
+    finishing,
+    /helper returns no commit and no pushed head appears[\s\S]*made\s+no mutation[\s\S]*stall on\s+the red-check path[\s\S]*end as attention[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
+  );
+  assert.match(
+    finishing,
+    /re-dispatch carries the evidence its own failure produced[\s\S]*local failure[\s\S]*`--command`, `--exit-status`[\s\S]*captured[\s\S]*`build-command-output\.log` or `test-command-output\.log`[\s\S]*required check red on the forge carries a\s+fresh `check-logs\.json`[\s\S]*exact current head and target[\s\S]*Never hand a helper stale forge evidence[\s\S]*`rootcause-inputs\.mjs` executes either shape\s+unchanged/,
+  );
+});
+
+test("a check going red at step 9 re-enters the finishing repair under the progress bound", () => {
+  const merging = lifecycle.slice(lifecycle.indexOf("9. If"));
+  assert.match(
+    merging,
+    /`failed_checks`\s+turns non-empty while waiting here[\s\S]*not a merge-readiness wait[\s\S]*re-enter step 8's root-cause\s+helper on that fresh evidence[\s\S]*fresh `check-logs\.json` for\s+the exact current head and target[\s\S]*same progress bound[\s\S]*gate-repair-ladder\.log[\s\S]*same check failing the same way is a stall[\s\S]*\*\*attention\*\*[\s\S]*honest request-changes report/,
+  );
+  assert.match(
+    merging,
+    /verified repair from that re-entry returns here through step 8's\s+ordinary continuation on its fresh head[\s\S]*no counted\s+ceiling[\s\S]*hard timeout being the failsafe/,
   );
 });
