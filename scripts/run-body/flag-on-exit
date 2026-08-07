@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: flag-on-exit FLAG_FILE COMMAND [ARG...]" >&2
+  exit 2
+fi
+
+flag="$1"
+shift
+rm -f "$flag"
+
+status=0
+"$@" || status=$?
+
+# Creation is the completion signal, so the flag must never be observable
+# before the command has exited or with partial content: write beside it,
+# then rename into place.
+printf '%s\n' "$status" >"${flag}.tmp"
+mv "${flag}.tmp" "$flag"
+exit "$status"
