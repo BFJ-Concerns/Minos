@@ -112,7 +112,7 @@ async function setupForge(remote, head, target) {
   };
 }
 
-test("setup, fix dispatch, publication and round reconciliation preserve their separate lineages", async (t) => {
+test("setup and fix integration operate on one published reconciled lineage", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "minos-reconciliation-fix-wave-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const { remote, head, target } = createDivergedRemote(root);
@@ -154,14 +154,14 @@ test("setup, fix dispatch, publication and round reconciliation preserve their s
   assert.equal(initial.outcome, "reconciled");
   assert.equal(initial.target, target);
   assert.equal(initial.baseHead, head);
-  assert.equal(typeof initial.publication, "string");
-  assert.equal(existsSync(join(remote, "push-count")), false, "setup must not push");
+  assert.equal(initial.publish, true);
+  assert.equal(readFileSync(join(remote, "push-count"), "utf8").trim(), "1");
   assert.deepEqual(
     git(reading, "show", "-s", "--format=%P", "HEAD").split(/\s+/),
     [head, target],
   );
-  assert.equal(git(initial.publication, "rev-parse", "HEAD"), head);
-  assert.equal(isAncestor(remote, initial.merge, `refs/heads/${HEAD_REF}`), false);
+  assert.equal(git(reading, "rev-parse", "HEAD"), initial.merge);
+  assert.equal(isAncestor(remote, initial.merge, `refs/heads/${HEAD_REF}`), true);
 
   let dispatchCwd = null;
   const result = await publishBeforeFix({
@@ -238,7 +238,7 @@ test("setup, fix dispatch, publication and round reconciliation preserve their s
 
   assert.equal(result.status, "complete");
   assert.equal(result.publication.outcome, "applied");
-  assert.equal(dispatchCwd, initial.publication);
+  assert.equal(dispatchCwd, reading);
   const commitsPath = join(runDir, "fix-commits.json");
   writeFileSync(commitsPath, JSON.stringify(result.integration.commits));
   const integrationOutput = execFileSync(
@@ -259,20 +259,16 @@ test("setup, fix dispatch, publication and round reconciliation preserve their s
   );
   const integration = JSON.parse(integrationOutput.trim().split(/\r?\n/).at(-1));
 
-  assert.equal(integration.outcome, "reconciled");
-  assert.equal(readFileSync(join(remote, "push-count"), "utf8").trim(), "1");
+  assert.equal(integration.outcome, "integrated");
+  assert.equal(readFileSync(join(remote, "push-count"), "utf8").trim(), "2");
   const publishedHead = git(remote, "rev-parse", `refs/heads/${HEAD_REF}`);
-  assert.equal(git(initial.publication, "rev-parse", "HEAD"), publishedHead);
+  assert.equal(git(reading, "rev-parse", "HEAD"), publishedHead);
   assert.equal(git(remote, "show", `${publishedHead}:repair.txt`), "repaired");
-  assert.equal(isAncestor(remote, initial.merge, publishedHead), false);
+  assert.equal(isAncestor(remote, initial.merge, publishedHead), true);
 
   const advanced = JSON.parse(readFileSync(statePath, "utf8"));
-  assert.notEqual(advanced.merge, initial.merge);
-  assert.equal(advanced.baseHead, publishedHead);
+  assert.equal(advanced.merge, initial.merge);
+  assert.equal(advanced.baseHead, head);
   assert.equal(advanced.target, target);
-  assert.deepEqual(
-    git(reading, "show", "-s", "--format=%P", "HEAD").split(/\s+/),
-    [publishedHead, target],
-  );
   assert.equal(git(reading, "show", "HEAD:repair.txt"), "repaired");
 });

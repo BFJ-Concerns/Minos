@@ -107,9 +107,8 @@ func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testi
 	if state.Head != head || state.Grounding != "annexe" {
 		t.Fatalf("rewritten orientation = %+v", state)
 	}
-	publication := filepath.Join(runDir, "publication")
-	if got := gitOutput(t, publication, "rev-parse", "HEAD"); got != head {
-		t.Fatalf("resumed publication head = %q, want %q", got, head)
+	if _, err := os.Stat(filepath.Join(runDir, "publication")); !os.IsNotExist(err) {
+		t.Fatalf("publication worktree still exists after resume: %v", err)
 	}
 	assertContainsFile(t, filepath.Join(commonDir, "hooks", "pre-push"), "minos-protected-ref")
 }

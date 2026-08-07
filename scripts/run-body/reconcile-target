@@ -64,18 +64,19 @@ write_state() {
   mv "$state_tmp" "$state_file"
 }
 
-record_unpushable() {
+publish_reconciliation() {
   reconciliation_sha="$1"
+  publish="$(jq -r '.publish // false' "$state_file")"
+  [ "$publish" = true ] || return 0
   common_dir="$(git -C "$workspace" rev-parse --path-format=absolute --git-common-dir)"
-  unpushable_file="${common_dir}/minos-unpushable"
-  if [ -e "$unpushable_file" ] && { [ ! -f "$unpushable_file" ] || [ ! -r "$unpushable_file" ]; }; then
-    echo "reconcile-target: reconciliation record is present but unreadable: $unpushable_file" >&2
-    exit 1
-  fi
-  if [ ! -f "$unpushable_file" ] || ! grep -Fxq "$reconciliation_sha" "$unpushable_file"; then
-    printf '%s\n' "$reconciliation_sha" >>"$unpushable_file"
-  fi
-  git -C "$workspace" update-ref refs/minos/reconciled "$reconciliation_sha"
+  push_ref="refs/heads/${MINOS_HEAD_BRANCH:?MINOS_HEAD_BRANCH is required}"
+  push_permit="$(mktemp "${common_dir}/minos-reconcile-target-push.XXXXXX")"
+  trap 'rm -f "$push_permit"' 0 1 2 3 15
+  printf '%s %s %s\n' "$push_ref" "$reconciliation_sha" "$base_sha" >"$push_permit"
+  MINOS_RECONCILE_TARGET_PUSH_PERMIT="$push_permit" git -C "$workspace" push \
+    "--force-with-lease=${push_ref}:${base_sha}" origin "HEAD:${push_ref}"
+  rm -f "$push_permit"
+  trap - 0 1 2 3 15
 }
 
 git -C "$workspace" checkout --detach "$base_sha" >/dev/null
@@ -87,10 +88,10 @@ if git -C "$workspace" merge-base --is-ancestor "$target_ref" "$base_sha"; then
   exit 0
 fi
 
-message="Minos local reconciliation: merge ${MINOS_BASE_REF} into ${base_sha} — never pushed"
+message="Merge ${MINOS_BASE_REF} into ${base_sha}"
 if git -C "$workspace" merge --no-ff -m "$message" "$target_ref" >/dev/null 2>&1; then
   reconciliation_sha="$(git -C "$workspace" rev-parse HEAD)"
-  record_unpushable "$reconciliation_sha"
+  publish_reconciliation "$reconciliation_sha"
   write_state "reconciled" "$reconciliation_sha" "[]" "" ""
   jq -nc --arg merge "$reconciliation_sha" '{outcome:"reconciled",merge:$merge,conflicts:[]}'
   exit 0
@@ -102,7 +103,7 @@ if [ "$conflicts_json" = "[]" ]; then
   if [ -f "${git_dir}/MERGE_HEAD" ] && ! git -C "$workspace" diff --cached --quiet; then
     git -C "$workspace" commit -m "$message" >/dev/null
     reconciliation_sha="$(git -C "$workspace" rev-parse HEAD)"
-    record_unpushable "$reconciliation_sha"
+    publish_reconciliation "$reconciliation_sha"
     write_state "reconciled" "$reconciliation_sha" "[]" "" ""
     jq -nc --arg merge "$reconciliation_sha" '{outcome:"reconciled",merge:$merge,conflicts:[]}'
     exit 0

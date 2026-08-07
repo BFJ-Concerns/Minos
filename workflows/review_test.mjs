@@ -672,6 +672,15 @@ test("an exploration null still emits its required leg for archive adjudication"
 test("the lifecycle uses one adjudicated review call and publication-owned fix waves", () => {
   assert.match(
     lifecycle,
+    /mainline pull request[\s\S]*pushed a completed target reconciliation merge[\s\S]*made that merge `\$MINOS_HEAD_SHA`/,
+  );
+  assert.match(
+    lifecycle,
+    /fork or AGit[\s\S]*reconciliation stays local[\s\S]*`\$MINOS_HEAD_SHA` remains the[\s\S]*admitted head/,
+  );
+  assert.doesNotMatch(lifecycle, /unpushable|separate publication worktree|`publication` field/);
+  assert.match(
+    lifecycle,
     /\*\*Carried result:\*\*[\s\S]*carried-review-result\.json` exists[\s\S]*complete predecessor verdict[\s\S]*Consume the one-time carry with this command:[\s\S]*mv "\$MINOS_RUN_DIR\/carried-review-result\.json"[\s\S]*Do not invoke the review workflow for this first review/,
   );
   assert.match(
@@ -763,6 +772,10 @@ test("a verified finishing repair merges in the same attempt", () => {
   assert.match(
     finishing,
     /each fresh snapshot[\s\S]*`dependencies_available`[\s\S]*`open_dependencies`[\s\S]*set `incomplete`/,
+  );
+  assert.match(
+    finishing,
+    /mainline pull request[\s\S]*script's pushed head[\s\S]*fork or AGit pull request[\s\S]*`local-only` outcome as\s+success[\s\S]*snapshot head to remain the fetched head[\s\S]*no\s+pushed head exists[\s\S]*exact configured build and test commands[\s\S]*nothing downstream pushes it/,
   );
   assert.match(
     finishing,
