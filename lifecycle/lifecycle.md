@@ -191,12 +191,9 @@ last action and end the turn. A continuation writes no failure-log line.
    it before any further forge action. Fork and AGit completion remains
    local-only and does not change `$MINOS_HEAD_SHA`.
 
-   The same check, one-retry and completion rule applies when a later Minos
-   script reports `reconcile-conflict`: redispatch the setup workflow in
-   reconciliation-only mode before continuing the round. The change under
-   review remains the pinned target-to-current-pull-request-head range. The
-   reconciliation merge supplies the context in which code is read; it is never
-   itself part of the reviewed change.
+   The change under review remains the pinned target-to-current-pull-request-head
+   range. The reconciliation merge supplies the context in which code is read;
+   it is never itself part of the reviewed change.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you
