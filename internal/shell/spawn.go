@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -30,6 +31,17 @@ type SpawnResult struct {
 
 const runOwnerMarker = ".runwrap-owner"
 
+// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Live runs
+// share it, so their ceilings can never together promise more memory than the
+// box has — the ceiling exists so that a ballooning run fails alone instead of
+// taking the receiver and sweep with it, and an overcommitted ceiling cannot
+// do that.
+const runMemoryEnvelopeGiB = 14
+
+func runMemoryMax(cfg ServiceConfig) string {
+	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB/cfg.MaxConcurrentRuns())
+}
+
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
@@ -38,13 +50,20 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	defer unlock()
 
-	out, err := commandCombinedOutput(ctx, "systemctl", "--user", "list-units",
-		"--type=service", "--state=activating,active", "--no-legend", "--plain", "--full", "--no-pager", "minos-run-*.service")
+	active, err := activeRunUnitNames(ctx)
 	if err != nil {
-		return SpawnResult{}, fmt.Errorf("inspect active Minos units: %w: %s", err, strings.TrimSpace(string(out)))
+		return SpawnResult{}, err
 	}
-	if fields := strings.Fields(string(out)); len(fields) != 0 {
-		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: fields[0]}, nil
+	// This pull request's own live unit is refused before the continuation
+	// handoff below is consumed: systemd-run would reject the duplicate unit
+	// name anyway, and by then the handoff would already be gone.
+	if own := slices.IndexFunc(active, func(name string) bool {
+		return strings.TrimSuffix(name, ".service") == unit
+	}); own >= 0 {
+		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[own]}, nil
+	}
+	if len(active) >= cfg.MaxConcurrentRuns() {
+		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[0]}, nil
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.Runs.Dir, ".handoffs"), 0o700); err != nil {
 		return SpawnResult{}, fmt.Errorf("create continuation handoff directory: %w", err)
@@ -210,13 +229,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
 		"--property=RuntimeMaxSec=12h",
-		"--property=MemoryMax=14G",
+		"--property=MemoryMax=" + runMemoryMax(cfg),
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)
 	}
 	args = append(args, exe, "run", "--config", cfg.Root)
-	out, err = commandCombinedOutput(ctx, "systemd-run", args...)
+	out, err := commandCombinedOutput(ctx, "systemd-run", args...)
 	if err != nil {
 		cleanupSpawnFailure()
 		if strings.Contains(string(out), "already exists") {

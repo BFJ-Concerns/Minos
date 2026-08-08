@@ -476,28 +476,30 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
-	t.Run("a second pull request waits for the active lead to exit", func(t *testing.T) {
+	t.Run("a pull request beyond the configured concurrency waits for a lead to exit", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		cfg, repo, firstFacts := state.service(t)
+		cfg.Runs.MaxConcurrent = 2
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })
-		var activeUnit string
+		var activeUnits []string
 		var startedUnits []string
 		commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
 			switch name {
 			case "systemctl":
-				if activeUnit == "" {
-					return nil, nil
+				listing := ""
+				for _, unit := range activeUnits {
+					listing += unit + " loaded active running Minos lead\n"
 				}
-				return []byte(activeUnit + " loaded active running Minos lead\n"), nil
+				return []byte(listing), nil
 			case "systemd-run":
 				unitFlag := slices.Index(args, "--unit")
 				if unitFlag < 0 || unitFlag+1 >= len(args) {
 					t.Fatalf("systemd-run arguments omit unit: %v", args)
 				}
-				activeUnit = args[unitFlag+1]
-				startedUnits = append(startedUnits, activeUnit)
+				activeUnits = append(activeUnits, args[unitFlag+1])
+				startedUnits = append(startedUnits, args[unitFlag+1])
 				return nil, nil
 			default:
 				t.Fatalf("unexpected command %q", name)
@@ -520,26 +522,37 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Decision != "suppressed" {
-			t.Fatalf("second result while first active = %q, want suppressed", result)
-		}
-		if result.BlockingUnit != activeUnit {
-			t.Fatalf("blocking unit = %q, want %q", result.BlockingUnit, activeUnit)
-		}
-		if len(startedUnits) != 1 {
-			t.Fatalf("started units while first active = %v, want one", startedUnits)
+		if result.Decision != "started" {
+			t.Fatalf("second result within the configured concurrency = %q, want started", result)
 		}
 
-		activeUnit = ""
-		result, err = reconcilePullRequest(t.Context(), cfg, repo, secondFacts)
+		state.changePullRequest(func(pullRequest map[string]any) { pullRequest["number"] = float64(3) })
+		_, _, thirdFacts := state.service(t)
+		thirdFacts.HeadSHA = ""
+		result, err = reconcilePullRequest(t.Context(), cfg, repo, thirdFacts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Decision != "suppressed" {
+			t.Fatalf("third result while both leads active = %q, want suppressed", result)
+		}
+		if result.BlockingUnit != activeUnits[0] {
+			t.Fatalf("blocking unit = %q, want %q", result.BlockingUnit, activeUnits[0])
+		}
+		if len(startedUnits) != 2 {
+			t.Fatalf("started units while both leads active = %v, want two", startedUnits)
+		}
+
+		activeUnits = activeUnits[1:]
+		result, err = reconcilePullRequest(t.Context(), cfg, repo, thirdFacts)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if result.Decision != "started" {
-			t.Fatalf("second result after first exit = %q, want started", result)
+			t.Fatalf("third result after a lead exited = %q, want started", result)
 		}
-		if len(startedUnits) != 2 || !strings.Contains(startedUnits[1], "pr2") {
-			t.Fatalf("started units = %v, want second pull request unit", startedUnits)
+		if len(startedUnits) != 3 || !strings.Contains(startedUnits[2], "pr3") {
+			t.Fatalf("started units = %v, want third pull request unit", startedUnits)
 		}
 	})
 }
