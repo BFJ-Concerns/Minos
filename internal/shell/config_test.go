@@ -97,6 +97,39 @@ func TestLoadRepoConfigDefaultsReviewLoopKnobs(t *testing.T) {
 	}
 }
 
+func TestLoadRepoConfigDecodesWorkInProgressBranchPrefixes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\nwork-in-progress-branch-prefixes = [\"structural/\"]\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
+	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repos, err := LoadRepoConfigs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || len(repos[0].WorkInProgressBranchPrefixes) != 1 || repos[0].WorkInProgressBranchPrefixes[0] != "structural/" {
+		t.Fatalf("work-in-progress prefixes = %+v", repos)
+	}
+}
+
+func TestLoadRepoConfigRejectsEmptyWorkInProgressBranchPrefix(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\nwork-in-progress-branch-prefixes = [\"\"]\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
+	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadRepoConfigs(root)
+	if err == nil || !strings.Contains(err.Error(), "work-in-progress-branch-prefixes") {
+		t.Fatalf("error = %v, want empty prefix validation", err)
+	}
+}
+
 func TestLoadRepoConfigValidatesReviewLoopKnobs(t *testing.T) {
 	for _, test := range []struct {
 		name   string

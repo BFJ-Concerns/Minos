@@ -40,6 +40,63 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("configured work-in-progress branch is deferred", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
+		})
+		cfg, repo, facts := state.service(t)
+		repo.WorkInProgressBranchPrefixes = []string{"structural/"}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("work-in-progress pull request reached %s", name)
+			return nil, nil
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Decision != `deferred: work-in-progress branch "structural/rework"` {
+			t.Fatalf("result = %q", result)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		branch string
+	}{
+		{name: "unmatched branch is started", branch: "feature/rework"},
+		{name: "empty head branch is started", branch: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			state.changePullRequest(func(pullRequest map[string]any) {
+				pullRequest["head"].(map[string]any)["ref"] = test.branch
+			})
+			cfg, repo, facts := state.service(t)
+			repo.WorkInProgressBranchPrefixes = []string{"structural/"}
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var commands []string
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				commands = append(commands, name)
+				return nil, nil
+			}
+
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != "started" || !slices.Equal(commands, []string{"systemctl", "systemd-run"}) {
+				t.Fatalf("result = %q, commands = %v", result, commands)
+			}
+		})
+	}
+
 	t.Run("open dependency defers until the dependency closes", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setDependencies([]map[string]any{{

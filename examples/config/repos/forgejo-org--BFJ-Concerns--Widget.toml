@@ -1,6 +1,7 @@
 forge = "forgejo-org"
 owner = "BFJ-Concerns"
 repo = "Widget"
+work-in-progress-branch-prefixes = ["structural/"]
 
 [adaptation]
 build = "cargo build --workspace"

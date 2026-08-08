@@ -1,6 +1,9 @@
 forge = "forgejo"
 owner = "REPLACE_WITH_FORGEJO_OWNER"
 repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
+# work-in-progress-branch-prefixes is optional. Prefixes are literal and case-sensitive:
+# "structural" also matches "structural-notes"; use "structural/" for that directory convention.
+# work-in-progress-branch-prefixes = ["REPLACE_WITH_BRANCH_PREFIX/"]
 
 [adaptation]
 build = "REPLACE_WITH_BUILD_COMMAND"

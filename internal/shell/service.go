@@ -123,6 +123,9 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	facts.BaseSHA = snapshot.TargetSHA
 	facts.BaseRef = snapshot.TargetBranch
 	facts.HeadRef = snapshot.HeadBranch
+	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
+	}
 	if review, reviewed := currentReview(snapshot, cfg.Service.BotLogin); reviewed {
 		state, terminal := terminalState(review)
 		if terminal {
@@ -155,6 +158,18 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 		return ReconcileResult{}, err
 	}
 	return ReconcileResult{Decision: outcome.Outcome, BlockingUnit: outcome.BlockingUnit, Detail: outcome.Detail}, nil
+}
+
+func workInProgressBranch(branch string, prefixes []string) bool {
+	if branch == "" {
+		return false
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(branch, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func dependencyDeferral(snapshot forge.Snapshot) (string, bool) {

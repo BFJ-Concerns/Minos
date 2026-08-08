@@ -49,6 +49,51 @@ func TestReceiverRejectsMappedEventWithoutPullRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestReceiverDefersConfiguredWorkInProgressBranchWithoutSpawning(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
+	})
+	cfg, _, _ := state.service(t)
+	cfg.Forges["local"] = cfg.Forges["forgejo"]
+	delete(cfg.Forges, "forgejo")
+	if err := os.WriteFile(cfg.Forges["local"].WebhookSecretFile, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := `forge = "local"
+owner = "minos-e2e-owner"
+repo = "subject"
+work-in-progress-branch-prefixes = ["structural/"]
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`
+	if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		t.Fatalf("work-in-progress webhook reached %s", name)
+		return nil, nil
+	}
+
+	fixture := readFixture(t, "001-pull_request-opened.json")
+	response, err := sendAuthenticatedHook(t, cfg, "pull_request", fixture.Body)
+	if err != nil {
+		t.Fatalf("handleHook() error = %v", err)
+	}
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if response.Body.String() != "deferred: work-in-progress branch \"structural/rework\"\n" {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+}
+
 func receiverTestConfig(t *testing.T) ServiceConfig {
 	t.Helper()
 	root := t.TempDir()
