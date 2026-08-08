@@ -30,11 +30,22 @@ type ServiceConfig struct {
 		FailuresRepo           string `toml:"failures-repo"`
 		FailuresCredentialFile string `toml:"failures-credential-file"`
 		ArchiveCommand         string `toml:"archive-command"`
+		MaxConcurrent          int    `toml:"max-concurrent"`
 	} `toml:"runs"`
 	Ensemble struct {
 		ConcurrencyClaude int `toml:"concurrency-claude"`
 		ConcurrencyCodex  int `toml:"concurrency-codex"`
 	} `toml:"ensemble"`
+}
+
+// MaxConcurrentRuns is how many run units may be live at once. An unset knob
+// means one, so a configuration written before the knob existed keeps the
+// serialised behaviour it was written for.
+func (cfg ServiceConfig) MaxConcurrentRuns() int {
+	if cfg.Runs.MaxConcurrent < 1 {
+		return 1
+	}
+	return cfg.Runs.MaxConcurrent
 }
 
 type ForgeConfig struct {
@@ -81,6 +92,9 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		if forge.Adaptation == "" || forge.APIBase == "" || forge.WebhookSecretFile == "" || forge.CredentialFile == "" {
 			return ServiceConfig{}, fmt.Errorf("service.toml: forge %s is incomplete", name)
 		}
+	}
+	if cfg.Runs.MaxConcurrent < 0 || cfg.Runs.MaxConcurrent > runMemoryEnvelopeGiB {
+		return ServiceConfig{}, fmt.Errorf("service.toml: runs max-concurrent must be between 1 and %d, the whole-GiB shares the run memory envelope divides into", runMemoryEnvelopeGiB)
 	}
 	if cfg.Ensemble.ConcurrencyClaude == 0 && cfg.Ensemble.ConcurrencyCodex == 0 {
 		cfg.Ensemble.ConcurrencyClaude = 2
