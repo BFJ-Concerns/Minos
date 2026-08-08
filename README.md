@@ -16,7 +16,10 @@ the forge, and may merge when repository policy permits it.
 The implementation deliberately has no lifecycle database, stage machine,
 heartbeat, incident system, preflight framework, model-admission gate, coverage
 ledger, review bar or review-of-review loop. The forge is the durable record and
-the systemd unit for a pull request is the only live-run coordination.
+the systemd unit for a pull request is the only live-run coordination. How many
+leads may run at once is `runs.max-concurrent` in `service.toml`; the run unit's
+memory ceiling is one share of a fixed whole-box envelope, so concurrent runs
+can never together promise more memory than the box has.
 
 ## Commands
 

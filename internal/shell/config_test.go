@@ -19,6 +19,7 @@ credential-file = "/tmp/token"
 [runs]
 dir = "/tmp/runs"
 failure-log = "/tmp/failures.log"
+max-concurrent = 2
 [ensemble]
 concurrency-claude = 10
 concurrency-codex = 6
@@ -30,8 +31,36 @@ func TestLoadServiceConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, err := LoadServiceConfig(root)
-	if err != nil || cfg.Service.BotLogin != "Minos" || cfg.Runs.Dir != "/tmp/runs" || cfg.Runs.FailureLog != "/tmp/failures.log" || cfg.Ensemble.ConcurrencyClaude != 10 || cfg.Ensemble.ConcurrencyCodex != 6 {
+	if err != nil || cfg.Service.BotLogin != "Minos" || cfg.Runs.Dir != "/tmp/runs" || cfg.Runs.FailureLog != "/tmp/failures.log" || cfg.Runs.MaxConcurrent != 2 || cfg.Ensemble.ConcurrencyClaude != 10 || cfg.Ensemble.ConcurrencyCodex != 6 {
 		t.Fatalf("config = %#v, error = %v", cfg, err)
+	}
+}
+
+func TestLoadServiceConfigDefaultsMaxConcurrentToOne(t *testing.T) {
+	root := t.TempDir()
+	contents := strings.Replace(testServiceConfig, "max-concurrent = 2\n", "", 1)
+	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServiceConfig(root)
+	if err != nil || cfg.MaxConcurrentRuns() != 1 {
+		t.Fatalf("max-concurrent = %d, error = %v; want one live run", cfg.MaxConcurrentRuns(), err)
+	}
+}
+
+func TestLoadServiceConfigRejectsUnusableMaxConcurrent(t *testing.T) {
+	for _, setting := range []string{"max-concurrent = -1\n", "max-concurrent = 15\n"} {
+		t.Run(strings.TrimSpace(setting), func(t *testing.T) {
+			root := t.TempDir()
+			contents := strings.Replace(testServiceConfig, "max-concurrent = 2\n", setting, 1)
+			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadServiceConfig(root)
+			if err == nil || !strings.Contains(err.Error(), "max-concurrent") {
+				t.Fatalf("error = %v, want max-concurrent validation", err)
+			}
+		})
 	}
 }
 

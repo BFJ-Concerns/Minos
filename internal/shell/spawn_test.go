@@ -90,6 +90,115 @@ func TestSpawnRunReportsSuppressedForActiveUnit(t *testing.T) {
 	}
 }
 
+func TestSpawnRunAdmitsUpToTheConfiguredConcurrency(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+
+	var active []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "systemctl":
+			listing := ""
+			for _, unit := range active {
+				listing += unit + " loaded active running Minos lead\n"
+			}
+			return []byte(listing), nil
+		case "systemd-run":
+			unitFlag := slices.Index(args, "--unit")
+			active = append(active, args[unitFlag+1]+".service")
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command %q", name)
+			return nil, nil
+		}
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Runs.MaxConcurrent = 2
+	repo := RepoConfig{}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+
+	var outcomes []ReconcileDecision
+	for _, pr := range []string{"1", "2", "3"} {
+		result, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: pr})
+		if err != nil {
+			t.Fatal(err)
+		}
+		outcomes = append(outcomes, result.Outcome)
+		if pr == "3" && result.BlockingUnit != "minos-run-owner-repo-pr1.service" {
+			t.Fatalf("blocking unit = %q, want the lowest-named active unit", result.BlockingUnit)
+		}
+	}
+	if !slices.Equal(outcomes, []ReconcileDecision{SpawnStarted, SpawnStarted, SpawnSuppressed}) {
+		t.Fatalf("outcomes = %v, want two starts then a suppression", outcomes)
+	}
+}
+
+func TestSpawnRunSuppressesOwnLiveUnitWithoutConsumingItsHandoff(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+	unit := UnitName(facts)
+	var commands []string
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		commands = append(commands, name)
+		return []byte(unit + ".service loaded active running Minos lead\n"), nil
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Runs.MaxConcurrent = 2
+	repo := RepoConfig{}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+	runDir := filepath.Join(cfg.Runs.Dir, unit+"-1")
+	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, json.RawMessage(`{"round":0,"confirmedUnfixed":[]}`))
+
+	result, err := SpawnRun(t.Context(), cfg, repo, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnSuppressed || result.BlockingUnit != unit+".service" {
+		t.Fatalf("result = %+v, want suppression by its own live unit", result)
+	}
+	if !slices.Equal(commands, []string{"systemctl"}) {
+		t.Fatalf("commands = %v, want only the active-unit check", commands)
+	}
+	if _, err := os.Stat(handoffFile); err != nil {
+		t.Fatalf("continuation handoff was consumed by a suppressed admission: %v", err)
+	}
+}
+
+func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
+	for maxConcurrent, want := range map[int]string{0: "14G", 1: "14G", 2: "7G"} {
+		t.Run(want, func(t *testing.T) {
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var systemdArgs []string
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					systemdArgs = args
+				}
+				return nil, nil
+			}
+
+			cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+			cfg.Runs.Dir = t.TempDir()
+			cfg.Runs.MaxConcurrent = maxConcurrent
+			repo := RepoConfig{}
+			repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+			if _, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}); err != nil {
+				t.Fatal(err)
+			}
+			assertArgument(t, systemdArgs, "--property=MemoryMax="+want)
+		})
+	}
+}
+
 func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
@@ -705,68 +814,82 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	}
 }
 
-func TestSpawnRunSerialisesConcurrentAdmissionAgainstSystemdFacts(t *testing.T) {
-	original := commandCombinedOutput
-	t.Cleanup(func() { commandCombinedOutput = original })
+func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		maxConcurrent int
+		racers        []string
+		want          []ReconcileDecision
+	}{
+		{name: "one", maxConcurrent: 1, racers: []string{"1", "2"}, want: []ReconcileDecision{SpawnStarted, SpawnSuppressed}},
+		{name: "two", maxConcurrent: 2, racers: []string{"1", "2", "3"}, want: []ReconcileDecision{SpawnStarted, SpawnStarted, SpawnSuppressed}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
 
-	var mu sync.Mutex
-	active := false
-	starts := 0
-	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		switch name {
-		case "systemctl":
-			if active {
-				return []byte("minos-run-owner-repo-pr1.service loaded active running Minos lead\n"), nil
+			var mu sync.Mutex
+			var active []string
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				switch name {
+				case "systemctl":
+					listing := ""
+					for _, unit := range active {
+						listing += unit + " loaded active running Minos lead\n"
+					}
+					return []byte(listing), nil
+				case "systemd-run":
+					unitFlag := slices.Index(args, "--unit")
+					active = append(active, args[unitFlag+1]+".service")
+					return nil, nil
+				default:
+					t.Fatalf("unexpected command %q", name)
+					return nil, nil
+				}
 			}
-			return nil, nil
-		case "systemd-run":
-			active = true
-			starts++
-			return nil, nil
-		default:
-			t.Fatalf("unexpected command %q", name)
-			return nil, nil
-		}
-	}
 
-	cfg := ServiceConfig{Root: "/etc/minos"}
-	cfg.Runs.Dir = t.TempDir()
-	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
-	repo := RepoConfig{}
-	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+			cfg := ServiceConfig{Root: "/etc/minos"}
+			cfg.Runs.Dir = t.TempDir()
+			cfg.Runs.MaxConcurrent = test.maxConcurrent
+			cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+			repo := RepoConfig{}
+			repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 
-	results := make(chan SpawnResult, 2)
-	errors := make(chan error, 2)
-	var group sync.WaitGroup
-	for _, pr := range []string{"1", "2"} {
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			outcome, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: pr})
-			results <- outcome
-			errors <- err
-		}()
-	}
-	group.Wait()
-	close(results)
-	close(errors)
-	for err := range errors {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	var outcomes []ReconcileDecision
-	for outcome := range results {
-		outcomes = append(outcomes, outcome.Outcome)
-	}
-	slices.Sort(outcomes)
-	if !slices.Equal(outcomes, []ReconcileDecision{SpawnStarted, SpawnSuppressed}) {
-		t.Fatalf("outcomes = %v, want one start and one suppression", outcomes)
-	}
-	if starts != 1 {
-		t.Fatalf("systemd starts = %d, want one", starts)
+			results := make(chan SpawnResult, len(test.racers))
+			errors := make(chan error, len(test.racers))
+			var group sync.WaitGroup
+			for _, pr := range test.racers {
+				group.Add(1)
+				go func() {
+					defer group.Done()
+					outcome, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: pr})
+					results <- outcome
+					errors <- err
+				}()
+			}
+			group.Wait()
+			close(results)
+			close(errors)
+			for err := range errors {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var outcomes []ReconcileDecision
+			for outcome := range results {
+				outcomes = append(outcomes, outcome.Outcome)
+			}
+			slices.Sort(outcomes)
+			slices.Sort(test.want)
+			if !slices.Equal(outcomes, test.want) {
+				t.Fatalf("outcomes = %v, want %v", outcomes, test.want)
+			}
+			if len(active) != test.maxConcurrent {
+				t.Fatalf("systemd starts = %d, want %d", len(active), test.maxConcurrent)
+			}
+		})
 	}
 }
 

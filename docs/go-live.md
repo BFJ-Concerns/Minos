@@ -35,6 +35,15 @@ machine itself is the containment boundary.
    match the deployment. Configure `archive.env` with the archive SSH host,
    destination, identity and pinned known-hosts file.
 
+   `runs.max-concurrent` caps how many run units may be live at once, and
+   defaults to one when unset. Each unit's `MemoryMax` is a fixed 14 GiB
+   whole-box envelope divided by that cap — 7 GiB each at two — so concurrent
+   runs never promise more memory than the machine has and a ballooning run
+   still fails alone. Size the cap against the machine's memory and cores:
+   a healthy run's unreclaimable footprint is around 1.2 GiB, but each run
+   also paces `ensemble.concurrency-claude` and `concurrency-codex` workers of
+   its own.
+
    `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
    3600-second no-output backstop. Keep the lifecycle's fallback wake shorter
    than this value.

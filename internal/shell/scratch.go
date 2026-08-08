@@ -127,19 +127,38 @@ func runDirIsDead(ctx context.Context, cfg ServiceConfig, factsByUnit map[string
 }
 
 func activeRunUnits(ctx context.Context) (map[string]bool, error) {
+	names, err := activeRunUnitNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	units := make(map[string]bool, len(names))
+	for _, name := range names {
+		units[strings.TrimSuffix(name, ".service")] = true
+	}
+	return units, nil
+}
+
+// activeRunUnitNames lists the live run units as systemd names them, suffix
+// included, sorted so that a caller reporting one of them reports the same one
+// every pass.
+func activeRunUnitNames(ctx context.Context) ([]string, error) {
 	out, err := commandCombinedOutput(ctx, "systemctl", "--user", "list-units",
 		"--type=service", "--state=activating,active", "--no-legend", "--plain", "--full", "--no-pager", "minos-run-*.service")
 	if err != nil {
 		return nil, fmt.Errorf("inspect active Minos units: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	units := make(map[string]bool)
+	var names []string
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
 		if fields := strings.Fields(scanner.Text()); len(fields) > 0 {
-			units[strings.TrimSuffix(fields[0], ".service")] = true
+			names = append(names, fields[0])
 		}
 	}
-	return units, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func runDirectoryHasActiveUnit(name string, active map[string]bool) bool {

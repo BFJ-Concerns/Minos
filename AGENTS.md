@@ -27,7 +27,10 @@ without an internal containment layer.
 - The forge carries the durable result through the current head, review and
   `Minos` status. Scratch data may disappear with the run.
 - Webhooks and the sweep both reconcile current forge state. The systemd unit
-  name prevents duplicate live runs; a later event starts a fresh attempt.
+  name prevents duplicate live runs of one pull request, and
+  `runs.max-concurrent` caps how many run at once; a later event starts a fresh
+  attempt. The run unit's memory ceiling is that cap's share of a fixed
+  whole-box envelope.
 - The disposable box is the security boundary. Do not add nested containment,
   credential scrubbing, policy gates, model admission, clearance, heartbeats,
   incident ledgers, backoff ladders or lifecycle bookkeeping.
