@@ -704,6 +704,10 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
     lifecycle,
     /Classifying the sweep is your judgement[\s\S]*informed by the threshold rather than mechanically bound to it/,
   );
+  assert.match(
+    lifecycle,
+    /new findings all sit below the threshold is\s+`terminal` by default[\s\S]*only exception is severity disagreement/,
+  );
   assert.match(lifecycle, /minos-sweep-decision-v1[\s\S]*--decision[\s\S]*fix-args\.json/);
   assert.match(lifecycle, /publish-before-fix[\s\S]*fix-args\.json[\s\S]*HEAD TARGET/);
   assert.match(lifecycle, /starts the effectful `fix\.js`[\s\S]*only after[\s\S]*`outcome: "applied"`/);
