@@ -548,13 +548,17 @@ last action and end the turn. A continuation writes no failure-log line.
    which of those sit at or above the threshold, whether the configured
    maximum rounds has been reached, and a `thresholdIndication` — what the
    threshold alone would say. Classifying the sweep is your judgement,
-   informed by the threshold rather than mechanically bound to it: judge
-   the sweep `working` when its findings genuinely warrant another fix
-   wave, and `terminal` when nothing new at or above the threshold remains
-   beyond entries already confirmed-unfixed — or when, in your judgement,
-   another wave would not move the pull request forward. Follow the
-   indication unless you can state a concrete reason not to; the reason
-   travels in the decision. Two bounds are mechanical, not judgement: a
+   informed by the threshold rather than mechanically bound to it. A sweep
+   with a new dispatchable finding at or above the threshold is `working`,
+   unless in your judgement another wave would not move the pull request
+   forward. A sweep whose new findings all sit below the threshold is
+   `terminal` by default: accept the review as it stands and dispatch no
+   wave for them. The only exception is severity disagreement — you judge
+   a finding's recorded severity to be an undergrade and the finding to
+   genuinely belong at or above the threshold; then classify `working` and
+   name that finding and the undergrade in the basis. Follow the
+   indication in every other case; the reason for any departure travels in
+   the decision. Two bounds are mechanical, not judgement: a
    reached maximum rounds is always terminal, and `working` needs at least
    one dispatchable finding. Write your decision to
    `$MINOS_RUN_DIR/sweep-decision.json`:
