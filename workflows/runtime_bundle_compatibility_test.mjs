@@ -89,11 +89,11 @@ async function installedOptionValidator(t) {
   writeFileSync(
     probeRuntime,
     `${readFileSync(installedRuntime, "utf8")}
-export { assertRecognisedAgentOptions as minosAssertRecognisedAgentOptions };
+export { assertValidAgentOptions as minosAssertValidAgentOptions };
 `,
   );
   const module = await import(`${pathToFileURL(probeRuntime).href}?probe=${Date.now()}`);
-  return module.minosAssertRecognisedAgentOptions;
+  return module.minosAssertValidAgentOptions;
 }
 
 function sandboxBindingKeys(runtimeSource) {
