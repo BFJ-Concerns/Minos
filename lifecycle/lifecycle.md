@@ -270,9 +270,12 @@ last action and end the turn. A continuation writes no failure-log line.
    `effort: "high"` and `isolation: "worktree"`; it follows the skill, fixes
    only what it proves, commits with the configured Minos identity, and never
    pushes. Whether the break is the change's own defect or exists only against
-   the reconciled target makes no difference to the dispatch: the repair
-   proves the actual cause either way, and its write-up may say which kind it
-   was. Launch it from `$MINOS_WORKSPACE` — the workflow's worktree isolation
+   the reconciled target makes no difference to the dispatch — the repair
+   proves the actual cause either way — but it bounds what the repair may
+   change: a proven target-side cause, one living in commits that arrived
+   from the reconciled target rather than in the pull request's own changes,
+   is out of scope for the pull-request branch, and the agent returns it as
+   a diagnosis with an empty commit instead of a repair. Launch it from `$MINOS_WORKSPACE` — the workflow's worktree isolation
    branches from the invoking directory's repository, so a launch from the
    run directory has no repository to branch.
 
@@ -342,6 +345,24 @@ last action and end the turn. A continuation writes no failure-log line.
    the progress rule; the run unit's hard timeout is the failsafe against
    a runaway ladder.
 
+   One empty-commit result is not a stall: a diagnosis that attributes the
+   red gate to the reconciled target — the breakage would be red without the
+   pull request's changes — is the discipline's honest answer, and the pull
+   request is not the place to fix it. Publishing request-changes there
+   would blame the wrong branch, and because that terminal review blocks
+   re-attempts until the head moves, it would hold the pull request hostage
+   to a fix that must land on the target. End the run as incomplete instead:
+   append each failed command and its non-zero exit status to
+   `$MINOS_FAILURE_LOG`, post one durable pull-request comment with
+   `"$MINOS_BIN" forge comment CURRENT_HEAD TARGET FILE` reporting that the
+   reconciled target itself is broken — naming the target-side commits and
+   mechanism the diagnosis proved — then set `"$MINOS_BIN" forge status HEAD
+   TARGET incomplete`, remove the 👀 with `"$MINOS_BIN" forge
+   reaction-remove HEAD TARGET eyes`, write the non-clean terminal marker,
+   and stop. A later run reconciles the then-current target, so the pull
+   request is re-assessed once the target is fixed, with no head movement
+   required.
+
    When the ladder stalls — or the dispatch was
    skipped on a fork — the gate stays red and the run ends as **attention**,
    never incomplete: append each failed command and its non-zero exit status
@@ -360,7 +381,8 @@ last action and end the turn. A continuation writes no failure-log line.
    apply to it. Where this discipline applies, `incomplete` remains the
    outcome only for genuine inability
    to assess — infrastructure failure, an incomplete leg, a missing
-   verdict — never for the red gate itself. Finishing's root-cause repair
+   verdict, a reconciled target that arrives broken — never for a red gate
+   the pull request's own changes caused. Finishing's root-cause repair
    (step 8) runs its own dispatch on forge check evidence rather than this
    discipline, but sits under the same progress bound, as step 8 states.
 4. Run every Ensemble workflow in this lifecycle from this accountable lead

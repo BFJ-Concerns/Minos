@@ -61,6 +61,10 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
   assert.match(calls[0].prompt, /Failing command: "just verify"[\s\S]*Exit status: 1/);
   assert.match(calls[0].prompt, /FAIL integration test/);
   assert.match(calls[0].prompt, /reconciled target[\s\S]*fix only what you prove/);
+  assert.match(
+    calls[0].prompt,
+    /target-side cause is out of scope[\s\S]*never revert or override target-side changes[\s\S]*never retarget or remove the pull request's test expectations[\s\S]*empty commit and a diagnosis naming the target-side commit/,
+  );
   assert.match(calls[0].prompt, /configured Minos identity[\s\S]*Never push/);
   assert.match(
     calls[0].prompt,
