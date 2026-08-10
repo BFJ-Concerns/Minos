@@ -196,6 +196,22 @@ last action and end the turn. A continuation writes no failure-log line.
    supplies the context in which code is read; it is never itself part of the
    reviewed change.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
+
+   When the trusted snapshot's `labels` contains the exact `Flaky Test` name,
+   dispatch the finishing root-cause helper now rather than leaving it to
+   step 8: the label was applied before this run started, its flake lives in
+   test code the reviewed diff rarely touches, and its diagnosis is the slow
+   part — so it runs in parallel with the whole review. Retrieve the forge's
+   check evidence with `"$MINOS_BIN" forge check-logs HEAD TARGET >
+   "$MINOS_RUN_DIR/check-logs.json"`, build the helper input with
+   `rootcause-inputs.mjs` exactly as step 8 directs, and launch `rootcause.js`
+   from `$MINOS_WORKSPACE` as a background task under step 4's workflow
+   discipline, with result name `flake-repair-result`. Do not wait on it and
+   do not integrate its commit before finishing: the helper works in its own
+   isolated worktree and never pushes, so the head under review does not
+   move. Step 8 consumes this result on its label-only path instead of
+   dispatching again; a required check red at finishing still gets its own
+   fresh-evidence dispatch there.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you
    in `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD`. First run:
@@ -858,6 +874,15 @@ last action and end the turn. A continuation writes no failure-log line.
    root-cause helper is required. Record which condition triggered it: a
    non-empty `failed_checks` array is the red-check path; only an empty
    `failed_checks` array with the exact label is the label-only path.
+
+   On the label-only path, step 2 has usually already dispatched this helper
+   in parallel with the review: wait for that background task through its
+   `flake-repair-result.done` flag exactly as step 4 directs, then treat
+   `$MINOS_RUN_DIR/flake-repair-result.json` as this helper's result and do
+   not dispatch a second one. Only when no such dispatch exists — the label
+   arrived after step 2's snapshot — construct the helper here. The red-check
+   path always dispatches here on fresh evidence: a check that went red during
+   the run is not the flake step 2's dispatch was working from.
 
    Before constructing the helper, retrieve the forge's check evidence for the
    exact guarded head and target:
