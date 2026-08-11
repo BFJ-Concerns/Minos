@@ -523,26 +523,29 @@ func TestSpawnRunRestoresMovedVerdictWhenAcceptedHandoffSpawnFails(t *testing.T)
 
 func TestSpawnRunRefusesUntrustedReviewVerdicts(t *testing.T) {
 	tests := []struct {
-		name    string
-		content []byte
-		mode    os.FileMode
+		name       string
+		content    []byte
+		unreadable bool
 	}{
 		{name: "absent"},
-		{name: "unreadable", content: []byte(`{"status":"complete","reviewed":{"head":"head"}}`), mode: 0},
-		{name: "malformed", content: []byte(`{"status":`), mode: 0o600},
-		{name: "non-object", content: []byte(`[]`), mode: 0o600},
-		{name: "non-complete", content: []byte(`{"status":"incomplete","reviewed":{"head":"head"}}`), mode: 0o600},
-		{name: "different head", content: []byte(`{"status":"complete","reviewed":{"head":"foreign"}}`), mode: 0o600},
+		{name: "unreadable", unreadable: true},
+		{name: "malformed", content: []byte(`{"status":`)},
+		{name: "non-object", content: []byte(`[]`)},
+		{name: "non-complete", content: []byte(`{"status":"incomplete","reviewed":{"head":"head"}}`)},
+		{name: "different head", content: []byte(`{"status":"complete","reviewed":{"head":"foreign"}}`)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			cfg, facts, predecessor, systemdArgs := reviewContinuationFixture(t)
-			if test.content != nil {
-				path := filepath.Join(predecessor, "review-result.json")
-				if err := os.WriteFile(path, test.content, 0o600); err != nil {
+			path := filepath.Join(predecessor, "review-result.json")
+			if test.unreadable {
+				// A directory at the verdict path fails the read for any
+				// caller, root included — chmod 0 does not bind for root.
+				if err := os.Mkdir(path, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Chmod(path, test.mode); err != nil {
+			} else if test.content != nil {
+				if err := os.WriteFile(path, test.content, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
