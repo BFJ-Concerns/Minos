@@ -169,6 +169,9 @@ func createBareFixtureRemote(t *testing.T, name, contents string) (string, strin
 	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
 	workspace := filepath.Join(root, "workspace")
 	runGit(t, root, "clone", remote, workspace)
+	// Clones do not inherit the seed's identity, and CI has no host-level one.
+	runGit(t, workspace, "config", "user.name", "Fixture")
+	runGit(t, workspace, "config", "user.email", "fixture@example.invalid")
 	return remote, workspace
 }
 
