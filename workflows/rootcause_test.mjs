@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,8 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
     skillPath: "/opt/minos/root-cause",
     command: "just verify",
     exitStatus: 1,
-    evidence: "FAIL integration test",
+    evidencePath: "/run/test-command-output.log",
+    excerptPath: "/run/test-command-output.log.excerpt",
   };
   const { result, calls, phases } = await run(input);
 
@@ -59,8 +60,15 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
   });
   assert.match(calls[0].prompt, /\/opt\/minos\/root-cause\/SKILL\.md/);
   assert.match(calls[0].prompt, /Failing command: "just verify"[\s\S]*Exit status: 1/);
-  assert.match(calls[0].prompt, /FAIL integration test/);
+  assert.match(
+    calls[0].prompt,
+    /read \/run\/test-command-output\.log\.excerpt — a failure-relevant excerpt[\s\S]*complete original is at \/run\/test-command-output\.log/,
+  );
   assert.match(calls[0].prompt, /reconciled target[\s\S]*fix only what you prove/);
+  assert.match(
+    calls[0].prompt,
+    /target-side cause is out of scope[\s\S]*never revert or override target-side changes[\s\S]*never retarget or remove the pull request's test expectations[\s\S]*empty commit and a diagnosis naming the target-side commit/,
+  );
   assert.match(calls[0].prompt, /configured Minos identity[\s\S]*Never push/);
   assert.match(
     calls[0].prompt,
@@ -78,12 +86,14 @@ test("finishing evidence needs no invented command and permits an empty commit",
     skillPath: "/opt/minos/root-cause",
     command: "",
     exitStatus: null,
-    evidence: '{"runs":[]}',
+    evidencePath: "/run/check-logs.json",
+    excerptPath: "/run/check-logs.json",
   }, response);
 
   assert.deepEqual(result, response);
   assert.match(calls[0].prompt, /No failing local command is available/);
-  assert.match(calls[0].prompt, /\{"runs":\[\]\}/);
+  assert.match(calls[0].prompt, /read the captured output at \/run\/check-logs\.json/);
+  assert.doesNotMatch(calls[0].prompt, /failure-relevant excerpt/);
   assert.match(calls[0].prompt, /empty commit string/);
 });
 
@@ -92,7 +102,8 @@ test("caller evidence is optional when an exact failing command is supplied", as
     skillPath: "/opt/minos/root-cause",
     command: "go test ./...",
     exitStatus: 2,
-    evidence: null,
+    evidencePath: null,
+    excerptPath: null,
   });
   assert.match(calls[0].prompt, /no captured output[\s\S]*Reproduce the failure/);
 });
@@ -100,9 +111,12 @@ test("caller evidence is optional when an exact failing command is supplied", as
 test("invalid inputs fail closed without dispatch", async () => {
   for (const input of [
     {},
-    { skillPath: "relative", command: "test", exitStatus: 1, evidence: "failed" },
-    { skillPath: "/skill", command: "test", exitStatus: "1", evidence: "failed" },
-    { skillPath: "/skill", command: "", exitStatus: null, evidence: null },
+    { skillPath: "relative", command: "test", exitStatus: 1, evidencePath: "/e.log", excerptPath: "/e.log" },
+    { skillPath: "/skill", command: "test", exitStatus: "1", evidencePath: "/e.log", excerptPath: "/e.log" },
+    { skillPath: "/skill", command: "", exitStatus: null, evidencePath: null, excerptPath: null },
+    { skillPath: "/skill", command: "test", exitStatus: 1, evidence: "inline text" },
+    { skillPath: "/skill", command: "test", exitStatus: 1, evidencePath: "/e.log", excerptPath: null },
+    { skillPath: "/skill", command: "test", exitStatus: 1, evidencePath: "relative.log", excerptPath: "relative.log" },
   ]) {
     const { result, calls, phases } = await run(input);
     assert.equal(result.status, "incomplete");
@@ -112,7 +126,7 @@ test("invalid inputs fail closed without dispatch", async () => {
   }
 });
 
-test("the input builder carries file evidence and validates its modes", (t) => {
+test("the input builder passes small evidence whole, by path, and validates its modes", (t) => {
   const root = mkdtempSync(join(tmpdir(), "minos-rootcause-inputs-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const evidencePath = join(root, "evidence.log");
@@ -129,8 +143,10 @@ test("the input builder carries file evidence and validates its modes", (t) => {
     skillPath: "/opt/minos/root-cause",
     command: "just verify",
     exitStatus: 1,
-    evidence: "captured failure\n",
+    evidencePath,
+    excerptPath: evidencePath,
   });
+  assert.equal(existsSync(`${evidencePath}.excerpt`), false);
 
   const finishing = spawnSync(inputScriptPath, [
     "--skill", "/opt/minos/root-cause",
@@ -150,4 +166,60 @@ test("the input builder carries file evidence and validates its modes", (t) => {
     assert.equal(invalid.status, 2);
     assert.match(invalid.stderr, /^usage:/);
   }
+});
+
+test("large plain-text evidence is excerpted to failure-relevant lines", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "minos-rootcause-excerpt-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const evidencePath = join(root, "test-command-output.log");
+  const passing = Array.from({ length: 4000 }, (_, index) => `        PASS [   0.01s] relay-app case_${index}`);
+  passing[1500] = "        TRY 1 FAIL [   2.31s] relay-app parser::keeps_attribution";
+  passing[1501] = "thread 'parser::keeps_attribution' panicked at src/parser.rs:44";
+  passing[3990] = "     Summary [  41.20s] 4000 tests run: 3999 passed (1 flaky), 0 skipped";
+  writeFileSync(evidencePath, passing.join("\n"));
+
+  const result = spawnSync(inputScriptPath, [
+    "--skill", "/opt/minos/root-cause",
+    "--evidence", evidencePath,
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.evidencePath, evidencePath);
+  assert.equal(output.excerptPath, `${evidencePath}.excerpt`);
+
+  const excerpt = readFileSync(output.excerptPath, "utf8");
+  assert.match(excerpt, /TRY 1 FAIL[\s\S]*panicked at src\/parser\.rs/);
+  assert.match(excerpt, /Summary \[/);
+  assert.match(excerpt, /lines elided/);
+  assert.ok(excerpt.length < readFileSync(evidencePath, "utf8").length / 4);
+});
+
+test("check-logs evidence keeps its structure while each job log is excerpted", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "minos-rootcause-checklogs-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const evidencePath = join(root, "check-logs.json");
+  const noisy = Array.from({ length: 3000 }, (_, index) => `ok line ${index}`);
+  noisy[2000] = "FLAKY 2/3 parser::boundary_only_input";
+  writeFileSync(evidencePath, JSON.stringify({
+    head_sha: "b1e6c548",
+    target_sha: "9fc4aa7b",
+    runs: [{ id: 7, index: 84, status: "success", title: "CI", jobs: [
+      { id: 9, name: "test", status: "success", log: noisy.join("\n") },
+    ] }],
+  }));
+
+  const result = spawnSync(inputScriptPath, [
+    "--skill", "/opt/minos/root-cause",
+    "--evidence", evidencePath,
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.excerptPath, `${evidencePath}.excerpt`);
+
+  const excerpt = JSON.parse(readFileSync(output.excerptPath, "utf8"));
+  assert.equal(excerpt.head_sha, "b1e6c548");
+  assert.equal(excerpt.runs[0].jobs[0].name, "test");
+  assert.match(excerpt.runs[0].jobs[0].log, /FLAKY 2\/3 parser::boundary_only_input/);
+  assert.match(excerpt.runs[0].jobs[0].log, /lines elided/);
+  assert.ok(excerpt.runs[0].jobs[0].log.length < noisy.join("\n").length / 4);
 });

@@ -196,6 +196,22 @@ last action and end the turn. A continuation writes no failure-log line.
    supplies the context in which code is read; it is never itself part of the
    reviewed change.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
+
+   When the trusted snapshot's `labels` contains the exact `Flaky Test` name,
+   dispatch the finishing root-cause helper now rather than leaving it to
+   step 8: the label was applied before this run started, its flake lives in
+   test code the reviewed diff rarely touches, and its diagnosis is the slow
+   part — so it runs in parallel with the whole review. Retrieve the forge's
+   check evidence with `"$MINOS_BIN" forge check-logs HEAD TARGET >
+   "$MINOS_RUN_DIR/check-logs.json"`, build the helper input with
+   `rootcause-inputs.mjs` exactly as step 8 directs, and launch `rootcause.js`
+   from `$MINOS_WORKSPACE` as a background task under step 4's workflow
+   discipline, with result name `flake-repair-result`. Do not wait on it and
+   do not integrate its commit before finishing: the helper works in its own
+   isolated worktree and never pushes, so the head under review does not
+   move. Step 8 consumes this result on its label-only path instead of
+   dispatching again; a required check red at finishing still gets its own
+   fresh-evidence dispatch there.
 3. Read the repository guidance and the complete target-to-head diff. The
    repository's configured build and test commands are already resolved for you
    in `$MINOS_BUILD_CMD` and `$MINOS_TEST_CMD`. First run:
@@ -249,14 +265,21 @@ last action and end the turn. A continuation writes no failure-log line.
    Invoke the shipped `rootcause.js` workflow. Give its input builder the
    vendored root-cause skill path, the exact failing command string and exit
    status, and the matching absolute `build-command-output.log` or
-   `test-command-output.log` path containing the failure's captured output. The
+   `test-command-output.log` path containing the failure's captured output.
+   The builder hands the workflow evidence by path, never inline: large
+   captured output is excerpted to its failure-relevant lines (written as
+   `.excerpt` beside the original) so the repair agent reads the failing
+   tests rather than the whole log. The
    workflow dispatches one repair agent on `codex` / `gpt-5.6-sol` with
    `effort: "high"` and `isolation: "worktree"`; it follows the skill, fixes
    only what it proves, commits with the configured Minos identity, and never
    pushes. Whether the break is the change's own defect or exists only against
-   the reconciled target makes no difference to the dispatch: the repair
-   proves the actual cause either way, and its write-up may say which kind it
-   was. Launch it from `$MINOS_WORKSPACE` — the workflow's worktree isolation
+   the reconciled target makes no difference to the dispatch — the repair
+   proves the actual cause either way — but it bounds what the repair may
+   change: a proven target-side cause, one living in commits that arrived
+   from the reconciled target rather than in the pull request's own changes,
+   is out of scope for the pull-request branch, and the agent returns it as
+   a diagnosis with an empty commit instead of a repair. Launch it from `$MINOS_WORKSPACE` — the workflow's worktree isolation
    branches from the invoking directory's repository, so a launch from the
    run directory has no repository to branch.
 
@@ -326,6 +349,24 @@ last action and end the turn. A continuation writes no failure-log line.
    the progress rule; the run unit's hard timeout is the failsafe against
    a runaway ladder.
 
+   One empty-commit result is not a stall: a diagnosis that attributes the
+   red gate to the reconciled target — the breakage would be red without the
+   pull request's changes — is the discipline's honest answer, and the pull
+   request is not the place to fix it. Publishing request-changes there
+   would blame the wrong branch, and because that terminal review blocks
+   re-attempts until the head moves, it would hold the pull request hostage
+   to a fix that must land on the target. End the run as incomplete instead:
+   append each failed command and its non-zero exit status to
+   `$MINOS_FAILURE_LOG`, post one durable pull-request comment with
+   `"$MINOS_BIN" forge comment CURRENT_HEAD TARGET FILE` reporting that the
+   reconciled target itself is broken — naming the target-side commits and
+   mechanism the diagnosis proved — then set `"$MINOS_BIN" forge status HEAD
+   TARGET incomplete`, remove the 👀 with `"$MINOS_BIN" forge
+   reaction-remove HEAD TARGET eyes`, write the non-clean terminal marker,
+   and stop. A later run reconciles the then-current target, so the pull
+   request is re-assessed once the target is fixed, with no head movement
+   required.
+
    When the ladder stalls — or the dispatch was
    skipped on a fork — the gate stays red and the run ends as **attention**,
    never incomplete: append each failed command and its non-zero exit status
@@ -344,7 +385,8 @@ last action and end the turn. A continuation writes no failure-log line.
    apply to it. Where this discipline applies, `incomplete` remains the
    outcome only for genuine inability
    to assess — infrastructure failure, an incomplete leg, a missing
-   verdict — never for the red gate itself. Finishing's root-cause repair
+   verdict, a reconciled target that arrives broken — never for a red gate
+   the pull request's own changes caused. Finishing's root-cause repair
    (step 8) runs its own dispatch on forge check evidence rather than this
    discipline, but sits under the same progress bound, as step 8 states.
 4. Run every Ensemble workflow in this lifecycle from this accountable lead
@@ -859,6 +901,15 @@ last action and end the turn. A continuation writes no failure-log line.
    non-empty `failed_checks` array is the red-check path; only an empty
    `failed_checks` array with the exact label is the label-only path.
 
+   On the label-only path, step 2 has usually already dispatched this helper
+   in parallel with the review: wait for that background task through its
+   `flake-repair-result.done` flag exactly as step 4 directs, then treat
+   `$MINOS_RUN_DIR/flake-repair-result.json` as this helper's result and do
+   not dispatch a second one. Only when no such dispatch exists — the label
+   arrived after step 2's snapshot — construct the helper here. The red-check
+   path always dispatches here on fresh evidence: a check that went red during
+   the run is not the flake step 2's dispatch was working from.
+
    Before constructing the helper, retrieve the forge's check evidence for the
    exact guarded head and target:
 
@@ -875,8 +926,10 @@ last action and end the turn. A continuation writes no failure-log line.
    than step 3's configured-command output files. The workflow uses the same
    `codex` / `gpt-5.6-sol`, `effort: "high"`, `isolation: "worktree"`, proof
    discipline, configured Minos commit identity, code-only `writeUp`, and
-   no-push rule as the gate repair discipline. It starts from the recorded job
-   statuses and logs,
+   no-push rule as the gate repair discipline. The builder excerpts each
+   job's log to its failure-relevant lines, keeping run and job structure, and
+   hands the agent both the excerpt and the full original by path. It starts
+   from the recorded job statuses and logs,
    including retry and flaky-test lines, but treats that evidence as diagnostic
    input rather than proof and still reproduces and proves its diagnosis. An
    empty `runs` array means there is no Actions-backed log evidence; do not
