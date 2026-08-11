@@ -265,7 +265,11 @@ last action and end the turn. A continuation writes no failure-log line.
    Invoke the shipped `rootcause.js` workflow. Give its input builder the
    vendored root-cause skill path, the exact failing command string and exit
    status, and the matching absolute `build-command-output.log` or
-   `test-command-output.log` path containing the failure's captured output. The
+   `test-command-output.log` path containing the failure's captured output.
+   The builder hands the workflow evidence by path, never inline: large
+   captured output is excerpted to its failure-relevant lines (written as
+   `.excerpt` beside the original) so the repair agent reads the failing
+   tests rather than the whole log. The
    workflow dispatches one repair agent on `codex` / `gpt-5.6-sol` with
    `effort: "high"` and `isolation: "worktree"`; it follows the skill, fixes
    only what it proves, commits with the configured Minos identity, and never
@@ -922,8 +926,10 @@ last action and end the turn. A continuation writes no failure-log line.
    than step 3's configured-command output files. The workflow uses the same
    `codex` / `gpt-5.6-sol`, `effort: "high"`, `isolation: "worktree"`, proof
    discipline, configured Minos commit identity, code-only `writeUp`, and
-   no-push rule as the gate repair discipline. It starts from the recorded job
-   statuses and logs,
+   no-push rule as the gate repair discipline. The builder excerpts each
+   job's log to its failure-relevant lines, keeping run and job structure, and
+   hands the agent both the excerpt and the full original by path. It starts
+   from the recorded job statuses and logs,
    including retry and flaky-test lines, but treats that evidence as diagnostic
    input rather than proof and still reproduces and proves its diagnosis. An
    empty `runs` array means there is no Actions-backed log evidence; do not

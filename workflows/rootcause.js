@@ -17,6 +17,10 @@ const rootCauseResultSchema = {
   },
 };
 
+function absolutePathOrNull(value) {
+  return value === null || (typeof value === "string" && value.startsWith("/"));
+}
+
 function validInput(input) {
   return Boolean(
     input &&
@@ -25,9 +29,11 @@ function validInput(input) {
     typeof input.command === "string" &&
     (input.exitStatus === null ||
       (Number.isInteger(input.exitStatus) && input.exitStatus >= 0)) &&
-    (input.evidence === null || typeof input.evidence === "string") &&
+    absolutePathOrNull(input.evidencePath) &&
+    absolutePathOrNull(input.excerptPath) &&
+    (input.evidencePath === null) === (input.excerptPath === null) &&
     (input.command !== "" || input.exitStatus === null) &&
-    (input.command !== "" || input.evidence !== null)
+    (input.command !== "" || input.evidencePath !== null)
   );
 }
 
@@ -39,9 +45,11 @@ function repairPrompt(input) {
   const failure = input.command === ""
     ? "No failing local command is available; start from the caller-supplied finishing evidence below."
     : `Failing command: ${JSON.stringify(input.command)}\nExit status: ${input.exitStatus}`;
-  const evidence = input.evidence === null
+  const evidence = input.evidencePath === null
     ? "The caller supplied no captured output. Reproduce the failure before diagnosing it."
-    : `<caller-evidence>\n${input.evidence}\n</caller-evidence>`;
+    : input.excerptPath === input.evidencePath
+      ? `Caller evidence: read the captured output at ${input.evidencePath}.`
+      : `Caller evidence: read ${input.excerptPath} — a failure-relevant excerpt of the captured output (the lines around failing, flaky, and retried tests, plus the harness summary; elided passages are marked). The complete original is at ${input.evidencePath}; consult it only where the excerpt lacks context you need.`;
 
   return `Read and follow the vendored root-cause skill at ${input.skillPath}/SKILL.md.
 
@@ -60,7 +68,7 @@ Commit any repair with the configured Minos identity. Return the diagnosis, the 
 
 const input = args && typeof args === "object" ? args : null;
 if (!validInput(input))
-  return failedResult("root-cause repair needs args {skillPath, command, exitStatus, evidence}");
+  return failedResult("root-cause repair needs args {skillPath, command, exitStatus, evidencePath, excerptPath}");
 
 phase("Root cause");
 
