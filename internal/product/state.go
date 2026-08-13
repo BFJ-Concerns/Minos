@@ -11,15 +11,17 @@ var (
 	working      = State{"working", "pending", "Reviewing changes"}
 	attention    = State{"attention", "failure", "Changes need attention"}
 	incomplete   = State{"incomplete", "error", "Review incomplete"}
+	held         = State{"held", "pending", "Blocked on target branch"}
 	continuation = State{"continuation", "pending", "Review continuing in a fresh run"}
 	clean        = State{"clean", "success", "Changes approved"}
 	merged       = State{"merged", "success", "Merged"}
-	states       = [...]State{working, attention, incomplete, continuation, clean, merged}
+	states       = [...]State{working, attention, incomplete, held, continuation, clean, merged}
 )
 
 func Working() State      { return working }
 func Attention() State    { return attention }
 func Incomplete() State   { return incomplete }
+func Held() State         { return held }
 func Continuation() State { return continuation }
 func Clean() State        { return clean }
 func Merged() State       { return merged }
