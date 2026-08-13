@@ -279,9 +279,24 @@ last action and end the turn. A continuation writes no failure-log line.
    change: a proven target-side cause, one living in commits that arrived
    from the reconciled target rather than in the pull request's own changes,
    is out of scope for the pull-request branch, and the agent returns it as
-   a diagnosis with an empty commit instead of a repair. Launch it from `$MINOS_WORKSPACE` — the workflow's worktree isolation
+   a diagnosis with an empty commit instead of a repair. Launch it from
+   `$MINOS_WORKSPACE` — the workflow's worktree isolation
    branches from the invoking directory's repository, so a launch from the
    run directory has no repository to branch.
+
+   The agent reports that bound structurally in its `cause` verdict —
+   `side`, `determinism` and `locus`, each of which may be `unproven` — and
+   every outcome below branches on those fields rather than on the
+   diagnosis prose. One target-side shape is in scope: a cause proven
+   `intermittent` with locus `test-expectation` is repaired on the
+   pull-request branch and rides it to merge, because a test asserting a
+   timing the product never guaranteed blocks every pull request
+   reconciling with it while its own branch stays green. That exception is
+   deliberately narrow. A `deterministic` target-side cause stays out of
+   scope because a repair that fits the pull request to a broken target
+   reverts the target's work at merge, and a `product` locus stays out
+   because the intermittent test is the only witness to a real race and
+   silencing it ships the bug.
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \
@@ -349,10 +364,10 @@ last action and end the turn. A continuation writes no failure-log line.
    the progress rule; the run unit's hard timeout is the failsafe against
    a runaway ladder.
 
-   One empty-commit result is not a stall: a diagnosis that attributes the
-   red gate to the reconciled target — the breakage would be red without the
-   pull request's changes — is the discipline's honest answer, and the pull
-   request is not the place to fix it. Publishing request-changes there
+   One empty-commit result is not a stall: a `cause` verdict whose `side`
+   is `target` — the breakage would be red without the pull request's
+   changes — is the discipline's honest answer, and the pull request is
+   not the place to fix it. Publishing request-changes there
    would blame the wrong branch, and because that terminal review blocks
    re-attempts until the head moves, it would hold the pull request hostage
    to a fix that must land on the target. End the run as held instead:
@@ -366,6 +381,21 @@ last action and end the turn. A continuation writes no failure-log line.
    and stop. The held status is bound to the current target; when the target
    branch receives fixes its SHA changes, the sweep sees a new target URL,
    and a fresh run re-assesses the pull request automatically.
+
+   The in-scope target-side shape never reaches that held paragraph on its
+   own merits: a `target` verdict that is `intermittent` with locus
+   `test-expectation` is the one the agent repairs, so it arrives with a
+   commit and continues through the ordinary integration and gate re-run
+   above — the flake fix rides the pull request to merge. It ends held only
+   when the repair could not be delivered: a fix landing solely in files
+   that exist on the target side is undeliverable through the
+   pull-request branch, and the agent returns that as an empty commit,
+   which ends the run held exactly as above with its comment naming the
+   fix that cannot be delivered here. Every other `target` verdict —
+   `deterministic`, or `product` locus, or `determinism` still `unproven`
+   — ends held as above. A verdict whose `side` is `unproven` is not a
+   target-side answer at all: it is a stall, and ends as **attention**
+   below.
 
    When the ladder stalls — or the dispatch was
    skipped on a fork — the gate stays red and the run ends as **attention**,
@@ -960,7 +990,11 @@ last action and end the turn. A continuation writes no failure-log line.
    Then run the exact configured build and test commands on the fresh head as
    for any fix. If those pass and the flake is fixed, remove the exact label
    with `"$MINOS_BIN" forge label-remove FRESH_HEAD FRESH_TARGET "Flaky Test"`;
-   this guarded command reads the labels back and is safe to repeat.
+   this guarded command reads the labels back and is safe to repeat. One
+   passing run does not decide that second judgement: an intermittent
+   failure has a rate, so a green sample is not proof it is gone. Take that
+   from the repair's own account of the mechanism it removed and the rate it
+   measured, and leave the label on when the account does not carry it.
 
    Build and tests are this repair's verification, and the merge proceeds in
    the same attempt: like the brief stage's wave and setup's conflict
@@ -990,17 +1024,25 @@ last action and end the turn. A continuation writes no failure-log line.
    and still stops incomplete.
 
    When the helper returns no commit and no pushed head appears, it has made
-   no mutation. On the red-check path, distinguish the cause: a diagnosis
-   that attributes the failure to the reconciled target ends the run as held,
-   exactly as step 3's target-side discipline directs — set `"$MINOS_BIN"
-   forge status HEAD TARGET held`, post the target-side comment, remove 👀,
-   write the non-clean terminal marker, and stop. A diagnosis that does not
-   attribute the failure to the target is a stall — leave the label when
-   present and end as attention exactly as above.
+   no mutation. On the red-check path, branch on the `cause` verdict exactly
+   as step 3's target-side discipline directs: a `side` of `target` ends the
+   run as held — set `"$MINOS_BIN" forge status HEAD TARGET held`, post the
+   target-side comment, remove 👀, write the non-clean terminal marker, and
+   stop. Any other `side`, `unproven` included, is a stall — leave the label
+   when present and end as attention exactly as above. The one target-side
+   shape the helper repairs rather than reports — `intermittent` with locus
+   `test-expectation` — returns a commit, so it leaves by the integration
+   path above and never reaches this paragraph; an empty commit carrying
+   that verdict means the fix was undeliverable through the pull-request
+   branch, and ends the run held with the rest.
    Only on the label-only path may step 9 receive the unchanged verified head
-   and target. Retain the `Flaky Test` label on that path. This clean
-   continuation writes nothing to `$MINOS_FAILURE_LOG`. The retained label is
-   the durable record that the flake remains unproven. A non-passing
+   and target. Retain the `Flaky Test` label on that path, whatever the
+   verdict says: required checks are green there, so an unrepaired flake is
+   not a reason to withhold a pull request the forge considers passing, and
+   the label is the durable record that the flake outlived this run —
+   whether it went unreproduced, or was proven to live in the product where
+   this repair may not follow it. This clean
+   continuation writes nothing to `$MINOS_FAILURE_LOG`. A non-passing
    `check_decision` with no explicit `failed_checks` is incomplete forge state,
    not a root-cause dispatch.
 9. Keep using the watcher until the trusted snapshot has `check_decision`
@@ -1015,8 +1057,9 @@ last action and end the turn. A continuation writes no failure-log line.
    `$MINOS_RUN_DIR/gate-repair-ladder.log` as step 3 directs. A repair
    that leaves the same check failing the same way is a stall that ends
    the run as **attention** with the honest request-changes report; a
-   target-side diagnosis ends the run as **held** exactly as step 8's
-   target-side discipline directs. A
+   `target` verdict the helper did not repair ends the run as **held**
+   exactly as step 8's target-side discipline directs, and a repaired
+   target-side flake returns with its commit like any other. A
    verified repair from that re-entry returns here through step 8's
    ordinary continuation on its fresh head; this loop has no counted
    ceiling, the run unit's hard timeout being the failsafe.

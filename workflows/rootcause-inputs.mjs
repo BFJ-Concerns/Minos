@@ -50,16 +50,24 @@ function excerptEvidence(content) {
     return excerptText(content);
   }
   if (!parsed || !Array.isArray(parsed.runs)) return excerptText(content);
+  let excerpted = false;
   const runs = parsed.runs.map((run) =>
     run && Array.isArray(run.jobs)
       ? {
         ...run,
-        jobs: run.jobs.map((job) =>
-          job && typeof job.log === "string" ? { ...job, log: excerptText(job.log) } : job,
-        ),
+        jobs: run.jobs.map((job) => {
+          if (!job || typeof job.log !== "string") return job;
+          const log = excerptText(job.log);
+          if (log === job.log) return job;
+          excerpted = true;
+          return { ...job, log };
+        }),
       }
       : run,
   );
+  // When every job log fits whole, hand over the original file: a rewritten
+  // copy would be described to the agent as an excerpt it is not.
+  if (!excerpted) return content;
   return JSON.stringify({ ...parsed, runs }, null, 1);
 }
 

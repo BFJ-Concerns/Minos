@@ -13,7 +13,18 @@ const body = source.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction("agent", "phase", "args", body);
 
-async function run(args, response = { diagnosis: "proved cause", commit: "abc123", writeUp: "Repaired code." }) {
+const provenPullRequestCause = {
+  side: "pull-request",
+  determinism: "deterministic",
+  locus: "unproven",
+};
+
+async function run(args, response = {
+  diagnosis: "proved cause",
+  commit: "abc123",
+  writeUp: "Repaired code.",
+  cause: provenPullRequestCause,
+}) {
   const calls = [];
   const phases = [];
   const result = await script(
@@ -37,7 +48,12 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
   };
   const { result, calls, phases } = await run(input);
 
-  assert.deepEqual(result, { diagnosis: "proved cause", commit: "abc123", writeUp: "Repaired code." });
+  assert.deepEqual(result, {
+    diagnosis: "proved cause",
+    commit: "abc123",
+    writeUp: "Repaired code.",
+    cause: provenPullRequestCause,
+  });
   assert.deepEqual(phases, ["Root cause"]);
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].options, {
@@ -45,11 +61,21 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
     schema: {
       type: "object",
       additionalProperties: false,
-      required: ["diagnosis", "commit", "writeUp"],
+      required: ["diagnosis", "commit", "writeUp", "cause"],
       properties: {
         diagnosis: { type: "string" },
         commit: { type: "string" },
         writeUp: { type: "string" },
+        cause: {
+          type: "object",
+          additionalProperties: false,
+          required: ["side", "determinism", "locus"],
+          properties: {
+            side: { enum: ["pull-request", "target", "unproven"] },
+            determinism: { enum: ["deterministic", "intermittent", "unproven"] },
+            locus: { enum: ["test-expectation", "product", "unproven"] },
+          },
+        },
       },
     },
     model: "gpt-5.6-sol",
@@ -69,6 +95,26 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
     calls[0].prompt,
     /target-side cause is out of scope[\s\S]*never revert or override target-side changes[\s\S]*never retarget or remove the pull request's test expectations[\s\S]*empty commit and a diagnosis naming the target-side commit/,
   );
+  assert.match(
+    calls[0].prompt,
+    /`side`[\s\S]*`determinism`[\s\S]*`locus`[\s\S]*Report `unproven` on any axis you have not proved/,
+  );
+  assert.match(
+    calls[0].prompt,
+    /`intermittent` only once you have measured a failure rate[\s\S]*A single observed failure is not a measured rate/,
+  );
+  assert.match(
+    calls[0].prompt,
+    /One exception, and only this one: a target-side cause proven `intermittent` with locus `test-expectation` is yours to repair[\s\S]*let the fix ride this pull request/,
+  );
+  assert.match(
+    calls[0].prompt,
+    /a `product` locus stays out of scope even when intermittent[\s\S]*only witness to a real bug[\s\S]*ships that bug/,
+  );
+  assert.match(
+    calls[0].prompt,
+    /repaired target-side flaky expectation carries the same disclosure[\s\S]*measured rate that proved the flake/,
+  );
   assert.match(calls[0].prompt, /configured Minos identity[\s\S]*Never push/);
   assert.match(
     calls[0].prompt,
@@ -81,7 +127,12 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
 });
 
 test("finishing evidence needs no invented command and permits an empty commit", async () => {
-  const response = { diagnosis: "flake did not reproduce", commit: "", writeUp: "No code changed." };
+  const response = {
+    diagnosis: "flake did not reproduce",
+    commit: "",
+    writeUp: "No code changed.",
+    cause: { side: "unproven", determinism: "unproven", locus: "unproven" },
+  };
   const { result, calls } = await run({
     skillPath: "/opt/minos/root-cause",
     command: "",
@@ -95,6 +146,38 @@ test("finishing evidence needs no invented command and permits an empty commit",
   assert.match(calls[0].prompt, /read the captured output at \/run\/check-logs\.json/);
   assert.doesNotMatch(calls[0].prompt, /failure-relevant excerpt/);
   assert.match(calls[0].prompt, /empty commit string/);
+});
+
+test("a repaired target-side flake and an unrepairable one are distinguishable by verdict", async () => {
+  const input = {
+    skillPath: "/opt/minos/root-cause",
+    command: "cargo run -p xtask -- test",
+    exitStatus: 1,
+    evidencePath: "/run/test-command-output.log",
+    excerptPath: "/run/test-command-output.log.excerpt",
+  };
+
+  const ridden = await run(input, {
+    diagnosis: "target-side test asserts an ordering the product never guaranteed",
+    commit: "d4e5f60",
+    writeUp: "Relaxed the ordering assumption.",
+    cause: { side: "target", determinism: "intermittent", locus: "test-expectation" },
+  });
+  assert.equal(ridden.result.commit, "d4e5f60");
+  assert.deepEqual(ridden.result.cause, {
+    side: "target",
+    determinism: "intermittent",
+    locus: "test-expectation",
+  });
+
+  const heldRace = await run(input, {
+    diagnosis: "target-side race in the scheduler, witnessed by the test",
+    commit: "",
+    writeUp: "No code changed.",
+    cause: { side: "target", determinism: "intermittent", locus: "product" },
+  });
+  assert.equal(heldRace.result.commit, "");
+  assert.equal(heldRace.result.cause.locus, "product");
 });
 
 test("caller evidence is optional when an exact failing command is supplied", async () => {
@@ -154,6 +237,19 @@ test("the input builder passes small evidence whole, by path, and validates its 
   ], { encoding: "utf8" });
   assert.equal(finishing.status, 0, finishing.stderr);
   assert.equal(JSON.parse(finishing.stdout).exitStatus, null);
+
+  const checkLogsPath = join(root, "check-logs.json");
+  writeFileSync(checkLogsPath, JSON.stringify({
+    head_sha: "b1e6c548",
+    runs: [{ id: 7, status: "failure", jobs: [{ id: 9, name: "test", status: "failure", log: "FAIL: TestX" }] }],
+  }));
+  const checkLogs = spawnSync(inputScriptPath, [
+    "--skill", "/opt/minos/root-cause",
+    "--evidence", checkLogsPath,
+  ], { encoding: "utf8" });
+  assert.equal(checkLogs.status, 0, checkLogs.stderr);
+  assert.equal(JSON.parse(checkLogs.stdout).excerptPath, checkLogsPath);
+  assert.equal(existsSync(`${checkLogsPath}.excerpt`), false);
 
   for (const invalidArgs of [
     [],
