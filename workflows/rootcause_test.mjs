@@ -155,6 +155,19 @@ test("the input builder passes small evidence whole, by path, and validates its 
   assert.equal(finishing.status, 0, finishing.stderr);
   assert.equal(JSON.parse(finishing.stdout).exitStatus, null);
 
+  const checkLogsPath = join(root, "check-logs.json");
+  writeFileSync(checkLogsPath, JSON.stringify({
+    head_sha: "b1e6c548",
+    runs: [{ id: 7, status: "failure", jobs: [{ id: 9, name: "test", status: "failure", log: "FAIL: TestX" }] }],
+  }));
+  const checkLogs = spawnSync(inputScriptPath, [
+    "--skill", "/opt/minos/root-cause",
+    "--evidence", checkLogsPath,
+  ], { encoding: "utf8" });
+  assert.equal(checkLogs.status, 0, checkLogs.stderr);
+  assert.equal(JSON.parse(checkLogs.stdout).excerptPath, checkLogsPath);
+  assert.equal(existsSync(`${checkLogsPath}.excerpt`), false);
+
   for (const invalidArgs of [
     [],
     ["--skill", "relative", "--evidence", evidencePath],
