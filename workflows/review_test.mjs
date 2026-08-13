@@ -768,7 +768,7 @@ test("configured command failures enter the repair discipline, never a review on
 });
 
 test("a verified finishing repair merges in the same attempt", () => {
-  const finishing = lifecycle.slice(lifecycle.indexOf("8. Enter finishing"), lifecycle.indexOf("9. If"));
+  const finishing = lifecycle.slice(lifecycle.indexOf("8. Enter finishing"), lifecycle.indexOf("9. Keep"));
   assert.match(
     finishing,
     /red-check path[\s\S]*label-only path/,
@@ -811,7 +811,7 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
-    /helper returns no commit and no pushed head appears[\s\S]*made\s+no mutation[\s\S]*stall on\s+the red-check path[\s\S]*end as attention[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
+    /helper returns no commit and no pushed head appears[\s\S]*made\s+no mutation[\s\S]*On the red-check path[\s\S]*target ends the run as held[\s\S]*does not\s+attribute the failure to the target is a stall[\s\S]*end as attention[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
   );
   assert.match(
     finishing,
@@ -819,11 +819,26 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
 });
 
-test("a check going red at step 9 re-enters the finishing repair under the progress bound", () => {
-  const merging = lifecycle.slice(lifecycle.indexOf("9. If"));
+test("the 👍 is awarded only at step 9, once checks pass, and retracted when a check turns red", () => {
+  const merging = lifecycle.slice(lifecycle.indexOf("9. Keep"));
   assert.match(
     merging,
-    /`failed_checks`\s+turns non-empty while waiting here[\s\S]*not a merge-readiness wait[\s\S]*re-enter step 8's root-cause\s+helper on that fresh evidence[\s\S]*fresh `check-logs\.json` for\s+the exact current head and target[\s\S]*same progress bound[\s\S]*gate-repair-ladder\.log[\s\S]*same check failing the same way is a stall[\s\S]*\*\*attention\*\*[\s\S]*honest request-changes report/,
+    /Once checks pass, add the 👍 with `"\$MINOS_BIN" forge reaction HEAD\s+TARGET \+1`/,
+  );
+  assert.match(
+    merging,
+    /check that turns red during this readiness wait\s+re-enters the repair exactly as above[\s\S]*remove it with `"\$MINOS_BIN" forge reaction-remove HEAD TARGET\s+\+1` before dispatching[\s\S]*re-add it only when checks pass again/,
+  );
+  // Every earlier stage — the main loop, the brief stage, finishing's
+  // repairs — must award no 👍: it means ready to merge, nothing less.
+  assert.doesNotMatch(lifecycle.slice(0, lifecycle.indexOf("9. Keep")), /\+1|add the 👍/);
+});
+
+test("a check going red at step 9 re-enters the finishing repair under the progress bound", () => {
+  const merging = lifecycle.slice(lifecycle.indexOf("9. Keep"));
+  assert.match(
+    merging,
+    /`failed_checks`\s+turns non-empty while waiting[\s\S]*not a readiness wait[\s\S]*re-enter step 8's root-cause\s+helper on that fresh evidence[\s\S]*fresh `check-logs\.json` for\s+the exact current head and target[\s\S]*same progress bound[\s\S]*gate-repair-ladder\.log[\s\S]*same check failing the same way is a stall[\s\S]*\*\*attention\*\*[\s\S]*honest request-changes report[\s\S]*target-side diagnosis ends the run as \*\*held\*\*/,
   );
   assert.match(
     merging,

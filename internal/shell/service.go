@@ -70,10 +70,12 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 	return 1
 }
 
-// A clean, attention, or merged Minos status on the current head marks a
-// completed run even when no terminal review exists: a converged clean run
+// A clean, attention, held, or merged Minos status on the current head marks
+// a completed run even when no terminal review exists: a converged clean run
 // posts no approve review (the 👍 reaction carries all-clear), so the status
-// is the head's only durable completion marker on that path.
+// is the head's only durable completion marker on that path. Held blocks
+// re-runs for the same target; when the target SHA changes the target URL
+// changes and the status no longer matches, triggering a fresh run.
 func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) bool {
 	var latest forge.Status
 	found := false
@@ -90,6 +92,7 @@ func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) boo
 	}
 	return latest.Description == product.Clean().Description() ||
 		latest.Description == product.Attention().Description() ||
+		latest.Description == product.Held().Description() ||
 		latest.Description == product.Merged().Description()
 }
 

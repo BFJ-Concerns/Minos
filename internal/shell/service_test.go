@@ -78,6 +78,14 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 			want: 1,
 		},
 		{
+			name: "held status is not unfinished",
+			statuses: []forge.Status{{
+				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Creator: "Minos", Description: product.Held().Description(),
+			}},
+			want: 1,
+		},
+		{
 			name: "clean terminal status is not unfinished",
 			statuses: []forge.Status{{
 				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
@@ -127,6 +135,7 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 		{name: "clean status completes the run", statuses: []forge.Status{ownedStatus(1, product.Clean().Description())}, want: true},
 		{name: "attention status completes the run", statuses: []forge.Status{ownedStatus(1, product.Attention().Description())}, want: true},
 		{name: "merged status completes the run", statuses: []forge.Status{ownedStatus(1, product.Merged().Description())}, want: true},
+		{name: "held status completes the run for this target", statuses: []forge.Status{ownedStatus(1, product.Held().Description())}, want: true},
 		{name: "incomplete status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Incomplete().Description())}},
 		{name: "working status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Working().Description())}},
 		{name: "continuation status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Continuation().Description())}},

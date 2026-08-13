@@ -355,17 +355,17 @@ last action and end the turn. A continuation writes no failure-log line.
    request is not the place to fix it. Publishing request-changes there
    would blame the wrong branch, and because that terminal review blocks
    re-attempts until the head moves, it would hold the pull request hostage
-   to a fix that must land on the target. End the run as incomplete instead:
+   to a fix that must land on the target. End the run as held instead:
    append each failed command and its non-zero exit status to
    `$MINOS_FAILURE_LOG`, post one durable pull-request comment with
    `"$MINOS_BIN" forge comment CURRENT_HEAD TARGET FILE` reporting that the
    reconciled target itself is broken — naming the target-side commits and
    mechanism the diagnosis proved — then set `"$MINOS_BIN" forge status HEAD
-   TARGET incomplete`, remove the 👀 with `"$MINOS_BIN" forge
+   TARGET held`, remove the 👀 with `"$MINOS_BIN" forge
    reaction-remove HEAD TARGET eyes`, write the non-clean terminal marker,
-   and stop. A later run reconciles the then-current target, so the pull
-   request is re-assessed once the target is fixed, with no head movement
-   required.
+   and stop. The held status is bound to the current target; when the target
+   branch receives fixes its SHA changes, the sweep sees a new target URL,
+   and a fresh run re-assesses the pull request automatically.
 
    When the ladder stalls — or the dispatch was
    skipped on a fork — the gate stays red and the run ends as **attention**,
@@ -385,8 +385,9 @@ last action and end the turn. A continuation writes no failure-log line.
    apply to it. Where this discipline applies, `incomplete` remains the
    outcome only for genuine inability
    to assess — infrastructure failure, an incomplete leg, a missing
-   verdict, a reconciled target that arrives broken — never for a red gate
-   the pull request's own changes caused. Finishing's root-cause repair
+   verdict — never for a red gate the pull request's own changes caused,
+   and never for a proven target-side breakage, which ends the run as held
+   as above. Finishing's root-cause repair
    (step 8) runs its own dispatch on forge check evidence rather than this
    discipline, but sits under the same progress bound, as step 8 states.
 4. Run every Ensemble workflow in this lifecycle from this accountable lead
@@ -750,7 +751,7 @@ last action and end the turn. A continuation writes no failure-log line.
 
    If `requestChangesReview` is present, materialise it exactly, post it with
    `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE
-   COMMENTS_FILE`, and set status `attention`. Otherwise set status `clean`.
+   COMMENTS_FILE`, and set status `attention`.
    Review prose talks only about the code, never about Minos, its process or a
    round number. Operational conditions — head moved, forge unreadable, review
    not reached — are always carried by the `Minos` status, never by a review.
@@ -784,8 +785,8 @@ last action and end the turn. A continuation writes no failure-log line.
    entry when other partition units ran, or under the `skipped` entry when
    every unit was inapplicable. None of it is published on the pull request.
    A `not-run` concern, missing result, incomplete leg, or missing or invalid
-   verifier result makes this stage incomplete: publish no brief review, add no
-   👍, set `"$MINOS_BIN" forge status CURRENT_HEAD "$MINOS_TARGET_SHA"
+   verifier result makes this stage incomplete: publish no brief review,
+   set `"$MINOS_BIN" forge status CURRENT_HEAD "$MINOS_TARGET_SHA"
    incomplete`, remove the 👀 with `"$MINOS_BIN" forge reaction-remove
    CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`, write the non-clean terminal marker,
    and stop.
@@ -797,9 +798,8 @@ last action and end the turn. A continuation writes no failure-log line.
    command makes that group idempotent. Do not publish a review when there are
    no confirmed brief findings, and never publish an all-clear comment.
 
-   When `briefFixRequired` is false, the brief stage has passed: add the 👍 with
-   `"$MINOS_BIN" forge reaction CURRENT_HEAD "$MINOS_TARGET_SHA" +1` and
-   continue to finishing. When `briefFixRequired` is true, save the complete brief
+   When `briefFixRequired` is false, the brief stage has passed: continue to
+   finishing. When `briefFixRequired` is true, save the complete brief
    verdict and build the single-wave input:
 
    ```sh
@@ -838,13 +838,11 @@ last action and end the turn. A continuation writes no failure-log line.
    the run as attention
    with the honest request-changes report, exactly as step 3 describes. If
    the single wave leaves `confirmedUnfixed` entries, or integration fails,
-   add no 👍, set attention or incomplete to reflect the actual result,
+   set attention or incomplete to reflect the actual result,
    remove the 👀, write the non-clean terminal marker, and stop. If all
    fixes were integrated
-   and the exact configured build and tests pass, the brief stage has passed:
-   add the 👍 on the fresh head. Do not run another review loop. Thus both a
-   no-findings pass and a findings-fixed-and-verified pass end in the same
-   idempotent 👍 signal.
+   and the exact configured build and tests pass, the brief stage has passed.
+   Do not run another review loop.
 
 8. Enter finishing only after both review stages are done and the current result
    is clean. If the result is attention, remove the 👀 with `"$MINOS_BIN" forge
@@ -954,8 +952,7 @@ last action and end the turn. A continuation writes no failure-log line.
    integrate it through `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
    "$MINOS_WORKSPACE" COMMITS_FILE`. Wait for the pushed head through the
    snapshot watcher and use its exact head and target as `FRESH_HEAD` and
-   `FRESH_TARGET`. Remove the stale completion reaction with
-   `"$MINOS_BIN" forge reaction-remove FRESH_HEAD FRESH_TARGET +1`. Materialise
+   `FRESH_TARGET`. Materialise
    the helper's `writeUp` as a review body with an empty comments array and post
    one `comment` review on `FRESH_HEAD`; this is a repair summary, separate from
    the findings review.
@@ -968,7 +965,7 @@ last action and end the turn. A continuation writes no failure-log line.
    Build and tests are this repair's verification, and the merge proceeds in
    the same attempt: like the brief stage's wave and setup's conflict
    resolution, the repair triggers no re-review and no successor run. After
-   the configured commands pass, add the 👍 on `FRESH_HEAD` and continue to
+   the configured commands pass, continue to
    step 9 using that fresh head and target. Never carry a failing repair to
    merge. This repair sits under the same progress bound as every gate
    repair: compare its red verification result — the failing configured
@@ -993,33 +990,47 @@ last action and end the turn. A continuation writes no failure-log line.
    and still stops incomplete.
 
    When the helper returns no commit and no pushed head appears, it has made
-   no mutation: the failure it was dispatched against stands unchanged, which
-   is a stall on the red-check path — leave the label when present and end as attention
-   exactly as above.
+   no mutation. On the red-check path, distinguish the cause: a diagnosis
+   that attributes the failure to the reconciled target ends the run as held,
+   exactly as step 3's target-side discipline directs — set `"$MINOS_BIN"
+   forge status HEAD TARGET held`, post the target-side comment, remove 👀,
+   write the non-clean terminal marker, and stop. A diagnosis that does not
+   attribute the failure to the target is a stall — leave the label when
+   present and end as attention exactly as above.
    Only on the label-only path may step 9 receive the unchanged verified head
    and target. Retain the `Flaky Test` label on that path. This clean
    continuation writes nothing to `$MINOS_FAILURE_LOG`. The retained label is
    the durable record that the flake remains unproven. A non-passing
    `check_decision` with no explicit `failed_checks` is incomplete forge state,
    not a root-cause dispatch.
-9. If `$MINOS_AUTO_MERGE` is not `true`, the clean run is complete without a
-   merge: remove 👀, write the clean terminal marker, and stop. If it is `true`,
-   keep using the watcher until the trusted snapshot has `check_decision`
-   `pass`, reports both `mergeable` and `can_merge`, and still names the
-   verified finishing head and target. A snapshot whose `failed_checks`
-   turns non-empty while waiting here — a required check going red again on
-   the verified head, including one red for the first time after a verified
-   repair — is not a merge-readiness wait: re-enter step 8's root-cause
+9. Keep using the watcher until the trusted snapshot has `check_decision`
+   `pass` and still names the verified finishing head and target. A snapshot
+   whose `failed_checks` turns non-empty while waiting — a required check
+   going red on the verified head, including one red for the first time after
+   a verified repair — is not a readiness wait: re-enter step 8's root-cause
    helper on that fresh evidence. Retrieve a fresh `check-logs.json` for
    the exact current head and target and dispatch exactly as step 8
    directs, under the same progress bound — the comparison failure is the
    one this dispatch answers, with its basis appended to
-   `$MINOS_RUN_DIR/gate-repair-ladder.log` as step 3 directs, and a repair
+   `$MINOS_RUN_DIR/gate-repair-ladder.log` as step 3 directs. A repair
    that leaves the same check failing the same way is a stall that ends
-   the run as **attention** with the honest request-changes report. A
+   the run as **attention** with the honest request-changes report; a
+   target-side diagnosis ends the run as **held** exactly as step 8's
+   target-side discipline directs. A
    verified repair from that re-entry returns here through step 8's
    ordinary continuation on its fresh head; this loop has no counted
-   ceiling, the run unit's hard timeout being the failsafe. Select one of its
+   ceiling, the run unit's hard timeout being the failsafe.
+
+   Once checks pass, add the 👍 with `"$MINOS_BIN" forge reaction HEAD
+   TARGET +1`. If `$MINOS_AUTO_MERGE` is not `true`, set status `clean`,
+   remove 👀 with `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`,
+   write the clean terminal marker, and stop. If it is `true`,
+   keep using the watcher until the snapshot also reports both `mergeable`
+   and `can_merge`. A check that turns red during this readiness wait
+   re-enters the repair exactly as above; the 👍 no longer describes the
+   head, so remove it with `"$MINOS_BIN" forge reaction-remove HEAD TARGET
+   +1` before dispatching, and re-add it only when checks pass again.
+   Select one of its
    `allowed_merge_methods` and call `"$MINOS_BIN" forge merge HEAD TARGET
    METHOD`. The guarded merge binds the exact head and is idempotent. Then set
    `merged`. For a non-empty, unprotected source branch whose `head_repository`
@@ -1028,9 +1039,9 @@ last action and end the turn. A continuation writes no failure-log line.
    deletion safe. Never try to delete a fork branch, a protected branch, or a
    virtual pull ref. Finally remove 👀 with `"$MINOS_BIN" forge
    reaction-remove HEAD TARGET eyes`, write the clean terminal marker, and
-   stop. Merged, request-changes, clean-without-auto-merge, and every incomplete outcome
-   the run reaches end 👀-absent; a crash alone leaves it for the next idempotent
-   claim.
+   stop. Merged, request-changes, clean-without-auto-merge, held,
+   and every incomplete outcome the run reaches end 👀-absent;
+   a crash alone leaves it for the next idempotent claim.
 
 Use your judgement. Retry an ordinary transient failure when that is sensible;
 otherwise report the actual state, finish all final forge writes and cleanup,

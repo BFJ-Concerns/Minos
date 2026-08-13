@@ -652,6 +652,7 @@ func TestRebuildEstateAllRunReachedTerminalOutcomesBindEyesCleanup(t *testing.T)
 		{name: "merged", instruction: "Merged,", merged: true, remove: true},
 		{name: "request changes", instruction: "request-changes", remove: true},
 		{name: "clean without auto merge", instruction: "clean-without-auto-merge", remove: true},
+		{name: "held", instruction: "held,", remove: true},
 		{name: "incomplete", instruction: "every incomplete outcome", remove: true},
 		{name: "crash", instruction: "a crash alone leaves it", remove: false},
 	} {
