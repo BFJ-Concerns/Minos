@@ -749,6 +749,22 @@ test("configured command failures enter the repair discipline, never a review on
     initialGate,
     /Where this discipline applies, `incomplete` remains the\s+outcome only for genuine inability\s+to assess/,
   );
+  assert.match(
+    initialGate,
+    /reports that bound structurally in its `cause` verdict —\s+`side`, `determinism` and `locus`[\s\S]*branches on those fields rather than on the\s+diagnosis prose/,
+  );
+  assert.match(
+    initialGate,
+    /cause proven\s+`intermittent` with locus `test-expectation` is repaired on the\s+pull-request branch and rides it to merge[\s\S]*deliberately narrow[\s\S]*`deterministic` target-side cause stays out of\s+scope[\s\S]*reverts the target's work at merge[\s\S]*`product` locus stays out\s+because the intermittent test is the only witness to a real race and\s+silencing it ships the bug/,
+  );
+  assert.match(
+    initialGate,
+    /One empty-commit result is not a stall: a `cause` verdict whose `side`\s+is `target`[\s\S]*End the run as held instead[\s\S]*forge status HEAD\s+TARGET held[\s\S]*bound to the current target/,
+  );
+  assert.match(
+    initialGate,
+    /flake fix rides the pull request to merge[\s\S]*ends held only\s+when the repair could not be delivered[\s\S]*solely in files\s+that exist on the target side[\s\S]*`side` is `unproven` is not a\s+target-side answer at all: it is a stall/,
+  );
 
   const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
   assert.match(
@@ -811,7 +827,19 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
-    /helper returns no commit and no pushed head appears[\s\S]*made\s+no mutation[\s\S]*On the red-check path[\s\S]*target ends the run as held[\s\S]*does not\s+attribute the failure to the target is a stall[\s\S]*end as attention[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head[\s\S]*and target/,
+    /helper returns no commit and no pushed head appears[\s\S]*made\s+no mutation[\s\S]*On the red-check path, branch on the `cause` verdict[\s\S]*`side` of `target` ends the\s+run as held[\s\S]*Any other `side`, `unproven` included, is a stall[\s\S]*end as attention[\s\S]*Only on the label-only[\s\S]*step 9 receive the unchanged verified head\s+and target/,
+  );
+  assert.match(
+    finishing,
+    /`intermittent` with locus\s+`test-expectation` — returns a commit, so it leaves by the integration\s+path above[\s\S]*undeliverable through the pull-request\s+branch, and ends the run held with the rest/,
+  );
+  assert.match(
+    finishing,
+    /Retain the `Flaky Test` label on that path, whatever the\s+verdict says: required checks are green there[\s\S]*not a reason to withhold a pull request the forge considers passing/,
+  );
+  assert.match(
+    finishing,
+    /One\s+passing run does not decide that second judgement[\s\S]*a green sample is not proof it is gone[\s\S]*leave the label on when the account does not carry it/,
   );
   assert.match(
     finishing,
@@ -838,7 +866,7 @@ test("a check going red at step 9 re-enters the finishing repair under the progr
   const merging = lifecycle.slice(lifecycle.indexOf("9. Keep"));
   assert.match(
     merging,
-    /`failed_checks`\s+turns non-empty while waiting[\s\S]*not a readiness wait[\s\S]*re-enter step 8's root-cause\s+helper on that fresh evidence[\s\S]*fresh `check-logs\.json` for\s+the exact current head and target[\s\S]*same progress bound[\s\S]*gate-repair-ladder\.log[\s\S]*same check failing the same way is a stall[\s\S]*\*\*attention\*\*[\s\S]*honest request-changes report[\s\S]*target-side diagnosis ends the run as \*\*held\*\*/,
+    /`failed_checks`\s+turns non-empty while waiting[\s\S]*not a readiness wait[\s\S]*re-enter step 8's root-cause\s+helper on that fresh evidence[\s\S]*fresh `check-logs\.json` for\s+the exact current head and target[\s\S]*same progress bound[\s\S]*gate-repair-ladder\.log[\s\S]*same check failing the same way is a stall[\s\S]*\*\*attention\*\*[\s\S]*honest request-changes report[\s\S]*`target` verdict the helper did not repair ends the run as \*\*held\*\*[\s\S]*repaired\s+target-side flake returns with its commit like any other/,
   );
   assert.match(
     merging,
