@@ -33,7 +33,11 @@ The lead uses `minos forge claim`, `snapshot`, `status`, `review` and `merge`.
 Forge adaptations live in `scripts/adaptations/forgejo`. The review entry point
 is `workflows/adjudicated-review`; it runs `workflows/review.js` through the
 vendored Ensemble launcher and passes the result to
-`workflows/run-record-adjudicator.mjs`. The workflow decision logic and
+`workflows/run-record-adjudicator.mjs`. Ahead of the first review,
+`workflows/review-scope.js` runs one lightweight engagement gate; its
+confident "nothing engages" verdict is itself a complete clean review, so a
+pull request that gives no specialist or `.review/` brief any work skips the
+full review launch. The workflow decision logic and
 adjudication are exercised by `node --test workflows/*_test.mjs`.
 
 The lead is guided by [`lifecycle/lifecycle.md`](lifecycle/lifecycle.md),
