@@ -37,7 +37,9 @@ succeeded, as your last action before ending the turn; the supervisor treats it
 as proof that there is no work or wake still pending.
 
 Before writing any terminal marker, write the run report to
-`$MINOS_RUN_DIR/report.md`: the outcome, what the run did, any anomalies, and
+`$MINOS_RUN_DIR/report.md`: the outcome, what the run did, where the time
+went — the stage spans that dominated, from the recorded telemetry — any
+anomalies, and
 what dragged — a short operator-facing account, not a transcript. Take every
 duration you cite from the run's recorded telemetry — the event log at
 `$MINOS_RUN_DIR/timings.ndjson` and the Ensemble run records — never from your

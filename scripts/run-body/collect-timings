@@ -32,11 +32,15 @@ fi
 # directly launched workflows write theirs under the run-private home. Both
 # roots may be absent on a run that dispatched nothing.
 workers="[]"
-agent_files="$(
-  find "$run_dir/ensemble-records" \
-    "$run_dir/home/.local/share/ensemble/runs" \
-    -type f -name agent.json 2>/dev/null | LC_ALL=C sort
-)" || agent_files=""
+agent_files=""
+for record_root in "$run_dir/ensemble-records" \
+  "$run_dir/home/.local/share/ensemble/runs"; do
+  [ -d "$record_root" ] || continue
+  root_files="$(find "$record_root" -type f -name agent.json 2>/dev/null)" || root_files=""
+  [ -n "$root_files" ] && agent_files="${agent_files}${root_files}
+"
+done
+agent_files="$(printf '%s' "$agent_files" | LC_ALL=C sort)"
 if [ -n "$agent_files" ]; then
   workers="$(
     printf '%s\n' "$agent_files" | while IFS= read -r agent_file; do

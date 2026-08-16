@@ -132,9 +132,9 @@ archive to the configured destination. Before building the tarball it runs
 `collect-timings`, which assembles the structured per-run timing record —
 every timed command span from the run's `timings.ndjson` event log plus every
 dispatched worker's timings from the Ensemble records — and after the tarball
-is promoted it delivers that record a second time as a
-`<archive-name>.timings.json` sidecar beside it, readable without extracting
-anything. This presentation archive and its sidecar are
+is promoted it delivers that record a second time as a sidecar beside it —
+the tarball's name with `.tar.zst` replaced by `.timings.json` — readable
+without extracting anything. This presentation archive and its sidecar are
 best-effort and cannot change the run result. Before each reconciliation pass,
 the sweep also salvages dead run directories into the dedicated Minos annexe
 checkout configured by `runs.failures-repo`, attempts to commit and push the

@@ -251,6 +251,30 @@ this line is not JSON and must cost one event, never the record
 	}
 }
 
+func TestCollectTimingsHarvestsASingleRecordRootWhenTheOtherIsAbsent(t *testing.T) {
+	runDir := t.TempDir()
+	writeTimingFixtureAgentRecord(t,
+		filepath.Join(runDir, "ensemble-records", "record-a", "agents", "0001", "agent.json"),
+		"2026-08-17T00:21:00Z", "2026-08-17T00:25:00Z")
+
+	recordPath := filepath.Join(runDir, "timing-record.json")
+	output, err := runCollectTimings(t, nil, runDir, recordPath)
+	if err != nil {
+		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	content, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record timingRecord
+	if err := json.Unmarshal(content, &record); err != nil {
+		t.Fatalf("timing record does not parse: %v\n%s", err, content)
+	}
+	if len(record.Workers) != 1 {
+		t.Fatalf("worker count = %d, want 1 (a missing sibling root must not erase the present one)", len(record.Workers))
+	}
+}
+
 func TestCollectTimingsWritesAnEmptyRecordForABareRunDirectory(t *testing.T) {
 	runDir := t.TempDir()
 	recordPath := filepath.Join(runDir, "timing-record.json")

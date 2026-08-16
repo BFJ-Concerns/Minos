@@ -45,7 +45,7 @@ archive_ssh() {
 # run's event log and Ensemble records before the tarball is built, so the
 # archive carries it too, but never let its failure fail the archive.
 "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/collect-timings" \
-  "$run_dir" "$run_dir/timing-record.json" 2>/dev/null || true
+  "$run_dir" "$run_dir/timing-record.json" || true
 
 (
   cd "$run_dir" || exit 1
