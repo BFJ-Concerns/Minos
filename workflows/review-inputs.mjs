@@ -52,6 +52,26 @@ if (!target || !head || argumentError) {
     path: guidancePath,
     content: guidanceContent,
   };
+  let pullRequest;
+  if (orientation.pullRequest !== undefined) {
+    if (typeof orientation.pullRequest !== "string" || orientation.pullRequest === "")
+      throw new Error("orientation's pull-request record path is unusable");
+    let record;
+    try {
+      record = JSON.parse(readFileSync(resolve(orientation.pullRequest), "utf8"));
+    } catch {
+      throw new Error("orientation names a missing or non-JSON pull-request record");
+    }
+    if (!record || typeof record !== "object" || Array.isArray(record) ||
+        typeof record.title !== "string" || typeof record.body !== "string")
+      throw new Error("pull-request record needs string title and body fields");
+    const maximumBodyCharacters = 65_536;
+    const body = record.body.length > maximumBodyCharacters
+      ? `${record.body.slice(0, maximumBodyCharacters)}\n[pull-request description truncated]`
+      : record.body;
+    if (record.title.trim() !== "" || body.trim() !== "")
+      pullRequest = { title: record.title, body };
+  }
   const paths = [
     "workflows/review-briefs/exploration.md",
     "workflows/review-briefs/correctness.md",
@@ -79,5 +99,12 @@ if (!target || !head || argumentError) {
       priorFindings = null;
     }
   }
-  process.stdout.write(JSON.stringify({ target, head, guidance, instructionBriefs, priorFindings }) + "\n");
+  process.stdout.write(JSON.stringify({
+    target,
+    head,
+    guidance,
+    ...(pullRequest === undefined ? {} : { pullRequest }),
+    instructionBriefs,
+    priorFindings,
+  }) + "\n");
 }

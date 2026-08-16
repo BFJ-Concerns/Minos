@@ -590,9 +590,12 @@ last action and end the turn. A continuation writes no failure-log line.
    ```
 
    This deterministic file-reading seam validates `$MINOS_ORIENTATION`, reads
-   the selected annexe commission or repository-fallback guidance, and supplies
-   that content with the shipped role briefs. Do not ask an agent to reproduce
-   it or hand-author its `guidance` or `instructionBriefs` entries.
+   the selected annexe commission or repository-fallback guidance and the
+   pull-request description setup recorded, and supplies that content with the
+   shipped role briefs — so reviewers weigh the author's explicitly declared
+   scope rather than rediscovering a declared gap as a defect. Do not ask an
+   agent to reproduce it or hand-author its `guidance`, `pullRequest`, or
+   `instructionBriefs` entries.
 
    Choose exactly one branch:
 
