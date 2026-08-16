@@ -1,0 +1,6 @@
+interface:
+  display_name: "Playwright"
+  short_description: "Browser automation, QA, and E2E testing"
+  icon_small: "./assets/playwright-small.svg"
+  icon_large: "./assets/playwright.png"
+  default_prompt: "Use $playwright to explore, QA, or test a web or Electron app in a persistent Playwright browser session."

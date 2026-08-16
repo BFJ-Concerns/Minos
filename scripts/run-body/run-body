@@ -113,6 +113,8 @@ failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
 : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
 failure_cause="MINOS_ROOT_CAUSE_SKILL is required"
 : "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
+failure_cause="MINOS_SKILLS_DIR is required"
+: "${MINOS_SKILLS_DIR:?MINOS_SKILLS_DIR is required}"
 failure_cause="MINOS_SETUP_WORKSPACE is required"
 : "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required}"
 failure_cause="MINOS_ORIENTATION is required"
@@ -179,19 +181,28 @@ SCCACHE_DIR="$MINOS_SHARED_CACHE_DIR/rust/sccache"
 GOCACHE="$MINOS_SHARED_CACHE_DIR/go/build"
 GOMODCACHE="$MINOS_SHARED_CACHE_DIR/go/modules"
 npm_config_cache="$MINOS_SHARED_CACHE_DIR/node/npm"
+PLAYWRIGHT_BROWSERS_PATH="$MINOS_SHARED_CACHE_DIR/playwright/browsers"
+# Repository test suites write large artefacts to temp; the box's shared
+# tmpfs /tmp cannot hold concurrent runs' output, so each run gets its own
+# disk-backed temp directory that dies with the run.
+TMPDIR="${MINOS_RUN_DIR%/}/tmp"
 PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export HOME CLAUDE_CONFIG_DIR CODEX_HOME XDG_STATE_HOME MINOS_SHARED_CACHE_DIR \
-  SCCACHE_DIR GOCACHE GOMODCACHE npm_config_cache PATH
+  SCCACHE_DIR GOCACHE GOMODCACHE npm_config_cache PLAYWRIGHT_BROWSERS_PATH \
+  TMPDIR PATH
 failure_stage="runtime-home"
 failure_cause="could not create isolated runtime home, state, cache and tool directories"
 mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
   "$SCCACHE_DIR" "$GOCACHE" "$GOMODCACHE" "$npm_config_cache" \
+  "$PLAYWRIGHT_BROWSERS_PATH" "$TMPDIR" \
   "$HOME/.cargo/bin" "$HOME/.local/bin"
 failure_cause="could not secure isolated runtime home, state, cache and tool directories"
 chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
   "$MINOS_SHARED_CACHE_DIR" "$MINOS_SHARED_CACHE_DIR/rust" "$SCCACHE_DIR" \
   "$MINOS_SHARED_CACHE_DIR/go" "$GOCACHE" "$GOMODCACHE" \
-  "$MINOS_SHARED_CACHE_DIR/node" "$npm_config_cache" "$HOME/.cargo/bin" "$HOME/.local/bin"
+  "$MINOS_SHARED_CACHE_DIR/node" "$npm_config_cache" \
+  "$MINOS_SHARED_CACHE_DIR/playwright" "$PLAYWRIGHT_BROWSERS_PATH" "$TMPDIR" \
+  "$HOME/.cargo/bin" "$HOME/.local/bin"
 failure_stage="claude-seed"
 failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
 cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
@@ -207,11 +218,15 @@ printf '%s\n' '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":tr
   >"$CLAUDE_CONFIG_DIR/.claude.json"
 failure_cause="could not secure Claude onboarding acceptance"
 chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
-failure_stage="root-cause-skill"
-failure_cause="could not create the vendored root-cause skill directory"
-mkdir -p "$CLAUDE_CONFIG_DIR/skills/root-cause"
-failure_cause="could not copy the vendored root-cause skill from $MINOS_ROOT_CAUSE_SKILL"
-cp -R "${MINOS_ROOT_CAUSE_SKILL%/}/." "$CLAUDE_CONFIG_DIR/skills/root-cause/"
+# The vendored skill tree holds one copy per agent tool; each session gets
+# the casting made for the tool it runs on.
+failure_stage="vendored-skills"
+failure_cause="could not create the vendored skill directories"
+mkdir -p "$CLAUDE_CONFIG_DIR/skills" "$CODEX_HOME/skills"
+failure_cause="could not copy the vendored Claude Code skills from $MINOS_SKILLS_DIR/claude-code"
+cp -R "${MINOS_SKILLS_DIR%/}/claude-code/." "$CLAUDE_CONFIG_DIR/skills/"
+failure_cause="could not copy the vendored Codex skills from $MINOS_SKILLS_DIR/codex"
+cp -R "${MINOS_SKILLS_DIR%/}/codex/." "$CODEX_HOME/skills/"
 
 failure_stage="workspace-setup"
 failure_cause="workspace setup failed"

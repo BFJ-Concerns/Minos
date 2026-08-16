@@ -765,12 +765,15 @@ esac
 	if err := os.WriteFile(filepath.Join(codexSeed, "auth.json"), []byte("fixture Codex ChatGPT state\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	skill := filepath.Join(root, "root-cause")
-	if err := os.Mkdir(skill, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("# Root Cause\n"), 0o644); err != nil {
-		t.Fatal(err)
+	skills := filepath.Join(root, "skills")
+	for _, casting := range []string{"claude-code", "codex"} {
+		skill := filepath.Join(skills, casting, "root-cause")
+		if err := os.MkdirAll(skill, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("# Root Cause\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	setup, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "setup-workspace"))
 	if err != nil {
@@ -789,7 +792,8 @@ esac
 		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION": instruction,
 		"MINOS_REVIEW_WORKFLOW":       "/opt/minos/workflows/adjudicated-review",
-		"MINOS_ROOT_CAUSE_SKILL":      skill,
+		"MINOS_ROOT_CAUSE_SKILL":      filepath.Join(skills, "codex", "root-cause"),
+		"MINOS_SKILLS_DIR":            skills,
 		"MINOS_SETUP_WORKSPACE":       setup,
 		"MINOS_BIN":                   "/usr/local/bin/minos",
 		"MINOS_CLAUDE_POLL_SECONDS":   "0",
