@@ -83,6 +83,12 @@ case "$observed_head_branch" in
 esac
 [ "$is_fork" = false ] || has_publication=false
 
+# The author's declared intent and scope travel with the run so the review
+# workflow can weigh explicit out-of-scope declarations.
+pull_request_record="${MINOS_RUN_DIR}/pull-request.json"
+jq '{number: (.number // null), title: (.title // ""), body: (.body // "")}' \
+  "$response_file" >"$pull_request_record"
+
 if [ "$resume" = true ]; then
   if [ ! -d "$MINOS_WORKSPACE" ]; then
     echo "setup-workspace: preserved workspace is missing: $MINOS_WORKSPACE" >&2
@@ -156,7 +162,8 @@ case "$response_status" in
       --arg head "$checked_out_head" \
       --arg annexe "$annexe_path" \
       --arg guidance "$annexe_guidance" \
-      '{repository:$repository,head:$head,grounding:"annexe",annexe:$annexe,guidance:$guidance}' \
+      --arg pull_request "$pull_request_record" \
+      '{repository:$repository,head:$head,grounding:"annexe",annexe:$annexe,guidance:$guidance,pullRequest:$pull_request}' \
       >"$MINOS_ORIENTATION"
     ;;
   404)
@@ -175,7 +182,8 @@ case "$response_status" in
       --arg repository "$MINOS_WORKSPACE" \
       --arg head "$checked_out_head" \
       --arg guidance "$repository_guidance" \
-      '{repository:$repository,head:$head,grounding:"repository",guidance:$guidance,reason:"annexe-not-found"}' \
+      --arg pull_request "$pull_request_record" \
+      '{repository:$repository,head:$head,grounding:"repository",guidance:$guidance,pullRequest:$pull_request,reason:"annexe-not-found"}' \
       >"$MINOS_ORIENTATION"
     ;;
   *)
