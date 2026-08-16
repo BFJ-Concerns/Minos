@@ -929,3 +929,11 @@ test("a check going red at step 9 re-enters the finishing repair under the progr
     /verified repair from that re-entry returns here through step 8's\s+ordinary continuation on its fresh head[\s\S]*no counted\s+ceiling[\s\S]*hard timeout being the failsafe/,
   );
 });
+
+test("timings are recorded by scripts and the run report cites them, never hand-written", () => {
+  assert.match(lifecycle, /time-on-exit" "\$MINOS_RUN_DIR\/timings\.ndjson"/);
+  assert.match(lifecycle, /timing wrapper outermost/);
+  assert.match(lifecycle, /\$MINOS_RUN_DIR\/report\.md/);
+  assert.match(lifecycle, /own estimates/);
+  assert.match(lifecycle, /killed result for the same stage/);
+});

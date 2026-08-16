@@ -36,6 +36,18 @@ terminal marker. Run it only after all final forge writes and cleanup have
 succeeded, as your last action before ending the turn; the supervisor treats it
 as proof that there is no work or wake still pending.
 
+Before writing any terminal marker, write the run report to
+`$MINOS_RUN_DIR/report.md`: the outcome, what the run did, where the time
+went — the stage spans that dominated, from the recorded telemetry — any
+anomalies, and
+what dragged — a short operator-facing account, not a transcript. Take every
+duration you cite from the run's recorded telemetry — the event log at
+`$MINOS_RUN_DIR/timings.ndjson` and the Ensemble run records — never from your
+own estimates: timings are written by the scripts and workflows, and the
+archive step assembles them into the structured timing record delivered
+beside the run's archive. The report is presentation-class: its failure never
+blocks the terminal obligations and changes no outcome.
+
 `$MINOS_RUN_DIR/memory-pressure` is a one-shot signal from the supervisor that
 the run is approaching its memory ceiling. Check for it only at the named
 boundaries below. When it exists, finish the current lifecycle stage; do not
@@ -245,6 +257,17 @@ last action and end the turn. A continuation writes no failure-log line.
    capture its complete combined output in
    `$MINOS_RUN_DIR/test-command-output.log`; when it is empty, no test command is
    configured, so skip it rather than inventing one.
+
+   Run each configured command through the timing wrapper so its span lands
+   in the run's event log:
+   `"${MINOS_SETUP_WORKSPACE%/*}/time-on-exit" "$MINOS_RUN_DIR/timings.ndjson"
+   build-command sh -c 'CONFIGURED_COMMAND_WITH_ITS_CAPTURE_REDIRECT'` —
+   name the test command's event `test-command`. The wrapper preserves the
+   command's exit status and leaves the configured string and its output
+   capture unchanged. This applies to every configured-command execution
+   this lifecycle directs, including the re-runs after fix waves and
+   repairs.
+
    For each command, run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`,
    passing the configured string and its exit status. Read the CLI's one-line
@@ -435,16 +458,19 @@ last action and end the turn. A continuation writes no failure-log line.
    brief review, brief fix and finishing repair below. Each block names its
    result JSON; redirect diagnostics to the same basename with `.log` instead
    of `.json`. Wherever a block shows an Ensemble or adjudication-wrapper
-   invocation redirected to its result JSON, run it instead through both
-   run-scripts wrappers — the completion-flag wrapper outermost, so a flag
-   file appears, complete, only after the workflow command exits, and the
-   result-publication wrapper inside it, so the result file itself is
+   invocation redirected to its result JSON, run it instead through the
+   run-scripts wrappers — the timing wrapper outermost, appending the
+   stage's span to the run's event log after the command exits; the
+   completion-flag wrapper next, so a flag
+   file appears, complete, only after the workflow command exits; and the
+   result-publication wrapper innermost, so the result file itself is
    atomic. (The `*-inputs.mjs` builders and other sub-second foreground
    commands keep their plain redirects — the wrappers exist for the
    background waits.)
 
    ```sh
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+     "${MINOS_SETUP_WORKSPACE%/*}/time-on-exit" "$MINOS_RUN_DIR/timings.ndjson" NAME \
      "${MINOS_SETUP_WORKSPACE%/*}/flag-on-exit" "$MINOS_RUN_DIR/NAME.done" \
      "${MINOS_SETUP_WORKSPACE%/*}/publish-on-exit" "$MINOS_RUN_DIR/NAME.json" \
      sh -c 'node /opt/minos/runtime/ensemble.mjs ... 2> "$MINOS_RUN_DIR/NAME.log"'
@@ -544,6 +570,13 @@ last action and end the turn. A continuation writes no failure-log line.
    JSON before trusting it: a result that does not parse, or a background
    task that exits non-zero, is likewise an incomplete stop, never a
    verdict.
+
+   A killed workflow stage — a flag recording a signal death, or a launcher
+   gone mid-stage — may be re-dispatched once when you judge the kill
+   transient. A second killed result for the same stage in one run is a
+   condition, not flakiness: append one failure-log line naming the stage
+   and both kills, and end the run incomplete as the infrastructure failure
+   it is, rather than absorbing repeated kills into further retries.
 
    Before the first review of a run — and only then; a run consuming a
    carried result and every re-review after a fix wave go straight to the

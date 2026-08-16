@@ -159,6 +159,11 @@ HOME="${MINOS_RUN_DIR%/}/home"
 CLAUDE_CONFIG_DIR="$HOME/.claude"
 CODEX_HOME="$HOME/.codex"
 XDG_STATE_HOME="${MINOS_RUN_DIR%/}/state"
+# Pin the data home to the run-private HOME's default: an ambient
+# XDG_DATA_HOME in the service environment would silently relocate the
+# Ensemble launcher's direct-launch run records outside the run directory,
+# emptying the timing record's worker rows and dodging the archive.
+XDG_DATA_HOME="$HOME/.local/share"
 failure_stage="runtime-home"
 failure_cause="MINOS_FORGE is required for the shared cache path"
 : "${MINOS_FORGE:?MINOS_FORGE is required for the shared cache path}"
@@ -187,7 +192,8 @@ PLAYWRIGHT_BROWSERS_PATH="$MINOS_SHARED_CACHE_DIR/playwright/browsers"
 # disk-backed temp directory that dies with the run.
 TMPDIR="${MINOS_RUN_DIR%/}/tmp"
 PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-export HOME CLAUDE_CONFIG_DIR CODEX_HOME XDG_STATE_HOME MINOS_SHARED_CACHE_DIR \
+export HOME CLAUDE_CONFIG_DIR CODEX_HOME XDG_STATE_HOME XDG_DATA_HOME \
+  MINOS_SHARED_CACHE_DIR \
   SCCACHE_DIR GOCACHE GOMODCACHE npm_config_cache PLAYWRIGHT_BROWSERS_PATH \
   TMPDIR PATH
 failure_stage="runtime-home"

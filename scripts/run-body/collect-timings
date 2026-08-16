@@ -1,0 +1,81 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: collect-timings RUN_DIR OUTPUT_FILE" >&2
+  exit 2
+fi
+
+run_dir="$1"
+output="$2"
+
+if [ ! -d "$run_dir" ]; then
+  echo "collect-timings: run directory $run_dir does not exist" >&2
+  exit 2
+fi
+
+# Command spans come from the append-only event log the time-on-exit wrapper
+# writes. Each line is parsed on its own so one malformed line costs one
+# event, never the whole record.
+events_file="$run_dir/timings.ndjson"
+commands="[]"
+if [ -r "$events_file" ]; then
+  commands="$(
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf '%s\n' "$line" | jq -c 'select(type == "object")' 2>/dev/null || true
+    done <"$events_file" | jq -cs 'sort_by([.started_at // "", .name // ""])'
+  )" || commands="[]"
+fi
+
+# Worker timings come from the Ensemble run records already on disk: the
+# adjudication wrapper retains its record under ensemble-records/, and
+# directly launched workflows write theirs under the run-private home. Both
+# roots may be absent on a run that dispatched nothing.
+workers="[]"
+agent_files=""
+for record_root in "$run_dir/ensemble-records" \
+  "$run_dir/home/.local/share/ensemble/runs"; do
+  [ -d "$record_root" ] || continue
+  root_files="$(find "$record_root" -type f -name agent.json 2>/dev/null)" || root_files=""
+  [ -n "$root_files" ] && agent_files="${agent_files}${root_files}
+"
+done
+agent_files="$(printf '%s' "$agent_files" | LC_ALL=C sort)"
+if [ -n "$agent_files" ]; then
+  workers="$(
+    printf '%s\n' "$agent_files" | while IFS= read -r agent_file; do
+      record="${agent_file#"${run_dir%/}"/}"
+      record="${record%/agents/*}"
+      jq -c --arg record "$record" '{
+        record: $record,
+        id: (.id // null),
+        label: (.label // null),
+        phase: (.phase // null),
+        engine: (.engine // null),
+        model: (.resolved_model // .model // null),
+        status: (.status // null),
+        queued_ms: (.queued_ms // null),
+        execution_ms: (.execution_ms // null),
+        started_at: ((.attempts // []) | map(.started_at) | map(select(. != null)) | .[0] // null),
+        ended_at: ((.attempts // []) | map(.ended_at) | map(select(. != null)) | .[-1] // null)
+      }' "$agent_file" 2>/dev/null || true
+    done | jq -cs 'sort_by([.started_at // "", .record // ""])'
+  )" || workers="[]"
+fi
+
+generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+if ! jq -n \
+  --arg generated_at "$generated_at" \
+  --arg owner "${MINOS_OWNER:-unknown}" \
+  --arg repository "${MINOS_REPO_NAME:-unknown}" \
+  --arg number "${MINOS_PR:-unknown}" \
+  --argjson commands "$commands" \
+  --argjson workers "$workers" \
+  '{kind: "minos-timing-record-v1", generated_at: $generated_at,
+    pull_request: {owner: $owner, repository: $repository, number: $number},
+    commands: $commands, workers: $workers}' >"${output}.tmp"; then
+  echo "collect-timings: could not assemble the timing record" >&2
+  rm -f "${output}.tmp"
+  exit 1
+fi
+mv "${output}.tmp" "$output"

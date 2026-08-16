@@ -51,7 +51,13 @@ outside the workspace:
 
 In full mode, use the repository's configured commands and manifests to choose
 which caches to warm, then run each configured build and test command exactly
-once to completion. Return their exit statuses as evidence so the lead can
+once to completion. The one sanctioned exception is an evidenced environment
+repair: when a command's run fails on an environment fault you then prove and
+repair — a missing tool, a broken cache, a bad toolchain install — re-run that
+command after the repair, and report each repair and re-run in your evidence.
+Free-form retries — re-running without a proven, repaired environment fault
+between attempts — remain forbidden. Return the final exit statuses as
+evidence so the lead can
 avoid repeating successful verification. In reconciliation-only mode, resolve
 the rejected conflicts without inspecting, provisioning, or changing the
 environment and without running either configured command; return null exit

@@ -110,7 +110,7 @@ Test command: ${JSON.stringify(input.testCommand)}
 Judge requirements from repository pins, manifests, and lockfiles. Verify working tools before installing anything.
 Install missing global toolchains and per-checkout dependencies only when evidenced by those commands and repository files.
 Do not modify repository files, regenerate a lockfile, or invent a build or test command.
-After provisioning, run each non-empty configured command exactly once to completion, build first and then test. Record commandExecutions with head ${JSON.stringify(input.head)}, each exact command string, and its integer exit status. For an empty command, record its exact empty string and a null exit status without running anything. These raw outcomes are evidence only; do not classify them as passed, failed, or skipped.
+After provisioning, run each non-empty configured command exactly once to completion, build first and then test. One exception: when a command's run fails on an environment fault you then prove and repair, re-run that command after the evidenced repair and record the repair as an action; never re-run without a proven, repaired environment fault between attempts. Record commandExecutions with head ${JSON.stringify(input.head)}, each exact command string, and its final integer exit status. For an empty command, record its exact empty string and a null exit status without running anything. These raw outcomes are evidence only; do not classify them as passed, failed, or skipped.
 When no tool or dependency action is needed, report the environment ready with an empty actions list.
 When a requirement cannot be provisioned, return environment.ready false and state exactly what was needed, tried, and failed.`;
 

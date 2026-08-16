@@ -10,7 +10,8 @@ machine itself is the containment boundary.
    `scripts/run-body/` under `/opt/minos/run-body` with the same basename and
    executable mode: `run-body`, `setup-workspace`, `pre-push-guard`,
    `reconcile-target`, `complete-reconciliation`, `reopen-conflict`,
-   `show-resolutions`, `sync-target`, `watch-snapshot` and `archive-run`.
+   `show-resolutions`, `sync-target`, `watch-snapshot`, `flag-on-exit`,
+   `publish-on-exit`, `time-on-exit`, `collect-timings` and `archive-run`.
    Install `scripts/provision-archive-transport` and
    `scripts/provision-failure-checkout` under `/opt/minos`, with executable
    mode. Install `lifecycle`
@@ -45,6 +46,19 @@ machine itself is the containment boundary.
    a healthy run's unreclaimable footprint is around 1.2 GiB, but each run
    also paces `ensemble.concurrency-claude` and `concurrency-codex` workers of
    its own.
+
+   Size every capacity decision — this cap, per-run `MemoryMax`, the box
+   itself — by **anonymous memory plus swap peak, never the journal's cgroup
+   memory peak**. The journal's figure includes reclaimable page cache and
+   pegs at `MemoryMax` on essentially every run that builds anything, so it
+   overstates the real footprint by an order of magnitude — and reading it
+   the other way round is just as wrong: a run the journal shows at ~2 GiB
+   can carry 8–9 GiB of real anonymous demand at its build peaks. Raising
+   the cap to three on the journal's cache-inflated figure has already
+   thrashed the box into mass continuations once (2026-08-16, reverted the
+   same day). Measure anonymous demand from the unit cgroup's `memory.stat`
+   (`anon`) plus `memory.swap.current` at peak — the same metric the run's
+   pressure watch reads.
 
    `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
    3600-second no-output backstop. Keep the lifecycle's fallback wake shorter
@@ -114,7 +128,13 @@ transient systemd unit bounds a wedged run at 12 hours.
 
 After the lead has finished its forge writes, `run-body` streams its report,
 Claude transcripts, Codex rollout JSONLs and Ensemble run records as a zstd tar
-archive to the configured destination. This presentation archive is
+archive to the configured destination. Before building the tarball it runs
+`collect-timings`, which assembles the structured per-run timing record —
+every timed command span from the run's `timings.ndjson` event log plus every
+dispatched worker's timings from the Ensemble records — and after the tarball
+is promoted it delivers that record a second time as a sidecar beside it —
+the tarball's name with `.tar.zst` replaced by `.timings.json` — readable
+without extracting anything. This presentation archive and its sidecar are
 best-effort and cannot change the run result. Before each reconciliation pass,
 the sweep also salvages dead run directories into the dedicated Minos annexe
 checkout configured by `runs.failures-repo`, attempts to commit and push the
@@ -133,3 +153,24 @@ fresh build and test verification.
 
 The receiver handles new events immediately. The sweep periodically starts any
 open, non-draft pull request whose current head has no Minos review.
+
+## Reading run liveness
+
+The obvious liveness signals invert during a correct yield, so a *correctly
+behaving* lead is the case most likely to be misread as dead. While the lead
+waits on a background workflow it has ended its turn: the run tree's scratch
+mtimes go stale, no lead processes are doing visible work, and the journal
+prints nothing — exactly the picture a dead run would show. Do not judge
+liveness from scratch mtime, process activity, or journal silence.
+
+The reliable discriminator is the lead session's own job state plus the unit:
+in the run's private home, the job directory's `state.json`
+(`$MINOS_RUN_DIR/home/.claude/jobs/<job>/state.json`) shows whether a wake is
+armed — a lead waiting on `session_cron` with `selfWake: true` is armed and
+healthy, and `inFlight` names any background task still owned — and the
+per-pull-request systemd unit must be `active`. An armed waiting lead with an
+active unit is a live run, however stale its scratch looks; a unit that has
+exited, or a job state with nothing in flight and no armed wake and no
+terminal marker, is the dead case. The run supervisor's own silence backstop
+(`MINOS_LEAD_SILENCE_TIMEOUT`) already bounds a genuinely wedged lead — do
+not kill a waiting run ahead of it on the strength of quiet files.
