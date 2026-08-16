@@ -14,8 +14,10 @@ machine itself is the containment boundary.
    Install `scripts/provision-archive-transport` and
    `scripts/provision-failure-checkout` under `/opt/minos`, with executable
    mode. Install `lifecycle`
-   under `/opt/minos/lifecycle`, and `skills/foundry/root-cause` under
-   `/opt/minos/skills/foundry/root-cause`.
+   under `/opt/minos/lifecycle`, and `skills/foundry` under
+   `/opt/minos/skills/foundry`. That tree holds the vendored skills one
+   directory per agent tool — `codex/` and `claude-code/` — so a spawned
+   session is handed the copy cast for the tool it runs on.
 3. Run `scripts/install-review-runtime /opt/minos`. It installs the complete
    test-free review runtime under `/opt/minos`: the vendored Ensemble launcher
    and its provenance files, the adjudication wrapper and adapter, and every
@@ -31,8 +33,8 @@ machine itself is the containment boundary.
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
      non-interactive Codex ChatGPT authentication state; and
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
-   `MINOS_ROOT_CAUSE_SKILL`, `MINOS_ARCHIVE_RUN` and the other installed paths
-   match the deployment. Configure `archive.env` with the archive SSH host,
+   `MINOS_ROOT_CAUSE_SKILL`, `MINOS_SKILLS_DIR`, `MINOS_ARCHIVE_RUN` and the
+   other installed paths match the deployment. Configure `archive.env` with the archive SSH host,
    destination, identity and pinned known-hosts file.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
@@ -68,7 +70,14 @@ machine itself is the containment boundary.
 
    Provision both seed directories when the disposable box is launched. Each
    run copies their contents into its private `HOME`: Claude state goes to
-   `$HOME/.claude` and Codex state to `$HOME/.codex`. The lead and Ensemble
+   `$HOME/.claude` and Codex state to `$HOME/.codex`. `run-body` then copies
+   the vendored skill tree named by `MINOS_SKILLS_DIR` into both homes —
+   `claude-code/` skills to `$HOME/.claude/skills` and `codex/` skills to
+   `$HOME/.codex/skills` — so every spawned session finds the casting made for
+   its tool. Each run also gets a private disk-backed `TMPDIR` under its run
+   directory (the shared tmpfs `/tmp` cannot hold concurrent runs' test
+   artefacts), and Playwright browsers persist per repository through
+   `PLAYWRIGHT_BROWSERS_PATH` in the shared cache alongside sccache. The lead and Ensemble
    workers therefore inherit both engines' configured authentication without an
    interactive login. Gateway settings reach the Claude workers through the
    same inherited environment; Codex continues to use its own `CODEX_HOME`
