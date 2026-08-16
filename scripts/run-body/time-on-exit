@@ -1,0 +1,45 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -lt 3 ]; then
+  echo "usage: time-on-exit EVENT_LOG NAME COMMAND [ARG...]" >&2
+  exit 2
+fi
+
+event_log="$1"
+name="$2"
+shift 2
+
+started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+started_ms="$(date '+%s%3N')"
+
+status=0
+"$@" || status=$?
+
+ended_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+ended_ms="$(date '+%s%3N')"
+
+# duration_ms is null rather than wrong when the platform's date cannot
+# produce millisecond epochs; the RFC 3339 span still brackets the command.
+case "${started_ms}${ended_ms}" in
+*[!0-9]*) duration_ms="null" ;;
+*) duration_ms=$((ended_ms - started_ms)) ;;
+esac
+
+# The event log is append-only telemetry shared by every wrapped command in
+# the run: one JSON line per execution, appended after the command exits.
+# A single short line lands in one O_APPEND write, so concurrent wrapped
+# commands cannot interleave mid-line. Telemetry is presentation-class — a
+# failed append warns and must never change the wrapped command's outcome.
+if ! jq -nc \
+  --arg name "$name" \
+  --arg started_at "$started_at" \
+  --arg ended_at "$ended_at" \
+  --argjson duration_ms "$duration_ms" \
+  --argjson exit_status "$status" \
+  '{kind: "minos-timing-event-v1", name: $name, started_at: $started_at,
+    ended_at: $ended_at, duration_ms: $duration_ms,
+    exit_status: $exit_status}' >>"$event_log" 2>/dev/null; then
+  echo "time-on-exit: could not append the timing event for $name to $event_log" >&2
+fi
+exit "$status"
