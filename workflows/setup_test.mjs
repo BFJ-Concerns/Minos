@@ -75,6 +75,8 @@ test("setup workflow binds inputs and dispatches one non-isolated Opus leg", asy
   assert.match(calls[0].prompt, /npm run build/);
   assert.match(calls[0].prompt, /npm test/);
   assert.match(calls[0].prompt, /run each non-empty configured command exactly once to completion/);
+  assert.match(calls[0].prompt, /re-run that command after the evidenced repair/);
+  assert.match(calls[0].prompt, /never re-run without a proven, repaired environment fault/);
   assert.match(calls[0].prompt, /raw outcomes are evidence only; do not classify/);
   assert.match(calls[0].prompt, /Do not commit, push/);
 });
