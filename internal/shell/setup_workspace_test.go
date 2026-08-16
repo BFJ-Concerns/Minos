@@ -49,6 +49,12 @@ func TestSetupWorkspaceChecksOutHeadClonesAnnexeAndConfiguresAuthor(t *testing.T
 	if state.Grounding != "annexe" || state.Guidance != filepath.Join(annexePath, "README.md") {
 		t.Fatalf("orientation = %+v, want annexe README grounding", state)
 	}
+	pullRequestRecord := filepath.Join(runDir, "pull-request.json")
+	if state.PullRequest != pullRequestRecord {
+		t.Fatalf("orientation pull-request record = %q, want %q", state.PullRequest, pullRequestRecord)
+	}
+	assertContainsFile(t, pullRequestRecord, `"title": "Fixture change"`)
+	assertContainsFile(t, pullRequestRecord, `"body": "Not in scope: a concrete transport."`)
 
 	if err := os.WriteFile(filepath.Join(workspace, "repair.txt"), []byte("repair\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -250,12 +256,13 @@ func TestSetupResultReuseRunsCommandsOnlyWhenCurrentHeadEvidenceIsUnavailable(t 
 }
 
 type orientationState struct {
-	Repository string `json:"repository"`
-	Head       string `json:"head"`
-	Grounding  string `json:"grounding"`
-	Annexe     string `json:"annexe"`
-	Guidance   string `json:"guidance"`
-	Reason     string `json:"reason"`
+	Repository  string `json:"repository"`
+	Head        string `json:"head"`
+	Grounding   string `json:"grounding"`
+	Annexe      string `json:"annexe"`
+	Guidance    string `json:"guidance"`
+	PullRequest string `json:"pullRequest"`
+	Reason      string `json:"reason"`
 }
 
 func readOrientation(t *testing.T, path string) orientationState {
@@ -282,6 +289,9 @@ func newSetupForge(t *testing.T, head, repository, annexe string) *httptest.Serv
 		case "/api/v1/repos/owner/repository/pulls/17":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(w, `{
+				"number":17,
+				"title":"Fixture change",
+				"body":"Not in scope: a concrete transport.",
 				"head":{"sha":%q,"ref":"feature","repo":{"clone_url":%q,"full_name":"owner/repository"}},
 				"base":{"ref":"main","repo":{"clone_url":%q,"full_name":"owner/repository"}}
 			}`, head, repository, repository)

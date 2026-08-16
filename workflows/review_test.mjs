@@ -47,6 +47,8 @@ function enumeratedArgs(
     grounding = "annexe",
     guidanceName = "README.md",
     guidanceContent = "MINOS_TEST_COMMISSION_INDIGO",
+    pullRequest,
+    absentPullRequestRecord = false,
     loopRecord,
     absentLoopRecord = false,
   } = {},
@@ -56,8 +58,15 @@ function enumeratedArgs(
   mkdirSync(workspace);
   const guidancePath = join(workspace, guidanceName);
   writeFileSync(guidancePath, guidanceContent);
+  const orientation = { repository: workspace, grounding, guidance: guidancePath };
+  if (pullRequest !== undefined || absentPullRequestRecord) {
+    const pullRequestPath = join(root, "pull-request.json");
+    if (!absentPullRequestRecord)
+      writeFileSync(pullRequestPath, typeof pullRequest === "string" ? pullRequest : JSON.stringify(pullRequest));
+    orientation.pullRequest = pullRequestPath;
+  }
   const orientationPath = join(root, "orientation.json");
-  writeFileSync(orientationPath, JSON.stringify({ repository: workspace, grounding, guidance: guidancePath }));
+  writeFileSync(orientationPath, JSON.stringify(orientation));
   const cliArgs = [inputScriptPath, target, head];
   if (loopRecord !== undefined || absentLoopRecord) {
     const recordPath = join(root, "loop-record.json");
@@ -547,6 +556,53 @@ test("the deterministic input binds shipped role prose and project guidance into
     call.opts.label === "exploration" || call.opts.label?.startsWith("specialist-") || call.opts.label?.startsWith("verify-"));
   assert.ok(judgementCalls.every((call) => call.prompt.includes(marker)));
   assert.match(judgementCalls.find((call) => call.opts.label?.startsWith("specialist-")).prompt, /MINOS_CORRECTNESS_EVIDENCE_V1/);
+});
+
+test("the recorded pull-request description reaches every judgement leg with the declared-scope rule", async () => {
+  const marker = "MINOS_TEST_DECLARED_SCOPE_VERMILION_442";
+  const args = enumeratedArgs("aaa111", "bbb222", {
+    pullRequest: { number: 17, title: "Bridge a thread", body: `Not in scope: ${marker}.` },
+  });
+  assert.deepEqual(args.pullRequest, { title: "Bridge a thread", body: `Not in scope: ${marker}.` });
+  const { calls } = await runScript(args, responder());
+  const judgementCalls = calls.filter((call) =>
+    call.opts.label === "exploration" || call.opts.label?.startsWith("specialist-") || call.opts.label?.startsWith("verify-"));
+  assert.ok(judgementCalls.length >= 3);
+  for (const call of judgementCalls) {
+    assert.ok(call.prompt.includes(marker));
+    assert.match(call.prompt, /declared gap is not a defect of this change/);
+    assert.match(call.prompt, /never excuses incorrect behaviour/);
+  }
+});
+
+test("a run without a recorded description carries no pull-request block", async () => {
+  const { calls } = await runScript(enumeratedArgs(), responder());
+  assert.ok(calls.every((call) => !call.prompt.includes("<pull-request-description")));
+});
+
+test("the review input fails closed on a recorded-but-unreadable pull-request record and omits an empty one", () => {
+  assert.throws(
+    () => enumeratedArgs("aaa111", "bbb222", { absentPullRequestRecord: true }),
+    /missing or non-JSON pull-request record/,
+  );
+  assert.throws(
+    () => enumeratedArgs("aaa111", "bbb222", { pullRequest: "not JSON" }),
+    /missing or non-JSON pull-request record/,
+  );
+  assert.throws(
+    () => enumeratedArgs("aaa111", "bbb222", { pullRequest: { title: 3, body: null } }),
+    /needs string title and body fields/,
+  );
+  const empty = enumeratedArgs("aaa111", "bbb222", { pullRequest: { title: "", body: " \n" } });
+  assert.equal(empty.pullRequest, undefined);
+});
+
+test("an oversized pull-request description is truncated rather than fatal", () => {
+  const args = enumeratedArgs("aaa111", "bbb222", {
+    pullRequest: { title: "Big", body: "x".repeat(70_000) },
+  });
+  assert.ok(args.pullRequest.body.length < 70_000);
+  assert.match(args.pullRequest.body, /\[pull-request description truncated\]$/);
 });
 
 test("a two-round journey carries fixed and unfixed findings into later specialist judgement", async () => {

@@ -545,6 +545,41 @@ last action and end the turn. A continuation writes no failure-log line.
    task that exits non-zero, is likewise an incomplete stop, never a
    verdict.
 
+   Before the first review of a run — and only then; a run consuming a
+   carried result and every re-review after a fix wave go straight to the
+   input build below — run the engagement gate. Build its input:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/review-scope-inputs.mjs" \
+     "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
+     > "$MINOS_RUN_DIR/review-scope-args.json"
+   ```
+
+   Read that file's `briefsEngage` field. When it is true, a repository brief
+   already gives this change work, so the full pipeline runs regardless: skip
+   the gate workflow and continue below. When it is false, invoke the
+   adjudication wrapper on the gate once from `$MINOS_WORKSPACE`, under this
+   step's workflow discipline:
+
+   ```sh
+   "$MINOS_REVIEW_WORKFLOW" \
+     "${MINOS_REVIEW_WORKFLOW%/*}/review-scope.js" \
+     --json-args @"$MINOS_RUN_DIR/review-scope-args.json" \
+     > "$MINOS_RUN_DIR/review-scope-result.json"
+   ```
+
+   Only a gate verdict whose `status` is `complete` and whose
+   `scopeDecision.status` is `nothing-engages` short-circuits: copy that
+   verdict to `$MINOS_RUN_DIR/review-result.json` and continue at step 5
+   without invoking the review workflow — the gate's verdict is that round's
+   complete clean review, and its `skipped` array is the brief record step 7
+   consumes. Every other outcome — `review-required`, an `incomplete` or
+   `infrastructure-failure` verdict, a missing or unparseable result —
+   continues below exactly as though the gate had not run. The gate is an
+   optimisation, never a blocker: falling through to the full review is a
+   planned continuation, not a failed exit, so it sets no status, removes no
+   reaction, and writes no failure-log line.
+
    Build the main review input from disk and write it to a file:
 
    ```sh
@@ -555,9 +590,12 @@ last action and end the turn. A continuation writes no failure-log line.
    ```
 
    This deterministic file-reading seam validates `$MINOS_ORIENTATION`, reads
-   the selected annexe commission or repository-fallback guidance, and supplies
-   that content with the shipped role briefs. Do not ask an agent to reproduce
-   it or hand-author its `guidance` or `instructionBriefs` entries.
+   the selected annexe commission or repository-fallback guidance and the
+   pull-request description setup recorded, and supplies that content with the
+   shipped role briefs — so reviewers weigh the author's explicitly declared
+   scope rather than rediscovering a declared gap as a defect. Do not ask an
+   agent to reproduce it or hand-author its `guidance`, `pullRequest`, or
+   `instructionBriefs` entries.
 
    Choose exactly one branch:
 
@@ -785,8 +823,16 @@ last action and end the turn. A continuation writes no failure-log line.
    Review prose talks only about the code, never about Minos, its process or a
    round number. Operational conditions — head moved, forge unreadable, review
    not reached — are always carried by the `Minos` status, never by a review.
-7. Once the main loop has reached its terminal classification, build the
-   repository-brief input directly as JSON:
+7. Once the main loop has reached its terminal classification, run the
+   repository-brief stage. When `review-result.json` is the engagement gate's
+   `nothing-engages` verdict, this stage is already settled: the gate launched
+   only because every `.review/` brief settled deterministically as skipped,
+   so its verdict's `skipped` array is this stage's brief record — the same
+   dispositions this workflow would recompute — and there is nothing to run,
+   judge, or publish. Do not build the brief input or launch the brief
+   workflow; the brief stage has passed with `briefFixRequired` false.
+   Continue to finishing. Otherwise, build the repository-brief input
+   directly as JSON:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-brief-inputs.mjs" \

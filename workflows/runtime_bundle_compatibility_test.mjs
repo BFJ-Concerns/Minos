@@ -28,6 +28,7 @@ const optionBlockPattern =
 const expectedCallSites = new Map([
   ["review.js", 3],
   ["review-briefs.js", 4],
+  ["review-scope.js", 1],
   ["fix.js", 3],
   ["setup.js", 1],
   ["rootcause.js", 1],
