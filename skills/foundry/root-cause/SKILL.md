@@ -158,14 +158,3 @@ When the failure is intermittent or reproduction is unreliable, read
 `references/intermittent-failures.md`: it carries the classification
 instruments, base-rate priors, and rate arithmetic that intermittence demands
 and steady failures never need.
-
-## Probation
-
-**Temporary — sunset 2026-08-10:** this skill shipped new on 2026-07-10, so treat friction
-with it as signal rather than noise. A defect in the skill itself — an instruction that is
-wrong or ambiguous, a bundled script, prompt, or binary that is broken, anything it tells
-you to do that you end up working around — is a report this window exists to collect:
-file it with the foundry-request skill once the task allows, or carry it in your session
-report where that skill is not available. A failure of the environment, the task, or other
-tooling is not this skill's defect; handle those as you normally would. If today is after
-2026-08-10, this note has outstayed its window: tell the user to remove it.
