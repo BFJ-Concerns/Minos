@@ -148,7 +148,7 @@ takes the absorb judgement above.
 
 1. The setup script has prepared the repository at the current pull-request head
    in `$MINOS_WORKSPACE`, either from a fresh clone or a validated preserved
-   workspace. It refused setup if the admitted head moved before setup. On a
+   workspace. It refused setup if the admitted head moved through a foreign commit before setup. On a
    mainline pull request it then pushed a completed target reconciliation merge
    to the source branch and made that merge `$MINOS_HEAD_SHA`; on a fork or AGit
    pull request the reconciliation stays local and `$MINOS_HEAD_SHA` remains the

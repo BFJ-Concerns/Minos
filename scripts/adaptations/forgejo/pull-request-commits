@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+
+commits='[]'
+previous=''
+page=1
+while :; do
+  current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/commits?limit=50&page=${page}")"
+  [ "$current" != "$previous" ] || break
+  [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
+  commits="$(jq -cn --argjson all "$commits" --argjson page "$current" '$all + $page')"
+  previous="$current"
+  page=$((page + 1))
+done
+
+printf '%s' "$commits" | jq '[.[] | {sha:(.sha // .id // ""), author:(.author.login // .author.username // "")}]'

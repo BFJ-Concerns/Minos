@@ -65,6 +65,11 @@ type IssueComment struct {
 	User string `json:"user"`
 }
 
+type Commit struct {
+	SHA    string `json:"sha"`
+	Author string `json:"author"`
+}
+
 type Dependency struct {
 	Repository string `json:"repository"`
 	Number     int64  `json:"number"`

@@ -62,6 +62,46 @@ func TestIssueCommentsUsesPullRequestIssueSurface(t *testing.T) {
 	}
 }
 
+func TestPullRequestCommitsExposeForgeAuthorship(t *testing.T) {
+	runner := &recordingRunner{outputs: [][]byte{[]byte(`[{"sha":"old","author":"contributor"},{"sha":"new","author":"Minos"}]`)}, errors: []error{nil}}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commits, err := adapter.PullRequestCommits(t.Context(), Repository{Owner: "owner", Name: "repo"}, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 2 || commits[0].SHA != "old" || commits[1].Author != "Minos" {
+		t.Fatalf("commits = %#v", commits)
+	}
+	request := runner.requests[0]
+	if request.Operation != "pull-request-commits" || !slices.Equal(request.Arguments, []string{"owner", "repo", "17"}) {
+		t.Fatalf("request = %#v", request)
+	}
+}
+
+func TestOwnMovementRequiresACompleteAllServiceAuthoredInterval(t *testing.T) {
+	commits := []Commit{{SHA: "held", Author: "contributor"}, {SHA: "own-one", Author: "Minos"}, {SHA: "foreign", Author: "contributor"}, {SHA: "current", Author: "Minos"}}
+	for _, test := range []struct {
+		name           string
+		earlier, later string
+		want           bool
+	}{
+		{name: "same commit", earlier: "current", later: "current", want: true},
+		{name: "own suffix", earlier: "foreign", later: "current", want: true},
+		{name: "mixed suffix", earlier: "held", later: "current"},
+		{name: "missing witness", earlier: "missing", later: "current"},
+		{name: "missing current", earlier: "foreign", later: "missing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := OwnMovement(commits, test.earlier, test.later, "Minos"); got != test.want {
+				t.Fatalf("OwnMovement() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSetProductStatusRejectsInvalidState(t *testing.T) {
 	runner := &recordingRunner{}
 	adapter, err := NewAdapter(runner, "Minos")

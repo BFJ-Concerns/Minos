@@ -17,9 +17,9 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|check-logs|claim|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge snapshot|head-movement|check-logs|claim|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
-	adapter, guard, err := leadForge()
+	adapter, guard, botLogin, err := leadForge()
 	if err != nil {
 		return err
 	}
@@ -33,6 +33,20 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(snapshot)
+	case "head-movement":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: minos forge head-movement EARLIER LATER")
+		}
+		commits, err := adapter.PullRequestCommits(ctx, guard.Repository, guard.PullRequest)
+		if err != nil {
+			return err
+		}
+		movement := "foreign"
+		if forge.OwnMovement(commits, args[1], args[2], botLogin) {
+			movement = "own"
+		}
+		_, err = fmt.Fprintln(stdout, movement)
+		return err
 	case "check-logs":
 		if len(args) != 3 {
 			return fmt.Errorf("usage: minos forge check-logs HEAD TARGET")
@@ -149,28 +163,28 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 }
 
-func leadForge() (*forge.Adapter, forge.Guard, error) {
+func leadForge() (*forge.Adapter, forge.Guard, string, error) {
 	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
-		return nil, forge.Guard{}, err
+		return nil, forge.Guard{}, "", err
 	}
 	forgeName := os.Getenv("MINOS_FORGE")
 	adapter, err := newBehaviouralForge(cfg, forgeName)
 	if err != nil {
-		return nil, forge.Guard{}, err
+		return nil, forge.Guard{}, "", err
 	}
 	pr, err := strconv.ParseInt(os.Getenv("MINOS_PR"), 10, 64)
 	if err != nil {
-		return nil, forge.Guard{}, fmt.Errorf("MINOS_PR: %w", err)
+		return nil, forge.Guard{}, "", fmt.Errorf("MINOS_PR: %w", err)
 	}
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: os.Getenv("MINOS_OWNER"), Name: os.Getenv("MINOS_REPO_NAME")},
 		PullRequest: pr,
 	}
 	if guard.Repository.Owner == "" || guard.Repository.Name == "" {
-		return nil, forge.Guard{}, fmt.Errorf("pull-request environment is incomplete")
+		return nil, forge.Guard{}, "", fmt.Errorf("pull-request environment is incomplete")
 	}
-	return adapter, guard, nil
+	return adapter, guard, cfg.Service.BotLogin, nil
 }
 
 func namedProductState(name string) (product.State, bool) {

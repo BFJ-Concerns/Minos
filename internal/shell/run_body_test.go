@@ -177,6 +177,20 @@ printf '%s\n' '{"outcome":"reconciled","publish":true,"merge":"setup-merge-sha"}
 	assertContainsFile(t, fixture.record+".worker-env", "MINOS_HEAD_SHA=setup-merge-sha")
 }
 
+func TestRunBodyUsesTheHeadSetupActuallyCheckedOut(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
+set -eu
+mkdir -p "$MINOS_WORKSPACE"
+install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
+printf '%s\n' '{"head":"own-moved-head","grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
+printf '%s\n' '{"outcome":"unchanged","publish":false}' >"$MINOS_RUN_DIR/reconciliation.json"
+`)
+
+	fixture.run(t, nil)
+	assertContainsFile(t, fixture.record+".worker-env", "MINOS_HEAD_SHA=own-moved-head")
+}
+
 func TestRunBodyKeepsAdmittedHeadForLocalOnlySetup(t *testing.T) {
 	for _, geometry := range []string{"fork", "agit"} {
 		t.Run(geometry, func(t *testing.T) {

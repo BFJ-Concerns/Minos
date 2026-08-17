@@ -126,6 +126,46 @@ func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testi
 	assertContainsFile(t, filepath.Join(commonDir, "hooks", "pre-push"), "minos-protected-ref")
 }
 
+func TestSetupWorkspaceRefusesOnlyForeignHeadMovement(t *testing.T) {
+	for _, test := range []struct {
+		name, movement string
+		wantSuccess    bool
+	}{
+		{name: "Minos-only movement proceeds", movement: "own", wantSuccess: true},
+		{name: "foreign movement refuses", movement: "foreign"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, admitted := createGitRepository(t, "code.txt", "admitted\n")
+			if err := os.WriteFile(filepath.Join(repository, "code.txt"), []byte("moved\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, repository, "add", "code.txt")
+			runGit(t, repository, "commit", "-m", "move head")
+			observed := gitOutput(t, repository, "rev-parse", "HEAD")
+			annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
+			server := newSetupForge(t, observed, repository, annexe)
+			runDir := t.TempDir()
+			classifier := filepath.Join(runDir, "minos")
+			if err := os.WriteFile(classifier, []byte("#!/bin/sh\nprintf '%s\\n' '"+test.movement+"'\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := setupWorkspaceCommandForTarget(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), admitted, observed)
+			cmd.Env = append(cmd.Env, "MINOS_BIN="+classifier)
+			output, err := cmd.CombinedOutput()
+			if test.wantSuccess {
+				if err != nil {
+					t.Fatalf("setup-workspace failed: %v\n%s", err, output)
+				}
+				if got := gitOutput(t, filepath.Join(runDir, "workspace"), "rev-parse", "HEAD"); got != observed {
+					t.Fatalf("workspace head = %q, want %q", got, observed)
+				}
+			} else if err == nil || !strings.Contains(string(output), "through a foreign commit") {
+				t.Fatalf("error = %v, output = %q", err, output)
+			}
+		})
+	}
+}
+
 func TestSetupWorkspaceRecordsRepositoryGuidanceFallbackWithoutAnnexe(t *testing.T) {
 	repository, head := createGitRepository(t, "AGENTS.md", "MINOS_REPOSITORY_GUIDANCE_OCHRE_719\n")
 	server := newSetupForge(t, head, repository, "")

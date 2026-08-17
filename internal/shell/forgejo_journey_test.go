@@ -641,9 +641,126 @@ func TestForgejoCurrentTargetHoldIsNotAReleasedHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	context := releasedHoldContext(t.Context(), adapter, snapshot, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, 1, cfg.Service.BotLogin)
+	commits, err := adapter.PullRequestCommits(t.Context(), forge.Repository{Owner: facts.Owner, Name: facts.Repo}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := releasedHoldContext(t.Context(), adapter, snapshot, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, 1, cfg.Service.BotLogin, commits)
 	if context != (AdmissionContext{}) {
 		t.Fatalf("released hold context = %#v, want empty", context)
+	}
+}
+
+func TestForgejoCompletionMarkersFollowForeignCommitProvenance(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		movement     []map[string]any
+		wantDecision ReconcileDecision
+		wantStarts   int
+	}{
+		{
+			name:         "Minos-only movement preserves completion",
+			movement:     []map[string]any{{"sha": "witness", "author": map[string]any{"login": "contributor"}}, {"sha": "current", "author": map[string]any{"login": "Minos"}}},
+			wantDecision: ReconcileNothing,
+		},
+		{
+			name:         "mixed movement spends completion",
+			movement:     []map[string]any{{"sha": "witness", "author": map[string]any{"login": "contributor"}}, {"sha": "foreign", "author": map[string]any{"login": "contributor"}}, {"sha": "current", "author": map[string]any{"login": "Minos"}}},
+			wantDecision: SpawnStarted, wantStarts: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = "witness" })
+			state.setStatuses([]map[string]any{{
+				"id": float64(7), "status": "success", "context": "Minos", "creator": map[string]any{"login": "Minos"},
+				"description": product.Clean().Description(), "target_url": fmt.Sprintf("%s/minos-e2e-owner/subject/pulls/1#minos-target-%s", state.server.URL, state.targetSHA()),
+			}})
+			state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = "current" })
+			state.setCommits(test.movement)
+			cfg, repo, facts := state.service(t)
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			starts := 0
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					starts++
+				}
+				return nil, nil
+			}
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != test.wantDecision || starts != test.wantStarts {
+				t.Fatalf("decision = %q, starts = %d; want %q, %d", result.Decision, starts, test.wantDecision, test.wantStarts)
+			}
+		})
+	}
+}
+
+func TestForgejoHeadMovementCommandClassifiesTheWholeCommitInterval(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = "current" })
+	cfg, _, _ := state.service(t)
+	cfg.Service.BotLogin = "minos-bot"
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+	t.Setenv("MINOS_GIT_AUTHOR_NAME", "Minos")
+	for _, test := range []struct {
+		name, middle, want string
+	}{
+		{name: "own movement", middle: "minos-bot", want: "own"},
+		{name: "mixed movement", middle: "contributor", want: "foreign"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state.setCommits([]map[string]any{
+				{"sha": "witness", "author": map[string]any{"login": "contributor"}},
+				{"sha": "middle", "author": map[string]any{"login": test.middle}},
+				{"sha": "current", "author": map[string]any{"login": "minos-bot"}},
+			})
+			var output bytes.Buffer
+			if err := ForgeCommand(t.Context(), []string{"head-movement", "witness", "current"}, &output); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(output.String()); got != test.want {
+				t.Fatalf("movement = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestForgejoReleasedHoldSurvivesMinosOnlyHeadMovement(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = "held" })
+	state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, "held", "earlier-target")})
+	state.setIssueComments([]map[string]any{{"id": float64(9), "body": "Held at: review\nThe target lacked the required fixture.", "user": map[string]any{"login": "Minos"}}})
+	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = "current" })
+	state.setCommits([]map[string]any{{"sha": "held", "author": map[string]any{"login": "contributor"}}, {"sha": "current", "author": map[string]any{"login": "Minos"}}})
+	cfg, repo, facts := state.service(t)
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+	result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != SpawnStarted {
+		t.Fatalf("decision = %q", result.Decision)
+	}
+	environment := systemdEnvironment(t, systemdArgs)
+	if environment["MINOS_RELEASED_HOLD_HEAD"] != "held" || environment["MINOS_RELEASED_HOLD_STAGE"] != "review" {
+		t.Fatalf("released hold environment = %#v", environment)
 	}
 }
 
@@ -1406,6 +1523,7 @@ type forgejoFixtureState struct {
 	reviews          []map[string]any
 	statuses         []map[string]any
 	statusesByCommit map[string][]map[string]any
+	commits          []map[string]any
 	issueComments    []map[string]any
 	dependencies     []map[string]any
 	dependencyPages  [][]map[string]any
@@ -1473,6 +1591,7 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 		dependencies:     []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
 		statusesByCommit: make(map[string][]map[string]any),
 	}
+	state.commits = []map[string]any{{"sha": state.pullRequest["head"].(map[string]any)["sha"], "author": map[string]any{"login": "fixture-author"}}}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
 	state.tokenPath = filepath.Join(t.TempDir(), "forge.token")
@@ -1574,6 +1693,12 @@ func (s *forgejoFixtureState) setIssueComments(comments []map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.issueComments = comments
+}
+
+func (s *forgejoFixtureState) setCommits(commits []map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commits = commits
 }
 
 func (s *forgejoFixtureState) setDependencies(dependencies []map[string]any) {
@@ -1684,6 +1809,8 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, s.dependencies)
 	case r.Method == http.MethodGet && path == issuePath+"/comments":
 		writeFixtureJSON(s.t, w, s.issueComments)
+	case r.Method == http.MethodGet && path == pullPath+"/commits":
+		writeFixtureJSON(s.t, w, s.commits)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/branches/main"):
 		base := s.pullRequest["base"].(map[string]any)
 		writeFixtureJSON(s.t, w, map[string]any{
@@ -1916,7 +2043,7 @@ func writeFixtureJSON(t *testing.T, w http.ResponseWriter, value any) {
 func writeServiceConfig(t *testing.T, cfg ServiceConfig) {
 	t.Helper()
 	body := fmt.Sprintf(`[service]
-bot-login = "Minos"
+bot-login = %q
 [listener]
 bind = ":0"
 [forges.forgejo]
@@ -1926,7 +2053,7 @@ webhook-secret-file = %q
 credential-file = %q
 [runs]
 dir = %q
-`, cfg.Forges["forgejo"].Adaptation, cfg.Forges["forgejo"].APIBase,
+`, cfg.Service.BotLogin, cfg.Forges["forgejo"].Adaptation, cfg.Forges["forgejo"].APIBase,
 		cfg.Forges["forgejo"].WebhookSecretFile, cfg.Forges["forgejo"].CredentialFile, cfg.Runs.Dir)
 	if err := os.WriteFile(filepath.Join(cfg.Root, "service.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
