@@ -53,6 +53,18 @@ func currentReview(snapshot forge.Snapshot, botLogin string) (forge.Review, bool
 	return latest, found
 }
 
+func trustedReview(snapshot forge.Snapshot, commits []forge.Commit, botLogin string) (forge.Review, bool) {
+	var latest forge.Review
+	found := false
+	for _, review := range snapshot.Reviews {
+		if review.User == botLogin && forge.OwnMovement(commits, review.CommitID, snapshot.HeadSHA, botLogin) && (!found || review.ID > latest.ID) {
+			latest = review
+			found = true
+		}
+	}
+	return latest, found
+}
+
 func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, bool) {
 	var latest forge.Status
 	found := false
@@ -68,15 +80,32 @@ func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, 
 	return latest, found
 }
 
-func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot forge.Snapshot, repository forge.Repository, pullRequest int64, botLogin string) AdmissionContext {
+func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot forge.Snapshot, repository forge.Repository, pullRequest int64, botLogin string, commits []forge.Commit) AdmissionContext {
 	var held forge.Status
+	heldHead := ""
 	found := false
-	for _, status := range snapshot.Statuses {
-		if status.Provider == forge.ForgejoProvider && status.Context == forge.OwnedStatusContext &&
-			status.Creator == botLogin && status.Description == product.Held().Description() &&
-			(!found || status.ID > held.ID) {
-			held = status
-			found = true
+	for index := len(commits) - 1; index >= 0; index-- {
+		commit := commits[index]
+		if !forge.OwnMovement(commits, commit.SHA, snapshot.HeadSHA, botLogin) {
+			continue
+		}
+		statuses := snapshot.Statuses
+		if commit.SHA != snapshot.HeadSHA {
+			var err error
+			statuses, err = adapter.CommitStatuses(ctx, repository, commit.SHA)
+			if err != nil {
+				return AdmissionContext{}
+			}
+		}
+		for _, status := range statuses {
+			if status.Provider == forge.ForgejoProvider && status.Context == forge.OwnedStatusContext &&
+				status.Creator == botLogin && status.Description == product.Held().Description() &&
+				(!found || status.ID > held.ID) {
+				held, heldHead, found = status, commit.SHA, true
+			}
+		}
+		if found {
+			break
 		}
 	}
 	fragment := strings.LastIndex(held.TargetURL, heldTargetFragment)
@@ -106,7 +135,7 @@ func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot f
 	if !ok {
 		return AdmissionContext{}
 	}
-	return AdmissionContext{ReleasedHoldHead: snapshot.HeadSHA, ReleasedHoldStage: stage, ReleasedHoldDiagnosis: diagnosis}
+	return AdmissionContext{ReleasedHoldHead: heldHead, ReleasedHoldStage: stage, ReleasedHoldDiagnosis: diagnosis}
 }
 
 func parseHeldComment(body string) (string, string, bool) {
@@ -157,6 +186,29 @@ func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) boo
 		latest.Description == product.Merged().Description()
 }
 
+func trustedCompletedRunStatus(ctx context.Context, adapter *forge.Adapter, repository forge.Repository, snapshot forge.Snapshot, commits []forge.Commit, botLogin, targetURL string) bool {
+	for index := len(commits) - 1; index >= 0; index-- {
+		commit := commits[index]
+		if !forge.OwnMovement(commits, commit.SHA, snapshot.HeadSHA, botLogin) {
+			continue
+		}
+		statuses := snapshot.Statuses
+		if commit.SHA != snapshot.HeadSHA {
+			var err error
+			statuses, err = adapter.CommitStatuses(ctx, repository, commit.SHA)
+			if err != nil {
+				return false
+			}
+		}
+		copy := snapshot
+		copy.Statuses = statuses
+		if completedRunStatus(copy, botLogin, targetURL) {
+			return true
+		}
+	}
+	return false
+}
+
 type ReconcileDecision string
 
 const (
@@ -188,11 +240,16 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	facts.BaseRef = snapshot.TargetBranch
 	facts.HeadRef = snapshot.HeadBranch
 	pullRequest, _ := strconv.ParseInt(facts.PR, 10, 64)
-	admission := releasedHoldContext(ctx, adapter, snapshot, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, pullRequest, cfg.Service.BotLogin)
+	repository := forge.Repository{Owner: facts.Owner, Name: facts.Repo}
+	commits, commitsErr := adapter.PullRequestCommits(ctx, repository, pullRequest)
+	if commitsErr != nil {
+		commits = []forge.Commit{{SHA: snapshot.HeadSHA, Author: cfg.Service.BotLogin}}
+	}
+	admission := releasedHoldContext(ctx, adapter, snapshot, repository, pullRequest, cfg.Service.BotLogin, commits)
 	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
 	}
-	if review, reviewed := currentReview(snapshot, cfg.Service.BotLogin); reviewed {
+	if review, reviewed := trustedReview(snapshot, commits, cfg.Service.BotLogin); reviewed {
 		state, terminal := terminalState(review)
 		if terminal {
 			if hasTerminalStatus(snapshot, cfg, facts, state) {
@@ -213,7 +270,7 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 			}
 		}
 	}
-	if completedRunStatus(snapshot, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts)) {
+	if trustedCompletedRunStatus(ctx, adapter, repository, snapshot, commits, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts)) {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
 	if reason, deferred := dependencyDeferral(snapshot); deferred {

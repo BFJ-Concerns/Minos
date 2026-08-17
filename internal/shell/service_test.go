@@ -39,6 +39,26 @@ func TestAlreadyReviewedRequiresMinosReviewOnCurrentHead(t *testing.T) {
 	}
 }
 
+func TestTrustedReviewSurvivesOnlyMinosAuthoredMovement(t *testing.T) {
+	snapshot := forge.Snapshot{HeadSHA: "current", Reviews: []forge.Review{{ID: 7, User: "Minos", CommitID: "reviewed", State: "APPROVED"}}}
+	for _, test := range []struct {
+		name   string
+		middle string
+		want   bool
+	}{
+		{name: "Minos-only movement", middle: "Minos", want: true},
+		{name: "foreign movement", middle: "contributor"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			commits := []forge.Commit{{SHA: "reviewed", Author: "contributor"}, {SHA: "middle", Author: test.middle}, {SHA: "current", Author: "Minos"}}
+			_, got := trustedReview(snapshot, commits, "Minos")
+			if got != test.want {
+				t.Fatalf("trustedReview() found = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 	tests := []struct {
 		name     string
