@@ -1,12 +1,17 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(new URL("./publish-overflow.mjs", import.meta.url));
+
+const scratchDirs = [];
+after(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+});
 
 function finding(title, overrides = {}) {
   return {
@@ -22,6 +27,7 @@ function finding(title, overrides = {}) {
 
 function fixture(orientation, findings) {
   const dir = mkdtempSync(join(tmpdir(), "publish-overflow-"));
+  scratchDirs.push(dir);
   const orientationPath = join(dir, "orientation.json");
   const findingsPath = join(dir, "findings.json");
   writeFileSync(orientationPath, JSON.stringify(orientation));
@@ -37,6 +43,7 @@ function run(args) {
 // clone the orientation points at, and assertions on what was pushed.
 function annexeFixture() {
   const root = mkdtempSync(join(tmpdir(), "publish-overflow-annexe-"));
+  scratchDirs.push(root);
   const origin = join(root, "origin.git");
   const clone = join(root, "annexe");
   const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
@@ -59,7 +66,7 @@ test("missing arguments exit with usage", () => {
   assert.match(result.stderr, /usage: node workflows\/publish-overflow\.mjs ORIENTATION FINDINGS/);
 });
 
-test("repository grounding returns one pull-request payload without touching disk", () => {
+test("repository grounding returns one pull-request payload", () => {
   const { orientationPath, findingsPath } = fixture({ grounding: "repository" }, [
     finding("stale cursor"),
     finding("orphan sweep", { path: "scripts/run-body/archive-run", line: 3, severity: "Medium" }),

@@ -903,7 +903,7 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
-    /target-side comment opening with `Held at: finishing` \(both review\s+stages completed clean at this head[\s\S]*file the diagnosis to the\s+reviewed project's annexe exactly as step 3's held stop directs/,
+    /target-side comment opening with `Held at: finishing` \(the review\s+stages concluded clean for this pull request and the hold interrupted\s+finishing[\s\S]*file the diagnosis to the\s+reviewed project's annexe exactly as step 3's held stop directs/,
   );
   assert.match(
     finishing,

@@ -218,10 +218,12 @@ last action and end the turn. A continuation writes no failure-log line.
    proves nothing. The resume is narrow by design: only work the forge
    witnesses complete may be skipped. When the stage value is `finishing`
    and `$MINOS_RELEASED_HOLD_HEAD` equals the admitted pull-request head
-   setup recorded, the predecessor completed both review stages clean at
-   exactly this content and was interrupted at finishing by a target-side
-   breakage. Every review the forge carries at that head stands — the
-   review judged the diff, and the target sync that released the hold
+   setup recorded, the predecessor's review stages concluded clean for
+   this pull request and finishing was interrupted at this head by a
+   target-side breakage. Every review the forge carries for this pull
+   request stands — the review judged the diff, any later finishing
+   repair was verified by the configured commands under the
+   no-re-review rule, and the target sync that released the hold
    triggers no re-review — so do not re-run the engagement gate, the
    review workflow, the fix loop, or the brief stage: both review stages
    are settled for this run. Run everything the forge does not witness:
@@ -233,8 +235,13 @@ last action and end the turn. A continuation writes no failure-log line.
    resumed run a red configured command enters the gate repair discipline
    in its entered-after-both-stages mode: the re-run build and tests are
    the repair's whole verification, no review loop reopens, and a later
-   held stop still opens its comment with `Held at: finishing`, because
-   the review stages' completion at this head remains witnessed.
+   held stop still opens its comment with `Held at: finishing` — a
+   finishing-stage repair rides the no-re-review rule, so the stage
+   witness records that the review stages concluded for this pull request
+   and the hold interrupted finishing; a successor admitted at the
+   repaired head resumes there exactly as this run would have continued,
+   its repair commit verified by the configured build and tests at merge
+   time, never by a review.
    Overflow and held-diagnosis filings the predecessor made are already
    in the reviewed project's annexe; do not repeat them. Any other case —
    either variable empty, a stage other than `finishing`, or a head
@@ -1161,9 +1168,12 @@ last action and end the turn. A continuation writes no failure-log line.
    no mutation. On the red-check path, branch on the `cause` verdict exactly
    as step 3's target-side discipline directs: a `side` of `target` ends the
    run as held — set `"$MINOS_BIN" forge status HEAD TARGET held`, post the
-   target-side comment opening with `Held at: finishing` (both review
-   stages completed clean at this head — the stretch witness a
-   successor's release recognition reads), file the diagnosis to the
+   target-side comment opening with `Held at: finishing` (the review
+   stages concluded clean for this pull request and the hold interrupted
+   finishing — the stretch witness a successor's release recognition
+   reads; after a finishing repair pushed, the reviews sit on an earlier
+   head, and the witness records the conclusion, not a review at this
+   exact commit), file the diagnosis to the
    reviewed project's annexe exactly as step 3's held stop directs,
    remove 👀, write the non-clean terminal marker, and
    stop. Any other `side`, `unproven` included, is a stall — leave the label
