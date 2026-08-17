@@ -61,6 +61,55 @@ func (a *Adapter) IssueComments(ctx context.Context, repository Repository, pull
 	return comments, nil
 }
 
+func (a *Adapter) PullRequestCommits(ctx context.Context, repository Repository, pullRequest int64) ([]Commit, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "pull-request-commits", Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)}})
+	if err != nil {
+		return nil, err
+	}
+	var commits []Commit
+	if err := json.Unmarshal(out, &commits); err != nil {
+		return nil, fmt.Errorf("decode forge pull-request commits: %w", err)
+	}
+	return commits, nil
+}
+
+func (a *Adapter) CommitStatuses(ctx context.Context, repository Repository, sha string) ([]Status, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "commit-statuses", Arguments: []string{repository.Owner, repository.Name, sha}})
+	if err != nil {
+		return nil, err
+	}
+	var statuses []Status
+	if err := json.Unmarshal(out, &statuses); err != nil {
+		return nil, fmt.Errorf("decode forge commit statuses: %w", err)
+	}
+	return statuses, nil
+}
+
+// OwnMovement reports whether later is reachable from earlier through only
+// commits attributed by the forge to the configured service identity.
+func OwnMovement(commits []Commit, earlier, later, serviceLogin string) bool {
+	if earlier == later {
+		return true
+	}
+	foundEarlier := false
+	for _, commit := range commits {
+		if commit.SHA == earlier {
+			foundEarlier = true
+			continue
+		}
+		if !foundEarlier {
+			continue
+		}
+		if commit.Author != serviceLogin {
+			return false
+		}
+		if commit.SHA == later {
+			return true
+		}
+	}
+	return false
+}
+
 // CheckLogs returns forge-provided job logs associated with check statuses on
 // the guarded pull-request head. The adaptation owns provider-specific URL and
 // Actions API handling; callers receive its evidence object unchanged.

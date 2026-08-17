@@ -55,8 +55,16 @@ fi
 
 observed_head="$(jq -r '.head.sha // ""' "$response_file")"
 if [ "$observed_head" != "$MINOS_HEAD_SHA" ]; then
-  echo "setup-workspace: pull-request head moved from $MINOS_HEAD_SHA to ${observed_head:-unknown}" >&2
-  exit 1
+  movement='foreign'
+  if [ -n "$observed_head" ] && [ -n "${MINOS_BIN:-}" ]; then
+    movement="$("$MINOS_BIN" forge head-movement "$MINOS_HEAD_SHA" "$observed_head" 2>/dev/null || true)"
+  fi
+  if [ "$movement" != "own" ]; then
+    echo "setup-workspace: pull-request head moved from $MINOS_HEAD_SHA to ${observed_head:-unknown} through a foreign commit" >&2
+    exit 1
+  fi
+  MINOS_HEAD_SHA="$observed_head"
+  export MINOS_HEAD_SHA
 fi
 repository_url="$(jq -r '.head.repo.clone_url // ""' "$response_file")"
 if [ -z "$repository_url" ]; then

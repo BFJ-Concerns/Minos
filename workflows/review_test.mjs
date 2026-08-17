@@ -726,6 +726,7 @@ test("an exploration null still emits its required leg for archive adjudication"
 });
 
 test("the lifecycle uses one adjudicated review call and publication-owned fix waves", () => {
+  assert.match(lifecycle, /refused setup if the admitted head moved through a foreign commit before setup/);
   assert.match(
     lifecycle,
     /mainline pull request[\s\S]*pushed a completed target reconciliation merge[\s\S]*made that merge `\$MINOS_HEAD_SHA`/,

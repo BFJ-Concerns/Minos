@@ -237,6 +237,9 @@ cp -R "${MINOS_SKILLS_DIR%/}/codex/." "$CODEX_HOME/skills/"
 failure_stage="workspace-setup"
 failure_cause="workspace setup failed"
 "$MINOS_SETUP_WORKSPACE"
+failure_cause="setup orientation omitted its checked-out head"
+MINOS_HEAD_SHA="$(jq -er '.head | select(type == "string" and length > 0)' "$MINOS_ORIENTATION")"
+export MINOS_HEAD_SHA
 
 # A mainline setup may publish its reconciliation merge. From this point the
 # run must bind every forge action to that pushed head, while local-only fork

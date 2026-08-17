@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|check-logs|claim|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge snapshot|head-movement|check-logs|claim|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
 	adapter, guard, err := leadForge()
 	if err != nil {
@@ -33,6 +33,20 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(snapshot)
+	case "head-movement":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: minos forge head-movement EARLIER LATER")
+		}
+		commits, err := adapter.PullRequestCommits(ctx, guard.Repository, guard.PullRequest)
+		if err != nil {
+			return err
+		}
+		movement := "foreign"
+		if forge.OwnMovement(commits, args[1], args[2], os.Getenv("MINOS_GIT_AUTHOR_NAME")) {
+			movement = "own"
+		}
+		_, err = fmt.Fprintln(stdout, movement)
+		return err
 	case "check-logs":
 		if len(args) != 3 {
 			return fmt.Errorf("usage: minos forge check-logs HEAD TARGET")
