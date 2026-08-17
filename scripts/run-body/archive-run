@@ -28,8 +28,10 @@ case "$MINOS_ARCHIVE_DESTINATION" in
 esac
 
 safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '-')"
+run_name="$(basename "$run_dir")"
+safe_run_name="$(printf '%s' "$run_name" | tr -c 'A-Za-z0-9_.-' '-')"
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ' 2>/dev/null)" || archive_failed
-archive_name="${timestamp}-${safe_label}-$(basename "$run_dir").tar.zst"
+archive_name="${timestamp}-${safe_label}-${safe_run_name}.tar.zst"
 remote_path="${MINOS_ARCHIVE_DESTINATION%/}/${archive_name}"
 partial_path="${remote_path}.partial"
 
