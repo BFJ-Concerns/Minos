@@ -114,6 +114,7 @@ git -C "$MINOS_WORKSPACE" config rerere.autoUpdate true
 git -C "$MINOS_WORKSPACE" config merge.conflictStyle zdiff3
 
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+run_date="$(date -u '+%Y-%m-%d')"
 common_dir="$(git -C "$MINOS_WORKSPACE" rev-parse --path-format=absolute --git-common-dir)"
 mkdir -p "$common_dir/hooks"
 printf 'refs/heads/%s\n' "$MINOS_HEAD_BRANCH" >"$common_dir/minos-protected-ref"
@@ -163,7 +164,11 @@ case "$response_status" in
       --arg annexe "$annexe_path" \
       --arg guidance "$annexe_guidance" \
       --arg pull_request "$pull_request_record" \
-      '{repository:$repository,head:$head,grounding:"annexe",annexe:$annexe,guidance:$guidance,pullRequest:$pull_request}' \
+      --arg owner "$MINOS_OWNER" \
+      --arg repo "$MINOS_REPO_NAME" \
+      --arg pr "$MINOS_PR" \
+      --arg date "$run_date" \
+      '{repository:$repository,head:$head,grounding:"annexe",annexe:$annexe,guidance:$guidance,pullRequest:$pull_request,source:{owner:$owner,repo:$repo,pr:$pr,date:$date}}' \
       >"$MINOS_ORIENTATION"
     ;;
   404)
@@ -183,7 +188,11 @@ case "$response_status" in
       --arg head "$checked_out_head" \
       --arg guidance "$repository_guidance" \
       --arg pull_request "$pull_request_record" \
-      '{repository:$repository,head:$head,grounding:"repository",guidance:$guidance,pullRequest:$pull_request,reason:"annexe-not-found"}' \
+      --arg owner "$MINOS_OWNER" \
+      --arg repo "$MINOS_REPO_NAME" \
+      --arg pr "$MINOS_PR" \
+      --arg date "$run_date" \
+      '{repository:$repository,head:$head,grounding:"repository",guidance:$guidance,pullRequest:$pull_request,reason:"annexe-not-found",source:{owner:$owner,repo:$repo,pr:$pr,date:$date}}' \
       >"$MINOS_ORIENTATION"
     ;;
   *)
