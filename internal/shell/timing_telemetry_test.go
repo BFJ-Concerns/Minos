@@ -383,6 +383,9 @@ exec sh -c "$last"
 	if len(tarballs) != 1 {
 		t.Fatalf("tarball count = %d, want 1: %v", len(tarballs), tarballs)
 	}
+	if name := filepath.Base(tarballs[0]); !strings.HasSuffix(name, "-example-Relay-pr53-run.tar.zst") {
+		t.Fatalf("ordinary tarball name = %q, want timestamp plus unchanged label and run name", name)
+	}
 	sidecar := strings.TrimSuffix(tarballs[0], ".tar.zst") + ".timings.json"
 	content, err := os.ReadFile(sidecar)
 	if err != nil {
@@ -400,5 +403,100 @@ exec sh -c "$last"
 	}
 	if _, err := os.Stat(sidecar + ".partial"); !os.IsNotExist(err) {
 		t.Fatalf("partial sidecar left beside the delivered one: %v", err)
+	}
+}
+
+func TestArchiveRunSanitisesHostileRunNameBeforeRemoteCommands(t *testing.T) {
+	root := t.TempDir()
+	runName := "run'; touch \"$INJECTION_MARKER\"; printf '\nend"
+	runDir := filepath.Join(root, runName)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "timings.ndjson"), []byte(`{"kind":"minos-timing-event-v1","name":"hostile-name","started_at":"2026-08-17T00:02:00Z","ended_at":"2026-08-17T00:03:00Z","duration_ms":60000,"exit_status":0}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := filepath.Join(root, "bin")
+	destination := filepath.Join(root, "destination")
+	for _, dir := range []string{bin, destination} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeScript(t, filepath.Join(bin, "ssh"), `#!/usr/bin/env sh
+last=""
+for argument in "$@"; do last="$argument"; done
+exec sh -c "$last"
+`)
+	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nexec cat\n")
+
+	identity := filepath.Join(root, "identity")
+	knownHosts := filepath.Join(root, "known-hosts")
+	for _, path := range []string{identity, knownHosts} {
+		if err := os.WriteFile(path, []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archiveConfig := filepath.Join(root, "archive.env")
+	config := strings.Join([]string{
+		`MINOS_ARCHIVE_HOST="fixture"`,
+		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
+		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
+		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(archiveConfig, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	archive, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "archive-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	injectionMarker := filepath.Join(root, "injected")
+	cmd := exec.Command(archive, runDir, "example-Relay-pr53")
+	cmd.Env = append(os.Environ(),
+		"MINOS_ARCHIVE_CONFIG="+archiveConfig,
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"INJECTION_MARKER="+injectionMarker,
+		"MINOS_OWNER=example", "MINOS_REPO_NAME=Relay", "MINOS_PR=53",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("archive-run: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(injectionMarker); !os.IsNotExist(err) {
+		t.Fatalf("hostile run name executed a remote-shell command: %v", err)
+	}
+
+	tarballs, err := filepath.Glob(filepath.Join(destination, "*.tar.zst"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tarballs) != 1 {
+		t.Fatalf("tarball count = %d, want 1: %v", len(tarballs), tarballs)
+	}
+	wantSuffix := "-example-Relay-pr53-run---touch---INJECTION_MARKER---printf---end.tar.zst"
+	if name := filepath.Base(tarballs[0]); !strings.HasSuffix(name, wantSuffix) {
+		t.Fatalf("hostile tarball name = %q, want suffix %q", name, wantSuffix)
+	}
+	sidecar := strings.TrimSuffix(tarballs[0], ".tar.zst") + ".timings.json"
+	content, err := os.ReadFile(sidecar)
+	if err != nil {
+		t.Fatalf("timing sidecar missing beside hostile-name tarball: %v", err)
+	}
+	var record timingRecord
+	if err := json.Unmarshal(content, &record); err != nil {
+		t.Fatalf("sidecar does not parse: %v\n%s", err, content)
+	}
+	if len(record.Commands) != 1 || record.Commands[0].Name != "hostile-name" {
+		t.Fatalf("sidecar commands = %#v, want archived hostile-name event", record.Commands)
+	}
+	archiveListing, err := exec.Command("tar", "-tf", tarballs[0]).CombinedOutput()
+	if err != nil {
+		t.Fatalf("list delivered tarball: %v\n%s", err, archiveListing)
+	}
+	if !strings.Contains(string(archiveListing), "timing-record.json") {
+		t.Fatalf("delivered tarball lacks timing record:\n%s", archiveListing)
 	}
 }
