@@ -209,7 +209,7 @@ test("the script emits an envelope with every routed leg and raw verifier output
   assert.ok(calls.every((call) => !("fallbackModel" in call.opts)));
 });
 
-test("malformed exploration scope entries fail closed before specialist dispatch", async () => {
+test("malformed exploration scope entries fail closed before specialist dispatch", async (t) => {
   for (const malformedScope of [
     ["internal/group_execution.rs],"],
     ["specialistType"],
@@ -225,6 +225,7 @@ test("malformed exploration scope entries fail closed before specialist dispatch
     assert.deepEqual(result, {
       reviewed: { target: ARGS.target, head: ARGS.head, occasion: null },
       stage: "present",
+      incomplete: ["exploration returned a malformed review plan"],
       requiredModelEvidence: [{
         label: "exploration",
         role: "exploration",
@@ -242,6 +243,14 @@ test("malformed exploration scope entries fail closed before specialist dispatch
         reason: "exploration returned a malformed review plan",
       }],
     });
+    const verdict = await adjudicateEnvelope(t, result);
+    assert.equal(verdict.status, "incomplete");
+    assert.equal(verdict.complete, false);
+    assert.deepEqual(verdict.incomplete, [
+      "workflow reported incomplete: exploration returned a malformed review plan",
+    ]);
+    assert.deepEqual(verdict.confirmedFindings, []);
+    assert.equal(verdict.reviewBody, null);
   }
 });
 

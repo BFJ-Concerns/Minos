@@ -363,6 +363,7 @@ function incompleteExploration(reason) {
   return {
     reviewed: { target, head, occasion },
     stage: "present",
+    ...(reason ? { incomplete: [reason] } : {}),
     requiredModelEvidence: legs,
     proposedFindings: [],
     outOfScopeObservations: [],
