@@ -774,7 +774,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
     /shipped `rootcause\.js`[\s\S]*`codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*configured Minos identity[\s\S]*never\s+push/,
   );
   assert.doesNotMatch(lifecycle, /(?:write|construct)(?: the)? `rootcause\.js`/i);
-  assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
+  assert.match(lifecycle, /helper returns a licensed non-empty commit[\s\S]*integrate-wave/);
 });
 
 test("configured command failures enter the repair discipline, never a review on a red head", () => {
@@ -832,6 +832,10 @@ test("configured command failures enter the repair discipline, never a review on
   assert.match(
     initialGate,
     /`side` of `infrastructure` at this gate[\s\S]*excludes the\s+reconciled tree[\s\S]*answered locally[\s\S]*run the exact configured commands again[\s\S]*green re-run continues exactly as a repaired gate would[\s\S]*same-failure judgement finds unchanged spends the exclusion[\s\S]*genuinely different failure is\s+progress[\s\S]*fresh-run push remedy belongs to finishing's forge\s+checks, never to this local gate/,
+  );
+  assert.match(
+    initialGate,
+    /Before reading any other result field, read `status`\. A result whose\s+`status` is `incomplete` is a failed dispatch, not an assessed verdict[\s\S]*the `incomplete` outcome, never a stall's attention[\s\S]*integrate a\s+commit only when the verdict licenses one[\s\S]*target-side `intermittent`\/`test-expectation` exception[\s\S]*breaches the helper's contract/,
   );
   assert.match(
     lifecycle,
@@ -915,7 +919,19 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
-    /fork pull request neither arm exists[\s\S]*honest request-changes report and ends as attention[\s\S]*exclusion earns one fresh run, never a ladder[\s\S]*same-failure judgement \(as\s+at every gate\) finds the same failure, the diagnosis is spent[\s\S]*never answer a spent exclusion with another fresh run[\s\S]*successor released from that hold whose fresh checks fail the same way[\s\S]*dispatches the repair rather than re-earning a fresh run/,
+    /fork pull request neither arm exists[\s\S]*honest request-changes report and ends as attention[\s\S]*exclusion earns one fresh run, never a ladder[\s\S]*same-failure judgement \(as\s+at every gate\) finds the same failure, the diagnosis is spent[\s\S]*never answer a spent exclusion with another fresh run[\s\S]*successor admitted from that hold receives the predecessor's exclusion\s+diagnosis with its release recognition[\s\S]*dispatches the repair rather than re-earning a fresh run/,
+  );
+  assert.match(
+    finishing,
+    /Take a fresh\s+`"\$MINOS_BIN" forge snapshot` now — the last one predates the helper's\s+whole dispatch/,
+  );
+  assert.match(
+    finishing,
+    /Before reading any other result field, read `status` exactly as step 3\s+directs[\s\S]*only a licensed commit\s+\(`side` `pull-request`, or the target flake exception\) is integrated/,
+  );
+  assert.match(
+    finishing,
+    /step-2 dispatch exists and its background task has not completed, first\s+wait for it through its `flake-repair-result\.done` flag[\s\S]*overwrites the\s+evidence files that task reads/,
   );
   assert.match(
     finishing,
