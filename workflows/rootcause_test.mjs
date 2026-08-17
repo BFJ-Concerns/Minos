@@ -71,7 +71,7 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
           additionalProperties: false,
           required: ["side", "determinism", "locus"],
           properties: {
-            side: { enum: ["pull-request", "target", "unproven"] },
+            side: { enum: ["pull-request", "target", "infrastructure", "unproven"] },
             determinism: { enum: ["deterministic", "intermittent", "unproven"] },
             locus: { enum: ["test-expectation", "product", "unproven"] },
           },
@@ -91,6 +91,10 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
     /read \/run\/test-command-output\.log\.excerpt — a failure-relevant excerpt[\s\S]*complete original is at \/run\/test-command-output\.log/,
   );
   assert.match(calls[0].prompt, /reconciled target[\s\S]*fix only what you prove/);
+  assert.match(
+    calls[0].prompt,
+    /The bar for `infrastructure` is exclusion, not attribution[\s\S]*neither the pull request's changes nor the target's code[\s\S]*even when you cannot prove which infrastructure piece failed[\s\S]*a failure that merely \*looks\* environmental[\s\S]*return an empty commit and a diagnosis stating the exclusion evidence[\s\S]*`determinism` and `locus` may honestly stay `unproven`/,
+  );
   assert.match(
     calls[0].prompt,
     /target-side cause is out of scope[\s\S]*never revert or override target-side changes[\s\S]*never retarget or remove the pull request's test expectations[\s\S]*empty commit and a diagnosis naming the target-side commit/,
