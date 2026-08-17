@@ -703,6 +703,7 @@ func TestForgejoHeadMovementCommandClassifiesTheWholeCommitInterval(t *testing.T
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = "current" })
 	cfg, _, _ := state.service(t)
+	cfg.Service.BotLogin = "minos-bot"
 	writeServiceConfig(t, cfg)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
 	t.Setenv("MINOS_FORGE", "forgejo")
@@ -713,14 +714,14 @@ func TestForgejoHeadMovementCommandClassifiesTheWholeCommitInterval(t *testing.T
 	for _, test := range []struct {
 		name, middle, want string
 	}{
-		{name: "own movement", middle: "Minos", want: "own"},
+		{name: "own movement", middle: "minos-bot", want: "own"},
 		{name: "mixed movement", middle: "contributor", want: "foreign"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state.setCommits([]map[string]any{
 				{"sha": "witness", "author": map[string]any{"login": "contributor"}},
 				{"sha": "middle", "author": map[string]any{"login": test.middle}},
-				{"sha": "current", "author": map[string]any{"login": "Minos"}},
+				{"sha": "current", "author": map[string]any{"login": "minos-bot"}},
 			})
 			var output bytes.Buffer
 			if err := ForgeCommand(t.Context(), []string{"head-movement", "witness", "current"}, &output); err != nil {
@@ -2042,7 +2043,7 @@ func writeFixtureJSON(t *testing.T, w http.ResponseWriter, value any) {
 func writeServiceConfig(t *testing.T, cfg ServiceConfig) {
 	t.Helper()
 	body := fmt.Sprintf(`[service]
-bot-login = "Minos"
+bot-login = %q
 [listener]
 bind = ":0"
 [forges.forgejo]
@@ -2052,7 +2053,7 @@ webhook-secret-file = %q
 credential-file = %q
 [runs]
 dir = %q
-`, cfg.Forges["forgejo"].Adaptation, cfg.Forges["forgejo"].APIBase,
+`, cfg.Service.BotLogin, cfg.Forges["forgejo"].Adaptation, cfg.Forges["forgejo"].APIBase,
 		cfg.Forges["forgejo"].WebhookSecretFile, cfg.Forges["forgejo"].CredentialFile, cfg.Runs.Dir)
 	if err := os.WriteFile(filepath.Join(cfg.Root, "service.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
