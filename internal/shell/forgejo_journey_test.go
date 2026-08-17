@@ -558,6 +558,74 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 	})
 }
 
+func TestForgejoCheckCausedVerdictSpending(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		cause        string
+		moveTarget   bool
+		seedStatus   bool
+		wantDecision ReconcileDecision
+		wantStarts   int
+		wantStatuses int
+	}{
+		{name: "moved target spends check-caused verdict", cause: product.RecordCauseRequiredChecks, moveTarget: true, seedStatus: true, wantDecision: SpawnStarted, wantStarts: 1},
+		{name: "unchanged target preserves check-caused verdict", cause: product.RecordCauseRequiredChecks, wantDecision: ReconcileRecovered, wantStatuses: 1},
+		{name: "moved target preserves findings-caused verdict", moveTarget: true, seedStatus: true, wantDecision: ReconcileRecovered, wantStatuses: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			reviewedTarget := state.targetSHA()
+			if test.moveTarget {
+				state.changePullRequest(func(pullRequest map[string]any) {
+					pullRequest["base"].(map[string]any)["sha"] = "moved-target"
+				})
+			}
+			recordValues := map[string]string{"head": state.headSHA(), "target": reviewedTarget}
+			if test.cause != "" {
+				recordValues[product.RecordCauseKey] = test.cause
+			}
+			record, err := product.FormatRecord(recordValues)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.setReviews([]map[string]any{{
+				"id": 41, "state": "REQUEST_CHANGES", "commit_id": state.headSHA(),
+				"body": "Terminal review.\n\n" + record, "user": map[string]any{"login": "Minos"},
+			}})
+			if test.seedStatus {
+				state.setStatuses([]map[string]any{{
+					"id": 7, "context": "Minos", "status": "failure", "description": product.Attention().Description(),
+					"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + reviewedTarget,
+					"creator":    map[string]any{"login": "Minos"},
+				}})
+			}
+			cfg, repo, facts := state.service(t)
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			starts := 0
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					starts++
+				}
+				return nil, nil
+			}
+
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != test.wantDecision || starts != test.wantStarts {
+				t.Fatalf("result = %q, starts = %d; want %q and %d", result.Decision, starts, test.wantDecision, test.wantStarts)
+			}
+			statusWrites, _ := state.statusWriteFacts()
+			if statusWrites != test.wantStatuses {
+				t.Fatalf("status writes = %d, want %d", statusWrites, test.wantStatuses)
+			}
+		})
+	}
+}
+
 func TestForgejoAdmissionCarriesReleasedHoldContextIntoSpawn(t *testing.T) {
 	for _, test := range []struct {
 		name          string
@@ -1297,6 +1365,30 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			t.Fatalf("request-changes comment = %#v", comment)
 		}
 	})
+
+	t.Run("check-caused request changes carry their durable witness", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		configureForgeCommandFixture(t, state)
+		bodyPath := filepath.Join(t.TempDir(), "body.md")
+		if err := os.WriteFile(bodyPath, []byte("Required checks remain red.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := ForgeCommand(t.Context(), []string{
+			"review", state.headSHA(), state.targetSHA(), "request-changes-checks", bodyPath,
+		}, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "REQUEST_CHANGES" {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		record, ok := product.TrailingRecord(payload["body"].(string))
+		if !ok || record[product.RecordCauseKey] != product.RecordCauseRequiredChecks || record[product.RecordTargetKey] != state.targetSHA() {
+			t.Fatalf("trailing record = %#v, valid = %t", record, ok)
+		}
+	})
 }
 
 func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.T) {
@@ -1760,6 +1852,16 @@ func (s *forgejoFixtureState) statusPostFacts() []statusPostRequest {
 	return posts
 }
 
+func (s *forgejoFixtureState) issueCommentFacts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	comments := make([]string, 0, len(s.issueComments))
+	for _, comment := range s.issueComments {
+		comments = append(comments, fmt.Sprint(comment["body"]))
+	}
+	return comments
+}
+
 func (s *forgejoFixtureState) virtualBranchReads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1809,6 +1911,17 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, s.dependencies)
 	case r.Method == http.MethodGet && path == issuePath+"/comments":
 		writeFixtureJSON(s.t, w, s.issueComments)
+	case r.Method == http.MethodPost && path == issuePath+"/comments":
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		comment := map[string]any{
+			"id": float64(len(s.issueComments) + 1), "body": payload["body"],
+			"user": map[string]any{"login": "Minos"},
+		}
+		s.issueComments = append(s.issueComments, comment)
+		writeFixtureJSON(s.t, w, comment)
 	case r.Method == http.MethodGet && path == pullPath+"/commits":
 		writeFixtureJSON(s.t, w, s.commits)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/branches/main"):

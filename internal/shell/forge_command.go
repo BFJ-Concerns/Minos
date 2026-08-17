@@ -75,10 +75,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		return emitForgeResult(stdout, "status", adapter.SetProductStatus(ctx, guard, state))
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
-			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|comment BODY_FILE [COMMENTS_FILE]")
+			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|request-changes-checks|comment BODY_FILE [COMMENTS_FILE]")
 		}
+		checkCaused := args[3] == "request-changes-checks"
 		verdict, ok := map[string]forge.ReviewVerdict{
-			"approve": forge.ReviewApprove, "request-changes": forge.ReviewRequestChanges, "comment": forge.ReviewVerdictComment,
+			"approve": forge.ReviewApprove, "request-changes": forge.ReviewRequestChanges,
+			"request-changes-checks": forge.ReviewRequestChanges, "comment": forge.ReviewVerdictComment,
 		}[args[3]]
 		if !ok {
 			return fmt.Errorf("unknown review verdict %q", args[3])
@@ -88,7 +90,11 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA})
+		recordValues := map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA}
+		if checkCaused {
+			recordValues[product.RecordCauseKey] = product.RecordCauseRequiredChecks
+		}
+		record, err := product.FormatRecord(recordValues)
 		if err != nil {
 			return err
 		}

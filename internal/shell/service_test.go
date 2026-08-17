@@ -59,6 +59,52 @@ func TestTrustedReviewSurvivesOnlyMinosAuthoredMovement(t *testing.T) {
 	}
 }
 
+func TestCheckCausedVerdictIsSpentOnlyByTargetMovementOnANonFork(t *testing.T) {
+	review := forge.Review{
+		State: "REQUEST_CHANGES",
+		Body:  "Required checks failed.\n\n<!-- Minos: cause=required-checks head=head target=old-target -->",
+	}
+	for _, test := range []struct {
+		name     string
+		snapshot forge.Snapshot
+		want     bool
+	}{
+		{
+			name: "moved target in the same repository",
+			snapshot: forge.Snapshot{
+				TargetSHA: "new-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
+			},
+			want: true,
+		},
+		{
+			name: "unchanged target",
+			snapshot: forge.Snapshot{
+				TargetSHA: "old-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
+			},
+		},
+		{
+			name: "fork target movement",
+			snapshot: forge.Snapshot{
+				TargetSHA: "new-target", HeadRepository: "contributor/repo", TargetRepository: "owner/repo",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := checkCausedVerdictSpent(review, test.snapshot); got != test.want {
+				t.Fatalf("checkCausedVerdictSpent() = %t, want %t", got, test.want)
+			}
+		})
+	}
+
+	findingsReview := review
+	findingsReview.Body = "Confirmed findings remain.\n\n<!-- Minos: head=head target=old-target -->"
+	if checkCausedVerdictSpent(findingsReview, forge.Snapshot{
+		TargetSHA: "new-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
+	}) {
+		t.Fatal("findings-caused verdict was spent by target movement")
+	}
+}
+
 func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 	tests := []struct {
 		name     string

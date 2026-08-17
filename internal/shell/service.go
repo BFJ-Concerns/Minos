@@ -65,6 +65,16 @@ func trustedReview(snapshot forge.Snapshot, commits []forge.Commit, botLogin str
 	return latest, found
 }
 
+func checkCausedVerdictSpent(review forge.Review, snapshot forge.Snapshot) bool {
+	if strings.ToUpper(review.State) != "REQUEST_CHANGES" && strings.ToUpper(review.State) != "REQUESTED_CHANGES" {
+		return false
+	}
+	record, ok := product.TrailingRecord(review.Body)
+	return ok && record[product.RecordCauseKey] == product.RecordCauseRequiredChecks &&
+		record[product.RecordTargetKey] != "" && record[product.RecordTargetKey] != snapshot.TargetSHA &&
+		snapshot.HeadRepository == snapshot.TargetRepository
+}
+
 func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, bool) {
 	var latest forge.Status
 	found := false
@@ -251,7 +261,7 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	}
 	if review, reviewed := trustedReview(snapshot, commits, cfg.Service.BotLogin); reviewed {
 		state, terminal := terminalState(review)
-		if terminal {
+		if terminal && !checkCausedVerdictSpent(review, snapshot) {
 			if hasTerminalStatus(snapshot, cfg, facts, state) {
 				return ReconcileResult{Decision: ReconcileNothing}, nil
 			}

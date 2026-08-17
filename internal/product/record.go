@@ -7,6 +7,12 @@ import (
 	"strings"
 )
 
+const (
+	RecordCauseKey            = "cause"
+	RecordCauseRequiredChecks = "required-checks"
+	RecordTargetKey           = "target"
+)
+
 // Record binds a review to the head and target it covered.
 var recordLine = regexp.MustCompile(`^<!-- Minos:( [a-z][a-z0-9-]*=[A-Za-z0-9._/@-]+)+ -->$`)
 
