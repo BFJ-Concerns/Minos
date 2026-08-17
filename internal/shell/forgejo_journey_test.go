@@ -883,12 +883,10 @@ run-body = "/opt/minos/run-body/run-body"
 			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
 				t.Fatal(err)
 			}
-			// Two reads are observed today; one is the post-fold target. Keep the
-			// decision assertions below independent so either count tells the truth.
 			got := state.pullRequestSnapshotReads("1")
 			t.Logf("pull request 1 snapshot reads this pass = %d", got)
-			if got != 1 && got != 2 {
-				t.Fatalf("pull request 1 snapshot reads this pass = %d, want one or two", got)
+			if got != 1 {
+				t.Fatalf("pull request 1 snapshot reads this pass = %d, want one", got)
 			}
 			started := slices.Contains(commands, "systemd-run")
 			if started != test.wantStarted {
@@ -896,6 +894,122 @@ run-body = "/opt/minos/run-body/run-body"
 			}
 		})
 	}
+}
+
+func TestForgejoSweepReconciliationKeepsDecisionSnapshotFresh(t *testing.T) {
+	t.Run("moved head and branch coordinates", func(t *testing.T) {
+		fresh, freshEnvironment := reconcileAfterForgeMutation(t, false, func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
+			state.changePullRequest(func(pullRequest map[string]any) {
+				pullRequest["head"].(map[string]any)["sha"] = "fresh-head"
+				pullRequest["head"].(map[string]any)["ref"] = "fresh-branch"
+				pullRequest["base"].(map[string]any)["sha"] = "fresh-base"
+			})
+		})
+		stale, staleEnvironment := reconcileAfterForgeMutation(t, true, func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
+			state.changePullRequest(func(pullRequest map[string]any) {
+				pullRequest["head"].(map[string]any)["sha"] = "fresh-head"
+				pullRequest["head"].(map[string]any)["ref"] = "fresh-branch"
+				pullRequest["base"].(map[string]any)["sha"] = "fresh-base"
+			})
+		})
+		if fresh.Decision != SpawnStarted || freshEnvironment["MINOS_HEAD_SHA"] != "fresh-head" ||
+			freshEnvironment["MINOS_HEAD_BRANCH"] != "fresh-branch" || freshEnvironment["MINOS_TARGET_SHA"] != "fresh-base" ||
+			freshEnvironment["MINOS_BASE_REF"] != "main" {
+			t.Fatalf("fresh result = %q, environment = %#v", fresh.Decision, freshEnvironment)
+		}
+		if stale.Decision != SpawnStarted || staleEnvironment["MINOS_HEAD_SHA"] == "fresh-head" {
+			t.Fatalf("deliberately stale result = %q, environment = %#v; want old coordinates", stale.Decision, staleEnvironment)
+		}
+	})
+
+	for _, eligibility := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "closed", mutate: func(pullRequest map[string]any) { pullRequest["state"] = "closed" }},
+		{name: "merged", mutate: func(pullRequest map[string]any) { pullRequest["merged"] = true }},
+		{name: "draft", mutate: func(pullRequest map[string]any) { pullRequest["draft"] = true }},
+	} {
+		t.Run(eligibility.name+" eligibility", func(t *testing.T) {
+			fresh, _ := reconcileAfterForgeMutation(t, false, func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
+				state.changePullRequest(eligibility.mutate)
+			})
+			stale, _ := reconcileAfterForgeMutation(t, true, func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
+				state.changePullRequest(eligibility.mutate)
+			})
+			if fresh.Decision != ReconcileNothing || stale.Decision != SpawnStarted {
+				t.Fatalf("fresh decision = %q, deliberately stale decision = %q", fresh.Decision, stale.Decision)
+			}
+		})
+	}
+
+	t.Run("terminal review", func(t *testing.T) {
+		mutation := func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
+			state.setReviews([]map[string]any{{
+				"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
+				"body": "fresh terminal review", "user": map[string]any{"login": "Minos"},
+			}})
+		}
+		fresh, _ := reconcileAfterForgeMutation(t, false, mutation)
+		stale, _ := reconcileAfterForgeMutation(t, true, mutation)
+		if fresh.Decision != ReconcileRecovered || stale.Decision != SpawnStarted {
+			t.Fatalf("fresh decision = %q, deliberately stale decision = %q", fresh.Decision, stale.Decision)
+		}
+	})
+
+	t.Run("terminal status", func(t *testing.T) {
+		mutation := func(state *forgejoFixtureState, cfg ServiceConfig, facts Facts) {
+			facts.BaseSHA = state.targetSHA()
+			state.setStatuses([]map[string]any{{
+				"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
+				"target_url": statusTargetURL(cfg.Forges["forgejo"].APIBase, facts),
+				"creator":    map[string]any{"login": "Minos"},
+			}})
+		}
+		fresh, _ := reconcileAfterForgeMutation(t, false, mutation)
+		stale, _ := reconcileAfterForgeMutation(t, true, mutation)
+		if fresh.Decision != ReconcileNothing || stale.Decision != SpawnStarted {
+			t.Fatalf("fresh decision = %q, deliberately stale decision = %q", fresh.Decision, stale.Decision)
+		}
+	})
+}
+
+func reconcileAfterForgeMutation(
+	t *testing.T,
+	useStaleSnapshot bool,
+	mutate func(*forgejoFixtureState, ServiceConfig, Facts),
+) (ReconcileResult, map[string]string) {
+	t.Helper()
+	state := newForgejoFixtureState(t)
+	cfg, repo, facts := state.service(t)
+	adapter, staleSnapshot, err := currentForgeSnapshot(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate(state, cfg, facts)
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+	var result ReconcileResult
+	if useStaleSnapshot {
+		result, err = reconcilePullRequestSnapshot(t.Context(), cfg, repo, facts, adapter, staleSnapshot)
+	} else {
+		result, err = reconcilePullRequest(t.Context(), cfg, repo, facts)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(systemdArgs) == 0 {
+		return result, nil
+	}
+	return result, systemdEnvironment(t, systemdArgs)
 }
 
 func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
