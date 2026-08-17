@@ -857,20 +857,7 @@ func TestForgejoSweepMeasuresPullRequestSnapshotReadsPerPass(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			state.setDependencies(test.dependencies)
-			cfg, _, _ := state.service(t)
-			writeServiceConfig(t, cfg)
-			if err := os.MkdirAll(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			repoConfig := `forge = "forgejo"
-owner = "minos-e2e-owner"
-repo = "subject"
-[adaptation]
-run-body = "/opt/minos/run-body/run-body"
-`
-			if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			cfg := writeSweepFixtureConfig(t, state)
 
 			original := commandCombinedOutput
 			t.Cleanup(func() { commandCombinedOutput = original })
@@ -883,12 +870,10 @@ run-body = "/opt/minos/run-body/run-body"
 			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
 				t.Fatal(err)
 			}
-			// Two reads are observed today; one is the post-fold target. Keep the
-			// decision assertions below independent so either count tells the truth.
 			got := state.pullRequestSnapshotReads("1")
 			t.Logf("pull request 1 snapshot reads this pass = %d", got)
-			if got != 1 && got != 2 {
-				t.Fatalf("pull request 1 snapshot reads this pass = %d, want one or two", got)
+			if got != 1 {
+				t.Fatalf("pull request 1 snapshot reads this pass = %d, want one", got)
 			}
 			started := slices.Contains(commands, "systemd-run")
 			if started != test.wantStarted {
@@ -896,6 +881,139 @@ run-body = "/opt/minos/run-body/run-body"
 			}
 		})
 	}
+}
+
+func TestForgejoSweepReconciliationKeepsDecisionSnapshotFresh(t *testing.T) {
+	t.Run("moved head and branch coordinates", func(t *testing.T) {
+		state, environment := sweepAfterPriorityMutation(t, func(state *forgejoFixtureState) {
+			state.changePullRequest(func(pullRequest map[string]any) {
+				pullRequest["head"].(map[string]any)["sha"] = "fresh-head"
+				pullRequest["head"].(map[string]any)["ref"] = "fresh-branch"
+				pullRequest["base"].(map[string]any)["sha"] = "fresh-base"
+			})
+		})
+		if environment["MINOS_HEAD_SHA"] != "fresh-head" || environment["MINOS_HEAD_BRANCH"] != "fresh-branch" ||
+			environment["MINOS_TARGET_SHA"] != "fresh-base" || environment["MINOS_BASE_REF"] != "main" {
+			t.Fatalf("systemd environment = %#v", environment)
+		}
+		if got := state.pullRequestSnapshotReads("1"); got != 1 {
+			t.Fatalf("pull request 1 snapshot reads this pass = %d, want one", got)
+		}
+	})
+
+	for _, eligibility := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "closed", mutate: func(pullRequest map[string]any) { pullRequest["state"] = "closed" }},
+		{name: "merged", mutate: func(pullRequest map[string]any) { pullRequest["merged"] = true }},
+		{name: "draft", mutate: func(pullRequest map[string]any) { pullRequest["draft"] = true }},
+	} {
+		t.Run(eligibility.name+" eligibility", func(t *testing.T) {
+			_, environment := sweepAfterPriorityMutation(t, func(state *forgejoFixtureState) {
+				state.changePullRequest(eligibility.mutate)
+			})
+			if environment != nil {
+				t.Fatalf("systemd environment = %#v, want no run", environment)
+			}
+		})
+	}
+
+	t.Run("terminal review", func(t *testing.T) {
+		state, environment := sweepAfterPriorityMutation(t, func(state *forgejoFixtureState) {
+			state.setReviews([]map[string]any{{
+				"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
+				"body": "fresh terminal review", "user": map[string]any{"login": "Minos"},
+			}})
+		})
+		if environment != nil {
+			t.Fatalf("systemd environment = %#v, want no run", environment)
+		}
+		if writes, _ := state.statusWriteFacts(); writes != 1 {
+			t.Fatalf("status writes = %d, want one recovered terminal status", writes)
+		}
+	})
+
+	t.Run("terminal status", func(t *testing.T) {
+		state, environment := sweepAfterPriorityMutation(t, func(state *forgejoFixtureState) {
+			state.setStatuses([]map[string]any{{
+				"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
+				"target_url": fmt.Sprintf("%s/minos-e2e-owner/subject/pulls/1#minos-target-%s", state.server.URL, state.targetSHA()),
+				"creator":    map[string]any{"login": "Minos"},
+			}})
+		})
+		if environment != nil {
+			t.Fatalf("systemd environment = %#v, want no run", environment)
+		}
+		if writes, _ := state.statusWriteFacts(); writes != 0 {
+			t.Fatalf("status writes = %d, want existing terminal status preserved", writes)
+		}
+	})
+}
+
+func TestForgejoContinuationPriorityReadsListedHeadStatuses(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.setStatuses([]map[string]any{{
+		"id": 9, "context": "Minos", "status": "pending", "description": product.Continuation().Description(),
+		"target_url": state.server.URL + "/continuation", "creator": map[string]any{"login": "Minos"},
+	}})
+	cfg, _, facts := state.service(t)
+	facts.HeadSHA = state.headSHA()
+	priority, err := currentContinuationPriority(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priority != 0 {
+		t.Fatalf("continuation priority = %d, want zero", priority)
+	}
+	for _, head := range state.statusReadFacts() {
+		if head != facts.HeadSHA {
+			t.Fatalf("status read head = %q, want listed head %q", head, facts.HeadSHA)
+		}
+	}
+}
+
+func sweepAfterPriorityMutation(t *testing.T, mutate func(*forgejoFixtureState)) (*forgejoFixtureState, map[string]string) {
+	t.Helper()
+	state := newForgejoFixtureState(t)
+	cfg := writeSweepFixtureConfig(t, state)
+	state.setPriorityBoundaryMutation(func() { mutate(state) })
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+	if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+		t.Fatal(err)
+	}
+	if len(systemdArgs) == 0 {
+		return state, nil
+	}
+	return state, systemdEnvironment(t, systemdArgs)
+}
+
+func writeSweepFixtureConfig(t *testing.T, state *forgejoFixtureState) ServiceConfig {
+	t.Helper()
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	if err := os.MkdirAll(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := `forge = "forgejo"
+owner = "minos-e2e-owner"
+repo = "subject"
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`
+	if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
 
 func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
@@ -1647,6 +1765,7 @@ type forgejoFixtureState struct {
 	positionRewrites         map[string]map[int64]int64
 	statusReadCommits        []string
 	pullRequestReads         map[string]int
+	priorityBoundaryMutation func()
 	writeSequence            []string
 	virtualRefLookups        int
 	annexeCloneURL           string
@@ -1832,6 +1951,23 @@ func (s *forgejoFixtureState) pullRequestSnapshotReads(pullRequest string) int {
 	return s.pullRequestReads[pullRequest]
 }
 
+func (s *forgejoFixtureState) setPriorityBoundaryMutation(mutate func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.priorityBoundaryMutation = mutate
+}
+
+func (s *forgejoFixtureState) runPriorityBoundaryMutation() {
+	mutate := s.priorityBoundaryMutation
+	if mutate == nil {
+		return
+	}
+	s.priorityBoundaryMutation = nil
+	s.mu.Unlock()
+	mutate()
+	s.mu.Lock()
+}
+
 func (s *forgejoFixtureState) statusWriteFacts() (int, any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1947,6 +2083,9 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"protected": false})
+		if s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])] > 0 {
+			s.runPriorityBoundaryMutation()
+		}
 	case r.Method == http.MethodPost && path == pullPath+"/merge":
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -1968,6 +2107,9 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			statuses = s.statuses
 		}
 		writeFixtureJSON(s.t, w, statuses)
+		if s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])] == 0 {
+			s.runPriorityBoundaryMutation()
+		}
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/actions/runs":
 		writeFixtureJSON(s.t, w, map[string]any{"workflow_runs": s.actionRuns})
 	case r.Method == http.MethodGet && strings.Contains(path, "/actions/runs/") && strings.HasSuffix(path, "/jobs"):

@@ -52,10 +52,10 @@ func SweepCommand(ctx context.Context, args []string) error {
 		}
 		for _, facts := range pullRequests {
 			priority := 1
-			if snapshot, err := currentSnapshot(ctx, cfg, facts); err != nil {
+			if inspected, err := currentContinuationPriority(ctx, cfg, facts); err != nil {
 				log.Printf("%s#%s: inspect continuation priority: %v", facts.RepoSlug(), facts.PR, err)
 			} else {
-				priority = continuationPriority(snapshot, cfg.Service.BotLogin)
+				priority = inspected
 			}
 			candidates = append(candidates, sweepCandidate{repo: repo, facts: facts, priority: priority})
 		}

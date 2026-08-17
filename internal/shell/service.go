@@ -36,6 +36,18 @@ func currentForgeSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (
 	return adapter, snapshot, err
 }
 
+func currentContinuationPriority(ctx context.Context, cfg ServiceConfig, facts Facts) (int, error) {
+	adapter, err := newBehaviouralForge(cfg, facts.Forge)
+	if err != nil {
+		return 0, err
+	}
+	statuses, err := adapter.CommitStatuses(ctx, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, facts.HeadSHA)
+	if err != nil {
+		return 0, err
+	}
+	return continuationPriority(forge.Snapshot{Statuses: statuses}, cfg.Service.BotLogin), nil
+}
+
 func alreadyReviewed(snapshot forge.Snapshot, botLogin string) bool {
 	_, found := currentReview(snapshot, botLogin)
 	return found
@@ -242,6 +254,10 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	if err != nil {
 		return ReconcileResult{}, err
 	}
+	return reconcilePullRequestSnapshot(ctx, cfg, repo, facts, adapter, snapshot)
+}
+
+func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (ReconcileResult, error) {
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
