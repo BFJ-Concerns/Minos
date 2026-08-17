@@ -496,10 +496,11 @@ takes the absorb judgement above.
    One empty-commit result is not a stall: a `cause` verdict whose `side`
    is `target` — the breakage would be red without the pull request's
    changes — is the discipline's honest answer, and the pull request is
-   not the place to fix it. Publishing request-changes there
-   would blame the wrong branch, and because that terminal review blocks
-   re-attempts until the head moves, it would hold the pull request hostage
-   to a fix that must land on the target. End the run as held instead:
+   not the place to fix it. Publishing request-changes there would blame the
+   wrong branch. A findings-caused terminal review would block re-attempts
+   until the head moves; the check-caused form is spent by target movement on
+   a non-fork, but is still the wrong verdict while the current target is known
+   broken. End the run as held instead:
    append each failed command and its non-zero exit status to
    `$MINOS_FAILURE_LOG`, post one durable pull-request comment with
    `"$MINOS_BIN" forge comment CURRENT_HEAD TARGET FILE` reporting that the

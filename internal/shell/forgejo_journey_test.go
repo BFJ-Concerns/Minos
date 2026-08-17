@@ -563,13 +563,14 @@ func TestForgejoCheckCausedVerdictSpending(t *testing.T) {
 		name         string
 		cause        string
 		moveTarget   bool
+		seedStatus   bool
 		wantDecision ReconcileDecision
 		wantStarts   int
 		wantStatuses int
 	}{
-		{name: "moved target spends check-caused verdict", cause: product.RecordCauseRequiredChecks, moveTarget: true, wantDecision: SpawnStarted, wantStarts: 1},
-		{name: "unchanged target preserves check-caused verdict", cause: product.RecordCauseRequiredChecks, wantDecision: ReconcileNothing},
-		{name: "moved target preserves findings-caused verdict", moveTarget: true, wantDecision: ReconcileRecovered, wantStatuses: 1},
+		{name: "moved target spends check-caused verdict", cause: product.RecordCauseRequiredChecks, moveTarget: true, seedStatus: true, wantDecision: SpawnStarted, wantStarts: 1},
+		{name: "unchanged target preserves check-caused verdict", cause: product.RecordCauseRequiredChecks, wantDecision: ReconcileRecovered, wantStatuses: 1},
+		{name: "moved target preserves findings-caused verdict", moveTarget: true, seedStatus: true, wantDecision: ReconcileRecovered, wantStatuses: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
@@ -591,11 +592,13 @@ func TestForgejoCheckCausedVerdictSpending(t *testing.T) {
 				"id": 41, "state": "REQUEST_CHANGES", "commit_id": state.headSHA(),
 				"body": "Terminal review.\n\n" + record, "user": map[string]any{"login": "Minos"},
 			}})
-			state.setStatuses([]map[string]any{{
-				"id": 7, "context": "Minos", "status": "failure", "description": product.Attention().Description(),
-				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + reviewedTarget,
-				"creator":    map[string]any{"login": "Minos"},
-			}})
+			if test.seedStatus {
+				state.setStatuses([]map[string]any{{
+					"id": 7, "context": "Minos", "status": "failure", "description": product.Attention().Description(),
+					"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + reviewedTarget,
+					"creator":    map[string]any{"login": "Minos"},
+				}})
+			}
 			cfg, repo, facts := state.service(t)
 
 			original := commandCombinedOutput

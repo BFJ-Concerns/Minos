@@ -816,7 +816,7 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
-    /One empty-commit result is not a stall: a `cause` verdict whose `side`\s+is `target`[\s\S]*End the run as held instead[\s\S]*forge status HEAD\s+TARGET held[\s\S]*bound to the current target/,
+    /One empty-commit result is not a stall: a `cause` verdict whose `side`\s+is `target`[\s\S]*findings-caused terminal review would block re-attempts\s+until the head moves[\s\S]*check-caused form is spent by target movement on\s+a non-fork[\s\S]*End the run as held instead[\s\S]*forge status HEAD\s+TARGET held[\s\S]*bound to the current target/,
   );
   assert.match(
     initialGate,
