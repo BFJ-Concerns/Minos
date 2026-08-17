@@ -108,6 +108,32 @@ function normalisePlan(plan) {
   });
 }
 
+function validExplorationResult(result) {
+  if (
+    !result || typeof result !== "object" || Array.isArray(result) ||
+    !result.applicability || typeof result.applicability.reason !== "string" ||
+    !Array.isArray(result.files) || !Array.isArray(result.plan)
+  ) return false;
+  const changedPaths = new Set();
+  for (const file of result.files) {
+    if (
+      !file || typeof file !== "object" || Array.isArray(file) ||
+      typeof file.path !== "string" || file.path === "" ||
+      !Number.isInteger(file.added) || file.added < 0 ||
+      !Number.isInteger(file.deleted) || file.deleted < 0
+    ) return false;
+    changedPaths.add(file.path);
+  }
+  return result.plan.every((unit) =>
+    unit && typeof unit === "object" && !Array.isArray(unit) &&
+    typeof unit.id === "string" && unit.id !== "" &&
+    typeof unit.concern === "string" && unit.concern !== "" &&
+    ["correctness", "security", "testing", "design"].includes(unit.specialistType) &&
+    Array.isArray(unit.scope) && unit.scope.length > 0 &&
+    unit.scope.every((scopePath) => typeof scopePath === "string" && changedPaths.has(scopePath))
+  );
+}
+
 // The Ensemble sandbox exposes no Buffer or TextEncoder global, so byte
 // lengths must be computed in plain JavaScript.
 function utf8ByteLength(text) {
@@ -333,6 +359,21 @@ function addLeg(label, role, pinnedModel, findingIds = null) {
   return leg;
 }
 
+function incompleteExploration(reason) {
+  return {
+    reviewed: { target, head, occasion },
+    stage: "present",
+    ...(reason ? { incomplete: [reason] } : {}),
+    requiredModelEvidence: legs,
+    proposedFindings: [],
+    outOfScopeObservations: [],
+    briefs: [],
+    misconfigurations: [],
+    dispatches: [],
+    reviewers: [{ label: "exploration", role: "exploration", status: "no-result", ...(reason ? { reason } : {}) }],
+  };
+}
+
 phase("Explore");
 addLeg("exploration", "exploration", GPT_EXPLORER_MODEL);
 const explorationResult = await agent(
@@ -354,18 +395,10 @@ const explorationResult = await agent(
 );
 
 if (!explorationResult) {
-  return {
-    reviewed: { target, head, occasion },
-    stage: "present",
-    requiredModelEvidence: legs,
-    proposedFindings: [],
-    outOfScopeObservations: [],
-    briefs: [],
-    misconfigurations: [],
-    dispatches: [],
-    reviewers: [{ label: "exploration", role: "exploration", status: "no-result" }],
-  };
+  return incompleteExploration();
 }
+if (!validExplorationResult(explorationResult))
+  return incompleteExploration("exploration returned a malformed review plan");
 
 const exploration = {
   ...explorationResult,

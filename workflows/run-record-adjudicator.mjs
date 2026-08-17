@@ -213,6 +213,18 @@ export async function adjudicate({ envelope, recordDir }) {
   }
   if (envelope.stage !== "present" && envelope.stage !== "absent")
     incomplete.push("envelope stage is absent or unknown");
+  if (envelope.incomplete !== undefined) {
+    if (!Array.isArray(envelope.incomplete) || envelope.incomplete.length === 0)
+      incomplete.push("envelope incomplete reasons are absent or unreadable");
+    else {
+      for (const reason of envelope.incomplete) {
+        if (typeof reason !== "string" || reason.trim() === "")
+          incomplete.push("envelope contains a malformed incomplete reason");
+        else
+          incomplete.push(`workflow reported incomplete: ${reason}`);
+      }
+    }
+  }
   for (const field of ["requiredModelEvidence", "proposedFindings", "briefs", "misconfigurations", "dispatches", "reviewers"])
     if (!Array.isArray(envelope[field])) incomplete.push(`envelope ${field} is absent or unreadable`);
 
