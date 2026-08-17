@@ -123,7 +123,7 @@ test("annexe grounding appends marked entries, commits, and pushes to origin", (
   assert.match(contents, /^# Issues\n/);
   assert.match(
     contents,
-    /- Review finding: stale cursor \(Low, internal\/example\.go:14\) — stale cursor narrows the guard Filed by Minos from exact-owner\/exact-repo#37, 2026-08-17\. <!-- review-finding:[A-Za-z0-9_-]+ -->/,
+    /- Review finding: stale cursor \(Low, internal\/example\.go:14\) — stale cursor narrows the guard\. Filed by Minos from exact-owner\/exact-repo#37, 2026-08-17\. <!-- review-finding:[A-Za-z0-9_-]+ -->/,
   );
   assert.match(contents, /- Review finding: orphan sweep \(Medium, internal\/example\.go:9\)/);
 
@@ -186,6 +186,6 @@ test("held diagnosis keeps finding details under its distinct attributed label",
   const contents = annexe.git(annexe.origin, "show", "main:ISSUES.md");
   assert.match(
     contents,
-    /- Held diagnosis: target cache invalidation \(target-side, internal\/cache\.go:52\) — target commits abc123 and def456 leave stale state through the cache refresh mechanism Filed by Minos from exact-owner\/exact-repo#37, 2026-08-17\./,
+    /- Held diagnosis: target cache invalidation \(target-side, internal\/cache\.go:52\) — target commits abc123 and def456 leave stale state through the cache refresh mechanism\. Filed by Minos from exact-owner\/exact-repo#37, 2026-08-17\./,
   );
 });
