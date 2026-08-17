@@ -41,6 +41,10 @@ if (orientation.grounding !== "annexe") throw new Error("orientation has unknown
 
 if (typeof orientation.annexe !== "string" || orientation.annexe === "")
   throw new Error("annexe grounding omitted the annexe path");
+const source = orientation.source;
+if (!source || [source.owner, source.repo, source.pr, source.date].some((value) => typeof value !== "string" || value === ""))
+  throw new Error("annexe grounding omitted its source attribution");
+const attribution = `Filed by Minos from ${source.owner}/${source.repo}#${source.pr}, ${source.date}`;
 const issuesPath = join(orientation.annexe, "ISSUES.md");
 let contents = existsSync(issuesPath) ? readFileSync(issuesPath, "utf8") : "# Issues\n";
 if (!contents.endsWith("\n")) contents += "\n";
@@ -48,7 +52,8 @@ let written = 0;
 for (const finding of findings) {
   const marker = `<!-- review-finding:${key(finding)} -->`;
   if (contents.includes(marker)) continue;
-  contents += `\n- Review finding: ${finding.title} (${finding.severity}, ${finding.path}:${finding.line}) — ${finding.explanation} ${marker}\n`;
+  const label = finding.kind === "held-diagnosis" ? "Held diagnosis" : "Review finding";
+  contents += `\n- ${label}: ${finding.title} (${finding.severity}, ${finding.path}:${finding.line}) — ${finding.explanation}. ${attribution}. ${marker}\n`;
   written++;
 }
 
@@ -58,7 +63,9 @@ if (written === 0) {
 }
 
 writeFileSync(issuesPath, contents);
-execFileSync("git", ["-C", orientation.annexe, "add", "ISSUES.md"], { stdio: "inherit" });
-execFileSync("git", ["-C", orientation.annexe, "commit", "-m", "chore: record review findings for triage"], { stdio: "inherit" });
-execFileSync("git", ["-C", orientation.annexe, "push", "origin", "HEAD"], { stdio: "inherit" });
+// stdout carries only the JSON envelope; git's own output goes to stderr.
+const gitStdio = ["ignore", process.stderr, "inherit"];
+execFileSync("git", ["-C", orientation.annexe, "add", "ISSUES.md"], { stdio: gitStdio });
+execFileSync("git", ["-C", orientation.annexe, "commit", "-m", "chore: record review findings for triage"], { stdio: gitStdio });
+execFileSync("git", ["-C", orientation.annexe, "push", "origin", "HEAD"], { stdio: gitStdio });
 process.stdout.write(JSON.stringify({ destination: "annexe", written, pushed: true }) + "\n");

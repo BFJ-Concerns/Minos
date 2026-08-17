@@ -510,11 +510,11 @@ takes the absorb judgement above.
    is written only where finishing's own held stop directs, or by a
    resumed run as step 1's resume passage states.) With annexe grounding,
    also file the proven diagnosis into the reviewed project's annexe:
-   write it as a one-element JSON findings array — `title` the
+   write it as a one-element JSON findings array — `kind`
+   `held-diagnosis`, `title` the
    target-side mechanism, `severity` `target-side`, `path` and `line` the
    most concrete locus the diagnosis proved, `explanation` naming the
-   target-side commits, the mechanism, and its provenance (`Filed by
-   Minos from OWNER/REPO#PR, DATE`) — and run `publish-overflow.mjs` with
+   target-side commits and the mechanism — and run `publish-overflow.mjs` with
    `$MINOS_ORIENTATION` exactly as step 6's overflow filing does: the
    diagnosis is exactly the actionable find that ingest exists for, and
    the pull-request comment alone leaves the target's own project
@@ -1266,7 +1266,7 @@ takes the absorb judgement above.
    finishing — the stretch witness a successor's release recognition
    reads; after a finishing repair pushed, the reviews sit on an earlier
    head, and the witness records the conclusion, not a review at this
-   exact commit), file the diagnosis to the
+   exact commit), file the diagnosis with `kind` `held-diagnosis` to the
    reviewed project's annexe exactly as step 3's held stop directs,
    remove 👀, write the non-clean terminal marker, and
    stop.
@@ -1286,7 +1286,8 @@ takes the absorb judgement above.
    the run as **held** — set `"$MINOS_BIN" forge status HEAD TARGET held`,
    post the comment opening with `Held at: finishing` reporting the
    exclusion diagnosis and its evidence, file that diagnosis to the
-   reviewed project's annexe exactly as step 3's held stop directs —
+   reviewed project's annexe with `kind` `held-diagnosis` exactly as step 3's
+   held stop directs —
    except that its `severity` is `infrastructure` and its `title` and
    `explanation` name the excluded-tree evidence and the failing check,
    not a target-side mechanism — remove

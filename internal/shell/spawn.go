@@ -42,7 +42,7 @@ func runMemoryMax(cfg ServiceConfig) string {
 	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB/cfg.MaxConcurrentRuns())
 }
 
-func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
+func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext) (SpawnResult, error) {
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
 	if err != nil {
@@ -183,30 +183,33 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		maximumRounds = strconv.Itoa(repo.Review.MaximumRounds)
 	}
 	env := map[string]string{
-		"MINOS_RUN_DIR":               runDir,
-		"MINOS_CONFIG":                cfg.Root,
-		"MINOS_FORGE":                 facts.Forge,
-		"MINOS_WORKSPACE":             filepath.Join(runDir, "workspace"),
-		"MINOS_ORIENTATION":           filepath.Join(runDir, "orientation.json"),
-		"MINOS_HANDOFF":               handoffFile,
-		"MINOS_LOOP_RECORD":           filepath.Join(runDir, "loop-record.json"),
-		"MINOS_OWNER":                 facts.Owner,
-		"MINOS_REPO_NAME":             facts.Repo,
-		"MINOS_PR":                    facts.PR,
-		"MINOS_HEAD_SHA":              facts.HeadSHA,
-		"MINOS_TARGET_SHA":            facts.BaseSHA,
-		"MINOS_BASE_REF":              facts.BaseRef,
-		"MINOS_HEAD_BRANCH":           facts.HeadRef,
-		"MINOS_API_BASE":              forgeConfig.APIBase,
-		"MINOS_CREDENTIAL_FILE":       forgeConfig.CredentialFile,
-		"MINOS_BUILD_CMD":             repo.Adaptation.Build,
-		"MINOS_TEST_CMD":              repo.Adaptation.Test,
-		"MINOS_RUN_BODY":              repo.Adaptation.RunBody,
-		"MINOS_AUTO_MERGE":            fmt.Sprintf("%t", repo.Policy.AutoMerge),
-		"MINOS_REVIEW_THRESHOLD":      repo.Review.Threshold,
-		"MINOS_MAX_ROUNDS":            maximumRounds,
-		"ENSEMBLE_CONCURRENCY_CLAUDE": strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
-		"ENSEMBLE_CONCURRENCY_CODEX":  strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
+		"MINOS_RUN_DIR":                 runDir,
+		"MINOS_CONFIG":                  cfg.Root,
+		"MINOS_FORGE":                   facts.Forge,
+		"MINOS_WORKSPACE":               filepath.Join(runDir, "workspace"),
+		"MINOS_ORIENTATION":             filepath.Join(runDir, "orientation.json"),
+		"MINOS_HANDOFF":                 handoffFile,
+		"MINOS_LOOP_RECORD":             filepath.Join(runDir, "loop-record.json"),
+		"MINOS_OWNER":                   facts.Owner,
+		"MINOS_REPO_NAME":               facts.Repo,
+		"MINOS_PR":                      facts.PR,
+		"MINOS_HEAD_SHA":                facts.HeadSHA,
+		"MINOS_TARGET_SHA":              facts.BaseSHA,
+		"MINOS_BASE_REF":                facts.BaseRef,
+		"MINOS_HEAD_BRANCH":             facts.HeadRef,
+		"MINOS_API_BASE":                forgeConfig.APIBase,
+		"MINOS_CREDENTIAL_FILE":         forgeConfig.CredentialFile,
+		"MINOS_BUILD_CMD":               repo.Adaptation.Build,
+		"MINOS_TEST_CMD":                repo.Adaptation.Test,
+		"MINOS_RUN_BODY":                repo.Adaptation.RunBody,
+		"MINOS_AUTO_MERGE":              fmt.Sprintf("%t", repo.Policy.AutoMerge),
+		"MINOS_REVIEW_THRESHOLD":        repo.Review.Threshold,
+		"MINOS_MAX_ROUNDS":              maximumRounds,
+		"MINOS_RELEASED_HOLD_HEAD":      admission.ReleasedHoldHead,
+		"MINOS_RELEASED_HOLD_STAGE":     admission.ReleasedHoldStage,
+		"MINOS_RELEASED_HOLD_DIAGNOSIS": admission.ReleasedHoldDiagnosis,
+		"ENSEMBLE_CONCURRENCY_CLAUDE":   strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
+		"ENSEMBLE_CONCURRENCY_CODEX":    strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
 	}
 	if handoff != nil && handoff.Progress != nil {
 		progress, marshalErr := json.Marshal(handoff.Progress)

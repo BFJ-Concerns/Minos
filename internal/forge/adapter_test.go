@@ -43,6 +43,25 @@ func TestSnapshotNormalisesEmptyDependenciesForEncoding(t *testing.T) {
 	}
 }
 
+func TestIssueCommentsUsesPullRequestIssueSurface(t *testing.T) {
+	runner := &recordingRunner{outputs: [][]byte{[]byte(`[{"id":7,"body":"Held at: review\nDiagnosis.","user":"Minos"}]`)}, errors: []error{nil}}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments, err := adapter.IssueComments(t.Context(), Repository{Owner: "owner", Name: "repo"}, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 1 || comments[0].ID != 7 || comments[0].User != "Minos" {
+		t.Fatalf("comments = %#v", comments)
+	}
+	request := runner.requests[0]
+	if request.Operation != "issue-comments" || !slices.Equal(request.Arguments, []string{"owner", "repo", "17"}) {
+		t.Fatalf("request = %#v", request)
+	}
+}
+
 func TestSetProductStatusRejectsInvalidState(t *testing.T) {
 	runner := &recordingRunner{}
 	adapter, err := NewAdapter(runner, "Minos")

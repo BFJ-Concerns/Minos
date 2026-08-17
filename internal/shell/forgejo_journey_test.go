@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"bfj/minos/internal/forge"
 	"bfj/minos/internal/product"
 )
 
@@ -555,6 +556,104 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 			t.Fatalf("started units = %v, want third pull request unit", startedUnits)
 		}
 	})
+}
+
+func TestForgejoAdmissionCarriesReleasedHoldContextIntoSpawn(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		comment       string
+		moveHead      bool
+		wantHead      bool
+		wantStage     string
+		wantDiagnosis string
+	}{
+		{
+			name:     "stale target hold resumes finishing",
+			comment:  "Held at: finishing\nTarget tests fail because the base branch lacks the fixture.",
+			wantHead: true, wantStage: "finishing",
+			wantDiagnosis: "Target tests fail because the base branch lacks the fixture.",
+		},
+		{name: "absent held comment starts fresh"},
+		{name: "malformed held stage starts fresh", comment: "Held at: merge\nTarget tests fail."},
+		{name: "moved admitted head starts fresh", comment: "Held at: review\nTarget tests fail.", moveHead: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			heldHead := state.headSHA()
+			state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, heldHead, "earlier-target")})
+			if test.comment != "" {
+				state.setIssueComments([]map[string]any{{"id": float64(9), "body": test.comment, "user": map[string]any{"login": "Minos"}}})
+			}
+			if test.moveHead {
+				state.changePullRequest(func(pullRequest map[string]any) {
+					pullRequest["head"].(map[string]any)["sha"] = "moved-admitted-head"
+				})
+			}
+			cfg, repo, facts := state.service(t)
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var systemdArgs []string
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					systemdArgs = append([]string(nil), args...)
+				}
+				return nil, nil
+			}
+
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != SpawnStarted {
+				t.Fatalf("decision = %q, want started", result.Decision)
+			}
+			environment := systemdEnvironment(t, systemdArgs)
+			wantHead := ""
+			if test.wantHead {
+				wantHead = heldHead
+			}
+			for key, want := range map[string]string{
+				"MINOS_RELEASED_HOLD_HEAD":      wantHead,
+				"MINOS_RELEASED_HOLD_STAGE":     test.wantStage,
+				"MINOS_RELEASED_HOLD_DIAGNOSIS": test.wantDiagnosis,
+			} {
+				got, present := environment[key]
+				if !present || got != want {
+					t.Fatalf("%s = %q, want %q", key, got, want)
+				}
+			}
+			if test.moveHead && !slices.Equal(state.statusReadFacts(), []string{"moved-admitted-head"}) {
+				t.Fatalf("status reads = %v, want only moved admitted head", state.statusReadFacts())
+			}
+		})
+	}
+}
+
+func TestForgejoCurrentTargetHoldIsNotAReleasedHold(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, state.headSHA(), state.targetSHA())})
+	state.setIssueComments([]map[string]any{{
+		"id": float64(9), "body": "Held at: finishing\nTarget tests fail.", "user": map[string]any{"login": "Minos"},
+	}})
+	cfg, _, facts := state.service(t)
+	adapter, snapshot, err := currentForgeSnapshot(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := releasedHoldContext(t.Context(), adapter, snapshot, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, 1, cfg.Service.BotLogin)
+	if context != (AdmissionContext{}) {
+		t.Fatalf("released hold context = %#v, want empty", context)
+	}
+}
+
+func heldFixtureStatus(id int, apiBase, head, target string) map[string]any {
+	return map[string]any{
+		"id": float64(id), "status": "pending", "context": "Minos",
+		"creator": map[string]any{"login": "Minos"}, "description": product.Held().Description(),
+		"target_url": fmt.Sprintf("%s/minos-e2e-owner/subject/pulls/1#minos-target-%s", apiBase, target),
+		"sha":        head,
+	}
 }
 
 func TestForgejoSweepMeasuresPullRequestSnapshotReadsPerPass(t *testing.T) {
@@ -1301,20 +1400,22 @@ func installAnchoredWorkspace(t *testing.T, state *forgejoFixtureState, path str
 }
 
 type forgejoFixtureState struct {
-	t               *testing.T
-	pullRequest     map[string]any
-	repository      map[string]any
-	reviews         []map[string]any
-	statuses        []map[string]any
-	dependencies    []map[string]any
-	dependencyPages [][]map[string]any
-	dependencyCode  int
-	actionRuns      []map[string]any
-	actionJobs      map[int64][]map[string]any
-	actionLogs      map[int64]string
-	server          *httptest.Server
-	tokenPath       string
-	adaptationPath  string
+	t                *testing.T
+	pullRequest      map[string]any
+	repository       map[string]any
+	reviews          []map[string]any
+	statuses         []map[string]any
+	statusesByCommit map[string][]map[string]any
+	issueComments    []map[string]any
+	dependencies     []map[string]any
+	dependencyPages  [][]map[string]any
+	dependencyCode   int
+	actionRuns       []map[string]any
+	actionJobs       map[int64][]map[string]any
+	actionLogs       map[int64]string
+	server           *httptest.Server
+	tokenPath        string
+	adaptationPath   string
 
 	mu                       sync.Mutex
 	assignees                []string
@@ -1370,6 +1471,7 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 		actionJobs: make(map[int64][]map[string]any), actionLogs: make(map[int64]string),
 		pullRequestReads: make(map[string]int),
 		dependencies:     []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
+		statusesByCommit: make(map[string][]map[string]any),
 	}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
@@ -1464,6 +1566,14 @@ func (s *forgejoFixtureState) setStatuses(statuses []map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.statuses = statuses
+	head := s.pullRequest["head"].(map[string]any)["sha"].(string)
+	s.statusesByCommit[head] = statuses
+}
+
+func (s *forgejoFixtureState) setIssueComments(comments []map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issueComments = comments
 }
 
 func (s *forgejoFixtureState) setDependencies(dependencies []map[string]any) {
@@ -1572,6 +1682,8 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeFixtureJSON(s.t, w, s.dependencies)
+	case r.Method == http.MethodGet && path == issuePath+"/comments":
+		writeFixtureJSON(s.t, w, s.issueComments)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/branches/main"):
 		base := s.pullRequest["base"].(map[string]any)
 		writeFixtureJSON(s.t, w, map[string]any{
@@ -1611,7 +1723,11 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.Contains(path, "/commits/") && strings.HasSuffix(path, "/statuses"):
 		commit := strings.TrimSuffix(strings.SplitN(path, "/commits/", 2)[1], "/statuses")
 		s.statusReadCommits = append(s.statusReadCommits, commit)
-		writeFixtureJSON(s.t, w, s.statuses)
+		statuses := s.statusesByCommit[commit]
+		if len(s.statusesByCommit) == 0 {
+			statuses = s.statuses
+		}
+		writeFixtureJSON(s.t, w, statuses)
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/actions/runs":
 		writeFixtureJSON(s.t, w, map[string]any{"workflow_runs": s.actionRuns})
 	case r.Method == http.MethodGet && strings.Contains(path, "/actions/runs/") && strings.HasSuffix(path, "/jobs"):
@@ -1651,10 +1767,11 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		payload["id"] = nextID
 		payload["creator"] = map[string]any{"login": "Minos"}
+		head := strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/statuses/")
 		s.statuses = append([]map[string]any{payload}, s.statuses...)
+		s.statusesByCommit[head] = append([]map[string]any{payload}, s.statusesByCommit[head]...)
 		s.statusWrites++
 		s.writeSequence = append(s.writeSequence, "status:"+fmt.Sprint(payload["description"]))
-		head := strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/statuses/")
 		s.statusPostRequests = append(s.statusPostRequests, statusPostRequest{Head: head, Payload: mapsClone(payload)})
 		writeFixtureJSON(s.t, w, payload)
 	case r.Method == http.MethodGet && path == pullPath+"/reviews":

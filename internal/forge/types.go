@@ -59,6 +59,12 @@ type Review struct {
 	User     string `json:"user"`
 }
 
+type IssueComment struct {
+	ID   int64  `json:"id"`
+	Body string `json:"body"`
+	User string `json:"user"`
+}
+
 type Dependency struct {
 	Repository string `json:"repository"`
 	Number     int64  `json:"number"`
