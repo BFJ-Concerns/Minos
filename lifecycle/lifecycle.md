@@ -561,18 +561,21 @@ takes the absorb judgement above.
    skipped on a fork — the gate stays red and the run ends as **attention**,
    never incomplete: append each failed command and its non-zero exit status
    to `$MINOS_FAILURE_LOG`, publish one request-changes review with
-   `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE
+   `"$MINOS_BIN" forge review HEAD TARGET request-changes-checks BODY_FILE
    COMMENTS_FILE` whose body reports honestly what the run has — the gate is
    red, which configured commands failed, what the repair attempts tried,
    and no claimed diagnosis beyond what those attempts proved — then set
    `"$MINOS_BIN" forge status HEAD TARGET attention`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the
    non-clean terminal marker, and stop. That terminal request-changes review
-   is the durable completion marker that blocks re-attempts until the head
-   moves. This report is the one review permitted to describe the run's own
-   attempts: an honest account of a red gate cannot be written any other
-   way, so the reviews-talk-only-about-the-code rule in step 6 does not
-   apply to it. Where this discipline applies, `incomplete` remains the
+   records that failed required checks caused the verdict and the target it
+   was rendered against. It blocks re-attempts while the head and target stay
+   unchanged; on a non-fork pull request, target movement spends it so a fresh
+   run can reconcile the target and reassess the checks. This report is the
+   one review permitted to describe the run's own attempts: an honest account
+   of a red gate cannot be written any other way, so the
+   reviews-talk-only-about-the-code rule in step 6 does not apply to it.
+   Where this discipline applies, `incomplete` remains the
    outcome only for genuine inability
    to assess — infrastructure failure, an incomplete leg, a missing
    verdict — never for a red gate the pull request's own changes caused,
