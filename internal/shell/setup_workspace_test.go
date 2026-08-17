@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,12 @@ func TestSetupWorkspaceChecksOutHeadClonesAnnexeAndConfiguresAuthor(t *testing.T
 	pullRequestRecord := filepath.Join(runDir, "pull-request.json")
 	if state.PullRequest != pullRequestRecord {
 		t.Fatalf("orientation pull-request record = %q, want %q", state.PullRequest, pullRequestRecord)
+	}
+	if state.Source.Owner != "owner" || state.Source.Repo != "repository" || state.Source.PR != "17" {
+		t.Fatalf("orientation source = %+v, want owner/repository#17", state.Source)
+	}
+	if matched, err := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, state.Source.Date); err != nil || !matched {
+		t.Fatalf("orientation source date = %q, want ISO date", state.Source.Date)
 	}
 	assertContainsFile(t, pullRequestRecord, `"title": "Fixture change"`)
 	assertContainsFile(t, pullRequestRecord, `"body": "Not in scope: a concrete transport."`)
@@ -263,6 +270,12 @@ type orientationState struct {
 	Guidance    string `json:"guidance"`
 	PullRequest string `json:"pullRequest"`
 	Reason      string `json:"reason"`
+	Source      struct {
+		Owner string `json:"owner"`
+		Repo  string `json:"repo"`
+		PR    string `json:"pr"`
+		Date  string `json:"date"`
+	} `json:"source"`
 }
 
 func readOrientation(t *testing.T, path string) orientationState {

@@ -25,6 +25,14 @@ function finding(title, overrides = {}) {
   };
 }
 
+function annexeOrientation(annexe, date = "2026-08-17") {
+  return {
+    grounding: "annexe",
+    annexe,
+    source: { owner: "exact-owner", repo: "exact-repo", pr: "37", date },
+  };
+}
+
 function fixture(orientation, findings) {
   const dir = mkdtempSync(join(tmpdir(), "publish-overflow-"));
   scratchDirs.push(dir);
@@ -103,7 +111,7 @@ test("non-array findings refuse", () => {
 
 test("annexe grounding appends marked entries, commits, and pushes to origin", () => {
   const annexe = annexeFixture();
-  const { orientationPath, findingsPath } = fixture({ grounding: "annexe", annexe: annexe.clone }, [
+  const { orientationPath, findingsPath } = fixture(annexeOrientation(annexe.clone), [
     finding("stale cursor"),
     finding("orphan sweep", { severity: "Medium", line: 9 }),
   ]);
@@ -115,7 +123,7 @@ test("annexe grounding appends marked entries, commits, and pushes to origin", (
   assert.match(contents, /^# Issues\n/);
   assert.match(
     contents,
-    /- Review finding: stale cursor \(Low, internal\/example\.go:14\) — stale cursor narrows the guard <!-- review-finding:[A-Za-z0-9_-]+ -->/,
+    /- Review finding: stale cursor \(Low, internal\/example\.go:14\) — stale cursor narrows the guard\. Filed by Minos from exact-owner\/exact-repo#37, 2026-08-17\. <!-- review-finding:[A-Za-z0-9_-]+ -->/,
   );
   assert.match(contents, /- Review finding: orphan sweep \(Medium, internal\/example\.go:9\)/);
 
@@ -127,14 +135,14 @@ test("annexe grounding appends marked entries, commits, and pushes to origin", (
 
 test("an entry already carrying its marker is not rewritten, even retitled in case or spacing", () => {
   const annexe = annexeFixture();
-  const first = fixture({ grounding: "annexe", annexe: annexe.clone }, [finding("Stale  Cursor")]);
+  const first = fixture(annexeOrientation(annexe.clone), [finding("Stale  Cursor")]);
   assert.equal(run([first.orientationPath, first.findingsPath]).status, 0);
   const before = readFileSync(join(annexe.clone, "ISSUES.md"), "utf8");
   const headBefore = annexe.git(annexe.clone, "rev-parse", "HEAD");
 
   // The idempotency key normalises title case and whitespace, so a retry
   // that re-renders the same finding writes nothing and pushes nothing.
-  const retry = fixture({ grounding: "annexe", annexe: annexe.clone }, [finding("stale cursor")]);
+  const retry = fixture(annexeOrientation(annexe.clone, "2026-08-18"), [finding("stale cursor")]);
   const result = run([retry.orientationPath, retry.findingsPath]);
   assert.equal(result.status, 0);
   assert.deepEqual(JSON.parse(result.stdout), { destination: "annexe", written: 0, pushed: false });
@@ -150,11 +158,34 @@ test("annexe grounding preserves an existing issues log and only appends", () =>
   annexe.git(annexe.clone, "commit", "-q", "-m", "seed issues log");
   annexe.git(annexe.clone, "push", "-q", "origin", "HEAD:main");
 
-  const { orientationPath, findingsPath } = fixture({ grounding: "annexe", annexe: annexe.clone }, [
+  const { orientationPath, findingsPath } = fixture(annexeOrientation(annexe.clone), [
     finding("orphan sweep"),
   ]);
   assert.equal(run([orientationPath, findingsPath]).status, 0);
   const contents = readFileSync(join(annexe.clone, "ISSUES.md"), "utf8");
   assert.ok(contents.startsWith(seeded));
   assert.match(contents, /- Review finding: orphan sweep /);
+});
+
+test("held diagnosis keeps finding details under its distinct attributed label", () => {
+  const annexe = annexeFixture();
+  const held = finding("target cache invalidation", {
+    kind: "held-diagnosis",
+    severity: "target-side",
+    path: "internal/cache.go",
+    line: 52,
+    explanation: "target commits abc123 and def456 leave stale state through the cache refresh mechanism",
+  });
+  const { orientationPath, findingsPath } = fixture(annexeOrientation(annexe.clone), [held]);
+
+  const result = run([orientationPath, findingsPath]);
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), { destination: "annexe", written: 1, pushed: true });
+  assert.equal(result.stdout.trim(), JSON.stringify({ destination: "annexe", written: 1, pushed: true }));
+
+  const contents = annexe.git(annexe.origin, "show", "main:ISSUES.md");
+  assert.match(
+    contents,
+    /- Held diagnosis: target cache invalidation \(target-side, internal\/cache\.go:52\) — target commits abc123 and def456 leave stale state through the cache refresh mechanism\. Filed by Minos from exact-owner\/exact-repo#37, 2026-08-17\./,
+  );
 });

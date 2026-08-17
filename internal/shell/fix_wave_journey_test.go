@@ -90,7 +90,8 @@ func TestPublishOverflowPushesAnnexeOnceAndEmitsRepositoryFallback(t *testing.T)
 			t.Fatalf("annexe push count = %d, want one", got)
 		}
 		issues := gitOutput(t, remote, "show", "refs/heads/main:ISSUES.md")
-		if strings.Count(issues, "small edge") != 1 || !strings.Contains(issues, "internal/state.go:41") {
+		if strings.Count(issues, "small edge") != 1 || !strings.Contains(issues, "internal/state.go:41") ||
+			!strings.Contains(issues, "Filed by Minos from owner/repository#17, ") {
 			t.Fatalf("remote ISSUES.md = %q", issues)
 		}
 	})
