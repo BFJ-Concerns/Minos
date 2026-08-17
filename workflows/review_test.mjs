@@ -821,6 +821,18 @@ test("configured command failures enter the repair discipline, never a review on
     initialGate,
     /flake fix rides the pull request to merge[\s\S]*ends held only\s+when the repair could not be delivered[\s\S]*solely in files\s+that exist on the target side[\s\S]*`side` is `unproven` is not a\s+target-side answer at all: it is a stall/,
   );
+  assert.match(
+    initialGate,
+    /opening with the line `Held at:\s+review` — the durable record of the stretch this hold interrupted/,
+  );
+  assert.match(
+    initialGate,
+    /With annexe grounding,\s+also file the proven diagnosis into the reviewed project's annexe[\s\S]*publish-overflow\.mjs[\s\S]*With repository grounding the held comment already sits on\s+the project's own surface[\s\S]*presentation-class: its failure degrades and never fails the run/,
+  );
+  assert.match(
+    lifecycle,
+    /\*\*Resuming a released hold\.\*\*[\s\S]*Recognition is forge state\s+alone[\s\S]*only work the forge\s+witnesses complete may be skipped[\s\S]*stage value is `finishing`[\s\S]*do not re-run the engagement gate, the\s+review workflow, the fix loop, or the brief stage[\s\S]*continue directly at step 8's finishing/,
+  );
 
   const repeatedGate = lifecycle.slice(lifecycle.indexOf("After the push"), lifecycle.indexOf("6. A `terminal`"));
   assert.match(
@@ -888,6 +900,10 @@ test("a verified finishing repair merges in the same attempt", () => {
   assert.match(
     finishing,
     /`intermittent` with locus\s+`test-expectation` — returns a commit, so it leaves by the integration\s+path above[\s\S]*undeliverable through the pull-request\s+branch, and ends the run held with the rest/,
+  );
+  assert.match(
+    finishing,
+    /target-side comment opening with `Held at: finishing` \(the review\s+stages concluded clean for this pull request and the hold interrupted\s+finishing[\s\S]*file the diagnosis to the\s+reviewed project's annexe exactly as step 3's held stop directs/,
   );
   assert.match(
     finishing,

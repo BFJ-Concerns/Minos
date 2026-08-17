@@ -207,6 +207,51 @@ last action and end the turn. A continuation writes no failure-log line.
    pinned target-to-current-pull-request-head range. The reconciliation merge
    supplies the context in which code is read; it is never itself part of the
    reviewed change.
+
+   **Resuming a released hold.** `$MINOS_RELEASED_HOLD_HEAD` and
+   `$MINOS_RELEASED_HOLD_STAGE`, when both are non-empty, record that
+   admission observed this pull request released from a predecessor's
+   `held` stop: a Minos `held` status bound to an earlier target stood on
+   the admitted head, and the predecessor's held comment named the stretch
+   it interrupted in its `Held at:` line. Recognition is forge state
+   alone — never a predecessor's scratch, which has a bounded life and
+   proves nothing. The resume is narrow by design: only work the forge
+   witnesses complete may be skipped. When the stage value is `finishing`
+   and `$MINOS_RELEASED_HOLD_HEAD` equals the admitted pull-request head
+   setup recorded, the predecessor's review stages concluded clean for
+   this pull request and finishing was interrupted at this head by a
+   target-side breakage. Every review the forge carries for this pull
+   request stands — the review judged the diff, any later finishing
+   repair was verified by the configured commands under the
+   no-re-review rule, and the target sync that released the hold
+   triggers no re-review — so do not re-run the engagement gate, the
+   review workflow, the fix loop, or the brief stage: both review stages
+   are settled for this run. Run everything the forge does not witness:
+   step 2 in full — the `Flaky Test` label's presence is itself forge
+   state, so its dispatch rule needs no adjustment — step 3's
+   configured build and test commands on the freshly reconciled tree —
+   the moved target is the very thing the release delivers — and then
+   continue directly at step 8's finishing on the passing result. On this
+   resumed run a red configured command enters the gate repair discipline
+   in its entered-after-both-stages mode: the re-run build and tests are
+   the repair's whole verification, no review loop reopens, and a later
+   held stop still opens its comment with `Held at: finishing` — a
+   finishing-stage repair rides the no-re-review rule, so the stage
+   witness records that the review stages concluded for this pull request
+   and the hold interrupted finishing; a successor admitted at the
+   repaired head resumes there exactly as this run would have continued,
+   its repair commit verified by the configured build and tests at merge
+   time, never by a review.
+   Overflow and held-diagnosis filings the predecessor made are already
+   in the reviewed project's annexe; do not repeat them. Any other case —
+   either variable empty, a stage other than `finishing`, or a head
+   mismatch — is not a resume: run the whole lifecycle normally, whatever
+   reviews the snapshot carries. A hold that fired before the review
+   stages completed leaves their completion unwitnessed, and a review
+   published mid-loop stands as a published round without licensing a
+   skip; the guarded review publication deduplicates an exact
+   pre-existing review, so a normal re-run converges rather than
+   repeating forge writes.
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 
    When the trusted snapshot's `labels` contains the exact `Flaky Test` name,
@@ -398,7 +443,24 @@ last action and end the turn. A continuation writes no failure-log line.
    `$MINOS_FAILURE_LOG`, post one durable pull-request comment with
    `"$MINOS_BIN" forge comment CURRENT_HEAD TARGET FILE` reporting that the
    reconciled target itself is broken — naming the target-side commits and
-   mechanism the diagnosis proved — then set `"$MINOS_BIN" forge status HEAD
+   mechanism the diagnosis proved, and opening with the line `Held at:
+   review` — the durable record of the stretch this hold interrupted,
+   which a successor's release recognition reads. (`Held at: finishing`
+   is written only where finishing's own held stop directs, or by a
+   resumed run as step 1's resume passage states.) With annexe grounding,
+   also file the proven diagnosis into the reviewed project's annexe:
+   write it as a one-element JSON findings array — `title` the
+   target-side mechanism, `severity` `target-side`, `path` and `line` the
+   most concrete locus the diagnosis proved, `explanation` naming the
+   target-side commits, the mechanism, and its provenance (`Filed by
+   Minos from OWNER/REPO#PR, DATE`) — and run `publish-overflow.mjs` with
+   `$MINOS_ORIENTATION` exactly as step 6's overflow filing does: the
+   diagnosis is exactly the actionable find that ingest exists for, and
+   the pull-request comment alone leaves the target's own project
+   unaware. With repository grounding the held comment already sits on
+   the project's own surface — file nothing further. This filing is
+   presentation-class: its failure degrades and never fails the run.
+   Then set `"$MINOS_BIN" forge status HEAD
    TARGET held`, remove the 👀 with `"$MINOS_BIN" forge
    reaction-remove HEAD TARGET eyes`, write the non-clean terminal marker,
    and stop. The held status is bound to the current target; when the target
@@ -1106,7 +1168,14 @@ last action and end the turn. A continuation writes no failure-log line.
    no mutation. On the red-check path, branch on the `cause` verdict exactly
    as step 3's target-side discipline directs: a `side` of `target` ends the
    run as held — set `"$MINOS_BIN" forge status HEAD TARGET held`, post the
-   target-side comment, remove 👀, write the non-clean terminal marker, and
+   target-side comment opening with `Held at: finishing` (the review
+   stages concluded clean for this pull request and the hold interrupted
+   finishing — the stretch witness a successor's release recognition
+   reads; after a finishing repair pushed, the reviews sit on an earlier
+   head, and the witness records the conclusion, not a review at this
+   exact commit), file the diagnosis to the
+   reviewed project's annexe exactly as step 3's held stop directs,
+   remove 👀, write the non-clean terminal marker, and
    stop. Any other `side`, `unproven` included, is a stall — leave the label
    when present and end as attention exactly as above. The one target-side
    shape the helper repairs rather than reports — `intermittent` with locus
