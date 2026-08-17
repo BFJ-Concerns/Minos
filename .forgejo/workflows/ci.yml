@@ -15,26 +15,14 @@ jobs:
   test:
     if: forgejo.event_name == 'push' || (forgejo.event.pull_request.draft == false && !startsWith(forgejo.event.pull_request.head.ref, 'structural/'))
     runs-on: docker
+    container:
+      # Built locally on the runner (from the runner's own image recipes): Go, node 24,
+      # jq, and just preinstalled. Bump the image's base when go.mod moves
+      # past the Go it carries.
+      image: forge-ci/go:latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4.3.1
-      - name: Set up Go
-        uses: actions/setup-go@v5.6.0
-        with:
-          go-version-file: go.mod
-          cache: false
-      - name: Set up Node.js
-        uses: actions/setup-node@v4.4.0
-        with:
-          node-version: '24.18.0'
-      - name: Install jq and just
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          apt-get update
-          apt-get install --yes --no-install-recommends jq
-          curl -LsSf https://github.com/casey/just/releases/download/1.57.0/just-1.57.0-x86_64-unknown-linux-musl.tar.gz \
-            | tar zxf - -C /usr/local/bin just
       # The same command a dev box runs. What the gate checks lives in the
       # justfile, not here, so CI and local cannot drift apart.
       - name: Verify
