@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -8,7 +9,88 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"bfj/minos/internal/product"
 )
+
+func TestFinishingMovedTargetCommandsReadFreshFixtureSnapshot(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	configureFixtureForgeCommand(t, cfg, facts)
+
+	sync := runMovedTargetSyncJourney(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["sha"] = sync.pushedHead
+		pullRequest["base"].(map[string]any)["sha"] = sync.target
+	})
+	// The fixture forge is not connected to the bare Git remote, so seed the
+	// successful check which a live forge would attach to the pushed head.
+	state.setStatuses([]map[string]any{{
+		"id": float64(8), "context": "CI / test", "status": "success",
+		"description": "fresh checks passed", "creator": map[string]any{"login": "forgejo-actions"},
+	}})
+
+	var snapshotOutput bytes.Buffer
+	if err := ForgeCommand(t.Context(), []string{"snapshot"}, &snapshotOutput); err != nil {
+		t.Fatalf("fresh forge snapshot: %v", err)
+	}
+	var snapshot struct {
+		HeadSHA   string `json:"head_sha"`
+		TargetSHA string `json:"target_sha"`
+		Statuses  []struct {
+			Context string `json:"context"`
+			State   string `json:"state"`
+		} `json:"statuses"`
+	}
+	if err := json.Unmarshal(snapshotOutput.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.HeadSHA != sync.pushedHead || snapshot.TargetSHA != sync.target ||
+		len(snapshot.Statuses) != 1 || snapshot.Statuses[0].Context != "CI / test" || snapshot.Statuses[0].State != "success" {
+		t.Fatalf("fresh snapshot = %#v", snapshot)
+	}
+}
+
+func TestFinishingUnmovedTargetCommandsPublishBoundHold(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	configureFixtureForgeCommand(t, cfg, facts)
+	head, target := state.headSHA(), state.targetSHA()
+
+	commentPath := writeJSONFixture(t, map[string]any{
+		"body": "Held at: finishing\nCI / test failed while provisioning the toolchain; the reconciled tree is excluded by the captured evidence.",
+	})
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"comment", head, target, commentPath}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("held comment attempt %d: %v", attempt, err)
+		}
+		if err := ForgeCommand(t.Context(), []string{"status", head, target, "held"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("held status attempt %d: %v", attempt, err)
+		}
+	}
+
+	posts := state.statusPostFacts()
+	wantTargetURL := cfg.Forges[facts.Forge].APIBase + "/minos-e2e-owner/subject/pulls/1#minos-target-" + target
+	if len(posts) != 1 || posts[0].Head != head || posts[0].Payload["state"] != "pending" ||
+		posts[0].Payload["description"] != product.Held().Description() ||
+		posts[0].Payload["target_url"] != wantTargetURL {
+		t.Fatalf("held status posts = %#v", posts)
+	}
+	comments := state.issueCommentFacts()
+	if len(comments) != 1 || !strings.HasPrefix(comments[0], "Held at: finishing\n") {
+		t.Fatalf("held comments = %#v", comments)
+	}
+}
+
+func configureFixtureForgeCommand(t *testing.T, cfg ServiceConfig, facts Facts) {
+	t.Helper()
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
+}
 
 func TestSnapshotWatcherReturnsTheTrustedChangedSnapshot(t *testing.T) {
 	baseline := map[string]any{
@@ -102,20 +184,7 @@ func TestSyncTargetNoOpCleanAndConflictJourneys(t *testing.T) {
 	})
 
 	t.Run("moved target is merged and pushed once", func(t *testing.T) {
-		remote, workspace := createSyncFixture(t, true, false)
-		installPushCounter(t, remote)
-		head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
-		target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
-		output, err := runSyncTarget(workspace, head, target, "merge")
-		if err != nil || !strings.Contains(output, `"outcome":"synced"`) {
-			t.Fatalf("sync-target: %v\n%s", err, output)
-		}
-		if got := readPushCount(t, remote); got != 1 {
-			t.Fatalf("pushes = %d, want one", got)
-		}
-		if err := exec.Command("git", "--git-dir", remote, "merge-base", "--is-ancestor", target, "refs/heads/feature").Run(); err != nil {
-			t.Fatal("remote source does not contain moved target")
-		}
+		runMovedTargetSyncJourney(t)
 	})
 
 	t.Run("forge rebase style is honoured", func(t *testing.T) {
@@ -176,6 +245,34 @@ func TestSyncTargetNoOpCleanAndConflictJourneys(t *testing.T) {
 			t.Fatalf("pushes = %d, want one", got)
 		}
 	})
+}
+
+type movedTargetSyncFacts struct {
+	pushedHead string
+	target     string
+}
+
+func runMovedTargetSyncJourney(t *testing.T) movedTargetSyncFacts {
+	t.Helper()
+	remote, workspace := createSyncFixture(t, true, false)
+	installPushCounter(t, remote)
+	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+	target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+	output, err := runSyncTarget(workspace, head, target, "merge")
+	if err != nil || !strings.Contains(output, `"outcome":"synced"`) {
+		t.Fatalf("sync-target: %v\n%s", err, output)
+	}
+	pushedHead := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+	if pushedHead == head {
+		t.Fatal("target sync did not move the source head")
+	}
+	if got := readPushCount(t, remote); got != 1 {
+		t.Fatalf("pushes = %d, want one", got)
+	}
+	if err := exec.Command("git", "--git-dir", remote, "merge-base", "--is-ancestor", target, pushedHead).Run(); err != nil {
+		t.Fatal("remote source does not contain moved target")
+	}
+	return movedTargetSyncFacts{pushedHead: pushedHead, target: target}
 }
 
 func createSyncFixture(t *testing.T, moveTarget, conflict bool) (string, string) {
