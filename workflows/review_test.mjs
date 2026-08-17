@@ -209,6 +209,58 @@ test("the script emits an envelope with every routed leg and raw verifier output
   assert.ok(calls.every((call) => !("fallbackModel" in call.opts)));
 });
 
+test("malformed exploration scope entries fail closed before specialist dispatch", async () => {
+  for (const malformedScope of [
+    ["internal/group_execution.rs],"],
+    ["specialistType"],
+    ["correctness"],
+  ]) {
+    const exploration = explorationFixture({
+      files: [{ path: "internal/group_execution.rs", added: 4, deleted: 1 }],
+      plan: [unit("group-execution", "correctness", malformedScope)],
+    });
+    const { result, calls } = await runScript(ARGS, responder({ exploration }));
+
+    assert.deepEqual(specialistCalls(calls), []);
+    assert.deepEqual(result, {
+      reviewed: { target: ARGS.target, head: ARGS.head, occasion: null },
+      stage: "present",
+      requiredModelEvidence: [{
+        label: "exploration",
+        role: "exploration",
+        pinnedModel: "gpt-5.6-terra",
+      }],
+      proposedFindings: [],
+      outOfScopeObservations: [],
+      briefs: [],
+      misconfigurations: [],
+      dispatches: [],
+      reviewers: [{
+        label: "exploration",
+        role: "exploration",
+        status: "no-result",
+        reason: "exploration returned a malformed review plan",
+      }],
+    });
+  }
+});
+
+test("a well-formed exploration scope reaches specialists unchanged", async () => {
+  const scope = ["internal/group_execution.rs", "internal/group_execution_test.rs"];
+  const plan = [unit("group-execution", "correctness", scope)];
+  const exploration = explorationFixture({
+    files: scope.map((path) => ({ path, added: 4, deleted: 1 })),
+    plan,
+  });
+  const { result, calls } = await runScript(ARGS, responder({ exploration }));
+  const specialist = specialistCalls(calls)[0];
+
+  assert.deepEqual(result.exploration.plan, plan);
+  assert.deepEqual(result.dispatches[0].scope, scope);
+  assert.deepEqual(JSON.parse(orientationPacketFromPrompt(specialist.prompt)).ownership[0].scope, scope);
+  assert.match(specialist.prompt, /Assigned scope: internal\/group_execution\.rs, internal\/group_execution_test\.rs/);
+});
+
 test("an out-of-scope observation leaves the specialist without entering finding verification", async () => {
   const { result, calls } = await runScript(ARGS, responder({
     specialist: () => specialistResult([], undefined, [observation()]),
@@ -307,8 +359,9 @@ test("specialist inapplicability is a skip-like disposition and never reaches a 
 
 test("the review plan dispatches exactly every requested specialist", async () => {
   const requested = Array.from({ length: 9 }, (_, index) => unit(`security-${index}`, "security", [`pkg/f${index}.go`]));
+  const files = requested.map((entry) => ({ path: entry.scope[0], added: 1, deleted: 0 }));
   const { result, calls } = await runScript(ARGS, responder({
-    exploration: explorationFixture({ plan: requested }),
+    exploration: explorationFixture({ files, plan: requested }),
     specialist: () => specialistResult([]),
   }));
   assert.equal(result.dispatches.length, 9);
@@ -366,8 +419,9 @@ test("verifier dispatch pools findings globally and caps batches at six", async 
   const counts = [7, 1, 2, 3, 4, 5, 6];
   const types = ["correctness", "security", "testing", "design", "correctness", "security", "testing"];
   const plan = counts.map((_, index) => unit(`unit-${index + 1}`, types[index], [`pkg/f${index + 1}.go`]));
+  const files = plan.map((entry) => ({ path: entry.scope[0], added: 1, deleted: 0 }));
   const { result, calls } = await runScript(ARGS, responder({
-    exploration: explorationFixture({ plan }),
+    exploration: explorationFixture({ files, plan }),
     specialist: (label) => {
       const unitIndex = Number(label.split("-")[1]) - 1;
       return specialistResult(Array.from({ length: counts[unitIndex] }, (_, findingIndex) => finding({
