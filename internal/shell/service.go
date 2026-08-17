@@ -10,6 +10,14 @@ import (
 	"bfj/minos/internal/product"
 )
 
+const heldTargetFragment = "#minos-target-"
+
+type AdmissionContext struct {
+	ReleasedHoldHead      string
+	ReleasedHoldStage     string
+	ReleasedHoldDiagnosis string
+}
+
 func currentSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (forge.Snapshot, error) {
 	_, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
 	return snapshot, err
@@ -58,6 +66,59 @@ func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, 
 		}
 	}
 	return latest, found
+}
+
+func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot forge.Snapshot, repository forge.Repository, pullRequest int64, botLogin string) AdmissionContext {
+	var held forge.Status
+	found := false
+	for _, status := range snapshot.Statuses {
+		if status.Provider == forge.ForgejoProvider && status.Context == forge.OwnedStatusContext &&
+			status.Creator == botLogin && status.Description == product.Held().Description() &&
+			(!found || status.ID > held.ID) {
+			held = status
+			found = true
+		}
+	}
+	fragment := strings.LastIndex(held.TargetURL, heldTargetFragment)
+	boundTarget := ""
+	if fragment >= 0 {
+		boundTarget = held.TargetURL[fragment+len(heldTargetFragment):]
+	}
+	if !found || boundTarget == "" || boundTarget == snapshot.TargetSHA {
+		return AdmissionContext{}
+	}
+	comments, err := adapter.IssueComments(ctx, repository, pullRequest)
+	if err != nil {
+		return AdmissionContext{}
+	}
+	var latest forge.IssueComment
+	found = false
+	for _, comment := range comments {
+		if comment.User == botLogin && (!found || comment.ID > latest.ID) {
+			latest = comment
+			found = true
+		}
+	}
+	if !found {
+		return AdmissionContext{}
+	}
+	stage, diagnosis, ok := parseHeldComment(latest.Body)
+	if !ok {
+		return AdmissionContext{}
+	}
+	return AdmissionContext{ReleasedHoldHead: snapshot.HeadSHA, ReleasedHoldStage: stage, ReleasedHoldDiagnosis: diagnosis}
+}
+
+func parseHeldComment(body string) (string, string, bool) {
+	stageLine, diagnosis, found := strings.Cut(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	if !found || (stageLine != "Held at: finishing" && stageLine != "Held at: review") {
+		return "", "", false
+	}
+	diagnosis = strings.TrimSpace(diagnosis)
+	if diagnosis == "" {
+		return "", "", false
+	}
+	return strings.TrimPrefix(stageLine, "Held at: "), diagnosis, true
 }
 
 func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
@@ -126,6 +187,8 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	facts.BaseSHA = snapshot.TargetSHA
 	facts.BaseRef = snapshot.TargetBranch
 	facts.HeadRef = snapshot.HeadBranch
+	pullRequest, _ := strconv.ParseInt(facts.PR, 10, 64)
+	admission := releasedHoldContext(ctx, adapter, snapshot, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, pullRequest, cfg.Service.BotLogin)
 	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
 	}
@@ -156,7 +219,7 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 	if reason, deferred := dependencyDeferral(snapshot); deferred {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason)}, nil
 	}
-	outcome, err := SpawnRun(ctx, cfg, repo, facts)
+	outcome, err := SpawnRun(ctx, cfg, repo, facts, admission)
 	if err != nil {
 		return ReconcileResult{}, err
 	}

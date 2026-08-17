@@ -46,6 +46,21 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	return snapshot, nil
 }
 
+func (a *Adapter) IssueComments(ctx context.Context, repository Repository, pullRequest int64) ([]IssueComment, error) {
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "issue-comments",
+		Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var comments []IssueComment
+	if err := json.Unmarshal(out, &comments); err != nil {
+		return nil, fmt.Errorf("decode forge issue comments: %w", err)
+	}
+	return comments, nil
+}
+
 // CheckLogs returns forge-provided job logs associated with check statuses on
 // the guarded pull-request head. The adaptation owns provider-specific URL and
 // Actions API handling; callers receive its evidence object unchanged.
