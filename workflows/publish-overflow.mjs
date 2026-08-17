@@ -58,7 +58,9 @@ if (written === 0) {
 }
 
 writeFileSync(issuesPath, contents);
-execFileSync("git", ["-C", orientation.annexe, "add", "ISSUES.md"], { stdio: "inherit" });
-execFileSync("git", ["-C", orientation.annexe, "commit", "-m", "chore: record review findings for triage"], { stdio: "inherit" });
-execFileSync("git", ["-C", orientation.annexe, "push", "origin", "HEAD"], { stdio: "inherit" });
+// stdout carries only the JSON envelope; git's own output goes to stderr.
+const gitStdio = ["ignore", process.stderr, "inherit"];
+execFileSync("git", ["-C", orientation.annexe, "add", "ISSUES.md"], { stdio: gitStdio });
+execFileSync("git", ["-C", orientation.annexe, "commit", "-m", "chore: record review findings for triage"], { stdio: gitStdio });
+execFileSync("git", ["-C", orientation.annexe, "push", "origin", "HEAD"], { stdio: gitStdio });
 process.stdout.write(JSON.stringify({ destination: "annexe", written, pushed: true }) + "\n");
