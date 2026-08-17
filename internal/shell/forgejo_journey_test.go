@@ -1852,6 +1852,16 @@ func (s *forgejoFixtureState) statusPostFacts() []statusPostRequest {
 	return posts
 }
 
+func (s *forgejoFixtureState) issueCommentFacts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	comments := make([]string, 0, len(s.issueComments))
+	for _, comment := range s.issueComments {
+		comments = append(comments, fmt.Sprint(comment["body"]))
+	}
+	return comments
+}
+
 func (s *forgejoFixtureState) virtualBranchReads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1901,6 +1911,17 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, s.dependencies)
 	case r.Method == http.MethodGet && path == issuePath+"/comments":
 		writeFixtureJSON(s.t, w, s.issueComments)
+	case r.Method == http.MethodPost && path == issuePath+"/comments":
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		comment := map[string]any{
+			"id": float64(len(s.issueComments) + 1), "body": payload["body"],
+			"user": map[string]any{"login": "Minos"},
+		}
+		s.issueComments = append(s.issueComments, comment)
+		writeFixtureJSON(s.t, w, comment)
 	case r.Method == http.MethodGet && path == pullPath+"/commits":
 		writeFixtureJSON(s.t, w, s.commits)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/branches/main"):
