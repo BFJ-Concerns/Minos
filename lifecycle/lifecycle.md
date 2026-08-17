@@ -15,7 +15,7 @@ nor a planned continuation,
 append one line to `$MINOS_FAILURE_LOG` before you stop — and before any cleanup
 or reaction removal. This covers **every failed** non-clean exit you make, not only the
 ones that set a status: a stop that sets `incomplete` or `attention`, and equally
-a setup or finishing head/target move, a failed build or test, an unparseable
+a foreign head move that ends the run, a failed build or test, an unparseable
 workflow result, or any other unrecovered error that ends the run short of a
 clean pass. Record the pull request and head, the stage that failed, and the
 concrete cause — what the workflow verdict, a failed command, or a dispatched
@@ -109,6 +109,43 @@ the complete handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
 `printf 'continuation\n' > "$MINOS_RUN_DIR/lead-complete"` as the
 last action and end the turn. A continuation writes no failure-log line.
 
+**Branch movement, run-wide.** Whenever a snapshot shows the
+pull-request head somewhere this run did not put it, answer by what the
+movement actually is, never by the bare fact of movement. The run's own
+pushes — setup's reconciliation merge, an integrated repair or fix
+wave, the finishing target sync — are its own motion: they spend
+nothing and invalidate nothing, and the pushed head simply becomes the
+head. Movement containing any commit this run did not push is foreign
+— foreign even when the run's own commits arrive alongside or after
+it. A foreign push mid-run takes judgement, not automatic
+invalidation: fetch the moved head, identify the foreign commits
+between the last head this run verified and the fresh one, and read
+their actual diff. A change you judge small enough not to alter this
+run's conclusions so far is absorbed — the fresh head becomes the
+head: sync the workspace to it, verify it with the exact configured
+build and test commands, and let every review stage still ahead judge
+it as part of the change; when no review stage remains ahead, post one
+durable pull-request comment with `"$MINOS_BIN" forge comment` naming
+the absorbed commits and the judgement's basis, because the honest
+record is the protection for a commit no reviewer will see. A change
+past that bar ends the run for a fresh successor at the new head:
+append the judgement and its diff-grounded basis to
+`$MINOS_FAILURE_LOG`, remove 👀 against the fresh head and target,
+write the non-clean terminal marker, and stop without publishing or
+setting a status — the pull request stays eligible, and the successor
+reviews the moved head whole. The judgement is yours under the balance
+rule: no size threshold or fixed policy decides it, and its subject is
+what the change means for this run's conclusions, not its line count.
+Movement of the *target* is not this case and never invalidates a live
+run, whatever its size or author: carry on against the pinned target
+and reconcile with the current target at finishing. Foreign is judged
+run-scoped here — what this run itself pushed — because that is what
+this window can verify; the cross-run recognition the service applies
+to completion markers, setup refusal, and hold release reads Minos
+authorship from the commits themselves, so a predecessor's own pushed
+commits spend nothing there, and meeting such a commit mid-run simply
+takes the absorb judgement above.
+
 1. The setup script has prepared the repository at the current pull-request head
    in `$MINOS_WORKSPACE`, either from a fresh clone or a validated preserved
    workspace. It refused setup if the admitted head moved before setup. On a
@@ -122,9 +159,19 @@ last action and end the turn. A continuation writes no failure-log line.
    the work in the repository's own checked-in guidance. Then run
    `"$MINOS_BIN" forge snapshot` and claim the pull request with `"$MINOS_BIN"
    forge claim` (it assigns the Minos account and adds the 👀 reaction; it is
-   safe to repeat). If the snapshot now shows that the head or target differs
-   from those setup established, remove 👀 against that fresh head and target,
-   write the non-clean terminal marker, and stop without publishing.
+   safe to repeat). If the snapshot now shows a target that differs from the one
+   setup established, carry on: target movement never invalidates the run,
+   and finishing reconciles with the current target. If it shows a head that
+   differs from `$MINOS_HEAD_SHA`, that movement is not this run's own —
+   setup's push already is `$MINOS_HEAD_SHA` — so it is foreign: fetch it
+   and read the foreign commits' diff, then exercise the run-wide movement
+   discipline's judgement with nothing yet invested. No conclusion exists
+   for the change to alter, and a fresh successor reviews the moved head
+   whole at only setup's cost, so ending for that successor is the
+   ordinary answer here — the diff grounds what the record says, not
+   whether judgement happens. Record that basis in `$MINOS_FAILURE_LOG`, remove 👀
+   against the fresh head and target, write the non-clean terminal marker,
+   and stop without publishing.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` after the claim and snapshot
    checks. If `$MINOS_LOOP_RECORD` already exists, a predecessor handed off:
@@ -217,10 +264,13 @@ last action and end the turn. A continuation writes no failure-log line.
    alone — never a predecessor's scratch, which has a bounded life and
    proves nothing. The resume is narrow by design: only work the forge
    witnesses complete may be skipped. When the stage value is `finishing`
-   and `$MINOS_RELEASED_HOLD_HEAD` equals the admitted pull-request head
-   setup recorded, the predecessor's review stages concluded clean for
+   and the admitted pull-request head setup recorded is unchanged from
+   `$MINOS_RELEASED_HOLD_HEAD` in foreign commits — equal, or moved only
+   by Minos-authored commits pushed through the sanctioned publishers, a
+   comparison admission has already made when it set these variables —
+   the predecessor's review stages concluded clean for
    this pull request and finishing was interrupted at this head by a
-   target-side breakage. Every review the forge carries for this pull
+   breakage proven not to be this pull request's own. Every review the forge carries for this pull
    request stands — the review judged the diff, any later finishing
    repair was verified by the configured commands under the
    no-re-review rule, and the target sync that released the hold
@@ -244,8 +294,8 @@ last action and end the turn. A continuation writes no failure-log line.
    time, never by a review.
    Overflow and held-diagnosis filings the predecessor made are already
    in the reviewed project's annexe; do not repeat them. Any other case —
-   either variable empty, a stage other than `finishing`, or a head
-   mismatch — is not a resume: run the whole lifecycle normally, whatever
+   either variable empty, a stage other than `finishing`, or a head moved
+   in foreign commits — is not a resume: run the whole lifecycle normally, whatever
    reviews the snapshot carries. A hold that fired before the review
    stages completed leaves their completion unwitnessed, and a review
    published mid-loop stands as a published round without licensing a
@@ -381,7 +431,18 @@ last action and end the turn. A continuation writes no failure-log line.
 
    Run it as a background task and wait exactly as step 4 directs.
 
-   When the repair returns a non-empty commit, write that one commit as a
+   Before reading any other result field, read `status`. A result whose
+   `status` is `incomplete` is a failed dispatch, not an assessed verdict —
+   its unproven `cause` carries no judgement — so append its `reason` to
+   `$MINOS_FAILURE_LOG` and treat it as the infrastructure-failure case:
+   the `incomplete` outcome, never a stall's attention. And integrate a
+   commit only when the verdict licenses one — `side` `pull-request`, or
+   the target-side `intermittent`/`test-expectation` exception; a
+   non-empty commit on any other verdict breaches the helper's contract,
+   so do not integrate it and treat the whole result as an `unproven`
+   stall.
+
+   When the repair returns a licensed non-empty commit, write that one commit as a
    JSON array and integrate it through
    `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave" "$MINOS_WORKSPACE"
    COMMITS_FILE` — the lead integrates and pushes through the controlled
@@ -477,8 +538,22 @@ last action and end the turn. A continuation writes no failure-log line.
    pull-request branch, and the agent returns that as an empty commit,
    which ends the run held exactly as above with its comment naming the
    fix that cannot be delivered here. Every other `target` verdict —
-   `deterministic`, or `product` locus, or `determinism` still `unproven`
-   — ends held as above. A verdict whose `side` is `unproven` is not a
+   `deterministic`, or `product` locus, or a `determinism` or `locus`
+   still `unproven` — ends held as above.
+
+   A `side` of `infrastructure` at this gate — the diagnosis excludes the
+   reconciled tree; the failing command's environment broke, not the code
+   — is answered locally, because execution is cheap here and no push
+   ceremony is needed: run the exact configured commands again, with the
+   same capture and exit-status requirements, and let the result speak. A
+   green re-run continues exactly as a repaired gate would. A red one that
+   your same-failure judgement finds unchanged spends the exclusion — that
+   dispatch is a stall, ending below; a genuinely different failure is
+   progress and earns the ordinary next dispatch on its own fresh
+   evidence. The fresh-run push remedy belongs to finishing's forge
+   checks, never to this local gate.
+
+   A verdict whose `side` is `unproven` is not a
    target-side answer at all: it is a stall, and ends as **attention**
    below.
 
@@ -1059,8 +1134,14 @@ last action and end the turn. A continuation writes no failure-log line.
    for the next decision. On its roughly ten-minute `timeout`, use the returned
    fresh snapshot as well; do not infer state from elapsed time, poll the forge
    separately, or sleep blind. If the target moved, return to target sync. If
-   an unexpected head moved, remove 👀 against the fresh head and target, write
-   the non-clean terminal marker, and stop without publishing a result for
+   the head moved, classify it by the run-wide movement discipline: a fresh
+   head consisting solely of commits this run pushed is the run's own motion —
+   continue finishing on it; foreign movement takes the discipline's
+   diff-grounded judgement — an absorbed change is synced in and verified by
+   the exact configured build and test commands before any further finishing
+   action, with the durable absorb comment posted since no review stage
+   remains ahead here, while a change past the bar ends the run for a fresh
+   successor exactly as the discipline directs, publishing nothing for
    unverified code.
 
    A required check is genuinely red only when `failed_checks` names its latest
@@ -1077,7 +1158,13 @@ last action and end the turn. A continuation writes no failure-log line.
    not dispatch a second one. Only when no such dispatch exists — the label
    arrived after step 2's snapshot — construct the helper here. The red-check
    path always dispatches here on fresh evidence: a check that went red during
-   the run is not the flake step 2's dispatch was working from.
+   the run is not the flake step 2's dispatch was working from. But when a
+   step-2 dispatch exists and its background task has not completed, first
+   wait for it through its `flake-repair-result.done` flag and dispose of
+   its result exactly as the label-only path directs — its commit is a
+   flake repair to integrate, and the retrieval below overwrites the
+   evidence files that task reads — before retrieving the red check's own
+   evidence.
 
    Before constructing the helper, retrieve the forge's check evidence for the
    exact guarded head and target:
@@ -1118,7 +1205,13 @@ last action and end the turn. A continuation writes no failure-log line.
      2> "$MINOS_RUN_DIR/rootcause-result.log"
    ```
 
-   When the helper returns a non-empty commit, write that one commit as a
+   Before reading any other result field, read `status` exactly as step 3
+   directs: an `incomplete` result is a failed dispatch — append its
+   `reason` to `$MINOS_FAILURE_LOG`, set `incomplete`, remove 👀, write
+   the non-clean terminal marker, and stop — and only a licensed commit
+   (`side` `pull-request`, or the target flake exception) is integrated.
+
+   When the helper returns a licensed non-empty commit, write that one commit as a
    JSON array and
    integrate it through `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
    "$MINOS_WORKSPACE" COMMITS_FILE`. Wait for the pushed head through the
@@ -1176,7 +1269,44 @@ last action and end the turn. A continuation writes no failure-log line.
    exact commit), file the diagnosis to the
    reviewed project's annexe exactly as step 3's held stop directs,
    remove 👀, write the non-clean terminal marker, and
-   stop. Any other `side`, `unproven` included, is a stall — leave the label
+   stop.
+
+   A `side` of `infrastructure` — the diagnosis excludes the reconciled
+   tree, even where the infrastructure cause itself stays unproven — earns
+   exactly one fresh check run, and a fresh check run rides a real push,
+   because the forge cannot re-run an existing check. Take a fresh
+   `"$MINOS_BIN" forge snapshot` now — the last one predates the helper's
+   whole dispatch. When that fresh
+   snapshot's target differs from the target this finishing already synced,
+   that sync is owed for the merge anyway: run `sync-target` again exactly
+   as this step began, let its lease-bound push start the fresh checks, and
+   keep waiting on the pushed head and fresh target — the sync triggers no
+   re-review, and the merge proceeds in this same attempt when the fresh
+   checks pass. When the target is unmoved there is nothing to push: end
+   the run as **held** — set `"$MINOS_BIN" forge status HEAD TARGET held`,
+   post the comment opening with `Held at: finishing` reporting the
+   exclusion diagnosis and its evidence, file that diagnosis to the
+   reviewed project's annexe exactly as step 3's held stop directs —
+   except that its `severity` is `infrastructure` and its `title` and
+   `explanation` name the excluded-tree evidence and the failing check,
+   not a target-side mechanism — remove
+   👀, write the non-clean terminal marker, and stop; the sweep's
+   target-bound re-assessment supplies the fresh run when the target next
+   moves, and the published review stands for that successor's resume. On
+   a fork pull request neither arm exists — nothing may be pushed — so its
+   red head takes the honest request-changes report and ends as attention.
+   The exclusion earns one fresh run, never a ladder: when a fresh check
+   run earned this way goes red again and your same-failure judgement (as
+   at every gate) finds the same failure, the diagnosis is spent — the
+   next dispatch is the ordinary repair, and a stalled repair ends the run
+   as attention; never answer a spent exclusion with another fresh run. A
+   successor admitted from that hold receives the predecessor's exclusion
+   diagnosis with its release recognition — the held comment carries it
+   durably for exactly this judgement — and fresh checks failing the same
+   way, by its own same-failure judgement, are the spent case too: it
+   dispatches the repair rather than re-earning a fresh run.
+
+   Any other `side`, `unproven` included, is a stall — leave the label
    when present and end as attention exactly as above. The one target-side
    shape the helper repairs rather than reports — `intermittent` with locus
    `test-expectation` — returns a commit, so it leaves by the integration
@@ -1206,7 +1336,10 @@ last action and end the turn. A continuation writes no failure-log line.
    that leaves the same check failing the same way is a stall that ends
    the run as **attention** with the honest request-changes report; a
    `target` verdict the helper did not repair ends the run as **held**
-   exactly as step 8's target-side discipline directs, and a repaired
+   exactly as step 8's target-side discipline directs, an `infrastructure`
+   verdict takes step 8's fresh-run arm — its spending rule as step 8
+   states it: a fresh run already earned against the same failure, by
+   your same-failure judgement, spends the exclusion — and a repaired
    target-side flake returns with its commit like any other. A
    verified repair from that re-entry returns here through step 8's
    ordinary continuation on its fresh head; this loop has no counted

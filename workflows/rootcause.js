@@ -19,7 +19,7 @@ const rootCauseResultSchema = {
       additionalProperties: false,
       required: ["side", "determinism", "locus"],
       properties: {
-        side: { enum: ["pull-request", "target", "unproven"] },
+        side: { enum: ["pull-request", "target", "infrastructure", "unproven"] },
         determinism: { enum: ["deterministic", "intermittent", "unproven"] },
         locus: { enum: ["test-expectation", "product", "unproven"] },
       },
@@ -71,7 +71,9 @@ ${evidence}
 
 Treat the supplied evidence as diagnostic input, not proof of a cause. Reproduce the failure, prove its actual cause, and report that cause on three axes in \`cause\`.
 
-\`side\` — where the cause lives relative to the reconciliation: \`pull-request\` for the pull request's own changes, \`target\` for commits that arrived from the reconciled target. A pull-request-side cause is yours to repair: fix only what you prove.
+\`side\` — where the cause lives relative to the reconciliation: \`pull-request\` for the pull request's own changes, \`target\` for commits that arrived from the reconciled target, \`infrastructure\` when the evidence excludes the reconciled tree entirely — the failure was caused by the environment the check or command ran in (a runner dying, a network outage mid-download, toolchain provisioning failing before the tree's own code ran), not by anything either branch contains. A pull-request-side cause is yours to repair: fix only what you prove.
+
+The bar for \`infrastructure\` is exclusion, not attribution: the evidence must establish that neither the pull request's changes nor the target's code produced the failure — a build that died before compiling anything, a fetch that timed out, a runner that vanished mid-job — and that is enough even when you cannot prove which infrastructure piece failed. Do not use it for a failure that merely *looks* environmental: a test that touches the network is the tree's own code failing. An \`infrastructure\` verdict has nothing in the tree to repair, so return an empty commit and a diagnosis stating the exclusion evidence; \`determinism\` and \`locus\` may honestly stay \`unproven\`.
 
 \`determinism\` — \`deterministic\` when the failure reproduces every run under the conditions you identified; \`intermittent\` only once you have measured a failure rate the way the skill's \`references/intermittent-failures.md\` directs. A single observed failure is not a measured rate.
 

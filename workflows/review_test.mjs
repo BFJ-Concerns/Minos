@@ -774,7 +774,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
     /shipped `rootcause\.js`[\s\S]*`codex` \/ `gpt-5\.6-sol`[\s\S]*isolation: "worktree"[\s\S]*configured Minos identity[\s\S]*never\s+push/,
   );
   assert.doesNotMatch(lifecycle, /(?:write|construct)(?: the)? `rootcause\.js`/i);
-  assert.match(lifecycle, /helper returns a non-empty commit[\s\S]*integrate-wave/);
+  assert.match(lifecycle, /helper returns a licensed non-empty commit[\s\S]*integrate-wave/);
 });
 
 test("configured command failures enter the repair discipline, never a review on a red head", () => {
@@ -828,6 +828,14 @@ test("configured command failures enter the repair discipline, never a review on
   assert.match(
     initialGate,
     /With annexe grounding,\s+also file the proven diagnosis into the reviewed project's annexe[\s\S]*publish-overflow\.mjs[\s\S]*With repository grounding the held comment already sits on\s+the project's own surface[\s\S]*presentation-class: its failure degrades and never fails the run/,
+  );
+  assert.match(
+    initialGate,
+    /`side` of `infrastructure` at this gate[\s\S]*excludes the\s+reconciled tree[\s\S]*answered locally[\s\S]*run the exact configured commands again[\s\S]*green re-run continues exactly as a repaired gate would[\s\S]*same-failure judgement finds unchanged spends the exclusion[\s\S]*genuinely different failure is\s+progress[\s\S]*fresh-run push remedy belongs to finishing's forge\s+checks, never to this local gate/,
+  );
+  assert.match(
+    initialGate,
+    /Before reading any other result field, read `status`\. A result whose\s+`status` is `incomplete` is a failed dispatch, not an assessed verdict[\s\S]*the `incomplete` outcome, never a stall's attention[\s\S]*integrate a\s+commit only when the verdict licenses one[\s\S]*target-side `intermittent`\/`test-expectation` exception[\s\S]*breaches the helper's contract/,
   );
   assert.match(
     lifecycle,
@@ -907,6 +915,26 @@ test("a verified finishing repair merges in the same attempt", () => {
   );
   assert.match(
     finishing,
+    /`side` of `infrastructure`[\s\S]*excludes the reconciled\s+tree, even where the infrastructure cause itself stays unproven[\s\S]*exactly one fresh check run[\s\S]*rides a real push,\s+because the forge cannot re-run an existing check[\s\S]*run `sync-target` again exactly\s+as this step began[\s\S]*sync triggers no\s+re-review, and the merge proceeds in this same attempt[\s\S]*target is unmoved there is nothing to push: end\s+the run as \*\*held\*\*[\s\S]*`severity` is `infrastructure`[\s\S]*published review stands for that successor's resume/,
+  );
+  assert.match(
+    finishing,
+    /fork pull request neither arm exists[\s\S]*honest request-changes report and ends as attention[\s\S]*exclusion earns one fresh run, never a ladder[\s\S]*same-failure judgement \(as\s+at every gate\) finds the same failure, the diagnosis is spent[\s\S]*never answer a spent exclusion with another fresh run[\s\S]*successor admitted from that hold receives the predecessor's exclusion\s+diagnosis with its release recognition[\s\S]*dispatches the repair rather than re-earning a fresh run/,
+  );
+  assert.match(
+    finishing,
+    /Take a fresh\s+`"\$MINOS_BIN" forge snapshot` now — the last one predates the helper's\s+whole dispatch/,
+  );
+  assert.match(
+    finishing,
+    /Before reading any other result field, read `status` exactly as step 3\s+directs[\s\S]*only a licensed commit\s+\(`side` `pull-request`, or the target flake exception\) is integrated/,
+  );
+  assert.match(
+    finishing,
+    /step-2 dispatch exists and its background task has not completed, first\s+wait for it through its `flake-repair-result\.done` flag[\s\S]*overwrites the\s+evidence files that task reads/,
+  );
+  assert.match(
+    finishing,
     /Retain the `Flaky Test` label on that path, whatever the\s+verdict says: required checks are green there[\s\S]*not a reason to withhold a pull request the forge considers passing/,
   );
   assert.match(
@@ -917,6 +945,26 @@ test("a verified finishing repair merges in the same attempt", () => {
     finishing,
     /re-dispatch carries the evidence its own failure produced[\s\S]*local failure[\s\S]*`--command`, `--exit-status`[\s\S]*captured[\s\S]*`build-command-output\.log` or `test-command-output\.log`[\s\S]*required check red on the forge carries a\s+fresh `check-logs\.json`[\s\S]*exact current head and target[\s\S]*Never hand a helper stale forge evidence[\s\S]*`rootcause-inputs\.mjs` executes either shape\s+unchanged/,
   );
+});
+
+test("head movement is judged by authorship and a foreign push takes the absorb judgement", () => {
+  assert.match(
+    lifecycle,
+    /\*\*Branch movement, run-wide\.\*\*[\s\S]*run's own\s+pushes[\s\S]*spend\s+nothing and invalidate nothing[\s\S]*any commit this run did not push is foreign[\s\S]*even when the run's own commits arrive alongside or after\s+it[\s\S]*judgement, not automatic\s+invalidation[\s\S]*read\s+their actual diff[\s\S]*every review stage still ahead judge\s+it as part of the change[\s\S]*durable pull-request comment[\s\S]*naming\s+the absorbed commits and the judgement's basis[\s\S]*ends the run for a fresh successor at the new head[\s\S]*stays eligible[\s\S]*no size threshold or fixed policy decides it/,
+  );
+  assert.match(
+    lifecycle,
+    /Movement of the \*target\* is not this case and never invalidates a live\s+run, whatever its size or author[\s\S]*reconcile with the current target\s+at finishing/,
+  );
+  assert.match(
+    lifecycle,
+    /a target that differs from the one\s+setup established, carry on: target movement never invalidates the run/,
+  );
+  assert.match(
+    lifecycle,
+    /the head moved, classify it by the run-wide movement discipline[\s\S]*solely of commits this run pushed is the run's own motion[\s\S]*continue finishing on it[\s\S]*absorbed change is synced in and verified by\s+the exact configured build and test commands before any further finishing\s+action[\s\S]*durable absorb comment[\s\S]*fresh\s+successor exactly as the discipline directs, publishing nothing for\s+unverified code/,
+  );
+  assert.doesNotMatch(lifecycle, /unexpected head moved/);
 });
 
 test("the 👍 is awarded only at step 9, once checks pass, and retracted when a check turns red", () => {
