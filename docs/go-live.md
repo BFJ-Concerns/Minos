@@ -39,8 +39,8 @@ machine itself is the containment boundary.
    destination, identity and pinned known-hosts file.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
-   defaults to one when unset. Each unit's `MemoryMax` is a fixed 14 GiB
-   whole-box envelope divided by that cap — 7 GiB each at two — so concurrent
+   defaults to one when unset. Each unit's `MemoryMax` is a fixed 20 GiB
+   whole-box envelope divided by that cap — 10 GiB each at two — so concurrent
    runs never promise more memory than the machine has and a ballooning run
    still fails alone. Size the cap against the machine's memory and cores:
    a healthy run's unreclaimable footprint is around 1.2 GiB, but each run

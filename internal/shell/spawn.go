@@ -54,7 +54,7 @@ func preserveStaleReviewResult(path, stalePath string) error {
 // box has — the ceiling exists so that a ballooning run fails alone instead of
 // taking the receiver and sweep with it, and an overcommitted ceiling cannot
 // do that.
-const runMemoryEnvelopeGiB = 14
+const runMemoryEnvelopeGiB = 20
 
 func runMemoryMax(cfg ServiceConfig) string {
 	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB/cfg.MaxConcurrentRuns())

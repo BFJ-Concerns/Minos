@@ -49,7 +49,7 @@ func TestLoadServiceConfigDefaultsMaxConcurrentToOne(t *testing.T) {
 }
 
 func TestLoadServiceConfigRejectsUnusableMaxConcurrent(t *testing.T) {
-	for _, setting := range []string{"max-concurrent = -1\n", "max-concurrent = 15\n"} {
+	for _, setting := range []string{"max-concurrent = -1\n", "max-concurrent = 21\n"} {
 		t.Run(strings.TrimSpace(setting), func(t *testing.T) {
 			root := t.TempDir()
 			contents := strings.Replace(testServiceConfig, "max-concurrent = 2\n", setting, 1)
