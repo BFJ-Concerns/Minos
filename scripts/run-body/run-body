@@ -6,6 +6,7 @@ supervisor_failure=false
 failure_stage="configuration"
 failure_cause="run-body exited before loading its configuration"
 session_id=""
+run_tmpdir=""
 
 stop_session() {
   if [ -n "$session_id" ]; then
@@ -16,6 +17,11 @@ stop_session() {
 stop_sccache() {
   command -v sccache >/dev/null 2>&1 || return 0
   sccache --stop-server >/dev/null 2>&1 || true
+}
+
+remove_run_tmpdir() {
+  [ -n "$run_tmpdir" ] || return 0
+  rm -rf -- "$run_tmpdir"
 }
 
 archive_run() {
@@ -59,6 +65,7 @@ on_exit() {
   stop_session
   stop_sccache
   archive_run
+  remove_run_tmpdir
   exit "$status"
 }
 trap 'on_exit $?' 0
@@ -188,9 +195,16 @@ GOMODCACHE="$MINOS_SHARED_CACHE_DIR/go/modules"
 npm_config_cache="$MINOS_SHARED_CACHE_DIR/node/npm"
 PLAYWRIGHT_BROWSERS_PATH="$MINOS_SHARED_CACHE_DIR/playwright/browsers"
 # Repository test suites write large artefacts to temp; the box's shared
-# tmpfs /tmp cannot hold concurrent runs' output, so each run gets its own
-# disk-backed temp directory that dies with the run.
-TMPDIR="${MINOS_RUN_DIR%/}/tmp"
+# tmpfs /tmp cannot hold concurrent runs' output. Keep a short, private temp
+# path on the same disk-backed Minos storage and remove it with the run.
+MINOS_RUN_TMP_ROOT="$(dirname "$MINOS_RUNS_DIR")/tmp"
+failure_cause="could not create run temp directory root $MINOS_RUN_TMP_ROOT"
+mkdir -p "$MINOS_RUN_TMP_ROOT"
+failure_cause="could not secure run temp directory root $MINOS_RUN_TMP_ROOT"
+chmod 700 "$MINOS_RUN_TMP_ROOT"
+failure_cause="could not create isolated run temp directory in $MINOS_RUN_TMP_ROOT"
+run_tmpdir="$(mktemp -d "$MINOS_RUN_TMP_ROOT/t.XXXXXXXXXX")"
+TMPDIR="$run_tmpdir"
 PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export HOME CLAUDE_CONFIG_DIR CODEX_HOME XDG_STATE_HOME XDG_DATA_HOME \
   MINOS_SHARED_CACHE_DIR \
@@ -200,7 +214,7 @@ failure_stage="runtime-home"
 failure_cause="could not create isolated runtime home, state, cache and tool directories"
 mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
   "$SCCACHE_DIR" "$GOCACHE" "$GOMODCACHE" "$npm_config_cache" \
-  "$PLAYWRIGHT_BROWSERS_PATH" "$TMPDIR" \
+  "$PLAYWRIGHT_BROWSERS_PATH" \
   "$HOME/.cargo/bin" "$HOME/.local/bin"
 failure_cause="could not secure isolated runtime home, state, cache and tool directories"
 chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
