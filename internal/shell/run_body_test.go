@@ -179,8 +179,15 @@ func TestRunBodyExportsSocketSafeTempDirectoryForLongRunName(t *testing.T) {
 	fixture.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
 
 	tempDir := environmentValue(t, fixture.record+".worker-env", "TMPDIR")
-	if got := len(tempDir) + 50; got > 108 {
-		t.Fatalf("TMPDIR plus 50-byte socket filename uses %d bytes, want at most 108 (TMPDIR=%q)", got, tempDir)
+	relativeTempDir, err := filepath.Rel(fixture.root, tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const deployedStorageRoot = "/var/lib/minos"
+	runBodyContribution := 1 + len(relativeTempDir)
+	deployedTempDirLength := len(deployedStorageRoot) + runBodyContribution
+	if got := deployedTempDirLength + 1 + 50; got > 108 {
+		t.Fatalf("deployed TMPDIR plus separator and 50-byte socket filename uses %d bytes, want at most 108 (storage-root-relative TMPDIR=%q)", got, relativeTempDir)
 	}
 	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
 		t.Fatalf("TMPDIR survived run-body exit: %v", err)

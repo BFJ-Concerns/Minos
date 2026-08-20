@@ -88,12 +88,13 @@ machine itself is the containment boundary.
    the vendored skill tree named by `MINOS_SKILLS_DIR` into both homes —
    `claude-code/` skills to `$HOME/.claude/skills` and `codex/` skills to
    `$HOME/.codex/skills` — so every spawned session finds the casting made for
-   its tool. Each run also gets a private disk-backed `TMPDIR` under its run
-   directory (the shared tmpfs `/tmp` cannot hold concurrent runs' test
-   artefacts), and Playwright browsers persist per repository through
-   `PLAYWRIGHT_BROWSERS_PATH` in the shared cache alongside sccache. The lead and Ensemble
-   workers therefore inherit both engines' configured authentication without an
-   interactive login. Gateway settings reach the Claude workers through the
+   its tool. Each run also gets a private disk-backed `TMPDIR` beneath the
+   storage root's `tmp/` directory, alongside `runs/` (the shared tmpfs `/tmp`
+   cannot hold concurrent runs' test artefacts), and Playwright browsers persist
+   per repository through `PLAYWRIGHT_BROWSERS_PATH` in the shared cache
+   alongside sccache. The lead and Ensemble workers therefore inherit both
+   engines' configured authentication without an interactive login. Gateway
+   settings reach the Claude workers through the
    same inherited environment; Codex continues to use its own `CODEX_HOME`
    authentication.
 
