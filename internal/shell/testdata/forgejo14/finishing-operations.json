@@ -3,7 +3,11 @@
   "merge": {
     "method": "POST",
     "path": "/api/v1/repos/{owner}/{repo}/pulls/{index}/merge",
-    "request": {"Do": "merge", "head_commit_id": "HEAD"},
+    "request": {
+      "Do": "merge",
+      "head_commit_id": "HEAD",
+      "delete_branch_after_merge": true
+    },
     "success_status": 200
   },
   "label_removal": {
@@ -15,7 +19,9 @@
   "reaction_removal": {
     "method": "DELETE",
     "path": "/api/v1/repos/{owner}/{repo}/issues/{index}/reactions",
-    "request": {"content": "eyes"},
+    "request": {
+      "content": "eyes"
+    },
     "success_status": 200
   },
   "branch_deletion": {

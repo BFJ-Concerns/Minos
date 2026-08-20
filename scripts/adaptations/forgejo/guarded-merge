@@ -33,7 +33,15 @@ if [ "$(printf '%s' "$guard_base_json" | jq -r '.user_can_merge // false')" != "
   exit 0
 fi
 
-payload="$(jq -nc --arg method "$method" --arg head "$head" '{Do:$method,head_commit_id:$head}')"
+# Forgejo deletes the source branch atomically with the merge and retargets
+# open stacked pull requests onto this pull request's base; a separate raw
+# branch deletion would close them instead. Fork branches are never deleted:
+# forge-side deletion is only requested for a same-repository head.
+delete_after_merge=false
+if printf '%s' "$guard_pr_json" | jq -e --arg repository "${owner}/${repo}" '.head.repo.full_name == $repository' >/dev/null; then
+  delete_after_merge=true
+fi
+payload="$(jq -nc --arg method "$method" --arg head "$head" --argjson delete "$delete_after_merge" '{Do:$method,head_commit_id:$head,delete_branch_after_merge:$delete}')"
 merge_http_status=transport-error
 merge_http_detail=""
 if api_with_status POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/merge" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1; then
