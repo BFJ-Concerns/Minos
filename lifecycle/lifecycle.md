@@ -460,9 +460,13 @@ takes the absorb judgement above.
    the head — use it in place of `$MINOS_HEAD_SHA` for every later command,
    including step 4's review input and any carried-result validation, which
    are bound to the exact head under review. A carried predecessor verdict
-   names the pre-repair head, so after a repair push it cannot match:
-   discard `carried-review-result.json` unread and run the review workflow
-   on the repaired head.
+   names the pre-repair head, so after a repair push it cannot match
+   exactly — but its findings judged this pull request's own diff, which
+   the repair extended rather than replaced. Demote it instead of
+   destroying it: `mv "$MINOS_RUN_DIR/carried-review-result.json"
+   "$MINOS_RUN_DIR/stale-review-result.json"`, and let step 4's
+   stale-carry branch decide whether it still drives a repair wave before
+   any fresh review.
 
    What verifies the repair depends on where the discipline was entered.
    Entered here — before any review — the repair needs no fresh-review
@@ -720,8 +724,8 @@ takes the absorb judgement above.
    it is, rather than absorbing repeated kills into further retries.
 
    Before the first review of a run — and only then; a run consuming a
-   carried result and every re-review after a fix wave go straight to the
-   input build below — run the engagement gate. Build its input:
+   carried or stale-carried result and every re-review after a fix wave go
+   straight to the input build below — run the engagement gate. Build its input:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-scope-inputs.mjs" \
@@ -775,15 +779,53 @@ takes the absorb judgement above.
 
    - **Carried result:** If
      `$MINOS_RUN_DIR/carried-review-result.json` exists, the service validated
-     it as a complete predecessor verdict for exactly `$MINOS_HEAD_SHA`.
-     Consume the one-time carry with this command:
+     it as a complete predecessor verdict for exactly the head it admitted.
+     Read its `reviewed.head`. When that value equals the current head, the
+     carry is exact. Consume the one-time carry with this command:
 
    ```sh
    mv "$MINOS_RUN_DIR/carried-review-result.json" \
      "$MINOS_RUN_DIR/review-result.json"
    ```
 
-     Do not invoke the review workflow for this first review.
+     Do not invoke the review workflow for this first review. When the
+     current head has instead moved past the verdict — setup pushed a fresh
+     reconciliation merge, or a gate repair landed — the carry is stale, not
+     worthless: demote it with `mv "$MINOS_RUN_DIR/carried-review-result.json"
+     "$MINOS_RUN_DIR/stale-review-result.json"` and take the stale-carry
+     branch.
+
+   - **Stale carry:** If there is no exact carry but
+     `$MINOS_RUN_DIR/stale-review-result.json` exists, it is a complete
+     predecessor verdict for an earlier head of this pull request, preserved
+     because its findings judged review work that a moved head rarely
+     invalidates. Read its `reviewed.head` and `reviewed.target`. Decide
+     from the workspace's own history whether the verdict still describes
+     the change under review: `git merge-base --is-ancestor REVIEWED_HEAD
+     CURRENT_HEAD` must hold, and every commit in
+     `REVIEWED_HEAD..CURRENT_HEAD` must be motion this pull request's own
+     runs made — setup's reconciliation merge and the target-side commits
+     arriving through it, or Minos-authored repair and fix-wave commits
+     pushed through the sanctioned publishers. Judge the range with `git
+     log` under the run-wide movement discipline; any foreign commit in the
+     range ends the reuse — discard the stale file and take the no-carried-
+     result branch.
+
+     A verdict that passes serves repair only, never publication or a
+     terminal stand. Use its path in place of `REVIEW_RESULT` for step 5's
+     digest, decision and action input. If your classification is
+     `working`, invoke the publication operation with the carried
+     declaration appended — `publish-before-fix FIX_ARGS HEAD TARGET
+     --carried-from REVIEWED_HEAD REVIEWED_TARGET` — which publishes the
+     sweep review bound to the current head and starts the dispatcher; the
+     post-wave build, tests and fresh whole review then re-enter step 5 on
+     the current head exactly as after any wave, and that fresh verdict —
+     never the stale one — is what every later stage and any terminal
+     classification stands on. If your classification is `terminal`, the
+     stale verdict cannot stand as this pull request's review at a head it
+     never judged: run the review workflow fresh instead (the no-carried-
+     result branch). In every outcome, remove the consumed stale file
+     before any fresh review so it cannot be consumed twice.
 
    - **No carried result:** From `$MINOS_WORKSPACE`, invoke the adjudication
      wrapper once and save its verdict:
