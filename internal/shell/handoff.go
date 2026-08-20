@@ -208,20 +208,25 @@ func containedRunDirectory(cfg ServiceConfig, unit, runDir string) (string, bool
 	return cleanRunDir, true
 }
 
-func adoptableReviewResult(path, head string) bool {
+func completeReviewResult(path string) (savedReviewResult, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return savedReviewResult{}, false
 	}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil || envelope == nil {
-		return false
+		return savedReviewResult{}, false
 	}
 	var result savedReviewResult
-	if err := json.Unmarshal(data, &result); err != nil || result.Status != "complete" || result.Reviewed.Head != head {
-		return false
+	if err := json.Unmarshal(data, &result); err != nil || result.Status != "complete" || result.Reviewed.Head == "" {
+		return savedReviewResult{}, false
 	}
-	return true
+	return result, true
+}
+
+func adoptableReviewResult(path, head string) bool {
+	result, ok := completeReviewResult(path)
+	return ok && result.Reviewed.Head == head
 }
 
 func containedPredecessorReviewResult(cfg ServiceConfig, unit, head string) string {

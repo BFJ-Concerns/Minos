@@ -400,24 +400,15 @@ func TestSpawnRunCarriesVerdictThroughSuccessiveRejectedHandoffs(t *testing.T) {
 	}
 }
 
-func TestSpawnRunRemovesStaleCarriedVerdictBeforeSuccessorLaunch(t *testing.T) {
-	for _, rejectedHandoff := range []bool{false, true} {
-		name := "accepted handoff"
-		if rejectedHandoff {
-			name = "rejected handoff"
-		}
-		t.Run(name, func(t *testing.T) {
+func TestSpawnRunDemotesHeadMismatchedVerdictsForAdoptedContinuation(t *testing.T) {
+	for _, source := range []string{"carried-review-result.json", "review-result.json"} {
+		t.Run(source, func(t *testing.T) {
 			cfg, facts, predecessor, systemdArgs := reviewContinuationFixture(t)
-			stale := filepath.Join(predecessor, "carried-review-result.json")
-			if err := os.WriteFile(stale, []byte(`{"status":"complete","reviewed":{"head":"old-head"}}`), 0o600); err != nil {
+			verdict := []byte(`{"status":"complete","reviewed":{"head":"old-head"},"findings":[]}`)
+			if err := os.WriteFile(filepath.Join(predecessor, source), verdict, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			handoff := writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
-			if rejectedHandoff {
-				if err := os.WriteFile(handoff, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
+			writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
 
 			stderr := captureStderr(t, func() {
 				if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
@@ -428,16 +419,78 @@ func TestSpawnRunRemovesStaleCarriedVerdictBeforeSuccessorLaunch(t *testing.T) {
 				t.Fatalf("stderr falsely reports stale carry adoption: %q", stderr)
 			}
 			successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
-			if !rejectedHandoff && successor != predecessor {
+			if successor != predecessor {
 				t.Fatalf("successor = %q, want adopted directory %q", successor, predecessor)
 			}
-			if _, err := os.Stat(stale); !os.IsNotExist(err) {
-				t.Fatalf("stale carry remains after admission or stat failed: %v", err)
+			preserved, err := os.ReadFile(filepath.Join(successor, staleReviewResultName))
+			if err != nil || string(preserved) != string(verdict) {
+				t.Fatalf("stale verdict = %s, err = %v; want preserved %s", preserved, err, verdict)
+			}
+			if _, err := os.Stat(filepath.Join(successor, source)); !os.IsNotExist(err) {
+				t.Fatalf("head-mismatched verdict still competes as %s: %v", source, err)
 			}
 			if _, err := os.Stat(filepath.Join(successor, "carried-review-result.json")); !os.IsNotExist(err) {
-				t.Fatalf("stale carry remains successor-visible or stat failed: %v", err)
+				t.Fatalf("head-mismatched verdict remains carried or stat failed: %v", err)
 			}
 		})
+	}
+}
+
+func TestSpawnRunPrefersExactVerdictOverLeftoverStaleCarry(t *testing.T) {
+	cfg, facts, predecessor, systemdArgs := reviewContinuationFixture(t)
+	if err := os.WriteFile(filepath.Join(predecessor, staleReviewResultName),
+		[]byte(`{"status":"complete","reviewed":{"head":"old-head"},"findings":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verdict := []byte(`{"status":"complete","reviewed":{"head":"head"},"findings":[]}`)
+	if err := os.WriteFile(filepath.Join(predecessor, "review-result.json"), verdict, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
+
+	stderr := captureStderr(t, func() {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stderr, "adopted completed review verdict") {
+		t.Fatalf("stderr does not report exact verdict adoption: %q", stderr)
+	}
+	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	carried, err := os.ReadFile(filepath.Join(successor, "carried-review-result.json"))
+	if err != nil || string(carried) != string(verdict) {
+		t.Fatalf("successor verdict = %s, err = %v; want %s", carried, err, verdict)
+	}
+	if _, err := os.Stat(filepath.Join(successor, staleReviewResultName)); !os.IsNotExist(err) {
+		t.Fatalf("superseded stale carry survives beside an exact one: %v", err)
+	}
+}
+
+func TestSpawnRunRemovesHeadMismatchedCarryWhenHandoffIsRejected(t *testing.T) {
+	cfg, facts, predecessor, systemdArgs := reviewContinuationFixture(t)
+	stale := filepath.Join(predecessor, "carried-review-result.json")
+	if err := os.WriteFile(stale, []byte(`{"status":"complete","reviewed":{"head":"old-head"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handoff := writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
+	if err := os.WriteFile(handoff, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr := captureStderr(t, func() {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(stderr, "adopted completed review verdict") {
+		t.Fatalf("stderr falsely reports stale carry adoption: %q", stderr)
+	}
+	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale carry remains after admission or stat failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(successor, "carried-review-result.json")); !os.IsNotExist(err) {
+		t.Fatalf("stale carry remains successor-visible or stat failed: %v", err)
 	}
 }
 

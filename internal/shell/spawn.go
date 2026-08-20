@@ -31,6 +31,24 @@ type SpawnResult struct {
 
 const runOwnerMarker = ".runwrap-owner"
 
+// staleReviewResultName preserves a complete predecessor verdict whose head no
+// longer matches the admitted one. The lead judges its reuse from the
+// workspace's history; an exact carry always supersedes it.
+const staleReviewResultName = "stale-review-result.json"
+
+func preserveStaleReviewResult(path, stalePath string) error {
+	if _, ok := completeReviewResult(path); ok {
+		if err := os.Rename(path, stalePath); err != nil {
+			return fmt.Errorf("preserve stale predecessor review result: %w", err)
+		}
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("discard untrusted predecessor review result: %w", err)
+	}
+	return nil
+}
+
 // runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Live runs
 // share it, so their ceilings can never together promise more memory than the
 // box has — the ceiling exists so that a ballooning run fails alone instead of
@@ -101,19 +119,25 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		}
 	}
 	if adopted {
+		staleResult := filepath.Join(runDir, staleReviewResultName)
 		carriedResult := filepath.Join(runDir, "carried-review-result.json")
 		if adoptableReviewResult(carriedResult, facts.HeadSHA) {
 			reviewResultPath = carriedResult
 			reviewResultAlreadyCarried = true
 		} else {
-			if err := os.Remove(carriedResult); err != nil && !os.IsNotExist(err) {
-				return SpawnResult{}, fmt.Errorf("discard untrusted predecessor review result: %w", err)
+			if err := preserveStaleReviewResult(carriedResult, staleResult); err != nil {
+				return SpawnResult{}, err
 			}
 			ordinaryResult := filepath.Join(runDir, "review-result.json")
 			if adoptableReviewResult(ordinaryResult, facts.HeadSHA) {
 				reviewResultPath = ordinaryResult
-			} else if err := os.Remove(ordinaryResult); err != nil && !os.IsNotExist(err) {
-				return SpawnResult{}, fmt.Errorf("discard untrusted predecessor review result: %w", err)
+			} else if err := preserveStaleReviewResult(ordinaryResult, staleResult); err != nil {
+				return SpawnResult{}, err
+			}
+		}
+		if reviewResultPath != "" {
+			if err := os.Remove(staleResult); err != nil && !os.IsNotExist(err) {
+				return SpawnResult{}, fmt.Errorf("discard superseded stale review result: %w", err)
 			}
 		}
 	} else if handoffRejected {

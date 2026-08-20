@@ -709,6 +709,82 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     assert.equal(events.filter((event) => event.startsWith("fix-dispatch-started:")).length, 1);
   });
 
+  await t.test("a carried verdict publishes at the current head and dispatches", async () => {
+    const carriedInput = input();
+    carriedInput.review.reviewed = { head: "1111111111", target: "2222222222" };
+    let publishedAt = null;
+    const result = await publishBeforeFix({
+      input: carriedInput,
+      head: HEAD,
+      target: TARGET,
+      carriedFrom: { head: "1111111111", target: "2222222222" },
+      minosBin,
+      launcher: "/unused/ensemble.mjs",
+      workflowScript: fixScriptPath,
+      runForge: async ({ head: forgeHead, target: forgeTarget }) => {
+        publishedAt = { head: forgeHead, target: forgeTarget };
+        return { code: 0, signal: null, stdout: '{"outcome":"applied"}\n', stderr: "" };
+      },
+      runDispatch: async () => ({
+        code: 0,
+        signal: null,
+        stdout: `${JSON.stringify({
+          status: "complete",
+          classification: "working",
+          integration: { commits: [], pushCount: 0 },
+        })}\n`,
+        stderr: "",
+      }),
+      diagnostics: () => {},
+    });
+    assert.equal(result.status, "complete");
+    assert.deepEqual(publishedAt, { head: HEAD, target: TARGET });
+  });
+
+  await t.test("a carried verdict that misdeclares its reviewed head starts no publication", async () => {
+    const carriedInput = input();
+    carriedInput.review.reviewed = { head: "1111111111", target: "2222222222" };
+    let forgeCalls = 0;
+    const result = await publishBeforeFix({
+      input: carriedInput,
+      head: HEAD,
+      target: TARGET,
+      carriedFrom: { head: "9999999999", target: "2222222222" },
+      minosBin,
+      launcher: "/unused/ensemble.mjs",
+      workflowScript: fixScriptPath,
+      runForge: async () => { forgeCalls += 1; throw new Error("must not publish"); },
+      runDispatch: async () => { throw new Error("must not dispatch"); },
+      diagnostics: () => {},
+    });
+    assert.equal(result.status, "incomplete");
+    assert.match(result.reason, /carried verdict does not match/);
+    assert.equal(forgeCalls, 0);
+  });
+
+  await t.test("a carried terminal preparation cannot stand as the round", async () => {
+    const carriedInput = input([finding({ severity: "Low" })]);
+    carriedInput.review.reviewed = { head: "1111111111", target: "2222222222" };
+    let forgeCalls = 0;
+    let dispatchCalls = 0;
+    const result = await publishBeforeFix({
+      input: carriedInput,
+      head: HEAD,
+      target: TARGET,
+      carriedFrom: { head: "1111111111", target: "2222222222" },
+      minosBin,
+      launcher: "/unused/ensemble.mjs",
+      workflowScript: fixScriptPath,
+      runForge: async () => { forgeCalls += 1; throw new Error("must not publish"); },
+      runDispatch: async () => { dispatchCalls += 1; throw new Error("must not dispatch"); },
+      diagnostics: () => {},
+    });
+    assert.equal(result.status, "incomplete");
+    assert.match(result.reason, /cannot stand as a terminal round/);
+    assert.equal(forgeCalls, 0);
+    assert.equal(dispatchCalls, 0);
+  });
+
   await t.test("terminal preparation refuses publication and dispatch", async () => {
     const events = [];
     let forgeCalls = 0;

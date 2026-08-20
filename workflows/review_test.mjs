@@ -805,6 +805,22 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   );
   assert.match(
     lifecycle,
+    /\*\*Stale carry:\*\*[\s\S]*complete\s+predecessor verdict for an earlier head[\s\S]*merge-base --is-ancestor[\s\S]*any foreign commit in the\s+range ends the reuse/,
+  );
+  assert.match(
+    lifecycle,
+    /serves repair only, never publication or a\s+terminal stand[\s\S]*--carried-from REVIEWED_HEAD REVIEWED_TARGET[\s\S]*fresh verdict —\s+never the stale one/,
+  );
+  assert.match(
+    lifecycle,
+    /classification is `terminal`, the\s+stale verdict cannot stand[\s\S]*run the review workflow fresh/,
+  );
+  assert.match(
+    lifecycle,
+    /repair push it cannot match\s+exactly[\s\S]*mv "\$MINOS_RUN_DIR\/carried-review-result\.json"\s+"\$MINOS_RUN_DIR\/stale-review-result\.json"/,
+  );
+  assert.match(
+    lifecycle,
     /\*\*No carried result:\*\*[\s\S]*invoke the adjudication[\s\S]*review\.js[\s\S]*> "\$MINOS_RUN_DIR\/review-result\.json"/,
   );
   assert.match(lifecycle, /invoke the adjudication\s+wrapper once and save its verdict:/);

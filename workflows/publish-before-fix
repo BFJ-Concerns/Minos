@@ -9,8 +9,14 @@ import { publishBeforeFix } from "./publish-before-fix.mjs";
 const [inputPath, head, target, ...extra] = process.argv.slice(2);
 let result;
 try {
-  if (!inputPath || !head || !target || extra.length > 0)
-    throw new Error("usage: publish-before-fix FIX_INPUT HEAD TARGET");
+  const usage = "usage: publish-before-fix FIX_INPUT HEAD TARGET [--carried-from REVIEWED_HEAD REVIEWED_TARGET]";
+  if (!inputPath || !head || !target) throw new Error(usage);
+  let carriedFrom = null;
+  if (extra.length > 0) {
+    if (extra.length !== 3 || extra[0] !== "--carried-from" || !extra[1] || !extra[2])
+      throw new Error(usage);
+    carriedFrom = { head: extra[1], target: extra[2] };
+  }
   if (!isAbsolute(inputPath)) throw new Error("fix input path must be absolute");
   const minosBin = process.env.MINOS_BIN;
   if (!minosBin) throw new Error("MINOS_BIN is required");
@@ -19,6 +25,7 @@ try {
     input: JSON.parse(readFileSync(inputPath, "utf8")),
     head,
     target,
+    carriedFrom,
     minosBin,
     launcher: process.env.MINOS_ENSEMBLE_LAUNCHER || "/opt/minos/runtime/ensemble.mjs",
     workflowScript: resolve(workflowsDir, "fix.js"),

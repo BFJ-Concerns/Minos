@@ -62,6 +62,7 @@ export async function publishBeforeFix({
   input,
   head,
   target,
+  carriedFrom = null,
   minosBin,
   launcher,
   workflowScript,
@@ -74,11 +75,22 @@ export async function publishBeforeFix({
 }) {
   const plan = prepareFixWave(input);
   if (plan.fingerprint) onEvent(`fix-plan-created:${plan.fingerprint}`);
-  if (plan.status !== "complete" || plan.classification === "terminal") return plan;
+  if (plan.status !== "complete") return plan;
+  if (plan.classification === "terminal") {
+    // A carried verdict judged an earlier head, so it may only drive repairs;
+    // standing as a terminal round would end the loop on a head it never saw.
+    if (carriedFrom)
+      return publicationFailure(plan, "a carried verdict cannot stand as a terminal round at a moved head");
+    return plan;
+  }
   if (plan.classification !== "working")
     return publicationFailure(plan, `publication-before-fix refuses ${String(plan.classification)} preparation`);
-  if (input.review.reviewed.head !== head || input.review.reviewed.target !== target)
+  if (carriedFrom) {
+    if (input.review.reviewed.head !== carriedFrom.head || input.review.reviewed.target !== carriedFrom.target)
+      return publicationFailure(plan, "carried verdict does not match the declared reviewed head and target");
+  } else if (input.review.reviewed.head !== head || input.review.reviewed.target !== target) {
     return publicationFailure(plan, "prepared wave does not match the requested head and target");
+  }
 
   const operationDir = mkdtempSync(join(tmpdir(), "minos-publication-before-fix-"));
   try {
