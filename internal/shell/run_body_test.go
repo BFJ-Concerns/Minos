@@ -77,7 +77,6 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		"GOMODCACHE":               filepath.Join(cacheDir, "go", "modules"),
 		"npm_config_cache":         filepath.Join(cacheDir, "node", "npm"),
 		"PLAYWRIGHT_BROWSERS_PATH": filepath.Join(cacheDir, "playwright", "browsers"),
-		"TMPDIR":                   filepath.Join(fixture.runDir, "tmp"),
 	} {
 		assertContainsFile(t, fixture.record+".worker-env", name+"="+path)
 		info, err := os.Stat(path)
@@ -87,6 +86,15 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		if !info.IsDir() || info.Mode().Perm() != 0o700 {
 			t.Fatalf("shared cache directory %s mode = %s, want directory 700", path, info.Mode())
 		}
+	}
+	tempDir := environmentValue(t, fixture.record+".worker-env", "TMPDIR")
+	if filepath.Dir(tempDir) != filepath.Join(fixture.root, "tmp") {
+		t.Fatalf("TMPDIR = %q, want child of disk-backed Minos temp root %q", tempDir, filepath.Join(fixture.root, "tmp"))
+	}
+	assertContainsFile(t, fixture.record+".worker-temp", "mode=700")
+	assertContainsFile(t, fixture.record+".worker-temp", "worker wrote temp")
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("TMPDIR survived run-body exit: %v", err)
 	}
 	assertContainsFile(
 		t,
@@ -161,6 +169,29 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	assertFileEmpty(t, fixture.failureLog)
 
 	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyExportsSocketSafeTempDirectoryForLongRunName(t *testing.T) {
+	fixture := newRunBodyFixtureWithShortRoot(t).withRun(
+		"minos-run-BFJ-Concerns-Gizmo-pr85-123456789",
+		"socket-safe-temp-record",
+	)
+	fixture.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+
+	tempDir := environmentValue(t, fixture.record+".worker-env", "TMPDIR")
+	relativeTempDir, err := filepath.Rel(fixture.root, tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const deployedStorageRoot = "/var/lib/minos"
+	runBodyContribution := 1 + len(relativeTempDir)
+	deployedTempDirLength := len(deployedStorageRoot) + runBodyContribution
+	if got := deployedTempDirLength + 1 + 50; got > 108 {
+		t.Fatalf("deployed TMPDIR plus separator and 50-byte socket filename uses %d bytes, want at most 108 (storage-root-relative TMPDIR=%q)", got, relativeTempDir)
+	}
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("TMPDIR survived run-body exit: %v", err)
+	}
 }
 
 func TestRunBodyUsesPublishedSetupMergeAsCurrentHead(t *testing.T) {
@@ -360,6 +391,16 @@ func TestRunBodyCreatesPersistentCacheSafelyForConcurrentRuns(t *testing.T) {
 	}
 	assertContainsFile(t, first.record+".setup", "setup invoked")
 	assertContainsFile(t, second.record+".setup", "setup invoked")
+	firstTemp := environmentValue(t, first.record+".worker-env", "TMPDIR")
+	secondTemp := environmentValue(t, second.record+".worker-env", "TMPDIR")
+	if firstTemp == secondTemp {
+		t.Fatalf("concurrent runs shared TMPDIR %q", firstTemp)
+	}
+	for _, tempDir := range []string{firstTemp, secondTemp} {
+		if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+			t.Fatalf("concurrent run TMPDIR survived exit: %s: %v", tempDir, err)
+		}
+	}
 }
 
 func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
@@ -1209,7 +1250,21 @@ type runBodyFixture struct {
 
 func newRunBodyFixture(t *testing.T) runBodyFixture {
 	t.Helper()
-	root := t.TempDir()
+	return newRunBodyFixtureAtRoot(t, t.TempDir())
+}
+
+func newRunBodyFixtureWithShortRoot(t *testing.T) runBodyFixture {
+	t.Helper()
+	root, err := os.MkdirTemp("", "minos.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	return newRunBodyFixtureAtRoot(t, root)
+}
+
+func newRunBodyFixtureAtRoot(t *testing.T, root string) runBodyFixture {
+	t.Helper()
 	fixture := runBodyFixture{
 		root: root, configRoot: filepath.Join(root, "config"),
 		runDir: filepath.Join(root, "runs", "run"), record: filepath.Join(root, "claude-record"),
@@ -1271,6 +1326,9 @@ record="${MINOS_TEST_RECORD:?}"
 env | sort >"$record.worker-env"
 printf 'worker wrote state\n' >"$XDG_STATE_HOME/worker-state"
 command -v minos-worker-probe >"$record.worker-tool"
+printf 'mode=%s\n' "$(stat -c '%a' "$TMPDIR")" >"$record.worker-temp"
+printf 'worker wrote temp\n' >"$TMPDIR/worker-temp"
+cat "$TMPDIR/worker-temp" >>"$record.worker-temp"
 `)
 	writeScript(t, fixture.claudeStub, `#!/usr/bin/env sh
 set -eu
