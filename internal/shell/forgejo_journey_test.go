@@ -1273,8 +1273,9 @@ func TestForgeTerminalCleanupWritesAreGuardedIdempotentAndReadBack(t *testing.T)
 	if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
 		t.Fatalf("reactions = %v, delete writes = %d", state.reactions, state.reactionDeleteWrites)
 	}
-	if state.mergeWrites != 1 || state.sourceBranchExists || state.branchDeleteWrites != 1 {
-		t.Fatalf("merge writes = %d, source exists = %t, branch deletes = %d", state.mergeWrites, state.sourceBranchExists, state.branchDeleteWrites)
+	if state.mergeWrites != 1 || state.sourceBranchExists || !state.branchDeletedByMerge || state.branchDeleteWrites != 0 {
+		t.Fatalf("merge writes = %d, source exists = %t, merge deleted = %t, raw branch deletes = %d",
+			state.mergeWrites, state.sourceBranchExists, state.branchDeletedByMerge, state.branchDeleteWrites)
 	}
 }
 
@@ -1324,6 +1325,132 @@ func TestForgePreservesForkSourceBranch(t *testing.T) {
 	defer state.mu.Unlock()
 	if !state.sourceBranchExists || state.branchDeleteWrites != 0 {
 		t.Fatalf("fork source exists = %t, delete writes = %d", state.sourceBranchExists, state.branchDeleteWrites)
+	}
+}
+
+func TestForgeMergeDeletesSameRepoBranchAndForgeRetargetsStackedChildren(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	stacked := stackedFixturePull(2, "journey-one", "journey-two")
+	state.setStackedChildren([]map[string]any{stacked})
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	if err := ForgeCommand(t.Context(), []string{"merge", state.headSHA(), state.targetSHA(), "merge"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.mergeWrites != 1 || state.sourceBranchExists || !state.branchDeletedByMerge {
+		t.Fatalf("merge writes = %d, source exists = %t, merge deleted = %t", state.mergeWrites, state.sourceBranchExists, state.branchDeletedByMerge)
+	}
+	if base := stacked["base"].(map[string]any)["ref"]; base != "main" || stacked["state"] != "open" {
+		t.Fatalf("stacked child base = %v, state = %v", base, stacked["state"])
+	}
+}
+
+func TestForgeMergePreservesForkSourceBranch(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["full_name"] = "contributor/subject"
+	})
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	if err := ForgeCommand(t.Context(), []string{"merge", state.headSHA(), state.targetSHA(), "merge"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.mergeWrites != 1 || !state.sourceBranchExists || state.branchDeletedByMerge {
+		t.Fatalf("merge writes = %d, source exists = %t, merge deleted = %t", state.mergeWrites, state.sourceBranchExists, state.branchDeletedByMerge)
+	}
+}
+
+func stackedFixturePull(number float64, baseRef, headRef string) map[string]any {
+	return map[string]any{
+		"number": number, "state": "open", "merged": false,
+		"base": map[string]any{"ref": baseRef, "repo": map[string]any{"full_name": "minos-e2e-owner/subject"}},
+		"head": map[string]any{"ref": headRef, "repo": map[string]any{"full_name": "minos-e2e-owner/subject"}},
+	}
+}
+
+func TestForgeDeleteSourceBranchRetargetsStackedChildrenBeforeDeletion(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["merged"] = true
+		pullRequest["state"] = "closed"
+	})
+	stacked := stackedFixturePull(2, "journey-one", "journey-two")
+	unrelated := stackedFixturePull(3, "main", "journey-three")
+	state.setStackedChildren([]map[string]any{stacked, unrelated})
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"delete-source-branch", state.headSHA(), state.targetSHA(), "journey-one"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("branch deletion attempt %d: %v", attempt+1, err)
+		}
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.sourceBranchExists || state.branchDeleteWrites != 1 {
+		t.Fatalf("source exists = %t, branch deletes = %d", state.sourceBranchExists, state.branchDeleteWrites)
+	}
+	if base := stacked["base"].(map[string]any)["ref"]; base != "main" || stacked["state"] != "open" {
+		t.Fatalf("stacked child base = %v, state = %v", base, stacked["state"])
+	}
+	if state.childRetargetWrites != 1 || state.childRetargetAfterDelete {
+		t.Fatalf("retarget writes = %d, after delete = %t", state.childRetargetWrites, state.childRetargetAfterDelete)
+	}
+	if base := unrelated["base"].(map[string]any)["ref"]; base != "main" {
+		t.Fatalf("unrelated pull base = %v", base)
+	}
+}
+
+func TestForgeDeleteSourceBranchRefusesWhenStackedChildRetargetFails(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["merged"] = true
+		pullRequest["state"] = "closed"
+	})
+	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "journey-one", "journey-two")})
+	state.mu.Lock()
+	state.childRetargetCode = http.StatusInternalServerError
+	state.mu.Unlock()
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	err := ForgeCommand(t.Context(), []string{"delete-source-branch", state.headSHA(), state.targetSHA(), "journey-one"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "uncertain") {
+		t.Fatalf("retarget failure error = %v", err)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.sourceBranchExists || state.branchDeleteWrites != 0 {
+		t.Fatalf("source exists = %t, branch deletes = %d", state.sourceBranchExists, state.branchDeleteWrites)
 	}
 }
 
@@ -1756,6 +1883,11 @@ type forgejoFixtureState struct {
 	mergeWrites              int
 	branchDeleteWrites       int
 	sourceBranchExists       bool
+	stackedChildren          []map[string]any
+	childRetargetWrites      int
+	childRetargetAfterDelete bool
+	childRetargetCode        int
+	branchDeletedByMerge     bool
 	statusWrites             int
 	statusPostRequests       []statusPostRequest
 	reviewWrites             int
@@ -1834,6 +1966,23 @@ func (s *forgejoFixtureState) service(t *testing.T) (ServiceConfig, RepoConfig, 
 		PR: pullRequestNumber, Occasion: "pr-opened",
 	}
 	return cfg, repo, facts
+}
+
+func (s *forgejoFixtureState) setStackedChildren(children []map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stackedChildren = children
+}
+
+// stackedChild resolves a request path to a fixture child pull request. The
+// caller already holds the fixture mutex.
+func (s *forgejoFixtureState) stackedChild(path string) map[string]any {
+	for _, child := range s.stackedChildren {
+		if path == fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/pulls/%v", child["number"]) {
+			return child
+		}
+	}
+	return nil
 }
 
 func (s *forgejoFixtureState) headSHA() string {
@@ -2023,10 +2172,30 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.annexeCloneURL})
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls":
-		writeFixtureJSON(s.t, w, []map[string]any{s.pullRequest})
+		writeFixtureJSON(s.t, w, append([]map[string]any{s.pullRequest}, s.stackedChildren...))
 	case r.Method == http.MethodGet && path == pullPath:
 		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		writeFixtureJSON(s.t, w, s.pullRequest)
+	case r.Method == http.MethodGet && s.stackedChild(path) != nil:
+		writeFixtureJSON(s.t, w, s.stackedChild(path))
+	case r.Method == http.MethodPatch && s.stackedChild(path) != nil:
+		if s.childRetargetCode != 0 {
+			http.Error(w, "retarget fixture failure", s.childRetargetCode)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		child := s.stackedChild(path)
+		if base, ok := payload["base"].(string); ok {
+			child["base"].(map[string]any)["ref"] = base
+		}
+		s.childRetargetWrites++
+		if !s.sourceBranchExists {
+			s.childRetargetAfterDelete = true
+		}
+		writeFixtureJSON(s.t, w, child)
 	case r.Method == http.MethodGet && path == issuePath+"/dependencies":
 		if s.dependencyCode != http.StatusOK {
 			http.Error(w, "dependency fixture failure", s.dependencyCode)
@@ -2098,6 +2267,18 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		s.pullRequest["merged"] = true
 		s.pullRequest["state"] = "closed"
 		s.mergeWrites++
+		if s.sourceBranchExists && payload["delete_branch_after_merge"] == true {
+			s.sourceBranchExists = false
+			s.branchDeletedByMerge = true
+			headRef := s.pullRequest["head"].(map[string]any)["ref"]
+			baseRef := s.pullRequest["base"].(map[string]any)["ref"]
+			for _, child := range s.stackedChildren {
+				base := child["base"].(map[string]any)
+				if child["state"] == "open" && base["ref"] == headRef {
+					base["ref"] = baseRef
+				}
+			}
+		}
 		writeFixtureJSON(s.t, w, map[string]any{})
 	case r.Method == http.MethodGet && strings.Contains(path, "/commits/") && strings.HasSuffix(path, "/statuses"):
 		commit := strings.TrimSuffix(strings.SplitN(path, "/commits/", 2)[1], "/statuses")

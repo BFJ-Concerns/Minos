@@ -1403,12 +1403,17 @@ takes the absorb judgement above.
    +1` before dispatching, and re-add it only when checks pass again.
    Select one of its
    `allowed_merge_methods` and call `"$MINOS_BIN" forge merge HEAD TARGET
-   METHOD`. The guarded merge binds the exact head and is idempotent. Then set
-   `merged`. For a non-empty, unprotected source branch whose `head_repository`
-   equals `target_repository`, call `"$MINOS_BIN" forge delete-source-branch
-   HEAD TARGET HEAD_BRANCH`; its merged-pull guard and read-back make repeat
-   deletion safe. Never try to delete a fork branch, a protected branch, or a
-   virtual pull ref. Finally remove 👀 with `"$MINOS_BIN" forge
+   METHOD`. The guarded merge binds the exact head and is idempotent; for a
+   same-repository source branch it asks the forge to delete the branch with
+   the merge itself, which also retargets any open pull requests stacked on
+   that branch onto this pull request's base. Then set `merged`. For a
+   non-empty, unprotected source branch whose `head_repository` equals
+   `target_repository`, call `"$MINOS_BIN" forge delete-source-branch HEAD
+   TARGET HEAD_BRANCH` as the backstop for a branch an earlier merge left
+   behind; it usually finds the branch already absent, its merged-pull guard
+   and read-back make repeat deletion safe, and it retargets stacked pull
+   requests itself before deleting. Never try to delete a fork branch, a
+   protected branch, or a virtual pull ref. Finally remove 👀 with `"$MINOS_BIN" forge
    reaction-remove HEAD TARGET eyes`, write the clean terminal marker, and
    stop. Merged, request-changes, clean-without-auto-merge, held,
    and every incomplete outcome the run reaches end 👀-absent;

@@ -99,6 +99,7 @@ func TestForgejo14FinishingOperationShapes(t *testing.T) {
 	if fixture.Source != "Forgejo v14.0.0 tagged OpenAPI" ||
 		fixture.Merge.Method != http.MethodPost || fixture.Merge.SuccessStatus != http.StatusOK ||
 		fixture.Merge.Request["Do"] != "merge" || fixture.Merge.Request["head_commit_id"] != "HEAD" ||
+		fixture.Merge.Request["delete_branch_after_merge"] != true ||
 		fixture.LabelRemoval.Method != http.MethodDelete || fixture.LabelRemoval.SuccessStatus != http.StatusNoContent ||
 		fixture.ReactionRemoval.Method != http.MethodDelete || fixture.ReactionRemoval.SuccessStatus != http.StatusOK ||
 		fixture.ReactionRemoval.Request["content"] != "eyes" ||

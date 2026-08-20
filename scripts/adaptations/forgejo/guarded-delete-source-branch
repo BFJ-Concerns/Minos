@@ -47,6 +47,47 @@ if [ "$(printf '%s' "$api_status_body" | jq -r '.protected // false')" = "true" 
   exit 0
 fi
 
+# A raw branch deletion makes Forgejo close every open pull request based on
+# the doomed branch. Retarget those stacked children first to the merged pull
+# request's own base — the destination Forgejo's delete_branch_after_merge
+# would give them — and refuse to delete while any retarget is unconfirmed.
+merged_base="$(printf '%s' "$guard_pr_json" | jq -r '.base.ref // ""')"
+if [ -z "$merged_base" ]; then
+  write_result uncertain "merged pull request base branch could not be read"
+  exit 0
+fi
+page=1
+previous_page=""
+stacked_children=""
+while :; do
+  if ! open_page="$(api GET "/api/v1/repos/${owner}/${repo}/pulls?state=open&page=${page}&limit=50")"; then
+    write_result uncertain "open pull requests could not be listed before branch deletion"
+    exit 0
+  fi
+  if [ "$(printf '%s' "$open_page" | jq -r 'length')" = "0" ] || repeats_previous_page "$open_page" "$previous_page"; then
+    break
+  fi
+  stacked_children="${stacked_children}
+$(printf '%s' "$open_page" | jq -r --arg repository "${owner}/${repo}" --arg branch "$branch" '
+  .[] | select(
+    .base.repo.full_name == $repository and .base.ref == $branch and
+    .state == "open" and ((.merged // false) | not)
+  ) | .number')"
+  previous_page="$open_page"
+  page=$((page + 1))
+done
+stacked_children="$(printf '%s\n' "$stacked_children" | sort -u)"
+for child in $stacked_children; do
+  api PATCH "/api/v1/repos/${owner}/${repo}/pulls/${child}" \
+    -H "Content-Type: application/json" \
+    --data "$(jq -nc --arg base "$merged_base" '{base:$base}')" >/dev/null 2>&1 || true
+  if ! child_json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${child}" 2>/dev/null)" ||
+    ! printf '%s' "$child_json" | jq -e --arg base "$merged_base" '.base.ref == $base' >/dev/null; then
+    write_result uncertain "stacked pull request #${child} could not be retargeted before branch deletion"
+    exit 0
+  fi
+done
+
 api DELETE "$branch_path" >/dev/null 2>&1 || true
 if ! api_with_status GET "$branch_path"; then
   write_result uncertain "source branch deletion could not be confirmed"
