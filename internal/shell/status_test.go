@@ -65,6 +65,10 @@ func TestStatusReportsLiveRunIdentityStageAndTimings(t *testing.T) {
 	writeStatusFile(t, filepath.Join(runDir, "setup-args.json"), "{}")
 	writeStatusFile(t, filepath.Join(runDir, "setup-result.done"), "0\n")
 	writeStatusFile(t, filepath.Join(runDir, "setup-result.json"), `{"verdict":"ready"}`)
+	// A foreground dispatch publishes its result but no completion flag; the
+	// result alone settles it as passed.
+	writeStatusFile(t, filepath.Join(runDir, "fix-args.json"), "{}")
+	writeStatusFile(t, filepath.Join(runDir, "fix-result.json"), `{"applied":1}`)
 	writeStatusFile(t, filepath.Join(runDir, "test-command-output.log"), "suite output\n")
 	writeStatusFile(t, filepath.Join(runDir, "test-exit"), "1\n")
 	writeStatusFile(t, filepath.Join(runDir, "gate-repair-args.json"), "{}")
@@ -104,6 +108,9 @@ func TestStatusReportsLiveRunIdentityStageAndTimings(t *testing.T) {
 	}
 	if states["setup"] != stagePassed || states["test"] != stageFailed || states["gate-repair"] != stageRunning {
 		t.Fatalf("stage states = %v, want setup passed, test failed, gate-repair running", states)
+	}
+	if states["fix"] != stagePassed {
+		t.Fatalf("stage states = %v, want an unflagged dispatch with a result counted as passed", states)
 	}
 	if len(document.Repos) != 1 || document.Repos[0].Repo != "Relay" {
 		t.Fatalf("repos = %v, want the configured repository", document.Repos)

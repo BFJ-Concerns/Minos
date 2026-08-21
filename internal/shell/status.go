@@ -309,16 +309,17 @@ func dispatchStages(runDir string) []statusStage {
 	for _, match := range matches {
 		name := strings.TrimSuffix(filepath.Base(match), dispatchArgsSuffix)
 		stage := statusStage{Name: name, State: stageRunning, StartedAt: fileModifiedTime(match)}
-		// The flag is written after the command exits, whatever became of
-		// it; the result file appears only on a clean exit. A flag with no
-		// result beside it is therefore a stage that ran and failed.
-		flag := filepath.Join(runDir, name+"-result.done")
-		if ended := fileModifiedTime(flag); ended != "" {
+		// The result file is published only on a clean exit, so its presence
+		// settles the stage on its own. The completion flag is written
+		// whatever became of the command, but only a dispatch waited on in
+		// the background carries one — so a flag standing alone is a stage
+		// that ran and failed, while neither file means it is still going.
+		if ended := fileModifiedTime(filepath.Join(runDir, name+"-result.json")); ended != "" {
+			stage.EndedAt = ended
+			stage.State = stagePassed
+		} else if ended := fileModifiedTime(filepath.Join(runDir, name+"-result.done")); ended != "" {
 			stage.EndedAt = ended
 			stage.State = stageFailed
-			if _, err := os.Stat(filepath.Join(runDir, name+"-result.json")); err == nil {
-				stage.State = stagePassed
-			}
 		}
 		stages = append(stages, stage)
 	}
