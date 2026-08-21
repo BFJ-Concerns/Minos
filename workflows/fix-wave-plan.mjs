@@ -257,9 +257,21 @@ export function prepareFixWave(input) {
   const decision = input.decision;
 
   if (decision.classification === "terminal") {
-    const overflow = findings.filter((finding) =>
-      !atOrAboveThreshold(finding, threshold) && !isPriorUnfixed(finding));
-    const requestChanges = [...priorUnfixed];
+    // A confirmed-unfixed finding blocks only when its severity holds the
+    // threshold; a sub-threshold finding whose repairs failed rides the
+    // overflow filing like any other sub-threshold finding, rather than
+    // hardening into a request-changes hold it could never have earned on
+    // severity alone. An entry whose severity is unreadable blocks — fail
+    // closed rather than silently waving through an unknown.
+    const unfixedBelowThreshold = priorUnfixed.filter((entry) =>
+      entry.finding && Object.hasOwn(SEVERITY, entry.finding.severity) &&
+      !atOrAboveThreshold(entry.finding, threshold));
+    const overflow = [
+      ...unfixedBelowThreshold.map((entry) => ({ ...entry.finding, kind: "fix-attempts-failed" })),
+      ...findings.filter((finding) =>
+        !atOrAboveThreshold(finding, threshold) && !isPriorUnfixed(finding)),
+    ];
+    const requestChanges = priorUnfixed.filter((entry) => !unfixedBelowThreshold.includes(entry));
     // Judgement may stop the loop with above-threshold findings still on the
     // table (or the maximum-rounds ceiling may force it to); either way those
     // findings are published as request-changes material, never dropped.
@@ -283,11 +295,18 @@ export function prepareFixWave(input) {
         comments: requestChanges.map((entry) => findingComment(entry.finding)),
       } : null,
       integration: { commits: [], pushCount: 0 },
-      confirmedUnfixed: requestChanges,
+      // The loop record stays truthful: sub-threshold unfixed entries remain
+      // confirmed-unfixed even though only the blocking subset is published
+      // as request-changes.
+      confirmedUnfixed: [...requestChanges, ...unfixedBelowThreshold],
       overflow,
       requestChanges,
       rerunReview: false,
-      runRecord: { round, confirmedFixed: priorFixed, confirmedUnfixed: requestChanges },
+      runRecord: {
+        round,
+        confirmedFixed: priorFixed,
+        confirmedUnfixed: [...requestChanges, ...unfixedBelowThreshold],
+      },
     });
   }
 

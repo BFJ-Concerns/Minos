@@ -420,6 +420,32 @@ test("a lead grouping cannot redispatch a twice-failed finding across a round bo
   assert.equal(terminal.calls.length, 0);
 });
 
+test("a twice-failed sub-threshold finding overflows at terminal instead of blocking", async () => {
+  const high = finding("unsafe transition", "High", "internal/state.go", 41);
+  const medium = finding("stranded cleanup", "Medium", "internal/cleanup.go", 12);
+  const first = await run(args([high, medium]), (label, prompt) => {
+    const assigned = assignedFindings(prompt);
+    const fixes = assigned.map((item) => item.severity === "High"
+      ? { findingKey: item.key, status: "fixed", writeUp: `Repaired ${item.title}.` }
+      : { findingKey: item.key, status: "failed", writeUp: "could not repair it" });
+    return { commit: fixes.some((fix) => fix.status === "fixed") ? `${label}-commit` : "", fixes };
+  });
+  assert.equal(first.result.classification, "working");
+  assert.equal(first.result.confirmedUnfixed.length, 1);
+  assert.equal(first.result.confirmedUnfixed[0].attempts, 2);
+
+  const terminal = await run(args([medium], { runRecord: first.result.runRecord }));
+  assert.equal(terminal.result.classification, "terminal");
+  assert.equal(terminal.result.requestChanges.length, 0);
+  assert.equal(terminal.result.requestChangesReview, null);
+  assert.equal(terminal.result.overflow.length, 1);
+  assert.equal(terminal.result.overflow[0].kind, "fix-attempts-failed");
+  assert.equal(terminal.result.overflow[0].title, medium.title);
+  assert.equal(terminal.result.runRecord.confirmedUnfixed.length, 1);
+  assert.equal(terminal.result.runRecord.confirmedUnfixed[0].attempts, 2);
+  assert.equal(terminal.calls.length, 0);
+});
+
 test("confirmed-unfixed identity drift stays suppressed across round-boundary planning", async () => {
   const original = finding("transition corrupts state", "High", "internal/state.go", 41);
   original.explanation = "The transition stores the new state before validation completes.";
