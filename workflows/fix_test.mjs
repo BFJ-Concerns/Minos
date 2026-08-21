@@ -198,7 +198,7 @@ test("default dispatch keeps every finding whole and carries purpose scope witho
     assert.doesNotMatch(call.prompt, /Assigned files|Stay within/i);
     assert.match(
       call.prompt,
-      /Delivery geometry[\s\S]*applies to that branch's own tree[\s\S]*solely on\s+the target side[\s\S]*cannot be\s+delivered through this pull request[\s\S]*report that finding as failed[\s\S]*Do\s+not author the fix anyway[\s\S]*not\s+existing[\s\S]*delivery path that is\s+absent/,
+      /Delivery geometry[\s\S]*applies to files that branch carries[\s\S]*tracked at\s+the head SHA being reviewed[\s\S]*published reconciliation merge[\s\S]*deliverable like any other[\s\S]*not tracked at the reviewed head[\s\S]*cannot be\s+delivered through this pull request[\s\S]*report that finding as failed[\s\S]*Do\s+not author the fix anyway[\s\S]*not\s+existing[\s\S]*delivery path that is\s+absent/,
     );
   }
 });
