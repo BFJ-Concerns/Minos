@@ -83,7 +83,11 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err := sweepRunResidue(ctx, cfg, factsByUnit); err != nil {
 		log.Printf("sweep run residue: %v", err)
 	}
-	candidates = orderSweepCandidates(candidates)
+	activeUnits, err := activeRunUnitNames(ctx)
+	if err != nil {
+		log.Printf("inspect active runs for candidate ordering: %v", err)
+	}
+	candidates = orderSweepCandidates(candidates, activeUnits)
 	for _, candidate := range candidates {
 		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
 		if err != nil {
@@ -110,7 +114,13 @@ func SweepCommand(ctx context.Context, args []string) error {
 // single pass while later-configured repos starve. Each repo's own queue runs
 // oldest pull request first: age is served in creation order, and a stuck head
 // can only delay its own repo's lane, never the fleet.
-func orderSweepCandidates(candidates []sweepCandidate) []sweepCandidate {
+//
+// The rotation alone is not enough: slots usually free between passes, not
+// mid-pass, and a rotation that restarts from the same repo every pass hands
+// each freed slot to that repo again. activeUnits carries the live run units,
+// and repos already holding slots yield the lane to repos holding fewer, so
+// service alternates across passes instead of draining one repo's queue first.
+func orderSweepCandidates(candidates []sweepCandidate, activeUnits []string) []sweepCandidate {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return pullRequestNumber(candidates[i].facts) < pullRequestNumber(candidates[j].facts)
 	})
@@ -123,10 +133,31 @@ func orderSweepCandidates(candidates []sweepCandidate) []sweepCandidate {
 		for end < len(candidates) && candidates[end].priority == candidates[start].priority {
 			end++
 		}
-		ordered = append(ordered, interleaveByRepo(candidates[start:end])...)
+		ordered = append(ordered, interleaveByRepo(candidates[start:end], activeUnits)...)
 		start = end
 	}
 	return ordered
+}
+
+// repoRunCounts counts the live run units each candidate repo holds, matched
+// by the same sanitised unit-name prefix SpawnRun claims them under.
+func repoRunCounts(candidates []sweepCandidate, activeUnits []string) map[string]int {
+	counts := make(map[string]int)
+	for _, candidate := range candidates {
+		slug := candidate.facts.RepoSlug()
+		if _, seen := counts[slug]; seen {
+			continue
+		}
+		counts[slug] = 0
+		prefix := unitSafe.ReplaceAllString(
+			fmt.Sprintf("minos-run-%s-%s-pr", candidate.facts.Owner, candidate.facts.Repo), "-")
+		for _, unit := range activeUnits {
+			if strings.HasPrefix(unit, prefix) {
+				counts[slug]++
+			}
+		}
+	}
+	return counts
 }
 
 func pullRequestNumber(facts Facts) int64 {
@@ -134,7 +165,7 @@ func pullRequestNumber(facts Facts) int64 {
 	return number
 }
 
-func interleaveByRepo(candidates []sweepCandidate) []sweepCandidate {
+func interleaveByRepo(candidates []sweepCandidate, activeUnits []string) []sweepCandidate {
 	queues := make(map[string][]sweepCandidate)
 	var repoOrder []string
 	for _, candidate := range candidates {
@@ -144,6 +175,10 @@ func interleaveByRepo(candidates []sweepCandidate) []sweepCandidate {
 		}
 		queues[slug] = append(queues[slug], candidate)
 	}
+	counts := repoRunCounts(candidates, activeUnits)
+	sort.SliceStable(repoOrder, func(i, j int) bool {
+		return counts[repoOrder[i]] < counts[repoOrder[j]]
+	})
 	interleaved := make([]sweepCandidate, 0, len(candidates))
 	for len(interleaved) < len(candidates) {
 		for _, slug := range repoOrder {
