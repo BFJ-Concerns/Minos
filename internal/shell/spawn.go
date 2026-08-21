@@ -49,21 +49,22 @@ func preserveStaleReviewResult(path, stalePath string) error {
 	return nil
 }
 
-// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Every
-// run's hard ceiling is the whole envelope, so a lone run may use all of it;
-// what keeps concurrent runs from starving each other is each run's soft
-// share (MemoryHigh), which reclaims and throttles a run growing past its
-// fraction instead of killing it. The kernel kill only fires when a run
-// exceeds the envelope itself, and the receiver and sweep live outside the
-// envelope either way.
+// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Runs
+// share it live inside runsSliceName rather than by static division: the
+// slice unit (deploy/systemd/user/minos-runs.slice) holds MemoryHigh just
+// under the envelope and MemoryMax at it, so no run feels any pressure until
+// the runs *together* approach the envelope, reclaim then pushes them back,
+// and only combined demand the envelope cannot hold kills — the kernel picks
+// the biggest consumer, which is the ballooning run's compiler or worker.
+// Each run also carries its own MemoryMax at the whole envelope as the
+// backstop for a box where the slice unit is not installed, keeping the
+// receiver and sweep (outside the slice) safe either way.
 const runMemoryEnvelopeGiB = 20
+
+const runsSliceName = "minos-runs.slice"
 
 func runMemoryMax() string {
 	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB)
-}
-
-func runMemoryHigh(cfg ServiceConfig) string {
-	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB/cfg.MaxConcurrentRuns())
 }
 
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext) (SpawnResult, error) {
@@ -241,6 +242,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"ENSEMBLE_CONCURRENCY_CLAUDE":   strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
 		"ENSEMBLE_CONCURRENCY_CODEX":    strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
 	}
+	if cfg.Ensemble.AgentCeiling > 0 {
+		env["ENSEMBLE_AGENT_CEILING"] = strconv.Itoa(cfg.Ensemble.AgentCeiling)
+	}
 	if handoff != nil && handoff.Progress != nil {
 		progress, marshalErr := json.Marshal(handoff.Progress)
 		if marshalErr != nil {
@@ -262,7 +266,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
 		"--property=RuntimeMaxSec=12h",
-		"--property=MemoryHigh=" + runMemoryHigh(cfg),
+		"--slice=" + runsSliceName,
 		"--property=MemoryMax=" + runMemoryMax(),
 	}
 	for key, value := range env {

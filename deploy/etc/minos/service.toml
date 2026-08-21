@@ -22,3 +22,6 @@ max-concurrent = 2
 [ensemble]
 concurrency-claude = 10
 concurrency-codex = 6
+# Caps a workflow's live agents across both engines together; unset leaves
+# the runtime's default.
+agent-ceiling = 12
