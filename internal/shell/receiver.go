@@ -23,14 +23,33 @@ func ReceiveCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	log.Printf("minos receiver listening on %s", cfg.Listener.Bind)
+	return http.ListenAndServe(cfg.Listener.Bind, receiverRoutes(ctx, cfg))
+}
+
+// receiverRoutes mounts the listener's surface. The status projection is
+// mounted only when a token file is configured for it, so a deployment that
+// has not been given one serves the webhook route alone.
+func receiverRoutes(ctx context.Context, cfg ServiceConfig) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hooks/", func(w http.ResponseWriter, r *http.Request) {
 		if err := handleHook(ctx, cfg, w, r); err != nil {
 			log.Printf("hook failed: %v", err)
 		}
 	})
-	log.Printf("minos receiver listening on %s", cfg.Listener.Bind)
-	return http.ListenAndServe(cfg.Listener.Bind, mux)
+	if cfg.Listener.StatusTokenFile != "" {
+		mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+			if err := handleStatus(ctx, cfg, w, r); err != nil {
+				log.Printf("status failed: %v", err)
+			}
+		})
+		mux.HandleFunc("/runs/recent", func(w http.ResponseWriter, r *http.Request) {
+			if err := handleRecentRuns(ctx, cfg, w, r); err != nil {
+				log.Printf("recent runs failed: %v", err)
+			}
+		})
+	}
+	return mux
 }
 
 func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r *http.Request) error {

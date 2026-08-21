@@ -1,0 +1,64 @@
+#!/usr/bin/env sh
+# List the timing sidecars archive-run has delivered since a cutoff, newest
+# first, as one line per record: the sidecar's filename, a tab, and its
+# contents base64-encoded.
+#
+# The encoding is what makes the framing unambiguous — a timing record is
+# pretty-printed JSON spanning many lines, and an agent's label or model is
+# free text, so no plain delimiter can be trusted not to appear inside one.
+#
+# Archive names begin with a UTC timestamp in ISO basic form, which sorts
+# lexically in time order, so the cutoff is compared as a string and no date
+# arithmetic is needed on the far side.
+set -eu
+
+cutoff="${1:-}"
+limit="${2:-60}"
+config="${MINOS_ARCHIVE_CONFIG:-/etc/minos/archive.env}"
+
+fail() {
+  printf 'minos: could not list archived timing records: %s\n' "$1" >&2
+  exit 1
+}
+
+[ -n "$cutoff" ] || fail "no cutoff given"
+[ -r "$config" ] || fail "archive configuration is unreadable"
+
+set -a
+# shellcheck source=/dev/null
+. "$config" 2>/dev/null || fail "archive configuration could not be read"
+set +a
+
+[ -n "${MINOS_ARCHIVE_HOST:-}" ] || fail "no archive host configured"
+[ -n "${MINOS_ARCHIVE_DESTINATION:-}" ] || fail "no archive destination configured"
+[ -r "${MINOS_ARCHIVE_IDENTITY_FILE:-}" ] || fail "archive identity is unreadable"
+[ -r "${MINOS_ARCHIVE_KNOWN_HOSTS:-}" ] || fail "archive known-hosts file is unreadable"
+
+# The destination and cutoff are interpolated into a single-quoted remote
+# command, so a quote or newline in either would break out of it.
+case "$MINOS_ARCHIVE_DESTINATION$cutoff$limit" in
+  *"'"* | *'
+'*) fail "archive destination, cutoff or limit contains a quote or newline" ;;
+esac
+case "$cutoff$limit" in
+  *[!0-9A-Za-z]*) fail "cutoff and limit must be alphanumeric" ;;
+esac
+
+ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
+  -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \
+  -o IdentitiesOnly=yes -o "IdentityFile=$MINOS_ARCHIVE_IDENTITY_FILE" \
+  -o "UserKnownHostsFile=$MINOS_ARCHIVE_KNOWN_HOSTS" \
+  "$MINOS_ARCHIVE_HOST" "
+cd '$MINOS_ARCHIVE_DESTINATION' || exit 1
+ls -1 2>/dev/null |
+  grep -e '\.timings\.json\$' |
+  awk -v cutoff='$cutoff' '\$0 >= cutoff' |
+  sort -r |
+  head -n '$limit' |
+  while IFS= read -r sidecar; do
+    [ -f \"\$sidecar\" ] || continue
+    printf '%s\t' \"\$sidecar\"
+    base64 -w0 <\"\$sidecar\" 2>/dev/null || base64 <\"\$sidecar\" | tr -d '\n'
+    printf '\n'
+  done
+" || fail "the archive host could not be reached"
