@@ -36,19 +36,27 @@ func SweepCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	var candidates []sweepCandidate
+	// One unreadable repo must not stop the pass: the rest of the fleet is
+	// swept, and only a total outage fails the unit.
+	var attempted, unreadable int
 	for _, repo := range repos {
 		forgeConfig, ok := cfg.Forges[repo.Forge]
 		if !ok {
 			log.Printf("repo %s/%s: unknown forge %s", repo.Owner, repo.Repo, repo.Forge)
 			continue
 		}
+		attempted++
 		adaptation, err := NewAdaptation(forgeConfig)
 		if err != nil {
-			return err
+			unreadable++
+			log.Printf("attention: repo %s/%s skipped this pass: %v", repo.Owner, repo.Repo, err)
+			continue
 		}
 		pullRequests, err := adaptation.ListOpenPRs(ctx, repo.Forge, repo.Owner, repo.Repo)
 		if err != nil {
-			return err
+			unreadable++
+			log.Printf("attention: repo %s/%s skipped this pass: %v", repo.Owner, repo.Repo, err)
+			continue
 		}
 		for _, facts := range pullRequests {
 			priority := 1
@@ -67,9 +75,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err := sweepRunResidue(ctx, cfg, factsByUnit); err != nil {
 		log.Printf("sweep run residue: %v", err)
 	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].priority < candidates[j].priority
-	})
+	candidates = orderSweepCandidates(candidates)
 	for _, candidate := range candidates {
 		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
 		if err != nil {
@@ -83,7 +89,52 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err := expireInactiveRunHandoffs(ctx, cfg, repos); err != nil {
 		log.Printf("expire inactive run handoffs: %v", err)
 	}
+	if attempted > 0 && unreadable == attempted {
+		return fmt.Errorf("every configured repo (%d) was unreadable this pass", attempted)
+	}
 	return nil
+}
+
+// orderSweepCandidates keeps continuation priority absolute, then within each
+// priority class takes one candidate per repo in turn, so a repo with a steady
+// stream of actionable pull requests cannot claim every free run slot in a
+// single pass while later-configured repos starve.
+func orderSweepCandidates(candidates []sweepCandidate) []sweepCandidate {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].priority < candidates[j].priority
+	})
+	ordered := make([]sweepCandidate, 0, len(candidates))
+	for start := 0; start < len(candidates); {
+		end := start
+		for end < len(candidates) && candidates[end].priority == candidates[start].priority {
+			end++
+		}
+		ordered = append(ordered, interleaveByRepo(candidates[start:end])...)
+		start = end
+	}
+	return ordered
+}
+
+func interleaveByRepo(candidates []sweepCandidate) []sweepCandidate {
+	queues := make(map[string][]sweepCandidate)
+	var repoOrder []string
+	for _, candidate := range candidates {
+		slug := candidate.facts.RepoSlug()
+		if _, seen := queues[slug]; !seen {
+			repoOrder = append(repoOrder, slug)
+		}
+		queues[slug] = append(queues[slug], candidate)
+	}
+	interleaved := make([]sweepCandidate, 0, len(candidates))
+	for len(interleaved) < len(candidates) {
+		for _, slug := range repoOrder {
+			if queue := queues[slug]; len(queue) > 0 {
+				interleaved = append(interleaved, queue[0])
+				queues[slug] = queue[1:]
+			}
+		}
+	}
+	return interleaved
 }
 
 func expireInactiveRunHandoffs(ctx context.Context, cfg ServiceConfig, repos []RepoConfig) error {
