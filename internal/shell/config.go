@@ -28,6 +28,11 @@ type ServiceConfig struct {
 	} `toml:"service"`
 	Listener struct {
 		Bind string `toml:"bind"`
+		// StatusTokenFile holds the bearer token a caller must present to
+		// read the run status projection. Unset leaves the status route
+		// unmounted, so a deployment gains the surface only once the
+		// operator has installed a token for it.
+		StatusTokenFile string `toml:"status-token-file"`
 	} `toml:"listener"`
 	Forges map[string]ForgeConfig `toml:"forges"`
 	Runs   struct {
@@ -36,7 +41,11 @@ type ServiceConfig struct {
 		FailuresRepo           string `toml:"failures-repo"`
 		FailuresCredentialFile string `toml:"failures-credential-file"`
 		ArchiveCommand         string `toml:"archive-command"`
-		MaxConcurrent          int    `toml:"max-concurrent"`
+		// TimingsCommand assembles a run's timing record from the residue
+		// the run has already written. Archiving invokes it at the end of a
+		// run; the status projection invokes it mid-run for the same record.
+		TimingsCommand string `toml:"timings-command"`
+		MaxConcurrent  int    `toml:"max-concurrent"`
 	} `toml:"runs"`
 	Ensemble struct {
 		ConcurrencyClaude int `toml:"concurrency-claude"`
