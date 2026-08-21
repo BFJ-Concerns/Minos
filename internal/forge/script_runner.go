@@ -16,6 +16,10 @@ type ScriptRunner struct {
 	Directory  string
 	APIBase    string
 	Credential string
+	// EnvStamp identifies the run environment (binary and run-body
+	// environment); held statuses bind to it so a Minos deploy can spend
+	// holds whose blocking cause was environmental.
+	EnvStamp string
 }
 
 func (r ScriptRunner) Run(ctx context.Context, request RunRequest) ([]byte, error) {
@@ -31,6 +35,7 @@ func (r ScriptRunner) Run(ctx context.Context, request RunRequest) ([]byte, erro
 	cmd.Env = append(os.Environ(),
 		"MINOS_API_BASE="+r.APIBase,
 		"MINOS_FORGE_TOKEN="+r.Credential,
+		"MINOS_ENV_STAMP="+r.EnvStamp,
 	)
 	for key, value := range request.Env {
 		cmd.Env = append(cmd.Env, key+"="+value)

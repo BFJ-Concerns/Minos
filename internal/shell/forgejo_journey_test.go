@@ -648,7 +648,7 @@ func TestForgejoAdmissionCarriesReleasedHoldContextIntoSpawn(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			heldHead := state.headSHA()
-			state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, heldHead, "earlier-target")})
+			state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, heldHead, "earlier-target", "")})
 			if test.comment != "" {
 				state.setIssueComments([]map[string]any{{"id": float64(9), "body": test.comment, "user": map[string]any{"login": "Minos"}}})
 			}
@@ -700,11 +700,12 @@ func TestForgejoAdmissionCarriesReleasedHoldContextIntoSpawn(t *testing.T) {
 
 func TestForgejoCurrentTargetHoldIsNotAReleasedHold(t *testing.T) {
 	state := newForgejoFixtureState(t)
-	state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, state.headSHA(), state.targetSHA())})
+	cfg, _, facts := state.service(t)
+	stamp := currentEnvironmentStamp(cfg)
+	state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, state.headSHA(), state.targetSHA(), stamp)})
 	state.setIssueComments([]map[string]any{{
 		"id": float64(9), "body": "Held at: finishing\nTarget tests fail.", "user": map[string]any{"login": "Minos"},
 	}})
-	cfg, _, facts := state.service(t)
 	adapter, snapshot, err := currentForgeSnapshot(t.Context(), cfg, facts)
 	if err != nil {
 		t.Fatal(err)
@@ -713,9 +714,40 @@ func TestForgejoCurrentTargetHoldIsNotAReleasedHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	context := releasedHoldContext(t.Context(), adapter, snapshot, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, 1, cfg.Service.BotLogin, commits)
+	context := releasedHoldContext(t.Context(), adapter, snapshot, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, 1, cfg.Service.BotLogin, commits, stamp)
 	if context != (AdmissionContext{}) {
 		t.Fatalf("released hold context = %#v, want empty", context)
+	}
+}
+
+func TestForgejoStaleEnvironmentHoldIsAReleasedHold(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		stamp string
+	}{
+		{name: "hold bound to an older deploy", stamp: "aaaaaaaaaaaa"},
+		{name: "legacy hold with no environment binding", stamp: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, _, facts := state.service(t)
+			state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, state.headSHA(), state.targetSHA(), test.stamp)})
+			state.setIssueComments([]map[string]any{{
+				"id": float64(9), "body": "Held at: finishing\nSocket path overflows in the run environment.", "user": map[string]any{"login": "Minos"},
+			}})
+			adapter, snapshot, err := currentForgeSnapshot(t.Context(), cfg, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			commits, err := adapter.PullRequestCommits(t.Context(), forge.Repository{Owner: facts.Owner, Name: facts.Repo}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			context := releasedHoldContext(t.Context(), adapter, snapshot, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, 1, cfg.Service.BotLogin, commits, currentEnvironmentStamp(cfg))
+			if context.ReleasedHoldStage != "finishing" || context.ReleasedHoldDiagnosis == "" {
+				t.Fatalf("released hold context = %#v, want finishing release with diagnosis", context)
+			}
+		})
 	}
 }
 
@@ -805,7 +837,7 @@ func TestForgejoHeadMovementCommandClassifiesTheWholeCommitInterval(t *testing.T
 func TestForgejoReleasedHoldSurvivesMinosOnlyHeadMovement(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = "held" })
-	state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, "held", "earlier-target")})
+	state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, "held", "earlier-target", "")})
 	state.setIssueComments([]map[string]any{{"id": float64(9), "body": "Held at: review\nThe target lacked the required fixture.", "user": map[string]any{"login": "Minos"}}})
 	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = "current" })
 	state.setCommits([]map[string]any{{"sha": "held", "author": map[string]any{"login": "contributor"}}, {"sha": "current", "author": map[string]any{"login": "Minos"}}})
@@ -832,11 +864,15 @@ func TestForgejoReleasedHoldSurvivesMinosOnlyHeadMovement(t *testing.T) {
 	}
 }
 
-func heldFixtureStatus(id int, apiBase, head, target string) map[string]any {
+func heldFixtureStatus(id int, apiBase, head, target, envStamp string) map[string]any {
+	targetURL := fmt.Sprintf("%s/minos-e2e-owner/subject/pulls/1#minos-target-%s", apiBase, target)
+	if envStamp != "" {
+		targetURL += "+minos-env-" + envStamp
+	}
 	return map[string]any{
 		"id": float64(id), "status": "pending", "context": "Minos",
 		"creator": map[string]any{"login": "Minos"}, "description": product.Held().Description(),
-		"target_url": fmt.Sprintf("%s/minos-e2e-owner/subject/pulls/1#minos-target-%s", apiBase, target),
+		"target_url": targetURL,
 		"sha":        head,
 	}
 }

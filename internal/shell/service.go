@@ -11,6 +11,25 @@ import (
 )
 
 const heldTargetFragment = "#minos-target-"
+const heldEnvFragment = "+minos-env-"
+
+// heldBinding splits a held status's target URL into the target SHA and the
+// environment stamp it was bound to. Either half may be empty: a legacy hold
+// carries no stamp and is treated as bound to an unknown environment.
+func heldBinding(targetURL string) (boundTarget, envStamp string) {
+	fragment := strings.LastIndex(targetURL, heldTargetFragment)
+	if fragment < 0 {
+		return "", ""
+	}
+	boundTarget, envStamp, _ = strings.Cut(targetURL[fragment+len(heldTargetFragment):], heldEnvFragment)
+	return boundTarget, envStamp
+}
+
+// statusForTarget matches an owned status against this pull request's target
+// URL, tolerating the environment-stamp suffix held statuses carry.
+func statusForTarget(statusURL, targetURL string) bool {
+	return statusURL == targetURL || strings.HasPrefix(statusURL, targetURL+heldEnvFragment)
+}
 
 type AdmissionContext struct {
 	ReleasedHoldHead      string
@@ -102,7 +121,7 @@ func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, 
 	return latest, found
 }
 
-func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot forge.Snapshot, repository forge.Repository, pullRequest int64, botLogin string, commits []forge.Commit) AdmissionContext {
+func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot forge.Snapshot, repository forge.Repository, pullRequest int64, botLogin string, commits []forge.Commit, envStamp string) AdmissionContext {
 	var held forge.Status
 	heldHead := ""
 	found := false
@@ -130,12 +149,15 @@ func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot f
 			break
 		}
 	}
-	fragment := strings.LastIndex(held.TargetURL, heldTargetFragment)
-	boundTarget := ""
-	if fragment >= 0 {
-		boundTarget = held.TargetURL[fragment+len(heldTargetFragment):]
+	boundTarget, boundStamp := heldBinding(held.TargetURL)
+	if !found || boundTarget == "" {
+		return AdmissionContext{}
 	}
-	if !found || boundTarget == "" || boundTarget == snapshot.TargetSHA {
+	// A hold stays respected only while both bindings still describe the
+	// world it was decided in: the target it blamed and the run environment
+	// it was judged under. A legacy hold with no stamp binds to an unknown
+	// environment and is spent once.
+	if boundTarget == snapshot.TargetSHA && boundStamp == envStamp {
 		return AdmissionContext{}
 	}
 	comments, err := adapter.IssueComments(ctx, repository, pullRequest)
@@ -188,12 +210,12 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 // is the head's only durable completion marker on that path. Held blocks
 // re-runs for the same target; when the target SHA changes the target URL
 // changes and the status no longer matches, triggering a fresh run.
-func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) bool {
+func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL, envStamp string) bool {
 	var latest forge.Status
 	found := false
 	for _, status := range snapshot.Statuses {
 		if status.Provider == forge.ForgejoProvider && status.Context == forge.OwnedStatusContext &&
-			status.Creator == botLogin && status.TargetURL == targetURL &&
+			status.Creator == botLogin && statusForTarget(status.TargetURL, targetURL) &&
 			(!found || status.ID > latest.ID) {
 			latest = status
 			found = true
@@ -202,13 +224,19 @@ func completedRunStatus(snapshot forge.Snapshot, botLogin, targetURL string) boo
 	if !found {
 		return false
 	}
+	if latest.Description == product.Held().Description() {
+		// A hold marks the run completed only while its environment binding
+		// still matches; a hold from an older deploy (or with no stamp) is
+		// spent, and the pull request earns a fresh attempt.
+		_, boundStamp := heldBinding(latest.TargetURL)
+		return boundStamp == envStamp
+	}
 	return latest.Description == product.Clean().Description() ||
 		latest.Description == product.Attention().Description() ||
-		latest.Description == product.Held().Description() ||
 		latest.Description == product.Merged().Description()
 }
 
-func trustedCompletedRunStatus(ctx context.Context, adapter *forge.Adapter, repository forge.Repository, snapshot forge.Snapshot, commits []forge.Commit, botLogin, targetURL string) bool {
+func trustedCompletedRunStatus(ctx context.Context, adapter *forge.Adapter, repository forge.Repository, snapshot forge.Snapshot, commits []forge.Commit, botLogin, targetURL, envStamp string) bool {
 	for index := len(commits) - 1; index >= 0; index-- {
 		commit := commits[index]
 		if !forge.OwnMovement(commits, commit.SHA, snapshot.HeadSHA, botLogin) {
@@ -224,7 +252,7 @@ func trustedCompletedRunStatus(ctx context.Context, adapter *forge.Adapter, repo
 		}
 		copy := snapshot
 		copy.Statuses = statuses
-		if completedRunStatus(copy, botLogin, targetURL) {
+		if completedRunStatus(copy, botLogin, targetURL, envStamp) {
 			return true
 		}
 	}
@@ -271,7 +299,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if commitsErr != nil {
 		commits = []forge.Commit{{SHA: snapshot.HeadSHA, Author: cfg.Service.BotLogin}}
 	}
-	admission := releasedHoldContext(ctx, adapter, snapshot, repository, pullRequest, cfg.Service.BotLogin, commits)
+	admission := releasedHoldContext(ctx, adapter, snapshot, repository, pullRequest, cfg.Service.BotLogin, commits, currentEnvironmentStamp(cfg))
 	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
 	}
@@ -296,7 +324,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 			}
 		}
 	}
-	if trustedCompletedRunStatus(ctx, adapter, repository, snapshot, commits, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts)) {
+	if trustedCompletedRunStatus(ctx, adapter, repository, snapshot, commits, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts), currentEnvironmentStamp(cfg)) {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
 	if reason, deferred := dependencyDeferral(snapshot); deferred {
