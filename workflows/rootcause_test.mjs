@@ -122,7 +122,7 @@ test("valid command evidence dispatches one pinned isolated repair agent", async
   assert.match(calls[0].prompt, /configured Minos identity[\s\S]*Never push/);
   assert.match(
     calls[0].prompt,
-    /Delivery geometry[\s\S]*delivered by pushing to the pull-request branch[\s\S]*reconciliation merge[\s\S]*does not prove it is deliverable[\s\S]*pull-request side of the history[\s\S]*solely on the target side[\s\S]*cannot be delivered through this pull request[\s\S]*empty commit[\s\S]*never that the file does not exist[\s\S]*Do not author an undeliverable fix/,
+    /Delivery geometry[\s\S]*delivered by pushing to the pull-request branch[\s\S]*tracked at the reviewed head SHA[\s\S]*published reconciliation merge[\s\S]*deliverable like any other[\s\S]*not tracked at the reviewed head has no delivery path[\s\S]*cannot be delivered through the pull-request branch[\s\S]*never that the file does not exist[\s\S]*Do not author an undeliverable fix/,
   );
   assert.match(
     calls[0].prompt,

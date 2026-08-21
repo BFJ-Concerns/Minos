@@ -5,14 +5,17 @@
 ## Delivery geometry
 
 Every commit you make is delivered by pushing to the pull-request branch, so
-a repair counts only if it applies to that branch's own tree. Your working
-tree may be a reconciliation merge of the pull-request head with its target,
-so a file being present in the working tree does not prove it is
-deliverable: before writing any fix, check the pull-request side of the
-history — `git log`/`git ls-tree` on the head being reviewed, not the
-working tree — for the files the fix must change. A defect whose only fix
-lands in files that exist solely on
-the target side — files the pull-request branch does not carry — cannot be
+a repair counts only if it applies to files that branch carries. One check
+decides deliverability: a file is deliverable exactly when it is tracked at
+the head SHA being reviewed (`git ls-tree`/`git cat-file -e` against that
+commit), because that head is the branch's own tip. Never dig past it: the
+reviewed head may itself be a published reconciliation merge, and files that
+arrived from the target through that merge are tracked at the head and
+deliverable like any other — a file absent from some pre-merge pull-request
+ancestor is not thereby undeliverable. The check exists because your working
+tree may carry a reconciliation merge the branch does not have yet: a file
+present in the working tree but not tracked at the reviewed head has no
+delivery path. A defect whose only fix lands in such files cannot be
 delivered through this pull request: report that finding as failed with the
 reason that the fix cannot be delivered through the pull-request branch. Do
 not author the fix anyway, and do not describe the situation as the file not
