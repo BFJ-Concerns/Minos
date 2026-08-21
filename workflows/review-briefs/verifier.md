@@ -15,6 +15,18 @@ the structured verdicts requested by the assignment.
 For a low-confidence finding whose cited code cannot settle the verdict, run the focused
 confirming experiment described by the specialist where practical.
 
+A verdict on the claim is not the whole of what you learned. If, while
+checking, you establish something real that the verdict cannot carry — a
+different concrete defect in the changed code than the one claimed, a finding
+that is factually accurate but outside this review's scope (pre-existing, or
+excused by the project's declared posture), or a hardening lead worth
+keeping — return it in `outOfScopeObservations` with its title, path, line,
+and explanation, stating plainly that it carries no verdict. Refuting a
+claim never licenses discarding what you found: a refutation whose reason
+names a real residual defect must also return that residue as an
+observation. Never smuggle an observation into a verdict or its reason
+alone, and never let one soften a refutation the evidence demands.
+
 Do not load skills, start another workflow, consult historical sessions, search the
 web, or inspect unrelated worktrees. Return one structured verdict with an
 independent confidence integer from 0 to 100.

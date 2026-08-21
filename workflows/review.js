@@ -317,6 +317,7 @@ const verifierSchema = {
   required: ["verdicts"],
   properties: {
     verdicts: { type: "array", items: verifierVerdictShape },
+    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
   },
 };
 
@@ -543,6 +544,24 @@ const verifierResults = await parallel(
 );
 
 const verifierByFinding = new Map(proposed.map((item) => [item.id, null]));
+// The observation channel is independent of verdict validity: what a
+// verifier established while checking survives even when its verdict set
+// is discarded as malformed.
+verifierGroups.forEach((group, groupIndex) => {
+  const response = verifierResults[groupIndex];
+  const observations = response && Array.isArray(response.outOfScopeObservations)
+    ? response.outOfScopeObservations
+    : [];
+  observations.forEach((observation, observationIndex) => {
+    outOfScopeObservations.push({
+      id: `${group.label}:observation:${observationIndex + 1}`,
+      source: "verification",
+      ...observation,
+      observingLabel: group.label,
+      verified: false,
+    });
+  });
+});
 verifierGroups.forEach((group, groupIndex) => {
   const response = verifierResults[groupIndex];
   if (!response || !Array.isArray(response.verdicts)) return;

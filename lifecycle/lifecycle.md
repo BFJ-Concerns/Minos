@@ -971,6 +971,12 @@ takes the absorb judgement above.
    commit with the configured Minos identity, and never push. A failed finding
    receives one retry; after two failures it remains in the loop record as
    confirmed-unfixed and later sweeps do not dispatch it again.
+
+   A fix result may also carry `outOfScopeObservations` — unverified
+   observations fix agents made while repairing, with no verdict and no
+   repair. Treat them exactly like a review verdict's observations: keep
+   them with the saved result and do not publish them through this
+   lifecycle; their publication is owned separately.
    When `integration.commits` is non-empty, write that array unchanged to a
    file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
    "$MINOS_WORKSPACE" COMMITS_FILE`. That script verifies every commit's Minos

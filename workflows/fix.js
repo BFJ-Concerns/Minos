@@ -26,8 +26,37 @@ const fixResultSchema = {
         },
       },
     },
+    outOfScopeObservations: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "path", "line", "explanation"],
+        properties: {
+          title: { type: "string" },
+          path: { type: "string" },
+          line: { type: "integer", minimum: 1 },
+          explanation: { type: "string" },
+        },
+      },
+    },
   },
 };
+
+function collectOutOfScopeObservations(outOfScopeObservations, label, result) {
+  const observations = result && Array.isArray(result.outOfScopeObservations)
+    ? result.outOfScopeObservations
+    : [];
+  observations.forEach((observation, observationIndex) => {
+    outOfScopeObservations.push({
+      id: `${label}:observation:${observationIndex + 1}`,
+      source: "fix",
+      ...observation,
+      observingLabel: label,
+      verified: false,
+    });
+  });
+}
 
 function writeUpComment(finding, writeUp) {
   return { path: finding.path, body: writeUp, line: finding.line };
@@ -81,6 +110,7 @@ function failedResult(plan, reason) {
     overflow: [],
     requestChanges: [],
     rerunReview: false,
+    outOfScopeObservations: [],
   };
 }
 
@@ -139,8 +169,10 @@ if (plan.classification === "single-wave") {
   const commits = [];
   const fixed = [];
   const confirmedUnfixed = [];
+  const outOfScopeObservations = [];
   preparedDispatches.forEach((dispatch, index) => {
     const result = results[index];
+    collectOutOfScopeObservations(outOfScopeObservations, dispatch.label, result);
     const returned = new Map(Array.isArray(result && result.fixes)
       ? result.fixes.map((entry) => [entry.findingKey, entry])
       : []);
@@ -187,6 +219,7 @@ if (plan.classification === "single-wave") {
     buildAndTestsRequired: uniqueCommits.length > 0,
     rerunReview: false,
     runRecord: { round: plan.round, confirmedFixed: [], confirmedUnfixed },
+    outOfScopeObservations,
   };
 }
 
@@ -205,8 +238,10 @@ const firstResults = await parallel(preparedDispatches.map((dispatch) => () =>
 const fixed = new Map();
 const commits = [];
 const retryDispatches = [];
+const outOfScopeObservations = [];
 preparedDispatches.forEach((dispatch, index) => {
   const result = firstResults[index];
+  collectOutOfScopeObservations(outOfScopeObservations, dispatch.label, result);
   const returned = new Map(Array.isArray(result && result.fixes)
     ? result.fixes.map((entry) => [entry.findingKey, entry])
     : []);
@@ -250,6 +285,7 @@ const retryResults = await parallel(retryDispatches.map((dispatch) => () =>
 const newlyUnfixed = [];
 retryDispatches.forEach((dispatch, index) => {
   const result = retryResults[index];
+  collectOutOfScopeObservations(outOfScopeObservations, dispatch.label, result);
   const returned = new Map(Array.isArray(result && result.fixes)
     ? result.fixes.map((entry) => [entry.findingKey, entry])
     : []);
@@ -301,4 +337,5 @@ return {
   requestChanges: [],
   rerunReview: true,
   runRecord: { round: plan.round, confirmedFixed, confirmedUnfixed },
+  outOfScopeObservations,
 };

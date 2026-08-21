@@ -678,3 +678,26 @@ test("the enumerator emits large deterministic input directly as JSON and reject
     /usage:/,
   );
 });
+
+test("a brief verifier observation reaches the result alongside its verdicts", async () => {
+  const { result } = await run(args(), responder({
+    verify: (label, prompt) => {
+      const findings = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      return {
+        verdicts: findings.map((entry) => ({
+          findingId: entry.id,
+          verdict: "upheld",
+          confidence: 92,
+          reason: "confirmed",
+        })),
+        outOfScopeObservations: [observation({ title: "residue the verdict cannot carry" })],
+      };
+    },
+  }));
+  assert.equal(result.outOfScopeObservations.length, 1);
+  const observed = result.outOfScopeObservations[0];
+  assert.equal(observed.source, "verification");
+  assert.equal(observed.title, "residue the verdict cannot carry");
+  assert.equal(observed.verified, false);
+  assert.match(observed.observingLabel, /^verify-brief-/);
+});
