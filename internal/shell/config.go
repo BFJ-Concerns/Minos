@@ -45,7 +45,12 @@ type ServiceConfig struct {
 		// the run has already written. Archiving invokes it at the end of a
 		// run; the status projection invokes it mid-run for the same record.
 		TimingsCommand string `toml:"timings-command"`
-		MaxConcurrent  int    `toml:"max-concurrent"`
+		// RecentTimingsCommand lists the timing sidecars archive-run has
+		// delivered since a cutoff, so a finished run can still be reported
+		// after its directory has been swept. Unset leaves the recent-runs
+		// route answering with no runs.
+		RecentTimingsCommand string `toml:"recent-timings-command"`
+		MaxConcurrent        int    `toml:"max-concurrent"`
 	} `toml:"runs"`
 	Ensemble struct {
 		ConcurrencyClaude int `toml:"concurrency-claude"`

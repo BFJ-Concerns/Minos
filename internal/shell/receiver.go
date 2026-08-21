@@ -43,6 +43,11 @@ func receiverRoutes(ctx context.Context, cfg ServiceConfig) *http.ServeMux {
 				log.Printf("status failed: %v", err)
 			}
 		})
+		mux.HandleFunc("/runs/recent", func(w http.ResponseWriter, r *http.Request) {
+			if err := handleRecentRuns(ctx, cfg, w, r); err != nil {
+				log.Printf("recent runs failed: %v", err)
+			}
+		})
 	}
 	return mux
 }

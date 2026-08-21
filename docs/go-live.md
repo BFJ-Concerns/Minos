@@ -224,3 +224,16 @@ curl -H "Authorization: Bearer $(cat /etc/minos/status.token)" \
 
 The token is the whole gate, and the projection names repositories, branches
 and heads — keep it to the LAN and treat it as a credential.
+
+To include finished runs, point the same `[runs]` block at the archive listing
+script and install it beside the others:
+
+```toml
+[runs]
+recent-timings-command = "/opt/minos/run-body/list-recent-timings"
+```
+
+`GET /runs/recent?hours=24` then reports the timing sidecars `archive-run` has
+delivered within the window — the same per-step and per-agent detail a live run
+shows, for runs whose directories have already been swept. Without the key the
+route answers with no runs rather than failing.

@@ -2,11 +2,14 @@ package shell
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,9 +143,40 @@ func TestStatusReportsAFailedDispatchAsFailed(t *testing.T) {
 	}
 }
 
+func TestStatusReportsAJustStartedRunAsStarting(t *testing.T) {
+	cfg := statusTestConfig(t)
+	// The unit is live but has written nothing yet: no run directory, so no
+	// orientation and no stages. This is how every run begins.
+	stubStatusCommands(t)
+
+	document := readStatusDocument(t, cfg)
+
+	if len(document.Runs) != 1 {
+		t.Fatalf("runs = %d, want the live unit reported", len(document.Runs))
+	}
+	run := document.Runs[0]
+	if run.Error != "" {
+		t.Fatalf("run error = %q, want a starting run reported without one", run.Error)
+	}
+	if run.Stage != stageStarting {
+		t.Fatalf("stage = %q, want %q", run.Stage, stageStarting)
+	}
+	// Identity is recoverable from the unit name alone, which is what lets the
+	// run name its pull request before it has oriented itself.
+	if run.Owner != "example" || run.Repo != "Relay" || run.PR != "96" || run.Forge != "forgejo" {
+		t.Fatalf("identity = %s/%s#%s on %q, want example/Relay#96 on forgejo", run.Owner, run.Repo, run.PR, run.Forge)
+	}
+}
+
 func TestStatusReportsAnUnreadableRunWithoutFailingTheRequest(t *testing.T) {
 	cfg := statusTestConfig(t)
-	// No run directory at all: the unit is live but its residue is gone.
+	// Two directories for one unit: an earlier attempt's residue outlived its
+	// unit, and which one the run owns cannot be told. That is a real fault,
+	// unlike a directory that has not appeared yet.
+	writeStatusRunDirectory(t, cfg)
+	if err := os.MkdirAll(filepath.Join(cfg.Runs.Dir, statusRunUnit+"-99"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	stubStatusCommands(t)
 
 	document := readStatusDocument(t, cfg)
@@ -151,10 +185,7 @@ func TestStatusReportsAnUnreadableRunWithoutFailingTheRequest(t *testing.T) {
 		t.Fatalf("runs = %d, want the live unit reported", len(document.Runs))
 	}
 	if document.Runs[0].Error == "" {
-		t.Fatal("run error = empty, want the missing run directory reported")
-	}
-	if document.Runs[0].Stage != stageUnknown {
-		t.Fatalf("stage = %q, want %q", document.Runs[0].Stage, stageUnknown)
+		t.Fatal("run error = empty, want the ambiguous run directory reported")
 	}
 }
 
@@ -272,4 +303,128 @@ func writeStatusFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The recent-runs route reports what a finished run did, from the timing
+// sidecars archive-run leaves beside each archive. These pin the parsing that
+// turns those sidecars back into runs, and that one unreadable sidecar costs
+// only itself.
+
+func TestRecentRunsReportsArchivedRecords(t *testing.T) {
+	cfg := statusTestConfig(t)
+	cfg.Runs.RecentTimingsCommand = archiveListingScript(t, map[string]string{
+		"20260821T213617Z-BFJ-Concerns-Gizmo-pr106-minos-run-BFJ-Concerns-Gizmo-pr106-3124491702.timings.json": `{"kind":"minos-timing-record-v1","pull_request":{"owner":"BFJ-Concerns","repository":"Gizmo","number":"106"},"workers":[{"label":"setup"}]}`,
+		"20260821T200140Z-example-Relay-pr96-minos-run-example-Relay-pr96-527798279.timings.json":              `{"kind":"minos-timing-record-v1","pull_request":{"owner":"example","repository":"Relay","number":"96"},"workers":[]}`,
+	})
+
+	document := readRecentRuns(t, cfg, "")
+
+	if document.Kind != recentRunsKind {
+		t.Fatalf("kind = %q, want %q", document.Kind, recentRunsKind)
+	}
+	if document.WindowHours != defaultRecentWindowHours {
+		t.Fatalf("window = %d, want %d", document.WindowHours, defaultRecentWindowHours)
+	}
+	if len(document.Runs) != 2 {
+		t.Fatalf("runs = %d, want 2; %+v", len(document.Runs), document.Runs)
+	}
+	run := document.Runs[0]
+	if run.Owner != "BFJ-Concerns" || run.Repo != "Gizmo" || run.PR != "106" {
+		t.Fatalf("identity = %s/%s#%s, want BFJ-Concerns/Gizmo#106", run.Owner, run.Repo, run.PR)
+	}
+	if run.ArchivedAt != "2026-08-21T21:36:17Z" {
+		t.Fatalf("archived_at = %q, want the archive's own timestamp", run.ArchivedAt)
+	}
+	if run.Unit != "minos-run-BFJ-Concerns-Gizmo-pr106" {
+		t.Fatalf("unit = %q, want the run's unit without its directory suffix", run.Unit)
+	}
+	if !json.Valid(run.Timings) {
+		t.Fatalf("timings = %s, want the archived record", run.Timings)
+	}
+}
+
+func TestRecentRunsSkipsAnUnreadableSidecar(t *testing.T) {
+	cfg := statusTestConfig(t)
+	cfg.Runs.RecentTimingsCommand = archiveListingScript(t, map[string]string{
+		"20260821T213617Z-BFJ-Concerns-Gizmo-pr106-minos-run-BFJ-Concerns-Gizmo-pr106-3124491702.timings.json": `{"pull_request":{"owner":"BFJ-Concerns","repository":"Gizmo","number":"106"}}`,
+		"20260821T200140Z-example-Relay-pr96-minos-run-example-Relay-pr96-527798279.timings.json":              `{"truncated":`,
+	})
+
+	document := readRecentRuns(t, cfg, "")
+
+	if len(document.Runs) != 1 || document.Runs[0].Repo != "Gizmo" {
+		t.Fatalf("runs = %+v, want only the readable sidecar", document.Runs)
+	}
+}
+
+func TestRecentRunsIsEmptyWithoutAnArchiveCommand(t *testing.T) {
+	cfg := statusTestConfig(t)
+
+	document := readRecentRuns(t, cfg, "")
+
+	if len(document.Runs) != 0 {
+		t.Fatalf("runs = %+v, want none when no archive command is configured", document.Runs)
+	}
+}
+
+func TestRecentRunsHoldsTheWindowWithinBounds(t *testing.T) {
+	cfg := statusTestConfig(t)
+	for _, test := range []struct {
+		requested string
+		want      int
+	}{
+		{requested: "6", want: 6},
+		{requested: "", want: defaultRecentWindowHours},
+		{requested: "nonsense", want: defaultRecentWindowHours},
+		{requested: "0", want: defaultRecentWindowHours},
+		{requested: "100000", want: maximumRecentWindowHours},
+	} {
+		t.Run(test.requested, func(t *testing.T) {
+			if got := readRecentRuns(t, cfg, test.requested).WindowHours; got != test.want {
+				t.Fatalf("window = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+// archiveListingScript stands in for the archive host, emitting the same
+// filename-and-base64 framing the real listing produces.
+func archiveListingScript(t *testing.T, sidecars map[string]string) string {
+	t.Helper()
+	var body strings.Builder
+	body.WriteString("#!/bin/sh\n")
+	names := make([]string, 0, len(sidecars))
+	for name := range sidecars {
+		names = append(names, name)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	for _, name := range names {
+		body.WriteString("printf '%s\\t%s\\n' '" + name + "' '" +
+			base64.StdEncoding.EncodeToString([]byte(sidecars[name])) + "'\n")
+	}
+	path := filepath.Join(t.TempDir(), "list-recent-timings")
+	writeScript(t, path, body.String())
+	return path
+}
+
+func readRecentRuns(t *testing.T, cfg ServiceConfig, hours string) recentRunsDocument {
+	t.Helper()
+	target := "/runs/recent"
+	if hours != "" {
+		target += "?hours=" + hours
+	}
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Header.Set("Authorization", "Bearer status-token")
+	response := httptest.NewRecorder()
+	if err := handleRecentRuns(context.Background(), cfg, response, request); err != nil {
+		t.Fatalf("handleRecentRuns() error = %v", err)
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	var document recentRunsDocument
+	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
+		t.Fatalf("decode recent runs: %v; body = %q", err, response.Body.String())
+	}
+	return document
 }
