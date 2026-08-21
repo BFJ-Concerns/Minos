@@ -23,7 +23,15 @@ Work from the bootstrapped repository workspace made available to this agent.
 Repair these findings and only these findings, reading and editing whatever the
 repair genuinely requires — purpose, not territory. Do not widen the change to
 nearby smells or unrequested improvements. Run the smallest relevant checks
-after editing. Commit completed repairs using the workspace's configured Minos
+after editing.
+
+Not widening the change never means discarding what you noticed. A real
+defect, smell, or missing capability you encounter while repairing — in the
+code you edited or beside it — goes in the result's
+`outOfScopeObservations` with its title, path, line, and explanation,
+stating plainly that it was not verified. Do not repair it, and do not bury
+it in a finding's write-up; the observation channel is how it reaches the
+lead. Commit completed repairs using the workspace's configured Minos
 identity and return the commit SHA plus one short write-up per finding. Never
 push; the lead integrates every agent commit and performs the wave's single push.
 

@@ -863,3 +863,25 @@ test("the deterministic fix input selects single-wave mode explicitly", () => {
   assert.equal(input.classification, "single-wave");
   assert.equal(input.input.workspace, root);
 });
+
+test("fixer observations ride the result without becoming repairs", async () => {
+  const findings = [finding("unsafe transition", "High", "a.go", 4)];
+  const { result } = await run(args(findings), (label, prompt) => ({
+    commit: `${label}-commit`,
+    fixes: assignedFindings(prompt).map((item) => ({ findingKey: item.key, status: "fixed", writeUp: `Repaired ${item.title}.` })),
+    outOfScopeObservations: [{
+      title: "adjacent invariant is unchecked",
+      path: "a.go",
+      line: 12,
+      explanation: "Unverified observation: noticed while repairing; not repaired.",
+    }],
+  }));
+  assert.equal(result.status, "complete");
+  assert.equal(result.outOfScopeObservations.length, 1);
+  const observed = result.outOfScopeObservations[0];
+  assert.equal(observed.source, "fix");
+  assert.equal(observed.verified, false);
+  assert.equal(observed.title, "adjacent invariant is unchecked");
+  assert.match(observed.id, /:observation:1$/);
+  assert.equal(observed.observingLabel, observed.id.replace(/:observation:1$/, ""));
+});

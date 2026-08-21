@@ -326,10 +326,47 @@ test("all findings are proposed on Terra and verified cross-family on Claude", a
     .every((call) => call.opts.engine !== "codex"));
 });
 
-test("specialists and verifiers use medium effort while exploration keeps its pin", async () => {
+test("a verifier observation reaches the result alongside its verdicts", async () => {
+  const { result, calls } = await runScript(ARGS, responder({
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      outOfScopeObservations: [observation({ title: "residual defect the verdict cannot carry" })],
+    }),
+  }));
+  assert.deepEqual(result.outOfScopeObservations, [{
+    id: "verify-1-claude:observation:1",
+    source: "verification",
+    title: "residual defect the verdict cannot carry",
+    path: "internal/legacy.go",
+    line: 9,
+    explanation: "Unverified observation: the unchanged branch admits an invalid state.",
+    observingLabel: "verify-1-claude",
+    verified: false,
+  }]);
+  const schema = calls.find((call) => call.opts.label === "verify-1-claude").opts.schema;
+  assert.ok(!schema.required.includes("outOfScopeObservations"));
+  assert.deepEqual(
+    schema.properties.outOfScopeObservations.items.required,
+    ["title", "path", "line", "explanation"],
+  );
+});
+
+test("a verifier observation survives a verdict set discarded as malformed", async () => {
+  const { result } = await runScript(ARGS, responder({
+    verify: () => ({
+      verdicts: [{ findingId: "not-a-proposed-finding", verdict: "upheld", confidence: 90, reason: "misaddressed" }],
+      outOfScopeObservations: [observation()],
+    }),
+  }));
+  assert.ok(result.proposedFindings.every((finding) => finding.rawVerifier === null));
+  assert.equal(result.outOfScopeObservations.length, 1);
+  assert.equal(result.outOfScopeObservations[0].source, "verification");
+});
+
+test("exploration and specialists run at high effort while verifiers stay at medium", async () => {
   const { calls } = await runScript(ARGS, responder());
   assert.equal(calls.find((call) => call.opts.label === "exploration").opts.effort, "high");
-  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "medium"));
+  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "high"));
   assert.ok(calls.filter((call) => call.opts.label?.startsWith("verify-"))
     .every((call) => call.opts.effort === "medium"));
 });

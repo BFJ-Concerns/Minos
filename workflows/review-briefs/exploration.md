@@ -24,6 +24,14 @@ file inventory with no units, and the review completes clean with no findings
 — a valid outcome, not a failure to plan. The plan is done when every unit it
 names earns its dispatch and no engaged concern lacks one.
 
+Minimal over concerns never means partial over the change: the units you do
+name must jointly account for the whole diff. Every changed path either
+appears in at least one unit's scope or is left out by judgement, and the
+applicability reason says what no unit reads and why it engages no concern.
+A path absent from every scope is a decision the reason must carry, never a
+remainder the partition silently dropped — a specialist can only sweep what
+a unit's scope hands it.
+
 Each unit's `id` is a short unique slug naming its concern; its `scope` lists
 the changed paths that unit reads — the specialist is dispatched to exactly
 that scope, so cover every path the concern touches and nothing else.
