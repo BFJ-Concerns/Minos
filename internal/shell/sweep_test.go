@@ -177,12 +177,39 @@ func TestOrderSweepCandidatesInterleavesReposWithinEachPriorityClass(t *testing.
 		candidate("starved", "8", 1),
 		candidate("quiet", "4", 1),
 		candidate("busy", "5", 0),
-	})
+	}, nil)
 	var got []string
 	for _, entry := range ordered {
 		got = append(got, entry.facts.Repo+"#"+entry.facts.PR)
 	}
 	want := []string{"busy#5", "busy#1", "quiet#4", "starved#8", "busy#2", "busy#3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ordered candidates = %v, want %v", got, want)
+	}
+}
+
+func TestOrderSweepCandidatesYieldsTheLaneToReposHoldingFewerLiveRuns(t *testing.T) {
+	candidate := func(repo, pr string, priority int) sweepCandidate {
+		return sweepCandidate{facts: Facts{Owner: "owner", Repo: repo, PR: pr}, priority: priority}
+	}
+	// The busy repo owns the lowest pull request number, so without live-run
+	// counts it would lead every pass and claim each freed slot; its two
+	// active units must push it behind the repos holding none.
+	ordered := orderSweepCandidates([]sweepCandidate{
+		candidate("busy", "1", 1),
+		candidate("busy", "2", 1),
+		candidate("starved", "8", 1),
+		candidate("quiet", "4", 1),
+	}, []string{
+		"minos-run-owner-busy-pr90.service",
+		"minos-run-owner-busy-pr104.service",
+		"minos-run-other-owner-unrelated-pr7.service",
+	})
+	var got []string
+	for _, entry := range ordered {
+		got = append(got, entry.facts.Repo+"#"+entry.facts.PR)
+	}
+	want := []string{"quiet#4", "starved#8", "busy#1", "busy#2"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("ordered candidates = %v, want %v", got, want)
 	}
