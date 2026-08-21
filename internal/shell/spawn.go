@@ -49,14 +49,20 @@ func preserveStaleReviewResult(path, stalePath string) error {
 	return nil
 }
 
-// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Live runs
-// share it, so their ceilings can never together promise more memory than the
-// box has — the ceiling exists so that a ballooning run fails alone instead of
-// taking the receiver and sweep with it, and an overcommitted ceiling cannot
-// do that.
+// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Every
+// run's hard ceiling is the whole envelope, so a lone run may use all of it;
+// what keeps concurrent runs from starving each other is each run's soft
+// share (MemoryHigh), which reclaims and throttles a run growing past its
+// fraction instead of killing it. The kernel kill only fires when a run
+// exceeds the envelope itself, and the receiver and sweep live outside the
+// envelope either way.
 const runMemoryEnvelopeGiB = 20
 
-func runMemoryMax(cfg ServiceConfig) string {
+func runMemoryMax() string {
+	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB)
+}
+
+func runMemoryHigh(cfg ServiceConfig) string {
 	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB/cfg.MaxConcurrentRuns())
 }
 
@@ -256,7 +262,8 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
 		"--property=RuntimeMaxSec=12h",
-		"--property=MemoryMax=" + runMemoryMax(cfg),
+		"--property=MemoryHigh=" + runMemoryHigh(cfg),
+		"--property=MemoryMax=" + runMemoryMax(),
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)

@@ -995,7 +995,7 @@ takes the absorb judgement above.
    `fixReview` is present, write that object unchanged to a file, then post it
    with `"$MINOS_BIN" forge comment CURRENT_HEAD "$MINOS_TARGET_SHA"
    FIX_REVIEW_FILE`. This durable pull-request comment is not a
-   review group; the guarded command binds it to that exact head and target,
+   review group; the guarded command binds it to that exact head,
    deduplicates retries, and reads it back before reporting success. Then run
    the exact configured build and test commands again, capturing their complete
    combined output in the matching absolute `build-command-output.log` or

@@ -28,6 +28,15 @@ else
   exit 0
 fi
 
+# The merge is the one guarded write whose meaning changes with the target:
+# finishing judged readiness against this exact target, so a moved one must
+# send the run back through target sync rather than merge into a tree that
+# readiness never described.
+if [ "$guard_actual_target" != "$target" ]; then
+  write_result rejected "target moved"
+  exit 0
+fi
+
 if [ "$(printf '%s' "$guard_base_json" | jq -r '.user_can_merge // false')" != "true" ]; then
   write_result rejected "authenticated identity cannot merge the target branch"
   exit 0

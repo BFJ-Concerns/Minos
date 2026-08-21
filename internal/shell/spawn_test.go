@@ -174,8 +174,8 @@ func TestSpawnRunSuppressesOwnLiveUnitWithoutConsumingItsHandoff(t *testing.T) {
 }
 
 func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
-	for maxConcurrent, want := range map[int]string{0: "20G", 1: "20G", 2: "10G"} {
-		t.Run(want, func(t *testing.T) {
+	for maxConcurrent, wantHigh := range map[int]string{0: "20G", 1: "20G", 2: "10G"} {
+		t.Run(wantHigh, func(t *testing.T) {
 			original := commandCombinedOutput
 			t.Cleanup(func() { commandCombinedOutput = original })
 			var systemdArgs []string
@@ -194,7 +194,8 @@ func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
 			if _, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{}); err != nil {
 				t.Fatal(err)
 			}
-			assertArgument(t, systemdArgs, "--property=MemoryMax="+want)
+			assertArgument(t, systemdArgs, "--property=MemoryHigh="+wantHigh)
+			assertArgument(t, systemdArgs, "--property=MemoryMax=20G")
 		})
 	}
 }
@@ -814,6 +815,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=ExitType=main")
 	assertArgument(t, systemdArgs, "--property=KillMode=control-group")
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=12h")
+	assertArgument(t, systemdArgs, "--property=MemoryHigh=20G")
 	assertArgument(t, systemdArgs, "--property=MemoryMax=20G")
 	for _, value := range []string{
 		"MINOS_CONFIG=/etc/minos",
