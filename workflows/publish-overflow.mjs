@@ -52,7 +52,9 @@ let written = 0;
 for (const finding of findings) {
   const marker = `<!-- review-finding:${key(finding)} -->`;
   if (contents.includes(marker)) continue;
-  const label = finding.kind === "held-diagnosis" ? "Held diagnosis" : "Review finding";
+  const label = finding.kind === "held-diagnosis" ? "Held diagnosis"
+    : finding.kind === "fix-attempts-failed" ? "Review finding (automated fixes failed)"
+    : "Review finding";
   contents += `\n- ${label}: ${finding.title} (${finding.severity}, ${finding.path}:${finding.line}) — ${finding.explanation}. ${attribution}. ${marker}\n`;
   written++;
 }

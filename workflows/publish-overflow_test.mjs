@@ -167,6 +167,26 @@ test("annexe grounding preserves an existing issues log and only appends", () =>
   assert.match(contents, /- Review finding: orphan sweep /);
 });
 
+test("a fix-attempts-failed finding carries its distinct label", () => {
+  const annexe = annexeFixture();
+  const unfixed = finding("stranded cleanup", {
+    kind: "fix-attempts-failed",
+    severity: "Medium",
+    path: "internal/cleanup.go",
+    line: 12,
+    explanation: "cleanup ownership lives only in memory and a crash strands it",
+  });
+  const { orientationPath, findingsPath } = fixture(annexeOrientation(annexe.clone), [unfixed]);
+
+  const result = run([orientationPath, findingsPath]);
+  assert.equal(result.status, 0);
+  const contents = annexe.git(annexe.origin, "show", "main:ISSUES.md");
+  assert.match(
+    contents,
+    /- Review finding \(automated fixes failed\): stranded cleanup \(Medium, internal\/cleanup\.go:12\) — cleanup ownership lives only in memory and a crash strands it\. Filed by Minos from exact-owner\/exact-repo#37, 2026-08-17\./,
+  );
+});
+
 test("held diagnosis keeps finding details under its distinct attributed label", () => {
   const annexe = annexeFixture();
   const held = finding("target cache invalidation", {

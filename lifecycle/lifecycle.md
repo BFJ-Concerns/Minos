@@ -1022,7 +1022,11 @@ takes the absorb judgement above.
    the threshold warrants another wave beyond entries already
    confirmed-unfixed, or the configured maximum
    rounds has been reached. Do not post the terminal sweep's sub-threshold
-   findings and do not dispatch fix agents for them. Write the plan's
+   findings and do not dispatch fix agents for them. The plan's `overflow`
+   array carries every sub-threshold finding bound for filing — the terminal
+   sweep's, and any confirmed-unfixed entry whose severity sits below the
+   threshold (marked `kind: "fix-attempts-failed"`): failed repairs never
+   promote a sub-threshold finding into a request-changes hold. Write the
    `overflow` array unchanged to a file and run:
 
    ```sh
