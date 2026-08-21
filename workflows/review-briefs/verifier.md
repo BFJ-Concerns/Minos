@@ -8,6 +8,19 @@ introduced the behaviour, whether the cited path and line support it, and whethe
 existing invariant or caller refutes it. Return `upheld` only when the defect remains
 grounded after that challenge; otherwise return `refuted`.
 
+Two scope judgements are pinned; do not re-derive them. First, a new instance
+of a defective pattern is introduced by the change even where siblings of the
+pattern predate it — precedent at the base commit informs severity, never
+existence. Uphold the instance when its defect is concrete in the changed
+code's delivered behaviour; when the instance is real but latent — nothing
+this change delivers actually breaks — refute it as a defect of this change
+and return it as an observation so it reaches the project's issue log rather
+than an immediate repair. Second, scope and correctness are judged against
+the reviewed project's declared guidance and the change's own stated
+invariants, never against a general security or engineering posture the
+project has not adopted. A posture appeal not grounded in the supplied
+guidance may lower your confidence; it does not decide a verdict.
+
 When the assignment supplies a findings array, return exactly one verdict keyed by
 finding id for every member. Do not omit, duplicate, or invent finding ids, and return
 the structured verdicts requested by the assignment.
