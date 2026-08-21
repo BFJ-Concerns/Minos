@@ -70,7 +70,10 @@ func TestStatusReportsLiveRunIdentityStageAndTimings(t *testing.T) {
 	writeStatusFile(t, filepath.Join(runDir, "fix-args.json"), "{}")
 	writeStatusFile(t, filepath.Join(runDir, "fix-result.json"), `{"applied":1}`)
 	writeStatusFile(t, filepath.Join(runDir, "test-command-output.log"), "suite output\n")
-	writeStatusFile(t, filepath.Join(runDir, "test-exit"), "1\n")
+	writeStatusFile(t, filepath.Join(runDir, "timings.ndjson"),
+		`{"kind":"minos-timing-event-v1","name":"test-command",`+
+			`"started_at":"2026-08-21T20:02:00Z","ended_at":"2026-08-21T20:03:00Z",`+
+			`"duration_ms":60000,"exit_status":1}`+"\n")
 	writeStatusFile(t, filepath.Join(runDir, "gate-repair-args.json"), "{}")
 	cfg.Runs.TimingsCommand = statusTimingsScript(t, `{"kind":"minos-timing-record-v1","workers":[]}`)
 	stubStatusCommands(t)
@@ -207,7 +210,9 @@ func writeStatusRunDirectory(t *testing.T, cfg ServiceConfig) string {
 	orientation := `{"head":"58c2a8dce6310320b4868d954b22fcbdc81bca57",
 "source":{"owner":"example","repo":"Relay","pr":"96"}}`
 	writeStatusFile(t, filepath.Join(runDir, "orientation.json"), orientation)
-	writeStatusFile(t, filepath.Join(runDir, "current-head"), "6fb27999e7bc27d3778d7128593aba2ea833c281\n")
+	reconciliation := `{"outcome":"reconciled","publish":true,` +
+		`"merge":"6fb27999e7bc27d3778d7128593aba2ea833c281"}`
+	writeStatusFile(t, filepath.Join(runDir, "reconciliation.json"), reconciliation)
 	return runDir
 }
 

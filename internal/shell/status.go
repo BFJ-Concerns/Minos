@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -85,6 +86,20 @@ type orientationDocument struct {
 		Repo  string `json:"repo"`
 		PR    string `json:"pr"`
 	} `json:"source"`
+}
+
+type reconciliationDocument struct {
+	Outcome string `json:"outcome"`
+	Publish bool   `json:"publish"`
+	Merge   string `json:"merge"`
+}
+
+type commandTimingEvent struct {
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	StartedAt  string `json:"started_at"`
+	EndedAt    string `json:"ended_at"`
+	ExitStatus *int   `json:"exit_status"`
 }
 
 func handleStatus(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r *http.Request) error {
@@ -184,17 +199,29 @@ func describeRun(ctx context.Context, cfg ServiceConfig, unitName string) status
 		run.PR = orientation.Source.PR
 		run.Head = orientation.Head
 	}
-	// The head the run is bound to moves when setup publishes a
-	// reconciliation merge, and current-head is where that move is recorded.
-	if head, err := os.ReadFile(filepath.Join(runDir, "current-head")); err == nil {
-		if trimmed := strings.TrimSpace(string(head)); trimmed != "" {
-			run.Head = trimmed
-		}
+	// A published setup reconciliation moves the head the run is bound to.
+	// run-body consumes the same state and binds subsequent forge actions to
+	// its merge commit.
+	if head := reconciledRunHead(runDir); head != "" {
+		run.Head = head
 	}
 	run.Stages = runStages(runDir)
 	run.Stage = currentStage(run.Stages)
 	run.Timings = runTimings(ctx, cfg, runDir, run)
 	return run
+}
+
+func reconciledRunHead(runDir string) string {
+	content, err := os.ReadFile(filepath.Join(runDir, "reconciliation.json"))
+	if err != nil {
+		return ""
+	}
+	var reconciliation reconciliationDocument
+	if json.Unmarshal(content, &reconciliation) != nil ||
+		!reconciliation.Publish || reconciliation.Outcome != "reconciled" {
+		return ""
+	}
+	return strings.TrimSpace(reconciliation.Merge)
 }
 
 // runDirectoryForUnit resolves the single run directory a live unit owns.
@@ -257,9 +284,10 @@ func orientationForge(cfg ServiceConfig, orientation orientationDocument) string
 }
 
 // runStages reports every lifecycle stage the run directory shows evidence of,
-// oldest first. Two kinds leave evidence: a wrapped command, which records its
-// exit status in "<name>-exit"; and a dispatched workflow, which follows the
-// args/flag/result convention the lifecycle prescribes.
+// oldest first. Two kinds leave evidence: a configured gate command, whose
+// completed timing event records its span and exit status; and a dispatched
+// workflow, which follows the args/flag/result convention the lifecycle
+// prescribes.
 func runStages(runDir string) []statusStage {
 	stages := append(commandStages(runDir), dispatchStages(runDir)...)
 	sort.SliceStable(stages, func(i, j int) bool {
@@ -269,32 +297,40 @@ func runStages(runDir string) []statusStage {
 }
 
 func commandStages(runDir string) []statusStage {
-	matches, err := filepath.Glob(filepath.Join(runDir, "*-exit"))
+	events, err := os.Open(filepath.Join(runDir, "timings.ndjson"))
 	if err != nil {
 		return nil
 	}
-	stages := make([]statusStage, 0, len(matches))
-	for _, match := range matches {
-		name := strings.TrimSuffix(filepath.Base(match), "-exit")
-		stage := statusStage{Name: name, State: stageUnknown, EndedAt: fileModifiedTime(match)}
-		content, err := os.ReadFile(match)
-		if err != nil {
+	defer func() { _ = events.Close() }()
+
+	stages := []statusStage{}
+	scanner := bufio.NewScanner(events)
+	for scanner.Scan() {
+		var event commandTimingEvent
+		if json.Unmarshal(scanner.Bytes(), &event) != nil ||
+			event.Kind != "minos-timing-event-v1" ||
+			!strings.HasSuffix(event.Name, "-command") {
+			continue
+		}
+		name := strings.TrimSuffix(event.Name, "-command")
+		if name == "" {
+			continue
+		}
+		stage := statusStage{
+			Name:       name,
+			State:      stageUnknown,
+			StartedAt:  event.StartedAt,
+			EndedAt:    event.EndedAt,
+			ExitStatus: event.ExitStatus,
+		}
+		if event.ExitStatus == nil {
 			stages = append(stages, stage)
 			continue
 		}
-		status, err := strconv.Atoi(strings.TrimSpace(string(content)))
-		if err != nil {
-			stages = append(stages, stage)
-			continue
-		}
-		stage.ExitStatus = &status
 		stage.State = stagePassed
-		if status != 0 {
+		if *event.ExitStatus != 0 {
 			stage.State = stageFailed
 		}
-		// The command's own output log is opened when the command starts,
-		// which is the closest record of when this stage began.
-		stage.StartedAt = fileModifiedTime(filepath.Join(runDir, name+"-command-output.log"))
 		stages = append(stages, stage)
 	}
 	return stages
