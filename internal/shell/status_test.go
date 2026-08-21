@@ -367,21 +367,24 @@ func TestRecentRunsIsEmptyWithoutAnArchiveCommand(t *testing.T) {
 	}
 }
 
-func TestRecentRunsHoldsTheWindowWithinBounds(t *testing.T) {
-	cfg := statusTestConfig(t)
+func TestRecentRunsHoldsTheWindowAndLimitWithinBounds(t *testing.T) {
 	for _, test := range []struct {
-		requested string
-		want      int
+		name       string
+		query      string
+		wantWindow int
+		wantLimit  int
 	}{
-		{requested: "6", want: 6},
-		{requested: "", want: defaultRecentWindowHours},
-		{requested: "nonsense", want: defaultRecentWindowHours},
-		{requested: "0", want: defaultRecentWindowHours},
-		{requested: "100000", want: maximumRecentWindowHours},
+		{name: "as asked", query: "hours=6&limit=5", wantWindow: 6, wantLimit: 5},
+		{name: "unasked", query: "", wantWindow: defaultRecentWindowHours, wantLimit: defaultRecentRecords},
+		{name: "nonsense", query: "hours=soon&limit=lots", wantWindow: defaultRecentWindowHours, wantLimit: defaultRecentRecords},
+		{name: "zero", query: "hours=0&limit=0", wantWindow: defaultRecentWindowHours, wantLimit: defaultRecentRecords},
+		{name: "beyond the ceiling", query: "hours=100000&limit=100000", wantWindow: maximumRecentWindowHours, wantLimit: maximumRecentRecords},
 	} {
-		t.Run(test.requested, func(t *testing.T) {
-			if got := readRecentRuns(t, cfg, test.requested).WindowHours; got != test.want {
-				t.Fatalf("window = %d, want %d", got, test.want)
+		t.Run(test.name, func(t *testing.T) {
+			document := readRecentRuns(t, statusTestConfig(t), test.query)
+			if document.WindowHours != test.wantWindow || document.Limit != test.wantLimit {
+				t.Fatalf("window/limit = %d/%d, want %d/%d",
+					document.WindowHours, document.Limit, test.wantWindow, test.wantLimit)
 			}
 		})
 	}
@@ -407,11 +410,11 @@ func archiveListingScript(t *testing.T, sidecars map[string]string) string {
 	return path
 }
 
-func readRecentRuns(t *testing.T, cfg ServiceConfig, hours string) recentRunsDocument {
+func readRecentRuns(t *testing.T, cfg ServiceConfig, query string) recentRunsDocument {
 	t.Helper()
 	target := "/runs/recent"
-	if hours != "" {
-		target += "?hours=" + hours
+	if query != "" {
+		target += "?" + query
 	}
 	request := httptest.NewRequest(http.MethodGet, target, nil)
 	request.Header.Set("Authorization", "Bearer status-token")

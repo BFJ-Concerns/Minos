@@ -23,7 +23,8 @@ const recentRunsKind = "minos-recent-runs-v1"
 const (
 	defaultRecentWindowHours = 24
 	maximumRecentWindowHours = 24 * 7
-	maximumRecentRecords     = 60
+	defaultRecentRecords     = 60
+	maximumRecentRecords     = 500
 	archiveTimestampLayout   = "20060102T150405Z"
 )
 
@@ -35,6 +36,7 @@ type recentRunsDocument struct {
 	Kind        string      `json:"kind"`
 	GeneratedAt string      `json:"generated_at"`
 	WindowHours int         `json:"window_hours"`
+	Limit       int         `json:"limit"`
 	Runs        []recentRun `json:"runs"`
 }
 
@@ -73,15 +75,17 @@ func handleRecentRuns(ctx context.Context, cfg ServiceConfig, w http.ResponseWri
 		http.Error(w, "unauthorised", http.StatusUnauthorized)
 		return nil
 	}
-	hours := recentWindowHours(r.URL.Query().Get("hours"))
+	hours := boundedQuery(r.URL.Query().Get("hours"), defaultRecentWindowHours, maximumRecentWindowHours)
+	limit := boundedQuery(r.URL.Query().Get("limit"), defaultRecentRecords, maximumRecentRecords)
 	document := recentRunsDocument{
 		Kind:        recentRunsKind,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		WindowHours: hours,
+		Limit:       limit,
 		Runs:        []recentRun{},
 	}
 	if cfg.Runs.RecentTimingsCommand != "" {
-		runs, err := archivedRuns(ctx, cfg, hours)
+		runs, err := archivedRuns(ctx, cfg, hours, limit)
 		if err != nil {
 			http.Error(w, "archived runs unavailable", http.StatusBadGateway)
 			return err
@@ -99,22 +103,25 @@ func handleRecentRuns(ctx context.Context, cfg ServiceConfig, w http.ResponseWri
 	return nil
 }
 
-func recentWindowHours(raw string) int {
-	hours, err := strconv.Atoi(raw)
-	if err != nil || hours < 1 {
-		return defaultRecentWindowHours
+// boundedQuery reads a positive integer from the query string, falling back to
+// a default and holding it under a ceiling. A caller says how much history it
+// wants; the ceiling is what keeps one request from asking for all of it.
+func boundedQuery(raw string, fallback, ceiling int) int {
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return fallback
 	}
-	return min(hours, maximumRecentWindowHours)
+	return min(value, ceiling)
 }
 
 // archivedRuns asks the archive host for every timing sidecar delivered since
 // the cutoff. A sidecar that cannot be decoded is skipped rather than failing
 // the request: it is one run's presentation detail, and the rest are still
 // worth reporting.
-func archivedRuns(ctx context.Context, cfg ServiceConfig, hours int) ([]recentRun, error) {
+func archivedRuns(ctx context.Context, cfg ServiceConfig, hours, limit int) ([]recentRun, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(archiveTimestampLayout)
 	out, err := commandCombinedOutput(ctx, cfg.Runs.RecentTimingsCommand,
-		cutoff, strconv.Itoa(maximumRecentRecords))
+		cutoff, strconv.Itoa(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list archived timing records: %w: %s", err, strings.TrimSpace(string(out)))
 	}
