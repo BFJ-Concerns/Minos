@@ -185,3 +185,42 @@ exited, or a job state with nothing in flight and no armed wake and no
 terminal marker, is the dead case. The run supervisor's own silence backstop
 (`MINOS_LEAD_SILENCE_TIMEOUT`) already bounds a genuinely wedged lead — do
 not kill a waiting run ahead of it on the strength of quiet files.
+
+## Serving run status to an operator surface
+
+The receiver can serve a read-only projection of what is live: for each active
+run, the pull request it serves, the head it is bound to, the lifecycle stage
+it has reached, and the timing record `collect-timings` assembles from the
+run's own residue. It is presentation only — nothing writes to it and no
+decision reads it — and it exists so a dashboard can show a run's progress
+without a shell on the box.
+
+The route is mounted only when a token is configured for it, so a deployment
+that wants no such surface simply leaves the keys out. To turn it on:
+
+```sh
+umask 077 && head -c 32 /dev/urandom | base64 > /etc/minos/status.token
+```
+
+then add both keys to `/etc/minos/service.toml` and restart the receiver:
+
+```toml
+[listener]
+bind = ":8919"
+status-token-file = "/etc/minos/status.token"
+
+[runs]
+timings-command = "/opt/minos/run-body/collect-timings"
+```
+
+`timings-command` is optional; without it each run reports a null timing block
+and its stage ladder alone. Read the projection with the token as a bearer
+credential:
+
+```sh
+curl -H "Authorization: Bearer $(cat /etc/minos/status.token)" \
+  http://minos.example:8919/status | jq
+```
+
+The token is the whole gate, and the projection names repositories, branches
+and heads — keep it to the LAN and treat it as a credential.
