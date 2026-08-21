@@ -1,0 +1,8 @@
+[Unit]
+Description=Minos sweep failure alert
+Documentation=file:/opt/minos/docs/go-live.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/minos alert --config /etc/minos "Sweep attention: the reconciliation sweep failed" "minos-sweep.service ended in failure. No pull request in any repo is reconciled while this persists. Inspect with: journalctl --user -u minos-sweep.service"
+UMask=0077

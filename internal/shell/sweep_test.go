@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -160,5 +161,63 @@ func TestUnconfiguredRepositoryExpiresHandoff(t *testing.T) {
 	}
 	if _, err := os.Stat(handoff); !os.IsNotExist(err) {
 		t.Fatalf("unconfigured repository handoff still exists: %v", err)
+	}
+}
+
+func TestOrderSweepCandidatesInterleavesReposWithinEachPriorityClass(t *testing.T) {
+	candidate := func(repo, pr string, priority int) sweepCandidate {
+		return sweepCandidate{facts: Facts{Owner: "owner", Repo: repo, PR: pr}, priority: priority}
+	}
+	ordered := orderSweepCandidates([]sweepCandidate{
+		// The forge lists newest first; the sweep must serve each repo's
+		// queue oldest first regardless.
+		candidate("busy", "3", 1),
+		candidate("busy", "2", 1),
+		candidate("busy", "1", 1),
+		candidate("starved", "8", 1),
+		candidate("quiet", "4", 1),
+		candidate("busy", "5", 0),
+	})
+	var got []string
+	for _, entry := range ordered {
+		got = append(got, entry.facts.Repo+"#"+entry.facts.PR)
+	}
+	want := []string{"busy#5", "busy#1", "quiet#4", "starved#8", "busy#2", "busy#3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ordered candidates = %v, want %v", got, want)
+	}
+}
+
+func TestSweepSkipsAnUnreadableRepoAndStillSweepsTheRest(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg := writeSweepFixtureConfig(t, state)
+	vanished := `forge = "forgejo"
+owner = "minos-e2e-owner"
+repo = "vanished"
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`
+	// Sorts before subject.toml, so the unreadable repo is met first and a
+	// pass-wide abort would leave the healthy repo unswept.
+	if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "aaa-vanished.toml"), []byte(vanished), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var commands []string
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		commands = append(commands, name)
+		return nil, nil
+	}
+
+	if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+		t.Fatalf("a single unreadable repo failed the pass: %v", err)
+	}
+	if got := state.pullRequestSnapshotReads("1"); got != 1 {
+		t.Fatalf("healthy repo snapshot reads this pass = %d, want one", got)
+	}
+	if !slices.Contains(commands, "systemd-run") {
+		t.Fatalf("healthy repo was not reconciled; commands = %v", commands)
 	}
 }

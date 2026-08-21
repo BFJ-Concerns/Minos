@@ -70,7 +70,8 @@ func TestFinishingUnmovedTargetCommandsPublishBoundHold(t *testing.T) {
 	}
 
 	posts := state.statusPostFacts()
-	wantTargetURL := cfg.Forges[facts.Forge].APIBase + "/minos-e2e-owner/subject/pulls/1#minos-target-" + target
+	wantTargetURL := cfg.Forges[facts.Forge].APIBase + "/minos-e2e-owner/subject/pulls/1#minos-target-" + target +
+		"+minos-env-" + currentEnvironmentStamp(cfg)
 	if len(posts) != 1 || posts[0].Head != head || posts[0].Payload["state"] != "pending" ||
 		posts[0].Payload["description"] != product.Held().Description() ||
 		posts[0].Payload["target_url"] != wantTargetURL {

@@ -201,7 +201,24 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 		{name: "clean status completes the run", statuses: []forge.Status{ownedStatus(1, product.Clean().Description())}, want: true},
 		{name: "attention status completes the run", statuses: []forge.Status{ownedStatus(1, product.Attention().Description())}, want: true},
 		{name: "merged status completes the run", statuses: []forge.Status{ownedStatus(1, product.Merged().Description())}, want: true},
-		{name: "held status completes the run for this target", statuses: []forge.Status{ownedStatus(1, product.Held().Description())}, want: true},
+		{
+			name: "held status bound to the current environment completes the run",
+			statuses: []forge.Status{{
+				ID: 1, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Creator: "Minos", Description: product.Held().Description(),
+				TargetURL: targetURL + "+minos-env-currentstamp",
+			}},
+			want: true,
+		},
+		{
+			name: "held status bound to an older environment is spent",
+			statuses: []forge.Status{{
+				ID: 1, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Creator: "Minos", Description: product.Held().Description(),
+				TargetURL: targetURL + "+minos-env-olderstamp",
+			}},
+		},
+		{name: "legacy held status with no environment binding is spent", statuses: []forge.Status{ownedStatus(1, product.Held().Description())}},
 		{name: "incomplete status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Incomplete().Description())}},
 		{name: "working status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Working().Description())}},
 		{name: "continuation status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Continuation().Description())}},
@@ -245,7 +262,7 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{Statuses: test.statuses}
-			if got := completedRunStatus(snapshot, "Minos", targetURL); got != test.want {
+			if got := completedRunStatus(snapshot, "Minos", targetURL, "currentstamp"); got != test.want {
 				t.Fatalf("completedRunStatus() = %t, want %t", got, test.want)
 			}
 		})

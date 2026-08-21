@@ -34,4 +34,8 @@ settle a suspicion, report it with lower confidence and state what would confirm
 Do not load skills, start another workflow, consult historical sessions, search the
 web, or inspect unrelated worktrees. Do not broaden beyond the assigned scope.
 Severity is Critical, High, Medium, or Low; confidence is an independent integer
-from 0 to 100.
+from 0 to 100. Severity rates what this change delivers. A coverage gap on
+currently-correct code rates the gap itself and caps at Medium — never the
+hypothetical defect the missing test could someday admit — with the ceiling
+lifted only when the unproved behaviour is itself a declared contract of the
+change.

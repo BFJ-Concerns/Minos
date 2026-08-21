@@ -157,6 +157,24 @@ func (a *Adapter) PostReview(ctx context.Context, guard Guard, verdict ReviewVer
 	return decodeWriteResult(out, runErr)
 }
 
+// Alert files an operator alert as a repository issue: one open issue per
+// title, with repeat alerts arriving as comments on it.
+func (a *Adapter) Alert(ctx context.Context, repository Repository, title, body string) WriteResult {
+	payload, err := json.Marshal(struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}{Title: title, Body: body})
+	if err != nil {
+		return WriteResult{Outcome: WriteRejected, Reason: "encode alert: " + err.Error()}
+	}
+	out, runErr := a.runner.Run(ctx, RunRequest{
+		Operation: "alert",
+		Arguments: []string{repository.Owner, repository.Name},
+		Stdin:     bytes.NewReader(payload),
+	})
+	return decodeWriteResult(out, runErr)
+}
+
 func (a *Adapter) PostComment(ctx context.Context, guard Guard, body string) WriteResult {
 	payload, err := json.Marshal(struct {
 		Body string `json:"body"`

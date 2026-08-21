@@ -17,5 +17,6 @@ func newBehaviouralForge(cfg ServiceConfig, forgeName string) (*forge.Adapter, e
 	}
 	return forge.NewAdapter(forge.ScriptRunner{
 		Directory: configuration.Adaptation, APIBase: configuration.APIBase, Credential: credential,
+		EnvStamp: currentEnvironmentStamp(cfg),
 	}, cfg.Service.BotLogin)
 }

@@ -106,7 +106,11 @@ machine itself is the containment boundary.
    installed skill.
 
    Create the webhook secret and forge token files separately.
-5. Install and enable `minos-receiver.service` and `minos-sweep.timer` from
+5. Install `minos-sweep-alert.service` (the sweep's `OnFailure=` hook, which
+   files an operator alert issue on the repository named by the `[service]`
+   `alert-forge`/`alert-owner`/`alert-repo` keys; the sweep files the same
+   alert itself when a configured repo goes unswept for an hour), then
+   install and enable `minos-receiver.service` and `minos-sweep.timer` from
    `deploy/systemd/user` for the deployment user.
 6. Configure the forge webhook to post to `/hooks/forgejo` using the matching
    secret.
