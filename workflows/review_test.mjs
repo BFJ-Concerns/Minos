@@ -326,10 +326,10 @@ test("all findings are proposed on Terra and verified cross-family on Claude", a
     .every((call) => call.opts.engine !== "codex"));
 });
 
-test("specialists and verifiers use medium effort while exploration keeps its pin", async () => {
+test("exploration and specialists run at high effort while verifiers stay at medium", async () => {
   const { calls } = await runScript(ARGS, responder());
   assert.equal(calls.find((call) => call.opts.label === "exploration").opts.effort, "high");
-  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "medium"));
+  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "high"));
   assert.ok(calls.filter((call) => call.opts.label?.startsWith("verify-"))
     .every((call) => call.opts.effort === "medium"));
 });

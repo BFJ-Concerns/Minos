@@ -376,13 +376,21 @@ function incompleteExploration(reason) {
 
 phase("Explore");
 addLeg("exploration", "exploration", GPT_EXPLORER_MODEL);
+const repairedSites = priorFindings.confirmedFixed.map(
+  (entry) => `${entry.finding.path}:${entry.finding.line} (${entry.finding.title})`
+);
+const repairedSitesContext = repairedSites.length > 0
+  ? `\nEarlier rounds reviewed this pull request and repairs have since landed at these sites: ${repairedSites.join("; ")}. ` +
+    "Ensure the plan's unit scopes cover every repaired site's path: the repairs are the newest code in the range, and a defect repaired in one arm of a construct is a prime candidate to persist in its symmetric siblings."
+  : "";
 const explorationResult = await agent(
   rolePrompt(
     roleBriefs,
     projectGuidance,
     pullRequestDescription,
     ROLE_BRIEFS.exploration,
-    `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.`
+    `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.` +
+      repairedSitesContext
   ),
   {
     engine: "codex",
@@ -419,7 +427,10 @@ function specialistPrompt(unit) {
   const suppressionContext = hasPriorFindings
     ? `\nPrior findings from earlier rounds: ${JSON.stringify(priorFindings)}\n` +
       "Do not present a substantially equivalent, already-dispositioned finding as a fresh discovery. " +
-      "You must judge equivalence from the current code and evidence. A regression of a repair, a materially different nearby defect, or a genuinely new finding remains reportable."
+      "You must judge equivalence from the current code and evidence. A regression of a repair, a materially different nearby defect, or a genuinely new finding remains reportable." +
+      (priorFindings.confirmedFixed.length > 0
+        ? " Each confirmedFixed entry names a repaired site. Where a repaired site falls in your scope, read the repair as it now stands and give its symmetric siblings — parallel arms of the same construct, mirrored branches, analogous call sites — the same reading: a defect repaired in one arm is a prime candidate to persist in its siblings."
+        : "")
     : "";
   return rolePrompt(
     roleBriefs,
@@ -438,7 +449,7 @@ const specialistResults = await parallel(
       engine: "codex",
       schema: specialistSchema,
       model: PROPOSER_MODEL,
-      effort: "medium",
+      effort: "high",
       label: unit.label,
       phase: "Specialise",
     })

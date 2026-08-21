@@ -7,6 +7,15 @@ authorisation, validation, secret handling, injection surfaces, and failure path
 Report concrete defects introduced by the change, not generic hardening advice.
 Trust the packet for orientation; read the diff for your scope directly.
 
+Sweep the whole assigned scope before returning: you are done when every
+changed hunk in scope has been read and judged against this concern, not
+when you have enough findings. One defect does not finish a region — give a
+defective construct's symmetric siblings (parallel arms of the same match
+or select, mirrored branches, analogous call sites) the same reading, then
+carry on through the rest of the scope. Never stop at the first strong
+finding: a finding list that ends where your reading stopped is an
+incomplete sweep, not a completed review.
+
 If you notice a real defect outside those bounds, do not return it as a finding.
 Record the lead and move on; do not investigate outside your assigned boundary.
 Return it in `outOfScopeObservations` for routing to the reviewed project's
