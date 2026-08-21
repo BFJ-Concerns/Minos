@@ -169,9 +169,11 @@ func TestOrderSweepCandidatesInterleavesReposWithinEachPriorityClass(t *testing.
 		return sweepCandidate{facts: Facts{Owner: "owner", Repo: repo, PR: pr}, priority: priority}
 	}
 	ordered := orderSweepCandidates([]sweepCandidate{
-		candidate("busy", "1", 1),
-		candidate("busy", "2", 1),
+		// The forge lists newest first; the sweep must serve each repo's
+		// queue oldest first regardless.
 		candidate("busy", "3", 1),
+		candidate("busy", "2", 1),
+		candidate("busy", "1", 1),
 		candidate("starved", "8", 1),
 		candidate("quiet", "4", 1),
 		candidate("busy", "5", 0),
@@ -180,7 +182,7 @@ func TestOrderSweepCandidatesInterleavesReposWithinEachPriorityClass(t *testing.
 	for _, entry := range ordered {
 		got = append(got, entry.facts.Repo+"#"+entry.facts.PR)
 	}
-	want := []string{"busy#5", "busy#1", "starved#8", "quiet#4", "busy#2", "busy#3"}
+	want := []string{"busy#5", "busy#1", "quiet#4", "starved#8", "busy#2", "busy#3"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("ordered candidates = %v, want %v", got, want)
 	}

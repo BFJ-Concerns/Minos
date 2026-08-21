@@ -19,6 +19,12 @@ type ServiceConfig struct {
 	Root    string `toml:"-"`
 	Service struct {
 		BotLogin string `toml:"bot-login"`
+		// Operator alerts are filed as issues on this repository (one open
+		// issue per alert title, repeats as comments). All three keys unset
+		// leaves alerting off and alerts as journal lines only.
+		AlertForge string `toml:"alert-forge"`
+		AlertOwner string `toml:"alert-owner"`
+		AlertRepo  string `toml:"alert-repo"`
 	} `toml:"service"`
 	Listener struct {
 		Bind string `toml:"bind"`

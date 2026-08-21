@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -37,25 +38,32 @@ func SweepCommand(ctx context.Context, args []string) error {
 	}
 	var candidates []sweepCandidate
 	// One unreadable repo must not stop the pass: the rest of the fleet is
-	// swept, and only a total outage fails the unit.
+	// swept, and only a total outage fails the unit. Skipped repos are
+	// counted across passes; a repo quietly failing for an hour files an
+	// operator alert.
 	var attempted, unreadable int
+	skipped := make(map[string]string)
 	for _, repo := range repos {
+		slug := repo.Owner + "/" + repo.Repo
 		forgeConfig, ok := cfg.Forges[repo.Forge]
 		if !ok {
-			log.Printf("repo %s/%s: unknown forge %s", repo.Owner, repo.Repo, repo.Forge)
+			skipped[slug] = fmt.Sprintf("unknown forge %q", repo.Forge)
+			log.Printf("attention: repo %s skipped this pass: unknown forge %s", slug, repo.Forge)
 			continue
 		}
 		attempted++
 		adaptation, err := NewAdaptation(forgeConfig)
 		if err != nil {
 			unreadable++
-			log.Printf("attention: repo %s/%s skipped this pass: %v", repo.Owner, repo.Repo, err)
+			skipped[slug] = err.Error()
+			log.Printf("attention: repo %s skipped this pass: %v", slug, err)
 			continue
 		}
 		pullRequests, err := adaptation.ListOpenPRs(ctx, repo.Forge, repo.Owner, repo.Repo)
 		if err != nil {
 			unreadable++
-			log.Printf("attention: repo %s/%s skipped this pass: %v", repo.Owner, repo.Repo, err)
+			skipped[slug] = err.Error()
+			log.Printf("attention: repo %s skipped this pass: %v", slug, err)
 			continue
 		}
 		for _, facts := range pullRequests {
@@ -89,6 +97,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err := expireInactiveRunHandoffs(ctx, cfg, repos); err != nil {
 		log.Printf("expire inactive run handoffs: %v", err)
 	}
+	recordRepoSkips(ctx, cfg, skipped)
 	if attempted > 0 && unreadable == attempted {
 		return fmt.Errorf("every configured repo (%d) was unreadable this pass", attempted)
 	}
@@ -98,8 +107,13 @@ func SweepCommand(ctx context.Context, args []string) error {
 // orderSweepCandidates keeps continuation priority absolute, then within each
 // priority class takes one candidate per repo in turn, so a repo with a steady
 // stream of actionable pull requests cannot claim every free run slot in a
-// single pass while later-configured repos starve.
+// single pass while later-configured repos starve. Each repo's own queue runs
+// oldest pull request first: age is served in creation order, and a stuck head
+// can only delay its own repo's lane, never the fleet.
 func orderSweepCandidates(candidates []sweepCandidate) []sweepCandidate {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return pullRequestNumber(candidates[i].facts) < pullRequestNumber(candidates[j].facts)
+	})
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].priority < candidates[j].priority
 	})
@@ -113,6 +127,11 @@ func orderSweepCandidates(candidates []sweepCandidate) []sweepCandidate {
 		start = end
 	}
 	return ordered
+}
+
+func pullRequestNumber(facts Facts) int64 {
+	number, _ := strconv.ParseInt(facts.PR, 10, 64)
+	return number
 }
 
 func interleaveByRepo(candidates []sweepCandidate) []sweepCandidate {
