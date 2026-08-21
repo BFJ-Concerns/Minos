@@ -49,15 +49,22 @@ func preserveStaleReviewResult(path, stalePath string) error {
 	return nil
 }
 
-// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Live runs
-// share it, so their ceilings can never together promise more memory than the
-// box has — the ceiling exists so that a ballooning run fails alone instead of
-// taking the receiver and sweep with it, and an overcommitted ceiling cannot
-// do that.
+// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Runs
+// share it live inside runsSliceName rather than by static division: the
+// slice unit (deploy/systemd/user/minos-runs.slice) holds MemoryHigh just
+// under the envelope and MemoryMax at it, so no run feels any pressure until
+// the runs *together* approach the envelope, reclaim then pushes them back,
+// and only combined demand the envelope cannot hold kills — the kernel picks
+// the biggest consumer, which is the ballooning run's compiler or worker.
+// Each run also carries its own MemoryMax at the whole envelope as the
+// backstop for a box where the slice unit is not installed, keeping the
+// receiver and sweep (outside the slice) safe either way.
 const runMemoryEnvelopeGiB = 20
 
-func runMemoryMax(cfg ServiceConfig) string {
-	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB/cfg.MaxConcurrentRuns())
+const runsSliceName = "minos-runs.slice"
+
+func runMemoryMax() string {
+	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB)
 }
 
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext) (SpawnResult, error) {
@@ -235,6 +242,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"ENSEMBLE_CONCURRENCY_CLAUDE":   strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
 		"ENSEMBLE_CONCURRENCY_CODEX":    strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
 	}
+	if cfg.Ensemble.AgentCeiling > 0 {
+		env["ENSEMBLE_AGENT_CEILING"] = strconv.Itoa(cfg.Ensemble.AgentCeiling)
+	}
 	if handoff != nil && handoff.Progress != nil {
 		progress, marshalErr := json.Marshal(handoff.Progress)
 		if marshalErr != nil {
@@ -256,7 +266,8 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
 		"--property=RuntimeMaxSec=12h",
-		"--property=MemoryMax=" + runMemoryMax(cfg),
+		"--slice=" + runsSliceName,
+		"--property=MemoryMax=" + runMemoryMax(),
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)

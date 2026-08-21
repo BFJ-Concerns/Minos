@@ -39,15 +39,20 @@ machine itself is the containment boundary.
    destination, identity and pinned known-hosts file.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
-   defaults to one when unset. Each unit's `MemoryMax` is a fixed 20 GiB
-   whole-box envelope divided by that cap — 10 GiB each at two — so concurrent
-   runs never promise more memory than the machine has and a ballooning run
-   still fails alone. Size the cap against the machine's memory and cores:
-   a healthy run's unreclaimable footprint is around 1.2 GiB, but each run
-   also paces `ensemble.concurrency-claude` and `concurrency-codex` workers of
-   its own.
+   defaults to one when unset. Run units share a fixed 20 GiB whole-box
+   memory envelope live, through the `minos-runs.slice` unit: the slice
+   holds `MemoryHigh=18G` and `MemoryMax=20G`, so no run feels any pressure
+   until the runs *together* approach the envelope — a lone run may use all
+   of it — reclaim then pushes them back, and only combined demand the
+   envelope cannot hold kills, taking the biggest consumer. Each unit also
+   carries its own `MemoryMax` at the whole envelope as the backstop for a
+   box missing the slice unit. Size the cap against the machine's memory
+   and cores: a healthy run's unreclaimable footprint is around 1.2 GiB,
+   but each run also paces `ensemble.concurrency-claude` and
+   `concurrency-codex` workers of its own, and `ensemble.agent-ceiling`
+   optionally caps a workflow's agents across both engines together.
 
-   Size every capacity decision — this cap, per-run `MemoryMax`, the box
+   Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
    memory peak**. The journal's figure includes reclaimable page cache and
    pegs at `MemoryMax` on essentially every run that builds anything, so it
@@ -111,7 +116,8 @@ machine itself is the containment boundary.
    `alert-forge`/`alert-owner`/`alert-repo` keys; the sweep files the same
    alert itself when a configured repo goes unswept for an hour), then
    install and enable `minos-receiver.service` and `minos-sweep.timer` from
-   `deploy/systemd/user` for the deployment user.
+   `deploy/systemd/user` for the deployment user, and install
+   `minos-runs.slice` alongside them so runs share the memory envelope.
 6. Configure the forge webhook to post to `/hooks/forgejo` using the matching
    secret.
 

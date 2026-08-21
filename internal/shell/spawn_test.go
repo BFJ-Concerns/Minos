@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -174,8 +175,8 @@ func TestSpawnRunSuppressesOwnLiveUnitWithoutConsumingItsHandoff(t *testing.T) {
 }
 
 func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
-	for maxConcurrent, want := range map[int]string{0: "20G", 1: "20G", 2: "10G"} {
-		t.Run(want, func(t *testing.T) {
+	for _, maxConcurrent := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("max-concurrent-%d", maxConcurrent), func(t *testing.T) {
 			original := commandCombinedOutput
 			t.Cleanup(func() { commandCombinedOutput = original })
 			var systemdArgs []string
@@ -194,7 +195,8 @@ func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
 			if _, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{}); err != nil {
 				t.Fatal(err)
 			}
-			assertArgument(t, systemdArgs, "--property=MemoryMax="+want)
+			assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
+			assertArgument(t, systemdArgs, "--property=MemoryMax=20G")
 		})
 	}
 }
@@ -789,6 +791,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Ensemble.ConcurrencyClaude = 10
 	cfg.Ensemble.ConcurrencyCodex = 6
+	cfg.Ensemble.AgentCeiling = 12
 	cfg.Forges = map[string]ForgeConfig{
 		"forgejo": {APIBase: "http://forge.local", CredentialFile: "/etc/minos/forge.token"},
 	}
@@ -814,6 +817,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=ExitType=main")
 	assertArgument(t, systemdArgs, "--property=KillMode=control-group")
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=12h")
+	assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
 	assertArgument(t, systemdArgs, "--property=MemoryMax=20G")
 	for _, value := range []string{
 		"MINOS_CONFIG=/etc/minos",
@@ -838,6 +842,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_RELEASED_HOLD_DIAGNOSIS=",
 		"ENSEMBLE_CONCURRENCY_CLAUDE=10",
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
+		"ENSEMBLE_AGENT_CEILING=12",
 	} {
 		assertArgument(t, systemdArgs, "--setenv")
 		assertArgument(t, systemdArgs, value)

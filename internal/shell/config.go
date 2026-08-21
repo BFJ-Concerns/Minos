@@ -41,6 +41,10 @@ type ServiceConfig struct {
 	Ensemble struct {
 		ConcurrencyClaude int `toml:"concurrency-claude"`
 		ConcurrencyCodex  int `toml:"concurrency-codex"`
+		// AgentCeiling caps a workflow's live agents across all engines
+		// together, the same way the per-engine knobs cap each engine.
+		// Zero leaves the runtime's own default in force.
+		AgentCeiling int `toml:"agent-ceiling"`
 	} `toml:"ensemble"`
 }
 
@@ -100,7 +104,7 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		}
 	}
 	if cfg.Runs.MaxConcurrent < 0 || cfg.Runs.MaxConcurrent > runMemoryEnvelopeGiB {
-		return ServiceConfig{}, fmt.Errorf("service.toml: runs max-concurrent must be between 1 and %d, the whole-GiB shares the run memory envelope divides into", runMemoryEnvelopeGiB)
+		return ServiceConfig{}, fmt.Errorf("service.toml: runs max-concurrent must be between 1 and %d — beyond that the shared %dG run memory envelope cannot give each run a useful share", runMemoryEnvelopeGiB, runMemoryEnvelopeGiB)
 	}
 	if cfg.Ensemble.ConcurrencyClaude == 0 && cfg.Ensemble.ConcurrencyCodex == 0 {
 		cfg.Ensemble.ConcurrencyClaude = 2
@@ -108,6 +112,9 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	}
 	if cfg.Ensemble.ConcurrencyClaude < 1 || cfg.Ensemble.ConcurrencyCodex < 1 {
 		return ServiceConfig{}, fmt.Errorf("service.toml: ensemble concurrency-claude and concurrency-codex must be positive")
+	}
+	if cfg.Ensemble.AgentCeiling < 0 {
+		return ServiceConfig{}, fmt.Errorf("service.toml: ensemble agent-ceiling must be positive when set")
 	}
 	return cfg, nil
 }

@@ -412,7 +412,7 @@ func TestRebuildEstateTerminalRecoveryBindsPullRequestHeadTargetAndStatus(t *tes
 	}
 }
 
-func TestRebuildEstateIncompleteStatusUsesGuardedTargetBoundForgePath(t *testing.T) {
+func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, facts := state.service(t)
 	writeServiceConfig(t, cfg)
@@ -455,19 +455,31 @@ func TestRebuildEstateIncompleteStatusUsesGuardedTargetBoundForgePath(t *testing
 		t.Fatalf("incomplete status creator = %#v, want Minos", written["creator"])
 	}
 
+	// A status is a head-bound statement: a pinned target the branch has
+	// since left behind still publishes, anchored to that pinned target, so
+	// a mid-run target push cannot end the round.
 	stdout.Reset()
-	err := ForgeCommand(t.Context(), []string{"status", head, target + "-stale", "incomplete"}, &stdout)
-	if err == nil {
-		t.Fatal("stale target accepted an incomplete status")
+	if err := ForgeCommand(t.Context(), []string{"status", head, target + "-stale", "incomplete"}, &stdout); err != nil {
+		t.Fatalf("pinned-target status after target moved: %v\n%s", err, stdout.String())
 	}
-	if !strings.Contains(err.Error(), "status rejected") || !strings.Contains(stdout.String(), `"outcome":"rejected"`) {
-		t.Fatalf("stale-target result = %q, error = %v; want guarded rejection", stdout.String(), err)
+	if !strings.Contains(stdout.String(), `"outcome":"applied"`) {
+		t.Fatalf("pinned-target status output = %q, want applied", stdout.String())
 	}
 	state.mu.Lock()
-	writesAfterRejection := state.statusWrites
+	writesAfterMove := state.statusWrites
+	var movedAnchor any
+	if len(state.statuses) > 1 {
+		movedAnchor = state.statuses[0]["target_url"]
+	}
 	state.mu.Unlock()
-	if writesAfterRejection != 1 {
-		t.Fatalf("stale target changed status write count to %d, want one", writesAfterRejection)
+	if writesAfterMove != 2 {
+		t.Fatalf("pinned-target status write count = %d, want two", writesAfterMove)
+	}
+	wantMovedAnchor := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target + "-stale",
+	})
+	if movedAnchor != wantMovedAnchor {
+		t.Fatalf("pinned-target status anchor = %#v, want %q", movedAnchor, wantMovedAnchor)
 	}
 }
 

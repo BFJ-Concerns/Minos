@@ -73,12 +73,20 @@ urlencode() {
 # guard_open_pull_request is deliberately repeated inside every consequential
 # verb. A caller's earlier snapshot is evidence for reasoning, not permission
 # for a later mutation.
+#
+# The guard binds the head, never the target: every guarded write except the
+# merge is a statement about the change under review, which the target
+# advancing does not invalidate — target movement is reconciled at finishing,
+# not treated as staleness here. The merge is the one write whose meaning
+# changes with the target, so guarded-merge alone compares the pinned target
+# against guard_actual_target, which this guard leaves populated for it.
 guard_open_pull_request() {
   guard_owner="$1"
   guard_repo="$2"
   guard_pr="$3"
   guard_expected_head="$4"
-  guard_expected_target="$5"
+  # $5 is the caller's pinned target, accepted for a stable calling
+  # convention; only guarded-merge consumes it, via guard_actual_target.
   guard_expected_login="$6"
   guard_reason=""
 
@@ -106,13 +114,9 @@ guard_open_pull_request() {
     return 1
   fi
   if [ "$(printf '%s' "$guard_pr_json" | jq -r '.head.sha // ""')" != "$guard_expected_head" ]; then
-    guard_reason="head moved"
-    return 1
-  fi
-  if [ "$guard_actual_target" != "$guard_expected_target" ]; then
     # The guarded caller reports this shared rejection reason.
     # shellcheck disable=SC2034
-    guard_reason="target moved"
+    guard_reason="head moved"
     return 1
   fi
   return 0
