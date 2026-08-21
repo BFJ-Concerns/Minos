@@ -1,3 +1,4 @@
+import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import {
