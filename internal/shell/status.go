@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -23,6 +24,10 @@ import (
 // box.
 const statusDocumentKind = "minos-status-v1"
 
+// errRunDirectoryAbsent separates a run whose directory has not appeared yet
+// from one whose residue cannot be read. The first is how every run begins.
+var errRunDirectoryAbsent = errors.New("run directory absent")
+
 // A dispatched lifecycle stage announces itself by writing <name>-args.json
 // before the workflow starts, and its completion flag <name>-result.done once
 // the command exits — success or failure alike. The result itself,
@@ -32,6 +37,7 @@ const statusDocumentKind = "minos-status-v1"
 // is reported without a change here.
 const (
 	dispatchArgsSuffix = "-args.json"
+	stageStarting      = "starting"
 	stageRunning       = "running"
 	stagePassed        = "passed"
 	stageFailed        = "failed"
@@ -176,28 +182,40 @@ func configuredStatusRepos(cfg ServiceConfig) []statusRepo {
 	return repos
 }
 
+// describeRun reports a run from the residue it has written so far. A run
+// that has only just started has written almost none of it — the run
+// directory appears before the unit does its first work, and orientation.json
+// only lands once setup has resolved which head it is reviewing. Neither
+// absence is a fault, so both report the run as starting rather than as
+// unreadable: identity comes from the unit name in the meantime, which is
+// enough to say which pull request is under way.
 func describeRun(ctx context.Context, cfg ServiceConfig, unitName string) statusRun {
 	unit := strings.TrimSuffix(unitName, ".service")
 	run := statusRun{
 		Unit:      unitName,
 		StartedAt: unitActiveEnterTime(ctx, unitName),
-		Stage:     stageUnknown,
+		Stage:     stageStarting,
 		Stages:    []statusStage{},
 	}
+	run.Forge, run.Owner, run.Repo, run.PR = identityFromUnit(cfg, unit)
 	runDir, err := runDirectoryForUnit(cfg, unit)
 	if err != nil {
-		run.Error = err.Error()
+		if !errors.Is(err, errRunDirectoryAbsent) {
+			run.Error = err.Error()
+		}
 		return run
 	}
 	run.RunDir = runDir
-	if orientation, err := readRunOrientation(runDir); err != nil {
-		run.Error = err.Error()
-	} else {
+	orientation, err := readRunOrientation(runDir)
+	switch {
+	case err == nil:
 		run.Forge = orientationForge(cfg, orientation)
 		run.Owner = orientation.Source.Owner
 		run.Repo = orientation.Source.Repo
 		run.PR = orientation.Source.PR
 		run.Head = orientation.Head
+	case !errors.Is(err, os.ErrNotExist):
+		run.Error = err.Error()
 	}
 	// A published setup reconciliation moves the head the run is bound to.
 	// run-body consumes the same state and binds subsequent forge actions to
@@ -206,7 +224,9 @@ func describeRun(ctx context.Context, cfg ServiceConfig, unitName string) status
 		run.Head = head
 	}
 	run.Stages = runStages(runDir)
-	run.Stage = currentStage(run.Stages)
+	if stage := currentStage(run.Stages); stage != stageUnknown {
+		run.Stage = stage
+	}
 	run.Timings = runTimings(ctx, cfg, runDir, run)
 	return run
 }
@@ -241,7 +261,7 @@ func runDirectoryForUnit(cfg ServiceConfig, unit string) (string, error) {
 	}
 	switch len(directories) {
 	case 0:
-		return "", fmt.Errorf("no run directory for %s", unit)
+		return "", fmt.Errorf("%w: %s", errRunDirectoryAbsent, unit)
 	case 1:
 		return directories[0], nil
 	default:
@@ -250,10 +270,33 @@ func runDirectoryForUnit(cfg ServiceConfig, unit string) (string, error) {
 	}
 }
 
+// identityFromUnit recovers which pull request a unit serves before the run
+// has written anything saying so. The unit name is built from the pull
+// request by UnitName, which rewrites characters an owner or repository may
+// contain — so rather than split the name back apart, each configured
+// repository's own unit name is recomputed and compared.
+func identityFromUnit(cfg ServiceConfig, unit string) (forge, owner, repo, pr string) {
+	number, found := strings.CutPrefix(unit[strings.LastIndex(unit, "-pr")+1:], "pr")
+	if !found {
+		return "", "", "", ""
+	}
+	repos, err := LoadRepoConfigs(cfg.Root)
+	if err != nil {
+		return "", "", "", ""
+	}
+	for _, configured := range repos {
+		facts := Facts{Owner: configured.Owner, Repo: configured.Repo, PR: number}
+		if UnitName(facts) == unit {
+			return configured.Forge, configured.Owner, configured.Repo, number
+		}
+	}
+	return "", "", "", ""
+}
+
 func readRunOrientation(runDir string) (orientationDocument, error) {
 	content, err := os.ReadFile(filepath.Join(runDir, "orientation.json"))
 	if err != nil {
-		return orientationDocument{}, fmt.Errorf("read orientation: %w", err)
+		return orientationDocument{}, err
 	}
 	var orientation orientationDocument
 	if err := json.Unmarshal(content, &orientation); err != nil {
