@@ -105,6 +105,29 @@ if [ "$workers" != "[]" ]; then
   ')" || phases="[]"
 fi
 
+# Memory telemetry rides as snapshots: run-body writes the baseline at start
+# and archive-run the final before assembling this record. The delta names
+# what the run genuinely experienced — PSI stall time and workingset
+# refaults — which page-cache-inflated footprint numbers cannot (AGENTS.md,
+# memory accounting).
+memory_snapshot() {
+  if jq -e 'type == "object" and .kind == "minos-memory-snapshot-v1"' "$1" >/dev/null 2>&1; then
+    cat "$1"
+  else
+    echo null
+  fi
+}
+baseline_snapshot="$(memory_snapshot "$run_dir/memory-baseline.json")"
+final_snapshot="$(memory_snapshot "$run_dir/memory-final.json")"
+memory="$(jq -cn --argjson baseline "$baseline_snapshot" --argjson final "$final_snapshot" '
+  if $baseline == null and $final == null then null else
+    {baseline: $baseline, final: $final,
+     delta: (if $baseline == null or $final == null then null else
+       (reduce ("stall_some_us", "stall_full_us", "refault_anon", "refault_file") as $key ({};
+         if ($baseline[$key] != null and $final[$key] != null)
+         then . + {($key): ($final[$key] - $baseline[$key])} else . end)) end)}
+  end')" || memory="null"
+
 generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 if ! jq -n \
   --arg generated_at "$generated_at" \
@@ -114,9 +137,11 @@ if ! jq -n \
   --argjson commands "$commands" \
   --argjson workers "$workers" \
   --argjson phases "$phases" \
+  --argjson memory "$memory" \
   '{kind: "minos-timing-record-v1", generated_at: $generated_at,
     pull_request: {owner: $owner, repository: $repository, number: $number},
-    commands: $commands, workers: $workers, phases: $phases}' >"${output}.tmp"; then
+    commands: $commands, workers: $workers, phases: $phases,
+    memory: $memory}' >"${output}.tmp"; then
   echo "collect-timings: could not assemble the timing record" >&2
   rm -f "${output}.tmp"
   exit 1

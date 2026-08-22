@@ -363,6 +363,10 @@ sample_memory_pressure() {
   pressure_latched=true
 }
 
+# Baseline memory snapshot for the timing record's stall and thrash deltas.
+# Presentation-class residue: its absence never blocks the run.
+"$(dirname "$0")/memory-telemetry" "$MINOS_RUN_DIR/memory-baseline.json" || true
+
 failure_stage="lead-launch"
 failure_cause="Claude lead launch failed"
 last_activity_signature="$(

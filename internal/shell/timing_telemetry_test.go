@@ -63,6 +63,11 @@ type timingRecord struct {
 	Commands []timingEvent  `json:"commands"`
 	Workers  []timingWorker `json:"workers"`
 	Phases   []timingPhase  `json:"phases"`
+	Memory   *struct {
+		Baseline map[string]any   `json:"baseline"`
+		Final    map[string]any   `json:"final"`
+		Delta    map[string]int64 `json:"delta"`
+	} `json:"memory"`
 }
 
 func runTimeOnExit(t *testing.T, args ...string) ([]byte, error) {
@@ -237,6 +242,95 @@ func TestCollectTimingsSummarisesPhasesAndFlagsTheStraggler(t *testing.T) {
 	}
 	if balanced.Straggler {
 		t.Fatalf("a balanced phase was flagged as straggling:\n%s", content)
+	}
+}
+
+func TestMemoryTelemetrySnapshotsHonestCountersFromTheCgroup(t *testing.T) {
+	cgroup := t.TempDir()
+	stat := "anon 2265636864\nfile 12687937536\nworkingset_refault_anon 14067688\nworkingset_refault_file 47279103\n"
+	pressure := "some avg10=0.12 avg60=0.16 avg300=2.37 total=1064808220\n" +
+		"full avg10=0.00 avg60=0.09 avg300=1.72 total=880404397\n"
+	for name, content := range map[string]string{
+		"memory.stat": stat, "memory.pressure": pressure, "memory.swap.current": "4800729088\n",
+	} {
+		if err := os.WriteFile(filepath.Join(cgroup, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output := filepath.Join(t.TempDir(), "snapshot.json")
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "memory-telemetry"), output)
+	cmd.Env = append(os.Environ(), "MINOS_CGROUP_DIR="+cgroup)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("memory-telemetry: %v\n%s", err, combined)
+	}
+	content, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		t.Fatalf("snapshot does not parse: %v\n%s", err, content)
+	}
+	if snapshot["kind"] != "minos-memory-snapshot-v1" {
+		t.Fatalf("snapshot kind = %v", snapshot["kind"])
+	}
+	for key, want := range map[string]float64{
+		"anon": 2265636864, "swap": 4800729088,
+		"stall_some_us": 1064808220, "stall_full_us": 880404397,
+		"refault_anon": 14067688, "refault_file": 47279103,
+	} {
+		if got, ok := snapshot[key].(float64); !ok || got != want {
+			t.Fatalf("snapshot %s = %v, want %v", key, snapshot[key], want)
+		}
+	}
+	if _, present := snapshot["memory_current"]; present {
+		t.Fatal("snapshot carries a page-cache-inflated counter")
+	}
+}
+
+func TestCollectTimingsCarriesMemoryStallAndThrashDeltas(t *testing.T) {
+	runDir := t.TempDir()
+	baseline := `{"kind":"minos-memory-snapshot-v1","sampled_at":"2026-08-22T00:00:00Z",` +
+		`"anon":2000000000,"swap":1000000000,"stall_some_us":100000,"stall_full_us":40000,` +
+		`"refault_anon":5000,"refault_file":90000}`
+	final := `{"kind":"minos-memory-snapshot-v1","sampled_at":"2026-08-22T04:00:00Z",` +
+		`"anon":2100000000,"swap":6000000000,"stall_some_us":900100000,"stall_full_us":600040000,` +
+		`"refault_anon":14005000,"refault_file":47090000}`
+	if err := os.WriteFile(filepath.Join(runDir, "memory-baseline.json"), []byte(baseline), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "memory-final.json"), []byte(final), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	recordPath := filepath.Join(runDir, "timing-record.json")
+	output, err := runCollectTimings(t, map[string]string{
+		"MINOS_OWNER": "example", "MINOS_REPO_NAME": "Relay", "MINOS_PR": "53",
+	}, runDir, recordPath)
+	if err != nil {
+		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	content, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record timingRecord
+	if err := json.Unmarshal(content, &record); err != nil {
+		t.Fatalf("timing record does not parse: %v\n%s", err, content)
+	}
+	if record.Memory == nil || record.Memory.Delta == nil {
+		t.Fatalf("memory deltas absent despite both snapshots:\n%s", content)
+	}
+	for key, want := range map[string]int64{
+		"stall_some_us": 900000000, "stall_full_us": 600000000,
+		"refault_anon": 14000000, "refault_file": 47000000,
+	} {
+		if record.Memory.Delta[key] != want {
+			t.Fatalf("memory delta %s = %d, want %d", key, record.Memory.Delta[key], want)
+		}
+	}
+	if record.Memory.Baseline == nil || record.Memory.Final == nil {
+		t.Fatalf("memory snapshots not retained alongside the delta:\n%s", content)
 	}
 }
 
