@@ -59,7 +59,7 @@ func preserveStaleReviewResult(path, stalePath string) error {
 // Each run also carries its own MemoryMax at the whole envelope as the
 // backstop for a box where the slice unit is not installed, keeping the
 // receiver and sweep (outside the slice) safe either way.
-const runMemoryEnvelopeGiB = 20
+const runMemoryEnvelopeGiB = 22
 
 const runsSliceName = "minos-runs.slice"
 

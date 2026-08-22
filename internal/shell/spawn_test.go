@@ -196,7 +196,7 @@ func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
-			assertArgument(t, systemdArgs, "--property=MemoryMax=20G")
+			assertArgument(t, systemdArgs, "--property=MemoryMax=22G")
 		})
 	}
 }
@@ -818,7 +818,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=KillMode=control-group")
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=12h")
 	assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
-	assertArgument(t, systemdArgs, "--property=MemoryMax=20G")
+	assertArgument(t, systemdArgs, "--property=MemoryMax=22G")
 	for _, value := range []string{
 		"MINOS_CONFIG=/etc/minos",
 		"MINOS_FORGE=forgejo",
