@@ -63,6 +63,48 @@ if [ -n "$agent_files" ]; then
   )" || workers="[]"
 fi
 
+# The phase summary is derived from the workers alone: each record's arms are
+# grouped by phase, and the group is named by its wall span, its median arm
+# and its longest arm. A phase whose longest arm ran at least twice the
+# median and a minute past it is flagged as straggling — the shape where one
+# leg holds the whole phase open while its peers sit finished.
+phases="[]"
+if [ "$workers" != "[]" ]; then
+  phases="$(jq -cn --argjson workers "$workers" '
+    def epoch: if . == null then null
+      else (sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null) end;
+    def arm_ms: .execution_ms // (
+      (.started_at | epoch) as $s | (.ended_at | epoch) as $e |
+      if $s != null and $e != null then ($e - $s) * 1000 else null end);
+    $workers
+    | map(. + {arm_ms: arm_ms,
+               start_epoch: (.started_at | epoch),
+               end_epoch: (.ended_at | epoch)})
+    | group_by([.record, .phase])
+    | map(
+        (map(.arm_ms | select(. != null)) | sort) as $arm_spans |
+        (map(.start_epoch | select(. != null)) | min) as $earliest |
+        (map(.end_epoch | select(. != null)) | max) as $latest |
+        (if ($arm_spans | length) > 0 then $arm_spans[-1] else null end) as $longest |
+        (if ($arm_spans | length) > 0
+         then $arm_spans[(($arm_spans | length) / 2 | floor)] else null end) as $median |
+        {record: .[0].record,
+         phase: .[0].phase,
+         arms: length,
+         started_at: (if $earliest != null then ($earliest | todate) else null end),
+         wall_ms: (if $earliest != null and $latest != null
+                   then ($latest - $earliest) * 1000 else null end),
+         median_arm_ms: $median,
+         longest_arm: (if $longest == null then null
+                       else (max_by(.arm_ms // -1) | {label: .label, ms: .arm_ms}) end),
+         straggler: (($arm_spans | length) >= 2 and $longest != null
+                     and $median != null and $median > 0
+                     and $longest >= 2 * $median
+                     and ($longest - $median) >= 60000)})
+    | sort_by([(.started_at // ""), (.record // ""), (.phase // "")])
+  ')" || phases="[]"
+fi
+
 generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 if ! jq -n \
   --arg generated_at "$generated_at" \
@@ -71,9 +113,10 @@ if ! jq -n \
   --arg number "${MINOS_PR:-unknown}" \
   --argjson commands "$commands" \
   --argjson workers "$workers" \
+  --argjson phases "$phases" \
   '{kind: "minos-timing-record-v1", generated_at: $generated_at,
     pull_request: {owner: $owner, repository: $repository, number: $number},
-    commands: $commands, workers: $workers}' >"${output}.tmp"; then
+    commands: $commands, workers: $workers, phases: $phases}' >"${output}.tmp"; then
   echo "collect-timings: could not assemble the timing record" >&2
   rm -f "${output}.tmp"
   exit 1
