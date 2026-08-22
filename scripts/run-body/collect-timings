@@ -119,9 +119,16 @@ memory_snapshot() {
 }
 baseline_snapshot="$(memory_snapshot "$run_dir/memory-baseline.json")"
 final_snapshot="$(memory_snapshot "$run_dir/memory-final.json")"
-memory="$(jq -cn --argjson baseline "$baseline_snapshot" --argjson final "$final_snapshot" '
-  if $baseline == null and $final == null then null else
+# The run supervisor tracks the run's hungriest anon-plus-swap moment in
+# memory-peak; it is the capacity number admission and ceiling judgements
+# read, which two endpoint snapshots cannot carry.
+peak_bytes="$(cat "$run_dir/memory-peak" 2>/dev/null || true)"
+memory="$(jq -cn --argjson baseline "$baseline_snapshot" --argjson final "$final_snapshot" \
+  --arg peak "$peak_bytes" '
+  ($peak | if test("^[0-9]+$") then tonumber else null end) as $peak_anon_plus_swap |
+  if $baseline == null and $final == null and $peak_anon_plus_swap == null then null else
     {baseline: $baseline, final: $final,
+     peak_anon_plus_swap: $peak_anon_plus_swap,
      delta: (if $baseline == null or $final == null then null else
        (reduce ("stall_some_us", "stall_full_us", "refault_anon", "refault_file") as $key ({};
          if ($baseline[$key] != null and $final[$key] != null)
