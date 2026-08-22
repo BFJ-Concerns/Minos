@@ -62,9 +62,19 @@ function writeUpComment(finding, writeUp) {
   return { path: finding.path, body: writeUp, line: finding.line };
 }
 
-function verificationInstruction(kind, command) {
-  if (typeof command !== "string" || command.trim() === "") return "";
-  return `Run this configured ${kind} command before returning: ${JSON.stringify(command)}\n`;
+function verificationInstruction(verification) {
+  const configured = [
+    ["build", verification.build],
+    ["test", verification.tests],
+  ].filter(([, command]) => typeof command === "string" && command.trim() !== "");
+  if (configured.length === 0) return "";
+  const gate = configured
+    .map(([kind, command]) => `${kind} ${JSON.stringify(command)}`)
+    .join(" and ");
+  return (
+    `Verify each repair with the smallest project-native checks that exercise the code you changed, scoped to the touched crate, package, or tests. ` +
+    `Do not run the repository's configured ${gate} in this worktree: the lead runs the configured commands once on the integrated head after the wave lands, and that run is the wave's authoritative gate.\n`
+  );
 }
 
 function warmTargetInstruction(source) {
@@ -88,8 +98,7 @@ function fixPrompt(plan, dispatch, attempt) {
     `Wave fingerprint: ${plan.fingerprint}\n` +
     `Confirmed findings: ${JSON.stringify(dispatch.findings)}\n` +
     warmTargetInstruction(plan.input.warmTargetSource) +
-    verificationInstruction("build", verification.build) +
-    verificationInstruction("test", verification.tests) +
+    verificationInstruction(verification) +
     `Return one result for every findingKey. Commit completed repairs, return the commit SHA, and do not push.`
   );
 }
