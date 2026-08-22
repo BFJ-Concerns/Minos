@@ -1,0 +1,36 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: reap-worktree-build-dirs WORKSPACE" >&2
+  exit 2
+fi
+
+workspace="${1%/}"
+if [ -z "$workspace" ] || [ ! -d "$workspace" ]; then
+  echo "reap-worktree-build-dirs: workspace $1 does not exist" >&2
+  exit 2
+fi
+if root="$(git -C "$workspace" rev-parse --show-toplevel 2>/dev/null)"; then
+  workspace="$root"
+fi
+
+# Ensemble creates one worktree per dispatched agent beside the workspace and
+# keeps every worktree whose leg left commits or files behind. Their build
+# directories dominate a run's disk footprint — a full Rust debug target per
+# building leg — and once the workflow that owned them has completed, its run
+# records and the shared object store carry everything later steps need. Reap
+# the build directories; keep each worktree's sources and commits for
+# inspection. Best-effort by design: a failed removal costs disk, not the run.
+worktrees_root="${workspace}.ensemble-workflows-worktrees"
+[ -d "$worktrees_root" ] || exit 0
+
+for worktree in "$worktrees_root"/*/; do
+  [ -d "$worktree" ] || continue
+  for build_dir in target node_modules; do
+    dir="${worktree}${build_dir}"
+    [ -d "$dir" ] || continue
+    rm -rf -- "$dir" || echo "reap-worktree-build-dirs: could not remove $dir" >&2
+  done
+done
+exit 0

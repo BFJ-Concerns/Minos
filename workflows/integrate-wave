@@ -45,4 +45,12 @@ trap 'rm -f "$push_permit"' 0 1 2 3 15
 printf '%s %s\n' "$push_ref" "$push_head" >"$push_permit"
 MINOS_INTEGRATE_WAVE_PUSH_PERMIT="$push_permit" \
   git -C "$workspace" push origin "HEAD:${push_ref}"
+
+# The wave's commits now live on the head branch; the worktrees that authored
+# them are spent, and their build directories are the run's largest transient
+# disk cost. Reap is best-effort: its failure never fails an integrated wave.
+if [ -n "${MINOS_REAP_WORKTREES:-}" ] && [ -x "$MINOS_REAP_WORKTREES" ]; then
+  "$MINOS_REAP_WORKTREES" "$workspace" || true
+fi
+
 jq -nc --arg head "$push_head" '{outcome:"integrated",head:$head}'
