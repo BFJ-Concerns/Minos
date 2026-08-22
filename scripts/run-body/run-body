@@ -319,7 +319,6 @@ disable_pressure_watch() {
 
 sample_memory_pressure() {
   [ "$pressure_enabled" = true ] || return 0
-  [ "$pressure_latched" = false ] || return 0
   # Use memory.current as a cheap probe that this is a readable cgroup before
   # attempting the counters that make up the pressure metric.
   if [ ! -r "$cgroup_dir/memory.current" ]; then
@@ -342,6 +341,15 @@ sample_memory_pressure() {
     esac
   done
   memory_pressure=$((anon + swap_current))
+  # The running peak of genuine footprint is the capacity number the timing
+  # record carries: what this run actually needed at its hungriest, sampled
+  # every poll, ceilings and admission judgements read it later. Tracked past
+  # the latch — the hungriest moment often follows the signal.
+  if [ "$memory_pressure" -gt "${peak_anon_swap:-0}" ]; then
+    peak_anon_swap=$memory_pressure
+    printf '%s\n' "$peak_anon_swap" >"$MINOS_RUN_DIR/memory-peak" || true
+  fi
+  [ "$pressure_latched" = false ] || return 0
   pressure_threshold=$((memory_max / 100 * 85))
   if [ "$memory_pressure" -ge "$pressure_threshold" ]; then
     pressure_samples=$((pressure_samples + 1))
@@ -370,7 +378,7 @@ sample_memory_pressure() {
 failure_stage="lead-launch"
 failure_cause="Claude lead launch failed"
 last_activity_signature="$(
-  find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" \) -prune \
+  find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" -o -path "$MINOS_RUN_DIR/memory-peak" \) -prune \
     -o -printf '%T@:%i:%s\n' 2>/dev/null |
     LC_ALL=C sort -rn |
     head -n 1
@@ -422,7 +430,7 @@ while :; do
   #    and Claude's daemon can update config, job state, caches and updater
   #    downloads there without useful lead work.
   activity_signature="$(
-    find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" \) -prune \
+    find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" -o -path "$MINOS_RUN_DIR/memory-peak" \) -prune \
       -o -printf '%T@:%i:%s\n' 2>/dev/null |
       LC_ALL=C sort -rn |
       head -n 1

@@ -64,9 +64,10 @@ type timingRecord struct {
 	Workers  []timingWorker `json:"workers"`
 	Phases   []timingPhase  `json:"phases"`
 	Memory   *struct {
-		Baseline map[string]any   `json:"baseline"`
-		Final    map[string]any   `json:"final"`
-		Delta    map[string]int64 `json:"delta"`
+		Baseline         map[string]any   `json:"baseline"`
+		Final            map[string]any   `json:"final"`
+		PeakAnonPlusSwap *int64           `json:"peak_anon_plus_swap"`
+		Delta            map[string]int64 `json:"delta"`
 	} `json:"memory"`
 }
 
@@ -302,6 +303,9 @@ func TestCollectTimingsCarriesMemoryStallAndThrashDeltas(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "memory-final.json"), []byte(final), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(runDir, "memory-peak"), []byte("9400000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	recordPath := filepath.Join(runDir, "timing-record.json")
 	output, err := runCollectTimings(t, map[string]string{
@@ -331,6 +335,9 @@ func TestCollectTimingsCarriesMemoryStallAndThrashDeltas(t *testing.T) {
 	}
 	if record.Memory.Baseline == nil || record.Memory.Final == nil {
 		t.Fatalf("memory snapshots not retained alongside the delta:\n%s", content)
+	}
+	if record.Memory.PeakAnonPlusSwap == nil || *record.Memory.PeakAnonPlusSwap != 9400000000 {
+		t.Fatalf("supervisor's peak footprint not carried:\n%s", content)
 	}
 }
 

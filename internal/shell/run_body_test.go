@@ -850,6 +850,10 @@ func TestRunBodyPressureSignalDoesNotCountAsLeadActivity(t *testing.T) {
 		t.Fatalf("run-body accepted a blocked lead after its own pressure write\n%s", output)
 	}
 	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-pressure"), "finish this stage and hand off")
+	// The supervisor's running peak lands beside the signal, and neither of
+	// its own residue files may reset the lead-silence detector — this run
+	// wrote both, and the backstop still fired above.
+	assertContainsFile(t, filepath.Join(fixture.runDir, "memory-peak"), "900000000")
 	assertFailureLine(t, fixture.failureLog, "stage=lead-supervision", "blocked state before producing run activity")
 	fixture.assertProcessesStopped(t)
 }
