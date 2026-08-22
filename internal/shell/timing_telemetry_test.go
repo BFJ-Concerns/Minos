@@ -38,6 +38,20 @@ type timingWorker struct {
 	EndedAt     *string `json:"ended_at"`
 }
 
+type timingPhase struct {
+	Record      string  `json:"record"`
+	Phase       *string `json:"phase"`
+	Arms        int     `json:"arms"`
+	StartedAt   *string `json:"started_at"`
+	WallMs      *int64  `json:"wall_ms"`
+	MedianArmMs *int64  `json:"median_arm_ms"`
+	LongestArm  *struct {
+		Label *string `json:"label"`
+		Ms    *int64  `json:"ms"`
+	} `json:"longest_arm"`
+	Straggler bool `json:"straggler"`
+}
+
 type timingRecord struct {
 	Kind        string `json:"kind"`
 	GeneratedAt string `json:"generated_at"`
@@ -48,6 +62,12 @@ type timingRecord struct {
 	} `json:"pull_request"`
 	Commands []timingEvent  `json:"commands"`
 	Workers  []timingWorker `json:"workers"`
+	Phases   []timingPhase  `json:"phases"`
+	Memory   *struct {
+		Baseline map[string]any   `json:"baseline"`
+		Final    map[string]any   `json:"final"`
+		Delta    map[string]int64 `json:"delta"`
+	} `json:"memory"`
 }
 
 func runTimeOnExit(t *testing.T, args ...string) ([]byte, error) {
@@ -164,6 +184,173 @@ func TestTimeOnExitRefusesMissingArguments(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "usage: time-on-exit") {
 		t.Fatalf("usage output = %s", output)
+	}
+}
+
+func TestCollectTimingsSummarisesPhasesAndFlagsTheStraggler(t *testing.T) {
+	runDir := t.TempDir()
+	verify := filepath.Join(runDir, "ensemble-records", "record-a", "agents")
+	writeTimingPhaseAgentRecord(t, filepath.Join(verify, "0001", "agent.json"),
+		"verifier-1", "Verify", 300000, "2026-08-17T00:00:00Z", "2026-08-17T00:05:00Z")
+	writeTimingPhaseAgentRecord(t, filepath.Join(verify, "0002", "agent.json"),
+		"verifier-2", "Verify", 320000, "2026-08-17T00:00:00Z", "2026-08-17T00:05:20Z")
+	writeTimingPhaseAgentRecord(t, filepath.Join(verify, "0003", "agent.json"),
+		"verifier-3", "Verify", 900000, "2026-08-17T00:00:10Z", "2026-08-17T00:15:10Z")
+	writeTimingPhaseAgentRecord(t, filepath.Join(verify, "0004", "agent.json"),
+		"reviewer-1", "Review", 240000, "2026-08-17T00:16:00Z", "2026-08-17T00:20:00Z")
+	writeTimingPhaseAgentRecord(t, filepath.Join(verify, "0005", "agent.json"),
+		"reviewer-2", "Review", 250000, "2026-08-17T00:16:00Z", "2026-08-17T00:20:10Z")
+
+	recordPath := filepath.Join(runDir, "timing-record.json")
+	output, err := runCollectTimings(t, map[string]string{
+		"MINOS_OWNER": "example", "MINOS_REPO_NAME": "Relay", "MINOS_PR": "53",
+	}, runDir, recordPath)
+	if err != nil {
+		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	content, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record timingRecord
+	if err := json.Unmarshal(content, &record); err != nil {
+		t.Fatalf("timing record does not parse: %v\n%s", err, content)
+	}
+
+	if len(record.Phases) != 2 {
+		t.Fatalf("phase count = %d, want 2\n%s", len(record.Phases), content)
+	}
+	held, balanced := record.Phases[0], record.Phases[1]
+	if held.Phase == nil || *held.Phase != "Verify" || balanced.Phase == nil || *balanced.Phase != "Review" {
+		t.Fatalf("phases are not sorted by start: %+v, %+v", held.Phase, balanced.Phase)
+	}
+	if held.Arms != 3 || balanced.Arms != 2 {
+		t.Fatalf("arm counts = %d, %d, want 3 and 2", held.Arms, balanced.Arms)
+	}
+	if held.WallMs == nil || *held.WallMs != 910000 {
+		t.Fatalf("held phase wall = %+v, want 910000 (earliest start to latest end)", held.WallMs)
+	}
+	if held.MedianArmMs == nil || *held.MedianArmMs != 320000 {
+		t.Fatalf("held phase median arm = %+v, want 320000", held.MedianArmMs)
+	}
+	if held.LongestArm == nil || held.LongestArm.Label == nil || *held.LongestArm.Label != "verifier-3" ||
+		held.LongestArm.Ms == nil || *held.LongestArm.Ms != 900000 {
+		t.Fatalf("held phase longest arm = %+v, want verifier-3 at 900000", held.LongestArm)
+	}
+	if !held.Straggler {
+		t.Fatalf("an arm at nearly three times the phase median was not flagged as straggling:\n%s", content)
+	}
+	if balanced.Straggler {
+		t.Fatalf("a balanced phase was flagged as straggling:\n%s", content)
+	}
+}
+
+func TestMemoryTelemetrySnapshotsHonestCountersFromTheCgroup(t *testing.T) {
+	cgroup := t.TempDir()
+	stat := "anon 2265636864\nfile 12687937536\nworkingset_refault_anon 14067688\nworkingset_refault_file 47279103\n"
+	pressure := "some avg10=0.12 avg60=0.16 avg300=2.37 total=1064808220\n" +
+		"full avg10=0.00 avg60=0.09 avg300=1.72 total=880404397\n"
+	for name, content := range map[string]string{
+		"memory.stat": stat, "memory.pressure": pressure, "memory.swap.current": "4800729088\n",
+	} {
+		if err := os.WriteFile(filepath.Join(cgroup, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output := filepath.Join(t.TempDir(), "snapshot.json")
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "memory-telemetry"), output)
+	cmd.Env = append(os.Environ(), "MINOS_CGROUP_DIR="+cgroup)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("memory-telemetry: %v\n%s", err, combined)
+	}
+	content, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		t.Fatalf("snapshot does not parse: %v\n%s", err, content)
+	}
+	if snapshot["kind"] != "minos-memory-snapshot-v1" {
+		t.Fatalf("snapshot kind = %v", snapshot["kind"])
+	}
+	for key, want := range map[string]float64{
+		"anon": 2265636864, "swap": 4800729088,
+		"stall_some_us": 1064808220, "stall_full_us": 880404397,
+		"refault_anon": 14067688, "refault_file": 47279103,
+	} {
+		if got, ok := snapshot[key].(float64); !ok || got != want {
+			t.Fatalf("snapshot %s = %v, want %v", key, snapshot[key], want)
+		}
+	}
+	if _, present := snapshot["memory_current"]; present {
+		t.Fatal("snapshot carries a page-cache-inflated counter")
+	}
+}
+
+func TestCollectTimingsCarriesMemoryStallAndThrashDeltas(t *testing.T) {
+	runDir := t.TempDir()
+	baseline := `{"kind":"minos-memory-snapshot-v1","sampled_at":"2026-08-22T00:00:00Z",` +
+		`"anon":2000000000,"swap":1000000000,"stall_some_us":100000,"stall_full_us":40000,` +
+		`"refault_anon":5000,"refault_file":90000}`
+	final := `{"kind":"minos-memory-snapshot-v1","sampled_at":"2026-08-22T04:00:00Z",` +
+		`"anon":2100000000,"swap":6000000000,"stall_some_us":900100000,"stall_full_us":600040000,` +
+		`"refault_anon":14005000,"refault_file":47090000}`
+	if err := os.WriteFile(filepath.Join(runDir, "memory-baseline.json"), []byte(baseline), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "memory-final.json"), []byte(final), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	recordPath := filepath.Join(runDir, "timing-record.json")
+	output, err := runCollectTimings(t, map[string]string{
+		"MINOS_OWNER": "example", "MINOS_REPO_NAME": "Relay", "MINOS_PR": "53",
+	}, runDir, recordPath)
+	if err != nil {
+		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	content, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record timingRecord
+	if err := json.Unmarshal(content, &record); err != nil {
+		t.Fatalf("timing record does not parse: %v\n%s", err, content)
+	}
+	if record.Memory == nil || record.Memory.Delta == nil {
+		t.Fatalf("memory deltas absent despite both snapshots:\n%s", content)
+	}
+	for key, want := range map[string]int64{
+		"stall_some_us": 900000000, "stall_full_us": 600000000,
+		"refault_anon": 14000000, "refault_file": 47000000,
+	} {
+		if record.Memory.Delta[key] != want {
+			t.Fatalf("memory delta %s = %d, want %d", key, record.Memory.Delta[key], want)
+		}
+	}
+	if record.Memory.Baseline == nil || record.Memory.Final == nil {
+		t.Fatalf("memory snapshots not retained alongside the delta:\n%s", content)
+	}
+}
+
+func writeTimingPhaseAgentRecord(t *testing.T, path, label, phase string, executionMs int64, startedAt, endedAt string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := map[string]any{
+		"id": 1, "engine": "codex", "label": label, "phase": phase,
+		"model": nil, "resolved_model": "gpt-5.6-terra", "status": "complete",
+		"queued_ms": 12, "execution_ms": executionMs,
+		"attempts": []map[string]any{{"attempt": 1, "started_at": startedAt, "ended_at": endedAt}},
+	}
+	content, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(content, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

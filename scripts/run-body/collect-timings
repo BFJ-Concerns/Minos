@@ -63,6 +63,71 @@ if [ -n "$agent_files" ]; then
   )" || workers="[]"
 fi
 
+# The phase summary is derived from the workers alone: each record's arms are
+# grouped by phase, and the group is named by its wall span, its median arm
+# and its longest arm. A phase whose longest arm ran at least twice the
+# median and a minute past it is flagged as straggling — the shape where one
+# leg holds the whole phase open while its peers sit finished.
+phases="[]"
+if [ "$workers" != "[]" ]; then
+  phases="$(jq -cn --argjson workers "$workers" '
+    def epoch: if . == null then null
+      else (sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null) end;
+    def arm_ms: .execution_ms // (
+      (.started_at | epoch) as $s | (.ended_at | epoch) as $e |
+      if $s != null and $e != null then ($e - $s) * 1000 else null end);
+    $workers
+    | map(. + {arm_ms: arm_ms,
+               start_epoch: (.started_at | epoch),
+               end_epoch: (.ended_at | epoch)})
+    | group_by([.record, .phase])
+    | map(
+        (map(.arm_ms | select(. != null)) | sort) as $arm_spans |
+        (map(.start_epoch | select(. != null)) | min) as $earliest |
+        (map(.end_epoch | select(. != null)) | max) as $latest |
+        (if ($arm_spans | length) > 0 then $arm_spans[-1] else null end) as $longest |
+        (if ($arm_spans | length) > 0
+         then $arm_spans[(($arm_spans | length) / 2 | floor)] else null end) as $median |
+        {record: .[0].record,
+         phase: .[0].phase,
+         arms: length,
+         started_at: (if $earliest != null then ($earliest | todate) else null end),
+         wall_ms: (if $earliest != null and $latest != null
+                   then ($latest - $earliest) * 1000 else null end),
+         median_arm_ms: $median,
+         longest_arm: (if $longest == null then null
+                       else (max_by(.arm_ms // -1) | {label: .label, ms: .arm_ms}) end),
+         straggler: (($arm_spans | length) >= 2 and $longest != null
+                     and $median != null and $median > 0
+                     and $longest >= 2 * $median
+                     and ($longest - $median) >= 60000)})
+    | sort_by([(.started_at // ""), (.record // ""), (.phase // "")])
+  ')" || phases="[]"
+fi
+
+# Memory telemetry rides as snapshots: run-body writes the baseline at start
+# and archive-run the final before assembling this record. The delta names
+# what the run genuinely experienced — PSI stall time and workingset
+# refaults — which page-cache-inflated footprint numbers cannot (AGENTS.md,
+# memory accounting).
+memory_snapshot() {
+  if jq -e 'type == "object" and .kind == "minos-memory-snapshot-v1"' "$1" >/dev/null 2>&1; then
+    cat "$1"
+  else
+    echo null
+  fi
+}
+baseline_snapshot="$(memory_snapshot "$run_dir/memory-baseline.json")"
+final_snapshot="$(memory_snapshot "$run_dir/memory-final.json")"
+memory="$(jq -cn --argjson baseline "$baseline_snapshot" --argjson final "$final_snapshot" '
+  if $baseline == null and $final == null then null else
+    {baseline: $baseline, final: $final,
+     delta: (if $baseline == null or $final == null then null else
+       (reduce ("stall_some_us", "stall_full_us", "refault_anon", "refault_file") as $key ({};
+         if ($baseline[$key] != null and $final[$key] != null)
+         then . + {($key): ($final[$key] - $baseline[$key])} else . end)) end)}
+  end')" || memory="null"
+
 generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 if ! jq -n \
   --arg generated_at "$generated_at" \
@@ -71,9 +136,12 @@ if ! jq -n \
   --arg number "${MINOS_PR:-unknown}" \
   --argjson commands "$commands" \
   --argjson workers "$workers" \
+  --argjson phases "$phases" \
+  --argjson memory "$memory" \
   '{kind: "minos-timing-record-v1", generated_at: $generated_at,
     pull_request: {owner: $owner, repository: $repository, number: $number},
-    commands: $commands, workers: $workers}' >"${output}.tmp"; then
+    commands: $commands, workers: $workers, phases: $phases,
+    memory: $memory}' >"${output}.tmp"; then
   echo "collect-timings: could not assemble the timing record" >&2
   rm -f "${output}.tmp"
   exit 1

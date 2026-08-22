@@ -38,6 +38,20 @@ without an internal containment layer.
 Planning and task records live in `../Minos-Annexe`. Keep its contract aligned
 with this boundary rather than treating older procedural text as authority.
 
+## Memory accounting on the box
+
+Judge memory by anonymous memory plus swap and by pressure, never by
+`memory.current`, journal "memory peak" lines, or `free`'s used column: those
+count page cache, which a busy build inflates to whatever ceiling exists and
+the kernel reclaims the instant anything needs the space. A runs slice
+reading 17G can be 2G of genuine demand. Swap likewise fills with cold pages
+that are rarely read back; a full swap is not itself harm. The honest
+signals are `memory.stat`'s `anon` plus `memory.swap.current` for footprint,
+`memory.pressure` (PSI stall time, which cache cannot inflate) for harm being
+experienced now, and `workingset_refault_anon` for genuine thrash. run-body's
+wind-down sampler already judges on anon plus swap for this reason; keep any
+new memory judgement on the same basis.
+
 ## Commands
 
 - `just verify` runs formatting, shell syntax, vet, tests and build. It is the

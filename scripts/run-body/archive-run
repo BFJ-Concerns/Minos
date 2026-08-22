@@ -45,7 +45,11 @@ archive_ssh() {
 
 # The timing record is presentation-class telemetry: assemble it from the
 # run's event log and Ensemble records before the tarball is built, so the
-# archive carries it too, but never let its failure fail the archive.
+# archive carries it too, but never let its failure fail the archive. The
+# closing memory snapshot lands first so the record can carry the run's
+# stall and thrash deltas against the baseline run-body took at start.
+"$(CDPATH= cd -- "$(dirname "$0")" && pwd)/memory-telemetry" \
+  "$run_dir/memory-final.json" || true
 "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/collect-timings" \
   "$run_dir" "$run_dir/timing-record.json" || true
 

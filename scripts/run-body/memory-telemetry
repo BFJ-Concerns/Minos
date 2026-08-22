@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: memory-telemetry OUTPUT_FILE" >&2
+  exit 2
+fi
+output="$1"
+
+# One honest memory snapshot of the calling process's own cgroup: anonymous
+# footprint and swap, PSI stall totals, and workingset refaults. memory.current
+# is deliberately absent — it counts page cache, which builds inflate to any
+# ceiling and the kernel reclaims on demand (see AGENTS.md, memory accounting).
+# Written at run start and again before the timing record is assembled, so the
+# record can carry the run's stall and thrash deltas. Best-effort residue: an
+# unreadable cgroup writes nothing and exits clean.
+if [ -n "${MINOS_CGROUP_DIR:-}" ]; then
+  cgroup_dir="$MINOS_CGROUP_DIR"
+else
+  cgroup_path="$(cut -d: -f3 /proc/self/cgroup 2>/dev/null | head -n 1)"
+  cgroup_dir="/sys/fs/cgroup${cgroup_path}"
+fi
+for counter_file in memory.stat memory.pressure; do
+  [ -r "$cgroup_dir/$counter_file" ] || exit 0
+done
+
+sampled_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+anon="$(awk '$1 == "anon" { print $2; exit }' "$cgroup_dir/memory.stat")"
+refault_anon="$(awk '$1 == "workingset_refault_anon" { print $2; exit }' "$cgroup_dir/memory.stat")"
+refault_file="$(awk '$1 == "workingset_refault_file" { print $2; exit }' "$cgroup_dir/memory.stat")"
+swap_current="$(cat "$cgroup_dir/memory.swap.current" 2>/dev/null || echo "")"
+stall_some_us="$(awk '$1 == "some" { sub("total=", "", $NF); print $NF; exit }' "$cgroup_dir/memory.pressure")"
+stall_full_us="$(awk '$1 == "full" { sub("total=", "", $NF); print $NF; exit }' "$cgroup_dir/memory.pressure")"
+
+jq -n \
+  --arg sampled_at "$sampled_at" \
+  --arg anon "$anon" --arg swap "$swap_current" \
+  --arg stall_some_us "$stall_some_us" --arg stall_full_us "$stall_full_us" \
+  --arg refault_anon "$refault_anon" --arg refault_file "$refault_file" \
+  '{kind: "minos-memory-snapshot-v1", sampled_at: $sampled_at}
+   + ([["anon", $anon], ["swap", $swap],
+       ["stall_some_us", $stall_some_us], ["stall_full_us", $stall_full_us],
+       ["refault_anon", $refault_anon], ["refault_file", $refault_file]]
+      | map(select(.[1] | test("^[0-9]+$")) | {(.[0]): (.[1] | tonumber)})
+      | add // {})' >"${output}.tmp"
+mv "${output}.tmp" "$output"
