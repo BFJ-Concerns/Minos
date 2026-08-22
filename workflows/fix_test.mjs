@@ -88,36 +88,34 @@ async function run(input, respond = (label, prompt) => ({
   return { result, calls };
 }
 
-function verificationActionsUnderstoodByWorker(prompt) {
-  const actions = new Set();
+function gateCommandsWorkerIsToldNotToRun(prompt) {
+  const withheld = new Set();
   for (const sentence of prompt.split(/(?<=[.!?])\s+|\n+/)) {
     const instruction = sentence.trim();
-    const isWorkerDirective = /^(?:before [^,]+,\s*)?(?:you (?:must|need to|are required to)\s+)?(?:run|execute)\b/i.test(instruction);
-    if (!isWorkerDirective || !/\bconfigured\b/i.test(instruction)) continue;
-    const encodedCommand = instruction.match(/("(?:\\.|[^"])*")\s*[.!?]?$/);
-    if (!encodedCommand || JSON.parse(encodedCommand[1]).trim() === "") continue;
-    if (/\bbuild\b/i.test(instruction)) actions.add("build");
-    if (/\btests?\b/i.test(instruction)) actions.add("tests");
+    if (!/^do not (?:run|execute)\b/i.test(instruction) || !/\bconfigured\b/i.test(instruction)) continue;
+    for (const named of instruction.matchAll(/\b(build|test)s?\s+("(?:\\.|[^"])*")/gi)) {
+      if (JSON.parse(named[2]).trim() === "") continue;
+      withheld.add(named[1].toLowerCase() === "build" ? "build" : "tests");
+    }
   }
-  return [...actions];
+  return [...withheld];
 }
 
-test("the recording worker reads obligations from directive meaning and command presence", () => {
-  assert.deepEqual(verificationActionsUnderstoodByWorker(
-    `Run this configured build command before returning: "make build"\n` +
-    `Execute the configured test command prior to completion: "make test"\n`,
+test("the recording worker reads gate prohibition from directive meaning and command presence", () => {
+  assert.deepEqual(gateCommandsWorkerIsToldNotToRun(
+    `Do not run the repository's configured build "make build" and test "make test" in this worktree: the lead runs the configured commands once on the integrated head.\n`,
   ), ["build", "tests"]);
-  assert.deepEqual(verificationActionsUnderstoodByWorker(
-    `Execute the configured build check before returning: "make build"\n`,
+  assert.deepEqual(gateCommandsWorkerIsToldNotToRun(
+    `Do not execute the configured build "make build" in this worktree.\n`,
   ), ["build"]);
-  assert.deepEqual(verificationActionsUnderstoodByWorker(
-    `Run the configured tests prior to completion: "make test"\n`,
+  assert.deepEqual(gateCommandsWorkerIsToldNotToRun(
+    `Do not run the repository's configured test "make test" in this worktree.\n`,
   ), ["tests"]);
-  assert.deepEqual(verificationActionsUnderstoodByWorker(
+  assert.deepEqual(gateCommandsWorkerIsToldNotToRun(
     "Return one result for every findingKey.\n",
   ), []);
-  assert.deepEqual(verificationActionsUnderstoodByWorker(
-    `Run the configured build command before returning: "   "\n`,
+  assert.deepEqual(gateCommandsWorkerIsToldNotToRun(
+    `Do not run the repository's configured build "   " in this worktree.\n`,
   ), []);
 });
 
@@ -286,7 +284,7 @@ test("a wave records one lead push for all distinct agent commits", async () => 
   assert.deepEqual(result.integration.author, { name: "Minos", email: "minos@example.invalid" });
 });
 
-test("fix assignments carry only the configured build and test obligations", async () => {
+test("fix assignments name the configured gate as the lead's to run, never the worker's", async () => {
   const original = finding("transition", "High", "internal/state.go", 41);
   const cases = [
     {
@@ -300,23 +298,23 @@ test("fix assignments carry only the configured build and test obligations", asy
       tests: true,
     },
     { verification: { build: "", tests: "" }, build: false, tests: false },
-    { verification: { build: "   ", tests: "\t " }, build: false, tests: false, whitespaceOnly: true },
+    { verification: { build: "   ", tests: "\t " }, build: false, tests: false },
     { verification: undefined, build: false, tests: false },
   ];
   for (const expected of cases) {
     const { calls } = await run(args([original], { verification: expected.verification }));
     const prompt = calls[0].prompt;
-    assert.equal(
-      prompt.includes('Run this configured build command before returning: "cargo build --workspace --locked"'),
-      expected.build,
+    assert.deepEqual(
+      gateCommandsWorkerIsToldNotToRun(prompt),
+      [...(expected.build ? ["build"] : []), ...(expected.tests ? ["tests"] : [])],
     );
-    assert.equal(
-      prompt.includes('Run this configured test command before returning: "cargo test --workspace --locked"'),
-      expected.tests,
-    );
+    if (expected.build || expected.tests) {
+      assert.match(prompt, /smallest project-native checks/);
+      assert.match(prompt, /authoritative gate/);
+    }
     if (!expected.build) assert.doesNotMatch(prompt, /configured build/i);
     if (!expected.tests) assert.doesNotMatch(prompt, /configured test/i);
-    if (expected.whitespaceOnly) assert.doesNotMatch(prompt, /Run this configured (?:build|test) command/i);
+    assert.doesNotMatch(prompt, /Run this configured (?:build|test) command/i);
   }
 });
 
@@ -581,7 +579,7 @@ test("single-wave mode dispatches every brief finding once and requests build an
   });
 });
 
-test("a fix worker performs exactly the configured verification it is assigned", async (t) => {
+test("a fix worker reads exactly the configured gate it must leave to the lead", async (t) => {
   for (const shape of [
     { name: "build and tests", verification: { build: "make build", tests: "make test" }, expected: ["build", "tests"] },
     { name: "build only", verification: { build: "make build", tests: "" }, expected: ["build"] },
@@ -590,28 +588,28 @@ test("a fix worker performs exactly the configured verification it is assigned",
     { name: "whitespace-only build", verification: { build: "   ", tests: "" }, expected: [] },
   ]) {
     await t.test(shape.name, async () => {
-      const actions = [];
+      const withheld = [];
       const original = finding("transition", "High", "internal/state.go", 41);
       const { result, calls } = await run(
         args([original], { singleWave: true, verification: shape.verification }),
         (label, prompt) => {
-          actions.push(...verificationActionsUnderstoodByWorker(prompt));
-          const assignmentUnderstood = actions.length === shape.expected.length &&
-            actions.every((action, index) => action === shape.expected[index]);
+          withheld.push(...gateCommandsWorkerIsToldNotToRun(prompt));
+          const assignmentUnderstood = withheld.length === shape.expected.length &&
+            withheld.every((action, index) => action === shape.expected[index]);
           return {
             commit: assignmentUnderstood ? `${label}-verified-commit` : "",
             fixes: assignedFindings(prompt).map((item) => ({
               findingKey: item.key,
               status: assignmentUnderstood ? "fixed" : "failed",
               writeUp: assignmentUnderstood
-                ? "Repair completed every configured verification action."
-                : "Configured verification assignment was not understood.",
+                ? "Repair verified with checks scoped to the touched code."
+                : "Configured gate assignment was not understood.",
             })),
           };
         },
       );
 
-      assert.deepEqual(actions, shape.expected);
+      assert.deepEqual(withheld, shape.expected);
       assert.equal(calls.length, 1);
       assert.equal(result.repairsComplete, true);
       assert.deepEqual(result.integration.commits, ["brief-fix-dispatch-1-verified-commit"]);
