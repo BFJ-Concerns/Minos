@@ -1,0 +1,48 @@
+#!/usr/bin/env sh
+set -eu
+
+# Shared build jobserver: one GNU-make-protocol token FIFO bounding how many
+# compiler jobs run at once across every run, workflow arm, and worker on the
+# box. Cargo connects through MAKEFLAGS (deploy/etc/minos/run-body.env) and
+# an inherited jobserver overrides CARGO_BUILD_JOBS, so the pool governs
+# wherever the FIFO is reachable; where it is not, cargo warns and falls back
+# to CARGO_BUILD_JOBS for that one invocation — degraded, never hung.
+#
+# Protocol accounting: every connected client holds one implicit slot and
+# borrows further slots from the pool, so a pool of SLOTS-1 tokens gives a
+# lone build -jSLOTS semantics and K concurrent builds at most K+SLOTS-1
+# compilers box-wide.
+
+slots="${MINOS_BUILD_SLOTS:-8}"
+fifo="${MINOS_BUILD_JOBSERVER:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/minos-build-jobserver}"
+
+rm -f "$fifo.stocked"
+if [ ! -p "$fifo" ]; then
+  rm -f "$fifo"
+  mkfifo -m 600 "$fifo"
+fi
+
+# Hold the FIFO open read-write for the service's lifetime: a FIFO keeps its
+# buffered tokens only while some descriptor stays open. Reusing an existing
+# FIFO keeps its inode stable across a service restart, so clients that
+# connected before the restart stay on the live pipe instead of blocking on
+# an orphaned one.
+exec 3<>"$fifo"
+
+# Drain stale tokens before stocking, so a restart resets the pool to its
+# configured size rather than stacking pools. Tokens borrowed by clients that
+# are mid-compile during the restart come back on top of the fresh stock —
+# a bounded, self-announcing overshoot that ends with those builds, accepted
+# in exchange for never hanging a connected client.
+while dd iflag=nonblock bs=64 count=1 <&3 >/dev/null 2>&1; do :; done
+
+tokens=$((slots - 1))
+if [ "$tokens" -gt 0 ]; then
+  printf '%.0s+' $(seq 1 "$tokens") >&3
+fi
+
+# The stocked marker names the pool's configured size once tokens are in
+# place: readable introspection that never touches the pool itself.
+printf '%s\n' "$slots" >"$fifo.stocked"
+
+while :; do sleep 86400; done
