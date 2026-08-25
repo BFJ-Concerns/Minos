@@ -950,6 +950,10 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
+    /top of every gate-repair-ladder iteration[\s\S]*`\$MINOS_RUN_DIR\/memory-pressure`[\s\S]*before dispatching or comparing the next\s+repair[\s\S]*pressure-boundary handoff[\s\S]*`stoppedAt` naming the gate-repair ladder[\s\S]*complete\s+`\$MINOS_RUN_DIR\/gate-repair-ladder\.log`[\s\S]*C27\s+successor inherits every progress comparison[\s\S]*do not poll for pressure while[\s\S]*workflow or forge write is in flight/,
+  );
+  assert.match(
+    initialGate,
     /When the ladder stalls[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes-checks[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*records that failed required checks caused the verdict[\s\S]*target its\s+gate actually ran against[\s\S]*never a newer target you judged equivalent[\s\S]*target movement spends it/,
   );
   assert.match(

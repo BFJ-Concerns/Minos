@@ -489,6 +489,16 @@ pull request and every grouped passage in this lifecycle is inert.
 
    Run it as a background task and wait exactly as step 4 directs.
 
+   At the top of every gate-repair-ladder iteration, check for
+   `$MINOS_RUN_DIR/memory-pressure` before dispatching or comparing the next
+   repair. When it exists, take the pressure-boundary handoff now with
+   `stoppedAt` naming the gate-repair ladder. The preserved run directory is
+   the handoff's ladder record: retain the complete
+   `$MINOS_RUN_DIR/gate-repair-ladder.log` beside `$MINOS_HANDOFF`, so the C27
+   successor inherits every progress comparison already established. This is
+   a checkpoint within this bounded loop only; do not poll for pressure while
+   a repair workflow or forge write is in flight.
+
    Before reading any other result field, read `status`. A result whose
    `status` is `incomplete` is a failed dispatch, not an assessed verdict —
    its unproven `cause` carries no judgement — so append its `reason` to
