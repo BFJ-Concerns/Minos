@@ -39,48 +39,27 @@ func groupCandidatesJSON(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 		}
 		snapshot, err := adapter.Snapshot(ctx, forge.Repository{Owner: repo.Owner, Name: repo.Repo}, pr)
 		if err != nil {
-			return "", err
+			// Candidate surfacing is optional input to the lead, never a reason to
+			// abandon reconciliation of the pull request being considered.
+			continue
 		}
 		snapshots[candidate.facts.PR] = snapshot
-	}
-	root := func(snapshot forge.Snapshot) string { return snapshot.TargetBranch }
-	// Resolve a stacked target through the current list's head branches.
-	for changed := true; changed; {
-		changed = false
-		for _, snapshot := range snapshots {
-			for _, parent := range snapshots {
-				if root(snapshot) == parent.HeadBranch && root(parent) != root(snapshot) {
-					changed = true
-				}
-			}
-		}
-		break // roots below follow the chain without mutating snapshots
-	}
-	resolve := func(snapshot forge.Snapshot) string { return root(snapshot) }
-	var resolveTarget func(forge.Snapshot, map[string]bool) string
-	resolveTarget = func(snapshot forge.Snapshot, seen map[string]bool) string {
-		if seen[snapshot.HeadBranch] {
-			return snapshot.TargetBranch
-		}
-		seen[snapshot.HeadBranch] = true
-		for _, parent := range snapshots {
-			if snapshot.TargetBranch == parent.HeadBranch {
-				return resolveTarget(parent, seen)
-			}
-		}
-		return resolve(snapshot)
 	}
 	primarySnapshot, ok := snapshots[primary.PR]
 	if !ok {
 		return "[]", nil
 	}
-	primaryTarget := resolveTarget(primarySnapshot, map[string]bool{})
+	primaryTarget := resolvedGroupTarget(primarySnapshot, snapshots, map[string]bool{})
 	members := make([]Facts, 0)
 	for number, snapshot := range snapshots {
-		if number == primary.PR || snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadRepository != repo.Owner+"/"+repo.Repo || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) || resolveTarget(snapshot, map[string]bool{}) != primaryTarget {
+		if number == primary.PR || snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadRepository != repo.Owner+"/"+repo.Repo || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) || resolvedGroupTarget(snapshot, snapshots, map[string]bool{}) != primaryTarget {
 			continue
 		}
 		facts := Facts{Forge: primary.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: number, HeadSHA: snapshot.HeadSHA, BaseRef: snapshot.TargetBranch, BaseSHA: snapshot.TargetSHA, HeadRef: snapshot.HeadBranch}
+		eligible, eligibilityErr := groupMemberEligible(ctx, cfg, repo, facts, adapter, snapshot)
+		if eligibilityErr != nil || !eligible {
+			continue
+		}
 		if groupMemberGuardActive(ctx, cfg.Runs.Dir, UnitName(facts)) {
 			continue
 		}
@@ -93,28 +72,60 @@ func groupCandidatesJSON(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 	return string(encoded), nil
 }
 
+// groupMemberEligible is the non-writing admission predicate shared by
+// candidate surfacing and member claiming. Reconciliation may repair a missing
+// terminal status; grouping must never re-claim a pull request with a terminal
+// Minos result while that repair is pending.
+func groupMemberEligible(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (bool, error) {
+	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadRepository != facts.Owner+"/"+facts.Repo || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) || workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
+		return false, nil
+	}
+	pr, err := strconv.ParseInt(facts.PR, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	repository := forge.Repository{Owner: facts.Owner, Name: facts.Repo}
+	commits, err := adapter.PullRequestCommits(ctx, repository, pr)
+	if err != nil {
+		return false, err
+	}
+	if review, reviewed := trustedReview(snapshot, commits, cfg.Service.BotLogin); reviewed {
+		if _, terminal := terminalState(review); terminal && !checkCausedVerdictSpent(review, snapshot) {
+			return false, nil
+		}
+	}
+	if trustedCompletedRunStatus(ctx, adapter, repository, snapshot, commits, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts), currentEnvironmentStamp(cfg)) {
+		return false, nil
+	}
+	if _, deferred := dependencyDeferral(snapshot); deferred {
+		return false, nil
+	}
+	return true, nil
+}
+
+func resolvedGroupTarget(snapshot forge.Snapshot, snapshots map[string]forge.Snapshot, seen map[string]bool) string {
+	if seen[snapshot.HeadBranch] {
+		return snapshot.TargetBranch
+	}
+	seen[snapshot.HeadBranch] = true
+	for _, parent := range snapshots {
+		if snapshot.TargetBranch == parent.HeadBranch {
+			return resolvedGroupTarget(parent, snapshots, seen)
+		}
+	}
+	return snapshot.TargetBranch
+}
+
 func groupMemberGuardPath(runsDir, unit string) string {
 	return filepath.Join(runsDir, ".group-members", unit)
 }
 func groupMemberGuardActive(ctx context.Context, runsDir, memberUnit string) bool {
-	data, err := os.ReadFile(groupMemberGuardPath(runsDir, memberUnit))
-	if err != nil {
-		return false
-	}
-	holder := strings.TrimSpace(string(data))
-	if holder == "" {
-		return false
-	}
 	active, err := activeRunUnitNames(ctx)
 	if err != nil {
 		return true
 	}
-	for _, unit := range active {
-		if strings.TrimSuffix(unit, ".service") == holder {
-			return true
-		}
-	}
-	return false
+	_, guarded := liveGroupMemberHolder(runsDir, memberUnit, active)
+	return guarded
 }
 
 func liveGroupMemberHolder(runsDir, memberUnit string, active []string) (string, bool) {
@@ -137,16 +148,11 @@ func sweepDeadGroupMemberGuards(runsDir string, active []string) error {
 		return err
 	}
 	for _, path := range paths {
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
-		}
 		if _, live := liveGroupMemberHolder(runsDir, filepath.Base(path), active); !live {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
-		_ = data
 	}
 	return nil
 }
@@ -172,11 +178,24 @@ func claimGroupMember(ctx context.Context, cfg ServiceConfig, repo RepoConfig, p
 	if err != nil {
 		return Facts{}, err
 	}
-	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadRepository != owner+"/"+name || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
+	facts := Facts{Forge: primary.Forge, Owner: owner, Repo: name, PR: number, HeadSHA: snapshot.HeadSHA, BaseRef: snapshot.TargetBranch, BaseSHA: snapshot.TargetSHA, HeadRef: snapshot.HeadBranch}
+	eligible, err := groupMemberEligible(ctx, cfg, repo, facts, adapter, snapshot)
+	if err != nil {
+		return Facts{}, err
+	}
+	if !eligible {
 		return Facts{}, fmt.Errorf("member is no longer eligible")
 	}
-	facts := Facts{Forge: primary.Forge, Owner: owner, Repo: name, PR: number, HeadSHA: snapshot.HeadSHA, BaseRef: snapshot.TargetBranch, BaseSHA: snapshot.TargetSHA, HeadRef: snapshot.HeadBranch}
-	if groupMemberGuardActive(ctx, cfg.Runs.Dir, UnitName(facts)) {
+	active, err := activeRunUnitNames(ctx)
+	if err != nil {
+		return Facts{}, err
+	}
+	for _, unit := range active {
+		if strings.TrimSuffix(unit, ".service") == UnitName(facts) {
+			return Facts{}, fmt.Errorf("member already has a live run")
+		}
+	}
+	if _, guarded := liveGroupMemberHolder(cfg.Runs.Dir, UnitName(facts), active); guarded {
 		return Facts{}, fmt.Errorf("member is guarded by a live run")
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.Runs.Dir, ".group-members"), 0o700); err != nil {

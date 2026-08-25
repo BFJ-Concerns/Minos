@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"bfj/minos/internal/forge"
 )
 
 func TestGroupCandidateEnumerationSurfacesSameTargetSibling(t *testing.T) {
@@ -24,6 +26,14 @@ func TestGroupCandidateEnumerationSurfacesSameTargetSibling(t *testing.T) {
 	}
 	if len(candidates) != 1 || candidates[0].PR != "2" || candidates[0].BaseRef != "main" {
 		t.Fatalf("group candidates = %#v, want sibling #2 targeting main", candidates)
+	}
+}
+
+func TestResolvedGroupTargetFollowsStackedChain(t *testing.T) {
+	child := forge.Snapshot{HeadBranch: "child", TargetBranch: "parent"}
+	parent := forge.Snapshot{HeadBranch: "parent", TargetBranch: "main"}
+	if got := resolvedGroupTarget(child, map[string]forge.Snapshot{"2": child, "3": parent}, map[string]bool{}); got != "main" {
+		t.Fatalf("resolved target = %q, want main", got)
 	}
 }
 
@@ -58,7 +68,7 @@ func TestSpawnRunSuppressesLiveGroupMemberWithoutSpendingConcurrency(t *testing.
 	t.Cleanup(func() { commandCombinedOutput = original })
 	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
 	cfg.Runs.Dir = t.TempDir()
-	cfg.Runs.MaxConcurrent = 1
+	cfg.Runs.MaxConcurrent = 2
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "2"}
 	if err := os.MkdirAll(filepath.Dir(groupMemberGuardPath(cfg.Runs.Dir, UnitName(facts))), 0o700); err != nil {
 		t.Fatal(err)
@@ -75,5 +85,49 @@ func TestSpawnRunSuppressesLiveGroupMemberWithoutSpendingConcurrency(t *testing.
 	}
 	if result.Outcome != SpawnSuppressed || result.BlockingUnit != "minos-run-owner-repo-pr1.service" {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSpawnRunAdmitsDeadGroupGuard(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Runs.MaxConcurrent = 1
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "2"}
+	if err := os.MkdirAll(filepath.Dir(groupMemberGuardPath(cfg.Runs.Dir, UnitName(facts))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(facts)), []byte("minos-run-owner-repo-pr1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var started bool
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			started = true
+		}
+		return nil, nil
+	}
+	result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnStarted || !started {
+		t.Fatalf("dead guard result = %+v, started = %t", result, started)
+	}
+}
+
+func TestClaimGroupMemberRefusesOwnLiveUnit(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
+	cfg, repo, primary := state.service(t)
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("minos-run-minos-e2e-owner-subject-pr2.service loaded active running Minos lead\n"), nil
+	}
+	_, err := claimGroupMember(t.Context(), cfg, repo, primary, repo.Owner, repo.Repo, "2")
+	if err == nil || !strings.Contains(err.Error(), "already has a live run") {
+		t.Fatalf("claim error = %v, want live-run refusal", err)
 	}
 }

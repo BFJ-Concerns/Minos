@@ -19,6 +19,10 @@ if [ -z "$source_branch" ] || [ -z "$target_branch" ]; then
 fi
 
 common_dir="$(git -C "$workspace" rev-parse --path-format=absolute --git-common-dir)"
+local_head="$(git -C "$workspace" rev-parse HEAD)"
+if [ "$local_head" != "$expected_head" ]; then
+  echo "sync-member-target: workspace is not checked out at the member head" >&2; exit 1
+fi
 source_ref="refs/minos/member/${member}/source"
 target_ref="refs/minos/member/${member}/target"
 git -C "$workspace" fetch --no-tags origin \
@@ -29,7 +33,6 @@ observed_target="$(git -C "$workspace" rev-parse "$target_ref")"
 if [ "$observed_head" != "$expected_head" ] || [ "$observed_target" != "$expected_target" ]; then
   echo "sync-member-target: member source or target moved" >&2; exit 1
 fi
-local_head="$(git -C "$workspace" rev-parse HEAD)"
 git_dir="$(git -C "$workspace" rev-parse --git-dir)"
 case "$git_dir" in /*) ;; *) git_dir="${workspace%/}/${git_dir}" ;; esac
 if [ -f "${git_dir}/MERGE_HEAD" ] || [ -d "${git_dir}/rebase-merge" ] || [ -d "${git_dir}/rebase-apply" ]; then
@@ -44,9 +47,12 @@ if ! git -C "$workspace" merge-base --is-ancestor "$target_ref" HEAD; then
   else git -C "$workspace" merge --no-edit "$target_ref" >&2 || { jq -nc '{outcome:"conflict",operation:"merge"}'; exit 2; }; fi
 fi
 synced_head="$(git -C "$workspace" rev-parse HEAD)"
+if [ "$method" = merge ] && ! git -C "$workspace" merge-base --is-ancestor "$expected_head" "$synced_head"; then
+  echo "sync-member-target: merged result lost the member head" >&2; exit 1
+fi
 if ! git -C "$workspace" merge-base --is-ancestor "$target_ref" "$synced_head"; then echo "sync-member-target: result does not contain the target" >&2; exit 1; fi
 push_ref="refs/heads/${source_branch}"
-push_permit="$(mktemp "${common_dir}/minos-sync-member-target-push.XXXXXX")"
+push_permit="$(mktemp "${common_dir}/minos-sync-target-push.XXXXXX")"
 trap 'rm -f "$push_permit"' 0 1 2 3 15
 printf '%s %s %s\n' "$push_ref" "$synced_head" "$expected_head" >"$push_permit"
 MINOS_SYNC_TARGET_PUSH_PERMIT="$push_permit" git -C "$workspace" push "--force-with-lease=refs/heads/${source_branch}:${expected_head}" origin "HEAD:${push_ref}"

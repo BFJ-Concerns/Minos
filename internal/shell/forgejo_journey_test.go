@@ -2240,6 +2240,8 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, s.stackedChild(path))
 	case r.Method == http.MethodGet && strings.Contains(path, "/issues/2/") && strings.HasSuffix(path, "/dependencies"):
 		writeFixtureJSON(s.t, w, []map[string]any{})
+	case r.Method == http.MethodGet && path != issuePath+"/dependencies" && strings.Contains(path, "/issues/") && strings.HasSuffix(path, "/dependencies"):
+		writeFixtureJSON(s.t, w, []map[string]any{})
 	case r.Method == http.MethodGet && strings.Contains(path, "/pulls/2/") && strings.HasSuffix(path, "/reviews"):
 		writeFixtureJSON(s.t, w, []map[string]any{})
 	case r.Method == http.MethodPatch && s.stackedChild(path) != nil:
@@ -2293,6 +2295,8 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, comment)
 	case r.Method == http.MethodGet && path == pullPath+"/commits":
 		writeFixtureJSON(s.t, w, s.commits)
+	case r.Method == http.MethodGet && strings.Contains(path, "/pulls/") && strings.HasSuffix(path, "/commits"):
+		writeFixtureJSON(s.t, w, []map[string]any{{"sha": "fixture-child-head", "author": map[string]any{"login": "fixture-author"}}})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/branches/main"):
 		base := s.pullRequest["base"].(map[string]any)
 		writeFixtureJSON(s.t, w, map[string]any{
