@@ -15,6 +15,15 @@ import (
 // groupCandidatesJSON surfaces sweep siblings only.  It deliberately makes no
 // judgement about which (if any) should become members.
 func groupCandidatesJSON(ctx context.Context, cfg ServiceConfig, repo RepoConfig, primary Facts, all []sweepCandidate) (string, error) {
+	eligibleInRepo := 0
+	for _, candidate := range all {
+		if candidate.repo.Forge == repo.Forge && candidate.repo.Owner == repo.Owner && candidate.repo.Repo == repo.Repo {
+			eligibleInRepo++
+		}
+	}
+	if eligibleInRepo < 2 {
+		return "[]", nil
+	}
 	adapter, err := newBehaviouralForge(cfg, primary.Forge)
 	if err != nil {
 		return "", err
