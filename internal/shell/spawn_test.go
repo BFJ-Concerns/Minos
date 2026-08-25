@@ -130,6 +130,12 @@ func TestSpawnRunAdmitsUpToTheConfiguredConcurrency(t *testing.T) {
 		if pr == "3" && result.BlockingUnit != "minos-run-owner-repo-pr1.service" {
 			t.Fatalf("blocking unit = %q, want the lowest-named active unit", result.BlockingUnit)
 		}
+		if pr == "3" {
+			want := "all 2/2 run slots are occupied by active units minos-run-owner-repo-pr1.service, minos-run-owner-repo-pr2.service"
+			if result.Detail != want {
+				t.Fatalf("cap suppression detail = %q, want %q", result.Detail, want)
+			}
+		}
 	}
 	if !slices.Equal(outcomes, []ReconcileDecision{SpawnStarted, SpawnStarted, SpawnSuppressed}) {
 		t.Fatalf("outcomes = %v, want two starts then a suppression", outcomes)

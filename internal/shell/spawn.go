@@ -88,7 +88,12 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[own]}, nil
 	}
 	if len(active) >= cfg.MaxConcurrentRuns() {
-		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[0]}, nil
+		return SpawnResult{
+			Outcome:      SpawnSuppressed,
+			BlockingUnit: active[0],
+			Detail: fmt.Sprintf("all %d/%d run slots are occupied by active units %s",
+				len(active), cfg.MaxConcurrentRuns(), strings.Join(active, ", ")),
+		}, nil
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.Runs.Dir, ".handoffs"), 0o700); err != nil {
 		return SpawnResult{}, fmt.Errorf("create continuation handoff directory: %w", err)
