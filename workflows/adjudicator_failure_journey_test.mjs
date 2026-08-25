@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readlinkSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -309,7 +310,12 @@ test("the executable adjudicator carries the launch contract through to a publis
   ]);
   assert.equal(launch.cwd, workflowsDir);
   assert.equal(launch.record, "on");
-  assert.match(launch.recordDir, /^\/tmp\/minos-ensemble-record-/);
+  assert.equal(
+    realpathSync(dirname(launch.recordDir)),
+    realpathSync(tmpdir()),
+    "the executable wrapper creates Ensemble records directly in Node's effective temporary directory",
+  );
+  assert.match(basename(launch.recordDir), /^minos-ensemble-record-[^/]+$/);
   assert.equal(verdict.status, "complete");
   assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
   assert.deepEqual(verdict.reviewBody.comments.map((comment) => ({
