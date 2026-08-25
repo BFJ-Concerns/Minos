@@ -74,11 +74,7 @@ const (
 	RunClassMaintenance RunClass = "maintenance"
 )
 
-func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext, runClasses ...RunClass) (SpawnResult, error) {
-	runClass := RunClassReview
-	if len(runClasses) > 0 {
-		runClass = runClasses[0]
-	}
+func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext, runClass RunClass) (SpawnResult, error) {
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
 	if err != nil {

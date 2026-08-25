@@ -22,7 +22,10 @@ import (
 func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 	t.Run("draft pull request is not started", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
-		state.changePullRequest(func(pullRequest map[string]any) { pullRequest["draft"] = true })
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["draft"] = true
+			pullRequest["head"].(map[string]any)["ref"] = "structural/draft"
+		})
 		cfg, repo, facts := state.service(t)
 		repo.StructuralBranchPrefixes = []string{"structural/"}
 
