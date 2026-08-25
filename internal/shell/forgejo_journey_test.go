@@ -1439,9 +1439,10 @@ func TestForgeMergePreservesForkSourceBranch(t *testing.T) {
 
 func stackedFixturePull(number float64, baseRef, headRef string) map[string]any {
 	return map[string]any{
-		"number": number, "state": "open", "merged": false,
-		"base": map[string]any{"ref": baseRef, "repo": map[string]any{"full_name": "minos-e2e-owner/subject"}},
-		"head": map[string]any{"ref": headRef, "repo": map[string]any{"full_name": "minos-e2e-owner/subject"}},
+		"number": number, "state": "open", "merged": false, "draft": false,
+		"user": map[string]any{"login": "fixture-author"},
+		"base": map[string]any{"ref": baseRef, "sha": "target-" + baseRef, "repo": map[string]any{"full_name": "minos-e2e-owner/subject"}},
+		"head": map[string]any{"ref": headRef, "sha": "head-" + headRef, "repo": map[string]any{"full_name": "minos-e2e-owner/subject"}},
 	}
 }
 
@@ -2237,6 +2238,10 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, s.pullRequest)
 	case r.Method == http.MethodGet && s.stackedChild(path) != nil:
 		writeFixtureJSON(s.t, w, s.stackedChild(path))
+	case r.Method == http.MethodGet && strings.Contains(path, "/issues/2/") && strings.HasSuffix(path, "/dependencies"):
+		writeFixtureJSON(s.t, w, []map[string]any{})
+	case r.Method == http.MethodGet && strings.Contains(path, "/pulls/2/") && strings.HasSuffix(path, "/reviews"):
+		writeFixtureJSON(s.t, w, []map[string]any{})
 	case r.Method == http.MethodPatch && s.stackedChild(path) != nil:
 		if s.childRetargetCode != 0 {
 			http.Error(w, "retarget fixture failure", s.childRetargetCode)

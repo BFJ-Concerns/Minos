@@ -190,6 +190,14 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		}
 		_ = removeRunDir(runDir)
 	}
+	if admission.GroupCandidatesJSON != "" {
+		candidatesPath := filepath.Join(runDir, "group-candidates.json")
+		if err := os.WriteFile(candidatesPath, []byte(admission.GroupCandidatesJSON), 0o600); err != nil {
+			cleanupSpawnFailure()
+			return SpawnResult{}, fmt.Errorf("write group candidates: %w", err)
+		}
+		admission.GroupCandidatesJSON = candidatesPath
+	}
 	if reviewResultPath != "" {
 		carriedResult := filepath.Join(runDir, "carried-review-result.json")
 		if !reviewResultAlreadyCarried {
@@ -247,6 +255,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_RELEASED_HOLD_HEAD":      admission.ReleasedHoldHead,
 		"MINOS_RELEASED_HOLD_STAGE":     admission.ReleasedHoldStage,
 		"MINOS_RELEASED_HOLD_DIAGNOSIS": admission.ReleasedHoldDiagnosis,
+		"MINOS_GROUP_CANDIDATES":        admission.GroupCandidatesJSON,
 		"ENSEMBLE_CONCURRENCY_CLAUDE":   strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
 		"ENSEMBLE_CONCURRENCY_CODEX":    strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
 	}

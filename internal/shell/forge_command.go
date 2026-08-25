@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|head-movement|check-logs|claim|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge snapshot|head-movement|check-logs|claim|claim-member|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
 	adapter, guard, botLogin, err := leadForge()
 	if err != nil {
@@ -63,6 +63,34 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("usage: minos forge claim")
 		}
 		return emitForgeResult(stdout, "claim", adapter.Claim(ctx, guard.Repository, guard.PullRequest))
+	case "claim-member":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge claim-member OWNER REPO NUMBER")
+		}
+		cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
+		if err != nil {
+			return err
+		}
+		repos, err := LoadRepoConfigs(cfg.Root)
+		if err != nil {
+			return err
+		}
+		var repo RepoConfig
+		for _, candidate := range repos {
+			if candidate.Forge == os.Getenv("MINOS_FORGE") && candidate.Owner == guard.Repository.Owner && candidate.Repo == guard.Repository.Name {
+				repo = candidate
+				break
+			}
+		}
+		if repo.Repo == "" {
+			return fmt.Errorf("lead repository is not configured")
+		}
+		primary := Facts{Forge: os.Getenv("MINOS_FORGE"), Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
+		facts, err := claimGroupMember(ctx, cfg, repo, primary, args[1], args[2], args[3])
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(facts)
 	case "status":
 		if len(args) != 4 {
 			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|incomplete|held|clean|merged|continuation")

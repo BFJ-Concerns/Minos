@@ -89,7 +89,12 @@ func SweepCommand(ctx context.Context, args []string) error {
 	}
 	candidates = orderSweepCandidates(candidates, activeUnits)
 	for _, candidate := range candidates {
-		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
+		groupCandidates, err := groupCandidatesJSON(ctx, cfg, candidate.repo, candidate.facts, candidates)
+		if err != nil {
+			log.Printf("%s#%s: enumerate group candidates: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
+			continue
+		}
+		result, err := reconcilePullRequestWithCandidates(ctx, cfg, candidate.repo, candidate.facts, groupCandidates)
 		if err != nil {
 			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
 			continue

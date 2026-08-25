@@ -35,6 +35,9 @@ type AdmissionContext struct {
 	ReleasedHoldHead      string
 	ReleasedHoldStage     string
 	ReleasedHoldDiagnosis string
+	// GroupCandidatesJSON is sweep-only raw material for the lead's grouping
+	// judgement.  It is deliberately data, not a selection decision.
+	GroupCandidatesJSON string
 }
 
 func currentSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (forge.Snapshot, error) {
@@ -278,14 +281,22 @@ type ReconcileResult struct {
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
+	return reconcilePullRequestWithCandidates(ctx, cfg, repo, facts, "")
+}
+
+func reconcilePullRequestWithCandidates(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, candidates string) (ReconcileResult, error) {
 	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
-	return reconcilePullRequestSnapshot(ctx, cfg, repo, facts, adapter, snapshot)
+	return reconcilePullRequestSnapshotWithCandidates(ctx, cfg, repo, facts, adapter, snapshot, candidates)
 }
 
 func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (ReconcileResult, error) {
+	return reconcilePullRequestSnapshotWithCandidates(ctx, cfg, repo, facts, adapter, snapshot, "")
+}
+
+func reconcilePullRequestSnapshotWithCandidates(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot, candidates string) (ReconcileResult, error) {
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
@@ -300,6 +311,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		commits = []forge.Commit{{SHA: snapshot.HeadSHA, Author: cfg.Service.BotLogin}}
 	}
 	admission := releasedHoldContext(ctx, adapter, snapshot, repository, pullRequest, cfg.Service.BotLogin, commits, currentEnvironmentStamp(cfg))
+	admission.GroupCandidatesJSON = candidates
 	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
 	}
