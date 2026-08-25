@@ -837,6 +837,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_AUTO_MERGE=true",
 		"MINOS_REVIEW_THRESHOLD=Medium",
 		"MINOS_MAX_ROUNDS=7",
+		"MINOS_RUN_CLASS=review",
 		"MINOS_RELEASED_HOLD_HEAD=",
 		"MINOS_RELEASED_HOLD_STAGE=",
 		"MINOS_RELEASED_HOLD_DIAGNOSIS=",
