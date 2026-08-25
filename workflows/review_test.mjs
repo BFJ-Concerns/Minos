@@ -17,6 +17,7 @@ const fixScriptPath = fileURLToPath(new URL("./fix.js", import.meta.url));
 const source = await readFile(scriptPath, "utf8");
 const fixSource = await readFile(fixScriptPath, "utf8");
 const lifecycle = await readFile(fileURLToPath(new URL("../lifecycle/lifecycle.md", import.meta.url)), "utf8");
+const maintenance = await readFile(fileURLToPath(new URL("../lifecycle/maintenance.md", import.meta.url)), "utf8");
 const body = source.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
@@ -826,6 +827,38 @@ test("an exploration null still emits its required leg for archive adjudication"
   assert.equal(result.reviewers[0].status, "no-result");
 });
 
+test("grouped runs keep the forge record per member and split on a blocking outcome", () => {
+  assert.match(lifecycle, /the forge record is per\s+member/);
+  assert.match(lifecycle, /every finding is published only on the member it\s+concerns/);
+  assert.match(lifecycle, /membership is fixed\s+from this point/);
+  assert.match(lifecycle, /no line count, file count, or member count decides it/);
+  assert.match(lifecycle, /forge claim-member OWNER REPO NUMBER/);
+  assert.match(lifecycle, /--members "\$MINOS_RUN_DIR\/members\.json"/);
+  assert.match(
+    lifecycle,
+    /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,
+  );
+  assert.match(
+    lifecycle,
+    /approve-chain-wait BODY_FILE[\s\S]*cause\s+`chain-wait`[\s\S]*target SHA this verdict was rendered\s+against[\s\S]*status HEAD TARGET held[\s\S]*Held at: finishing/,
+  );
+});
+
+test("the maintenance playbook is fixed, screened, and runs no review workflow", () => {
+  assert.match(maintenance, /No\s+review workflow runs at any point in this lifecycle\./);
+  assert.match(maintenance, /never a\s+work order/);
+  assert.match(maintenance, /at least seven days old[\s\S]*adopted without\s+ceremony/);
+  assert.match(
+    maintenance,
+    /flagged young release is never adopted\*\*: pin it back to the aged\s+release/,
+  );
+  assert.match(maintenance, /never reach the branch unscreened/);
+  assert.match(maintenance, /one patch level[\s\S]*declares no version of its own, skip this step/);
+  assert.match(maintenance, /no 👍 is ever added/);
+  assert.match(maintenance, /integrate-wave/);
+  assert.match(maintenance, /request-changes-checks\s+BODY_FILE COMMENTS_FILE/);
+});
+
 test("the lifecycle uses one adjudicated review call and publication-owned fix waves", () => {
   assert.match(lifecycle, /refused setup if the admitted head moved through a foreign commit before setup/);
   assert.match(
@@ -917,7 +950,7 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
-    /When the ladder stalls[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes-checks[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*records that failed required checks caused the verdict[\s\S]*target movement spends it/,
+    /When the ladder stalls[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes-checks[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*records that failed required checks caused the verdict[\s\S]*target its\s+gate actually ran against[\s\S]*never a newer target you judged equivalent[\s\S]*target movement spends it/,
   );
   assert.match(
     initialGate,
