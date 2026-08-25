@@ -248,6 +248,28 @@ func TestSyncTargetNoOpCleanAndConflictJourneys(t *testing.T) {
 	})
 }
 
+func TestSyncMemberTargetChecksOutTheMemberInItsLinkedWorktreeAndKeepsPrimaryPin(t *testing.T) {
+	remote, primary := createSyncFixture(t, false, false)
+	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+	target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+	primaryPin := gitOutput(t, primary, "rev-parse", "HEAD")
+	runGit(t, primary, "update-ref", "refs/minos/target", primaryPin)
+	member := filepath.Join(t.TempDir(), "member")
+	runGit(t, primary, "worktree", "add", "--detach", member, target)
+
+	command := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "sync-member-target"), member, "2", "feature", "main", head, target, "merge")
+	output, err := command.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), `"outcome":"unchanged"`) {
+		t.Fatalf("sync-member-target: %v\n%s", err, output)
+	}
+	if got := gitOutput(t, member, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("member HEAD = %q, want checked-out member head %q", got, head)
+	}
+	if got := gitOutput(t, primary, "rev-parse", "refs/minos/target"); got != primaryPin {
+		t.Fatalf("primary target pin = %q, want unchanged %q", got, primaryPin)
+	}
+}
+
 type movedTargetSyncFacts struct {
 	pushedHead string
 	target     string

@@ -19,9 +19,11 @@ if [ -z "$source_branch" ] || [ -z "$target_branch" ]; then
 fi
 
 common_dir="$(git -C "$workspace" rev-parse --path-format=absolute --git-common-dir)"
-local_head="$(git -C "$workspace" rev-parse HEAD)"
-if [ "$local_head" != "$expected_head" ]; then
-  echo "sync-member-target: workspace is not checked out at the member head" >&2; exit 1
+# A linked worktree makes the member workspace distinct from the primary
+# workspace sharing its common Git directory. Checking the member head out here
+# is therefore safe and fulfils the member-scoped lifecycle contract.
+if [ ! -f "${workspace%/}/.git" ]; then
+  echo "sync-member-target: workspace must be the member's linked worktree" >&2; exit 1
 fi
 source_ref="refs/minos/member/${member}/source"
 target_ref="refs/minos/member/${member}/target"
@@ -33,16 +35,17 @@ observed_target="$(git -C "$workspace" rev-parse "$target_ref")"
 if [ "$observed_head" != "$expected_head" ] || [ "$observed_target" != "$expected_target" ]; then
   echo "sync-member-target: member source or target moved" >&2; exit 1
 fi
+git -C "$workspace" checkout --detach "$expected_head" >&2
+local_head="$(git -C "$workspace" rev-parse HEAD)"
 git_dir="$(git -C "$workspace" rev-parse --git-dir)"
 case "$git_dir" in /*) ;; *) git_dir="${workspace%/}/${git_dir}" ;; esac
 if [ -f "${git_dir}/MERGE_HEAD" ] || [ -d "${git_dir}/rebase-merge" ] || [ -d "${git_dir}/rebase-apply" ]; then
   echo "sync-member-target: finish the current merge or rebase before resuming" >&2; exit 1
 fi
-if [ "$local_head" = "$expected_head" ] && git -C "$workspace" merge-base --is-ancestor "$target_ref" HEAD; then
+if git -C "$workspace" merge-base --is-ancestor "$target_ref" HEAD; then
   jq -nc --arg head "$local_head" '{outcome:"unchanged",head:$head}'; exit 0
 fi
 if ! git -C "$workspace" merge-base --is-ancestor "$target_ref" HEAD; then
-  if [ "$local_head" != "$expected_head" ]; then echo "sync-member-target: workspace has unintegrated local commits" >&2; exit 1; fi
   if [ "$method" = rebase ]; then git -C "$workspace" rebase "$target_ref" >&2 || { jq -nc '{outcome:"conflict",operation:"rebase"}'; exit 2; }
   else git -C "$workspace" merge --no-edit "$target_ref" >&2 || { jq -nc '{outcome:"conflict",operation:"merge"}'; exit 2; }; fi
 fi

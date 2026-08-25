@@ -90,13 +90,16 @@ func SweepCommand(ctx context.Context, args []string) error {
 		log.Printf("sweep group member guards: %v", err)
 	}
 	candidates = orderSweepCandidates(candidates, activeUnits)
-	for _, candidate := range candidates {
-		groupCandidates, err := groupCandidatesJSON(ctx, cfg, candidate.repo, candidate.facts, candidates)
+	groupCandidates := map[string]string{}
+	if err == nil {
+		groupCandidates, err = groupCandidatesByPrimary(ctx, cfg, candidates, activeUnits)
 		if err != nil {
-			log.Printf("%s#%s: enumerate group candidates: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
-			groupCandidates = "[]"
+			log.Printf("enumerate group candidates: %v", err)
+			groupCandidates = map[string]string{}
 		}
-		result, err := reconcilePullRequestWithCandidates(ctx, cfg, candidate.repo, candidate.facts, groupCandidates)
+	}
+	for _, candidate := range candidates {
+		result, err := reconcilePullRequestWithCandidates(ctx, cfg, candidate.repo, candidate.facts, groupCandidates[UnitName(candidate.facts)])
 		if err != nil {
 			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
 			continue

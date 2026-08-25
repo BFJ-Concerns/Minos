@@ -15,24 +15,55 @@ import (
 // groupCandidatesJSON surfaces sweep siblings only.  It deliberately makes no
 // judgement about which (if any) should become members.
 func groupCandidatesJSON(ctx context.Context, cfg ServiceConfig, repo RepoConfig, primary Facts, all []sweepCandidate) (string, error) {
-	eligibleInRepo := 0
-	for _, candidate := range all {
-		if candidate.repo.Forge == repo.Forge && candidate.repo.Owner == repo.Owner && candidate.repo.Repo == repo.Repo {
-			eligibleInRepo++
-		}
-	}
-	if eligibleInRepo < 2 {
-		return "[]", nil
-	}
-	adapter, err := newBehaviouralForge(cfg, primary.Forge)
+	active, err := activeRunUnitNames(ctx)
 	if err != nil {
 		return "", err
 	}
-	snapshots := map[string]forge.Snapshot{}
+	groups, err := groupCandidatesByPrimary(ctx, cfg, all, active)
+	if err != nil {
+		return "", err
+	}
+	return groups[UnitName(primary)], nil
+}
+
+// groupCandidatesByPrimary snapshots each sweep candidate once and returns the
+// lead-facing sibling list for every primary. The active-unit snapshot comes
+// from the sweep so candidates already running on their own are not surfaced.
+func groupCandidatesByPrimary(ctx context.Context, cfg ServiceConfig, all []sweepCandidate, active []string) (map[string]string, error) {
+	groups := make(map[string]string, len(all))
 	for _, candidate := range all {
-		if candidate.repo.Forge != repo.Forge || candidate.repo.Owner != repo.Owner || candidate.repo.Repo != repo.Repo {
-			continue
+		groups[UnitName(candidate.facts)] = "[]"
+	}
+	byRepo := make(map[string][]sweepCandidate)
+	repos := make(map[string]RepoConfig)
+	for _, candidate := range all {
+		key := candidate.repo.Forge + "\x00" + candidate.repo.Owner + "\x00" + candidate.repo.Repo
+		byRepo[key] = append(byRepo[key], candidate)
+		repos[key] = candidate.repo
+	}
+	for key, candidates := range byRepo {
+		repo := repos[key]
+		if err := groupCandidatesForRepo(ctx, cfg, repo, candidates, active, groups); err != nil {
+			return nil, err
 		}
+	}
+	return groups, nil
+}
+
+func groupCandidatesForRepo(ctx context.Context, cfg ServiceConfig, repo RepoConfig, candidates []sweepCandidate, active []string, groups map[string]string) error {
+	eligibleInRepo := 0
+	for range candidates {
+		eligibleInRepo++
+	}
+	if eligibleInRepo < 2 {
+		return nil
+	}
+	adapter, err := newBehaviouralForge(cfg, repo.Forge)
+	if err != nil {
+		return err
+	}
+	snapshots := map[string]forge.Snapshot{}
+	for _, candidate := range candidates {
 		pr, err := strconv.ParseInt(candidate.facts.PR, 10, 64)
 		if err != nil {
 			continue
@@ -45,31 +76,40 @@ func groupCandidatesJSON(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 		}
 		snapshots[candidate.facts.PR] = snapshot
 	}
-	primarySnapshot, ok := snapshots[primary.PR]
-	if !ok {
-		return "[]", nil
-	}
-	primaryTarget := resolvedGroupTarget(primarySnapshot, snapshots, map[string]bool{})
-	members := make([]Facts, 0)
+	membersByTarget := make(map[string][]Facts)
 	for number, snapshot := range snapshots {
-		if number == primary.PR || snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadRepository != repo.Owner+"/"+repo.Repo || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) || resolvedGroupTarget(snapshot, snapshots, map[string]bool{}) != primaryTarget {
+		if snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadRepository != repo.Owner+"/"+repo.Repo || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
 			continue
 		}
-		facts := Facts{Forge: primary.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: number, HeadSHA: snapshot.HeadSHA, BaseRef: snapshot.TargetBranch, BaseSHA: snapshot.TargetSHA, HeadRef: snapshot.HeadBranch}
+		facts := Facts{Forge: repo.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: number, HeadSHA: snapshot.HeadSHA, BaseRef: snapshot.TargetBranch, BaseSHA: snapshot.TargetSHA, HeadRef: snapshot.HeadBranch}
 		eligible, eligibilityErr := groupMemberEligible(ctx, cfg, repo, facts, adapter, snapshot)
 		if eligibilityErr != nil || !eligible {
 			continue
 		}
-		if groupMemberGuardActive(ctx, cfg.Runs.Dir, UnitName(facts)) {
+		if activeRunContains(active, UnitName(facts)) || groupMemberGuardedBy(cfg.Runs.Dir, UnitName(facts), active) {
 			continue
 		}
-		members = append(members, facts)
+		target := resolvedGroupTarget(snapshot, snapshots, map[string]bool{})
+		membersByTarget[target] = append(membersByTarget[target], facts)
 	}
-	encoded, err := json.Marshal(members)
-	if err != nil {
-		return "", err
+	for _, primary := range candidates {
+		snapshot, ok := snapshots[primary.facts.PR]
+		if !ok {
+			continue
+		}
+		members := make([]Facts, 0, len(membersByTarget[resolvedGroupTarget(snapshot, snapshots, map[string]bool{})]))
+		for _, member := range membersByTarget[resolvedGroupTarget(snapshot, snapshots, map[string]bool{})] {
+			if member.PR != primary.facts.PR {
+				members = append(members, member)
+			}
+		}
+		encoded, err := json.Marshal(members)
+		if err != nil {
+			return err
+		}
+		groups[UnitName(primary.facts)] = string(encoded)
 	}
-	return string(encoded), nil
+	return nil
 }
 
 // groupMemberEligible is the non-writing admission predicate shared by
@@ -89,18 +129,16 @@ func groupMemberEligible(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 	if err != nil {
 		return false, err
 	}
-	if review, reviewed := trustedReview(snapshot, commits, cfg.Service.BotLogin); reviewed {
-		if _, terminal := terminalState(review); terminal && !checkCausedVerdictSpent(review, snapshot) {
-			return false, nil
+	return assessPullRequestAdmission(ctx, cfg, repo, facts, adapter, snapshot, commits).admitsNewRun(), nil
+}
+
+func activeRunContains(active []string, unit string) bool {
+	for _, live := range active {
+		if strings.TrimSuffix(live, ".service") == unit {
+			return true
 		}
 	}
-	if trustedCompletedRunStatus(ctx, adapter, repository, snapshot, commits, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts), currentEnvironmentStamp(cfg)) {
-		return false, nil
-	}
-	if _, deferred := dependencyDeferral(snapshot); deferred {
-		return false, nil
-	}
-	return true, nil
+	return false
 }
 
 func resolvedGroupTarget(snapshot forge.Snapshot, snapshots map[string]forge.Snapshot, seen map[string]bool) string {
@@ -124,6 +162,11 @@ func groupMemberGuardActive(ctx context.Context, runsDir, memberUnit string) boo
 	if err != nil {
 		return true
 	}
+	_, guarded := liveGroupMemberHolder(runsDir, memberUnit, active)
+	return guarded
+}
+
+func groupMemberGuardedBy(runsDir, memberUnit string, active []string) bool {
 	_, guarded := liveGroupMemberHolder(runsDir, memberUnit, active)
 	return guarded
 }
