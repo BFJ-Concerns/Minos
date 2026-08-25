@@ -474,14 +474,13 @@ while :; do
 
   # 3. Claude has reported an unrecoverable terminal state.
   if [ "$agent_state" = "failed" ] || [ "$agent_state" = "stopped" ]; then
-    supervisor_failure=true
-    failure_stage="lead-supervision"
-    failure_cause="Claude lead entered terminal state: $agent_state"
     if ! capture_cgroup_death_evidence; then
+      supervisor_failure=true
       failure_stage="cgroup-death-evidence"
       failure_cause="could not write cgroup death evidence $MINOS_RUN_DIR/cgroup-death-evidence"
+      exit 1
     fi
-    exit 1
+    break
   fi
 
   now="$(date +%s)"

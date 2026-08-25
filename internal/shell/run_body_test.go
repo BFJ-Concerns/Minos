@@ -893,8 +893,8 @@ func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 				"MINOS_CGROUP_DIR":          cgroup,
 				"MINOS_TEST_TERMINAL_STATE": state,
 			})
-			if err == nil {
-				t.Fatalf("run-body accepted a terminal lead state\n%s", output)
+			if err != nil {
+				t.Fatalf("run-body failed after recording terminal lead evidence: %v\n%s", err, output)
 			}
 			assertContainsFile(t, fixture.record+".terminal", `"state":"`+state+`"`)
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.events]")
@@ -902,7 +902,7 @@ func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.peak]\n987654321")
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.pressure]")
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "some avg10=0.01")
-			assertFailureLine(t, fixture.failureLog, "stage=lead-supervision", "cause=Claude lead entered terminal state: "+state)
+			assertFileEmpty(t, fixture.failureLog)
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 			fixture.assertProcessesStopped(t)
 		})
