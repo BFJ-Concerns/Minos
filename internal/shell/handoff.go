@@ -205,6 +205,14 @@ func containedRunDirectory(cfg ServiceConfig, unit, runDir string) (string, bool
 		filepath.Dir(cleanRunDir) != cleanRunsDir || !strings.HasPrefix(filepath.Base(cleanRunDir), unit+"-") {
 		return "", false
 	}
+	resolvedRunsDir, err := filepath.EvalSymlinks(cleanRunsDir)
+	if err != nil {
+		return "", false
+	}
+	resolvedRunDir, err := filepath.EvalSymlinks(cleanRunDir)
+	if err != nil || filepath.Dir(resolvedRunDir) != resolvedRunsDir {
+		return "", false
+	}
 	return cleanRunDir, true
 }
 
