@@ -146,6 +146,32 @@ authorship from the commits themselves, so a predecessor's own pushed
 commits spend nothing there, and meeting such a commit mid-run simply
 takes the absorb judgement above.
 
+**Grouped run, run-wide.** When step 1's grouping judgement has claimed
+members beyond this pull request, the run owns several small pull requests
+bound for the same merge destination as one accountable run, and one rule
+governs every forge effect from then on: **the forge record is per
+member**. Every guarded forge command names the coordinates of the member
+it concerns — its pull-request number, its head, its target — never
+another member's; every finding is published only on the member it
+concerns; each member receives its own reviews, its own `Minos` statuses,
+its own reactions, and its own merge; and each member's project surfaces
+(annexe filings, overflow) receive only that member's material — each
+such write addressed to its member through the guarded commands' member
+addressing, since the commands otherwise bind to this run's own pull
+request. The
+members record is `$MINOS_RUN_DIR/members.json` — this pull request's
+own facts first, then the facts each claim command returned — written at
+claim and fixed from then on in *membership*: no member joins mid-run,
+and a small pull request arriving later is a later pass's ordinary work.
+The record fixes each member's identity — its number and branch names —
+never its coordinates: a member's current head and target are always
+taken from a fresh per-member snapshot at the point of use, because the
+run's own syncs and waves move them. A blocking outcome on one member
+never holds a clean member back (step 8 carries the split; a chain's
+order is read from the members' target branches). When no grouping happened —
+no candidates, or the judgement declined them — the run owns this one
+pull request and every grouped passage in this lifecycle is inert.
+
 1. The setup script has prepared the repository at the current pull-request head
    in `$MINOS_WORKSPACE`, either from a fresh clone or a validated preserved
    workspace. It refused setup if the admitted head moved through a foreign commit before setup. On a
@@ -172,6 +198,38 @@ takes the absorb judgement above.
    whether judgement happens. Record that basis in `$MINOS_FAILURE_LOG`, remove 👀
    against the fresh head and target, write the non-clean terminal marker,
    and stop without publishing.
+
+   **Grouping judgement.** When `$MINOS_GROUP_CANDIDATES` is set and names a
+   file listing candidates, the sweep that spawned this run found other
+   currently-eligible pull requests sharing this one's merge destination —
+   siblings targeting it directly, or a stacked chain resolving to it at
+   the chain's base. Judge here, once, whether to claim any of them into
+   this run as a group. The judgement is yours under the balance rule:
+   group the members that are genuinely small — where a run's fixed cost
+   would dominate each reviewed alone — and coherent to review together;
+   no line count, file count, or member count decides it, in either
+   direction, and declining to group is an ordinary answer. For each member
+   you take, run `"$MINOS_BIN" forge claim-member OWNER REPO NUMBER`: under
+   the service's admission lock it re-reads forge state, refuses a member
+   that is no longer eligible or already owned by a live run or group, and
+   otherwise guards the member against duplicate runs, claims it on the
+   forge (assign + 👀), and returns the member's facts as one JSON line. A
+   refusal simply drops that candidate — take what was granted and move on.
+   Write this pull request's own facts first, then the granted members'
+   facts, with one sentence of the grouping
+   judgement's basis, to `$MINOS_RUN_DIR/members.json`; membership is fixed
+   from this point. Then reconcile each claimed member with its target
+   through the member reconciliation script the run scripts provide — a
+   sibling of `sync-target` that checks the member's head out in its own
+   worktree and pins the member's target under a member-scoped ref. Never
+   run `sync-target` itself for a member: it syncs the invoking
+   workspace's HEAD — the primary's tree — and its fetch would move this
+   run's pinned `refs/minos/target`. Setup's pushed target reconciliation
+   applies per member this way, and each member's pushed sync becomes
+   that member's current head, read thereafter from fresh per-member
+   snapshots. A candidates file that is absent or
+   empty, or a judgement that declines every candidate, leaves this a
+   single-pull-request run with no members record.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` after the claim and snapshot
    checks. If `$MINOS_LOOP_RECORD` already exists, a predecessor handed off:
@@ -573,8 +631,12 @@ takes the absorb judgement above.
    `"$MINOS_BIN" forge status HEAD TARGET attention`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the
    non-clean terminal marker, and stop. That terminal request-changes review
-   records that failed required checks caused the verdict and the target it
-   was rendered against. It blocks re-attempts while the head and target stay
+   records that failed required checks caused the verdict and the target its
+   gate actually ran against: pass as TARGET the target SHA of the last gate
+   execution — the one setup or a later sync reconciled and the failing
+   commands ran on — never a newer target you judged equivalent, so target
+   movement this run absorbed in judgement still counts as movement for
+   re-admission. It blocks re-attempts while the head and target stay
    unchanged; on a non-fork pull request, target movement spends it so a fresh
    run can reconcile the target and reassess the checks. This report is the
    one review permitted to describe the run's own attempts: an honest account
@@ -773,7 +835,16 @@ takes the absorb judgement above.
    shipped role briefs — so reviewers weigh the author's explicitly declared
    scope rather than rediscovering a declared gap as a defect. Do not ask an
    agent to reproduce it or hand-author its `guidance`, `pullRequest`, or
-   `instructionBriefs` entries.
+   `instructionBriefs` entries. On a grouped run, additionally pass
+   `--members "$MINOS_RUN_DIR/members.json"`: the builder carries each
+   member's identity, description and its own *current* target-to-head
+   diff into the workflow — the diff is taken at invocation, so a
+   re-review after a wave reads the member's fixed head, not the head the
+   record was claimed at — the plan partitions across the members under
+   the same proportionality, and every finding travels with the identity of the
+   member it concerns — the adjudicated verdict withholds on a finding
+   whose member attribution is missing, and publication below writes each
+   member's findings to that member's pull request only.
 
    Choose exactly one branch:
 
@@ -1150,6 +1221,33 @@ takes the absorb judgement above.
    is clean. If the result is attention, remove the 👀 with `"$MINOS_BIN" forge
    reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`, write the non-clean
    terminal marker, and stop instead.
+
+   **On a grouped run, a blocking outcome splits the group** — finishing and
+   the attention stop above are both per member, and no member waits on
+   another's findings except through the chain rule below. Take the members
+   in dependency order: siblings in any order, a stacked chain base-first.
+   For each member whose own result is clean and whose chain predecessor
+   (where it has one) has merged, run this whole finishing step with that
+   member's coordinates — its current head and target from a fresh
+   per-member snapshot, its branch, every guarded forge command addressed
+   to that member — through to its
+   own merge, statuses and reactions. A member whose own confirmed findings
+   block it carries its own request-changes review and `attention`, exactly
+   as a solo run would leave it, and affects no other member. A chain
+   member whose own result is clean but whose predecessor ended blocked
+   **waits, expressed as a hold**: publish its approve review with
+   `"$MINOS_BIN" forge review HEAD TARGET approve-chain-wait BODY_FILE` —
+   the command appends the machine-readable trailing record (cause
+   `chain-wait`, and as TARGET the target SHA this verdict was rendered
+   against) that lets the sweep spend the approval when the target moves —
+   then set `"$MINOS_BIN" forge status HEAD TARGET held` and post the
+   comment opening with `Held at: finishing`, naming the blocked
+   predecessor it waits on. When the predecessor eventually merges, the
+   member's target moves, the sweep re-admits it, and the released
+   successor resumes at finishing on the standing review — so the wait
+   costs no re-review. Remove each member's 👀 at that member's own
+   terminal outcome. The failure log and terminal marker remain run-wide:
+   write them once, after every member has reached its outcome.
 
    Save a fresh `"$MINOS_BIN" forge snapshot` JSON object. It is the sole forge
    state used throughout finishing. For the initial and each fresh snapshot,
