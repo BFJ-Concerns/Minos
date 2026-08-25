@@ -108,6 +108,40 @@ func groupMemberGuardActive(ctx context.Context, runsDir, memberUnit string) boo
 	return false
 }
 
+func liveGroupMemberHolder(runsDir, memberUnit string, active []string) (string, bool) {
+	data, err := os.ReadFile(groupMemberGuardPath(runsDir, memberUnit))
+	if err != nil {
+		return "", false
+	}
+	holder := strings.TrimSpace(string(data))
+	for _, unit := range active {
+		if strings.TrimSuffix(unit, ".service") == holder {
+			return unit, true
+		}
+	}
+	return "", false
+}
+
+func sweepDeadGroupMemberGuards(runsDir string, active []string) error {
+	paths, err := filepath.Glob(filepath.Join(runsDir, ".group-members", "*"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if _, live := liveGroupMemberHolder(runsDir, filepath.Base(path), active); !live {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		_ = data
+	}
+	return nil
+}
+
 func claimGroupMember(ctx context.Context, cfg ServiceConfig, repo RepoConfig, primary Facts, owner, name, number string) (Facts, error) {
 	if owner != repo.Owner || name != repo.Repo {
 		return Facts{}, fmt.Errorf("member is outside this run repository")

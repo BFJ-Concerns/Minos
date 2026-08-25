@@ -87,6 +87,9 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		log.Printf("inspect active runs for candidate ordering: %v", err)
 	}
+	if err := sweepDeadGroupMemberGuards(cfg.Runs.Dir, activeUnits); err != nil {
+		log.Printf("sweep group member guards: %v", err)
+	}
 	candidates = orderSweepCandidates(candidates, activeUnits)
 	for _, candidate := range candidates {
 		groupCandidates, err := groupCandidatesJSON(ctx, cfg, candidate.repo, candidate.facts, candidates)

@@ -94,6 +94,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}); own >= 0 {
 		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[own]}, nil
 	}
+	if holder, guarded := liveGroupMemberHolder(cfg.Runs.Dir, unit, active); guarded {
+		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: holder}, nil
+	}
 	if len(active) >= cfg.MaxConcurrentRuns() {
 		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[0]}, nil
 	}
