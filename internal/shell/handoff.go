@@ -173,13 +173,14 @@ func rejectRunHandoff(path string, reason error) {
 }
 
 func adoptableRunDirectory(cfg ServiceConfig, unit string, facts Facts, handoff *runHandoff) (string, bool) {
-	cleanRunDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir)
-	if !contained {
-		return "runDir is not a direct, unit-named child of runs.dir", false
-	}
+	cleanRunDir := filepath.Clean(handoff.RunDir)
 	info, err := os.Stat(cleanRunDir)
 	if err != nil || !info.IsDir() {
 		return "runDir does not exist as a directory", false
+	}
+	cleanRunDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir)
+	if !contained {
+		return "runDir is not a direct, unit-named child of runs.dir", false
 	}
 	if _, err := os.Stat(filepath.Join(cleanRunDir, runOwnerMarker)); err == nil || !os.IsNotExist(err) {
 		return "runDir is still owned by another runwrap invocation", false

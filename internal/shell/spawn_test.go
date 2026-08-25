@@ -323,6 +323,18 @@ func TestSpawnRunRefusesContinuationDirectorySymlinkEscapingRunsDirectory(t *tes
 	}
 }
 
+func TestAdoptableRunDirectoryReportsMissingDirectory(t *testing.T) {
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = t.TempDir()
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+	handoff := &runHandoff{RunDir: filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-reaped")}
+
+	reason, ok := adoptableRunDirectory(cfg, UnitName(facts), facts, handoff)
+	if ok || reason != "runDir does not exist as a directory" {
+		t.Fatalf("adoption = (%q, %t), want missing-directory refusal", reason, ok)
+	}
+}
+
 func TestSpawnRunCarriesCompleteReviewVerdictAcrossContinuation(t *testing.T) {
 	for _, rejectedHandoff := range []bool{false, true} {
 		name := "accepted handoff"

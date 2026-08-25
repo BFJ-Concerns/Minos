@@ -101,18 +101,19 @@ pull_request_record="${MINOS_RUN_DIR}/pull-request.json"
 jq '{number: (.number // null), title: (.title // ""), body: (.body // "")}' \
   "$response_file" >"$pull_request_record"
 
-if [ "$resume" = true ]; then
+reuse_workspace="$resume"
+if [ "$reuse_workspace" = true ]; then
   if ! workspace_is_git_repository; then
     echo "setup-workspace: preserved workspace is not a Git repository; cloning fresh" >&2
     rm -rf -- "$MINOS_WORKSPACE"
-    resume=false
+    reuse_workspace=false
   else
     git -C "$MINOS_WORKSPACE" merge --abort 2>/dev/null || true
     git -C "$MINOS_WORKSPACE" reset --hard
     git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
   fi
 fi
-if [ "$resume" = false ]; then
+if [ "$reuse_workspace" = false ]; then
   git -c "http.extraHeader=Authorization: token ${forge_token}" clone --no-checkout "$repository_url" "$MINOS_WORKSPACE"
   git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
 fi

@@ -133,7 +133,11 @@ func TestSetupWorkspaceResumeReclonesInvalidGitWorkspaceAndReestablishesSafetySt
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
-	if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o700); err != nil {
+	runSetupWorkspace(t, server.URL, runDir, workspace, orientation, head)
+	if err := os.RemoveAll(filepath.Join(workspace, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workspace, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(workspace, "abandoned.txt"), []byte("not a repository\n"), 0o600); err != nil {
