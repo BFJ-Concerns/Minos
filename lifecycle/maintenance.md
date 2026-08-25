@@ -251,8 +251,9 @@ carry on against the pinned target and reconcile at finishing.
    project's annexe as a one-element JSON findings array — `kind`
    `held-diagnosis`, `title` the mechanism, `severity` `target-side`,
    `path` and `line` its most concrete locus, `explanation` naming the
-   commits — run through `"${MINOS_REVIEW_WORKFLOW%/*}/publish-overflow.mjs"`
-   with `$MINOS_ORIENTATION` (presentation-class: its failure degrades
+   commits — write that array to a file and run
+   `node "${MINOS_REVIEW_WORKFLOW%/*}/publish-overflow.mjs"
+   "$MINOS_ORIENTATION" FINDINGS_FILE` (presentation-class: its failure degrades
    and never fails the run; with repository grounding the comment already
    sits on the project's surface — file nothing further). Then set
    `"$MINOS_BIN" forge status HEAD TARGET held`, remove 👀, write the
@@ -272,10 +273,15 @@ carry on against the pinned target and reconcile at finishing.
    of either appends the concrete condition to `$MINOS_FAILURE_LOG`, sets
    `incomplete`, removes 👀, writes the non-clean terminal marker, and
    stops. Run `"${MINOS_SETUP_WORKSPACE%/*}/sync-target" "$MINOS_WORKSPACE"
-   HEAD_BRANCH TARGET_BRANCH HEAD TARGET TARGET_SYNC_METHOD` exactly as the
-   review lifecycle's finishing directs — resolve a real conflict in the
-   workspace and re-run the script for the guarded push; the sync is
-   reconciliation and triggers nothing further — then re-run the exact
+   HEAD_BRANCH TARGET_BRANCH HEAD TARGET TARGET_SYNC_METHOD` with the
+   snapshot's `head_branch`, `target_branch`, `head_sha`, `target_sha` and
+   `target_sync_method`: the script fetches and validates both branches,
+   follows the forge's merge-or-rebase style, and uses a lease-bound
+   single push; an unchanged target is a no-op. On a real conflict,
+   resolve only the merge or rebase conflict in the workspace, complete
+   that Git operation, then re-run the same script so it performs the
+   guarded push; the sync is
+   reconciliation and triggers nothing further. Then re-run the exact
    configured build and test commands when the sync moved anything. Wait on
    forge readiness through `"${MINOS_SETUP_WORKSPACE%/*}/watch-snapshot"
    SNAPSHOT_FILE 600`, never by polling or sleeping blind.
@@ -285,7 +291,8 @@ carry on against the pinned target and reconcile at finishing.
    root-cause discipline on forge evidence: retrieve
    `"$MINOS_BIN" forge check-logs HEAD TARGET >
    "$MINOS_RUN_DIR/check-logs.json"`, dispatch the same `rootcause.js`
-   workflow with `--evidence "$MINOS_RUN_DIR/check-logs.json"` (no
+   workflow with `--skill "$MINOS_ROOT_CAUSE_SKILL"` and
+   `--evidence "$MINOS_RUN_DIR/check-logs.json"` (no
    `--command`), and read `status` before any other field exactly as
    step 5 directs. Integrate only a licensed commit, verify it with the
    exact configured commands, and continue finishing on the pushed head —

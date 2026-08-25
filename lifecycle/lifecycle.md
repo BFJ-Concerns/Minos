@@ -155,12 +155,20 @@ it concerns — its pull-request number, its head, its target — never
 another member's; every finding is published only on the member it
 concerns; each member receives its own reviews, its own `Minos` statuses,
 its own reactions, and its own merge; and each member's project surfaces
-(annexe filings, overflow) receive only that member's material. The
-members record is `$MINOS_RUN_DIR/members.json` — the facts the claim
-commands returned, written at claim and fixed from then on: membership
-never grows mid-run, and a small pull request arriving later is a later
-pass's ordinary work. A blocking outcome on one member never holds a
-clean member back (step 8 carries the split). When no grouping happened —
+(annexe filings, overflow) receive only that member's material — each
+such write addressed to its member through the guarded commands' member
+addressing, since the commands otherwise bind to this run's own pull
+request. The
+members record is `$MINOS_RUN_DIR/members.json` — this pull request's
+own facts first, then the facts each claim command returned — written at
+claim and fixed from then on in *membership*: no member joins mid-run,
+and a small pull request arriving later is a later pass's ordinary work.
+The record fixes each member's identity — its number and branch names —
+never its coordinates: a member's current head and target are always
+taken from a fresh per-member snapshot at the point of use, because the
+run's own syncs and waves move them. A blocking outcome on one member
+never holds a clean member back (step 8 carries the split; a chain's
+order is read from the members' target branches). When no grouping happened —
 no candidates, or the judgement declined them — the run owns this one
 pull request and every grouped passage in this lifecycle is inert.
 
@@ -207,13 +215,19 @@ pull request and every grouped passage in this lifecycle is inert.
    otherwise guards the member against duplicate runs, claims it on the
    forge (assign + 👀), and returns the member's facts as one JSON line. A
    refusal simply drops that candidate — take what was granted and move on.
-   Write the granted members' facts, with one sentence of the grouping
+   Write this pull request's own facts first, then the granted members'
+   facts, with one sentence of the grouping
    judgement's basis, to `$MINOS_RUN_DIR/members.json`; membership is fixed
-   from this point. Then, for each claimed member, fetch its head branch
-   and run `"${MINOS_SETUP_WORKSPACE%/*}/sync-target"` for it exactly as
-   finishing directs for this pull request — setup's pushed target
-   reconciliation applies per member — and treat each member's pushed sync
-   as that member's current head. A candidates file that is absent or
+   from this point. Then reconcile each claimed member with its target
+   through the member reconciliation script the run scripts provide — a
+   sibling of `sync-target` that checks the member's head out in its own
+   worktree and pins the member's target under a member-scoped ref. Never
+   run `sync-target` itself for a member: it syncs the invoking
+   workspace's HEAD — the primary's tree — and its fetch would move this
+   run's pinned `refs/minos/target`. Setup's pushed target reconciliation
+   applies per member this way, and each member's pushed sync becomes
+   that member's current head, read thereafter from fresh per-member
+   snapshots. A candidates file that is absent or
    empty, or a judgement that declines every candidate, leaves this a
    single-pull-request run with no members record.
 
@@ -823,9 +837,11 @@ pull request and every grouped passage in this lifecycle is inert.
    agent to reproduce it or hand-author its `guidance`, `pullRequest`, or
    `instructionBriefs` entries. On a grouped run, additionally pass
    `--members "$MINOS_RUN_DIR/members.json"`: the builder carries each
-   member's coordinates, description and its own target-to-head diff into
-   the workflow, the plan partitions across the members under the same
-   proportionality, and every finding travels with the identity of the
+   member's identity, description and its own *current* target-to-head
+   diff into the workflow — the diff is taken at invocation, so a
+   re-review after a wave reads the member's fixed head, not the head the
+   record was claimed at — the plan partitions across the members under
+   the same proportionality, and every finding travels with the identity of the
    member it concerns — the adjudicated verdict withholds on a finding
    whose member attribution is missing, and publication below writes each
    member's findings to that member's pull request only.
@@ -1212,7 +1228,9 @@ pull request and every grouped passage in this lifecycle is inert.
    in dependency order: siblings in any order, a stacked chain base-first.
    For each member whose own result is clean and whose chain predecessor
    (where it has one) has merged, run this whole finishing step with that
-   member's coordinates — its head, its target, its branch — through to its
+   member's coordinates — its current head and target from a fresh
+   per-member snapshot, its branch, every guarded forge command addressed
+   to that member — through to its
    own merge, statuses and reactions. A member whose own confirmed findings
    block it carries its own request-changes review and `attention`, exactly
    as a solo run would leave it, and affects no other member. A chain
