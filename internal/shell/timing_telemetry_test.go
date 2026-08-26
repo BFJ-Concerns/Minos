@@ -516,6 +516,9 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "timings.ndjson"), []byte(event), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(runDir, "cgroup-death-evidence"), []byte("[memory.events]\noom_kill 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// The archive proof starts at the two production launch boundaries. A tree
 	// lacking either retention setting fails before it can manufacture a record
 	// shape, then the real launcher creates the exact nested directories the
@@ -640,6 +643,9 @@ exec sh -c "$last"
 		if !strings.Contains(string(archiveListing), want) {
 			t.Fatalf("delivered tarball omits %q:\n%s", want, archiveListing)
 		}
+	}
+	if !strings.Contains(string(archiveListing), "cgroup-death-evidence") {
+		t.Fatalf("delivered tarball lacks cgroup death evidence:\n%s", archiveListing)
 	}
 	if _, err := os.Stat(sidecar + ".partial"); !os.IsNotExist(err) {
 		t.Fatalf("partial sidecar left beside the delivered one: %v", err)

@@ -89,6 +89,7 @@ successor the preserved workspace:
   "writtenAt": "RFC 3339 timestamp",
   "runRecord": { the complete JSON object from $MINOS_LOOP_RECORD },
   "predecessorProgress": { the complete JSON object from $MINOS_PREDECESSOR_PROGRESS, when set },
+  "gateRepairLadder": "the complete $MINOS_RUN_DIR/gate-repair-ladder.log text, only for a gate-repair pressure-boundary handoff",
   "progress": {
     "stage": "stable name of the lifecycle stage just completed",
     "round": CURRENT_ROUND,
@@ -234,10 +235,13 @@ pull request and every grouped passage in this lifecycle is inert.
    Check for `$MINOS_RUN_DIR/memory-pressure` after the claim and snapshot
    checks. If `$MINOS_LOOP_RECORD` already exists, a predecessor handed off:
    its round continues and its confirmed-unfixed findings are already
-   suppressed from later dispatch. The loop record is the only inherited
-   decision state. Other preserved files are reusable workspace material, not
-   authority; the orientation and reconciliation records describe the state to
-   trust in this attempt.
+   suppressed from later dispatch. The loop record is inherited decision
+   state. When the handoff carries `gateRepairLadder`, it is also inherited
+   decision state: the launcher restores that exact text to
+   `$MINOS_RUN_DIR/gate-repair-ladder.log` before this turn begins. Other
+   preserved files are reusable workspace material, not authority; the
+   orientation and reconciliation records describe the state to trust in this
+   attempt.
 
    Read `$MINOS_RUN_DIR/reconciliation.json`. Setup has fetched the target from
    the base repository, verified its observed SHA and pinned it at
@@ -477,6 +481,18 @@ pull request and every grouped passage in this lifecycle is inert.
    reverts the target's work at merge, and a `product` locus stays out
    because the intermittent test is the only witness to a real race and
    silencing it ships the bug.
+
+   At the top of every gate-repair-ladder iteration, before preparing or
+   dispatching the next repair, check for `$MINOS_RUN_DIR/memory-pressure`.
+   When it exists, take the pressure-boundary handoff now with `stoppedAt`
+   set to `gate-repair-ladder`. Put the complete, exact current
+   `$MINOS_RUN_DIR/gate-repair-ladder.log` text in the handoff's
+   `gateRepairLadder` field. If no comparison has yet been logged, carry an
+   empty string: that is the authoritative first-iteration record, not a
+   malformed handoff. The C27 successor restores the field as its authoritative
+   progress record. This is a checkpoint within this bounded
+   loop only; do not poll for pressure while a repair workflow or forge write
+   is in flight.
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \
@@ -934,8 +950,10 @@ pull request and every grouped passage in this lifecycle is inert.
 
    Any adjudicated verdict may also contain `outOfScopeObservations`. These are
    unverified observations, not findings, and carry no verifier verdict. Keep
-   them in the saved verdict, but do not publish them through this lifecycle;
-   their publication is owned separately.
+   them in the saved verdict. At the terminal filing, publish them as
+   `kind: "out-of-scope-observation"` entries alongside the terminal overflow:
+   they are triage material only and never enter a review, fix input, sweep
+   decision, or run outcome.
 
    Only a verdict whose `status` is `complete` is publishable. A missing result,
    incomplete leg, or missing or invalid verifier result yields `incomplete` or
@@ -1056,9 +1074,9 @@ pull request and every grouped passage in this lifecycle is inert.
 
    A fix result may also carry `outOfScopeObservations` — unverified
    observations fix agents made while repairing, with no verdict and no
-   repair. Treat them exactly like a review verdict's observations: keep
-   them with the saved result and do not publish them through this
-   lifecycle; their publication is owned separately.
+   repair. Keep them with the saved result. The terminal filing publishes only
+   observations from the current complete adjudicated review or brief verdict,
+   not observations from a fix result.
    When `integration.commits` is non-empty, write that array unchanged to a
    file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
    "$MINOS_WORKSPACE" COMMITS_FILE`. That script verifies every commit's Minos
@@ -1109,21 +1127,28 @@ pull request and every grouped passage in this lifecycle is inert.
    sweep's, and any confirmed-unfixed entry whose severity sits below the
    threshold (marked `kind: "fix-attempts-failed"`): failed repairs never
    promote a sub-threshold finding into a request-changes hold. Write the
-   `overflow` array unchanged to a file and run:
+   `overflow` array unchanged to a publication file. Append the current complete
+   adjudicated verdict's `outOfScopeObservations`, each with
+   `kind: "out-of-scope-observation"`, and its `misconfigurations`, each with
+   `kind: "review-brief-misconfiguration"`, `brief` copied from `brief`,
+   `reason` copied from `reason`, and `misconfigurationKind` copied from its
+   original `kind`. These are distinct non-finding channels: do not add them to
+   the sweep digest, `requestChangesReview`, or any fix input. Run:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/publish-overflow.mjs" \
-     "$MINOS_ORIENTATION" OVERFLOW_FILE \
+     "$MINOS_ORIENTATION" PUBLICATION_FILE \
      > "$MINOS_RUN_DIR/overflow-result.json"
    ```
 
-   With an annexe it appends each finding once to `ISSUES.md`, commits and
+   With an annexe it appends each entry once to `ISSUES.md`, commits and
    pushes the annexe itself. Without an annexe its result is
    `destination: "pull-request"` with one `body`/`comments` payload:
    materialise those to files and post them as one `comment` review with
    `"$MINOS_BIN" forge review HEAD TARGET comment BODY_FILE COMMENTS_FILE`,
-   still without fix agents. Overflow publication is presentation-class:
-   its failure never fails the run.
+   still without fix agents. The rendered labels distinguish `Review finding`,
+   `Out-of-scope observation`, and `Review brief misconfiguration`. Publication
+   is presentation-class: its failure never fails the run.
 
    If `requestChangesReview` is present, materialise it exactly, post it with
    `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE
@@ -1181,6 +1206,16 @@ pull request and every grouped passage in this lifecycle is inert.
    "$MINOS_TARGET_SHA" comment BODY_FILE COMMENTS_FILE`. The guarded review
    command makes that group idempotent. Do not publish a review when there are
    no confirmed brief findings, and never publish an all-clear comment.
+
+   A complete brief verdict's `outOfScopeObservations` and `misconfigurations`
+   are also terminal triage material. Map and publish them through the same
+   two-positional `publish-overflow.mjs` call as step 6 — observations as
+   `kind: "out-of-scope-observation"`; misconfigurations as
+   `kind: "review-brief-misconfiguration"` with `brief`, `reason`, and
+   `misconfigurationKind` preserved. Do not mix either channel into the brief
+   review, `briefFixRequired`, or the single-wave fix input. This second
+   best-effort publication reaches the same annexe-or-pull-request destination;
+   its failure degrades presentation and never changes the brief-stage outcome.
 
    When `briefFixRequired` is false, the brief stage has passed: continue to
    finishing. When `briefFixRequired` is true, save the complete brief

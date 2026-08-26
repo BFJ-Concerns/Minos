@@ -904,7 +904,11 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.match(lifecycle, /review-inputs\.mjs[\s\S]*--loop-record "\$MINOS_LOOP_RECORD"/);
   assert.match(
     lifecycle,
-    /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*do not publish them through this lifecycle/,
+    /`outOfScopeObservations`[\s\S]*?unverified observations, not findings[\s\S]*?terminal filing[\s\S]*?out-of-scope-observation[\s\S]*?never enter a review, fix input, sweep\s+decision, or run outcome/,
+  );
+  assert.match(
+    lifecycle,
+    /fix result may also carry `outOfScopeObservations`[\s\S]*?Keep them with the saved result[\s\S]*?terminal filing publishes only[\s\S]*?current complete adjudicated review or brief verdict[\s\S]*?not observations from a fix result/,
   );
   assert.match(lifecycle, /--digest[\s\S]*sweep-digest\.json/);
   assert.match(
@@ -919,6 +923,14 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.match(lifecycle, /publish-before-fix[\s\S]*fix-args\.json[\s\S]*HEAD TARGET/);
   assert.match(lifecycle, /starts the effectful `fix\.js`[\s\S]*only after[\s\S]*`outcome: "applied"`/);
   assert.match(lifecycle, /Do not post the terminal sweep's sub-threshold[\s\S]*findings/);
+  assert.match(
+    lifecycle,
+    /`overflow` array unchanged[\s\S]*`outOfScopeObservations`[\s\S]*`misconfigurations`[\s\S]*review-brief-misconfiguration[\s\S]*do not add them to[\s\S]*sweep digest[\s\S]*requestChangesReview[\s\S]*fix input[\s\S]*PUBLICATION_FILE[\s\S]*Out-of-scope observation[\s\S]*Review brief misconfiguration[\s\S]*failure never fails the run/,
+  );
+  assert.match(
+    lifecycle,
+    /complete brief verdict's `outOfScopeObservations` and `misconfigurations`[\s\S]*same\s+two-positional `publish-overflow\.mjs` call[\s\S]*Do not mix either channel into the brief\s+review, `briefFixRequired`, or the single-wave fix input[\s\S]*failure degrades presentation and never changes the brief-stage outcome/,
+  );
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,
@@ -951,6 +963,22 @@ test("configured command failures enter the repair discipline, never a review on
   assert.match(
     initialGate,
     /bounded by progress, not a count[\s\S]*the red result\s+that repair was dispatched against[\s\S]*never the one that first entered the discipline[\s\S]*earns another repair\s+dispatch[\s\S]*same command failing the same way is a stall[\s\S]*your judgement[\s\S]*never a string comparison of gate\s+output[\s\S]*append its basis as one\s+sentence to `\$MINOS_RUN_DIR\/gate-repair-ladder\.log`[\s\S]*No counted ceiling[\s\S]*hard timeout is the failsafe/,
+  );
+  assert.match(
+    initialGate,
+    /top of every gate-repair-ladder iteration/,
+  );
+  assert.match(initialGate, /before preparing or[\s\S]*dispatching the next repair/);
+  assert.match(initialGate, /memory-pressure[\s\S]*pressure-boundary handoff/);
+  assert.match(initialGate, /gateRepairLadder[\s\S]*authoritative\s+progress record/);
+  assert.match(initialGate, /do not poll for pressure while[\s\S]*workflow or forge write[\s\S]*is in flight/);
+  const pressureCheckpoint = initialGate.indexOf("At the top of every gate-repair-ladder iteration");
+  const repairDispatch = initialGate.indexOf("rootcause-inputs.mjs");
+  assert.ok(pressureCheckpoint >= 0, "the pressure checkpoint anchor must be present");
+  assert.ok(repairDispatch >= 0, "the repair dispatch anchor must be present");
+  assert.ok(
+    pressureCheckpoint < repairDispatch,
+    "the pressure checkpoint must precede the repair dispatch",
   );
   assert.match(
     initialGate,
