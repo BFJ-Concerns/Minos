@@ -875,9 +875,10 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
-  await t.test("fix dispatch runs from the reconciled workspace", async () => {
+  await t.test("fix dispatch runs from the reconciled workspace with retained Ensemble evidence", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "minos-publication-cwd-"));
     let dispatchedFrom = null;
+    let dispatchEnv = null;
     const result = await publishBeforeFix({
       input: input(),
       head: HEAD,
@@ -893,8 +894,9 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
         stdout: '{"outcome":"applied"}\n',
         stderr: "",
       }),
-      runDispatch: async ({ cwd }) => {
+      runDispatch: async ({ cwd, env }) => {
         dispatchedFrom = cwd;
+        dispatchEnv = env;
         return {
           code: 0,
           signal: null,
@@ -910,6 +912,9 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     });
     assert.equal(result.status, "complete");
     assert.equal(dispatchedFrom, "/run/workspace");
+    assert.equal(dispatchEnv.ENSEMBLE_STATUS_DIR, runDir);
+    assert.equal(dispatchEnv.ENSEMBLE_RUN_RECORD, "on");
+    assert.equal(dispatchEnv.ENSEMBLE_RUN_RECORD_DIR, join(runDir, "ensemble-records", "fix"));
   });
 
   await t.test("fix dispatch does not depend on a reconciliation workspace record", async () => {

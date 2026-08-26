@@ -929,12 +929,58 @@ func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 	for _, state := range []string{"failed", "stopped"} {
 		t.Run(state, func(t *testing.T) {
 			fixture := newRunBodyFixture(t)
-			fixture.run(t, map[string]string{"MINOS_TEST_TERMINAL_STATE": state})
+			cgroup := writeTestCgroup(t, fixture.root, 850_000_000, 1_000_000_000, 0, 850_000_000, 0)
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.events"), []byte("low 0\nhigh 3\nmax 17\noom 2\noom_kill 1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.peak"), []byte("987654321\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.pressure"), []byte("some avg10=0.01 avg60=0.02 avg300=0.03 total=456\nfull avg10=0.00 avg60=0.01 avg300=0.02 total=123\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			output, err := fixture.execute(map[string]string{
+				"MINOS_CGROUP_DIR":          cgroup,
+				"MINOS_TEST_TERMINAL_STATE": state,
+			})
+			if err != nil {
+				t.Fatalf("run-body failed after recording terminal lead evidence: %v\n%s", err, output)
+			}
 			assertContainsFile(t, fixture.record+".terminal", `"state":"`+state+`"`)
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.events]")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "oom_kill 1")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.peak]\n987654321")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.pressure]")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "some avg10=0.01")
+			assertFileEmpty(t, fixture.failureLog)
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 			fixture.assertProcessesStopped(t)
 		})
 	}
+}
+
+func TestRunBodyCapturesDeathEvidenceBeforeCleanupAndRecordsUnavailableCounters(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 850_000_000, 1_000_000_000, 0, 850_000_000, 0)
+	if err := os.WriteFile(filepath.Join(cgroup, "memory.events"), []byte("oom_kill 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(cgroup, "memory.pressure")); err != nil {
+		t.Fatal(err)
+	}
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+		"MINOS_TEST_CGROUP_ON_STOP": filepath.Join(cgroup, "memory.events"),
+	})
+	if err != nil {
+		t.Fatalf("run-body failed after recording terminal lead evidence: %v\n%s", err, output)
+	}
+	evidence := filepath.Join(fixture.runDir, "cgroup-death-evidence")
+	assertContainsFile(t, evidence, "oom_kill 1")
+	assertContainsFile(t, evidence, "[memory.pressure]\nunavailable")
+	assertContainsFile(t, filepath.Join(cgroup, "memory.events"), "oom_kill 0")
+	fixture.assertProcessesStopped(t)
 }
 
 func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
@@ -1145,6 +1191,114 @@ func TestVendoredEnsembleResolvesConfiguredConcurrencyFromRunEnvironment(t *test
 			t.Fatalf("%s concurrency = %+v, present = %t; want env value %d", engine, got, ok, want)
 		}
 	}
+}
+
+func TestLifecycleEnsembleLaunchesRetainRunRecords(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	for _, launch := range []struct {
+		name   string
+		marker string
+	}{
+		{name: "setup", marker: `> "$MINOS_RUN_DIR/setup-args.json"`},
+		{name: "setup-retry", marker: `> "$MINOS_RUN_DIR/setup-retry-args.json"`},
+		{name: "gate-repair", marker: `> "$MINOS_RUN_DIR/gate-repair-args.json"`},
+		{name: "brief-fix", marker: `> "$MINOS_RUN_DIR/brief-fix-args.json"`},
+		{name: "finishing-rootcause", marker: `> "$MINOS_RUN_DIR/rootcause-args.json"`},
+	} {
+		t.Run(launch.name, func(t *testing.T) {
+			assertLifecycleEnsembleRecordLaunch(t, launch.name, launch.marker)
+
+			runDir := filepath.Join(t.TempDir(), "run")
+			archive := launchEnsembleRecordProbe(t, runDir, launch.name)
+			if !strings.HasPrefix(archive, filepath.Join(runDir, "ensemble-records", launch.name)+string(filepath.Separator)) {
+				t.Fatalf("%s archive = %q, want it below the run record root", launch.name, archive)
+			}
+		})
+	}
+}
+
+func assertLifecycleEnsembleRecordLaunch(t *testing.T, name, marker string) {
+	t.Helper()
+	lifecycle, err := os.ReadFile(filepath.Join("..", "..", "lifecycle", "lifecycle.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(lifecycle), marker)
+	if start < 0 {
+		t.Fatalf("lifecycle omits %s launch marker", name)
+	}
+	block := string(lifecycle)[start:]
+	if end := strings.Index(block, "```"); end >= 0 {
+		block = block[:end]
+	}
+	for _, want := range []string{
+		`ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR"`,
+		`ENSEMBLE_RUN_RECORD=on`,
+		`node /opt/minos/runtime/ensemble.mjs`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("%s launch omits %q:\n%s", name, want, block)
+		}
+	}
+	if strings.Contains(block, "ENSEMBLE_RUN_RECORD_DIR=") {
+		t.Fatalf("%s launch sets ENSEMBLE_RUN_RECORD_DIR instead of relying on the shared wrapper:\n%s", name, block)
+	}
+	if !strings.Contains(string(lifecycle), `ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/NAME"`) {
+		t.Fatal("shared lifecycle wrapper omits ENSEMBLE_RUN_RECORD_DIR")
+	}
+}
+
+func assertFixDispatchRetainsEnsembleRecord(t *testing.T) {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join("..", "..", "workflows", "publish-before-fix.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`ENSEMBLE_STATUS_DIR: env.MINOS_RUN_DIR`,
+		`ENSEMBLE_RUN_RECORD: "on"`,
+		`ENSEMBLE_RUN_RECORD_DIR: runRecordRoot`,
+	} {
+		if !strings.Contains(string(source), want) {
+			t.Fatalf("fix dispatch omits %q", want)
+		}
+	}
+}
+
+// launchEnsembleRecordProbe drives the vendored launcher rather than making a
+// record-shaped fixture. The deliberately invalid workflow exits non-zero only
+// after the launcher has opened and finalised its immutable run record.
+func launchEnsembleRecordProbe(t *testing.T, runDir, name string) string {
+	t.Helper()
+	bundle, err := filepath.Abs(filepath.Join("..", "..", "runtime", "ensemble.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := filepath.Join(t.TempDir(), "invalid-workflow.mjs")
+	if err := os.WriteFile(workflow, []byte("export default {};\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordRoot := filepath.Join(runDir, "ensemble-records", name)
+	cmd := exec.CommandContext(t.Context(), "node", bundle, workflow)
+	cmd.Dir = t.TempDir()
+	cmd.Env = environmentWithOverrides(map[string]string{
+		"HOME":                    filepath.Join(runDir, "home"),
+		"XDG_CONFIG_HOME":         filepath.Join(runDir, "config"),
+		"XDG_DATA_HOME":           filepath.Join(runDir, "data"),
+		"ENSEMBLE_STATUS_DIR":     runDir,
+		"ENSEMBLE_RUN_RECORD":     "on",
+		"ENSEMBLE_RUN_RECORD_DIR": recordRoot,
+	})
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("vendored Ensemble accepted invalid probe workflow\n%s", output)
+	}
+	manifests, err := filepath.Glob(filepath.Join(recordRoot, "runs", "*", "*", "*", "manifest.json"))
+	if err != nil || len(manifests) != 1 {
+		t.Fatalf("%s manifests = %v, error = %v; want one launcher-created record", name, manifests, err)
+	}
+	return filepath.Dir(manifests[0])
 }
 
 func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *testing.T) {
@@ -1456,6 +1610,9 @@ case "$1" in
     ;;
   stop)
     printf 'stop %s\n' "$2" >>"$record.calls"
+    if [ -n "${MINOS_TEST_CGROUP_ON_STOP:-}" ]; then
+      printf 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n' >"$MINOS_TEST_CGROUP_ON_STOP"
+    fi
     while IFS= read -r pid; do
       kill "$pid" 2>/dev/null || true
     done <"$record.pids"
@@ -1636,6 +1793,9 @@ func writeTestCgroup(t *testing.T, root string, current, maximum, inactiveFile, 
 		"memory.max":          fmt.Sprintf("%d\n", maximum),
 		"memory.stat":         fmt.Sprintf("anon %d\ninactive_file %d\n", anon, inactiveFile),
 		"memory.swap.current": fmt.Sprintf("%d\n", swap),
+		"memory.events":       "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n",
+		"memory.peak":         fmt.Sprintf("%d\n", current),
+		"memory.pressure":     "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
 	}
 	for name, contents := range files {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(contents), 0o644); err != nil {
