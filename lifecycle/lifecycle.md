@@ -257,6 +257,9 @@ pull request and every grouped passage in this lifecycle is inert.
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" "$MINOS_HEAD_SHA" \
      > "$MINOS_RUN_DIR/setup-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
+   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/setup" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
@@ -288,6 +291,9 @@ pull request and every grouped passage in this lifecycle is inert.
    node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" "$MINOS_HEAD_SHA" \
      --reconcile-only --objections "$MINOS_RUN_DIR/setup-objections.json" \
      > "$MINOS_RUN_DIR/setup-retry-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
+   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/setup-retry" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-retry-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
@@ -1184,6 +1190,9 @@ pull request and every grouped passage in this lifecycle is inert.
    node "${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs" \
      BRIEF_RESULT --single-wave \
      > "$MINOS_RUN_DIR/brief-fix-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
+   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/brief-fix" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/brief-fix-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/fix.js" \
@@ -1357,6 +1366,9 @@ pull request and every grouped passage in this lifecycle is inert.
      --skill "$MINOS_ROOT_CAUSE_SKILL" \
      --evidence "$MINOS_RUN_DIR/check-logs.json" \
      > "$MINOS_RUN_DIR/rootcause-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
+   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/finishing-rootcause" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/rootcause-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
