@@ -971,10 +971,23 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 			original := commandCombinedOutput
 			t.Cleanup(func() { commandCombinedOutput = original })
 			var firstStart []string
+			var activeUnits []string
 			starts := 0
 			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "systemctl" {
+					var listing strings.Builder
+					for _, unit := range activeUnits {
+						fmt.Fprintf(&listing, "%s.service loaded active running Minos lead\n", unit)
+					}
+					return []byte(listing.String()), nil
+				}
 				if name == "systemd-run" {
 					starts++
+					unitFlag := slices.Index(args, "--unit")
+					if unitFlag < 0 || unitFlag+1 >= len(args) {
+						t.Fatalf("systemd-run arguments omit unit: %v", args)
+					}
+					activeUnits = append(activeUnits, args[unitFlag+1])
 					if firstStart == nil {
 						firstStart = append([]string(nil), args...)
 					}
@@ -1007,6 +1020,60 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("primary live from previous pass", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		cfg := writeSweepFixtureConfig(t, state)
+		servicePath := filepath.Join(cfg.Root, "service.toml")
+		serviceConfig, err := os.ReadFile(servicePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serviceConfig = append(serviceConfig, []byte("max-concurrent = 3\n")...)
+		if err := os.WriteFile(servicePath, serviceConfig, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		var activeUnits []string
+		starts := 0
+		commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+			switch name {
+			case "systemctl":
+				var listing strings.Builder
+				for _, unit := range activeUnits {
+					fmt.Fprintf(&listing, "%s.service loaded active running Minos lead\n", unit)
+				}
+				return []byte(listing.String()), nil
+			case "systemd-run":
+				unitFlag := slices.Index(args, "--unit")
+				if unitFlag < 0 || unitFlag+1 >= len(args) {
+					t.Fatalf("systemd-run arguments omit unit: %v", args)
+				}
+				starts++
+				activeUnits = append(activeUnits, args[unitFlag+1])
+				return nil, nil
+			default:
+				return nil, nil
+			}
+		}
+
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		if starts != 1 {
+			t.Fatalf("first sweep started %d runs, want one primary", starts)
+		}
+
+		state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		if starts != 1 {
+			t.Fatalf("two passes started %d grouped runs, want the one live primary", starts)
+		}
+	})
 }
 
 func TestForgejoSweepRemovesDeadGroupMemberGuard(t *testing.T) {

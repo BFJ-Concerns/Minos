@@ -124,11 +124,23 @@ func SweepCommand(ctx context.Context, args []string) error {
 		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
 			log.Print(message)
 		}
-		if result.Decision == SpawnStarted || result.Decision == SpawnContinued {
-			var siblings []Facts
-			if decodeErr := json.Unmarshal([]byte(groupCandidates[unit]), &siblings); decodeErr != nil && groupCandidates[unit] != "" {
-				log.Printf("%s#%s: decode admitted group candidates: %v", candidate.facts.RepoSlug(), candidate.facts.PR, decodeErr)
+		var siblings []Facts
+		if decodeErr := json.Unmarshal([]byte(groupCandidates[unit]), &siblings); decodeErr != nil && groupCandidates[unit] != "" {
+			log.Printf("%s#%s: decode admitted group candidates: %v", candidate.facts.RepoSlug(), candidate.facts.PR, decodeErr)
+		}
+		if len(siblings) == 0 {
+			continue
+		}
+		primaryLive := activeRunContains(activeUnits, unit)
+		if !primaryLive {
+			currentActiveUnits, activeErr := activeRunUnitNames(ctx)
+			if activeErr != nil {
+				log.Printf("%s#%s: inspect primary run after reconciliation: %v", candidate.facts.RepoSlug(), candidate.facts.PR, activeErr)
+				continue
 			}
+			primaryLive = activeRunContains(currentActiveUnits, unit)
+		}
+		if primaryLive {
 			for _, sibling := range siblings {
 				groupedThisPass[UnitName(sibling)] = unit + ".service"
 			}
