@@ -12,15 +12,16 @@ import (
 const runHandoffKind = "minos-run-handoff-v1"
 
 type runHandoff struct {
-	Kind        string           `json:"kind"`
-	PullRequest handoffPull      `json:"pullRequest"`
-	Head        string           `json:"head"`
-	RunDir      string           `json:"runDir"`
-	StoppedAt   string           `json:"stoppedAt"`
-	WrittenAt   string           `json:"writtenAt"`
-	RunRecord   json.RawMessage  `json:"runRecord"`
-	Predecessor *handoffProgress `json:"predecessorProgress,omitempty"`
-	Progress    *handoffProgress `json:"progress,omitempty"`
+	Kind             string           `json:"kind"`
+	PullRequest      handoffPull      `json:"pullRequest"`
+	Head             string           `json:"head"`
+	RunDir           string           `json:"runDir"`
+	StoppedAt        string           `json:"stoppedAt"`
+	WrittenAt        string           `json:"writtenAt"`
+	RunRecord        json.RawMessage  `json:"runRecord"`
+	Predecessor      *handoffProgress `json:"predecessorProgress,omitempty"`
+	Progress         *handoffProgress `json:"progress,omitempty"`
+	GateRepairLadder *string          `json:"gateRepairLadder,omitempty"`
 }
 
 type handoffProgress struct {
@@ -117,6 +118,9 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 		if err := validateHandoffProgress("predecessorProgress", handoff.Predecessor); err != nil {
 			return nil, err
 		}
+	}
+	if handoff.GateRepairLadder != nil && strings.TrimSpace(*handoff.GateRepairLadder) == "" {
+		return nil, fmt.Errorf("gateRepairLadder must be non-empty when present")
 	}
 	return &handoff, nil
 }

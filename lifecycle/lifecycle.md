@@ -89,6 +89,7 @@ successor the preserved workspace:
   "writtenAt": "RFC 3339 timestamp",
   "runRecord": { the complete JSON object from $MINOS_LOOP_RECORD },
   "predecessorProgress": { the complete JSON object from $MINOS_PREDECESSOR_PROGRESS, when set },
+  "gateRepairLadder": "the complete $MINOS_RUN_DIR/gate-repair-ladder.log text, only for a gate-repair pressure-boundary handoff",
   "progress": {
     "stage": "stable name of the lifecycle stage just completed",
     "round": CURRENT_ROUND,
@@ -234,10 +235,13 @@ pull request and every grouped passage in this lifecycle is inert.
    Check for `$MINOS_RUN_DIR/memory-pressure` after the claim and snapshot
    checks. If `$MINOS_LOOP_RECORD` already exists, a predecessor handed off:
    its round continues and its confirmed-unfixed findings are already
-   suppressed from later dispatch. The loop record is the only inherited
-   decision state. Other preserved files are reusable workspace material, not
-   authority; the orientation and reconciliation records describe the state to
-   trust in this attempt.
+   suppressed from later dispatch. The loop record is inherited decision
+   state. When the handoff carries `gateRepairLadder`, it is also inherited
+   decision state: the launcher restores that exact text to
+   `$MINOS_RUN_DIR/gate-repair-ladder.log` before this turn begins. Other
+   preserved files are reusable workspace material, not authority; the
+   orientation and reconciliation records describe the state to trust in this
+   attempt.
 
    Read `$MINOS_RUN_DIR/reconciliation.json`. Setup has fetched the target from
    the base repository, verified its observed SHA and pinned it at
@@ -474,6 +478,16 @@ pull request and every grouped passage in this lifecycle is inert.
    because the intermittent test is the only witness to a real race and
    silencing it ships the bug.
 
+   At the top of every gate-repair-ladder iteration, before preparing or
+   dispatching the next repair, check for `$MINOS_RUN_DIR/memory-pressure`.
+   When it exists, take the pressure-boundary handoff now with `stoppedAt`
+   set to `gate-repair-ladder`. Put the complete, exact current
+   `$MINOS_RUN_DIR/gate-repair-ladder.log` text in the handoff's
+   `gateRepairLadder` field; the C27 successor restores that field as its
+   authoritative progress record. This is a checkpoint within this bounded
+   loop only; do not poll for pressure while a repair workflow or forge write
+   is in flight.
+
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/rootcause-inputs.mjs" \
      --skill "$MINOS_ROOT_CAUSE_SKILL" \
@@ -488,16 +502,6 @@ pull request and every grouped passage in this lifecycle is inert.
    ```
 
    Run it as a background task and wait exactly as step 4 directs.
-
-   At the top of every gate-repair-ladder iteration, check for
-   `$MINOS_RUN_DIR/memory-pressure` before dispatching or comparing the next
-   repair. When it exists, take the pressure-boundary handoff now with
-   `stoppedAt` naming the gate-repair ladder. The preserved run directory is
-   the handoff's ladder record: retain the complete
-   `$MINOS_RUN_DIR/gate-repair-ladder.log` beside `$MINOS_HANDOFF`, so the C27
-   successor inherits every progress comparison already established. This is
-   a checkpoint within this bounded loop only; do not poll for pressure while
-   a repair workflow or forge write is in flight.
 
    Before reading any other result field, read `status`. A result whose
    `status` is `incomplete` is a failed dispatch, not an assessed verdict —

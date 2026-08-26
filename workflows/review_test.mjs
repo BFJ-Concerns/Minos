@@ -950,7 +950,15 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
-    /top of every gate-repair-ladder iteration[\s\S]*`\$MINOS_RUN_DIR\/memory-pressure`[\s\S]*before dispatching or comparing the next\s+repair[\s\S]*pressure-boundary handoff[\s\S]*`stoppedAt` naming the gate-repair ladder[\s\S]*complete\s+`\$MINOS_RUN_DIR\/gate-repair-ladder\.log`[\s\S]*C27\s+successor inherits every progress comparison[\s\S]*do not poll for pressure while[\s\S]*workflow or forge write is in flight/,
+    /top of every gate-repair-ladder iteration/,
+  );
+  assert.match(initialGate, /before preparing or[\s\S]*dispatching the next repair/);
+  assert.match(initialGate, /memory-pressure[\s\S]*pressure-boundary handoff/);
+  assert.match(initialGate, /gateRepairLadder[\s\S]*authoritative progress record/);
+  assert.match(initialGate, /do not poll for pressure while[\s\S]*workflow or forge write[\s\S]*is in flight/);
+  assert.ok(
+    initialGate.indexOf("At the top of every gate-repair-ladder iteration") < initialGate.indexOf("rootcause-inputs.mjs"),
+    "the pressure checkpoint must precede the repair dispatch",
   );
   assert.match(
     initialGate,
