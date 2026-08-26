@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+exec node "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/analyse-archived-spans.mjs" "$@"
