@@ -907,6 +907,80 @@ exec sh -c "$last"
 	}
 }
 
+func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tools := filepath.Join(root, "run-body")
+	if err := os.MkdirAll(tools, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"archive-run", "collect-timings", "memory-telemetry"} {
+		content, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tools, name), content, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeScript(t, filepath.Join(tools, "analyse-archived-spans"), "#!/usr/bin/env sh\nexit 1\n")
+
+	bin := filepath.Join(root, "bin")
+	destination := filepath.Join(root, "destination")
+	for _, dir := range []string{bin, destination} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeScript(t, filepath.Join(bin, "ssh"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nexec sh -c \"$last\"\n")
+	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nexec cat\n")
+	identity := filepath.Join(root, "identity")
+	knownHosts := filepath.Join(root, "known-hosts")
+	for _, path := range []string{identity, knownHosts} {
+		if err := os.WriteFile(path, []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := filepath.Join(root, "archive.env")
+	content := strings.Join([]string{
+		`MINOS_ARCHIVE_HOST="fixture"`,
+		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
+		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
+		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(tools, "archive-run"), runDir, "analysis-failure")
+	cmd.Env = append(os.Environ(), "MINOS_ARCHIVE_CONFIG="+config, "PATH="+bin+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("archive-run after failed analysis: %v\n%s", err, output)
+	}
+	tarballs, err := filepath.Glob(filepath.Join(destination, "*.tar.zst"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tarballs) != 1 {
+		t.Fatalf("tarball count after failed analysis = %d, want 1: %v", len(tarballs), tarballs)
+	}
+	sidecar := strings.TrimSuffix(tarballs[0], ".tar.zst") + ".timings.json"
+	stored, err := os.ReadFile(sidecar)
+	if err != nil {
+		t.Fatalf("sidecar after failed analysis: %v", err)
+	}
+	var record timingRecord
+	if err := json.Unmarshal(stored, &record); err != nil {
+		t.Fatalf("sidecar after failed analysis does not parse: %v\n%s", err, stored)
+	}
+	if len(record.Workers) != 0 {
+		t.Fatalf("failed analysis changed the ordinary timing record: %+v", record.Workers)
+	}
+}
+
 func TestArchiveRunSanitisesHostileRunNameBeforeRemoteCommands(t *testing.T) {
 	root := t.TempDir()
 	runName := "run'; touch \"$INJECTION_MARKER\"; printf '\nend"
