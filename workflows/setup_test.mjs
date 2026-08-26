@@ -32,7 +32,12 @@ function setupInput(overrides = {}) {
     setupBrief: {
       path: "workflows/setup-briefs/setup-agent.md",
       readPath: "/opt/minos/workflows/setup-briefs/setup-agent.md",
-      content: "SETUP_BRIEF_SENTINEL_OCHRE_719",
+      content: `SETUP_BRIEF_SENTINEL_OCHRE_719
+
+In full mode, use the repository's configured commands and manifests to choose
+which caches to warm, then run each configured build and test command exactly
+once to completion. Passwordless sudo is available when an evidenced system
+package is the appropriate installation.`,
     },
     objections: null,
     ...overrides,
@@ -77,7 +82,11 @@ test("setup workflow sends recorded conflicts to Opus before provisioning", asyn
   assert.match(calls[0].prompt, /GUIDANCE_SENTINEL_VIOLET_719/);
   assert.match(calls[0].prompt, /SETUP_BRIEF_SENTINEL_OCHRE_719/);
   assert.match(calls[0].prompt, /package\.json/);
-  assert.doesNotMatch(calls[0].prompt, /Install missing global toolchains/);
+  assert.match(calls[0].prompt, /which caches to warm/);
+  assert.match(calls[0].prompt, /Passwordless sudo is available/);
+  assert.match(calls[0].prompt, /do not inspect, install, upgrade, warm, or otherwise alter the environment/i);
+  assert.match(calls[0].prompt, /do not run configured build or test commands/i);
+  assert.match(calls[0].prompt, /takes precedence over any environment instructions in the shipped setup brief/i);
 
   assert.equal(calls[1].options.engine, "codex");
   assert.equal(calls[1].options.model, "gpt-5.6-terra");
@@ -154,7 +163,8 @@ test("reconciliation-only retry carries objections and excludes provisioning wor
   );
   assert.equal(result.status, "complete");
   assert.match(captured, /target-side engine floor was dropped/);
-  assert.match(captured, /Do not inspect, install, upgrade/);
+  assert.match(captured, /do not inspect, install, upgrade/i);
+  assert.match(captured, /takes precedence over any environment instructions in the shipped setup brief/);
   assert.doesNotMatch(captured, /Install missing global toolchains/);
 });
 

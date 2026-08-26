@@ -129,7 +129,7 @@ Resolve these conflicted paths in order: ${JSON.stringify(input.conflicts)}.
 The marker-bearing preimages are under: ${input.preimageDir}
 Reconcile both parents' intents. Stage each resolution. Do not commit, push, or touch an unconflicted file.
 Do not re-implement either side or add logic that exists in neither parent.
-${input.mode === "reconcile-only" ? "Do not inspect, install, upgrade, or otherwise alter the environment." : ""}
+For this reconciliation leg, do not inspect, install, upgrade, warm, or otherwise alter the environment, and do not run configured build or test commands. This limitation takes precedence over any environment instructions in the shipped setup brief; provisioning is a separate leg.
 ${objections}`;
 }
 
@@ -195,7 +195,7 @@ if (!provisioningResult)
 const executions = provisioningResult.commandExecutions;
 const validExecution = (execution, command) =>
   execution && execution.command === command &&
-  (input.mode === "reconcile-only" || command.trim() === ""
+  (command.trim() === ""
     ? execution.exitStatus === null
     : Number.isInteger(execution.exitStatus) && execution.exitStatus >= 0);
 if (!executions || executions.head !== input.head ||
