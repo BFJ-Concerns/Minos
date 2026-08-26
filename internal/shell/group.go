@@ -195,11 +195,11 @@ func liveGroupMemberHolder(runsDir, memberUnit string, active []string) (string,
 	return "", false
 }
 
-func sweepDeadGroupMemberGuards(ctx context.Context, runsDir string) error {
+func sweepDeadGroupMemberGuards(ctx context.Context, cfg ServiceConfig, repos []RepoConfig) error {
 	// Serialize cleanup with SpawnRun: a successor consumes its handoff before
 	// systemd exposes the replacement unit, so cleanup must not observe that
 	// internal transition as an abandoned group.
-	unlock, err := lockAdmission(runsDir)
+	unlock, err := lockAdmission(cfg.Runs.Dir)
 	if err != nil {
 		return err
 	}
@@ -209,18 +209,65 @@ func sweepDeadGroupMemberGuards(ctx context.Context, runsDir string) error {
 		return err
 	}
 
-	paths, err := filepath.Glob(filepath.Join(runsDir, ".group-members", "*"))
+	paths, err := filepath.Glob(filepath.Join(cfg.Runs.Dir, ".group-members", "*"))
 	if err != nil {
 		return err
 	}
+	holderValidity := make(map[string]bool)
 	for _, path := range paths {
-		if _, live := liveGroupMemberHolder(runsDir, filepath.Base(path), active); !live {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				continue
+			}
+			return readErr
+		}
+		holder := strings.TrimSpace(string(data))
+		if activeRunContains(active, holder) {
+			continue
+		}
+		valid, inspected := holderValidity[holder]
+		if !inspected {
+			valid = validGroupContinuationHolder(ctx, cfg, repos, holder)
+			holderValidity[holder] = valid
+		}
+		if !valid {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func validGroupContinuationHolder(ctx context.Context, cfg ServiceConfig, repos []RepoConfig, holder string) bool {
+	handoff, err := readRunHandoffStructure(handoffPath(cfg.Runs.Dir, holder))
+	if err != nil {
+		return false
+	}
+	facts := Facts{
+		Owner:   handoff.PullRequest.Owner,
+		Repo:    handoff.PullRequest.Repo,
+		PR:      handoff.PullRequest.Number,
+		HeadSHA: handoff.Head,
+	}
+	if UnitName(facts) != holder {
+		return false
+	}
+	for _, repo := range repos {
+		if repo.Owner == facts.Owner && repo.Repo == facts.Repo {
+			facts.Forge = repo.Forge
+			break
+		}
+	}
+	if facts.Forge == "" {
+		return false
+	}
+	if _, valid := adoptableRunDirectory(cfg, holder, facts, handoff); !valid {
+		return false
+	}
+	_, valid := adoptableGroupMembers(ctx, cfg, facts, holder, handoff)
+	return valid
 }
 
 func releaseGroupMemberGuards(runsDir, holder string) error {

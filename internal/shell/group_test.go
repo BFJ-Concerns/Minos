@@ -193,13 +193,10 @@ func TestGroupMemberGuardSuppressesWhileHolderIsLiveOrContinuable(t *testing.T) 
 	if !groupMemberGuardActive(t.Context(), runs, member) {
 		t.Fatal("continuable group holder did not suppress member")
 	}
-	if err := sweepDeadGroupMemberGuards(t.Context(), runs); err != nil {
+	if err := os.Remove(handoff); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(groupMemberGuardPath(runs, member)); err != nil {
-		t.Fatalf("continuable group holder guard was swept: %v", err)
-	}
-	if err := os.Remove(handoff); err != nil {
+	if err := sweepDeadGroupMemberGuards(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
 	}
 	if groupMemberGuardActive(t.Context(), runs, member) {
@@ -207,6 +204,69 @@ func TestGroupMemberGuardSuppressesWhileHolderIsLiveOrContinuable(t *testing.T) 
 	}
 	if !strings.Contains(groupMemberGuardPath(runs, member), ".group-members") {
 		t.Fatal("guard path escaped its admission directory")
+	}
+}
+
+func TestSweepReleasesGroupMemberWhoseHeadMovedBeforeEnumeration(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		currentHead   string
+		wantGuardLive bool
+	}{
+		{name: "unchanged member stays guarded", currentHead: "member-head", wantGuardLive: true},
+		{name: "moved member is released", currentHead: "foreign-member-head"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			memberPull := stackedFixturePull(2, "main", "member")
+			memberPull["head"].(map[string]any)["sha"] = test.currentHead
+			state.setStackedChildren([]map[string]any{memberPull})
+			cfg, repo, primary := state.service(t)
+			primary.HeadSHA = state.headSHA()
+			member := Facts{Owner: primary.Owner, Repo: primary.Repo, PR: "2"}
+			guard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))
+			if err := os.MkdirAll(filepath.Dir(guard), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(guard, []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runDir := filepath.Join(cfg.Runs.Dir, UnitName(primary)+"-preserved")
+			if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			handoffFile := writeTestHandoff(t, cfg, primary, runDir, primary.HeadSHA, json.RawMessage(`{"round":0,"confirmedUnfixed":[]}`))
+			data, err := os.ReadFile(handoffFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var handoff runHandoff
+			if err := json.Unmarshal(data, &handoff); err != nil {
+				t.Fatal(err)
+			}
+			handoff.MemberHeads = []handoffMember{{Owner: primary.Owner, Repo: primary.Repo, Number: "2", Head: "member-head"}}
+			data, err = json.Marshal(handoff)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(handoffFile, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+			if err := sweepDeadGroupMemberGuards(t.Context(), cfg, []RepoConfig{repo}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = os.Stat(guard)
+			if test.wantGuardLive && err != nil {
+				t.Fatalf("unchanged member guard was swept: %v", err)
+			}
+			if !test.wantGuardLive && !os.IsNotExist(err) {
+				t.Fatalf("moved member guard survived sweep: %v", err)
+			}
+		})
 	}
 }
 
@@ -324,6 +384,41 @@ func TestSpawnRunReleasesGroupMembersWhenContinuationHeadMoved(t *testing.T) {
 	}
 	if result.Outcome != SpawnStarted || !memberStarted {
 		t.Fatalf("released member result = %+v, started = %t", result, memberStarted)
+	}
+}
+
+func TestSpawnRunReleasesGroupMembersWhenContinuationHandoffMalformed(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	primary := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1", HeadSHA: "head"}
+	member := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "2"}
+	guard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))
+	if err := os.MkdirAll(filepath.Dir(guard), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(guard, []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handoffFile := handoffPath(cfg.Runs.Dir, UnitName(primary))
+	if err := os.MkdirAll(filepath.Dir(handoffFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(handoffFile, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+	result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, primary, AdmissionContext{}, RunClassReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnStarted {
+		t.Fatalf("fresh primary outcome = %q, want %q", result.Outcome, SpawnStarted)
+	}
+	if _, err := os.Stat(guard); !os.IsNotExist(err) {
+		t.Fatalf("malformed continuation's member guard survived fresh start: %v", err)
 	}
 }
 

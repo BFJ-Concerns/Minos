@@ -185,7 +185,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	if !adopted {
 		progressDecision = continuationProgressUnknown
-		if handoff != nil || groupHandoffRejected {
+		if handoff != nil || handoffRejected || groupHandoffRejected {
 			// A fresh successor does not inherit members.json. Release the old
 			// group's guards before its reused unit name can suppress those members.
 			if err := releaseGroupMemberGuards(cfg.Runs.Dir, unit); err != nil {
