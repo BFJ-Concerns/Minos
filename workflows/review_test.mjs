@@ -950,6 +950,22 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
+    /top of every gate-repair-ladder iteration/,
+  );
+  assert.match(initialGate, /before preparing or[\s\S]*dispatching the next repair/);
+  assert.match(initialGate, /memory-pressure[\s\S]*pressure-boundary handoff/);
+  assert.match(initialGate, /gateRepairLadder[\s\S]*authoritative\s+progress record/);
+  assert.match(initialGate, /do not poll for pressure while[\s\S]*workflow or forge write[\s\S]*is in flight/);
+  const pressureCheckpoint = initialGate.indexOf("At the top of every gate-repair-ladder iteration");
+  const repairDispatch = initialGate.indexOf("rootcause-inputs.mjs");
+  assert.ok(pressureCheckpoint >= 0, "the pressure checkpoint anchor must be present");
+  assert.ok(repairDispatch >= 0, "the repair dispatch anchor must be present");
+  assert.ok(
+    pressureCheckpoint < repairDispatch,
+    "the pressure checkpoint must precede the repair dispatch",
+  );
+  assert.match(
+    initialGate,
     /When the ladder stalls[\s\S]*ends as \*\*attention\*\*,\s+never incomplete[\s\S]*`\$MINOS_FAILURE_LOG`[\s\S]*request-changes-checks[\s\S]*no claimed diagnosis beyond what\s+those attempts proved[\s\S]*status HEAD TARGET attention[\s\S]*reaction-remove HEAD TARGET eyes[\s\S]*non-clean terminal marker[\s\S]*records that failed required checks caused the verdict[\s\S]*target its\s+gate actually ran against[\s\S]*never a newer target you judged equivalent[\s\S]*target movement spends it/,
   );
   assert.match(

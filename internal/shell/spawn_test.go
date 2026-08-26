@@ -233,53 +233,86 @@ func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
 	}
 }
 
-func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
-	original := commandCombinedOutput
-	t.Cleanup(func() { commandCombinedOutput = original })
-	var systemdArgs []string
-	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if name == "systemctl" {
-			return nil, nil
-		}
-		systemdArgs = append([]string(nil), args...)
-		return nil, nil
-	}
-
-	cfg := ServiceConfig{Root: "/etc/minos"}
-	cfg.Runs.Dir = t.TempDir()
-	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
-	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
-	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
-	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	runRecord := json.RawMessage(`{"round":3,"confirmedFixed":[{"key":"repaired"}],"confirmedUnfixed":[{"key":"known"}]}`)
-	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, runRecord)
-
-	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.Outcome != SpawnStarted {
-		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
-	}
-	for _, value := range []string{
-		"MINOS_RUN_DIR=" + runDir,
-		"MINOS_RESUME=true",
-		"MINOS_HANDOFF=" + handoffFile,
-		"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
+func TestSpawnRunAdoptsContinuationAndSeedsLoopRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		ladder string
+	}{
+		{name: "empty first-iteration ladder", ladder: ""},
+		{name: "non-empty mid-ladder progress", ladder: "build still fails: missing header\nrepair changed the failure to missing symbol\n"},
 	} {
-		assertArgument(t, systemdArgs, value)
-	}
-	seed, err := os.ReadFile(filepath.Join(runDir, "loop-record.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(seed) != string(runRecord) {
-		t.Fatalf("seed = %s, want verbatim %s", seed, runRecord)
-	}
-	if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
-		t.Fatalf("consumed handoff still exists or stat failed: %v", err)
+		t.Run(tc.name, func(t *testing.T) {
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var systemdArgs []string
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "systemctl" {
+					return nil, nil
+				}
+				systemdArgs = append([]string(nil), args...)
+				return nil, nil
+			}
+
+			cfg := ServiceConfig{Root: "/etc/minos"}
+			cfg.Runs.Dir = t.TempDir()
+			cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+			facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+			runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
+			if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			runRecord := json.RawMessage(`{"round":3,"confirmedFixed":[{"key":"repaired"}],"confirmedUnfixed":[{"key":"known"}]}`)
+			handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, runRecord)
+			handoffData, err := os.ReadFile(handoffFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var handoff runHandoff
+			if err := json.Unmarshal(handoffData, &handoff); err != nil {
+				t.Fatal(err)
+			}
+			handoff.GateRepairLadder = &tc.ladder
+			handoffData, err = json.Marshal(handoff)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(handoffFile, handoffData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Outcome != SpawnStarted {
+				t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
+			}
+			for _, value := range []string{
+				"MINOS_RUN_DIR=" + runDir,
+				"MINOS_RESUME=true",
+				"MINOS_HANDOFF=" + handoffFile,
+				"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
+			} {
+				assertArgument(t, systemdArgs, value)
+			}
+			seed, err := os.ReadFile(filepath.Join(runDir, "loop-record.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(seed) != string(runRecord) {
+				t.Fatalf("seed = %s, want verbatim %s", seed, runRecord)
+			}
+			restoredLadder, err := os.ReadFile(filepath.Join(runDir, "gate-repair-ladder.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(restoredLadder) != tc.ladder {
+				t.Fatalf("restored ladder = %q, want verbatim %q", restoredLadder, tc.ladder)
+			}
+			if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+				t.Fatalf("consumed handoff still exists or stat failed: %v", err)
+			}
+		})
 	}
 }
 
@@ -1005,10 +1038,11 @@ func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head
 func TestRunHandoffKeepsExistingShapeCompatibility(t *testing.T) {
 	base := `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"head","runDir":"/runs/run","stoppedAt":"stage","writtenAt":"fixture","runRecord":{"round":0,"confirmedUnfixed":[]}}`
 	tests := map[string]string{
-		"unknown field":       strings.TrimSuffix(base, "}") + `,"futureField":true}`,
-		"trailing content":    base + ` {"ignored":true}`,
-		"empty existing data": `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"","runDir":"","stoppedAt":"","writtenAt":"fixture","runRecord":{"round":0,"confirmedUnfixed":[]}}`,
-		"non-RFC timestamp":   base,
+		"unknown field":            strings.TrimSuffix(base, "}") + `,"futureField":true}`,
+		"trailing content":         base + ` {"ignored":true}`,
+		"empty existing data":      `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"","runDir":"","stoppedAt":"","writtenAt":"fixture","runRecord":{"round":0,"confirmedUnfixed":[]}}`,
+		"non-RFC timestamp":        base,
+		"empty gate repair ladder": strings.TrimSuffix(base, "}") + `,"gateRepairLadder":"  "}`,
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -1016,7 +1050,8 @@ func TestRunHandoffKeepsExistingShapeCompatibility(t *testing.T) {
 			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := readRunHandoffStructure(path); err != nil {
+			_, err := readRunHandoffStructure(path)
+			if err != nil {
 				t.Fatalf("existing handoff shape rejected: %v", err)
 			}
 		})
