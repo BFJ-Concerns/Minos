@@ -59,7 +59,7 @@ archive_ssh() {
 if [ -r "$run_dir/timing-record.json" ]; then
   analysed_record="$run_dir/timing-record.analysed.json"
   if "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/analyse-archived-spans" \
-    "$run_dir/timing-record.json" "$run_dir/ensemble-records" >"$analysed_record" 2>/dev/null; then
+    "$run_dir/timing-record.json" "$run_dir" >"$analysed_record" 2>/dev/null; then
     mv "$analysed_record" "$run_dir/timing-record.json"
   else
     rm -f "$analysed_record"

@@ -4,11 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 if (process.argv.length !== 4) {
-  console.error('usage: analyse-archived-spans TIMING_RECORD ENSEMBLE_RECORDS_DIRECTORY');
+  console.error('usage: analyse-archived-spans TIMING_RECORD RUN_DIRECTORY');
   process.exit(2);
 }
 
-const [recordPath, archiveRoot] = process.argv.slice(2);
+const [recordPath, runDirectory] = process.argv.slice(2);
 let record;
 try { record = JSON.parse(fs.readFileSync(recordPath, 'utf8')); } catch { process.exit(1); }
 
@@ -111,17 +111,31 @@ function analyseTranscripts(transcripts, recordRoot) {
   }
   return total;
 }
-const archivedAgents = agentFiles(archiveRoot);
+function ensembleRecordRoot(record) {
+  for (const prefix of ['ensemble-records/', 'home/.local/share/ensemble/runs/']) {
+    if (!record.startsWith(prefix)) continue;
+    const relative = record.slice(prefix.length);
+    if (!relative || relative.split('/').includes('..')) return null;
+    return path.join(runDirectory, prefix, relative);
+  }
+  return null;
+}
 for (const worker of record.workers || []) {
-  const recordPath = worker.record && worker.record.replace(/^ensemble-records\//, '');
-  if (!recordPath) continue;
-  const recordRoot = path.join(archiveRoot, recordPath);
-  if (archivedAgents.unreadableDirectories.some(directory => directory === recordRoot || directory.startsWith(recordRoot + path.sep))) {
+  const recordRoot = typeof worker.record === 'string' ? ensembleRecordRoot(worker.record) : null;
+  if (!recordRoot) {
+    worker.span_breakdown = unparseable(null, 'unresolved ensemble record');
+    continue;
+  }
+  const archivedAgents = agentFiles(recordRoot);
+  if (archivedAgents.unreadableDirectories.length > 0) {
     worker.span_breakdown = unparseable(null, 'unreadable ensemble record');
     continue;
   }
-  const agent = archivedAgents.files.find(file => path.dirname(path.dirname(path.dirname(file))) === recordRoot);
-  if (!agent) continue;
+  const agent = archivedAgents.files[0];
+  if (!agent) {
+    worker.span_breakdown = unparseable(null, 'unresolved ensemble record');
+    continue;
+  }
   let detail;
   try { detail = JSON.parse(fs.readFileSync(agent, 'utf8')); }
   catch {

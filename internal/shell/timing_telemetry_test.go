@@ -97,9 +97,9 @@ func runCollectTimings(t *testing.T, env map[string]string, args ...string) ([]b
 	return cmd.CombinedOutput()
 }
 
-func runArchivedSpanAnalysis(t *testing.T, recordPath, archiveRoot string) ([]byte, error) {
+func runArchivedSpanAnalysis(t *testing.T, recordPath, runDirectory string) ([]byte, error) {
 	t.Helper()
-	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "analyse-archived-spans"), recordPath, archiveRoot)
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "analyse-archived-spans"), recordPath, runDirectory)
 	return cmd.CombinedOutput()
 }
 
@@ -308,7 +308,7 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 		t.Fatalf("the timing collector must expose only its existing arm wall data before archive analysis: %+v", baseline.Workers)
 	}
 
-	output, err := runArchivedSpanAnalysis(t, recordPath, filepath.Join(runDir, "ensemble-records"))
+	output, err := runArchivedSpanAnalysis(t, recordPath, runDir)
 	if err != nil {
 		t.Fatalf("analyse-archived-spans: %v\n%s", err, output)
 	}
@@ -328,7 +328,7 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 	}
 }
 
-func TestArchivedSpanAnalysisScopesToEnsembleRecordsAndReportsBrokenAgentRecords(t *testing.T) {
+func TestArchivedSpanAnalysisScopesToCollectedRecordRootsAndReportsUnresolvedRecords(t *testing.T) {
 	runDir := t.TempDir()
 	writeArchivedSpanAgent(t, runDir, "valid", "codex-app-server-events", `
 {"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
@@ -347,8 +347,14 @@ func TestArchivedSpanAnalysisScopesToEnsembleRecordsAndReportsBrokenAgentRecords
 {"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
 {"recordedAt":"2026-08-26T00:01:00Z","method":"turn/completed"}
 `)
+	fallbackRecord := "home/.local/share/ensemble/runs/cwd/hash/fallback"
+	writeArchivedSpanAgentAt(t, filepath.Join(runDir, filepath.FromSlash(fallbackRecord)), "codex-app-server-events", `
+{"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-26T00:02:00Z","method":"turn/completed"}
+`)
 	record := timingRecord{Workers: []timingWorker{
 		{Record: "ensemble-records/valid"},
+		{Record: fallbackRecord},
 		{Record: "ensemble-records/broken"},
 		{Record: "repository"},
 	}}
@@ -360,7 +366,7 @@ func TestArchivedSpanAnalysisScopesToEnsembleRecordsAndReportsBrokenAgentRecords
 	if err := os.WriteFile(recordPath, encoded, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	output, err := runArchivedSpanAnalysis(t, recordPath, filepath.Join(runDir, "ensemble-records"))
+	output, err := runArchivedSpanAnalysis(t, recordPath, runDir)
 	if err != nil {
 		t.Fatalf("analyse-archived-spans: %v\n%s", err, output)
 	}
@@ -368,11 +374,12 @@ func TestArchivedSpanAnalysisScopesToEnsembleRecordsAndReportsBrokenAgentRecords
 		t.Fatalf("analysis does not produce a timing record: %v\n%s", err, output)
 	}
 	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 0, 0, 60000)
-	if span := record.Workers[1].SpanBreakdown; span == nil || span.Status != "unparseable" || span.Reason != "unreadable or invalid agent record" {
+	assertArchivedSpan(t, record.Workers[1].SpanBreakdown, "codex-app-server-events", 0, 0, 120000)
+	if span := record.Workers[2].SpanBreakdown; span == nil || span.Status != "unparseable" || span.Reason != "unreadable or invalid agent record" {
 		t.Fatalf("broken agent record was not reported as unparseable: %+v", span)
 	}
-	if record.Workers[2].SpanBreakdown != nil {
-		t.Fatalf("repository artefact was scanned as an Ensemble record: %+v", record.Workers[2].SpanBreakdown)
+	if span := record.Workers[3].SpanBreakdown; span == nil || span.Status != "unparseable" || span.Reason != "unresolved ensemble record" {
+		t.Fatalf("repository artefact was scanned instead of refused: %+v", span)
 	}
 }
 
@@ -388,7 +395,7 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	if output, err := runCollectTimings(t, nil, archiveRoot, sidecar); err != nil {
 		t.Fatalf("collect-timings: %v\n%s", err, output)
 	}
-	analysed, err := runArchivedSpanAnalysis(t, sidecar, filepath.Join(archiveRoot, "ensemble-records"))
+	analysed, err := runArchivedSpanAnalysis(t, sidecar, archiveRoot)
 	if err != nil {
 		t.Fatalf("analyse-archived-spans: %v\n%s", err, analysed)
 	}
