@@ -47,11 +47,13 @@ function indicatedDecision(findings, overrides) {
 }
 
 function args(findings, overrides = {}) {
+  const { members, ...rest } = overrides;
   return {
     review: {
       status: "complete",
       reviewed: { target: "target111", head: "head222" },
       confirmedFindings: findings,
+      ...(members === undefined ? {} : { members }),
     },
     threshold: "High",
     maximumRounds: null,
@@ -61,7 +63,7 @@ function args(findings, overrides = {}) {
     verification: { build: "make build", tests: "make test" },
     guidance: { grounding: "annexe", path: "/run/subject-Annexe/README.md", content: "COMMISSION_VIOLET_719" },
     fixerBrief: { path: "workflows/review-briefs/fixer.md", readPath: fixerBriefPath, content: fixerBriefContent },
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -280,8 +282,56 @@ test("a wave records one lead push for all distinct agent commits", async () => 
   const findings = [finding("first", "High", "a.go", 1), finding("second", "Low", "b.go", 2)];
   const { result } = await run(args(findings));
   assert.deepEqual(result.integration.commits, ["fix-dispatch-1-commit", "fix-dispatch-2-commit"]);
+  assert.deepEqual(result.integration.memberCommits, []);
+  assert.deepEqual(result.integration.memberFixReviews, []);
   assert.equal(result.integration.pushCount, 1);
   assert.deepEqual(result.integration.author, { name: "Minos", email: "minos@example.invalid" });
+});
+
+test("a grouped wave assigns each completed commit to its finding member", async () => {
+  const first = { ...finding("first", "High", "a.go", 1), member: "first-member" };
+  const second = { ...finding("second", "High", "b.go", 2), member: "second-member" };
+  const { result } = await run(args([first, second], { members: [{ id: "first-member" }, { id: "second-member" }] }));
+  assert.deepEqual(result.integration.memberCommits, [
+    { member: "first-member", commits: ["fix-dispatch-1-commit"] },
+    { member: "second-member", commits: ["fix-dispatch-2-commit"] },
+  ]);
+  assert.equal(result.fixReview, null);
+  assert.deepEqual(result.integration.memberFixReviews, [
+    {
+      member: "first-member",
+      fixReview: {
+        body: "Implemented repairs for confirmed findings.",
+        comments: [{ path: "a.go", body: "Repaired first.", line: 1 }],
+      },
+    },
+    {
+      member: "second-member",
+      fixReview: {
+        body: "Implemented repairs for confirmed findings.",
+        comments: [{ path: "b.go", body: "Repaired second.", line: 2 }],
+      },
+    },
+  ]);
+});
+
+test("a grouped dispatch cannot assign one repair commit to two members", async () => {
+  const first = { ...finding("first", "High", "a.go", 1), member: "first-member" };
+  const second = { ...finding("second", "High", "b.go", 2), member: "second-member" };
+  const { result } = await run(args([first, second], {
+    members: [{ id: "first-member" }, { id: "second-member" }],
+    grouping: grouping([first.id, second.id]),
+  }));
+  assert.equal(result.status, "incomplete");
+  assert.match(result.reason, /assigned to more than one member/);
+});
+
+test("a grouped wave refuses completed repairs without member attribution", async () => {
+  const { result } = await run(args([finding("unattributed", "High", "a.go", 1)], {
+    members: [{ id: "primary" }, { id: "sibling" }],
+  }));
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.reason, "completed grouped repair has no member attribution");
 });
 
 test("fix assignments name the configured gate as the lead's to run, never the worker's", async () => {
@@ -577,6 +627,34 @@ test("single-wave mode dispatches every brief finding once and requests build an
       { path: "b.go", body: "Repaired minor.", line: 2 },
     ],
   });
+  assert.deepEqual(result.integration.memberFixReviews, []);
+});
+
+test("a grouped single wave partitions repair write-ups by member", async () => {
+  const first = { ...finding("material", "High", "a.go", 1), member: "first-member" };
+  const second = { ...finding("minor", "Low", "b.go", 2), member: "second-member" };
+  const { result } = await run(args([first, second], {
+    singleWave: true,
+    members: [{ id: "first-member" }, { id: "second-member" }],
+  }));
+
+  assert.equal(result.fixReview, null);
+  assert.deepEqual(result.integration.memberFixReviews, [
+    {
+      member: "first-member",
+      fixReview: {
+        body: "Implemented repairs for confirmed findings.",
+        comments: [{ path: "a.go", body: "Repaired material.", line: 1 }],
+      },
+    },
+    {
+      member: "second-member",
+      fixReview: {
+        body: "Implemented repairs for confirmed findings.",
+        comments: [{ path: "b.go", body: "Repaired minor.", line: 2 }],
+      },
+    },
+  ]);
 });
 
 test("a fix worker reads exactly the configured gate it must leave to the lead", async (t) => {

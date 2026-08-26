@@ -164,10 +164,15 @@ members record is `$MINOS_RUN_DIR/members.json` — this pull request's
 own facts first, then the facts each claim command returned — written at
 claim and fixed from then on in *membership*: no member joins mid-run,
 and a small pull request arriving later is a later pass's ordinary work.
-The record fixes each member's identity — its number and branch names —
-never its coordinates: a member's current head and target are always
-taken from a fresh per-member snapshot at the point of use, because the
-run's own syncs and waves move them. A blocking outcome on one member
+The record fixes each member's identity — its number and branch names. When
+review input is built, `review-inputs.mjs` takes a fresh per-member snapshot and
+carries that snapshot's head and target into the workflow; the resulting
+verdict records those reviewed coordinates on its member entry. Operations this
+lifecycle explicitly bases on current forge state, such as a later sync or
+finishing, take another fresh per-member snapshot. Publication of an existing
+review verdict instead passes that verdict member's recorded reviewed head and
+target as explicit guard coordinates: if either moved, the guard rejects the
+write rather than publishing the verdict against an unreviewed revision. A blocking outcome on one member
 never holds a clean member back (step 8 carries the split; a chain's
 order is read from the members' target branches). When no grouping happened —
 no candidates, or the judgement declined them — the run owns this one
@@ -219,7 +224,11 @@ pull request and every grouped passage in this lifecycle is inert.
    Write this pull request's own facts first, then the granted members'
    facts, with one sentence of the grouping
    judgement's basis, to `$MINOS_RUN_DIR/members.json`; membership is fixed
-   from this point. Then reconcile each claimed member with its target
+   from this point. Immediately run
+   `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave" "$MINOS_WORKSPACE"
+   --protect-members "$MINOS_RUN_DIR/members.json"` so the shared pre-push
+   hook protects every claimed member before any member worktree or publisher
+   runs. Then reconcile each claimed member with its target
    through the member reconciliation script the run scripts provide — a
    sibling of `sync-target` that checks the member's head out in its own
    worktree and pins the member's target under a member-scoped ref. Never
@@ -850,9 +859,13 @@ pull request and every grouped passage in this lifecycle is inert.
    Build the main review input from disk and write it to a file:
 
    ```sh
+   REVIEW_MEMBERS_ARGS=()
+   if [ -f "$MINOS_RUN_DIR/members.json" ]; then
+     REVIEW_MEMBERS_ARGS=(--members "$MINOS_RUN_DIR/members.json")
+   fi
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-inputs.mjs" \
      "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
-     --loop-record "$MINOS_LOOP_RECORD" \
+     --loop-record "$MINOS_LOOP_RECORD" "${REVIEW_MEMBERS_ARGS[@]}" \
      > "$MINOS_RUN_DIR/review-args.json"
    ```
 
@@ -961,6 +974,20 @@ pull request and every grouped passage in this lifecycle is inert.
    `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
    terminal marker, and stop.
+
+   Do not publish the verdict here. The publication-before-fix operation below
+   detects a verdict carrying `members` and `memberReviews` and redirects its
+   one review write through `publish-member-reviews.mjs`, retiring the former
+   primary-only review call for that shape. The executable passes each
+   member's recorded reviewed head and target as explicit guard coordinates
+   and issues that member’s addressed review, including an
+   empty scripted review for a member with no findings. A solo member takes
+   this same publication path. It does not write a terminal-shaped `Minos`
+   status while the loop is still working. On a terminal classification the
+   same operation posts `request-changes` for a member with blocking findings
+   and writes that member's `attention` status after its review. A clean
+   member review is not a completion marker: finishing owns clean status
+   publication after the repository-brief stage has passed.
 5. Save each complete review verdict, then read this sweep's mechanical
    digest:
 
@@ -1025,8 +1052,10 @@ pull request and every grouped passage in this lifecycle is inert.
    ```
 
    This one production operation prepares an immutable wave without agents. A
-   `working` preparation materialises the exact sweep review, publishes it
-   through the guarded forge command, and starts the effectful `fix.js`
+   member-shaped preparation publishes exactly one addressed review per member
+   through the member publisher; the former primary-only review call is used
+   only for a legacy verdict without members. A `working` preparation then
+   starts the effectful `fix.js`
    dispatcher only after the command returns `outcome: "applied"`. An exact
    pre-existing review is applied and may continue; every other publication
    result returns `incomplete` without starting the dispatcher. On an
@@ -1077,11 +1106,30 @@ pull request and every grouped passage in this lifecycle is inert.
    repair. Keep them with the saved result. The terminal filing publishes only
    observations from the current complete adjudicated review or brief verdict,
    not observations from a fix result.
-   When `integration.commits` is non-empty, write that array unchanged to a
-   file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
-   "$MINOS_WORKSPACE" COMMITS_FILE`. That script verifies every commit's Minos
-   author, cherry-picks the wave and performs exactly one push to
-   `$MINOS_HEAD_BRANCH`. No fix agent may push.
+   When `integration.commits` is non-empty, a solo run writes that array
+   unchanged to a file and runs `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
+   "$MINOS_WORKSPACE" COMMITS_FILE`. A grouped run instead consumes
+   `integration.memberCommits`: every entry names a member and only the
+   completed commits licensed by that member's findings. Resolve each named
+   member from `$MINOS_RUN_DIR/members.json`, take its fresh addressed
+   `"$MINOS_BIN" forge --member OWNER REPO NUMBER snapshot`, and require a
+   non-empty `head_branch`; a missing member, branch, or snapshot is a fault,
+   never a member to skip. For each non-empty entry write its commits to a
+   separate file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
+   "$MINOS_WORKSPACE" COMMITS_FILE --member-branch HEAD_BRANCH`. The script
+   refuses when the destination moved from the head the run had accepted, so
+   the run-wide foreign-movement discipline judges the new commits before a
+   retry. It detaches the shared workspace at that member branch before
+   cherry-picking,
+   verifies every commit's Minos author, and pushes once to that branch only.
+   Setup preserves that complete protected-ref record across a continuation,
+   and each invocation creates the same one-use push permit for its push, so
+   the guard applies independently to every member. On success or refusal,
+   each member invocation restores the
+   claimed workspace to the primary's fresh published head. This gives the
+   post-wave gate a defined conservative tree without deciding the commission's
+   unresolved question of what a grouped gate should judge. No fix agent may
+   push.
 
    The workspace's pre-push guard protects the recorded pull-request ref by
    destination ref name, regardless of the remote name or whether Git was
@@ -1091,12 +1139,20 @@ pull request and every grouped passage in this lifecycle is inert.
    `minos-protected-ref` is invalid. The hook covers checkouts sharing this Git
    directory, not separate clones.
 
-   After the push, read a fresh forge snapshot and use its current head. When
-   `fixReview` is present, write that object unchanged to a file, then post it
-   with `"$MINOS_BIN" forge comment CURRENT_HEAD "$MINOS_TARGET_SHA"
-   FIX_REVIEW_FILE`. This durable pull-request comment is not a
-   review group; the guarded command binds it to that exact head,
-   deduplicates retries, and reads it back before reporting success. Then run
+   After the push, a solo run reads a fresh forge snapshot and uses its current
+   head. When `fixReview` is present, write that object unchanged to a file,
+   then post it with `"$MINOS_BIN" forge comment CURRENT_HEAD
+   "$MINOS_TARGET_SHA" FIX_REVIEW_FILE`. A grouped result instead carries
+   `integration.memberFixReviews`, one entry for each member in
+   `integration.memberCommits`; an absent, duplicate, or additional member is
+   a fault. For each entry resolve the member from
+   `$MINOS_RUN_DIR/members.json`, take a fresh addressed snapshot after that
+   member's integration, write only its `fixReview` object to a file, and post
+   it with `"$MINOS_BIN" forge --member OWNER REPO NUMBER comment MEMBER_HEAD
+   MEMBER_TARGET FIX_REVIEW_FILE`. Never post the aggregate `fixReview` on a
+   grouped run. Each durable pull-request comment is not a review group; the
+   guarded command binds it to that member's exact head, deduplicates retries,
+   and reads it back before reporting success. Then run
    the exact configured build and test commands again, capturing their complete
    combined output in the matching absolute `build-command-output.log` or
    `test-command-output.log`, preserving each command's exit status, and
@@ -1128,31 +1184,45 @@ pull request and every grouped passage in this lifecycle is inert.
    threshold (marked `kind: "fix-attempts-failed"`): failed repairs never
    promote a sub-threshold finding into a request-changes hold. Write the
    `overflow` array unchanged to a publication file. Append the current complete
-   adjudicated verdict's `outOfScopeObservations`, each with
-   `kind: "out-of-scope-observation"`, and its `misconfigurations`, each with
+   adjudicated verdict's `outOfScopeObservations`, each with its originating
+   `member` preserved and `kind: "out-of-scope-observation"`, and its
+   `misconfigurations`, each with its originating `member` preserved and
    `kind: "review-brief-misconfiguration"`, `brief` copied from `brief`,
    `reason` copied from `reason`, and `misconfigurationKind` copied from its
    original `kind`. These are distinct non-finding channels: do not add them to
    the sweep digest, `requestChangesReview`, or any fix input. Run:
 
    ```sh
+   OVERFLOW_MEMBER_ARGS=()
+   if [ -f "$MINOS_RUN_DIR/members.json" ]; then
+     OVERFLOW_MEMBER_ARGS=(--members "$MINOS_RUN_DIR/members.json")
+   fi
    node "${MINOS_REVIEW_WORKFLOW%/*}/publish-overflow.mjs" \
-     "$MINOS_ORIENTATION" PUBLICATION_FILE \
+     "$MINOS_ORIENTATION" PUBLICATION_FILE "${OVERFLOW_MEMBER_ARGS[@]}" \
      > "$MINOS_RUN_DIR/overflow-result.json"
    ```
 
    With an annexe it appends each entry once to `ISSUES.md`, commits and
-   pushes the annexe itself. Without an annexe its result is
-   `destination: "pull-request"` with one `body`/`comments` payload:
-   materialise those to files and post them as one `comment` review with
-   `"$MINOS_BIN" forge review HEAD TARGET comment BODY_FILE COMMENTS_FILE`,
-   still without fix agents. The rendered labels distinguish `Review finding`,
-   `Out-of-scope observation`, and `Review brief misconfiguration`. Publication
-   is presentation-class: its failure never fails the run.
+   pushes the annexe itself. On a grouped run it derives each entry's source
+   attribution from its fixed member coordinates, so an entry for one member
+   cannot claim the primary or another member's project. Without an annexe a
+   solo result is `destination: "pull-request"` with one `body`/`comments`
+   payload: materialise those to files and post them as one `comment` review
+   with `"$MINOS_BIN" forge review HEAD TARGET comment BODY_FILE COMMENTS_FILE`.
+   A grouped repository result instead has one publication per member; resolve
+   that member's record and post each payload with
+   `"$MINOS_BIN" forge --member OWNER REPO NUMBER review MEMBER_HEAD
+   MEMBER_TARGET comment BODY_FILE COMMENTS_FILE`. Still do not start fix
+   agents. The rendered labels distinguish `Review finding`, `Out-of-scope observation`, and `Review brief misconfiguration`. Publication is
+   presentation-class: its failure never fails the run.
 
-   If `requestChangesReview` is present, materialise it exactly, post it with
-   `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE
-   COMMENTS_FILE`, and set status `attention`.
+   If `requestChangesReview` is present on a legacy verdict without `members`
+   and `memberReviews`, materialise it exactly, post it with `"$MINOS_BIN"
+   forge review HEAD TARGET request-changes BODY_FILE COMMENTS_FILE`, and set
+   status `attention`. For a member-shaped verdict, the publication-before-fix
+   operation has already published each attributed member's terminal review
+   and each blocking member's `attention` status: do not post a second
+   primary-only request-changes review.
    Review prose talks only about the code, never about Minos, its process or a
    round number. Operational conditions — head moved, forge unreadable, review
    not reached — are always carried by the `Minos` status, never by a review.
@@ -1208,14 +1278,19 @@ pull request and every grouped passage in this lifecycle is inert.
    no confirmed brief findings, and never publish an all-clear comment.
 
    A complete brief verdict's `outOfScopeObservations` and `misconfigurations`
-   are also terminal triage material. Map and publish them through the same
-   two-positional `publish-overflow.mjs` call as step 6 — observations as
-   `kind: "out-of-scope-observation"`; misconfigurations as
+   are also terminal triage material. Map them into a publication file —
+   observations as `kind: "out-of-scope-observation"`; misconfigurations as
    `kind: "review-brief-misconfiguration"` with `brief`, `reason`, and
-   `misconfigurationKind` preserved. Do not mix either channel into the brief
-   review, `briefFixRequired`, or the single-wave fix input. This second
-   best-effort publication reaches the same annexe-or-pull-request destination;
-   its failure degrades presentation and never changes the brief-stage outcome.
+   `misconfigurationKind` preserved. Preserve each entry's originating
+   `member` (the brief workflow attributes this primary-workspace stage to
+   `primary`) — then invoke the member-aware
+   `publish-overflow.mjs` block from step 6, including `--members
+   "$MINOS_RUN_DIR/members.json"` whenever that record exists and the same
+   per-member handling of repository-grounded publications. Do not mix either
+   channel into the brief review, `briefFixRequired`, or the single-wave fix
+   input. This second best-effort publication reaches the same
+   annexe-or-pull-request destination; its failure degrades presentation and
+   never changes the brief-stage outcome.
 
    When `briefFixRequired` is false, the brief stage has passed: continue to
    finishing. When `briefFixRequired` is true, save the complete brief
@@ -1242,10 +1317,10 @@ pull request and every grouped passage in this lifecycle is inert.
    This mode dispatches every confirmed brief finding exactly once and never
    requests a second brief review or fix wave. If its
    `integration.commits` is non-empty, integrate them through `integrate-wave`
-   exactly as in the main loop, then take a fresh forge snapshot and use its
-   current head. When `fixReview` is present, write that object unchanged and
-   post the same location-bearing guarded pull-request comment described in
-   step 5 on that fresh head. Run `$MINOS_BUILD_CMD` and
+   exactly as in the main loop, then publish either the solo `fixReview` or
+   every grouped `integration.memberFixReviews` entry through the same
+   member-addressed, fresh-snapshot procedure described in step 5. Run
+   `$MINOS_BUILD_CMD` and
    `$MINOS_TEST_CMD` exactly as configured and to completion when each is
    non-empty; capture their complete combined output in the matching absolute
    `build-command-output.log` or `test-command-output.log`, preserve each

@@ -19,7 +19,25 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: minos forge snapshot|head-movement|check-logs|claim|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
-	adapter, guard, botLogin, err := leadForge()
+	member := forge.Repository{}
+	var memberPR int64
+	if args[0] == "--member" {
+		if len(args) < 5 {
+			return fmt.Errorf("usage: minos forge --member OWNER REPO NUMBER ACTION ...")
+		}
+		parsed, parseErr := strconv.ParseInt(args[3], 10, 64)
+		if parseErr != nil || parsed < 1 {
+			return fmt.Errorf("member pull-request number %q is invalid", args[3])
+		}
+		member, memberPR, args = forge.Repository{Owner: args[1], Name: args[2]}, parsed, args[4:]
+		if member.Owner == "" || member.Name == "" {
+			return fmt.Errorf("member coordinates are incomplete")
+		}
+		if len(args) == 0 {
+			return fmt.Errorf("usage: minos forge --member OWNER REPO NUMBER ACTION ...")
+		}
+	}
+	adapter, guard, botLogin, err := leadForge(member, memberPR)
 	if err != nil {
 		return err
 	}
@@ -169,7 +187,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 }
 
-func leadForge() (*forge.Adapter, forge.Guard, string, error) {
+func leadForge(member forge.Repository, memberPR int64) (*forge.Adapter, forge.Guard, string, error) {
 	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
 		return nil, forge.Guard{}, "", err
@@ -186,6 +204,10 @@ func leadForge() (*forge.Adapter, forge.Guard, string, error) {
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: os.Getenv("MINOS_OWNER"), Name: os.Getenv("MINOS_REPO_NAME")},
 		PullRequest: pr,
+	}
+	if memberPR != 0 {
+		guard.Repository = member
+		guard.PullRequest = memberPR
 	}
 	if guard.Repository.Owner == "" || guard.Repository.Name == "" {
 		return nil, forge.Guard{}, "", fmt.Errorf("pull-request environment is incomplete")

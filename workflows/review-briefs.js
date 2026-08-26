@@ -303,6 +303,7 @@ for (const brief of input.briefs) {
   if (misconfiguration)
     misconfigurations.push({
       ...base,
+      member: "primary",
       kind: misconfiguration.skipKind,
       reason: misconfiguration.reason,
     });
@@ -490,6 +491,7 @@ dispatched.forEach((unit, unitIndex) => {
     outOfScopeObservations.push({
       id: `${unit.label}:observation:${observationIndex + 1}`,
       source: unit.title,
+      member: "primary",
       ...observation,
       observingLabel: unit.label,
       verified: false,
@@ -586,6 +588,7 @@ verifierGroups.forEach((group, groupIndex) => {
     outOfScopeObservations.push({
       id: `${group.label}:observation:${observationIndex + 1}`,
       source: "verification",
+      member: "primary",
       ...observation,
       observingLabel: group.label,
       verified: false,
@@ -615,6 +618,7 @@ const proposedFindings = proposed.map((item) => ({
   id: findingId(item),
   source: item.unit.title,
   ...item.finding,
+  member: "primary",
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
   rawVerifier: verifierByFinding.get(findingId(item)),
@@ -623,6 +627,7 @@ const proposedFindings = proposed.map((item) => ({
 return {
   reviewed: { target: input.target, head: input.head, occasion: input.occasion || null },
   stage: "present",
+  members: [{ id: "primary" }],
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,

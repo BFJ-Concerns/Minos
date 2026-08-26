@@ -1,7 +1,7 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import { DECISION_KIND, prepareFixWave } from "./fix-wave-plan.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-inputs.mjs", import.meta.url));
+const publishMembersScriptPath = fileURLToPath(new URL("./publish-member-reviews.mjs", import.meta.url));
 const fixScriptPath = fileURLToPath(new URL("./fix.js", import.meta.url));
 const source = await readFile(scriptPath, "utf8");
 const fixSource = await readFile(fixScriptPath, "utf8");
@@ -53,6 +54,8 @@ function enumeratedArgs(
     absentPullRequestRecord = false,
     loopRecord,
     absentLoopRecord = false,
+    members,
+    minosBin,
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
@@ -69,6 +72,10 @@ function enumeratedArgs(
   }
   const orientationPath = join(root, "orientation.json");
   writeFileSync(orientationPath, JSON.stringify(orientation));
+  if (members !== undefined) {
+    execFileSync("git", ["-C", workspace, "init", "--quiet"]);
+    execFileSync("git", ["-C", workspace, "-c", "user.name=Minos", "-c", "user.email=minos@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "fixture"]);
+  }
   const cliArgs = [inputScriptPath, target, head];
   if (loopRecord !== undefined || absentLoopRecord) {
     const recordPath = join(root, "loop-record.json");
@@ -76,9 +83,21 @@ function enumeratedArgs(
       writeFileSync(recordPath, typeof loopRecord === "string" ? loopRecord : JSON.stringify(loopRecord));
     cliArgs.push("--loop-record", recordPath);
   }
+  if (members !== undefined) {
+    const membersPath = join(root, "members.json");
+    writeFileSync(membersPath, typeof members === "string" ? members : JSON.stringify(members));
+    cliArgs.push("--members", membersPath);
+  }
   return JSON.parse(execFileSync(process.execPath, cliArgs, {
     encoding: "utf8",
-    env: { ...process.env, MINOS_ORIENTATION: orientationPath },
+    env: {
+      ...process.env,
+      MINOS_ORIENTATION: orientationPath,
+      MINOS_OWNER: "minos-e2e-owner",
+      MINOS_REPO_NAME: "subject",
+      MINOS_PR: "1",
+      ...(minosBin ? { MINOS_BIN: minosBin } : {}),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   }));
 }
@@ -90,8 +109,19 @@ async function runFixPlan(plan, respond) {
 
 const ARGS = enumeratedArgs();
 
-function unit(id = "logic", specialistType = "correctness", scope = ["internal/x.go"]) {
-  return { id, concern: `${specialistType} concern ${id}`, scope, specialistType };
+test("a solo input derives its member from the run without a grouped members record", () => {
+  assert.deepEqual(ARGS.members, [{
+    id: "primary",
+    owner: "minos-e2e-owner",
+    repo: "subject",
+    number: 1,
+    target: "aaa111",
+    head: "bbb222",
+  }]);
+});
+
+function unit(id = "logic", specialistType = "correctness", scope = ["internal/x.go"], member = "primary") {
+  return { id, member, concern: `${specialistType} concern ${id}`, scope, specialistType };
 }
 
 function explorationFixture({
@@ -104,6 +134,7 @@ function explorationFixture({
 
 function finding(overrides = {}) {
   return {
+    member: "primary",
     title: "incorrect transition",
     severity: "High",
     confidence: 88,
@@ -163,7 +194,7 @@ function specialistCalls(calls) {
 }
 
 function orientationPacketFromPrompt(prompt) {
-  const match = prompt.match(/Orientation packet: (.+)\nAssigned concern:/);
+  const match = prompt.match(/Orientation packet: ([^\n]+)\n/);
   assert.ok(match, "specialist prompt carries a serialised orientation packet");
   return match[1];
 }
@@ -191,7 +222,7 @@ test("the script emits an envelope with every routed leg and raw verifier output
   const { result, calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
 
   assert.deepEqual(Object.keys(result).sort(), [
-    "briefs", "dispatches", "exploration", "misconfigurations", "outOfScopeObservations", "proposedFindings",
+    "briefs", "dispatches", "exploration", "members", "misconfigurations", "outOfScopeObservations", "proposedFindings",
     "requiredModelEvidence", "reviewed", "reviewers", "stage",
   ]);
   assert.equal(result.stage, "present");
@@ -209,6 +240,215 @@ test("the script emits an envelope with every routed leg and raw verifier output
   );
   assert.ok(calls.every((call) => call.opts.engine === "codex" || call.opts.engine === "claude"));
   assert.ok(calls.every((call) => !("fallbackModel" in call.opts)));
+});
+
+test("a two-member input keeps each finding attributed through verification and member publication", async (t) => {
+  const members = { members: [
+    {
+      id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1,
+      target: "primary-target", head: "primary-head", diff: "PRIMARY_MEMBER_DIFF",
+      title: "Primary title", body: "PRIMARY_MEMBER_DESCRIPTION",
+    },
+    {
+      id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2,
+      target: "sibling-target", head: "sibling-head", diff: "SIBLING_MEMBER_DIFF",
+      title: "Sibling title", body: "SIBLING_MEMBER_DESCRIPTION",
+    },
+  ] };
+  const args = { ...enumeratedArgs("target", "head"), members: members.members };
+  const plan = [unit("primary", "correctness", ["internal/primary.go"], "primary"), unit("sibling", "security", ["internal/sibling.go"], "sibling")];
+  const { result, calls } = await runScript(args, responder({
+    exploration: explorationFixture({
+      files: [
+        { path: "internal/primary.go", added: 1, deleted: 0 },
+        { path: "internal/sibling.go", added: 1, deleted: 0 },
+      ],
+      plan,
+    }),
+    specialist: (label) => specialistResult([finding({
+      member: label.includes("security") ? "sibling" : "primary",
+      title: label.includes("security") ? "sibling finding" : "primary finding",
+    })], undefined, [observation({ title: `${label} observation` })]),
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      outOfScopeObservations: [observation({ member: "sibling", title: `${label} observation` })],
+    }),
+  }));
+  assert.deepEqual(result.members, members.members);
+  assert.deepEqual(
+    result.proposedFindings.map(({ member, title }) => ({ member, title })).sort((left, right) => left.member.localeCompare(right.member)),
+    [
+      { member: "primary", title: "primary finding" },
+      { member: "sibling", title: "sibling finding" },
+    ],
+  );
+  assert.match(calls.find((call) => call.opts.label === "exploration").prompt, /SIBLING_MEMBER_DIFF/);
+
+  const primarySpecialist = calls.find((call) => call.opts.label === "specialist-1-correctness-gpt");
+  const siblingSpecialist = calls.find((call) => call.opts.label === "specialist-2-security-gpt");
+  assert.match(primarySpecialist.prompt, /primary-target\.\.\.primary-head/);
+  assert.match(primarySpecialist.prompt, /PRIMARY_MEMBER_DIFF/);
+  assert.match(primarySpecialist.prompt, /PRIMARY_MEMBER_DESCRIPTION/);
+  assert.doesNotMatch(primarySpecialist.prompt, /SIBLING_MEMBER_(?:DIFF|DESCRIPTION)/);
+  assert.match(siblingSpecialist.prompt, /sibling-target\.\.\.sibling-head/);
+  assert.match(siblingSpecialist.prompt, /SIBLING_MEMBER_DIFF/);
+  assert.match(siblingSpecialist.prompt, /SIBLING_MEMBER_DESCRIPTION/);
+  assert.doesNotMatch(siblingSpecialist.prompt, /PRIMARY_MEMBER_(?:DIFF|DESCRIPTION)/);
+
+  const verifier = calls.find((call) => call.opts.label === "verify-1-claude");
+  assert.match(verifier.prompt, /primary-target.*primary-head/);
+  assert.match(verifier.prompt, /PRIMARY_MEMBER_DIFF/);
+  assert.match(verifier.prompt, /PRIMARY_MEMBER_DESCRIPTION/);
+  assert.match(verifier.prompt, /sibling-target.*sibling-head/);
+  assert.match(verifier.prompt, /SIBLING_MEMBER_DIFF/);
+  assert.match(verifier.prompt, /SIBLING_MEMBER_DESCRIPTION/);
+
+  assert.deepEqual(
+    result.outOfScopeObservations.map(({ member, title }) => ({ member, title })),
+    [
+      { member: "primary", title: "specialist-1-correctness-gpt observation" },
+      { member: "sibling", title: "specialist-2-security-gpt observation" },
+      { member: "sibling", title: "verify-1-claude observation" },
+    ],
+  );
+
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.deepEqual(verdict.memberReviews.map(({ member, status }) => ({ member, status })), [
+    { member: "primary", status: "attention" },
+    { member: "sibling", status: "attention" },
+  ]);
+  assert.match(verdict.memberReviews[0].comments[0].body, /primary finding/);
+  assert.doesNotMatch(verdict.memberReviews[0].comments[0].body, /sibling finding/);
+  assert.match(verdict.memberReviews[1].comments[0].body, /sibling finding/);
+  assert.doesNotMatch(verdict.memberReviews[1].comments[0].body, /primary finding/);
+});
+
+test("the members CLI snapshots each member and carries its fresh diff", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-member-inputs-"));
+  const callLog = join(root, "calls.log");
+  const minosBin = join(root, "minos-fixture");
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nprintf '{"head_sha":"HEAD","target_sha":"HEAD"}\\n'\n`);
+  chmodSync(minosBin, 0o755);
+  const input = enumeratedArgs("target", "head", {
+    minosBin,
+    members: { members: [
+      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 },
+      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2 },
+    ] },
+  });
+  assert.deepEqual(input.members.map(({ id, head, target, diff }) => ({ id, head, target, diff })), [
+    { id: "primary", head: "HEAD", target: "HEAD", diff: "" },
+    { id: "sibling", head: "HEAD", target: "HEAD", diff: "" },
+  ]);
+  assert.deepEqual(readFileSync(callLog, "utf8").trim().split("\n"), [
+    "forge --member minos-e2e-owner subject 1 snapshot",
+    "forge --member minos-e2e-owner sibling 2 snapshot",
+  ]);
+});
+
+test("the members CLI carries the diff returned by each fresh snapshot", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-member-input-diff-"));
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace);
+  execFileSync("git", ["-C", workspace, "init", "--quiet"]);
+  execFileSync("git", ["-C", workspace, "config", "user.name", "Minos"]);
+  execFileSync("git", ["-C", workspace, "config", "user.email", "minos@example.invalid"]);
+  writeFileSync(join(workspace, "member.txt"), "before\n");
+  execFileSync("git", ["-C", workspace, "add", "member.txt"]);
+  execFileSync("git", ["-C", workspace, "commit", "--quiet", "-m", "base"]);
+  const target = execFileSync("git", ["-C", workspace, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(workspace, "member.txt"), "after\n");
+  execFileSync("git", ["-C", workspace, "commit", "-am", "member change", "--quiet"]);
+  const head = execFileSync("git", ["-C", workspace, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const guidancePath = join(root, "guidance.md");
+  const orientationPath = join(root, "orientation.json");
+  const membersPath = join(root, "members.json");
+  const minosBin = join(root, "minos-fixture");
+  writeFileSync(guidancePath, "fixture guidance\n");
+  writeFileSync(orientationPath, JSON.stringify({ repository: workspace, guidance: guidancePath }));
+  writeFileSync(membersPath, JSON.stringify({ members: [
+    { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 },
+  ] }));
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '{"head_sha":"${head}","target_sha":"${target}"}\\n'\n`);
+  chmodSync(minosBin, 0o755);
+  const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head, "--members", membersPath], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_BIN: minosBin },
+  }));
+  assert.match(input.members[0].diff, /-before/);
+  assert.match(input.members[0].diff, /\+after/);
+});
+
+test("terminal member publication writes each member's own request-changes review and status", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-member-publication-"));
+  const callLog = join(root, "calls.log");
+  const minosBin = join(root, "minos-fixture");
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; elif [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; printf '{"outcome":"applied"}\\n'; elif [ "$6" = status ]; then printf '{"outcome":"applied"}\\n'; fi\n`);
+  chmodSync(minosBin, 0o755);
+  const verdictPath = join(root, "verdict.json");
+  writeFileSync(verdictPath, JSON.stringify({
+    status: "complete",
+    members: [
+      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, head: "reviewed-head-1", target: "reviewed-target-1" },
+      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2, head: "reviewed-head-2", target: "reviewed-target-2" },
+    ],
+    memberReviews: [
+      { member: "primary", verdict: "comment", body: "Primary body.", comments: [{ body: "primary finding" }], status: "attention" },
+      { member: "sibling", verdict: "comment", body: "Sibling body.", comments: [{ body: "sibling finding" }], status: "attention" },
+    ],
+  }));
+  execFileSync(process.execPath, [publishMembersScriptPath, verdictPath, "--terminal"], {
+    env: { ...process.env, MINOS_BIN: minosBin },
+    stdio: "pipe",
+  });
+  const calls = readFileSync(callLog, "utf8").trim().split("\n");
+  assert.deepEqual(calls.filter((call) => !call.startsWith("content ")).map((call) => call.split(" ").slice(0, 6).join(" ")), [
+    "forge --member minos-e2e-owner subject 1 review",
+    "forge --member minos-e2e-owner subject 1 status",
+    "forge --member minos-e2e-owner sibling 2 review",
+    "forge --member minos-e2e-owner sibling 2 status",
+  ]);
+  assert.ok(calls.some((call) => call.includes("review reviewed-head-1 reviewed-target-1 request-changes")));
+  assert.ok(calls.some((call) => call.includes("status reviewed-head-1 reviewed-target-1 attention")));
+  assert.ok(calls.some((call) => call.includes("review reviewed-head-2 reviewed-target-2 request-changes")));
+  assert.ok(calls.some((call) => call.includes("status reviewed-head-2 reviewed-target-2 attention")));
+  assert.ok(calls.includes('content 1 Primary body. [{"body":"primary finding"}]'));
+  assert.ok(calls.includes('content 2 Sibling body. [{"body":"sibling finding"}]'));
+});
+
+test("terminal member publication writes every clean review before finishing status", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-clean-member-publication-"));
+  const callLog = join(root, "calls.log");
+  const minosBin = join(root, "minos-fixture");
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; elif [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; printf '{"outcome":"applied"}\\n'; elif [ "$6" = status ]; then printf '{"outcome":"applied"}\\n'; fi\n`);
+  chmodSync(minosBin, 0o755);
+  const verdictPath = join(root, "verdict.json");
+  writeFileSync(verdictPath, JSON.stringify({
+    status: "complete",
+    members: [
+      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, head: "reviewed-head-1", target: "reviewed-target-1" },
+      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2, head: "reviewed-head-2", target: "reviewed-target-2" },
+    ],
+    memberReviews: [
+      { member: "primary", verdict: "comment", body: "No confirmed findings in the reviewed code.", comments: [], status: "clean" },
+      { member: "sibling", verdict: "comment", body: "No confirmed findings in the reviewed code.", comments: [], status: "clean" },
+    ],
+  }));
+  execFileSync(process.execPath, [publishMembersScriptPath, verdictPath, "--terminal"], {
+    env: { ...process.env, MINOS_BIN: minosBin },
+    stdio: "pipe",
+  });
+  const calls = readFileSync(callLog, "utf8").trim().split("\n");
+  assert.deepEqual(calls.filter((call) => !call.startsWith("content ")).map((call) => call.split(" ").slice(0, 6).join(" ")), [
+    "forge --member minos-e2e-owner subject 1 review",
+    "forge --member minos-e2e-owner sibling 2 review",
+  ]);
+  assert.ok(calls.some((call) => call.includes("review reviewed-head-1 reviewed-target-1 comment")));
+  assert.ok(calls.some((call) => call.includes("review reviewed-head-2 reviewed-target-2 comment")));
+  assert.equal(calls.some((call) => call.includes(" status ")), false, "clean member completion waits for finishing");
+  assert.ok(calls.includes("content 1 No confirmed findings in the reviewed code. []"));
+  assert.ok(calls.includes("content 2 No confirmed findings in the reviewed code. []"));
 });
 
 test("malformed exploration scope entries fail closed before specialist dispatch", async (t) => {
@@ -282,6 +522,7 @@ test("an out-of-scope observation leaves the specialist without entering finding
   assert.deepEqual(result.outOfScopeObservations, [{
     id: "specialist-1-correctness-gpt:observation:1",
     source: "correctness concern logic",
+    member: "primary",
     title: "pre-existing defect",
     path: "internal/legacy.go",
     line: 9,
@@ -332,12 +573,13 @@ test("a verifier observation reaches the result alongside its verdicts", async (
   const { result, calls } = await runScript(ARGS, responder({
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      outOfScopeObservations: [observation({ title: "residual defect the verdict cannot carry" })],
+      outOfScopeObservations: [observation({ member: "primary", title: "residual defect the verdict cannot carry" })],
     }),
   }));
   assert.deepEqual(result.outOfScopeObservations, [{
     id: "verify-1-claude:observation:1",
     source: "verification",
+    member: "primary",
     title: "residual defect the verdict cannot carry",
     path: "internal/legacy.go",
     line: 9,
@@ -349,7 +591,7 @@ test("a verifier observation reaches the result alongside its verdicts", async (
   assert.ok(!schema.required.includes("outOfScopeObservations"));
   assert.deepEqual(
     schema.properties.outOfScopeObservations.items.required,
-    ["title", "path", "line", "explanation"],
+    ["member", "title", "path", "line", "explanation"],
   );
 });
 
@@ -446,6 +688,13 @@ test("an empty plan completes through the adjudicator's no-findings path", async
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
   assert.deepEqual(verdict.confirmedFindings, []);
+  assert.deepEqual(verdict.memberReviews, [{
+    member: "primary",
+    verdict: "comment",
+    body: "No confirmed findings in the reviewed code.",
+    comments: [],
+    status: "clean",
+  }]);
 });
 
 test("every specialist finding reaches its opposite-family verifier batch", async () => {
@@ -803,6 +1052,20 @@ test("review inputs provide stable empty context and fail closed on malformed re
   assert.doesNotMatch(result.stderr, /^\s+at /m);
 });
 
+test("review inputs refuse a member entry without forge coordinates", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-invalid-member-input-"));
+  const membersPath = join(root, "members.json");
+  writeFileSync(membersPath, JSON.stringify({ members: [{ id: "primary", owner: "minos-e2e-owner" }] }));
+  const result = spawnSync(process.execPath, [inputScriptPath, "target", "head", "--members", membersPath], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: "unused" },
+  });
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /review members need non-empty ids and forge coordinates/);
+  assert.match(result.stderr, /usage: node workflows\/review-inputs\.mjs/);
+});
+
 test("the deterministic review input rejects empty guidance", () => {
   for (const guidanceContent of ["", " \n\t"])
     assert.throws(() => enumeratedArgs("aaa111", "bbb222", { guidanceContent }), /guidance document is empty/);
@@ -834,6 +1097,23 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   assert.match(lifecycle, /no line count, file count, or member count decides it/);
   assert.match(lifecycle, /forge claim-member OWNER REPO NUMBER/);
   assert.match(lifecycle, /--members "\$MINOS_RUN_DIR\/members\.json"/);
+  assert.match(
+    lifecycle,
+    /REVIEW_MEMBERS_ARGS=\(\)[\s\S]*if \[ -f "\$MINOS_RUN_DIR\/members\.json" \]; then[\s\S]*REVIEW_MEMBERS_ARGS=\(--members "\$MINOS_RUN_DIR\/members\.json"\)/,
+  );
+  assert.match(
+    lifecycle,
+    /publication-before-fix operation[\s\S]*redirects its\s+one review write through `publish-member-reviews\.mjs`[\s\S]*former\s+primary-only review call/,
+  );
+  assert.match(lifecycle, /A solo member takes\s+this same publication path/);
+  assert.match(lifecycle, /does not write a terminal-shaped `Minos`[\s\S]*while the loop is still working/);
+  assert.match(lifecycle, /blocking member's `attention` status/);
+  assert.match(lifecycle, /`requestChangesReview` is present on a legacy verdict without `members`/);
+  assert.match(lifecycle, /member-shaped verdict[\s\S]*do not post a second[\s\S]*primary-only request-changes review/);
+  assert.match(
+    lifecycle,
+    /`integration\.memberFixReviews`[\s\S]*one entry for each member in[\s\S]*`integration\.memberCommits`[\s\S]*absent, duplicate, or additional member is[\s\S]*a fault[\s\S]*forge --member OWNER REPO NUMBER comment MEMBER_HEAD[\s\S]*MEMBER_TARGET FIX_REVIEW_FILE[\s\S]*Never post the aggregate `fixReview` on a[\s\S]*grouped run/,
+  );
   assert.match(
     lifecycle,
     /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,
@@ -929,7 +1209,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   );
   assert.match(
     lifecycle,
-    /complete brief verdict's `outOfScopeObservations` and `misconfigurations`[\s\S]*same\s+two-positional `publish-overflow\.mjs` call[\s\S]*Do not mix either channel into the brief\s+review, `briefFixRequired`, or the single-wave fix input[\s\S]*failure degrades presentation and never changes the brief-stage outcome/,
+    /complete brief verdict's `outOfScopeObservations` and `misconfigurations`[\s\S]*member-aware\s+`publish-overflow\.mjs` block from step 6[\s\S]*including `--members[\s\S]*whenever that record exists[\s\S]*same\s+per-member handling[\s\S]*Do not mix either[\s\S]*channel into the brief review, `briefFixRequired`, or the single-wave fix\s+input[\s\S]*failure degrades presentation and[\s\S]*never changes the brief-stage outcome/,
   );
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(

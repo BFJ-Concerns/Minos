@@ -30,7 +30,8 @@ if ! IFS= read -r forge_token <"$MINOS_CREDENTIAL_FILE" || [ -z "$forge_token" ]
 fi
 
 response_file="${MINOS_ORIENTATION}.response"
-trap 'rm -f "$response_file"' 0
+protected_refs_tmp=""
+trap 'rm -f "$response_file" ${protected_refs_tmp:+"$protected_refs_tmp"}' 0
 
 forge_get() {
   api_path="$1"
@@ -133,11 +134,58 @@ script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 run_date="$(date -u '+%Y-%m-%d')"
 common_dir="$(git -C "$MINOS_WORKSPACE" rev-parse --path-format=absolute --git-common-dir)"
 mkdir -p "$common_dir/hooks"
-printf 'refs/heads/%s\n' "$MINOS_HEAD_BRANCH" >"$common_dir/minos-protected-ref"
-chmod 0600 "$common_dir/minos-protected-ref"
+protected_refs="$common_dir/minos-protected-ref"
+protected_refs_tmp="$(mktemp "${common_dir}/minos-protected-ref.XXXXXX")"
+
+append_protected_ref() {
+  protected_ref="$1"
+  case "$protected_ref" in
+    refs/heads/?*) ;;
+    *)
+      echo "setup-workspace: invalid protected ref ${protected_ref:-<empty>}" >&2
+      exit 1
+      ;;
+  esac
+  if ! git -C "$MINOS_WORKSPACE" check-ref-format "$protected_ref"; then
+    echo "setup-workspace: invalid protected ref $protected_ref" >&2
+    exit 1
+  fi
+  if ! grep -Fqx "$protected_ref" "$protected_refs_tmp"; then
+    printf '%s\n' "$protected_ref" >>"$protected_refs_tmp"
+  fi
+}
+
+append_protected_ref "refs/heads/${MINOS_HEAD_BRANCH}"
+if [ "$resume" = true ] && [ -e "$protected_refs" ]; then
+  if [ ! -f "$protected_refs" ] || [ ! -r "$protected_refs" ] || [ ! -s "$protected_refs" ]; then
+    echo "setup-workspace: preserved protected-ref record is unreadable or empty" >&2
+    exit 1
+  fi
+  while IFS= read -r protected_ref; do
+    append_protected_ref "$protected_ref"
+  done <"$protected_refs"
+fi
+members_file="${MINOS_RUN_DIR}/members.json"
+if [ -f "$members_file" ]; then
+  if ! jq -e '
+    (if type == "array" then . else .members end) as $members |
+    ($members | type == "array" and length > 0) and
+    all($members[]; type == "object" and (.head_branch | type == "string" and length > 0))
+  ' "$members_file" >/dev/null; then
+    echo "setup-workspace: members record must contain non-empty head branches" >&2
+    exit 1
+  fi
+  jq -r 'if type == "array" then .[] else .members[] end | .head_branch' "$members_file" |
+    while IFS= read -r member_branch; do
+      append_protected_ref "refs/heads/${member_branch}"
+    done
+fi
+chmod 0600 "$protected_refs_tmp"
+mv "$protected_refs_tmp" "$protected_refs"
+protected_refs_tmp=""
 # This hook binds every checkout sharing the common Git directory and requires
-# a controlled-publisher permit for the pull-request branch. A separate clone
-# inherits neither protection.
+# a controlled-publisher permit for every grouped pull-request branch. A
+# separate clone inherits neither protection.
 install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
 
 git -C "$MINOS_WORKSPACE" fetch --no-tags "$target_repository_url" \

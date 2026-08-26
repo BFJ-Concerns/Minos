@@ -100,6 +100,10 @@ function invalidInputReason(input) {
   return null;
 }
 
+function memberAttributionRequired(review) {
+  return Array.isArray(review.members) && review.members.length > 1;
+}
+
 function failedPlan(input, reason) {
   return {
     kind: PLAN_KIND,
@@ -130,6 +134,7 @@ function fingerprintFor(input, round, findings, dispatches = []) {
     threshold: input.threshold === undefined ? DEFAULT_THRESHOLD : input.threshold,
     maximumRounds: input.maximumRounds ?? null,
     singleWave: input.singleWave === true,
+    memberAttributionRequired: memberAttributionRequired(input.review),
     warmTargetSource: input.warmTargetSource ?? null,
     decision: input.decision
       ? { classification: input.decision.classification, basis: input.decision.basis }
@@ -219,6 +224,7 @@ export function prepareFixWave(input) {
       fingerprint,
       input: {
         workspace: input.workspace,
+        memberAttributionRequired: memberAttributionRequired(input.review),
         ...(input.warmTargetSource ? { warmTargetSource: input.warmTargetSource } : {}),
         verification,
         guidance: { ...input.guidance },
@@ -324,6 +330,7 @@ export function prepareFixWave(input) {
     fingerprint: workingFingerprint,
     input: {
       workspace: input.workspace,
+      memberAttributionRequired: memberAttributionRequired(input.review),
       ...(input.warmTargetSource ? { warmTargetSource: input.warmTargetSource } : {}),
       verification,
       guidance: { ...input.guidance },
