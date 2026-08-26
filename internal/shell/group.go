@@ -19,7 +19,7 @@ func groupCandidatesJSON(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 	if err != nil {
 		return "", err
 	}
-	groups, err := groupCandidatesByPrimary(ctx, cfg, all, active)
+	groups, _, err := groupCandidatesByPrimary(ctx, cfg, all, active)
 	if err != nil {
 		return "", err
 	}
@@ -29,8 +29,14 @@ func groupCandidatesJSON(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 // groupCandidatesByPrimary snapshots each sweep candidate once and returns the
 // lead-facing sibling list for every primary. The active-unit snapshot comes
 // from the sweep so candidates already running on their own are not surfaced.
-func groupCandidatesByPrimary(ctx context.Context, cfg ServiceConfig, all []sweepCandidate, active []string) (map[string]string, error) {
+type groupedCandidateSnapshot struct {
+	adapter  *forge.Adapter
+	snapshot forge.Snapshot
+}
+
+func groupCandidatesByPrimary(ctx context.Context, cfg ServiceConfig, all []sweepCandidate, active []string) (map[string]string, map[string]groupedCandidateSnapshot, error) {
 	groups := make(map[string]string, len(all))
+	snapshots := make(map[string]groupedCandidateSnapshot, len(all))
 	for _, candidate := range all {
 		groups[UnitName(candidate.facts)] = "[]"
 	}
@@ -43,14 +49,14 @@ func groupCandidatesByPrimary(ctx context.Context, cfg ServiceConfig, all []swee
 	}
 	for key, candidates := range byRepo {
 		repo := repos[key]
-		if err := groupCandidatesForRepo(ctx, cfg, repo, candidates, active, groups); err != nil {
-			return nil, err
+		if err := groupCandidatesForRepo(ctx, cfg, repo, candidates, active, groups, snapshots); err != nil {
+			return nil, nil, err
 		}
 	}
-	return groups, nil
+	return groups, snapshots, nil
 }
 
-func groupCandidatesForRepo(ctx context.Context, cfg ServiceConfig, repo RepoConfig, candidates []sweepCandidate, active []string, groups map[string]string) error {
+func groupCandidatesForRepo(ctx context.Context, cfg ServiceConfig, repo RepoConfig, candidates []sweepCandidate, active []string, groups map[string]string, passSnapshots map[string]groupedCandidateSnapshot) error {
 	eligibleInRepo := 0
 	for range candidates {
 		eligibleInRepo++
@@ -75,6 +81,7 @@ func groupCandidatesForRepo(ctx context.Context, cfg ServiceConfig, repo RepoCon
 			continue
 		}
 		snapshots[candidate.facts.PR] = snapshot
+		passSnapshots[UnitName(candidate.facts)] = groupedCandidateSnapshot{adapter: adapter, snapshot: snapshot}
 	}
 	membersByTarget := make(map[string][]Facts)
 	for number, snapshot := range snapshots {

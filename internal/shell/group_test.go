@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -171,6 +172,39 @@ func TestSpawnRunSuppressesLiveGroupMemberWithoutSpendingConcurrency(t *testing.
 	}
 }
 
+func TestSpawnRunAdmitsUnrelatedPullRequestWhileLiveGroupGuardExists(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Runs.MaxConcurrent = 2
+	guarded := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "2"}
+	if err := os.MkdirAll(filepath.Dir(groupMemberGuardPath(cfg.Runs.Dir, UnitName(guarded))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(guarded)), []byte("minos-run-owner-repo-pr1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return []byte("minos-run-owner-repo-pr1.service loaded active running Minos lead\n"), nil
+		}
+		if name == "systemd-run" {
+			starts++
+		}
+		return nil, nil
+	}
+	unrelated := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "3"}
+	result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, unrelated, AdmissionContext{}, RunClassReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnStarted || starts != 1 {
+		t.Fatalf("unrelated result = %+v, starts = %d; live group guard must not spend a slot", result, starts)
+	}
+}
+
 func TestSpawnRunAdmitsDeadGroupGuard(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
@@ -249,7 +283,9 @@ func TestForgeCommandClaimMemberClaimsFixtureSiblingAndWritesGuard(t *testing.T)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if !strings.Contains(strings.Join(state.assignees, ","), "Minos") || !strings.Contains(strings.Join(state.reactions, ","), "eyes") {
-		t.Fatalf("fixture member was not claimed: assignees=%v reactions=%v", state.assignees, state.reactions)
+	if !slices.Equal(state.assignmentWritePaths, []string{"/api/v1/repos/minos-e2e-owner/subject/issues/2"}) ||
+		!slices.Equal(state.reactionWritePaths, []string{"/api/v1/repos/minos-e2e-owner/subject/issues/2/reactions"}) ||
+		!strings.Contains(strings.Join(state.assignees, ","), "Minos") || !strings.Contains(strings.Join(state.reactions, ","), "eyes") {
+		t.Fatalf("fixture member claim = assignment paths:%v reaction paths:%v assignees:%v reactions:%v", state.assignmentWritePaths, state.reactionWritePaths, state.assignees, state.reactions)
 	}
 }

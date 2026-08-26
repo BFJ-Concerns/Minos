@@ -218,10 +218,17 @@ pull request and every grouped passage in this lifecycle is inert.
    Write this pull request's own facts first, then the granted members'
    facts, with one sentence of the grouping
    judgement's basis, to `$MINOS_RUN_DIR/members.json`; membership is fixed
-   from this point. Then reconcile each claimed member with its target
-   through the member reconciliation script the run scripts provide — a
-   sibling of `sync-target` that checks the member's head out in its own
-   worktree and pins the member's target under a member-scoped ref. Never
+   from this point. You create the required linked worktree for each claimed
+   member before reconciliation: make a member-specific directory beneath
+   `$MINOS_RUN_DIR/worktrees`, then run `git -C "$MINOS_WORKSPACE" worktree
+   add --detach MEMBER_WORKSPACE HEAD`. `HEAD` is only the linked worktree's
+   safe initial checkout; the member reconciliation script fetches and checks
+   out the claimed member head. Run
+   `"${MINOS_SETUP_WORKSPACE%/*}/sync-member-target" MEMBER_WORKSPACE NUMBER
+   SOURCE_BRANCH TARGET_BRANCH EXPECTED_HEAD EXPECTED_TARGET METHOD` with the
+   values returned in the member facts and the repository's configured sync
+   method. The script checks the member's head out in that linked worktree and
+   pins the member's target under a member-scoped ref. Never
    run `sync-target` itself for a member: it syncs the invoking
    workspace's HEAD — the primary's tree — and its fetch would move this
    run's pinned `refs/minos/target`. Setup's pushed target reconciliation

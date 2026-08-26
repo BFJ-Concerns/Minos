@@ -915,6 +915,9 @@ func TestForgejoSweepMeasuresPullRequestSnapshotReadsPerPass(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
+			second := stackedFixturePull(2, "main", "second-candidate")
+			second["draft"] = true
+			state.setStackedChildren([]map[string]any{second})
 			state.setDependencies(test.dependencies)
 			cfg := writeSweepFixtureConfig(t, state)
 
@@ -934,6 +937,9 @@ func TestForgejoSweepMeasuresPullRequestSnapshotReadsPerPass(t *testing.T) {
 			if got != 1 {
 				t.Fatalf("pull request 1 snapshot reads this pass = %d, want one", got)
 			}
+			if got := state.pullRequestSnapshotReads("2"); got != 1 {
+				t.Fatalf("pull request 2 snapshot reads this pass = %d, want one", got)
+			}
 			started := slices.Contains(commands, "systemd-run")
 			if started != test.wantStarted {
 				t.Fatalf("systemd-run called = %t, want %t; commands = %v", started, test.wantStarted, commands)
@@ -949,9 +955,13 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToTheStartedLead(t *testing.
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	var firstStart []string
+	starts := 0
 	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if name == "systemd-run" && firstStart == nil {
-			firstStart = append([]string(nil), args...)
+		if name == "systemd-run" {
+			starts++
+			if firstStart == nil {
+				firstStart = append([]string(nil), args...)
+			}
 		}
 		return nil, nil
 	}
@@ -960,6 +970,9 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToTheStartedLead(t *testing.
 	}
 	if firstStart == nil {
 		t.Fatal("sweep did not start the primary lead")
+	}
+	if starts != 1 {
+		t.Fatalf("sweep started %d grouped runs, want exactly one", starts)
 	}
 	environment := systemdEnvironment(t, firstStart)
 	data, err := os.ReadFile(environment["MINOS_GROUP_CANDIDATES"])
@@ -994,6 +1007,46 @@ func TestForgejoSweepRemovesDeadGroupMemberGuard(t *testing.T) {
 	}
 	if _, err := os.Stat(guard); !os.IsNotExist(err) {
 		t.Fatalf("dead group guard remains: %v", err)
+	}
+}
+
+func TestForgejoSweepPreservesLiveGroupMemberGuardAndSuppressesMember(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
+	cfg := writeSweepFixtureConfig(t, state)
+	primary := "minos-run-minos-e2e-owner-subject-pr1"
+	member := UnitName(Facts{Forge: "forgejo", Owner: "minos-e2e-owner", Repo: "subject", PR: "2"})
+	guard := groupMemberGuardPath(cfg.Runs.Dir, member)
+	if err := os.MkdirAll(filepath.Dir(guard), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(guard, []byte(primary+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	starts := 0
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return []byte(primary + ".service loaded active running Minos lead\n"), nil
+		}
+		if name == "systemd-run" {
+			starts++
+		}
+		return nil, nil
+	}
+	if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(guard); err != nil || string(data) != primary+"\n" {
+		t.Fatalf("live group guard after sweep = %q, %v", data, err)
+	}
+	result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, Facts{Forge: "forgejo", Owner: "minos-e2e-owner", Repo: "subject", PR: "2"}, AdmissionContext{}, RunClassReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnSuppressed || result.BlockingUnit != primary+".service" || starts != 0 {
+		t.Fatalf("member result after sweep = %+v, starts = %d", result, starts)
 	}
 }
 
@@ -1990,6 +2043,8 @@ type forgejoFixtureState struct {
 	mu                       sync.Mutex
 	assignees                []string
 	reactions                []string
+	assignmentWritePaths     []string
+	reactionWritePaths       []string
 	assignmentWrites         int
 	obsoleteAssignmentWrites int
 	reactionWrites           int
@@ -2302,6 +2357,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		writeFixtureJSON(s.t, w, s.pullRequest)
 	case r.Method == http.MethodGet && s.stackedChild(path) != nil:
+		s.pullRequestReads[fmt.Sprint(s.stackedChild(path)["number"])]++
 		writeFixtureJSON(s.t, w, s.stackedChild(path))
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/dependencies") && s.stackedChildForPath(path) != nil:
 		child := s.stackedChildForPath(path)
@@ -2569,6 +2625,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.assignmentWrites++
+		s.assignmentWritePaths = append(s.assignmentWritePaths, path)
 		writeFixtureJSON(s.t, w, map[string]any{})
 	case r.Method == http.MethodGet && (path == issuePath+"/reactions" || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/reactions")):
 		reactions := make([]map[string]any, 0, len(s.reactions))
@@ -2587,6 +2644,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			s.reactions = append(s.reactions, payload.Content)
 		}
 		s.reactionWrites++
+		s.reactionWritePaths = append(s.reactionWritePaths, path)
 		writeFixtureJSON(s.t, w, map[string]any{
 			"content":    payload.Content,
 			"created_at": "2026-07-19T12:00:00Z",
