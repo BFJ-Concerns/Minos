@@ -2472,6 +2472,134 @@ func TestForgeMemberWritesStayOnTheirOwnPullRequests(t *testing.T) {
 	}
 }
 
+func TestForgejoGroupedSplitFinishesEachMemberAndReleasesOnlyAfterTargetMovement(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	blocked := stackedFixturePull(2, "main", "blocked-member")
+	waiting := stackedFixturePull(3, "blocked-member", "waiting-member")
+	state.setStackedChildren([]map[string]any{blocked, waiting})
+	cfg, repo, primary := state.service(t)
+	configureFixtureForgeCommand(t, cfg, primary)
+
+	for _, number := range []string{"2", "3"} {
+		member := Facts{Owner: primary.Owner, Repo: primary.Repo, PR: number}
+		guard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))
+		if err := os.MkdirAll(filepath.Dir(guard), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(guard, []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	blockedHead := blocked["head"].(map[string]any)["sha"].(string)
+	blockedTarget := blocked["base"].(map[string]any)["sha"].(string)
+	waitingHead := waiting["head"].(map[string]any)["sha"].(string)
+	// Forgejo resolves a stacked member's target through its predecessor
+	// branch, whose current coordinate is the blocked member's head.
+	waitingTarget := blockedHead
+	blockedBody := filepath.Join(t.TempDir(), "blocked.md")
+	waitingBody := filepath.Join(t.TempDir(), "waiting.md")
+	waitingComment := writeJSONFixture(t, map[string]any{
+		"body": "Held at: finishing\nWaiting for blocked member #2 to merge.",
+	})
+	if err := os.WriteFile(blockedBody, []byte("The blocked member needs changes.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(waitingBody, []byte("The dependent member is otherwise clean.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	memberCommand := func(number string, args ...string) {
+		t.Helper()
+		prefix := []string{"--member", primary.Owner, primary.Repo, number}
+		if err := ForgeCommand(t.Context(), append(prefix, args...), &bytes.Buffer{}); err != nil {
+			t.Fatalf("member %s %v: %v", number, args, err)
+		}
+	}
+
+	// Each member writes its own terminal outcome; the clean primary can land
+	// even though its grouped sibling is blocked.
+	if err := ForgeCommand(t.Context(), []string{"merge", state.headSHA(), state.targetSHA(), "merge"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	memberCommand("2", "review", blockedHead, blockedTarget, "request-changes", blockedBody)
+	memberCommand("2", "status", blockedHead, blockedTarget, "attention")
+	memberCommand("3", "review", waitingHead, waitingTarget, "approve-chain-wait", waitingBody)
+	memberCommand("3", "status", waitingHead, waitingTarget, "held")
+	memberCommand("3", "comment", waitingHead, waitingTarget, waitingComment)
+
+	state.mu.Lock()
+	if !state.pullRequest["merged"].(bool) {
+		state.mu.Unlock()
+		t.Fatal("clean sibling was not merged")
+	}
+	blockedReviews := blocked["reviews"].([]map[string]any)
+	blockedStatuses := blocked["statuses"].([]map[string]any)
+	waitingReviews := waiting["reviews"].([]map[string]any)
+	waitingStatuses := waiting["statuses"].([]map[string]any)
+	waitingComments := waiting["comments"].([]map[string]any)
+	state.mu.Unlock()
+	if len(blockedReviews) != 1 || blockedReviews[0]["state"] != "REQUEST_CHANGES" ||
+		len(blockedStatuses) != 1 || blockedStatuses[0]["description"] != product.Attention().Description() {
+		t.Fatalf("blocked member outcome = reviews:%#v statuses:%#v", blockedReviews, blockedStatuses)
+	}
+	if len(waitingReviews) != 1 || waitingReviews[0]["state"] != "APPROVED" ||
+		len(waitingStatuses) != 1 || waitingStatuses[0]["description"] != product.Held().Description() ||
+		len(waitingComments) != 1 || !strings.HasPrefix(fmt.Sprint(waitingComments[0]["body"]), "Held at: finishing\n") {
+		t.Fatalf("waiting member hold = reviews:%#v statuses:%#v comments:%#v", waitingReviews, waitingStatuses, waitingComments)
+	}
+	record, ok := product.TrailingRecord(fmt.Sprint(waitingReviews[0]["body"]))
+	if !ok || record[product.RecordCauseKey] != product.RecordCauseChainWait || record[product.RecordTargetKey] != waitingTarget {
+		t.Fatalf("waiting approval record = %#v, valid = %t", record, ok)
+	}
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var starts [][]string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			starts = append(starts, append([]string(nil), args...))
+		}
+		return nil, nil
+	}
+	waitingFacts := Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: "3"}
+	result, err := reconcilePullRequest(t.Context(), cfg, repo, waitingFacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision == SpawnStarted || len(starts) != 0 {
+		t.Fatalf("unmoved chain wait was re-admitted: result=%#v starts=%v", result, starts)
+	}
+
+	// This is forge state changing after the blocked predecessor lands. The
+	// waiting head is deliberately unchanged, so the only release is its new
+	// target coordinate and the chain-wait spend rule.
+	state.mu.Lock()
+	waiting["base"].(map[string]any)["ref"] = "main"
+	state.pullRequest["base"].(map[string]any)["sha"] = "target-after-blocked-member"
+	state.mu.Unlock()
+	result, err = reconcilePullRequest(t.Context(), cfg, repo, waitingFacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != SpawnStarted || len(starts) != 1 {
+		t.Fatalf("moved chain wait = result:%#v starts:%v, want one finishing admission", result, starts)
+	}
+	environment := systemdEnvironment(t, starts[0])
+	if environment["MINOS_RELEASED_HOLD_HEAD"] != waitingHead ||
+		environment["MINOS_RELEASED_HOLD_STAGE"] != "finishing" ||
+		!strings.HasPrefix(environment["MINOS_RELEASED_HOLD_DIAGNOSIS"], "Waiting for blocked member #2 to merge.") {
+		t.Fatalf("released hold environment = %#v", environment)
+	}
+	memberCommand("3", "merge", waitingHead, "target-after-blocked-member", "merge")
+	state.mu.Lock()
+	deferredReviews := len(waiting["reviews"].([]map[string]any))
+	waitingMerged := waiting["merged"].(bool)
+	state.mu.Unlock()
+	if deferredReviews != 1 || !waitingMerged {
+		t.Fatalf("released member reviews=%d merged=%t, want standing review and merge", deferredReviews, waitingMerged)
+	}
+}
+
 func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
@@ -2887,6 +3015,22 @@ func (s *forgejoFixtureState) stackedChildForPath(path string) map[string]any {
 	return nil
 }
 
+// branchHead resolves the target branch's current forge coordinate while the
+// fixture mutex is held by handle.
+func (s *forgejoFixtureState) branchHead(path string) string {
+	branch := strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/branches/")
+	if branch == s.pullRequest["base"].(map[string]any)["ref"] {
+		return s.pullRequest["base"].(map[string]any)["sha"].(string)
+	}
+	for _, child := range s.stackedChildren {
+		head := child["head"].(map[string]any)
+		if branch == head["ref"] {
+			return head["sha"].(string)
+		}
+	}
+	return ""
+}
+
 func (s *forgejoFixtureState) headSHA() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3113,6 +3257,40 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			reviews = []map[string]any{}
 		}
 		writeFixtureJSON(s.t, w, reviews)
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/reviews") && s.stackedChildForPath(path) != nil:
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		child := s.stackedChildForPath(path)
+		reviews, _ := child["reviews"].([]map[string]any)
+		review := map[string]any{
+			"id": int64(len(reviews) + 1), "state": payload["event"], "commit_id": payload["commit_id"],
+			"body": payload["body"], "user": map[string]any{"login": "Minos"},
+		}
+		child["reviews"] = append(reviews, review)
+		writeFixtureJSON(s.t, w, review)
+	case r.Method == http.MethodGet && strings.Contains(path, "/reviews/") && strings.HasSuffix(path, "/comments") && s.stackedChildForPath(path) != nil:
+		writeFixtureJSON(s.t, w, []map[string]any{})
+	case r.Method == http.MethodGet && strings.Contains(path, "/issues/") && strings.HasSuffix(path, "/comments") && s.stackedChildForPath(path) != nil:
+		child := s.stackedChildForPath(path)
+		comments, _ := child["comments"].([]map[string]any)
+		if comments == nil {
+			comments = []map[string]any{}
+		}
+		writeFixtureJSON(s.t, w, comments)
+	case r.Method == http.MethodPost && strings.Contains(path, "/issues/") && strings.HasSuffix(path, "/comments") && s.stackedChildForPath(path) != nil:
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		child := s.stackedChildForPath(path)
+		comments, _ := child["comments"].([]map[string]any)
+		comment := map[string]any{
+			"id": float64(len(comments) + 1), "body": payload["body"], "user": map[string]any{"login": "Minos"},
+		}
+		child["comments"] = append(comments, comment)
+		writeFixtureJSON(s.t, w, comment)
 	case r.Method == http.MethodPatch && s.stackedChild(path) != nil:
 		if s.childRetargetCode != 0 {
 			http.Error(w, "retarget fixture failure", s.childRetargetCode)
@@ -3171,10 +3349,9 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			commits = []map[string]any{{"sha": child["head"].(map[string]any)["sha"], "author": map[string]any{"login": "fixture-author"}}}
 		}
 		writeFixtureJSON(s.t, w, commits)
-	case r.Method == http.MethodGet && strings.HasSuffix(path, "/branches/main"):
-		base := s.pullRequest["base"].(map[string]any)
+	case r.Method == http.MethodGet && strings.Contains(path, "/branches/") && s.branchHead(path) != "":
 		writeFixtureJSON(s.t, w, map[string]any{
-			"commit": map[string]any{"id": base["sha"]}, "protected": false,
+			"commit": map[string]any{"id": s.branchHead(path)}, "protected": false,
 			"user_can_merge": true, "status_check_contexts": []string{},
 		})
 	case r.Method == http.MethodDelete && strings.Contains(path, "/branches/"):
@@ -3221,6 +3398,19 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		writeFixtureJSON(s.t, w, map[string]any{})
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/merge") && s.stackedChildForPath(path) != nil:
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		child := s.stackedChildForPath(path)
+		if payload["head_commit_id"] != child["head"].(map[string]any)["sha"] {
+			http.Error(w, "head mismatch", http.StatusConflict)
+			return
+		}
+		child["merged"] = true
+		child["state"] = "closed"
 		writeFixtureJSON(s.t, w, map[string]any{})
 	case r.Method == http.MethodGet && strings.Contains(path, "/commits/") && strings.HasSuffix(path, "/statuses"):
 		commit := strings.TrimSuffix(strings.SplitN(path, "/commits/", 2)[1], "/statuses")
