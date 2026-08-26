@@ -1102,7 +1102,10 @@ pull request and every grouped passage in this lifecycle is inert.
    never a member to skip. For each non-empty entry write its commits to a
    separate file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
    "$MINOS_WORKSPACE" COMMITS_FILE --member-branch HEAD_BRANCH`. The script
-   detaches the shared workspace at that member branch before cherry-picking,
+   refuses when the destination moved from the head the run had accepted, so
+   the run-wide foreign-movement discipline judges the new commits before a
+   retry. It detaches the shared workspace at that member branch before
+   cherry-picking,
    verifies every commit's Minos author, and pushes once to that branch only.
    It records the member branch as protected and creates the same one-use
    push permit for every push, so the guard applies independently to every

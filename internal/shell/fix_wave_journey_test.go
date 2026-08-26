@@ -62,6 +62,70 @@ func TestIntegrateWaveCherryPicksMinosCommitsAndPushesOnce(t *testing.T) {
 	}
 }
 
+func TestIntegrateWaveRefusesMovedDestination(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		branch string
+	}{
+		{name: "primary", branch: "main"},
+		{name: "grouped member", branch: "member"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			remote, workspace := createBareFixtureRemote(t, "base.txt", "base\n")
+			runGit(t, workspace, "config", "user.name", "Minos")
+			runGit(t, workspace, "config", "user.email", "minos@example.invalid")
+			base := gitOutput(t, workspace, "rev-parse", "HEAD")
+			if test.branch != "main" {
+				runGit(t, workspace, "push", "origin", "HEAD:refs/heads/"+test.branch)
+			}
+
+			repairWorktree := filepath.Join(t.TempDir(), "repair")
+			runGit(t, workspace, "worktree", "add", "--detach", repairWorktree, base)
+			if err := os.WriteFile(filepath.Join(repairWorktree, "repair.txt"), []byte("repair\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, repairWorktree, "add", "repair.txt")
+			runGit(t, repairWorktree, "commit", "-m", "fix: repair reviewed head")
+			repair := gitOutput(t, repairWorktree, "rev-parse", "HEAD")
+
+			foreignWorktree := filepath.Join(t.TempDir(), "foreign")
+			runGit(t, workspace, "worktree", "add", "--detach", foreignWorktree, base)
+			if err := os.WriteFile(filepath.Join(foreignWorktree, "foreign.txt"), []byte("foreign\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, foreignWorktree, "add", "foreign.txt")
+			runGit(t, foreignWorktree, "commit", "-m", "feat: foreign movement")
+			foreign := gitOutput(t, foreignWorktree, "rev-parse", "HEAD")
+			runGit(t, foreignWorktree, "push", remote, "HEAD:refs/heads/"+test.branch)
+
+			commitsPath := filepath.Join(t.TempDir(), "commits.json")
+			if err := os.WriteFile(commitsPath, []byte("[\""+repair+"\"]"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{workspace, commitsPath}
+			if test.branch != "main" {
+				args = append(args, "--member-branch", test.branch)
+			}
+			cmd := exec.Command(filepath.Join("..", "..", "workflows", "integrate-wave"), args...)
+			cmd.Env = append(os.Environ(),
+				"MINOS_HEAD_BRANCH=main",
+				"MINOS_GIT_AUTHOR_NAME=Minos",
+				"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
+			)
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "apply the run-wide foreign-movement discipline") {
+				t.Fatalf("moved destination result = %v\n%s", err, output)
+			}
+			if got := gitOutput(t, remote, "rev-parse", "refs/heads/"+test.branch); got != foreign {
+				t.Fatalf("moved destination = %q, want foreign head %q", got, foreign)
+			}
+			if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != base {
+				t.Fatalf("workspace after refusal = %q, want accepted primary %q", got, base)
+			}
+		})
+	}
+}
+
 func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	remote, workspace := createBareFixtureRemote(t, "base.txt", "base\n")
 	installPushCounter(t, remote)
