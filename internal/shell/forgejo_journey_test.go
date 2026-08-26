@@ -960,6 +960,7 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
 			cfg := writeSweepFixtureConfig(t, state)
+			setSweepFixtureMaxConcurrent(t, cfg, 3)
 			if test.continuing {
 				_, _, facts := state.service(t)
 				facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
@@ -1024,15 +1025,7 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 	t.Run("primary live from previous pass", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		cfg := writeSweepFixtureConfig(t, state)
-		servicePath := filepath.Join(cfg.Root, "service.toml")
-		serviceConfig, err := os.ReadFile(servicePath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		serviceConfig = append(serviceConfig, []byte("max-concurrent = 3\n")...)
-		if err := os.WriteFile(servicePath, serviceConfig, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		setSweepFixtureMaxConcurrent(t, cfg, 3)
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })
@@ -1269,6 +1262,22 @@ run-body = "/opt/minos/run-body/run-body"
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+// setSweepFixtureMaxConcurrent keeps admission capacity above the grouped
+// journey's two pull requests. The one-run assertions must therefore prove
+// grouped suppression, rather than merely observe the global cap.
+func setSweepFixtureMaxConcurrent(t *testing.T, cfg ServiceConfig, maximum int) {
+	t.Helper()
+	servicePath := filepath.Join(cfg.Root, "service.toml")
+	serviceConfig, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceConfig = append(serviceConfig, []byte(fmt.Sprintf("max-concurrent = %d\n", maximum))...)
+	if err := os.WriteFile(servicePath, serviceConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
