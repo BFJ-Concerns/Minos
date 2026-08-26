@@ -95,7 +95,7 @@ function terminalMemberReview(plan, review) {
         return {
           member: member.id,
           verdict: "comment",
-          body: "No confirmed findings in the reviewed code.",
+          body: "No blocking findings in the reviewed code.",
           comments: [],
           status: "clean",
         };
@@ -206,7 +206,19 @@ export async function publishBeforeFix({
     onEvent(`fix-dispatch-started:${plan.fingerprint}`);
     let dispatchResult;
     try {
-      dispatchResult = await runDispatch({ launcher, workflowScript, planPath, plan, cwd: input.workspace, env });
+      // The launcher owns the immutable per-agent record. Keep it under the
+      // run's existing retained-record root, while the status snapshot stays
+      // at the run root for the lead's live watcher.
+      const runRecordRoot = typeof env.MINOS_RUN_DIR === "string" && env.MINOS_RUN_DIR !== ""
+        ? `${env.MINOS_RUN_DIR}/ensemble-records/fix`
+        : null;
+      const dispatchEnv = runRecordRoot === null ? env : {
+        ...env,
+        ENSEMBLE_STATUS_DIR: env.MINOS_RUN_DIR,
+        ENSEMBLE_RUN_RECORD: "on",
+        ENSEMBLE_RUN_RECORD_DIR: runRecordRoot,
+      };
+      dispatchResult = await runDispatch({ launcher, workflowScript, planPath, plan, cwd: input.workspace, env: dispatchEnv });
     } catch (error) {
       return publicationFailure(plan, `fix dispatcher failed to start: ${error.message}`, publication);
     }

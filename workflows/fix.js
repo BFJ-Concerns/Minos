@@ -102,6 +102,13 @@ function memberFixReviewGroups(fixed) {
   return [...byMember].map(([member, repairs]) => ({ member, fixReview: fixReview(repairs) }));
 }
 
+function failedAttemptReason(result, entry) {
+  if (entry && entry.writeUp) return entry.writeUp;
+  if (result == null) return "fix attempt returned no result";
+  if (!entry) return "fix attempt returned no result for this finding";
+  return "fix attempt returned no repair write-up";
+}
+
 function verificationInstruction(verification) {
   const configured = [
     ["build", verification.build],
@@ -350,7 +357,7 @@ retryDispatches.forEach((dispatch, index) => {
         key: finding.key,
         finding,
         attempts: 2,
-        reason: entry && entry.writeUp ? entry.writeUp : "fix failed twice",
+        reason: failedAttemptReason(result, entry),
       });
     }
   }

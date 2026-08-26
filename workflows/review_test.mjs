@@ -194,7 +194,7 @@ function specialistCalls(calls) {
 }
 
 function orientationPacketFromPrompt(prompt) {
-  const match = prompt.match(/Orientation packet: (.+)\nAssigned concern:/);
+  const match = prompt.match(/Orientation packet: ([^\n]+)\n/);
   assert.ok(match, "specialist prompt carries a serialised orientation packet");
   return match[1];
 }
@@ -244,8 +244,16 @@ test("the script emits an envelope with every routed leg and raw verifier output
 
 test("a two-member input keeps each finding attributed through verification and member publication", async (t) => {
   const members = { members: [
-    { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, diff: "primary diff" },
-    { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2, diff: "sibling diff" },
+    {
+      id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1,
+      target: "primary-target", head: "primary-head", diff: "PRIMARY_MEMBER_DIFF",
+      title: "Primary title", body: "PRIMARY_MEMBER_DESCRIPTION",
+    },
+    {
+      id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2,
+      target: "sibling-target", head: "sibling-head", diff: "SIBLING_MEMBER_DIFF",
+      title: "Sibling title", body: "SIBLING_MEMBER_DESCRIPTION",
+    },
   ] };
   const args = { ...enumeratedArgs("target", "head"), members: members.members };
   const plan = [unit("primary", "correctness", ["internal/primary.go"], "primary"), unit("sibling", "security", ["internal/sibling.go"], "sibling")];
@@ -274,7 +282,27 @@ test("a two-member input keeps each finding attributed through verification and 
       { member: "sibling", title: "sibling finding" },
     ],
   );
-  assert.match(calls.find((call) => call.opts.label === "exploration").prompt, /sibling diff/);
+  assert.match(calls.find((call) => call.opts.label === "exploration").prompt, /SIBLING_MEMBER_DIFF/);
+
+  const primarySpecialist = calls.find((call) => call.opts.label === "specialist-1-correctness-gpt");
+  const siblingSpecialist = calls.find((call) => call.opts.label === "specialist-2-security-gpt");
+  assert.match(primarySpecialist.prompt, /primary-target\.\.\.primary-head/);
+  assert.match(primarySpecialist.prompt, /PRIMARY_MEMBER_DIFF/);
+  assert.match(primarySpecialist.prompt, /PRIMARY_MEMBER_DESCRIPTION/);
+  assert.doesNotMatch(primarySpecialist.prompt, /SIBLING_MEMBER_(?:DIFF|DESCRIPTION)/);
+  assert.match(siblingSpecialist.prompt, /sibling-target\.\.\.sibling-head/);
+  assert.match(siblingSpecialist.prompt, /SIBLING_MEMBER_DIFF/);
+  assert.match(siblingSpecialist.prompt, /SIBLING_MEMBER_DESCRIPTION/);
+  assert.doesNotMatch(siblingSpecialist.prompt, /PRIMARY_MEMBER_(?:DIFF|DESCRIPTION)/);
+
+  const verifier = calls.find((call) => call.opts.label === "verify-1-claude");
+  assert.match(verifier.prompt, /primary-target.*primary-head/);
+  assert.match(verifier.prompt, /PRIMARY_MEMBER_DIFF/);
+  assert.match(verifier.prompt, /PRIMARY_MEMBER_DESCRIPTION/);
+  assert.match(verifier.prompt, /sibling-target.*sibling-head/);
+  assert.match(verifier.prompt, /SIBLING_MEMBER_DIFF/);
+  assert.match(verifier.prompt, /SIBLING_MEMBER_DESCRIPTION/);
+
   assert.deepEqual(
     result.outOfScopeObservations.map(({ member, title }) => ({ member, title })),
     [
@@ -1197,6 +1225,10 @@ test("configured command failures enter the repair discipline, never a review on
   assert.match(
     initialGate,
     /\$\{MINOS_REVIEW_WORKFLOW%\/\*\}\/completion-policy\.mjs[\s\S]*JSON `status` field[\s\S]*gate repair discipline[\s\S]*No review starts while the gate is red/,
+  );
+  assert.match(
+    initialGate,
+    /ENSEMBLE_STATUS_DIR="\$MINOS_RUN_DIR"[\s\S]*ENSEMBLE_RUN_RECORD=on[\s\S]*rootcause\.js/,
   );
   assert.match(initialGate, /when it is empty, no test command is\s+configured, so skip it/);
   assert.match(

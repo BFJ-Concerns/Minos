@@ -81,6 +81,17 @@ function pullRequestSection(pullRequest) {
   );
 }
 
+function reviewedMemberSection(context) {
+  const diff = context.diff === null
+    ? "The deterministic input carries no separate diff text for this solo member; read the reviewed range directly."
+    : `<member-diff>\n${context.diff}\n</member-diff>`;
+  return (
+    `<review-member id=${JSON.stringify(context.id)} target=${JSON.stringify(context.target)} head=${JSON.stringify(context.head)}>\n` +
+    pullRequestSection(context.pullRequest) +
+    `${diff}\n</review-member>`
+  );
+}
+
 function rolePrompt(roleBriefs, guidance, pullRequest, path, assignment) {
   const brief = roleBriefs.get(path) || { readPath: path, content: "" };
   return (
@@ -355,9 +366,19 @@ const memberEntries = Array.isArray(members)
     : null;
 if (!memberEntries || memberEntries.length === 0 || memberEntries.some((member) =>
   !member || typeof member !== "object" || Array.isArray(member) ||
-  typeof member.id !== "string" || member.id === ""
-)) throw new Error("deterministic input needs a non-empty members record with member ids");
+  typeof member.id !== "string" || member.id === "" ||
+  typeof member.target !== "string" || member.target === "" ||
+  typeof member.head !== "string" || member.head === "" ||
+  (memberEntries.length > 1 && typeof member.diff !== "string")
+)) throw new Error("deterministic input needs members with ids, reviewed coordinates, and grouped-member diffs");
 const memberIds = new Set(memberEntries.map((member) => member.id));
+const memberContexts = new Map(memberEntries.map((member) => [member.id, {
+  id: member.id,
+  target: member.target,
+  head: member.head,
+  diff: typeof member.diff === "string" ? member.diff : null,
+  pullRequest: pullRequestFromInput({ pullRequest: member }),
+}]));
 const priorFindings = input && input.priorFindings;
 const validPriorEntry = (entry) => Boolean(
   entry && typeof entry === "object" && !Array.isArray(entry) &&
@@ -441,12 +462,18 @@ const exploration = {
   },
 };
 const specialistUnits = normalisePlan(exploration.plan);
-const orientation = orientationPacket(target, head, exploration.files, specialistUnits);
 phase("Specialise");
 for (const unit of specialistUnits)
   addLeg(unit.label, "specialist", PROPOSER_MODEL);
 
 function specialistPrompt(unit) {
+  const memberContext = memberContexts.get(unit.member);
+  const orientation = orientationPacket(
+    memberContext.target,
+    memberContext.head,
+    exploration.files,
+    specialistUnits.filter((candidate) => candidate.member === unit.member),
+  );
   const hasPriorFindings = priorFindings.confirmedFixed.length > 0 ||
     priorFindings.confirmedUnfixed.length > 0;
   const suppressionContext = hasPriorFindings
@@ -460,10 +487,11 @@ function specialistPrompt(unit) {
   return rolePrompt(
     roleBriefs,
     projectGuidance,
-    pullRequestDescription,
+    null,
     unit.roleBrief,
     `Orientation packet: ${orientation}\n` +
-      `Assigned concern: ${unit.concern}\nAssigned member: ${unit.member}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that member's concern and scope against ${target}...${head}. Every finding must carry assigned member ${unit.member}.` +
+      `${reviewedMemberSection(memberContext)}\n` +
+      `Assigned concern: ${unit.concern}\nAssigned member: ${unit.member}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that member's concern and scope against ${memberContext.target}...${memberContext.head}. Every finding must carry assigned member ${unit.member}.` +
       suppressionContext
   );
 }
@@ -550,9 +578,11 @@ const verifierResults = await parallel(
       rolePrompt(
         roleBriefs,
         projectGuidance,
-        pullRequestDescription,
+        null,
         ROLE_BRIEFS.verifier,
-        `Try to disprove each proposed finding against ${target}...${head} and the cited code.\n` +
+        `Try to disprove each proposed finding against its assigned reviewed-member context and the cited code.\n` +
+          `Reviewed member contexts:\n${[...new Set(group.items.map((item) => item.unit.member))]
+            .map((member) => reviewedMemberSection(memberContexts.get(member))).join("\n")}\n` +
           `Proposing specialists: ${[...new Set(group.items.map((item) => item.unit.label))].join(", ")}\n` +
           `Every out-of-scope observation must carry the member it concerns, chosen from ${JSON.stringify([...new Set(group.items.map((item) => item.unit.member))])}.\n` +
           `Findings: ${JSON.stringify(group.items.map((item) => ({ id: item.id, ...item.finding })))}`
