@@ -302,6 +302,40 @@ func TestSyncMemberTargetReconcilesMovedTargetAndKeepsPrimaryPin(t *testing.T) {
 	}
 }
 
+func TestSyncMemberTargetRejectsTargetMovedPastExpectedSnapshot(t *testing.T) {
+	remote, primary := createSyncFixture(t, true, false)
+	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+	expectedTarget := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+
+	targetMover := filepath.Join(t.TempDir(), "target-mover")
+	runGit(t, t.TempDir(), "clone", "--branch", "main", remote, targetMover)
+	runGit(t, targetMover, "config", "user.name", "Fixture")
+	runGit(t, targetMover, "config", "user.email", "fixture@example.invalid")
+	if err := os.WriteFile(filepath.Join(targetMover, "later-target.txt"), []byte("later target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, targetMover, "add", "later-target.txt")
+	runGit(t, targetMover, "commit", "-m", "later target")
+	runGit(t, targetMover, "push", "origin", "main")
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/main"); got == expectedTarget {
+		t.Fatal("fixture did not move the target past the expected snapshot")
+	}
+
+	member := filepath.Join(t.TempDir(), "member")
+	runGit(t, primary, "worktree", "add", "--detach", member, expectedTarget)
+	memberHead := gitOutput(t, member, "rev-parse", "HEAD")
+	output, err := runSyncMemberTarget(member, head, expectedTarget, "merge")
+	if err == nil || !strings.Contains(string(output), "member source or target moved") {
+		t.Fatalf("member sync accepted a target newer than its snapshot: %v\n%s", err, output)
+	}
+	if got := gitOutput(t, member, "rev-parse", "HEAD"); got != memberHead {
+		t.Fatalf("member HEAD changed before target snapshot rejection: got %q, want %q", got, memberHead)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != head {
+		t.Fatalf("remote member branch was published despite target snapshot rejection: got %q, want %q", got, head)
+	}
+}
+
 func TestSyncMemberTargetConflictCanBeResolvedAndResumed(t *testing.T) {
 	remote, primary := createSyncFixture(t, true, true)
 	installPushCounter(t, remote)
