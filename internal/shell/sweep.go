@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -86,16 +87,69 @@ func SweepCommand(ctx context.Context, args []string) error {
 	activeUnits, err := activeRunUnitNames(ctx)
 	if err != nil {
 		log.Printf("inspect active runs for candidate ordering: %v", err)
+	} else if err := sweepDeadGroupMemberGuards(ctx, cfg, repos); err != nil {
+		log.Printf("sweep group member guards: %v", err)
 	}
 	candidates = orderSweepCandidates(candidates, activeUnits)
+	groupCandidates := map[string]string{}
+	groupSnapshots := map[string]groupedCandidateSnapshot{}
+	if err == nil {
+		groupCandidates, groupSnapshots, err = groupCandidatesByPrimary(ctx, cfg, candidates, activeUnits)
+		if err != nil {
+			log.Printf("enumerate group candidates: %v", err)
+			groupCandidates = map[string]string{}
+			groupSnapshots = map[string]groupedCandidateSnapshot{}
+		}
+	}
+	groupedThisPass := map[string]string{}
 	for _, candidate := range candidates {
-		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
+		unit := UnitName(candidate.facts)
+		if holder, grouped := groupedThisPass[unit]; grouped {
+			result := ReconcileResult{Decision: SpawnSuppressed, BlockingUnit: holder}
+			if message := sweepDecisionMessage(candidate.facts, result); message != "" {
+				log.Print(message)
+			}
+			continue
+		}
+		var result ReconcileResult
+		if cached, ok := groupSnapshots[unit]; ok {
+			result, err = reconcilePullRequestSnapshotWithCandidates(ctx, cfg, candidate.repo, candidate.facts, cached.adapter, cached.snapshot, groupCandidates[unit])
+		} else {
+			result, err = reconcilePullRequestWithCandidates(ctx, cfg, candidate.repo, candidate.facts, groupCandidates[unit])
+		}
 		if err != nil {
 			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
 			continue
 		}
 		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
 			log.Print(message)
+		}
+		// Candidate membership is fixed when a primary is admitted. Suppress its
+		// surfaced siblings only for that admission pass; a unit already live at
+		// the start of a later pass owns only members carrying durable guards.
+		if (result.Decision != SpawnStarted && result.Decision != SpawnContinued) || result.GroupCandidatesPath == "" {
+			continue
+		}
+		var siblings []Facts
+		if decodeErr := json.Unmarshal([]byte(groupCandidates[unit]), &siblings); decodeErr != nil && groupCandidates[unit] != "" {
+			log.Printf("%s#%s: decode admitted group candidates: %v", candidate.facts.RepoSlug(), candidate.facts.PR, decodeErr)
+		}
+		if len(siblings) == 0 {
+			continue
+		}
+		primaryLive := activeRunContains(activeUnits, unit)
+		if !primaryLive {
+			currentActiveUnits, activeErr := activeRunUnitNames(ctx)
+			if activeErr != nil {
+				log.Printf("%s#%s: inspect primary run after reconciliation: %v", candidate.facts.RepoSlug(), candidate.facts.PR, activeErr)
+				continue
+			}
+			primaryLive = activeRunContains(currentActiveUnits, unit)
+		}
+		if primaryLive {
+			for _, sibling := range siblings {
+				groupedThisPass[UnitName(sibling)] = unit + ".service"
+			}
 		}
 	}
 	if err := expireInactiveRunHandoffs(ctx, cfg, repos); err != nil {

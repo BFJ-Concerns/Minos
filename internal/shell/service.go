@@ -35,6 +35,9 @@ type AdmissionContext struct {
 	ReleasedHoldHead      string
 	ReleasedHoldStage     string
 	ReleasedHoldDiagnosis string
+	// GroupCandidatesJSON is sweep-only raw material for the lead's grouping
+	// judgement.  It is deliberately data, not a selection decision.
+	GroupCandidatesJSON string
 }
 
 func currentSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (forge.Snapshot, error) {
@@ -97,13 +100,18 @@ func trustedReview(snapshot forge.Snapshot, commits []forge.Commit, botLogin str
 }
 
 func checkCausedVerdictSpent(review forge.Review, snapshot forge.Snapshot) bool {
-	if strings.ToUpper(review.State) != "REQUEST_CHANGES" && strings.ToUpper(review.State) != "REQUESTED_CHANGES" {
+	record, ok := product.TrailingRecord(review.Body)
+	if !ok || record[product.RecordTargetKey] == "" || record[product.RecordTargetKey] == snapshot.TargetSHA || snapshot.HeadRepository != snapshot.TargetRepository {
 		return false
 	}
-	record, ok := product.TrailingRecord(review.Body)
-	return ok && record[product.RecordCauseKey] == product.RecordCauseRequiredChecks &&
-		record[product.RecordTargetKey] != "" && record[product.RecordTargetKey] != snapshot.TargetSHA &&
-		snapshot.HeadRepository == snapshot.TargetRepository
+	switch strings.ToUpper(review.State) {
+	case "REQUEST_CHANGES", "REQUESTED_CHANGES":
+		return record[product.RecordCauseKey] == product.RecordCauseRequiredChecks
+	case "APPROVED", "APPROVE":
+		return record[product.RecordCauseKey] == product.RecordCauseChainWait
+	default:
+		return false
+	}
 }
 
 func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, bool) {
@@ -280,20 +288,29 @@ const (
 )
 
 type ReconcileResult struct {
-	Decision     ReconcileDecision
-	BlockingUnit string
-	Detail       string
+	Decision            ReconcileDecision
+	BlockingUnit        string
+	Detail              string
+	GroupCandidatesPath string
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
+	return reconcilePullRequestWithCandidates(ctx, cfg, repo, facts, "")
+}
+
+func reconcilePullRequestWithCandidates(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, candidates string) (ReconcileResult, error) {
 	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
-	return reconcilePullRequestSnapshot(ctx, cfg, repo, facts, adapter, snapshot)
+	return reconcilePullRequestSnapshotWithCandidates(ctx, cfg, repo, facts, adapter, snapshot, candidates)
 }
 
 func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (ReconcileResult, error) {
+	return reconcilePullRequestSnapshotWithCandidates(ctx, cfg, repo, facts, adapter, snapshot, "")
+}
+
+func reconcilePullRequestSnapshotWithCandidates(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot, candidates string) (ReconcileResult, error) {
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
@@ -308,35 +325,34 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		commits = []forge.Commit{{SHA: snapshot.HeadSHA, Author: cfg.Service.BotLogin}}
 	}
 	admission := releasedHoldContext(ctx, adapter, snapshot, repository, pullRequest, cfg.Service.BotLogin, commits, currentEnvironmentStamp(cfg))
-	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
+	admission.GroupCandidatesJSON = candidates
+	eligibility := assessPullRequestAdmission(ctx, cfg, repo, facts, adapter, snapshot, commits)
+	if eligibility.workInProgress {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
 	}
-	if review, reviewed := trustedReview(snapshot, commits, cfg.Service.BotLogin); reviewed {
-		state, terminal := terminalState(review)
-		if terminal && !checkCausedVerdictSpent(review, snapshot) {
-			if hasTerminalStatus(snapshot, cfg, facts, state) {
-				return ReconcileResult{Decision: ReconcileNothing}, nil
-			}
-			pr, _ := strconv.ParseInt(facts.PR, 10, 64)
-			result := adapter.SetProductStatus(ctx, forge.Guard{
-				Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
-				PullRequest: pr, HeadSHA: facts.HeadSHA, TargetSHA: facts.BaseSHA,
-			}, state)
-			switch result.Outcome {
-			case forge.WriteApplied:
-				return ReconcileResult{Decision: ReconcileRecovered}, nil
-			case forge.WriteRejected:
-				return ReconcileResult{Decision: ReconcileNothing}, nil
-			default:
-				return ReconcileResult{}, fmt.Errorf("restore terminal Minos status: %s", result.Reason)
-			}
+	if eligibility.terminalReview {
+		if hasTerminalStatus(snapshot, cfg, facts, eligibility.terminalState) {
+			return ReconcileResult{Decision: ReconcileNothing}, nil
+		}
+		pr, _ := strconv.ParseInt(facts.PR, 10, 64)
+		result := adapter.SetProductStatus(ctx, forge.Guard{
+			Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+			PullRequest: pr, HeadSHA: facts.HeadSHA, TargetSHA: facts.BaseSHA,
+		}, eligibility.terminalState)
+		switch result.Outcome {
+		case forge.WriteApplied:
+			return ReconcileResult{Decision: ReconcileRecovered}, nil
+		case forge.WriteRejected:
+			return ReconcileResult{Decision: ReconcileNothing}, nil
+		default:
+			return ReconcileResult{}, fmt.Errorf("restore terminal Minos status: %s", result.Reason)
 		}
 	}
-	if trustedCompletedRunStatus(ctx, adapter, repository, snapshot, commits, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts), currentEnvironmentStamp(cfg)) {
+	if eligibility.completedRun {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
-	if reason, deferred := dependencyDeferral(snapshot); deferred {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason)}, nil
+	if eligibility.dependencyDeferred {
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason)}, nil
 	}
 	runClass := RunClassReview
 	if structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
@@ -346,7 +362,48 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if err != nil {
 		return ReconcileResult{}, err
 	}
-	return ReconcileResult{Decision: outcome.Outcome, BlockingUnit: outcome.BlockingUnit, Detail: outcome.Detail}, nil
+	return ReconcileResult{
+		Decision:            outcome.Outcome,
+		BlockingUnit:        outcome.BlockingUnit,
+		Detail:              outcome.Detail,
+		GroupCandidatesPath: outcome.GroupCandidatesPath,
+	}, nil
+}
+
+// pullRequestAdmissionEligibility holds the non-writing admission chain shared
+// by ordinary reconciliation and grouped-member surfacing. Reconciliation owns
+// the terminal-status repair that follows this judgement; grouping only needs
+// to know whether admitting a new run would be correct.
+type pullRequestAdmissionEligibility struct {
+	workInProgress     bool
+	terminalReview     bool
+	terminalState      product.State
+	completedRun       bool
+	dependencyDeferred bool
+	dependencyReason   string
+}
+
+func (e pullRequestAdmissionEligibility) admitsNewRun() bool {
+	return !e.workInProgress && !e.terminalReview && !e.completedRun && !e.dependencyDeferred
+}
+
+func assessPullRequestAdmission(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot, commits []forge.Commit) pullRequestAdmissionEligibility {
+	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
+		return pullRequestAdmissionEligibility{workInProgress: true}
+	}
+	if review, reviewed := trustedReview(snapshot, commits, cfg.Service.BotLogin); reviewed {
+		if state, terminal := terminalState(review); terminal && !checkCausedVerdictSpent(review, snapshot) {
+			return pullRequestAdmissionEligibility{terminalReview: true, terminalState: state}
+		}
+	}
+	repository := forge.Repository{Owner: facts.Owner, Name: facts.Repo}
+	if trustedCompletedRunStatus(ctx, adapter, repository, snapshot, commits, cfg.Service.BotLogin, statusTargetURL(cfg.Forges[facts.Forge].APIBase, facts), currentEnvironmentStamp(cfg)) {
+		return pullRequestAdmissionEligibility{completedRun: true}
+	}
+	if reason, deferred := dependencyDeferral(snapshot); deferred {
+		return pullRequestAdmissionEligibility{dependencyDeferred: true, dependencyReason: reason}
+	}
+	return pullRequestAdmissionEligibility{}
 }
 
 func structuralBranch(branch string, prefixes []string) bool {

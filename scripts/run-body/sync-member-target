@@ -1,0 +1,82 @@
+#!/usr/bin/env sh
+set -eu
+
+# Reconcile one grouped member in the member's own worktree.  The separate
+# source/target refs stop a member fetch or rebase from moving the primary
+# workspace's refs in a shared Git directory.
+workspace="$1"
+member="$2"
+source_branch="$3"
+target_branch="$4"
+expected_head="$5"
+expected_target="$6"
+method="$7"
+
+case "$method" in merge|rebase) ;; *) echo "sync-member-target: method must be merge or rebase" >&2; exit 1 ;; esac
+case "$member" in ''|*[!0-9]*) echo "sync-member-target: member number is required" >&2; exit 1 ;; esac
+if [ -z "$source_branch" ] || [ -z "$target_branch" ]; then
+  echo "sync-member-target: named source and target branches are required" >&2; exit 1
+fi
+
+common_dir="$(git -C "$workspace" rev-parse --path-format=absolute --git-common-dir)"
+# A linked worktree makes the member workspace distinct from the primary
+# workspace sharing its common Git directory. Checking the member head out here
+# is therefore safe and fulfils the member-scoped lifecycle contract.
+if [ ! -f "${workspace%/}/.git" ]; then
+  echo "sync-member-target: workspace must be the member's linked worktree" >&2; exit 1
+fi
+push_ref="refs/heads/${source_branch}"
+protected_ref_file="${common_dir}/minos-protected-ref.member-${member}"
+if [ ! -f "$protected_ref_file" ] || [ ! -r "$protected_ref_file" ] ||
+  [ "$(cat "$protected_ref_file")" != "$push_ref" ]; then
+  echo "sync-member-target: claimed member protected-ref record does not match its source branch" >&2; exit 1
+fi
+source_ref="refs/minos/member/${member}/source"
+target_ref="refs/minos/member/${member}/target"
+git -C "$workspace" fetch --no-tags origin \
+  "+refs/heads/${source_branch}:${source_ref}" \
+  "+refs/heads/${target_branch}:${target_ref}"
+observed_head="$(git -C "$workspace" rev-parse "$source_ref")"
+observed_target="$(git -C "$workspace" rev-parse "$target_ref")"
+if [ "$observed_head" != "$expected_head" ] || [ "$observed_target" != "$expected_target" ]; then
+  echo "sync-member-target: member source or target moved" >&2; exit 1
+fi
+git_dir="$(git -C "$workspace" rev-parse --git-dir)"
+case "$git_dir" in /*) ;; *) git_dir="${workspace%/}/${git_dir}" ;; esac
+if [ -f "${git_dir}/MERGE_HEAD" ] || [ -d "${git_dir}/rebase-merge" ] || [ -d "${git_dir}/rebase-apply" ]; then
+  echo "sync-member-target: finish the current merge or rebase before resuming" >&2; exit 1
+fi
+reconciliation_file="${common_dir}/minos-member-sync-${member}"
+reconciliation="${source_branch} ${target_branch} ${expected_head} ${expected_target} ${method}"
+if [ -e "$reconciliation_file" ]; then
+  if [ ! -f "$reconciliation_file" ] || [ ! -r "$reconciliation_file" ] ||
+    [ "$(cat "$reconciliation_file")" != "$reconciliation" ]; then
+    echo "sync-member-target: member reconciliation record does not match this request" >&2; exit 1
+  fi
+else
+  git -C "$workspace" checkout --detach "$expected_head" >&2
+  printf '%s\n' "$reconciliation" >"$reconciliation_file"
+  chmod 0600 "$reconciliation_file"
+fi
+local_head="$(git -C "$workspace" rev-parse HEAD)"
+if git -C "$workspace" merge-base --is-ancestor "$target_ref" HEAD; then
+  if [ "$local_head" = "$expected_head" ]; then
+    rm -f "$reconciliation_file"
+    jq -nc --arg head "$local_head" '{outcome:"unchanged",head:$head}'; exit 0
+  fi
+fi
+if ! git -C "$workspace" merge-base --is-ancestor "$target_ref" HEAD; then
+  if [ "$method" = rebase ]; then git -C "$workspace" rebase "$target_ref" >&2 || { jq -nc '{outcome:"conflict",operation:"rebase"}'; exit 2; }
+  else git -C "$workspace" merge --no-edit "$target_ref" >&2 || { jq -nc '{outcome:"conflict",operation:"merge"}'; exit 2; }; fi
+fi
+synced_head="$(git -C "$workspace" rev-parse HEAD)"
+if [ "$method" = merge ] && ! git -C "$workspace" merge-base --is-ancestor "$expected_head" "$synced_head"; then
+  echo "sync-member-target: merged result lost the member head" >&2; exit 1
+fi
+if ! git -C "$workspace" merge-base --is-ancestor "$target_ref" "$synced_head"; then echo "sync-member-target: result does not contain the target" >&2; exit 1; fi
+push_permit="$(mktemp "${common_dir}/minos-sync-target-push.XXXXXX")"
+trap 'rm -f "$push_permit"' 0 1 2 3 15
+printf '%s %s %s\n' "$push_ref" "$synced_head" "$expected_head" >"$push_permit"
+MINOS_SYNC_TARGET_PUSH_PERMIT="$push_permit" git -C "$workspace" push "--force-with-lease=refs/heads/${source_branch}:${expected_head}" origin "HEAD:${push_ref}"
+rm -f "$reconciliation_file"
+jq -nc --arg head "$synced_head" --arg method "$method" '{outcome:"synced",head:$head,method:$method}'

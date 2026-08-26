@@ -1096,6 +1096,8 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   assert.match(lifecycle, /membership is fixed\s+from this point/);
   assert.match(lifecycle, /no line count, file count, or member count decides it/);
   assert.match(lifecycle, /forge claim-member OWNER REPO NUMBER/);
+  assert.match(lifecycle, /memberHeads[\s\S]*forge --member` snapshot[\s\S]*every non-primary member/);
+  assert.match(lifecycle, /list exactly matches its guarded membership and every head is unchanged/);
   assert.match(lifecycle, /--members "\$MINOS_RUN_DIR\/members\.json"/);
   assert.match(
     lifecycle,
