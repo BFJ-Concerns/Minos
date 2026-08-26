@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -309,6 +310,71 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 	if unknown == nil || unknown.Status != "unparseable" || unknown.Format == nil || *unknown.Format != "future-session-jsonl" {
 		t.Fatalf("unknown transcript was attributed instead of refused: %+v", unknown)
 	}
+}
+
+func TestListRecentTimingsEnrichesTheArchivedTimingRecord(t *testing.T) {
+	root := t.TempDir()
+	archiveRoot := filepath.Join(root, "archive-root")
+	writeArchivedSpanAgent(t, archiveRoot, "codex", "codex-app-server-events", `
+{"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-26T00:01:00Z","method":"item/started","params":{"item":{"id":"test","type":"commandExecution","command":"go test ./..."}}}
+{"recordedAt":"2026-08-26T00:03:00Z","method":"item/completed","params":{"item":{"id":"test","type":"commandExecution"}}}
+`)
+	sidecar := filepath.Join(root, "sidecar.json")
+	if output, err := runCollectTimings(t, nil, archiveRoot, sidecar); err != nil {
+		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	destination := filepath.Join(root, "destination")
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archiveName := "20260826T030000Z-fixture-minos-run-fixture-1.tar.zst"
+	archivePath := filepath.Join(destination, archiveName)
+	if output, err := exec.Command("tar", "-C", archiveRoot, "-cf", archivePath, ".").CombinedOutput(); err != nil {
+		t.Fatalf("create archive fixture: %v\n%s", err, output)
+	}
+	if content, err := os.ReadFile(sidecar); err != nil {
+		t.Fatal(err)
+	} else if err := os.WriteFile(strings.TrimSuffix(archivePath, ".tar.zst")+".timings.json", content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(bin, "ssh"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nexec sh -c \"$last\"\n")
+	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nif [ -n \"$last\" ] && [ -f \"$last\" ]; then exec cat \"$last\"; fi\nexec cat\n")
+	identity := filepath.Join(root, "identity")
+	knownHosts := filepath.Join(root, "known-hosts")
+	for _, file := range []string{identity, knownHosts} {
+		if err := os.WriteFile(file, []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := filepath.Join(root, "archive.env")
+	if err := os.WriteFile(config, []byte("MINOS_ARCHIVE_HOST=fixture\nMINOS_ARCHIVE_DESTINATION=\""+destination+"\"\nMINOS_ARCHIVE_IDENTITY_FILE=\""+identity+"\"\nMINOS_ARCHIVE_KNOWN_HOSTS=\""+knownHosts+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "list-recent-timings"), "20260826T000000Z", "1")
+	cmd.Env = append(os.Environ(), "MINOS_ARCHIVE_CONFIG="+config, "PATH="+bin+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list-recent-timings: %v\n%s", err, output)
+	}
+	_, encoded, found := strings.Cut(strings.TrimSpace(string(output)), "\t")
+	if !found {
+		t.Fatalf("listing = %q, want one framed record", output)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record timingRecord
+	if err := json.Unmarshal(decoded, &record); err != nil {
+		t.Fatalf("enriched sidecar does not parse: %v\n%s", err, decoded)
+	}
+	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 0, 120000, 60000)
 }
 
 func writeArchivedSpanAgent(t *testing.T, runDir, record, source, transcript string) {
