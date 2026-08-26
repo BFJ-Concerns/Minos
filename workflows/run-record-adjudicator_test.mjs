@@ -746,6 +746,31 @@ test("a malformed misconfigurations field cannot become publishable", { timeout:
   assert.match(adapterVerdict.incomplete.join("\n"), /envelope misconfigurations is absent or unreadable/);
 });
 
+test("a brief misconfiguration retains its member attribution", { timeout: 1000 }, async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const adapterVerdict = await adjudicate({
+    envelope: {
+      ...envelope,
+      misconfigurations: [{
+        brief: ".review/missing/scoped.md",
+        title: "Scoped",
+        member: "primary",
+        kind: "misconfigured-scope",
+        reason: "brief scope missing/ matches no repository directory",
+      }],
+    },
+    recordDir: fixtureArchiveDir,
+  });
+
+  assert.deepEqual(adapterVerdict.misconfigurations, [{
+    brief: ".review/missing/scoped.md",
+    title: "Scoped",
+    member: "primary",
+    kind: "misconfigured-scope",
+    reason: "brief scope missing/ matches no repository directory",
+  }]);
+});
+
 for (const [description, misconfiguration] of [
   ["missing kind", {
     brief: ".review/missing/scoped.md",

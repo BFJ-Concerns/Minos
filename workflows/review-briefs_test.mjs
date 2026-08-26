@@ -228,6 +228,7 @@ test("a brief whose missing scope is its only trigger skips as misconfigured", a
   assert.deepEqual(result.misconfigurations, [{
     brief: candidate.path,
     title: "Scoped",
+    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
@@ -265,6 +266,7 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
   assert.deepEqual(result.misconfigurations, [{
     brief: candidate.path,
     title: "Scoped",
+    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
@@ -528,6 +530,7 @@ test("a repository observation is returned separately and never reaches verifica
   assert.deepEqual(result.outOfScopeObservations, [{
     id: "repository-review-pkg-errors-md-gpt:observation:1",
     source: "Errors",
+    member: "primary",
     title: "pre-existing repository defect",
     path: "pkg/legacy.go",
     line: 11,

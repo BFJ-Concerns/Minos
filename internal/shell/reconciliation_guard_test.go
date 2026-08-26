@@ -137,7 +137,7 @@ func TestPrePushGuardScopesAndConsumesControlledPushPermits(t *testing.T) {
 	}
 
 	integratePermit := filepath.Join(commonDir, "minos-integrate-wave-push.test")
-	if err := os.WriteFile(integratePermit, []byte("refs/heads/feature "+base+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(integratePermit, []byte("refs/heads/feature "+base+" "+base+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	push = exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/feature")
@@ -150,7 +150,7 @@ func TestPrePushGuardScopesAndConsumesControlledPushPermits(t *testing.T) {
 		t.Fatalf("remote feature = %q after mismatched permit, want %q", got, base)
 	}
 
-	if err := os.WriteFile(integratePermit, []byte("refs/heads/feature "+repair+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(integratePermit, []byte("refs/heads/feature "+repair+" "+base+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	push = exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/feature")

@@ -268,7 +268,11 @@ test("a two-member input keeps each finding attributed through verification and 
     specialist: (label) => specialistResult([finding({
       member: label.includes("security") ? "sibling" : "primary",
       title: label.includes("security") ? "sibling finding" : "primary finding",
-    })]),
+    })], undefined, [observation({ title: `${label} observation` })]),
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      outOfScopeObservations: [observation({ member: "sibling", title: `${label} observation` })],
+    }),
   }));
   assert.deepEqual(result.members, members.members);
   assert.deepEqual(
@@ -298,6 +302,15 @@ test("a two-member input keeps each finding attributed through verification and 
   assert.match(verifier.prompt, /sibling-target.*sibling-head/);
   assert.match(verifier.prompt, /SIBLING_MEMBER_DIFF/);
   assert.match(verifier.prompt, /SIBLING_MEMBER_DESCRIPTION/);
+
+  assert.deepEqual(
+    result.outOfScopeObservations.map(({ member, title }) => ({ member, title })),
+    [
+      { member: "primary", title: "specialist-1-correctness-gpt observation" },
+      { member: "sibling", title: "specialist-2-security-gpt observation" },
+      { member: "sibling", title: "verify-1-claude observation" },
+    ],
+  );
 
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
@@ -509,6 +522,7 @@ test("an out-of-scope observation leaves the specialist without entering finding
   assert.deepEqual(result.outOfScopeObservations, [{
     id: "specialist-1-correctness-gpt:observation:1",
     source: "correctness concern logic",
+    member: "primary",
     title: "pre-existing defect",
     path: "internal/legacy.go",
     line: 9,
@@ -559,12 +573,13 @@ test("a verifier observation reaches the result alongside its verdicts", async (
   const { result, calls } = await runScript(ARGS, responder({
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      outOfScopeObservations: [observation({ title: "residual defect the verdict cannot carry" })],
+      outOfScopeObservations: [observation({ member: "primary", title: "residual defect the verdict cannot carry" })],
     }),
   }));
   assert.deepEqual(result.outOfScopeObservations, [{
     id: "verify-1-claude:observation:1",
     source: "verification",
+    member: "primary",
     title: "residual defect the verdict cannot carry",
     path: "internal/legacy.go",
     line: 9,
@@ -576,7 +591,7 @@ test("a verifier observation reaches the result alongside its verdicts", async (
   assert.ok(!schema.required.includes("outOfScopeObservations"));
   assert.deepEqual(
     schema.properties.outOfScopeObservations.items.required,
-    ["title", "path", "line", "explanation"],
+    ["member", "title", "path", "line", "explanation"],
   );
 });
 
@@ -1097,6 +1112,10 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   assert.match(lifecycle, /member-shaped verdict[\s\S]*do not post a second[\s\S]*primary-only request-changes review/);
   assert.match(
     lifecycle,
+    /`integration\.memberFixReviews`[\s\S]*one entry for each member in[\s\S]*`integration\.memberCommits`[\s\S]*absent, duplicate, or additional member is[\s\S]*a fault[\s\S]*forge --member OWNER REPO NUMBER comment MEMBER_HEAD[\s\S]*MEMBER_TARGET FIX_REVIEW_FILE[\s\S]*Never post the aggregate `fixReview` on a[\s\S]*grouped run/,
+  );
+  assert.match(
+    lifecycle,
     /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,
   );
   assert.match(
@@ -1190,7 +1209,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   );
   assert.match(
     lifecycle,
-    /complete brief verdict's `outOfScopeObservations` and `misconfigurations`[\s\S]*same\s+two-positional `publish-overflow\.mjs` call[\s\S]*Do not mix either channel into the brief\s+review, `briefFixRequired`, or the single-wave fix input[\s\S]*failure degrades presentation and never changes the brief-stage outcome/,
+    /complete brief verdict's `outOfScopeObservations` and `misconfigurations`[\s\S]*member-aware\s+`publish-overflow\.mjs` block from step 6[\s\S]*including `--members[\s\S]*whenever that record exists[\s\S]*same\s+per-member handling[\s\S]*Do not mix either[\s\S]*channel into the brief review, `briefFixRequired`, or the single-wave fix\s+input[\s\S]*failure degrades presentation and[\s\S]*never changes the brief-stage outcome/,
   );
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
