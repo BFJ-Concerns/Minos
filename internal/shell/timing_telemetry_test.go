@@ -979,6 +979,22 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 	if len(record.Workers) != 0 {
 		t.Fatalf("failed analysis changed the ordinary timing record: %+v", record.Workers)
 	}
+	if err := os.Remove(filepath.Join(tools, "analyse-archived-spans")); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(filepath.Join(tools, "archive-run"), runDir, "analysis-missing")
+	cmd.Env = append(os.Environ(), "MINOS_ARCHIVE_CONFIG="+config, "PATH="+bin+":"+os.Getenv("PATH"))
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("archive-run with unavailable analysis: %v\n%s", err, output)
+	}
+	tarballs, err = filepath.Glob(filepath.Join(destination, "*.tar.zst"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tarballs) != 2 {
+		t.Fatalf("tarball count after unavailable analysis = %d, want 2: %v", len(tarballs), tarballs)
+	}
 }
 
 func TestArchiveRunSanitisesHostileRunNameBeforeRemoteCommands(t *testing.T) {
