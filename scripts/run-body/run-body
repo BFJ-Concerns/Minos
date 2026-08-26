@@ -110,8 +110,24 @@ failure_cause="MINOS_CLAUDE_CONFIG_SEED is required"
 : "${MINOS_CLAUDE_CONFIG_SEED:?MINOS_CLAUDE_CONFIG_SEED is required}"
 failure_cause="MINOS_CODEX_CONFIG_SEED is required"
 : "${MINOS_CODEX_CONFIG_SEED:?MINOS_CODEX_CONFIG_SEED is required}"
-failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
-: "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
+run_class="${MINOS_RUN_CLASS:-review}"
+case "$run_class" in
+  review)
+    failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
+    : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
+    instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
+    ;;
+  maintenance)
+    failure_cause="MINOS_MAINTENANCE_INSTRUCTION is required"
+    : "${MINOS_MAINTENANCE_INSTRUCTION:?MINOS_MAINTENANCE_INSTRUCTION is required}"
+    instruction_path="$MINOS_MAINTENANCE_INSTRUCTION"
+    ;;
+  *)
+    failure_cause="MINOS_RUN_CLASS must be review or maintenance"
+    echo "run-body: MINOS_RUN_CLASS must be review or maintenance" >&2
+    exit 1
+    ;;
+esac
 failure_cause="MINOS_ROOT_CAUSE_SKILL is required"
 : "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
 failure_cause="MINOS_SKILLS_DIR is required"
@@ -267,8 +283,8 @@ trap 'exit 130' 2
 trap 'exit 143' 15
 
 failure_stage="lifecycle-instruction"
-failure_cause="could not read lifecycle instruction $MINOS_LIFECYCLE_INSTRUCTION"
-instruction="$(cat "$MINOS_LIFECYCLE_INSTRUCTION")"
+failure_cause="could not read lifecycle instruction $instruction_path"
+instruction="$(cat "$instruction_path")"
 session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
 completion_marker="$MINOS_RUN_DIR/lead-complete"
 pressure_signal="$MINOS_RUN_DIR/memory-pressure"

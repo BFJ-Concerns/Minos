@@ -86,6 +86,7 @@ type RepoConfig struct {
 	Owner                        string   `toml:"owner"`
 	Repo                         string   `toml:"repo"`
 	WorkInProgressBranchPrefixes []string `toml:"work-in-progress-branch-prefixes"`
+	StructuralBranchPrefixes     []string `toml:"structural-branch-prefixes"`
 	Adaptation                   struct {
 		Build   string `toml:"build"`
 		Test    string `toml:"test"`
@@ -160,6 +161,11 @@ func LoadRepoConfigs(root string) ([]RepoConfig, error) {
 		for _, prefix := range repo.WorkInProgressBranchPrefixes {
 			if prefix == "" {
 				return nil, fmt.Errorf("%s: work-in-progress-branch-prefixes cannot contain an empty prefix", path)
+			}
+		}
+		for _, prefix := range repo.StructuralBranchPrefixes {
+			if prefix == "" {
+				return nil, fmt.Errorf("%s: structural-branch-prefixes cannot contain an empty prefix", path)
 			}
 		}
 		repos = append(repos, repo)
