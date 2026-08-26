@@ -956,11 +956,15 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 	}{
 		{name: "started primary"},
 		{name: "continued singleton with fixed membership", continuing: true},
-		{name: "continued group with fixed membership", continuing: true, establishedMembers: true},
+		{name: "continued group preserves claimed member and admits later sibling", continuing: true, establishedMembers: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
-			state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
+			children := []map[string]any{stackedFixturePull(2, "main", "claimed-member")}
+			if test.establishedMembers {
+				children = append(children, stackedFixturePull(3, "main", "later-sibling"))
+			}
+			state.setStackedChildren(children)
 			cfg := writeSweepFixtureConfig(t, state)
 			setSweepFixtureMaxConcurrent(t, cfg, 3)
 			if test.continuing {
@@ -968,9 +972,36 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 				facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 				current := handoffProgress{Stage: "fix", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
 				predecessor := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
-				runDir, _ := writeProgressHandoff(t, cfg, facts, current, &predecessor)
+				runDir, handoffFile := writeProgressHandoff(t, cfg, facts, current, &predecessor)
 				if test.establishedMembers {
-					if err := os.WriteFile(filepath.Join(runDir, "members.json"), []byte(`{"members":[{"number":"1"}]}`), 0o600); err != nil {
+					if err := os.WriteFile(filepath.Join(runDir, "members.json"), []byte(`{"members":[{"number":"1"},{"number":"2"}]}`), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					member := Facts{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PR: "2"}
+					guard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))
+					if err := os.MkdirAll(filepath.Dir(guard), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(guard, []byte(UnitName(facts)+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					data, err := os.ReadFile(handoffFile)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var handoff runHandoff
+					if err := json.Unmarshal(data, &handoff); err != nil {
+						t.Fatal(err)
+					}
+					handoff.MemberHeads = []handoffMember{{
+						Owner: facts.Owner, Repo: facts.Repo, Number: "2",
+						Head: children[0]["head"].(map[string]any)["sha"].(string),
+					}}
+					data, err = json.Marshal(handoff)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(handoffFile, data, 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1014,6 +1045,16 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 			}
 			if starts != wantStarts {
 				t.Fatalf("sweep started %d runs, want %d", starts, wantStarts)
+			}
+			if test.establishedMembers {
+				claimedMember := UnitName(Facts{Owner: "minos-e2e-owner", Repo: "subject", PR: "2"})
+				laterSibling := UnitName(Facts{Owner: "minos-e2e-owner", Repo: "subject", PR: "3"})
+				if slices.Contains(activeUnits, claimedMember) {
+					t.Fatalf("continued group's claimed member started its own run: %v", activeUnits)
+				}
+				if !slices.Contains(activeUnits, laterSibling) {
+					t.Fatalf("later sibling did not start with spare capacity: %v", activeUnits)
+				}
 			}
 			environment := systemdEnvironment(t, firstStart)
 			if got := environment["MINOS_RESUME"] == "true"; got != test.continuing {
