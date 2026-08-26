@@ -154,6 +154,14 @@ test("a bare full-extent brief with no trigger is skipped without dispatch", asy
   }]);
 });
 
+test("a repository brief keeps its primary attribution but does not create a member review", async (t) => {
+  const { result } = await run(args());
+  assert.deepEqual(result.members, [{ id: "primary" }]);
+  assert.ok(result.proposedFindings.every((entry) => entry.member === "primary"));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.deepEqual(verdict.memberReviews, []);
+});
+
 test("relevance gates full-extent briefs and remains an explicit Terra leg", async () => {
   const candidate = brief(".review/errors.md", "---\nextent: full\nsweep: whole-tree\nrelevance: Error-path changes.\n---\nJudge errors.");
   const met = await run(args({ briefs: [candidate] }), responder({ specialist: () => specialistResult([]) }));
@@ -220,6 +228,7 @@ test("a brief whose missing scope is its only trigger skips as misconfigured", a
   assert.deepEqual(result.misconfigurations, [{
     brief: candidate.path,
     title: "Scoped",
+    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
@@ -257,6 +266,7 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
   assert.deepEqual(result.misconfigurations, [{
     brief: candidate.path,
     title: "Scoped",
+    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
@@ -520,6 +530,7 @@ test("a repository observation is returned separately and never reaches verifica
   assert.deepEqual(result.outOfScopeObservations, [{
     id: "repository-review-pkg-errors-md-gpt:observation:1",
     source: "Errors",
+    member: "primary",
     title: "pre-existing repository defect",
     path: "pkg/legacy.go",
     line: 11,

@@ -3,12 +3,15 @@ package shell
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -358,6 +361,54 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("member terminal publication leaves the next pass completed", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		configureForgeCommandFixture(t, state)
+		cfg, repo, facts := state.service(t)
+		directory := t.TempDir()
+		bodyPath := filepath.Join(directory, "body.md")
+		commentsPath := filepath.Join(directory, "comments.json")
+		if err := os.WriteFile(bodyPath, []byte("Confirmed findings in the reviewed code.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(commentsPath, []byte("[]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		prefix := []string{"--member", facts.Owner, facts.Repo, facts.PR}
+		if err := ForgeCommand(t.Context(), append(prefix,
+			"review", state.headSHA(), state.targetSHA(), "request-changes", bodyPath, commentsPath,
+		), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ForgeCommand(t.Context(), append(prefix,
+			"status", state.headSHA(), state.targetSHA(), "attention",
+		), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if writes, payload := state.reviewWriteFacts(); writes != 1 || payload["event"] != "REQUEST_CHANGES" {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		if writes, _ := state.statusWriteFacts(); writes != 1 {
+			t.Fatalf("status writes = %d, want one terminal status", writes)
+		}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("completed member-shaped pull request reached %s", name)
+			return nil, nil
+		}
+		for pass := 1; pass <= 2; pass++ {
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != "nothing" {
+				t.Fatalf("pass %d result = %q, want nothing", pass, result)
+			}
+		}
+	})
+
 	t.Run("incomplete pull request with a comment review starts a fresh attempt", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setReviews([]map[string]any{{
@@ -579,6 +630,302 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 			t.Fatalf("started units = %v, want third pull request unit", startedUnits)
 		}
 	})
+}
+
+func TestForgejoOperatorListsCurrentHoldsAndBlockedVerdicts(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, _ := state.service(t)
+	writeOperatorFixtureConfig(t, cfg)
+	state.setOperatorPullRequests([]operatorFixturePullRequest{
+		{
+			pullRequest: state.operatorPullRequest(1, "held-head"),
+			statuses:    []map[string]any{heldFixtureStatus(1, state.server.URL, "held-head", state.targetSHA(), currentEnvironmentStamp(cfg))},
+			comments: []map[string]any{{
+				"id": float64(1), "body": "Held at: finishing\nTarget checks are failing.", "user": map[string]any{"login": "Minos"},
+			}},
+		},
+		{
+			pullRequest: state.operatorPullRequest(2, "blocked-head"),
+			reviews: []map[string]any{{
+				"id": float64(2), "state": "REQUEST_CHANGES", "commit_id": "blocked-head", "user": map[string]any{"login": "Minos"},
+				"body": "Required checks remain red.\n\n<!-- Minos: cause=required-checks head=blocked-head target=" + state.targetSHA() + " -->",
+			}},
+		},
+		{pullRequest: state.operatorPullRequest(3, "ordinary-head")},
+		{
+			pullRequest: state.operatorPullRequest(4, "released-hold-head"),
+			statuses:    []map[string]any{heldFixtureStatus(4, state.server.URL, "released-hold-head", "superseded-target", currentEnvironmentStamp(cfg))},
+			comments: []map[string]any{{
+				"id": float64(4), "body": "Held at: review\nThe target changed after this hold.", "user": map[string]any{"login": "Minos"},
+			}},
+		},
+		{
+			pullRequest: state.operatorPullRequest(5, "released-verdict-head"),
+			reviews: []map[string]any{{
+				"id": float64(5), "state": "REQUEST_CHANGES", "commit_id": "released-verdict-head", "user": map[string]any{"login": "Minos"},
+				"body": "Required checks were red before the target moved.\n\n<!-- Minos: cause=required-checks head=released-verdict-head target=superseded-target -->",
+			}},
+		},
+	})
+
+	var output bytes.Buffer
+	if err := OperatorCommand(t.Context(), []string{"held", "--config", cfg.Root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var listed []HeldPullRequest
+	if err := json.Unmarshal(output.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	want := []HeldPullRequest{
+		{Forge: "forgejo", Owner: "minos-e2e-owner", Repo: "subject", PullRequest: "1", Class: "held", Stage: "finishing", Reason: "Target checks are failing."},
+		{Forge: "forgejo", Owner: "minos-e2e-owner", Repo: "subject", PullRequest: "2", Class: "required-checks", Reason: "Required checks remain red."},
+	}
+	if !reflect.DeepEqual(listed, want) {
+		t.Fatalf("held pull requests = %#v, want %#v", listed, want)
+	}
+
+	binary := filepath.Join(t.TempDir(), "minos")
+	build := exec.Command("go", "build", "-o", binary, "../../cmd/minos")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build minos CLI: %v\n%s", err, output)
+	}
+	binaryContent, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryStamp := fmt.Sprintf("%x", sha256.Sum256(binaryContent))[:12]
+	target := state.targetSHA()
+	state.mu.Lock()
+	state.operatorPullRequests[0].statuses = []map[string]any{heldFixtureStatus(1, state.server.URL, "held-head", target, binaryStamp)}
+	state.mu.Unlock()
+	cliOutput, err := exec.Command(binary, "operator", "held", "--config", cfg.Root).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run minos operator held: %v\n%s", err, cliOutput)
+	}
+	listed = nil
+	if err := json.Unmarshal(cliOutput, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(listed, want) {
+		t.Fatalf("CLI held pull requests = %#v, want %#v", listed, want)
+	}
+}
+
+func TestForgejoOperatorDoesNotListReleasedHold(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, _ := state.service(t)
+	writeOperatorFixtureConfig(t, cfg)
+	state.setOperatorPullRequests([]operatorFixturePullRequest{{
+		pullRequest: state.operatorPullRequest(1, "released-hold-head"),
+		statuses:    []map[string]any{heldFixtureStatus(1, state.server.URL, "released-hold-head", "superseded-target", currentEnvironmentStamp(cfg))},
+		comments: []map[string]any{{
+			"id": float64(1), "body": "Held at: review\nThe target changed after this hold.", "user": map[string]any{"login": "Minos"},
+		}},
+	}})
+
+	var output bytes.Buffer
+	if err := OperatorCommand(t.Context(), []string{"held", "--config", cfg.Root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var listed []HeldPullRequest
+	if err := json.Unmarshal(output.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(listed, []HeldPullRequest{}) {
+		t.Fatalf("released hold listed = %#v, want empty", listed)
+	}
+}
+
+func TestForgejoOperatorDoesNotListStaleEnvironmentHold(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, _ := state.service(t)
+	writeOperatorFixtureConfig(t, cfg)
+	state.setOperatorPullRequests([]operatorFixturePullRequest{{
+		pullRequest: state.operatorPullRequest(1, "stale-environment-hold-head"),
+		statuses:    []map[string]any{heldFixtureStatus(1, state.server.URL, "stale-environment-hold-head", state.targetSHA(), "stale-environment-stamp")},
+		comments: []map[string]any{{
+			"id": float64(1), "body": "Held at: review\nThe run environment changed after this hold.", "user": map[string]any{"login": "Minos"},
+		}},
+	}})
+
+	var output bytes.Buffer
+	if err := OperatorCommand(t.Context(), []string{"held", "--config", cfg.Root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var listed []HeldPullRequest
+	if err := json.Unmarshal(output.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(listed, []HeldPullRequest{}) {
+		t.Fatalf("stale environment hold listed = %#v, want empty", listed)
+	}
+}
+
+func TestForgejoOperatorForceUsesSpawnRunAdmission(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		activeUnit string
+		maxRuns    int
+		wantUnit   string
+		wantStart  bool
+	}{
+		{name: "fresh run starts through ordinary admission", maxRuns: 1, wantStart: true},
+		{name: "duplicate unit is refused", activeUnit: "minos-run-minos-e2e-owner-subject-pr1.service", maxRuns: 2, wantUnit: "minos-run-minos-e2e-owner-subject-pr1.service"},
+		{name: "full concurrency cap is refused", activeUnit: "minos-run-other-repository-pr9.service", maxRuns: 1, wantUnit: "minos-run-other-repository-pr9.service"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, _, facts := state.service(t)
+			cfg.Runs.MaxConcurrent = test.maxRuns
+			writeOperatorFixtureConfig(t, cfg)
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			starts := 0
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				switch name {
+				case "systemctl":
+					if test.activeUnit == "" {
+						return nil, nil
+					}
+					return []byte(test.activeUnit + " loaded active running Minos lead\n"), nil
+				case "systemd-run":
+					starts++
+					return nil, nil
+				default:
+					t.Fatalf("unexpected command %q", name)
+					return nil, nil
+				}
+			}
+
+			var output bytes.Buffer
+			err := OperatorCommand(t.Context(), []string{"force", "--config", cfg.Root, facts.Forge, facts.Owner, facts.Repo, facts.PR}, &output)
+			if test.wantStart {
+				if err != nil || starts != 1 || !strings.Contains(output.String(), `"Outcome":"started"`) {
+					t.Fatalf("force result = %v, starts = %d, output = %s", err, starts, output.String())
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantUnit) {
+				t.Fatalf("force error = %v, want refusal naming %s", err, test.wantUnit)
+			}
+			if starts != 0 {
+				t.Fatalf("force started %d units despite admission refusal", starts)
+			}
+		})
+	}
+}
+
+func TestForgejoOperatorForcePreservesEligibilityDeferrals(t *testing.T) {
+	t.Run("work-in-progress branch", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["ref"] = "wip/rework"
+		})
+		cfg, _, facts := state.service(t)
+		writeOperatorFixtureConfig(t, cfg)
+		repoConfigPath := filepath.Join(cfg.Root, "repos", "subject.toml")
+		repoConfig, err := os.ReadFile(repoConfigPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repoConfig = bytes.Replace(repoConfig, []byte("repo = \"subject\"\n"), []byte("repo = \"subject\"\nwork-in-progress-branch-prefixes = [\"wip/\"]\n"), 1)
+		if err := os.WriteFile(repoConfigPath, repoConfig, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("work-in-progress pull request reached %s", name)
+			return nil, nil
+		}
+
+		var output bytes.Buffer
+		err = OperatorCommand(t.Context(), []string{"force", "--config", cfg.Root, facts.Forge, facts.Owner, facts.Repo, facts.PR}, &output)
+		if err == nil || !strings.Contains(err.Error(), `force refused: work-in-progress branch "wip/rework"`) {
+			t.Fatalf("force error = %v", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name       string
+		configure  func(*forgejoFixtureState)
+		wantReason string
+	}{
+		{
+			name: "open dependency",
+			configure: func(state *forgejoFixtureState) {
+				state.setDependencies([]map[string]any{{
+					"number": 7, "state": "open",
+					"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+				}})
+			},
+			wantReason: "force refused: open dependencies: minos-e2e-owner/prerequisite#7",
+		},
+		{
+			name: "unavailable dependency state",
+			configure: func(state *forgejoFixtureState) {
+				state.setDependenciesFailure(http.StatusServiceUnavailable)
+			},
+			wantReason: "force refused: dependency state unavailable: forge returned HTTP 503",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			test.configure(state)
+			cfg, _, facts := state.service(t)
+			writeOperatorFixtureConfig(t, cfg)
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				t.Fatalf("dependency-deferred pull request reached %s", name)
+				return nil, nil
+			}
+
+			var output bytes.Buffer
+			err := OperatorCommand(t.Context(), []string{"force", "--config", cfg.Root, facts.Forge, facts.Owner, facts.Repo, facts.PR}, &output)
+			if err == nil || !strings.Contains(err.Error(), test.wantReason) {
+				t.Fatalf("force error = %v", err)
+			}
+		})
+	}
+}
+
+func TestForgejoOperatorForceCarriesReleasedHoldContext(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, state.headSHA(), "earlier-target", currentEnvironmentStamp(cfg))})
+	state.setIssueComments([]map[string]any{{
+		"id": float64(9), "body": "Held at: finishing\nTarget tests fail.", "user": map[string]any{"login": "Minos"},
+	}})
+	writeOperatorFixtureConfig(t, cfg)
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+
+	var output bytes.Buffer
+	if err := OperatorCommand(t.Context(), []string{"force", "--config", cfg.Root, facts.Forge, facts.Owner, facts.Repo, facts.PR}, &output); err != nil {
+		t.Fatal(err)
+	}
+	environment := systemdEnvironment(t, systemdArgs)
+	for key, want := range map[string]string{
+		"MINOS_RELEASED_HOLD_HEAD":      state.headSHA(),
+		"MINOS_RELEASED_HOLD_STAGE":     "finishing",
+		"MINOS_RELEASED_HOLD_DIAGNOSIS": "Target tests fail.",
+	} {
+		if got := environment[key]; got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
 }
 
 func TestForgejoCheckCausedVerdictSpending(t *testing.T) {
@@ -1339,6 +1686,23 @@ func setSweepFixtureMaxConcurrent(t *testing.T, cfg ServiceConfig, maximum int) 
 	}
 }
 
+func writeOperatorFixtureConfig(t *testing.T, cfg ServiceConfig) {
+	t.Helper()
+	writeServiceConfig(t, cfg)
+	if err := os.MkdirAll(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := `forge = "forgejo"
+owner = "minos-e2e-owner"
+repo = "subject"
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`
+	if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, _ := state.service(t)
@@ -1960,6 +2324,154 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 	})
 }
 
+func TestForgeMemberWritesStayOnTheirOwnPullRequests(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
+
+	var writes []string
+	var requests []string
+	reviews := map[string][]map[string]any{}
+	comments := map[string]map[string][]map[string]any{}
+	statuses := map[string][]map[string]any{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		requests = append(requests, r.Method+" "+path)
+		if r.Method == http.MethodGet && path == "/api/v1/user" {
+			writeFixtureJSON(t, w, map[string]any{"login": "Minos"})
+			return
+		}
+		if strings.HasSuffix(path, "/statuses") && r.Method == http.MethodGet {
+			headID := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/commits/"), "/statuses")
+			writeFixtureJSON(t, w, statuses[headID])
+			return
+		}
+		if strings.Contains(path, "/statuses/") {
+			if r.Method == http.MethodPost {
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				member := "unknown"
+				if targetURL, ok := payload["target_url"].(string); ok {
+					for _, candidate := range []string{"1", "2"} {
+						if strings.Contains(targetURL, "/pulls/"+candidate+"#") {
+							member = candidate
+						}
+					}
+				}
+				payload["id"] = len(statuses[head]) + 1
+				payload["creator"] = map[string]any{"login": "Minos"}
+				statuses[head] = append([]map[string]any{payload}, statuses[head]...)
+				writes = append(writes, "status:"+member)
+				writeFixtureJSON(t, w, payload)
+				return
+			}
+		}
+		if r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/branches/main" {
+			writeFixtureJSON(t, w, map[string]any{"commit": map[string]any{"id": target}})
+			return
+		}
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) < 7 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "repos" || parts[5] != "pulls" {
+			http.Error(w, "unexpected fixture request", http.StatusNotFound)
+			return
+		}
+		member := parts[6]
+		switch {
+		case r.Method == http.MethodGet && len(parts) == 7:
+			memberNumber, err := strconv.Atoi(member)
+			if err != nil {
+				http.Error(w, "invalid pull request", http.StatusBadRequest)
+				return
+			}
+			writeFixtureJSON(t, w, map[string]any{
+				"number": memberNumber, "state": "open", "merged": false,
+				"head": map[string]any{"sha": head},
+				"base": map[string]any{"ref": "main", "sha": target, "repo": map[string]any{"full_name": "minos-e2e-owner/subject"}},
+			})
+		case r.Method == http.MethodGet && len(parts) == 8 && parts[7] == "reviews":
+			writeFixtureJSON(t, w, reviews[member])
+		case r.Method == http.MethodPost && len(parts) == 8 && parts[7] == "reviews":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			id := int64(len(reviews[member]) + 1)
+			review := map[string]any{"id": id, "state": payload["event"], "commit_id": payload["commit_id"], "body": payload["body"], "user": map[string]any{"login": "Minos"}}
+			reviews[member] = append(reviews[member], review)
+			commentRows := []map[string]any{}
+			for index, raw := range payload["comments"].([]any) {
+				comment := mapsClone(raw.(map[string]any))
+				comment["id"] = index + 1
+				comment["pull_request_review_id"] = id
+				comment["position"] = comment["new_position"]
+				comment["original_position"] = float64(0)
+				comment["diff_hunk"] = "@@ -41,3 +41,3 @@"
+				delete(comment, "new_position")
+				commentRows = append(commentRows, comment)
+			}
+			if comments[member] == nil {
+				comments[member] = map[string][]map[string]any{}
+			}
+			comments[member][strconv.FormatInt(id, 10)] = commentRows
+			writes = append(writes, "review:"+member+":"+fmt.Sprint(commentRows[0]["body"]))
+			writeFixtureJSON(t, w, review)
+		case r.Method == http.MethodGet && len(parts) == 10 && parts[7] == "reviews" && parts[9] == "comments":
+			writeFixtureJSON(t, w, comments[member][parts[8]])
+		default:
+			http.Error(w, "unexpected fixture request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cfg, _, _ := state.service(t)
+	cfg.Forges["forgejo"] = ForgeConfig{Adaptation: state.adaptationPath, APIBase: server.URL, WebhookSecretFile: state.tokenPath, CredentialFile: state.tokenPath}
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+	primary := Facts{Owner: "minos-e2e-owner", Repo: "subject", PR: "1"}
+	sibling := Facts{Owner: "minos-e2e-owner", Repo: "subject", PR: "2"}
+	siblingGuard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(sibling))
+	if err := os.MkdirAll(filepath.Dir(siblingGuard), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(siblingGuard, []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, member := range []struct{ number, finding string }{{"1", "primary-only finding"}, {"2", "sibling-only finding"}} {
+		bodyPath := filepath.Join(t.TempDir(), member.number+".md")
+		commentsPath := filepath.Join(t.TempDir(), member.number+".json")
+		if err := os.WriteFile(bodyPath, []byte("Member review.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal([]requestedReviewComment{{Path: "internal/state.go", Line: 41, Body: member.finding}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(commentsPath, encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		prefix := []string{"--member", "minos-e2e-owner", "subject", member.number}
+		if err := ForgeCommand(t.Context(), append(prefix, "review", head, target, "comment", bodyPath, commentsPath), &bytes.Buffer{}); err != nil {
+			t.Fatalf("review: %v; requests: %v", err, requests)
+		}
+		if err := ForgeCommand(t.Context(), append(prefix, "status", head, target, "attention"), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if !slices.Equal(writes, []string{
+		"review:1:primary-only finding", "status:1", "review:2:sibling-only finding", "status:2",
+	}) {
+		t.Fatalf("member write sequence = %v", writes)
+	}
+}
+
 func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
@@ -2227,6 +2739,14 @@ type forgejoFixtureState struct {
 	writeSequence            []string
 	virtualRefLookups        int
 	annexeCloneURL           string
+	operatorPullRequests     []operatorFixturePullRequest
+}
+
+type operatorFixturePullRequest struct {
+	pullRequest map[string]any
+	statuses    []map[string]any
+	reviews     []map[string]any
+	comments    []map[string]any
 }
 
 type statusPostRequest struct {
@@ -2298,6 +2818,52 @@ func (s *forgejoFixtureState) setStackedChildren(children []map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stackedChildren = children
+}
+
+func (s *forgejoFixtureState) operatorPullRequest(number int, head string) map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := json.Marshal(s.pullRequest)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	var pullRequest map[string]any
+	if err := json.Unmarshal(data, &pullRequest); err != nil {
+		s.t.Fatal(err)
+	}
+	pullRequest["number"] = float64(number)
+	pullRequest["head"].(map[string]any)["sha"] = head
+	return pullRequest
+}
+
+func (s *forgejoFixtureState) setOperatorPullRequests(pullRequests []operatorFixturePullRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.operatorPullRequests = pullRequests
+}
+
+// operatorPullRequestForPath resolves a request made by the operator-listing
+// journey. The caller holds the fixture mutex.
+func (s *forgejoFixtureState) operatorPullRequestForPath(path string) *operatorFixturePullRequest {
+	for index := range s.operatorPullRequests {
+		pullRequest := &s.operatorPullRequests[index]
+		prefix := fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/pulls/%v", pullRequest.pullRequest["number"])
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return pullRequest
+		}
+	}
+	return nil
+}
+
+func (s *forgejoFixtureState) operatorPullRequestForIssuePath(path string) *operatorFixturePullRequest {
+	for index := range s.operatorPullRequests {
+		pullRequest := &s.operatorPullRequests[index]
+		prefix := fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/issues/%v", pullRequest.pullRequest["number"])
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return pullRequest
+		}
+	}
+	return nil
 }
 
 // stackedChild resolves a request path to a fixture child pull request. The
@@ -2507,8 +3073,24 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.annexeCloneURL})
+	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls" && len(s.operatorPullRequests) > 0:
+		pullRequests := make([]map[string]any, 0, len(s.operatorPullRequests))
+		for _, pullRequest := range s.operatorPullRequests {
+			pullRequests = append(pullRequests, pullRequest.pullRequest)
+		}
+		writeFixtureJSON(s.t, w, pullRequests)
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls":
 		writeFixtureJSON(s.t, w, append([]map[string]any{s.pullRequest}, s.stackedChildren...))
+	case r.Method == http.MethodGet && s.operatorPullRequestForPath(path) != nil && !strings.Contains(strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/pulls/"), "/"):
+		writeFixtureJSON(s.t, w, s.operatorPullRequestForPath(path).pullRequest)
+	case r.Method == http.MethodGet && s.operatorPullRequestForPath(path) != nil && strings.HasSuffix(path, "/dependencies"):
+		writeFixtureJSON(s.t, w, []map[string]any{})
+	case r.Method == http.MethodGet && s.operatorPullRequestForPath(path) != nil && strings.HasSuffix(path, "/reviews"):
+		writeFixtureJSON(s.t, w, s.operatorPullRequestForPath(path).reviews)
+	case r.Method == http.MethodGet && s.operatorPullRequestForIssuePath(path) != nil && strings.HasSuffix(path, "/dependencies"):
+		writeFixtureJSON(s.t, w, []map[string]any{})
+	case r.Method == http.MethodGet && s.operatorPullRequestForIssuePath(path) != nil && strings.HasSuffix(path, "/comments"):
+		writeFixtureJSON(s.t, w, s.operatorPullRequestForIssuePath(path).comments)
 	case r.Method == http.MethodGet && path == pullPath:
 		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		writeFixtureJSON(s.t, w, s.pullRequest)
@@ -2642,6 +3224,12 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, map[string]any{})
 	case r.Method == http.MethodGet && strings.Contains(path, "/commits/") && strings.HasSuffix(path, "/statuses"):
 		commit := strings.TrimSuffix(strings.SplitN(path, "/commits/", 2)[1], "/statuses")
+		for _, pullRequest := range s.operatorPullRequests {
+			if pullRequest.pullRequest["head"].(map[string]any)["sha"] == commit {
+				writeFixtureJSON(s.t, w, pullRequest.statuses)
+				return
+			}
+		}
 		s.statusReadCommits = append(s.statusReadCommits, commit)
 		statuses := s.statusesByCommit[commit]
 		childStatuses := false

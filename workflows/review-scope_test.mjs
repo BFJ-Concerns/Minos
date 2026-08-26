@@ -194,6 +194,7 @@ test("relevance-conditioned and misconfigured briefs settle conservatively", () 
   assert.deepEqual(misconfiguredInput.briefMisconfigurations, [{
     brief: ".review/gone/tidy.md",
     title: "Tidy",
+    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope gone/ matches no repository directory",
   }]);

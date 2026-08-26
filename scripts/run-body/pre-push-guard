@@ -20,30 +20,32 @@ for protected_ref_file in "${common_dir}/minos-protected-ref" "${common_dir}"/mi
     echo "pre-push-guard: protected-ref record is present but unreadable: $protected_ref_file" >&2
     exit 1
   fi
-  protected_ref="$(cat "$protected_ref_file")"
-  case "$protected_ref" in
-    refs/heads/?*) ;;
-    *)
-      echo "pre-push-guard: protected-ref record is invalid: ${protected_ref:-<empty>}" >&2
-      exit 1
-      ;;
-  esac
-  if ! git check-ref-format "$protected_ref"; then
-    echo "pre-push-guard: protected-ref record is invalid: $protected_ref" >&2
+  record="$(cat "$protected_ref_file")"
+  [ -n "$record" ] || {
+    echo "pre-push-guard: protected-ref record is invalid: <empty>" >&2
     exit 1
-  fi
-  protected_refs="${protected_refs} ${protected_ref}"
+  }
+  while IFS= read -r protected_ref; do
+    case "$protected_ref" in
+      refs/heads/?*) ;;
+      *)
+        echo "pre-push-guard: protected-ref record is invalid: ${protected_ref:-<empty>}" >&2
+        exit 1
+        ;;
+    esac
+    if ! git check-ref-format "$protected_ref"; then
+      echo "pre-push-guard: protected-ref record is invalid: $protected_ref" >&2
+      exit 1
+    fi
+    protected_refs="${protected_refs}${protected_ref}
+"
+  done <<EOF
+$record
+EOF
 done
 
 while read -r local_ref local_sha remote_ref remote_sha; do
-  protected=false
-  for protected_ref in $protected_refs; do
-    if [ "$remote_ref" = "$protected_ref" ]; then
-      protected=true
-      break
-    fi
-  done
-  if [ "$protected" = true ]; then
+  if [ -n "$protected_refs" ] && printf '%s' "$protected_refs" | grep -Fqx "$remote_ref"; then
     integrate_permit="${MINOS_INTEGRATE_WAVE_PUSH_PERMIT:-}"
     sync_permit="${MINOS_SYNC_TARGET_PUSH_PERMIT:-}"
     reconcile_permit="${MINOS_RECONCILE_TARGET_PUSH_PERMIT:-}"
@@ -56,7 +58,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       exit 1
     elif [ -n "$integrate_permit" ]; then
       permit="$integrate_permit"
-      expected_permitted_update="$remote_ref $local_sha"
+      expected_permitted_update="$remote_ref $local_sha $remote_sha"
       case "$permit" in
         "$common_dir"/minos-integrate-wave-push.*)
           permit_is_in_common_dir "$permit" || {

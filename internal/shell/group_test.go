@@ -707,9 +707,17 @@ func TestForgeCommandSnapshotMemberReadsRequestedMember(t *testing.T) {
 	t.Setenv("MINOS_OWNER", primary.Owner)
 	t.Setenv("MINOS_REPO_NAME", primary.Repo)
 	t.Setenv("MINOS_PR", primary.PR)
+	member := Facts{Owner: repo.Owner, Repo: repo.Repo, PR: "2"}
+	memberGuard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))
+	if err := os.MkdirAll(filepath.Dir(memberGuard), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memberGuard, []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout bytes.Buffer
-	if err := ForgeCommand(t.Context(), []string{"snapshot-member", repo.Owner, repo.Repo, "2"}, &stdout); err != nil {
+	if err := ForgeCommand(t.Context(), []string{"--member", repo.Owner, repo.Repo, "2", "snapshot"}, &stdout); err != nil {
 		t.Fatal(err)
 	}
 	var snapshot forge.Snapshot
@@ -723,9 +731,14 @@ func TestForgeCommandSnapshotMemberReadsRequestedMember(t *testing.T) {
 
 func TestMemberAddressedForgeWritesSelectOnlyAClaimedMember(t *testing.T) {
 	state := newForgejoFixtureState(t)
+	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
 	cfg, _, primary := state.service(t)
 	writeServiceConfig(t, cfg)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", primary.Forge)
+	t.Setenv("MINOS_OWNER", primary.Owner)
+	t.Setenv("MINOS_REPO_NAME", primary.Repo)
+	t.Setenv("MINOS_PR", primary.PR)
 	member := Facts{Owner: primary.Owner, Repo: primary.Repo, PR: "2"}
 	if err := os.MkdirAll(filepath.Dir(groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))), 0o700); err != nil {
 		t.Fatal(err)
@@ -733,22 +746,21 @@ func TestMemberAddressedForgeWritesSelectOnlyAClaimedMember(t *testing.T) {
 	if err := os.WriteFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(member)), []byte(UnitName(primary)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	primaryNumber, _ := strconv.ParseInt(primary.PR, 10, 64)
-	guard := forge.Guard{Repository: forge.Repository{Owner: primary.Owner, Name: primary.Repo}, PullRequest: primaryNumber}
 
-	for addressed, action := range memberForgeWriteActions {
-		t.Run(addressed, func(t *testing.T) {
-			selected, rewritten, err := memberAddressedForgeWrite([]string{addressed, primary.Owner, primary.Repo, "2", "tail"}, guard)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if selected.PullRequest != 2 || !slices.Equal(rewritten, []string{action, "tail"}) {
-				t.Fatalf("selected guard/args = %#v/%#v", selected, rewritten)
-			}
-		})
+	if err := ForgeCommand(t.Context(), []string{
+		"--member", primary.Owner, primary.Repo, "2", "snapshot",
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("claimed member: %v", err)
 	}
-	if _, _, err := memberAddressedForgeWrite([]string{"status-member", primary.Owner, primary.Repo, "3", "tail"}, guard); err == nil || !strings.Contains(err.Error(), "not claimed") {
+	if err := ForgeCommand(t.Context(), []string{
+		"--member", primary.Owner, primary.Repo, "3", "status", "head-sibling", "target-main", "working",
+	}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not claimed") {
 		t.Fatalf("unclaimed member error = %v", err)
+	}
+	if err := ForgeCommand(t.Context(), []string{
+		"--member", primary.Owner, "elsewhere", "2", "status", "head-sibling", "target-main", "working",
+	}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "outside this run repository") {
+		t.Fatalf("foreign repository error = %v", err)
 	}
 }
 
@@ -771,7 +783,7 @@ func TestForgeCommandStatusMemberWritesTheClaimedMembersRecord(t *testing.T) {
 	}
 
 	if err := ForgeCommand(t.Context(), []string{
-		"status-member", primary.Owner, primary.Repo, "2", "head-sibling", "target-main", "working",
+		"--member", primary.Owner, primary.Repo, "2", "status", "head-sibling", "target-main", "working",
 	}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}

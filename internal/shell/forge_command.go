@@ -17,13 +17,27 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|snapshot-member|head-movement|check-logs|claim|claim-member|status[-member]|review[-member]|comment[-member]|reaction[-member]|reaction-remove[-member]|label-remove[-member]|merge[-member]|delete-source-branch[-member]")
+		return fmt.Errorf("usage: minos forge [--member OWNER REPO NUMBER] snapshot|head-movement|check-logs|claim|claim-member|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
-	adapter, guard, botLogin, err := leadForge()
-	if err != nil {
-		return err
+	member := forge.Repository{}
+	var memberPR int64
+	if args[0] == "--member" {
+		if len(args) < 5 {
+			return fmt.Errorf("usage: minos forge --member OWNER REPO NUMBER ACTION ...")
+		}
+		parsed, parseErr := strconv.ParseInt(args[3], 10, 64)
+		if parseErr != nil || parsed < 1 {
+			return fmt.Errorf("member pull-request number %q is invalid", args[3])
+		}
+		member, memberPR, args = forge.Repository{Owner: args[1], Name: args[2]}, parsed, args[4:]
+		if member.Owner == "" || member.Name == "" {
+			return fmt.Errorf("member coordinates are incomplete")
+		}
+		if len(args) == 0 {
+			return fmt.Errorf("usage: minos forge --member OWNER REPO NUMBER ACTION ...")
+		}
 	}
-	guard, args, err = memberAddressedForgeWrite(args, guard)
+	adapter, guard, botLogin, err := leadForge(member, memberPR)
 	if err != nil {
 		return err
 	}
@@ -33,22 +47,6 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("usage: minos forge snapshot")
 		}
 		snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(stdout).Encode(snapshot)
-	case "snapshot-member":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge snapshot-member OWNER REPO NUMBER")
-		}
-		if args[1] != guard.Repository.Owner || args[2] != guard.Repository.Name {
-			return fmt.Errorf("member is outside this run repository")
-		}
-		pullRequest, err := strconv.ParseInt(args[3], 10, 64)
-		if err != nil {
-			return fmt.Errorf("member number: %w", err)
-		}
-		snapshot, err := adapter.Snapshot(ctx, guard.Repository, pullRequest)
 		if err != nil {
 			return err
 		}
@@ -221,56 +219,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 }
 
-var memberForgeWriteActions = map[string]string{
-	"status-member":               "status",
-	"review-member":               "review",
-	"comment-member":              "comment",
-	"reaction-member":             "reaction",
-	"reaction-remove-member":      "reaction-remove",
-	"label-remove-member":         "label-remove",
-	"merge-member":                "merge",
-	"delete-source-branch-member": "delete-source-branch",
-}
-
-// memberAddressedForgeWrite selects a claimed grouped member before the
-// ordinary guarded writer runs. The durable group guard binds that member to
-// this primary run, so repository coordinates alone cannot widen its write
-// authority to an arbitrary pull request.
-func memberAddressedForgeWrite(args []string, guard forge.Guard) (forge.Guard, []string, error) {
-	action, memberWrite := memberForgeWriteActions[args[0]]
-	if !memberWrite {
-		return guard, args, nil
-	}
-	if len(args) < 4 {
-		return forge.Guard{}, nil, fmt.Errorf("usage: minos forge %s OWNER REPO NUMBER ...", args[0])
-	}
-	if args[1] != guard.Repository.Owner || args[2] != guard.Repository.Name {
-		return forge.Guard{}, nil, fmt.Errorf("member is outside this run repository")
-	}
-	pullRequest, err := strconv.ParseInt(args[3], 10, 64)
-	if err != nil || pullRequest <= 0 {
-		if err == nil {
-			err = fmt.Errorf("must be positive")
-		}
-		return forge.Guard{}, nil, fmt.Errorf("member number: %w", err)
-	}
-	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
-	if err != nil {
-		return forge.Guard{}, nil, err
-	}
-	if pullRequest != guard.PullRequest {
-		primary := Facts{Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
-		member := Facts{Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: args[3]}
-		binding, err := os.ReadFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(member)))
-		if err != nil || strings.TrimSpace(string(binding)) != UnitName(primary) {
-			return forge.Guard{}, nil, fmt.Errorf("member is not claimed by this run")
-		}
-	}
-	guard.PullRequest = pullRequest
-	return guard, append([]string{action}, args[4:]...), nil
-}
-
-func leadForge() (*forge.Adapter, forge.Guard, string, error) {
+func leadForge(member forge.Repository, memberPR int64) (*forge.Adapter, forge.Guard, string, error) {
 	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
 		return nil, forge.Guard{}, "", err
@@ -287,6 +236,21 @@ func leadForge() (*forge.Adapter, forge.Guard, string, error) {
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: os.Getenv("MINOS_OWNER"), Name: os.Getenv("MINOS_REPO_NAME")},
 		PullRequest: pr,
+	}
+	if memberPR != 0 {
+		if member != guard.Repository {
+			return nil, forge.Guard{}, "", fmt.Errorf("member is outside this run repository")
+		}
+		if memberPR != guard.PullRequest {
+			primary := Facts{Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
+			claimed := Facts{Owner: member.Owner, Repo: member.Name, PR: strconv.FormatInt(memberPR, 10)}
+			binding, err := os.ReadFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(claimed)))
+			if err != nil || strings.TrimSpace(string(binding)) != UnitName(primary) {
+				return nil, forge.Guard{}, "", fmt.Errorf("member is not claimed by this run")
+			}
+		}
+		guard.Repository = member
+		guard.PullRequest = memberPR
 	}
 	if guard.Repository.Owner == "" || guard.Repository.Name == "" {
 		return nil, forge.Guard{}, "", fmt.Errorf("pull-request environment is incomplete")

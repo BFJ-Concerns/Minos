@@ -15,11 +15,13 @@ const legs = [
 
 const envelope = {
   reviewed: { target: "target-sha", head: "head-sha", occasion: null },
+  members: [{ id: "primary" }],
   stage: "present",
   requiredModelEvidence: legs,
   proposedFindings: [{
     id: "specialist-1:1",
     source: "Correctness",
+    member: "primary",
     title: "Distinct failure",
     severity: "High",
     confidence: 86,
@@ -38,6 +40,7 @@ const envelope = {
 
 const zeroLegEnvelope = {
   reviewed: { target: "target-sha", head: "head-sha", occasion: null },
+  members: [{ id: "primary" }],
   stage: "absent",
   requiredModelEvidence: [],
   proposedFindings: [],
@@ -115,6 +118,7 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   );
   assert.equal("new_position" in adapterVerdict.reviewBody.comments[0], false);
   assert.equal(adapterVerdict.reviewBody.body, "Repository review brief findings.");
+  assert.deepEqual(adapterVerdict.memberReviews, []);
   assert.equal(adapterVerdict.briefFixRequired, true);
   assert.deepEqual(adapterVerdict.ran, [{ brief: ".review/errors.md", title: "Error handling" }]);
   assert.deepEqual(adapterVerdict.skipped, []);
@@ -479,6 +483,20 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
   assert.match(adapterVerdict.incomplete.join("\n"), /proposed finding 1 is absent or malformed/);
 });
 
+for (const [description, finding] of [
+  ["missing attribution", (({ member, ...rest }) => rest)(envelope.proposedFindings[0])],
+  ["unknown attribution", { ...envelope.proposedFindings[0], member: "other-member" }],
+]) {
+  test(`a confirmed finding with ${description} withholds the verdict`, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t);
+    const adapterVerdict = await adjudicate({
+      envelope: { ...envelope, proposedFindings: [finding] },
+      recordDir: fixtureArchiveDir,
+    });
+    assertWithheld(adapterVerdict, /member attribution/);
+  });
+}
+
 for (const [description, findingField] of [
   ["an empty source", { source: "" }],
   ["an empty title", { title: "" }],
@@ -726,6 +744,31 @@ test("a malformed misconfigurations field cannot become publishable", { timeout:
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
   assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /envelope misconfigurations is absent or unreadable/);
+});
+
+test("a brief misconfiguration retains its member attribution", { timeout: 1000 }, async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const adapterVerdict = await adjudicate({
+    envelope: {
+      ...envelope,
+      misconfigurations: [{
+        brief: ".review/missing/scoped.md",
+        title: "Scoped",
+        member: "primary",
+        kind: "misconfigured-scope",
+        reason: "brief scope missing/ matches no repository directory",
+      }],
+    },
+    recordDir: fixtureArchiveDir,
+  });
+
+  assert.deepEqual(adapterVerdict.misconfigurations, [{
+    brief: ".review/missing/scoped.md",
+    title: "Scoped",
+    member: "primary",
+    kind: "misconfigured-scope",
+    reason: "brief scope missing/ matches no repository directory",
+  }]);
 });
 
 for (const [description, misconfiguration] of [
