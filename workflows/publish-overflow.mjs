@@ -6,8 +6,10 @@ import { join } from "node:path";
 
 const orientationPath = process.argv[2];
 const findingsPath = process.argv[3];
-if (!orientationPath || !findingsPath) {
-  process.stderr.write("usage: node workflows/publish-overflow.mjs ORIENTATION FINDINGS\n");
+const membersFlag = process.argv[4];
+const membersPath = process.argv[5];
+if (!orientationPath || !findingsPath || (membersFlag !== undefined && (membersFlag !== "--members" || !membersPath)) || process.argv.length > 6) {
+  process.stderr.write("usage: node workflows/publish-overflow.mjs ORIENTATION FINDINGS [--members MEMBERS]\n");
   process.exit(2);
 }
 
@@ -45,12 +47,44 @@ function normaliseEntry(entry) {
 
 const findings = entries.map(normaliseEntry);
 
+function memberGroups() {
+  if (!membersPath) {
+    if (findings.some((finding) => typeof finding.member === "string" && finding.member !== ""))
+      throw new Error("member-attributed overflow requires a members record");
+    return [{ member: null, findings }];
+  }
+  const record = JSON.parse(readFileSync(membersPath, "utf8"));
+  const members = Array.isArray(record) ? record : record && record.members;
+  if (!Array.isArray(members) || members.length === 0) throw new Error("members record must contain a non-empty members array");
+  const byID = new Map();
+  for (const member of members) {
+    if (!member || typeof member.id !== "string" || member.id === "" ||
+        typeof member.owner !== "string" || member.owner === "" ||
+        typeof member.repo !== "string" || member.repo === "" || !Number.isInteger(member.number))
+      throw new Error("members record has incomplete member coordinates");
+    if (byID.has(member.id)) throw new Error(`members record duplicates member ${member.id}`);
+    byID.set(member.id, member);
+  }
+  const grouped = new Map();
+  for (const finding of findings) {
+    if (typeof finding.member !== "string" || !byID.has(finding.member))
+      throw new Error("member-attributed overflow has an absent or unknown member");
+    const member = byID.get(finding.member);
+    const group = grouped.get(member.id) || { member, findings: [] };
+    group.findings.push(finding);
+    grouped.set(member.id, group);
+  }
+  return [...grouped.values()];
+}
+
+const groups = memberGroups();
+
 function key(finding) {
   const title = String(finding.title || "").trim().toLowerCase().replace(/\s+/g, " ");
   const identity = finding.kind === "out-of-scope-observation" || finding.kind === "review-brief-misconfiguration"
     ? [finding.kind, finding.path, finding.line, title]
     : [finding.path, finding.line, title];
-  return Buffer.from(JSON.stringify(identity)).toString("base64url");
+  return Buffer.from(JSON.stringify(finding.member ? [finding.member, ...identity] : identity)).toString("base64url");
 }
 
 function inlineComment(finding) {
@@ -62,6 +96,17 @@ function inlineComment(finding) {
 }
 
 if (orientation.grounding === "repository") {
+  if (membersPath) {
+    process.stdout.write(JSON.stringify({
+      destination: "pull-request",
+      publications: groups.map(({ member, findings: memberFindings }) => ({
+        member: member.id,
+        body: "Additional review material for project triage.",
+        comments: memberFindings.map(inlineComment),
+      })),
+    }) + "\n");
+    process.exit(0);
+  }
   process.stdout.write(JSON.stringify({
     destination: "pull-request",
     body: "Additional review material for project triage.",
@@ -77,19 +122,24 @@ if (typeof orientation.annexe !== "string" || orientation.annexe === "")
 const source = orientation.source;
 if (!source || [source.owner, source.repo, source.pr, source.date].some((value) => typeof value !== "string" || value === ""))
   throw new Error("annexe grounding omitted its source attribution");
-const attribution = `Filed by Minos from ${source.owner}/${source.repo}#${source.pr}, ${source.date}`;
 const issuesPath = join(orientation.annexe, "ISSUES.md");
 let contents = existsSync(issuesPath) ? readFileSync(issuesPath, "utf8") : "# Issues\n";
 if (!contents.endsWith("\n")) contents += "\n";
 let written = 0;
-for (const finding of findings) {
-  const marker = `<!-- review-finding:${key(finding)} -->`;
-  if (contents.includes(marker)) continue;
-  const location = finding.kind === "review-brief-misconfiguration"
-    ? finding.path
-    : `${finding.path}:${finding.line}`;
-  contents += `\n- ${finding.label}: ${finding.title} (${finding.severity}, ${location}) — ${finding.explanation}. ${attribution}. ${marker}\n`;
-  written++;
+for (const group of groups) {
+  const memberSource = group.member
+    ? { owner: group.member.owner, repo: group.member.repo, pr: String(group.member.number), date: source.date }
+    : source;
+  const attribution = `Filed by Minos from ${memberSource.owner}/${memberSource.repo}#${memberSource.pr}, ${memberSource.date}`;
+  for (const finding of group.findings) {
+    const marker = `<!-- review-finding:${key(finding)} -->`;
+    if (contents.includes(marker)) continue;
+    const location = finding.kind === "review-brief-misconfiguration"
+      ? finding.path
+      : `${finding.path}:${finding.line}`;
+    contents += `\n- ${finding.label}: ${finding.title} (${finding.severity}, ${location}) — ${finding.explanation}. ${attribution}. ${marker}\n`;
+    written++;
+  }
 }
 
 if (written === 0) {

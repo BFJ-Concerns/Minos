@@ -62,6 +62,46 @@ function writeUpComment(finding, writeUp) {
   return { path: finding.path, body: writeUp, line: finding.line };
 }
 
+function memberCommitGroups(fixed, requiresMemberAttribution) {
+  const byMember = new Map();
+  const memberByCommit = new Map();
+  const hasMemberAttribution = fixed.some(({ finding }) => typeof finding?.member === "string" && finding.member !== "");
+  for (const { finding, commit } of fixed) {
+    if (typeof commit !== "string" || commit === "") continue;
+    if (typeof finding?.member !== "string" || finding.member === "") {
+      if (requiresMemberAttribution || hasMemberAttribution)
+        return { reason: "completed grouped repair has no member attribution" };
+      continue;
+    }
+    const assigned = memberByCommit.get(commit);
+    if (assigned && assigned !== finding.member)
+      return { reason: `completed repair ${commit} is assigned to more than one member` };
+    memberByCommit.set(commit, finding.member);
+    const commits = byMember.get(finding.member) || [];
+    if (!commits.includes(commit)) commits.push(commit);
+    byMember.set(finding.member, commits);
+  }
+  return { groups: [...byMember].map(([member, commits]) => ({ member, commits })) };
+}
+
+function fixReview(fixed) {
+  return fixed.length > 0 ? {
+    body: "Implemented repairs for confirmed findings.",
+    comments: fixed.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
+  } : null;
+}
+
+function memberFixReviewGroups(fixed) {
+  const byMember = new Map();
+  for (const repair of fixed) {
+    if (typeof repair.finding?.member !== "string" || repair.finding.member === "") continue;
+    const repairs = byMember.get(repair.finding.member) || [];
+    repairs.push(repair);
+    byMember.set(repair.finding.member, repairs);
+  }
+  return [...byMember].map(([member, repairs]) => ({ member, fixReview: fixReview(repairs) }));
+}
+
 function failedAttemptReason(result, entry) {
   if (entry && entry.writeUp) return entry.writeUp;
   if (result == null) return "fix attempt returned no result";
@@ -197,7 +237,7 @@ if (plan.classification === "single-wave") {
       const entry = returned.get(finding.key);
       if (result && result.commit && entry && entry.status === "fixed" && entry.writeUp) {
         usedCommit = true;
-        fixed.push({ finding, writeUp: entry.writeUp });
+        fixed.push({ finding, writeUp: entry.writeUp, commit: result.commit });
       } else {
         confirmedUnfixed.push({
           key: finding.key,
@@ -210,6 +250,8 @@ if (plan.classification === "single-wave") {
     if (usedCommit) commits.push(result.commit);
   });
   const uniqueCommits = [...new Set(commits)];
+  const memberCommits = memberCommitGroups(fixed, plan.input.memberAttributionRequired);
+  if (memberCommits.reason) return failedResult(plan, memberCommits.reason);
   return {
     status: "complete",
     classification: "single-wave",
@@ -218,13 +260,12 @@ if (plan.classification === "single-wave") {
     fingerprint: plan.fingerprint,
     dispatches: plan.dispatches,
     sweepReview: null,
-    fixReview: fixed.length > 0 ? {
-      body: "Implemented repairs for confirmed findings.",
-      comments: fixed.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
-    } : null,
+    fixReview: plan.input.memberAttributionRequired ? null : fixReview(fixed),
     requestChangesReview: null,
     integration: {
       commits: uniqueCommits,
+      memberCommits: memberCommits.groups,
+      memberFixReviews: plan.input.memberAttributionRequired ? memberFixReviewGroups(fixed) : [],
       pushCount: uniqueCommits.length > 0 ? 1 : 0,
       author: { name: "Minos", email: "minos@example.invalid" },
     },
@@ -330,6 +371,8 @@ const confirmedFixed = [
 ];
 const uniqueCommits = [...new Set(commits)];
 const writeUps = [...fixed.values()];
+const memberCommits = memberCommitGroups(writeUps, plan.input.memberAttributionRequired);
+if (memberCommits.reason) return failedResult(plan, memberCommits.reason);
 return {
   status: "complete",
   classification: "working",
@@ -338,13 +381,12 @@ return {
   fingerprint: plan.fingerprint,
   dispatches,
   sweepReview: plan.sweepReview,
-  fixReview: writeUps.length > 0 ? {
-    body: "Implemented repairs for confirmed findings.",
-    comments: writeUps.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
-  } : null,
+  fixReview: plan.input.memberAttributionRequired ? null : fixReview(writeUps),
   requestChangesReview: null,
   integration: {
     commits: uniqueCommits,
+    memberCommits: memberCommits.groups,
+    memberFixReviews: plan.input.memberAttributionRequired ? memberFixReviewGroups(writeUps) : [],
     pushCount: uniqueCommits.length > 0 ? 1 : 0,
     author: { name: "Minos", email: "minos@example.invalid" },
   },

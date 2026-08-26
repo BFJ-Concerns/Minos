@@ -246,6 +246,15 @@ const outOfScopeObservationShape = {
   },
 };
 
+const memberOutOfScopeObservationShape = {
+  ...outOfScopeObservationShape,
+  required: ["member", ...outOfScopeObservationShape.required],
+  properties: {
+    member: { type: "string" },
+    ...outOfScopeObservationShape.properties,
+  },
+};
+
 const applicabilityShape = {
   type: "object",
   additionalProperties: false,
@@ -331,7 +340,7 @@ const verifierSchema = {
   required: ["verdicts"],
   properties: {
     verdicts: { type: "array", items: verifierVerdictShape },
-    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
+    outOfScopeObservations: { type: "array", items: memberOutOfScopeObservationShape },
   },
 };
 
@@ -524,6 +533,7 @@ specialistUnits.forEach((unit, unitIndex) => {
     outOfScopeObservations.push({
       id: `${unit.label}:observation:${observationIndex + 1}`,
       source: unit.concern,
+      member: unit.member,
       ...observation,
       observingLabel: unit.label,
       verified: false,
@@ -574,6 +584,7 @@ const verifierResults = await parallel(
           `Reviewed member contexts:\n${[...new Set(group.items.map((item) => item.unit.member))]
             .map((member) => reviewedMemberSection(memberContexts.get(member))).join("\n")}\n` +
           `Proposing specialists: ${[...new Set(group.items.map((item) => item.unit.label))].join(", ")}\n` +
+          `Every out-of-scope observation must carry the member it concerns, chosen from ${JSON.stringify([...new Set(group.items.map((item) => item.unit.member))])}.\n` +
           `Findings: ${JSON.stringify(group.items.map((item) => ({ id: item.id, ...item.finding })))}`
       ),
       {

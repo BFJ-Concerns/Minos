@@ -402,6 +402,7 @@ test("the adjudicated verdict distinguishes a misconfigured brief that ran from 
   const expectedMisconfigurations = [{
     brief,
     title: "Scoped",
+    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }];
@@ -442,6 +443,7 @@ test("the executable verdict carries observations without admitting them as find
   assert.deepEqual(verdict.outOfScopeObservations, [{
     id: "specialist:observation:1",
     source: "Correctness",
+    member: "primary",
     title: "Unchanged adjacent defect",
     path: "internal/adjacent.go",
     line: 73,
