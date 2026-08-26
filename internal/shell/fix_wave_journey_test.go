@@ -150,6 +150,16 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(commonDir, "minos-protected-ref"), []byte("refs/heads/main\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runDir := t.TempDir()
+	membersPath := filepath.Join(runDir, "members.json")
+	if err := os.WriteFile(membersPath, []byte(`{"members":[{"head_branch":"main"},{"head_branch":"member-one"},{"head_branch":"member-two"},{"head_branch":"untouched"},{"head_branch":"bad-member"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	protect := exec.Command(filepath.Join("..", "..", "workflows", "integrate-wave"), workspace, "--protect-members", membersPath)
+	protect.Env = append(os.Environ(), "MINOS_HEAD_BRANCH=main")
+	if output, err := protect.CombinedOutput(); err != nil {
+		t.Fatalf("protect grouped members: %v\n%s", err, output)
+	}
 
 	makeCommit := func(name, authorName, authorEmail string) string {
 		worktree := filepath.Join(t.TempDir(), "agent")
@@ -171,6 +181,7 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 			"MINOS_HEAD_BRANCH=main",
 			"MINOS_GIT_AUTHOR_NAME=Minos",
 			"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
+			"MINOS_RUN_DIR="+runDir,
 		)
 		output, err := cmd.CombinedOutput()
 		return string(output), err
@@ -191,40 +202,40 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 		}
 	}
 
-	first := makeCommit("one.txt", "Minos", "minos@example.invalid")
-	if output, err := runIntegration("member-one", first); err != nil {
-		t.Fatalf("member one integration: %v\n%s", err, output)
-	}
-	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != base {
-		t.Fatalf("workspace after member one = %q, want primary %q", got, base)
-	}
 	protectedRefs, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(protectedRefs); got != "refs/heads/main\nrefs/heads/member-one\n" {
-		t.Fatalf("protected refs after member one = %q", got)
+	if got, want := string(protectedRefs), "refs/heads/main\nrefs/heads/member-one\nrefs/heads/member-two\nrefs/heads/untouched\nrefs/heads/bad-member\n"; got != want {
+		t.Fatalf("protected grouped refs = %q, want %q", got, want)
+	}
+	assertUnpermittedPushIsRefused("untouched", "unpermitted-untouched.txt")
+
+	primary := makeCommit("primary.txt", "Minos", "minos@example.invalid")
+	if output, err := runIntegration("main", primary); err != nil {
+		t.Fatalf("primary integration: %v\n%s", err, output)
+	}
+	primaryHead := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != primaryHead {
+		t.Fatalf("workspace after primary = %q, want published primary %q", got, primaryHead)
+	}
+
+	first := makeCommit("one.txt", "Minos", "minos@example.invalid")
+	if output, err := runIntegration("member-one", first); err != nil {
+		t.Fatalf("member one integration: %v\n%s", err, output)
+	}
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != primaryHead {
+		t.Fatalf("workspace after member one = %q, want published primary %q", got, primaryHead)
 	}
 	assertUnpermittedPushIsRefused("member-one", "unpermitted-one.txt")
 	second := makeCommit("two.txt", "Minos", "minos@example.invalid")
 	if output, err := runIntegration("member-two", second); err != nil {
 		t.Fatalf("member two integration: %v\n%s", err, output)
 	}
-	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != base {
-		t.Fatalf("workspace after member two = %q, want primary %q", got, base)
-	}
-	protectedRefs, err = os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := string(protectedRefs); got != "refs/heads/main\nrefs/heads/member-one\nrefs/heads/member-two\n" {
-		t.Fatalf("protected refs after member two = %q", got)
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != primaryHead {
+		t.Fatalf("workspace after member two = %q, want published primary %q", got, primaryHead)
 	}
 	assertUnpermittedPushIsRefused("member-two", "unpermitted-two.txt")
-	primary := makeCommit("primary.txt", "Minos", "minos@example.invalid")
-	if output, err := runIntegration("main", primary); err != nil {
-		t.Fatalf("primary integration after members: %v\n%s", err, output)
-	}
 
 	if got := readPushCount(t, remote); got != 3 {
 		t.Fatalf("push count = %d, want one push per touched member", got)
@@ -265,6 +276,28 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	}
 	if got, want := gitOutput(t, workspace, "rev-parse", "HEAD"), gitOutput(t, remote, "rev-parse", "refs/heads/main"); got != want {
 		t.Fatalf("workspace after member refusal = %q, want primary %q", got, want)
+	}
+	assertUnpermittedPushIsRefused("bad-member", "unpermitted-bad.txt")
+
+	conflictWorktree := filepath.Join(t.TempDir(), "conflicting-primary")
+	runGit(t, workspace, "worktree", "add", "--detach", conflictWorktree, base)
+	if err := os.WriteFile(filepath.Join(conflictWorktree, "primary.txt"), []byte("conflicting primary\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, conflictWorktree, "add", "primary.txt")
+	runGit(t, conflictWorktree, "commit", "-m", "fix: conflicting primary repair")
+	conflict := gitOutput(t, conflictWorktree, "rev-parse", "HEAD")
+	if output, err := runIntegration("main", conflict); err == nil || !strings.Contains(output, "CONFLICT") {
+		t.Fatalf("primary conflict refusal = %v\n%s", err, output)
+	}
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != primaryHead {
+		t.Fatalf("workspace after primary conflict = %q, want published primary %q", got, primaryHead)
+	}
+	if status := gitOutput(t, workspace, "status", "--porcelain"); status != "" {
+		t.Fatalf("workspace after primary conflict is dirty: %q", status)
+	}
+	if err := exec.Command("git", "-C", workspace, "rev-parse", "--verify", "CHERRY_PICK_HEAD").Run(); err == nil {
+		t.Fatal("primary conflict left CHERRY_PICK_HEAD behind")
 	}
 }
 

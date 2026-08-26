@@ -224,7 +224,11 @@ pull request and every grouped passage in this lifecycle is inert.
    Write this pull request's own facts first, then the granted members'
    facts, with one sentence of the grouping
    judgement's basis, to `$MINOS_RUN_DIR/members.json`; membership is fixed
-   from this point. Then reconcile each claimed member with its target
+   from this point. Immediately run
+   `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave" "$MINOS_WORKSPACE"
+   --protect-members "$MINOS_RUN_DIR/members.json"` so the shared pre-push
+   hook protects every claimed member before any member worktree or publisher
+   runs. Then reconcile each claimed member with its target
    through the member reconciliation script the run scripts provide — a
    sibling of `sync-target` that checks the member's head out in its own
    worktree and pins the member's target under a member-scoped ref. Never
@@ -1107,9 +1111,10 @@ pull request and every grouped passage in this lifecycle is inert.
    retry. It detaches the shared workspace at that member branch before
    cherry-picking,
    verifies every commit's Minos author, and pushes once to that branch only.
-   It records the member branch as protected and creates the same one-use
-   push permit for every push, so the guard applies independently to every
-   touched member. On success or refusal, each member invocation restores the
+   Setup preserves that complete protected-ref record across a continuation,
+   and each invocation creates the same one-use push permit for its push, so
+   the guard applies independently to every member. On success or refusal,
+   each member invocation restores the
    claimed workspace to the primary's fresh published head. This gives the
    post-wave gate a defined conservative tree without deciding the commission's
    unresolved question of what a grouped gate should judge. No fix agent may

@@ -103,6 +103,12 @@ func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testi
 	if err := os.WriteFile(orientation, []byte(`{"stale":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(commonDir, "minos-protected-ref"), []byte("refs/heads/feature\nrefs/heads/preserved-member\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "members.json"), []byte(`{"members":[{"id":"primary","head_branch":"feature"},{"id":"member","head_branch":"recorded-member"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	cmd := setupWorkspaceCommand(t, server.URL, runDir, workspace, orientation, head)
 	cmd.Env = append(cmd.Env, "MINOS_RESUME=true")
@@ -122,6 +128,13 @@ func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(runDir, "publication")); !os.IsNotExist(err) {
 		t.Fatalf("publication worktree still exists after resume: %v", err)
+	}
+	protectedRefs, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(protectedRefs), "refs/heads/feature\nrefs/heads/preserved-member\nrefs/heads/recorded-member\n"; got != want {
+		t.Fatalf("protected refs after resume = %q, want %q", got, want)
 	}
 	assertContainsFile(t, filepath.Join(commonDir, "hooks", "pre-push"), "minos-protected-ref")
 }
