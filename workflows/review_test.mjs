@@ -906,6 +906,10 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
     lifecycle,
     /`outOfScopeObservations`[\s\S]*?unverified observations, not findings[\s\S]*?terminal filing[\s\S]*?out-of-scope-observation[\s\S]*?never enter a review, fix input, sweep\s+decision, or run outcome/,
   );
+  assert.match(
+    lifecycle,
+    /fix result may also carry `outOfScopeObservations`[\s\S]*?Keep them with the saved result[\s\S]*?terminal filing publishes only[\s\S]*?current complete adjudicated review or brief verdict[\s\S]*?not observations from a fix result/,
+  );
   assert.match(lifecycle, /--digest[\s\S]*sweep-digest\.json/);
   assert.match(
     lifecycle,

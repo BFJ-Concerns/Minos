@@ -1047,9 +1047,9 @@ pull request and every grouped passage in this lifecycle is inert.
 
    A fix result may also carry `outOfScopeObservations` — unverified
    observations fix agents made while repairing, with no verdict and no
-   repair. Treat them exactly like a review verdict's observations: keep
-   them with the saved result and do not publish them through this
-   lifecycle; their publication is owned separately.
+   repair. Keep them with the saved result. The terminal filing publishes only
+   observations from the current complete adjudicated review or brief verdict,
+   not observations from a fix result.
    When `integration.commits` is non-empty, write that array unchanged to a
    file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
    "$MINOS_WORKSPACE" COMMITS_FILE`. That script verifies every commit's Minos
