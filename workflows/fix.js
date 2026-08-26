@@ -84,6 +84,24 @@ function memberCommitGroups(fixed, requiresMemberAttribution) {
   return { groups: [...byMember].map(([member, commits]) => ({ member, commits })) };
 }
 
+function fixReview(fixed) {
+  return fixed.length > 0 ? {
+    body: "Implemented repairs for confirmed findings.",
+    comments: fixed.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
+  } : null;
+}
+
+function memberFixReviewGroups(fixed) {
+  const byMember = new Map();
+  for (const repair of fixed) {
+    if (typeof repair.finding?.member !== "string" || repair.finding.member === "") continue;
+    const repairs = byMember.get(repair.finding.member) || [];
+    repairs.push(repair);
+    byMember.set(repair.finding.member, repairs);
+  }
+  return [...byMember].map(([member, repairs]) => ({ member, fixReview: fixReview(repairs) }));
+}
+
 function verificationInstruction(verification) {
   const configured = [
     ["build", verification.build],
@@ -235,14 +253,12 @@ if (plan.classification === "single-wave") {
     fingerprint: plan.fingerprint,
     dispatches: plan.dispatches,
     sweepReview: null,
-    fixReview: fixed.length > 0 ? {
-      body: "Implemented repairs for confirmed findings.",
-      comments: fixed.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
-    } : null,
+    fixReview: plan.input.memberAttributionRequired ? null : fixReview(fixed),
     requestChangesReview: null,
     integration: {
       commits: uniqueCommits,
       memberCommits: memberCommits.groups,
+      memberFixReviews: plan.input.memberAttributionRequired ? memberFixReviewGroups(fixed) : [],
       pushCount: uniqueCommits.length > 0 ? 1 : 0,
       author: { name: "Minos", email: "minos@example.invalid" },
     },
@@ -358,14 +374,12 @@ return {
   fingerprint: plan.fingerprint,
   dispatches,
   sweepReview: plan.sweepReview,
-  fixReview: writeUps.length > 0 ? {
-    body: "Implemented repairs for confirmed findings.",
-    comments: writeUps.map(({ finding, writeUp }) => writeUpComment(finding, writeUp)),
-  } : null,
+  fixReview: plan.input.memberAttributionRequired ? null : fixReview(writeUps),
   requestChangesReview: null,
   integration: {
     commits: uniqueCommits,
     memberCommits: memberCommits.groups,
+    memberFixReviews: plan.input.memberAttributionRequired ? memberFixReviewGroups(writeUps) : [],
     pushCount: uniqueCommits.length > 0 ? 1 : 0,
     author: { name: "Minos", email: "minos@example.invalid" },
   },

@@ -1070,6 +1070,10 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   assert.match(lifecycle, /member-shaped verdict[\s\S]*do not post a second[\s\S]*primary-only request-changes review/);
   assert.match(
     lifecycle,
+    /`integration\.memberFixReviews`[\s\S]*one entry for each member in[\s\S]*`integration\.memberCommits`[\s\S]*absent, duplicate, or additional member is[\s\S]*a fault[\s\S]*forge --member OWNER REPO NUMBER comment MEMBER_HEAD[\s\S]*MEMBER_TARGET FIX_REVIEW_FILE[\s\S]*Never post the aggregate `fixReview` on a[\s\S]*grouped run/,
+  );
+  assert.match(
+    lifecycle,
     /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,
   );
   assert.match(
@@ -1163,7 +1167,7 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   );
   assert.match(
     lifecycle,
-    /complete brief verdict's `outOfScopeObservations` and `misconfigurations`[\s\S]*same\s+two-positional `publish-overflow\.mjs` call[\s\S]*Do not mix either channel into the brief\s+review, `briefFixRequired`, or the single-wave fix input[\s\S]*failure degrades presentation and never changes the brief-stage outcome/,
+    /complete brief verdict's `outOfScopeObservations` and `misconfigurations`[\s\S]*member-aware\s+`publish-overflow\.mjs` block from step 6[\s\S]*including `--members[\s\S]*whenever that record exists[\s\S]*same\s+per-member handling[\s\S]*Do not mix either[\s\S]*channel into the brief review, `briefFixRequired`, or the single-wave fix\s+input[\s\S]*failure degrades presentation and[\s\S]*never changes the brief-stage outcome/,
   );
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(

@@ -283,6 +283,7 @@ test("a wave records one lead push for all distinct agent commits", async () => 
   const { result } = await run(args(findings));
   assert.deepEqual(result.integration.commits, ["fix-dispatch-1-commit", "fix-dispatch-2-commit"]);
   assert.deepEqual(result.integration.memberCommits, []);
+  assert.deepEqual(result.integration.memberFixReviews, []);
   assert.equal(result.integration.pushCount, 1);
   assert.deepEqual(result.integration.author, { name: "Minos", email: "minos@example.invalid" });
 });
@@ -294,6 +295,23 @@ test("a grouped wave assigns each completed commit to its finding member", async
   assert.deepEqual(result.integration.memberCommits, [
     { member: "first-member", commits: ["fix-dispatch-1-commit"] },
     { member: "second-member", commits: ["fix-dispatch-2-commit"] },
+  ]);
+  assert.equal(result.fixReview, null);
+  assert.deepEqual(result.integration.memberFixReviews, [
+    {
+      member: "first-member",
+      fixReview: {
+        body: "Implemented repairs for confirmed findings.",
+        comments: [{ path: "a.go", body: "Repaired first.", line: 1 }],
+      },
+    },
+    {
+      member: "second-member",
+      fixReview: {
+        body: "Implemented repairs for confirmed findings.",
+        comments: [{ path: "b.go", body: "Repaired second.", line: 2 }],
+      },
+    },
   ]);
 });
 
@@ -609,6 +627,34 @@ test("single-wave mode dispatches every brief finding once and requests build an
       { path: "b.go", body: "Repaired minor.", line: 2 },
     ],
   });
+  assert.deepEqual(result.integration.memberFixReviews, []);
+});
+
+test("a grouped single wave partitions repair write-ups by member", async () => {
+  const first = { ...finding("material", "High", "a.go", 1), member: "first-member" };
+  const second = { ...finding("minor", "Low", "b.go", 2), member: "second-member" };
+  const { result } = await run(args([first, second], {
+    singleWave: true,
+    members: [{ id: "first-member" }, { id: "second-member" }],
+  }));
+
+  assert.equal(result.fixReview, null);
+  assert.deepEqual(result.integration.memberFixReviews, [
+    {
+      member: "first-member",
+      fixReview: {
+        body: "Implemented repairs for confirmed findings.",
+        comments: [{ path: "a.go", body: "Repaired material.", line: 1 }],
+      },
+    },
+    {
+      member: "second-member",
+      fixReview: {
+        body: "Implemented repairs for confirmed findings.",
+        comments: [{ path: "b.go", body: "Repaired minor.", line: 2 }],
+      },
+    },
+  ]);
 });
 
 test("a fix worker reads exactly the configured gate it must leave to the lead", async (t) => {

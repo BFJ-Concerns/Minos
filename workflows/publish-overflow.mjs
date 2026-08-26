@@ -48,7 +48,11 @@ function normaliseEntry(entry) {
 const findings = entries.map(normaliseEntry);
 
 function memberGroups() {
-  if (!membersPath) return [{ member: null, findings }];
+  if (!membersPath) {
+    if (findings.some((finding) => typeof finding.member === "string" && finding.member !== ""))
+      throw new Error("member-attributed overflow requires a members record");
+    return [{ member: null, findings }];
+  }
   const record = JSON.parse(readFileSync(membersPath, "utf8"));
   const members = Array.isArray(record) ? record : record && record.members;
   if (!Array.isArray(members) || members.length === 0) throw new Error("members record must contain a non-empty members array");

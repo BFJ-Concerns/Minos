@@ -1123,12 +1123,20 @@ pull request and every grouped passage in this lifecycle is inert.
    `minos-protected-ref` is invalid. The hook covers checkouts sharing this Git
    directory, not separate clones.
 
-   After the push, read a fresh forge snapshot and use its current head. When
-   `fixReview` is present, write that object unchanged to a file, then post it
-   with `"$MINOS_BIN" forge comment CURRENT_HEAD "$MINOS_TARGET_SHA"
-   FIX_REVIEW_FILE`. This durable pull-request comment is not a
-   review group; the guarded command binds it to that exact head,
-   deduplicates retries, and reads it back before reporting success. Then run
+   After the push, a solo run reads a fresh forge snapshot and uses its current
+   head. When `fixReview` is present, write that object unchanged to a file,
+   then post it with `"$MINOS_BIN" forge comment CURRENT_HEAD
+   "$MINOS_TARGET_SHA" FIX_REVIEW_FILE`. A grouped result instead carries
+   `integration.memberFixReviews`, one entry for each member in
+   `integration.memberCommits`; an absent, duplicate, or additional member is
+   a fault. For each entry resolve the member from
+   `$MINOS_RUN_DIR/members.json`, take a fresh addressed snapshot after that
+   member's integration, write only its `fixReview` object to a file, and post
+   it with `"$MINOS_BIN" forge --member OWNER REPO NUMBER comment MEMBER_HEAD
+   MEMBER_TARGET FIX_REVIEW_FILE`. Never post the aggregate `fixReview` on a
+   grouped run. Each durable pull-request comment is not a review group; the
+   guarded command binds it to that member's exact head, deduplicates retries,
+   and reads it back before reporting success. Then run
    the exact configured build and test commands again, capturing their complete
    combined output in the matching absolute `build-command-output.log` or
    `test-command-output.log`, preserving each command's exit status, and
@@ -1253,14 +1261,17 @@ pull request and every grouped passage in this lifecycle is inert.
    no confirmed brief findings, and never publish an all-clear comment.
 
    A complete brief verdict's `outOfScopeObservations` and `misconfigurations`
-   are also terminal triage material. Map and publish them through the same
-   two-positional `publish-overflow.mjs` call as step 6 — observations as
-   `kind: "out-of-scope-observation"`; misconfigurations as
+   are also terminal triage material. Map them into a publication file —
+   observations as `kind: "out-of-scope-observation"`; misconfigurations as
    `kind: "review-brief-misconfiguration"` with `brief`, `reason`, and
-   `misconfigurationKind` preserved. Do not mix either channel into the brief
-   review, `briefFixRequired`, or the single-wave fix input. This second
-   best-effort publication reaches the same annexe-or-pull-request destination;
-   its failure degrades presentation and never changes the brief-stage outcome.
+   `misconfigurationKind` preserved — then invoke the member-aware
+   `publish-overflow.mjs` block from step 6, including `--members
+   "$MINOS_RUN_DIR/members.json"` whenever that record exists and the same
+   per-member handling of repository-grounded publications. Do not mix either
+   channel into the brief review, `briefFixRequired`, or the single-wave fix
+   input. This second best-effort publication reaches the same
+   annexe-or-pull-request destination; its failure degrades presentation and
+   never changes the brief-stage outcome.
 
    When `briefFixRequired` is false, the brief stage has passed: continue to
    finishing. When `briefFixRequired` is true, save the complete brief
@@ -1285,10 +1296,10 @@ pull request and every grouped passage in this lifecycle is inert.
    This mode dispatches every confirmed brief finding exactly once and never
    requests a second brief review or fix wave. If its
    `integration.commits` is non-empty, integrate them through `integrate-wave`
-   exactly as in the main loop, then take a fresh forge snapshot and use its
-   current head. When `fixReview` is present, write that object unchanged and
-   post the same location-bearing guarded pull-request comment described in
-   step 5 on that fresh head. Run `$MINOS_BUILD_CMD` and
+   exactly as in the main loop, then publish either the solo `fixReview` or
+   every grouped `integration.memberFixReviews` entry through the same
+   member-addressed, fresh-snapshot procedure described in step 5. Run
+   `$MINOS_BUILD_CMD` and
    `$MINOS_TEST_CMD` exactly as configured and to completion when each is
    non-empty; capture their complete combined output in the matching absolute
    `build-command-output.log` or `test-command-output.log`, preserve each

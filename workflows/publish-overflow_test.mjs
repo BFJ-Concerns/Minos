@@ -232,6 +232,60 @@ test("member overflow filing retains each member's source attribution", () => {
   assert.doesNotMatch(second, /first-owner|first-repo#11/);
 });
 
+test("member-attributed overflow refuses when the members record is absent", () => {
+  const { orientationPath, findingsPath } = fixture({ grounding: "repository" }, [
+    finding("misrouted overflow", { member: "first" }),
+  ]);
+
+  const result = run([orientationPath, findingsPath]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /member-attributed overflow requires a members record/);
+  assert.equal(result.stdout, "");
+});
+
+test("member-attributed overflow refuses a member absent from the record", () => {
+  const members = { members: [
+    { id: "first", owner: "first-owner", repo: "first-repo", number: 11 },
+  ] };
+  const { orientationPath, findingsPath, membersPath } = fixture({ grounding: "repository" }, [
+    finding("unknown member overflow", { member: "second" }),
+  ], members);
+
+  const result = run([orientationPath, findingsPath, "--members", membersPath]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /member-attributed overflow has an absent or unknown member/);
+  assert.equal(result.stdout, "");
+});
+
+test("member-attributed overflow refuses incomplete or duplicated member coordinates", async (t) => {
+  for (const testCase of [
+    {
+      name: "incomplete",
+      members: { members: [{ id: "first", owner: "", repo: "first-repo", number: 11 }] },
+      reason: /members record has incomplete member coordinates/,
+    },
+    {
+      name: "duplicated",
+      members: { members: [
+        { id: "first", owner: "first-owner", repo: "first-repo", number: 11 },
+        { id: "first", owner: "second-owner", repo: "second-repo", number: 22 },
+      ] },
+      reason: /members record duplicates member first/,
+    },
+  ]) {
+    await t.test(testCase.name, () => {
+      const { orientationPath, findingsPath, membersPath } = fixture({ grounding: "repository" }, [
+        finding("invalid member record", { member: "first" }),
+      ], testCase.members);
+
+      const result = run([orientationPath, findingsPath, "--members", membersPath]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, testCase.reason);
+      assert.equal(result.stdout, "");
+    });
+  }
+});
+
 test("an entry already carrying its marker is not rewritten, even retitled in case or spacing", () => {
   const annexe = annexeFixture();
   const first = fixture(annexeOrientation(annexe.clone), [finding("Stale  Cursor")]);
