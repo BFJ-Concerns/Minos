@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readlinkSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -223,6 +224,8 @@ syncBuiltinESMExports();
 function runWrapper(t, scenario, { retention = "unset" } = {}) {
   const operationRoot = mkdtempSync(join(tmpdir(), "minos-adjudicator-wrapper-"));
   t.after(() => rmSync(operationRoot, { recursive: true, force: true }));
+  const effectiveTmpDir = join(operationRoot, "tmp");
+  mkdirSync(effectiveTmpDir);
   const preloadPath = join(operationRoot, "record-ensemble.mjs");
   const recorderPath = join(operationRoot, "ensemble-call.json");
   const retentionShapePath = join(operationRoot, "retention-shape.json");
@@ -248,6 +251,7 @@ function runWrapper(t, scenario, { retention = "unset" } = {}) {
       encoding: "utf8",
       env: {
         ...process.env,
+        TMPDIR: effectiveTmpDir,
         NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
         MINOS_ADJUDICATOR_SCENARIO: scenario,
         MINOS_ADJUDICATOR_RECORDER: recorderPath,
@@ -274,7 +278,16 @@ function runWrapper(t, scenario, { retention = "unset" } = {}) {
   const retentionShape = existsSync(retentionShapePath)
     ? JSON.parse(readFileSync(retentionShapePath, "utf8"))
     : null;
-  return { verdict, launch, result, argsPath, workflowPath, minosRunDir, retentionShape };
+  return {
+    verdict,
+    launch,
+    result,
+    argsPath,
+    workflowPath,
+    effectiveTmpDir,
+    minosRunDir,
+    retentionShape,
+  };
 }
 
 function assertWithheld(verdict) {
@@ -298,7 +311,7 @@ function machineReadableBriefStatus(verdict, brief) {
 }
 
 test("the executable adjudicator carries the launch contract through to a publishable verdict", (t) => {
-  const { verdict, launch, result, argsPath, workflowPath } = runWrapper(t, "complete");
+  const { verdict, launch, result, argsPath, workflowPath, effectiveTmpDir } = runWrapper(t, "complete");
 
   assert.equal(launch.command, process.execPath);
   assert.deepEqual(launch.args, [
@@ -309,7 +322,12 @@ test("the executable adjudicator carries the launch contract through to a publis
   ]);
   assert.equal(launch.cwd, workflowsDir);
   assert.equal(launch.record, "on");
-  assert.match(launch.recordDir, /^\/tmp\/minos-ensemble-record-/);
+  assert.equal(
+    realpathSync(dirname(launch.recordDir)),
+    realpathSync(effectiveTmpDir),
+    "the executable wrapper creates Ensemble records directly in Node's effective temporary directory",
+  );
+  assert.match(basename(launch.recordDir), /^minos-ensemble-record-[^/]+$/);
   assert.equal(verdict.status, "complete");
   assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
   assert.deepEqual(verdict.reviewBody.comments.map((comment) => ({
