@@ -24,9 +24,10 @@ var commandCombinedOutput = func(ctx context.Context, name string, args ...strin
 }
 
 type SpawnResult struct {
-	Outcome      ReconcileDecision
-	BlockingUnit string
-	Detail       string
+	Outcome             ReconcileDecision
+	BlockingUnit        string
+	Detail              string
+	GroupCandidatesPath string
 }
 
 const runOwnerMarker = ".runwrap-owner"
@@ -94,6 +95,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}); own >= 0 {
 		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[own]}, nil
 	}
+	if holder, guarded := liveGroupMemberHolder(cfg.Runs.Dir, unit, active); guarded {
+		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: holder}, nil
+	}
 	if len(active) >= cfg.MaxConcurrentRuns() {
 		return SpawnResult{
 			Outcome:      SpawnSuppressed,
@@ -131,8 +135,20 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	reviewResultAlreadyCarried := false
 	if handoff != nil {
 		if reason, valid := adoptableRunDirectory(cfg, unit, facts, handoff); valid {
-			runDir = handoff.RunDir
-			adopted = true
+			if memberReason, membersValid := adoptableGroupMembers(ctx, cfg, facts, unit, handoff); membersValid {
+				runDir = handoff.RunDir
+				adopted = true
+			} else {
+				progressDecision = continuationProgressUnknown
+				fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, memberReason)
+				rejectRunHandoff(handoffFile, fmt.Errorf("%s", memberReason))
+				if _, statErr := os.Stat(handoffFile); statErr == nil {
+					return SpawnResult{}, fmt.Errorf("invalidate grouped continuation handoff %s", handoffFile)
+				} else if !os.IsNotExist(statErr) {
+					return SpawnResult{}, fmt.Errorf("confirm grouped continuation invalidation: %w", statErr)
+				}
+				handoff = nil
+			}
 		} else {
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
@@ -167,6 +183,12 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	if !adopted {
 		progressDecision = continuationProgressUnknown
+		// A fresh run does not inherit the previous run's fixed membership.
+		// Release the old group's guards before this reused unit name becomes
+		// live and can make those guards appear current again.
+		if err := releaseGroupMemberGuards(cfg.Runs.Dir, unit); err != nil {
+			return SpawnResult{}, fmt.Errorf("release previous group members: %w", err)
+		}
 	}
 	if adopted {
 		for _, stale := range []string{"lead-complete", "memory-pressure"} {
@@ -181,6 +203,12 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			return SpawnResult{}, err
 		}
 	}
+	// A continuation resumes the membership the original lead fixed, including
+	// an original singleton for which there is no members.json. Do not invite it
+	// to reconsider newly eligible siblings from this sweep.
+	if adopted {
+		admission.GroupCandidatesJSON = ""
+	}
 	reviewResultCarried := false
 	cleanupSpawnFailure := func() {
 		if adopted {
@@ -194,6 +222,14 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), reviewResultPath)
 		}
 		_ = removeRunDir(runDir)
+	}
+	if admission.GroupCandidatesJSON != "" {
+		candidatesPath := filepath.Join(runDir, "group-candidates.json")
+		if err := os.WriteFile(candidatesPath, []byte(admission.GroupCandidatesJSON), 0o600); err != nil {
+			cleanupSpawnFailure()
+			return SpawnResult{}, fmt.Errorf("write group candidates: %w", err)
+		}
+		admission.GroupCandidatesJSON = candidatesPath
 	}
 	if reviewResultPath != "" {
 		carriedResult := filepath.Join(runDir, "carried-review-result.json")
@@ -258,6 +294,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_RELEASED_HOLD_HEAD":      admission.ReleasedHoldHead,
 		"MINOS_RELEASED_HOLD_STAGE":     admission.ReleasedHoldStage,
 		"MINOS_RELEASED_HOLD_DIAGNOSIS": admission.ReleasedHoldDiagnosis,
+		"MINOS_GROUP_CANDIDATES":        admission.GroupCandidatesJSON,
 		"ENSEMBLE_CONCURRENCY_CLAUDE":   strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
 		"ENSEMBLE_CONCURRENCY_CODEX":    strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
 	}
@@ -301,9 +338,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{}, fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if progressDecision == continuationProgressAdvanced {
-		return SpawnResult{Outcome: SpawnContinued}, nil
+		return SpawnResult{Outcome: SpawnContinued, GroupCandidatesPath: admission.GroupCandidatesJSON}, nil
 	}
-	return SpawnResult{Outcome: SpawnStarted}, nil
+	return SpawnResult{Outcome: SpawnStarted, GroupCandidatesPath: admission.GroupCandidatesJSON}, nil
 }
 
 func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {

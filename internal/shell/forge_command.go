@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|head-movement|check-logs|claim|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge [--member OWNER REPO NUMBER] snapshot|head-movement|check-logs|claim|claim-member|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
 	member := forge.Repository{}
 	var memberPR int64
@@ -81,6 +81,34 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("usage: minos forge claim")
 		}
 		return emitForgeResult(stdout, "claim", adapter.Claim(ctx, guard.Repository, guard.PullRequest))
+	case "claim-member":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge claim-member OWNER REPO NUMBER")
+		}
+		cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
+		if err != nil {
+			return err
+		}
+		repos, err := LoadRepoConfigs(cfg.Root)
+		if err != nil {
+			return err
+		}
+		var repo RepoConfig
+		for _, candidate := range repos {
+			if candidate.Forge == os.Getenv("MINOS_FORGE") && candidate.Owner == guard.Repository.Owner && candidate.Repo == guard.Repository.Name {
+				repo = candidate
+				break
+			}
+		}
+		if repo.Repo == "" {
+			return fmt.Errorf("lead repository is not configured")
+		}
+		primary := Facts{Forge: os.Getenv("MINOS_FORGE"), Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
+		facts, err := claimGroupMember(ctx, cfg, repo, primary, args[1], args[2], args[3], os.Getenv("MINOS_WORKSPACE"))
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(facts)
 	case "status":
 		if len(args) != 4 {
 			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|incomplete|held|clean|merged|continuation")
@@ -93,11 +121,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		return emitForgeResult(stdout, "status", adapter.SetProductStatus(ctx, guard, state))
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
-			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|request-changes-checks|comment BODY_FILE [COMMENTS_FILE]")
+			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|approve-chain-wait|request-changes|request-changes-checks|comment BODY_FILE [COMMENTS_FILE]")
 		}
 		checkCaused := args[3] == "request-changes-checks"
+		chainWait := args[3] == "approve-chain-wait"
 		verdict, ok := map[string]forge.ReviewVerdict{
-			"approve": forge.ReviewApprove, "request-changes": forge.ReviewRequestChanges,
+			"approve": forge.ReviewApprove, "approve-chain-wait": forge.ReviewApprove, "request-changes": forge.ReviewRequestChanges,
 			"request-changes-checks": forge.ReviewRequestChanges, "comment": forge.ReviewVerdictComment,
 		}[args[3]]
 		if !ok {
@@ -111,6 +140,9 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		recordValues := map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA}
 		if checkCaused {
 			recordValues[product.RecordCauseKey] = product.RecordCauseRequiredChecks
+		}
+		if chainWait {
+			recordValues[product.RecordCauseKey] = product.RecordCauseChainWait
 		}
 		record, err := product.FormatRecord(recordValues)
 		if err != nil {
@@ -206,6 +238,17 @@ func leadForge(member forge.Repository, memberPR int64) (*forge.Adapter, forge.G
 		PullRequest: pr,
 	}
 	if memberPR != 0 {
+		if member != guard.Repository {
+			return nil, forge.Guard{}, "", fmt.Errorf("member is outside this run repository")
+		}
+		if memberPR != guard.PullRequest {
+			primary := Facts{Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
+			claimed := Facts{Owner: member.Owner, Repo: member.Name, PR: strconv.FormatInt(memberPR, 10)}
+			binding, err := os.ReadFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(claimed)))
+			if err != nil || strings.TrimSpace(string(binding)) != UnitName(primary) {
+				return nil, forge.Guard{}, "", fmt.Errorf("member is not claimed by this run")
+			}
+		}
 		guard.Repository = member
 		guard.PullRequest = memberPR
 	}

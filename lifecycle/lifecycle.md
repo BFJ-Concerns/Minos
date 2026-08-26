@@ -83,6 +83,9 @@ successor the preserved workspace:
 {
   "kind": "minos-run-handoff-v1",
   "pullRequest": { "owner": "OWNER", "repo": "REPOSITORY", "number": "NUMBER" },
+  "memberHeads": [
+    { "owner": "OWNER", "repo": "REPOSITORY", "number": "MEMBER_NUMBER", "head": "FRESH_MEMBER_HEAD_SHA" }
+  ],
   "head": "FRESH_SNAPSHOT_HEAD_SHA",
   "runDir": "$MINOS_RUN_DIR value",
   "stoppedAt": "concise description of the stopping point",
@@ -105,6 +108,13 @@ are both the fresh snapshot's `head_sha`, and the progress and loop-record
 write `{"round":0,"confirmedFixed":[],"confirmedUnfixed":[]}` to it. The
 snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the current head
 established by setup and may already be stale after a later repair push. Write
+`memberHeads` only for a grouped run: immediately before the handoff, take a
+fresh `forge --member` snapshot for every non-primary member and record
+every member's identity and `head_sha`. The successor adopts the preserved
+group only when that
+list exactly matches its guarded membership and every head is unchanged;
+a missing or moved member head starts a fresh run and releases the old guards.
+Omit `memberHeads` for a singleton. Write
 the complete handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
 `"$MINOS_HANDOFF"`. Finally run
 `printf 'continuation\n' > "$MINOS_RUN_DIR/lead-complete"` as the
@@ -218,8 +228,9 @@ pull request and every grouped passage in this lifecycle is inert.
    you take, run `"$MINOS_BIN" forge claim-member OWNER REPO NUMBER`: under
    the service's admission lock it re-reads forge state, refuses a member
    that is no longer eligible or already owned by a live run or group, and
-   otherwise guards the member against duplicate runs, claims it on the
-   forge (assign + 👀), and returns the member's facts as one JSON line. A
+   otherwise registers the member's source branch with the shared push guard,
+   guards the member against duplicate runs, claims it on the forge (assign +
+   👀), and returns the member's facts as one JSON line. A
    refusal simply drops that candidate — take what was granted and move on.
    Write this pull request's own facts first, then the granted members'
    facts, with one sentence of the grouping
@@ -228,16 +239,39 @@ pull request and every grouped passage in this lifecycle is inert.
    `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave" "$MINOS_WORKSPACE"
    --protect-members "$MINOS_RUN_DIR/members.json"` so the shared pre-push
    hook protects every claimed member before any member worktree or publisher
-   runs. Then reconcile each claimed member with its target
-   through the member reconciliation script the run scripts provide — a
-   sibling of `sync-target` that checks the member's head out in its own
-   worktree and pins the member's target under a member-scoped ref. Never
+   runs. Every later forge read or write for a non-primary member must use the
+   member-addressed form, `"$MINOS_BIN" forge --member OWNER REPO NUMBER
+   ACTION ...`, which requires the member's durable guard to name this run;
+   never use a primary writer with a member's head and target. Reconcile
+   claimed members in
+   dependency order, base first: a member whose target branch is another
+   claimed member's source branch runs only after that predecessor has
+   published its reconciliation.
+   Immediately before each member, run `"$MINOS_BIN" forge --member
+   OWNER REPO NUMBER snapshot` and use that fresh snapshot's `target_sha` as
+   `EXPECTED_TARGET`; keep `EXPECTED_HEAD` from the member's claim facts, and
+   if the snapshot's `head_sha` no longer equals it, apply the run-wide
+   foreign-head-movement discipline instead of absorbing the move as
+   reconciliation. This fresh target read lets a stacked child follow its
+   predecessor's newly published head rather than the coordinate captured
+   when all members were claimed. Create the required linked worktree for
+   that member before reconciliation: make a member-specific directory beneath
+   `$MINOS_RUN_DIR/worktrees`, then run `git -C "$MINOS_WORKSPACE" worktree
+   add --detach MEMBER_WORKSPACE HEAD`. `HEAD` is only the linked worktree's
+   safe initial checkout; the member reconciliation script fetches and checks
+   out the claimed member head. Run
+   `"${MINOS_SETUP_WORKSPACE%/*}/sync-member-target" MEMBER_WORKSPACE NUMBER
+   SOURCE_BRANCH TARGET_BRANCH EXPECTED_HEAD EXPECTED_TARGET METHOD` with the
+   identity, branches, and head returned in the member facts, the freshly
+   snapped target, and the repository's configured sync method. The script
+   checks the member's head out in that linked worktree and
+   pins the member's target under a member-scoped ref. Never
    run `sync-target` itself for a member: it syncs the invoking
    workspace's HEAD — the primary's tree — and its fetch would move this
    run's pinned `refs/minos/target`. Setup's pushed target reconciliation
    applies per member this way, and each member's pushed sync becomes
-   that member's current head, read thereafter from fresh per-member
-   snapshots. A candidates file that is absent or
+   that member's current head, which the next dependent member's fresh
+   snapshot observes. A candidates file that is absent or
    empty, or a judgement that declines every candidate, leaves this a
    single-pull-request run with no members record.
 
@@ -1359,11 +1393,13 @@ pull request and every grouped passage in this lifecycle is inert.
    as a solo run would leave it, and affects no other member. A chain
    member whose own result is clean but whose predecessor ended blocked
    **waits, expressed as a hold**: publish its approve review with
-   `"$MINOS_BIN" forge review HEAD TARGET approve-chain-wait BODY_FILE` —
+   `"$MINOS_BIN" forge --member OWNER REPO NUMBER review HEAD TARGET
+   approve-chain-wait BODY_FILE` —
    the command appends the machine-readable trailing record (cause
    `chain-wait`, and as TARGET the target SHA this verdict was rendered
    against) that lets the sweep spend the approval when the target moves —
-   then set `"$MINOS_BIN" forge status HEAD TARGET held` and post the
+   then set `"$MINOS_BIN" forge --member OWNER REPO NUMBER status HEAD TARGET
+   held` and post the
    comment opening with `Held at: finishing`, naming the blocked
    predecessor it waits on. When the predecessor eventually merges, the
    member's target moves, the sweep re-admits it, and the released

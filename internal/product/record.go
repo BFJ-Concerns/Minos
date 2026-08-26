@@ -9,6 +9,7 @@ import (
 
 const (
 	RecordCauseKey            = "cause"
+	RecordCauseChainWait      = "chain-wait"
 	RecordCauseRequiredChecks = "required-checks"
 	RecordTargetKey           = "target"
 )

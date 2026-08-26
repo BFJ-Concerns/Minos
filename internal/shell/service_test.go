@@ -103,6 +103,21 @@ func TestCheckCausedVerdictIsSpentOnlyByTargetMovementOnANonFork(t *testing.T) {
 	}) {
 		t.Fatal("findings-caused verdict was spent by target movement")
 	}
+
+	chainWaitReview := forge.Review{
+		State: "APPROVED",
+		Body:  "Waiting for the preceding member.\n\n<!-- Minos: cause=chain-wait head=head target=old-target -->",
+	}
+	if !checkCausedVerdictSpent(chainWaitReview, forge.Snapshot{
+		TargetSHA: "new-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
+	}) {
+		t.Fatal("chain-wait approval was not spent by target movement")
+	}
+	if checkCausedVerdictSpent(chainWaitReview, forge.Snapshot{
+		TargetSHA: "old-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
+	}) {
+		t.Fatal("chain-wait approval was spent before its target moved")
+	}
 }
 
 func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {

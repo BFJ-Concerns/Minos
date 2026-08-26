@@ -14,6 +14,7 @@ const runHandoffKind = "minos-run-handoff-v1"
 type runHandoff struct {
 	Kind             string           `json:"kind"`
 	PullRequest      handoffPull      `json:"pullRequest"`
+	MemberHeads      []handoffMember  `json:"memberHeads,omitempty"`
 	Head             string           `json:"head"`
 	RunDir           string           `json:"runDir"`
 	StoppedAt        string           `json:"stoppedAt"`
@@ -22,6 +23,13 @@ type runHandoff struct {
 	Predecessor      *handoffProgress `json:"predecessorProgress,omitempty"`
 	Progress         *handoffProgress `json:"progress,omitempty"`
 	GateRepairLadder *string          `json:"gateRepairLadder,omitempty"`
+}
+
+type handoffMember struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number string `json:"number"`
+	Head   string `json:"head"`
 }
 
 type handoffProgress struct {
@@ -83,6 +91,16 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 	}
 	if handoff.PullRequest.Owner == "" || handoff.PullRequest.Repo == "" || handoff.PullRequest.Number == "" {
 		return nil, fmt.Errorf("pull request identity must be complete")
+	}
+	seenMembers := make(map[string]bool, len(handoff.MemberHeads))
+	for _, member := range handoff.MemberHeads {
+		if member.Owner != handoff.PullRequest.Owner || member.Repo != handoff.PullRequest.Repo || member.Number == "" || member.Head == "" {
+			return nil, fmt.Errorf("member head identities must be complete and belong to the pull-request repository")
+		}
+		if member.Number == handoff.PullRequest.Number || seenMembers[member.Number] {
+			return nil, fmt.Errorf("member head pull-request numbers must be unique and exclude the primary")
+		}
+		seenMembers[member.Number] = true
 	}
 	var record handoffRunRecord
 	if err := json.Unmarshal(handoff.RunRecord, &record); err != nil {

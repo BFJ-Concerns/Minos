@@ -3,7 +3,6 @@ set -eu
 
 common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
 common_dir_resolved="$(CDPATH= cd -P -- "$common_dir" && pwd -P)"
-protected_ref_file="${common_dir}/minos-protected-ref"
 protected_refs=""
 controlled_permit=""
 expected_permitted_update=""
@@ -15,13 +14,14 @@ permit_is_in_common_dir() {
   [ "$permit_parent_resolved" = "$common_dir_resolved" ] && [ ! -L "$permit_path" ]
 }
 
-if [ -e "$protected_ref_file" ]; then
+for protected_ref_file in "${common_dir}/minos-protected-ref" "${common_dir}"/minos-protected-ref.member-*; do
+  [ -e "$protected_ref_file" ] || continue
   if [ ! -f "$protected_ref_file" ] || [ ! -r "$protected_ref_file" ]; then
     echo "pre-push-guard: protected-ref record is present but unreadable: $protected_ref_file" >&2
     exit 1
   fi
-  protected_refs="$(cat "$protected_ref_file")"
-  [ -n "$protected_refs" ] || {
+  record="$(cat "$protected_ref_file")"
+  [ -n "$record" ] || {
     echo "pre-push-guard: protected-ref record is invalid: <empty>" >&2
     exit 1
   }
@@ -37,13 +37,15 @@ if [ -e "$protected_ref_file" ]; then
       echo "pre-push-guard: protected-ref record is invalid: $protected_ref" >&2
       exit 1
     fi
+    protected_refs="${protected_refs}${protected_ref}
+"
   done <<EOF
-$protected_refs
+$record
 EOF
-fi
+done
 
 while read -r local_ref local_sha remote_ref remote_sha; do
-  if [ -n "$protected_refs" ] && printf '%s\n' "$protected_refs" | grep -Fqx "$remote_ref"; then
+  if [ -n "$protected_refs" ] && printf '%s' "$protected_refs" | grep -Fqx "$remote_ref"; then
     integrate_permit="${MINOS_INTEGRATE_WAVE_PUSH_PERMIT:-}"
     sync_permit="${MINOS_SYNC_TARGET_PUSH_PERMIT:-}"
     reconcile_permit="${MINOS_RECONCILE_TARGET_PUSH_PERMIT:-}"
