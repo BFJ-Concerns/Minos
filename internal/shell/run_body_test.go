@@ -929,12 +929,58 @@ func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 	for _, state := range []string{"failed", "stopped"} {
 		t.Run(state, func(t *testing.T) {
 			fixture := newRunBodyFixture(t)
-			fixture.run(t, map[string]string{"MINOS_TEST_TERMINAL_STATE": state})
+			cgroup := writeTestCgroup(t, fixture.root, 850_000_000, 1_000_000_000, 0, 850_000_000, 0)
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.events"), []byte("low 0\nhigh 3\nmax 17\noom 2\noom_kill 1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.peak"), []byte("987654321\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cgroup, "memory.pressure"), []byte("some avg10=0.01 avg60=0.02 avg300=0.03 total=456\nfull avg10=0.00 avg60=0.01 avg300=0.02 total=123\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			output, err := fixture.execute(map[string]string{
+				"MINOS_CGROUP_DIR":          cgroup,
+				"MINOS_TEST_TERMINAL_STATE": state,
+			})
+			if err != nil {
+				t.Fatalf("run-body failed after recording terminal lead evidence: %v\n%s", err, output)
+			}
 			assertContainsFile(t, fixture.record+".terminal", `"state":"`+state+`"`)
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.events]")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "oom_kill 1")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.peak]\n987654321")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.pressure]")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "some avg10=0.01")
+			assertFileEmpty(t, fixture.failureLog)
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 			fixture.assertProcessesStopped(t)
 		})
 	}
+}
+
+func TestRunBodyCapturesDeathEvidenceBeforeCleanupAndRecordsUnavailableCounters(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 850_000_000, 1_000_000_000, 0, 850_000_000, 0)
+	if err := os.WriteFile(filepath.Join(cgroup, "memory.events"), []byte("oom_kill 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(cgroup, "memory.pressure")); err != nil {
+		t.Fatal(err)
+	}
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+		"MINOS_TEST_CGROUP_ON_STOP": filepath.Join(cgroup, "memory.events"),
+	})
+	if err != nil {
+		t.Fatalf("run-body failed after recording terminal lead evidence: %v\n%s", err, output)
+	}
+	evidence := filepath.Join(fixture.runDir, "cgroup-death-evidence")
+	assertContainsFile(t, evidence, "oom_kill 1")
+	assertContainsFile(t, evidence, "[memory.pressure]\nunavailable")
+	assertContainsFile(t, filepath.Join(cgroup, "memory.events"), "oom_kill 0")
+	fixture.assertProcessesStopped(t)
 }
 
 func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
@@ -1456,6 +1502,9 @@ case "$1" in
     ;;
   stop)
     printf 'stop %s\n' "$2" >>"$record.calls"
+    if [ -n "${MINOS_TEST_CGROUP_ON_STOP:-}" ]; then
+      printf 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n' >"$MINOS_TEST_CGROUP_ON_STOP"
+    fi
     while IFS= read -r pid; do
       kill "$pid" 2>/dev/null || true
     done <"$record.pids"
@@ -1636,6 +1685,9 @@ func writeTestCgroup(t *testing.T, root string, current, maximum, inactiveFile, 
 		"memory.max":          fmt.Sprintf("%d\n", maximum),
 		"memory.stat":         fmt.Sprintf("anon %d\ninactive_file %d\n", anon, inactiveFile),
 		"memory.swap.current": fmt.Sprintf("%d\n", swap),
+		"memory.events":       "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n",
+		"memory.peak":         fmt.Sprintf("%d\n", current),
+		"memory.pressure":     "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
 	}
 	for name, contents := range files {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(contents), 0o644); err != nil {

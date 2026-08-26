@@ -12,15 +12,16 @@ import (
 const runHandoffKind = "minos-run-handoff-v1"
 
 type runHandoff struct {
-	Kind        string           `json:"kind"`
-	PullRequest handoffPull      `json:"pullRequest"`
-	Head        string           `json:"head"`
-	RunDir      string           `json:"runDir"`
-	StoppedAt   string           `json:"stoppedAt"`
-	WrittenAt   string           `json:"writtenAt"`
-	RunRecord   json.RawMessage  `json:"runRecord"`
-	Predecessor *handoffProgress `json:"predecessorProgress,omitempty"`
-	Progress    *handoffProgress `json:"progress,omitempty"`
+	Kind             string           `json:"kind"`
+	PullRequest      handoffPull      `json:"pullRequest"`
+	Head             string           `json:"head"`
+	RunDir           string           `json:"runDir"`
+	StoppedAt        string           `json:"stoppedAt"`
+	WrittenAt        string           `json:"writtenAt"`
+	RunRecord        json.RawMessage  `json:"runRecord"`
+	Predecessor      *handoffProgress `json:"predecessorProgress,omitempty"`
+	Progress         *handoffProgress `json:"progress,omitempty"`
+	GateRepairLadder *string          `json:"gateRepairLadder,omitempty"`
 }
 
 type handoffProgress struct {
@@ -173,13 +174,14 @@ func rejectRunHandoff(path string, reason error) {
 }
 
 func adoptableRunDirectory(cfg ServiceConfig, unit string, facts Facts, handoff *runHandoff) (string, bool) {
-	cleanRunDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir)
-	if !contained {
-		return "runDir is not a direct, unit-named child of runs.dir", false
-	}
+	cleanRunDir := filepath.Clean(handoff.RunDir)
 	info, err := os.Stat(cleanRunDir)
 	if err != nil || !info.IsDir() {
 		return "runDir does not exist as a directory", false
+	}
+	cleanRunDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir)
+	if !contained {
+		return "runDir is not a direct, unit-named child of runs.dir", false
 	}
 	if _, err := os.Stat(filepath.Join(cleanRunDir, runOwnerMarker)); err == nil || !os.IsNotExist(err) {
 		return "runDir is still owned by another runwrap invocation", false
@@ -203,6 +205,14 @@ func containedRunDirectory(cfg ServiceConfig, unit, runDir string) (string, bool
 	cleanRunsDir := filepath.Clean(cfg.Runs.Dir)
 	if runDir == "" || !filepath.IsAbs(runDir) || cleanRunDir != runDir ||
 		filepath.Dir(cleanRunDir) != cleanRunsDir || !strings.HasPrefix(filepath.Base(cleanRunDir), unit+"-") {
+		return "", false
+	}
+	resolvedRunsDir, err := filepath.EvalSymlinks(cleanRunsDir)
+	if err != nil {
+		return "", false
+	}
+	resolvedRunDir, err := filepath.EvalSymlinks(cleanRunDir)
+	if err != nil || filepath.Dir(resolvedRunDir) != resolvedRunsDir {
 		return "", false
 	}
 	return cleanRunDir, true

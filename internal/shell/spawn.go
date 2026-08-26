@@ -215,6 +215,12 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			cleanupSpawnFailure()
 			return SpawnResult{}, fmt.Errorf("seed continuation loop record: %w", err)
 		}
+		if handoff.GateRepairLadder != nil {
+			if err := os.WriteFile(filepath.Join(runDir, "gate-repair-ladder.log"), []byte(*handoff.GateRepairLadder), 0o600); err != nil {
+				cleanupSpawnFailure()
+				return SpawnResult{}, fmt.Errorf("restore continuation gate repair ladder: %w", err)
+			}
+		}
 		if err := os.Remove(handoffFile); err != nil {
 			cleanupSpawnFailure()
 			return SpawnResult{}, fmt.Errorf("consume continuation handoff: %w", err)
