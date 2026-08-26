@@ -955,7 +955,7 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 		establishedMembers bool
 	}{
 		{name: "started primary"},
-		{name: "continued primary", continuing: true},
+		{name: "continued singleton with fixed membership", continuing: true},
 		{name: "continued group with fixed membership", continuing: true, establishedMembers: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1009,7 +1009,7 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 				t.Fatal("sweep did not start the primary lead")
 			}
 			wantStarts := 1
-			if test.establishedMembers {
+			if test.continuing {
 				wantStarts = 2
 			}
 			if starts != wantStarts {
@@ -1020,9 +1020,9 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 				t.Fatalf("MINOS_RESUME set = %t, want %t", got, test.continuing)
 			}
 			candidatePath := environment["MINOS_GROUP_CANDIDATES"]
-			if test.establishedMembers {
+			if test.continuing {
 				if candidatePath != "" {
-					t.Fatalf("continued group received fresh candidate path %q", candidatePath)
+					t.Fatalf("continuation received fresh candidate path %q", candidatePath)
 				}
 				return
 			}
