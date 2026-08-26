@@ -64,13 +64,23 @@ function writeUpComment(finding, writeUp) {
 
 function memberCommitGroups(fixed) {
   const byMember = new Map();
+  const memberByCommit = new Map();
+  const hasMemberAttribution = fixed.some(({ finding }) => typeof finding?.member === "string" && finding.member !== "");
   for (const { finding, commit } of fixed) {
-    if (typeof finding?.member !== "string" || finding.member === "" || typeof commit !== "string" || commit === "") continue;
+    if (typeof commit !== "string" || commit === "") continue;
+    if (typeof finding?.member !== "string" || finding.member === "") {
+      if (hasMemberAttribution) return { reason: "completed grouped repair has no member attribution" };
+      continue;
+    }
+    const assigned = memberByCommit.get(commit);
+    if (assigned && assigned !== finding.member)
+      return { reason: `completed repair ${commit} is assigned to more than one member` };
+    memberByCommit.set(commit, finding.member);
     const commits = byMember.get(finding.member) || [];
     if (!commits.includes(commit)) commits.push(commit);
     byMember.set(finding.member, commits);
   }
-  return [...byMember].map(([member, commits]) => ({ member, commits }));
+  return { groups: [...byMember].map(([member, commits]) => ({ member, commits })) };
 }
 
 function verificationInstruction(verification) {
@@ -214,6 +224,8 @@ if (plan.classification === "single-wave") {
     if (usedCommit) commits.push(result.commit);
   });
   const uniqueCommits = [...new Set(commits)];
+  const memberCommits = memberCommitGroups(fixed);
+  if (memberCommits.reason) return failedResult(plan, memberCommits.reason);
   return {
     status: "complete",
     classification: "single-wave",
@@ -229,7 +241,7 @@ if (plan.classification === "single-wave") {
     requestChangesReview: null,
     integration: {
       commits: uniqueCommits,
-      memberCommits: memberCommitGroups(fixed),
+      memberCommits: memberCommits.groups,
       pushCount: uniqueCommits.length > 0 ? 1 : 0,
       author: { name: "Minos", email: "minos@example.invalid" },
     },
@@ -335,6 +347,8 @@ const confirmedFixed = [
 ];
 const uniqueCommits = [...new Set(commits)];
 const writeUps = [...fixed.values()];
+const memberCommits = memberCommitGroups(writeUps);
+if (memberCommits.reason) return failedResult(plan, memberCommits.reason);
 return {
   status: "complete",
   classification: "working",
@@ -350,7 +364,7 @@ return {
   requestChangesReview: null,
   integration: {
     commits: uniqueCommits,
-    memberCommits: memberCommitGroups([...fixed.values()]),
+    memberCommits: memberCommits.groups,
     pushCount: uniqueCommits.length > 0 ? 1 : 0,
     author: { name: "Minos", email: "minos@example.invalid" },
   },

@@ -295,6 +295,14 @@ test("a grouped wave assigns each completed commit to its finding member", async
   ]);
 });
 
+test("a grouped dispatch cannot assign one repair commit to two members", async () => {
+  const first = { ...finding("first", "High", "a.go", 1), member: "first-member" };
+  const second = { ...finding("second", "High", "b.go", 2), member: "second-member" };
+  const { result } = await run(args([first, second], { grouping: grouping([first.id, second.id]) }));
+  assert.equal(result.status, "incomplete");
+  assert.match(result.reason, /assigned to more than one member/);
+});
+
 test("fix assignments name the configured gate as the lead's to run, never the worker's", async () => {
   const original = finding("transition", "High", "internal/state.go", 41);
   const cases = [
