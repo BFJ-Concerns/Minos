@@ -1361,7 +1361,7 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(installed)); got != "b3633ac75f5722cdb1383b8ba1bbd5939427327cf594665aa9565dc12daadab6" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(installed)); got != "d014d45c7caf0a482ada2594942ee08ddab3493ed43ee6036e2befe5c35bb367" {
 		t.Fatalf("installed Ensemble digest = %s", got)
 	}
 }
