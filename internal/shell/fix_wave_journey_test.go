@@ -113,7 +113,8 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	}
 	assertUnpermittedPushIsRefused := func(branch, name string) {
 		worktree := filepath.Join(t.TempDir(), "unpermitted")
-		runGit(t, workspace, "worktree", "add", "--detach", worktree, "HEAD")
+		branchHead := gitOutput(t, remote, "rev-parse", "refs/heads/"+branch)
+		runGit(t, workspace, "worktree", "add", "--detach", worktree, branchHead)
 		if err := os.WriteFile(filepath.Join(worktree, name), []byte(name+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -130,8 +131,8 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	if output, err := runIntegration("member-one", first); err != nil {
 		t.Fatalf("member one integration: %v\n%s", err, output)
 	}
-	if got := gitOutput(t, workspace, "show", "HEAD:one.txt"); got != "one.txt" {
-		t.Fatalf("member one workspace repair = %q", got)
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != base {
+		t.Fatalf("workspace after member one = %q, want primary %q", got, base)
 	}
 	protectedRefs, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
 	if err != nil {
@@ -144,6 +145,9 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	second := makeCommit("two.txt", "Minos", "minos@example.invalid")
 	if output, err := runIntegration("member-two", second); err != nil {
 		t.Fatalf("member two integration: %v\n%s", err, output)
+	}
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != base {
+		t.Fatalf("workspace after member two = %q, want primary %q", got, base)
 	}
 	protectedRefs, err = os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
 	if err != nil {
@@ -194,6 +198,9 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	}
 	if got := gitOutput(t, remote, "rev-parse", "refs/heads/bad-member"); got != base {
 		t.Fatalf("bad member moved to %q, want %q", got, base)
+	}
+	if got, want := gitOutput(t, workspace, "rev-parse", "HEAD"), gitOutput(t, remote, "rev-parse", "refs/heads/main"); got != want {
+		t.Fatalf("workspace after member refusal = %q, want primary %q", got, want)
 	}
 }
 

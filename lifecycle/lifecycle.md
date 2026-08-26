@@ -1106,7 +1106,11 @@ pull request and every grouped passage in this lifecycle is inert.
    verifies every commit's Minos author, and pushes once to that branch only.
    It records the member branch as protected and creates the same one-use
    push permit for every push, so the guard applies independently to every
-   touched member. No fix agent may push.
+   touched member. On success or refusal, each member invocation restores the
+   claimed workspace to the primary's fresh published head. This gives the
+   post-wave gate a defined conservative tree without deciding the commission's
+   unresolved question of what a grouped gate should judge. No fix agent may
+   push.
 
    The workspace's pre-push guard protects the recorded pull-request ref by
    destination ref name, regardless of the remote name or whether Git was
