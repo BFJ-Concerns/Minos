@@ -31,7 +31,7 @@ const expectedCallSites = new Map([
   ["review-briefs.js", 4],
   ["review-scope.js", 1],
   ["fix.js", 3],
-  ["setup.js", 1],
+  ["setup.js", 2],
   ["rootcause.js", 1],
 ]);
 

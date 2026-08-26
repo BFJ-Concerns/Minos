@@ -32,23 +32,32 @@ function setupInput(overrides = {}) {
     setupBrief: {
       path: "workflows/setup-briefs/setup-agent.md",
       readPath: "/opt/minos/workflows/setup-briefs/setup-agent.md",
-      content: "SETUP_BRIEF_SENTINEL_OCHRE_719",
+      content: `SETUP_BRIEF_SENTINEL_OCHRE_719
+
+In full mode, use the repository's configured commands and manifests to choose
+which caches to warm, then run each configured build and test command exactly
+once to completion. Passwordless sudo is available when an evidenced system
+package is the appropriate installation.`,
     },
     objections: null,
     ...overrides,
   };
 }
 
-test("setup workflow binds inputs and dispatches one non-isolated Opus leg", async () => {
+test("setup workflow sends recorded conflicts to Opus before provisioning", async () => {
   const calls = [];
   const result = await setupWorkflow(
     async (prompt, options) => {
       calls.push({ prompt, options });
+      if (options.model === "claude-opus-5") {
+        return {
+          reconciliation: {
+            attempted: true,
+            resolutions: [{ path: "package.json", note: "preserved both dependency updates" }],
+          },
+        };
+      }
       return {
-        reconciliation: {
-          attempted: true,
-          resolutions: [{ path: "package.json", note: "preserved both dependency updates" }],
-        },
         environment: { ready: true, actions: ["npm ci"], cause: null },
         commandExecutions: {
           head: "head-setup-719",
@@ -64,22 +73,65 @@ test("setup workflow binds inputs and dispatches one non-isolated Opus leg", asy
     setupInput(),
   );
   assert.equal(result.status, "complete");
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(calls[0].options.engine, "claude");
   assert.equal(calls[0].options.model, "claude-opus-5");
   assert.equal(calls[0].options.effort, "high");
   assert.equal(calls[0].options.isolation, undefined);
-  assert.equal(calls[0].options.label, "setup");
+  assert.equal(calls[0].options.label, "setup-reconciliation");
   assert.match(calls[0].prompt, /GUIDANCE_SENTINEL_VIOLET_719/);
   assert.match(calls[0].prompt, /SETUP_BRIEF_SENTINEL_OCHRE_719/);
   assert.match(calls[0].prompt, /package\.json/);
-  assert.match(calls[0].prompt, /npm run build/);
-  assert.match(calls[0].prompt, /npm test/);
-  assert.match(calls[0].prompt, /run each non-empty configured command exactly once to completion/);
-  assert.match(calls[0].prompt, /re-run that command after the evidenced repair/);
-  assert.match(calls[0].prompt, /never re-run without a proven, repaired environment fault/);
-  assert.match(calls[0].prompt, /raw outcomes are evidence only; do not classify/);
-  assert.match(calls[0].prompt, /Do not commit, push/);
+  assert.match(calls[0].prompt, /which caches to warm/);
+  assert.match(calls[0].prompt, /Passwordless sudo is available/);
+  assert.match(calls[0].prompt, /do not inspect, install, upgrade, warm, or otherwise alter the environment/i);
+  assert.match(calls[0].prompt, /do not run configured build or test commands/i);
+  assert.match(calls[0].prompt, /takes precedence over any environment instructions in the shipped setup brief/i);
+
+  assert.equal(calls[1].options.engine, "codex");
+  assert.equal(calls[1].options.model, "gpt-5.6-terra");
+  assert.equal(calls[1].options.effort, "low");
+  assert.equal(calls[1].options.label, "setup-provision");
+  assert.match(calls[1].prompt, /GUIDANCE_SENTINEL_VIOLET_719/);
+  assert.match(calls[1].prompt, /SETUP_BRIEF_SENTINEL_OCHRE_719/);
+  assert.doesNotMatch(calls[1].prompt, /Resolve these conflicted paths/);
+  assert.match(calls[1].prompt, /Install missing global toolchains/);
+  assert.match(calls[1].prompt, /npm run build/);
+  assert.match(calls[1].prompt, /npm test/);
+  assert.match(calls[1].prompt, /run each non-empty configured command exactly once to completion/);
+  assert.match(calls[1].prompt, /re-run that command after the evidenced repair/);
+  assert.match(calls[1].prompt, /never re-run without a proven, repaired environment fault/);
+  assert.match(calls[1].prompt, /raw outcomes are evidence only; do not classify/);
+  assert.match(calls[1].prompt, /commit, or push/);
+});
+
+test("clean setup provisions without dispatching an Opus reconciliation leg", async () => {
+  const calls = [];
+  const result = await setupWorkflow(
+    async (prompt, options) => {
+      calls.push({ prompt, options });
+      return {
+        environment: { ready: true, actions: ["npm ci"], cause: null },
+        commandExecutions: {
+          head: "head-setup-719",
+          build: { command: "npm run build", exitStatus: 0 },
+          test: { command: "npm test", exitStatus: 0 },
+        },
+      };
+    },
+    async () => [],
+    async () => [],
+    () => {},
+    () => {},
+    setupInput({ conflicts: [], preimageDir: null }),
+  );
+  assert.equal(result.status, "complete");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.model, "gpt-5.6-terra");
+  assert.equal(calls[0].options.effort, "low");
+  assert.ok(calls.every(({ options }) => options.model !== "claude-opus-5"));
+  assert.match(calls[0].prompt, /Reconciliation is already clean/);
+  assert.match(calls[0].prompt, /Install missing global toolchains/);
 });
 
 test("reconciliation-only retry carries objections and excludes provisioning work", async () => {
@@ -111,11 +163,12 @@ test("reconciliation-only retry carries objections and excludes provisioning wor
   );
   assert.equal(result.status, "complete");
   assert.match(captured, /target-side engine floor was dropped/);
-  assert.match(captured, /Do not inspect, install, upgrade/);
+  assert.match(captured, /do not inspect, install, upgrade/i);
+  assert.match(captured, /takes precedence over any environment instructions in the shipped setup brief/);
   assert.doesNotMatch(captured, /Install missing global toolchains/);
 });
 
-test("setup workflow fails closed when its input or leg result is absent", async () => {
+test("setup workflow fails closed when its input, reconciliation result, or provisioning result is absent", async () => {
   let calls = 0;
   const invalid = await setupWorkflow(
     async () => { calls += 1; },
@@ -136,7 +189,20 @@ test("setup workflow fails closed when its input or leg result is absent", async
     () => {},
     setupInput(),
   );
-  assert.deepEqual(missing, { status: "incomplete", reason: "setup agent returned no result" });
+  assert.deepEqual(missing, { status: "incomplete", reason: "setup reconciliation agent returned no result" });
+
+  const provisioningMissing = await setupWorkflow(
+    async () => null,
+    async () => [],
+    async () => [],
+    () => {},
+    () => {},
+    setupInput({ conflicts: [], preimageDir: null }),
+  );
+  assert.deepEqual(provisioningMissing, {
+    status: "incomplete",
+    reason: "setup provisioning agent returned no result",
+  });
 });
 
 test("setup workflow refuses command evidence outside the requested envelope", async () => {

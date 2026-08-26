@@ -4,10 +4,13 @@ export const meta = {
   phases: [{ title: "Setup", detail: "resolve reconciliation conflicts and provision evidenced requirements" }],
 };
 
-const resultSchema = {
+const RECONCILIATION_MODEL = "claude-opus-5";
+const PROVISIONING_MODEL = "gpt-5.6-terra";
+
+const reconciliationSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["reconciliation", "environment", "commandExecutions"],
+  required: ["reconciliation"],
   properties: {
     reconciliation: {
       type: "object",
@@ -29,6 +32,14 @@ const resultSchema = {
         },
       },
     },
+  },
+};
+
+const provisioningSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["environment", "commandExecutions"],
+  properties: {
     environment: {
       type: "object",
       additionalProperties: false,
@@ -91,29 +102,7 @@ function validInput(input) {
   );
 }
 
-function promptFor(input) {
-  const conflictJob = input.conflicts.length === 0
-    ? "There are no reconciliation conflicts. Report reconciliation.attempted as false and return no resolutions."
-    : `Resolve these conflicted paths in order: ${JSON.stringify(input.conflicts)}.
-The marker-bearing preimages are under: ${input.preimageDir}
-Reconcile both parents' intents. Stage each resolution. Do not commit, push, or touch an unconflicted file.
-Do not re-implement either side or add logic that exists in neither parent.`;
-  const objections = input.objections === null
-    ? "There are no lead objections from an earlier attempt."
-    : `The lead rejected the earlier resolutions for these reasons: ${JSON.stringify(input.objections)}`;
-  const environmentJob = input.mode === "reconcile-only"
-    ? `This is a reconciliation-only retry. Do not inspect, install, upgrade, or otherwise alter the environment.
-Return commandExecutions with head ${JSON.stringify(input.head)}, both exact configured command strings, and null exit statuses; this retry record is not reusable execution evidence.`
-    : `After conflict resolution, verify and ready only what these configured commands need:
-Build command: ${JSON.stringify(input.buildCommand)}
-Test command: ${JSON.stringify(input.testCommand)}
-Judge requirements from repository pins, manifests, and lockfiles. Verify working tools before installing anything.
-Install missing global toolchains and per-checkout dependencies only when evidenced by those commands and repository files.
-Do not modify repository files, regenerate a lockfile, or invent a build or test command.
-After provisioning, run each non-empty configured command exactly once to completion, build first and then test. One exception: when a command's run fails on an environment fault you then prove and repair, re-run that command after the evidenced repair and record the repair as an action; never re-run without a proven, repaired environment fault between attempts. Record commandExecutions with head ${JSON.stringify(input.head)}, each exact command string, and its final integer exit status. For an empty command, record its exact empty string and a null exit status without running anything. These raw outcomes are evidence only; do not classify them as passed, failed, or skipped.
-When no tool or dependency action is needed, report the environment ready with an empty actions list.
-When a requirement cannot be provisioned, return environment.ready false and state exactly what was needed, tried, and failed.`;
-
+function contextFor(input) {
   return `Read and follow the shipped setup brief at ${input.setupBrief.readPath}.
 
 <setup-brief path="${input.setupBrief.path}">
@@ -127,16 +116,36 @@ ${input.guidance.content}
 </project-guidance>
 
 Workspace: ${input.workspace}
-Mode: ${input.mode}
+Mode: ${input.mode}`;
+}
 
-First job — reconciliation:
-${conflictJob}
-${objections}
+function reconciliationPrompt(input) {
+  const objections = input.objections === null
+    ? "There are no lead objections from an earlier attempt."
+    : `The lead rejected the earlier resolutions for these reasons: ${JSON.stringify(input.objections)}`;
+  return `${contextFor(input)}
 
-Second job — environment:
-${environmentJob}
+Resolve these conflicted paths in order: ${JSON.stringify(input.conflicts)}.
+The marker-bearing preimages are under: ${input.preimageDir}
+Reconcile both parents' intents. Stage each resolution. Do not commit, push, or touch an unconflicted file.
+Do not re-implement either side or add logic that exists in neither parent.
+For this reconciliation leg, do not inspect, install, upgrade, warm, or otherwise alter the environment, and do not run configured build or test commands. This limitation takes precedence over any environment instructions in the shipped setup brief; provisioning is a separate leg.
+${objections}`;
+}
 
-Return the required structured result.`;
+function provisioningPrompt(input) {
+  return `${contextFor(input)}
+
+Reconciliation is already clean or has completed separately. Do not inspect or modify conflicted files.
+Verify and ready only what these configured commands need:
+Build command: ${JSON.stringify(input.buildCommand)}
+Test command: ${JSON.stringify(input.testCommand)}
+Judge requirements from repository pins, manifests, and lockfiles. Verify working tools before installing anything.
+Install missing global toolchains and per-checkout dependencies only when evidenced by those commands and repository files.
+Do not modify repository files, regenerate a lockfile, invent a build or test command, commit, or push.
+After provisioning, run each non-empty configured command exactly once to completion, build first and then test. One exception: when a command's run fails on an environment fault you then prove and repair, re-run that command after the evidenced repair and record the repair as an action; never re-run without a proven, repaired environment fault between attempts. Record commandExecutions with head ${JSON.stringify(input.head)}, each exact command string, and its final integer exit status. For an empty command, record its exact empty string and a null exit status without running anything. These raw outcomes are evidence only; do not classify them as passed, failed, or skipped.
+When no tool or dependency action is needed, report the environment ready with an empty actions list.
+When a requirement cannot be provisioned, return environment.ready false and state exactly what was needed, tried, and failed.`;
 }
 
 const input = args && typeof args === "object" ? args : null;
@@ -144,25 +153,53 @@ if (!validInput(input))
   return { status: "incomplete", reason: "setup needs a valid deterministic input" };
 
 phase("Setup");
-const result = await agent(promptFor(input), {
-  engine: "claude",
-  schema: resultSchema,
-  model: "claude-opus-5",
-  effort: "high",
-  label: "setup",
+let reconciliation = { attempted: false, resolutions: [] };
+if (input.conflicts.length > 0) {
+  const reconciliationResult = await agent(reconciliationPrompt(input), {
+    engine: "claude",
+    schema: reconciliationSchema,
+    model: RECONCILIATION_MODEL,
+    effort: "high",
+    label: "setup-reconciliation",
+    phase: "Setup",
+  });
+  if (!reconciliationResult)
+    return { status: "incomplete", reason: "setup reconciliation agent returned no result" };
+  reconciliation = reconciliationResult.reconciliation;
+}
+
+if (input.mode === "reconcile-only") {
+  return {
+    status: "complete",
+    reconciliation,
+    environment: { ready: true, actions: [], cause: null },
+    commandExecutions: {
+      head: input.head,
+      build: { command: input.buildCommand, exitStatus: null },
+      test: { command: input.testCommand, exitStatus: null },
+    },
+  };
+}
+
+const provisioningResult = await agent(provisioningPrompt(input), {
+  engine: "codex",
+  schema: provisioningSchema,
+  model: PROVISIONING_MODEL,
+  effort: "low",
+  label: "setup-provision",
   phase: "Setup",
 });
 
-if (!result)
-  return { status: "incomplete", reason: "setup agent returned no result" };
-const executions = result.commandExecutions;
+if (!provisioningResult)
+  return { status: "incomplete", reason: "setup provisioning agent returned no result" };
+const executions = provisioningResult.commandExecutions;
 const validExecution = (execution, command) =>
   execution && execution.command === command &&
-  (input.mode === "reconcile-only" || command.trim() === ""
+  (command.trim() === ""
     ? execution.exitStatus === null
     : Number.isInteger(execution.exitStatus) && execution.exitStatus >= 0);
 if (!executions || executions.head !== input.head ||
-    !validExecution(executions.build, input.buildCommand) ||
-    !validExecution(executions.test, input.testCommand))
+  !validExecution(executions.build, input.buildCommand) ||
+  !validExecution(executions.test, input.testCommand))
   return { status: "incomplete", reason: "setup agent returned command outcomes outside the requested head and commands" };
-return { status: "complete", ...result };
+return { status: "complete", reconciliation, ...provisioningResult };
