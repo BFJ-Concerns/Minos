@@ -29,7 +29,8 @@ fi
 
 # Worker timings come from the Ensemble run records already on disk. The
 # adjudication wrapper and directly launched workflows retain their records
-# under ensemble-records/. The run-private home root remains for older runs.
+# under ensemble-records/. The run-private home root is the launcher's live
+# fallback when recording is enabled without naming a record directory.
 workers="[]"
 agent_files=""
 for record_root in "$run_dir/ensemble-records" \
