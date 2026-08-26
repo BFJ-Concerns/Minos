@@ -109,6 +109,17 @@ async function runFixPlan(plan, respond) {
 
 const ARGS = enumeratedArgs();
 
+test("a solo input derives its member from the run without a grouped members record", () => {
+  assert.deepEqual(ARGS.members, [{
+    id: "primary",
+    owner: "minos-e2e-owner",
+    repo: "subject",
+    number: 1,
+    target: "aaa111",
+    head: "bbb222",
+  }]);
+});
+
 function unit(id = "logic", specialistType = "correctness", scope = ["internal/x.go"], member = "primary") {
   return { id, member, concern: `${specialistType} concern ${id}`, scope, specialistType };
 }
@@ -1043,6 +1054,10 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   assert.match(lifecycle, /no line count, file count, or member count decides it/);
   assert.match(lifecycle, /forge claim-member OWNER REPO NUMBER/);
   assert.match(lifecycle, /--members "\$MINOS_RUN_DIR\/members\.json"/);
+  assert.match(
+    lifecycle,
+    /REVIEW_MEMBERS_ARGS=\(\)[\s\S]*if \[ -f "\$MINOS_RUN_DIR\/members\.json" \]; then[\s\S]*REVIEW_MEMBERS_ARGS=\(--members "\$MINOS_RUN_DIR\/members\.json"\)/,
+  );
   assert.match(lifecycle, /When the verdict carries `members` and `memberReviews`, publish the member[\s\S]*publish-member-reviews\.mjs/);
   assert.match(lifecycle, /A solo member takes this same publication path/);
   assert.match(
