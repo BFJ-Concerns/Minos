@@ -14,11 +14,6 @@ stop_session() {
   fi
 }
 
-stop_sccache() {
-  command -v sccache >/dev/null 2>&1 || return 0
-  sccache --stop-server >/dev/null 2>&1 || true
-}
-
 remove_run_tmpdir() {
   [ -n "$run_tmpdir" ] || return 0
   rm -rf -- "$run_tmpdir"
@@ -63,7 +58,6 @@ on_exit() {
     append_failure
   fi
   stop_session
-  stop_sccache
   archive_run
   remove_run_tmpdir
   exit "$status"

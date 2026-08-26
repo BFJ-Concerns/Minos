@@ -432,17 +432,42 @@ func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
 	fixture.assertProcessesStopped(t)
 }
 
-func TestRunBodyStopsRunScopedSccacheServer(t *testing.T) {
+func TestRunBodyLeavesSharedSccacheServerRunningForConcurrentRuns(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	sccacheSource := filepath.Join(fixture.root, "sccache")
 	writeScript(t, sccacheSource, `#!/usr/bin/env sh
-printf '%s\n' "$*" >"$MINOS_TEST_RECORD.sccache"
-exit 23
+set -eu
+case "${1:-}" in
+  --start-server)
+    sleep 300 </dev/null >/dev/null 2>&1 &
+    printf '%s\n' "$!" >"$MINOS_TEST_RECORD.sccache-server"
+    ;;
+  --stop-server)
+    kill "$(cat "$MINOS_TEST_RECORD.sccache-server")"
+    ;;
+esac
 `)
+	serverEnv := environmentWithOverrides(map[string]string{"MINOS_TEST_RECORD": fixture.record})
+	start := exec.Command(sccacheSource, "--start-server")
+	start.Env = serverEnv
+	if out, err := start.CombinedOutput(); err != nil {
+		t.Fatalf("start shared sccache server: %v\n%s", err, out)
+	}
+	serverPID, err := os.ReadFile(fixture.record + ".sccache-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(serverPID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
 
 	fixture.run(t, map[string]string{"MINOS_TEST_SCCACHE_SOURCE": sccacheSource})
 
-	assertContainsFile(t, fixture.record+".sccache", "--stop-server")
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("run-body stopped the shared sccache server used by concurrent runs: %v", err)
+	}
 }
 
 func TestRunBodyRejectsInvalidGatewayConfigurationBeforeLaunchingClaude(t *testing.T) {

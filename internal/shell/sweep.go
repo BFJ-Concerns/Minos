@@ -268,6 +268,9 @@ func sweepDecisionMessage(facts Facts, result ReconcileResult) string {
 	pullRequest := fmt.Sprintf("%s#%s", facts.RepoSlug(), facts.PR)
 	switch result.Decision {
 	case SpawnSuppressed:
+		if result.Detail != "" {
+			return fmt.Sprintf("%s: suppressed because %s", pullRequest, result.Detail)
+		}
 		return fmt.Sprintf("%s: suppressed by active unit %s", pullRequest, result.BlockingUnit)
 	case SpawnContinued:
 		return pullRequest + ": continued previous run"
