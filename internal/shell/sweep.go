@@ -124,7 +124,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
 			log.Print(message)
 		}
-		if result.Decision == SpawnStarted {
+		if result.Decision == SpawnStarted || result.Decision == SpawnContinued {
 			var siblings []Facts
 			if decodeErr := json.Unmarshal([]byte(groupCandidates[unit]), &siblings); decodeErr != nil && groupCandidates[unit] != "" {
 				log.Printf("%s#%s: decode admitted group candidates: %v", candidate.facts.RepoSlug(), candidate.facts.PR, decodeErr)

@@ -948,43 +948,64 @@ func TestForgejoSweepMeasuresPullRequestSnapshotReadsPerPass(t *testing.T) {
 	}
 }
 
-func TestForgejoSweepDeliversEligibleGroupCandidatesToTheStartedLead(t *testing.T) {
-	state := newForgejoFixtureState(t)
-	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
-	cfg := writeSweepFixtureConfig(t, state)
-	original := commandCombinedOutput
-	t.Cleanup(func() { commandCombinedOutput = original })
-	var firstStart []string
-	starts := 0
-	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if name == "systemd-run" {
-			starts++
-			if firstStart == nil {
-				firstStart = append([]string(nil), args...)
+func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		continuing bool
+	}{
+		{name: "started primary"},
+		{name: "continued primary", continuing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
+			cfg := writeSweepFixtureConfig(t, state)
+			if test.continuing {
+				_, _, facts := state.service(t)
+				facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+				current := handoffProgress{Stage: "fix", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+				predecessor := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+				_, _ = writeProgressHandoff(t, cfg, facts, current, &predecessor)
 			}
-		}
-		return nil, nil
-	}
-	if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
-		t.Fatal(err)
-	}
-	if firstStart == nil {
-		t.Fatal("sweep did not start the primary lead")
-	}
-	if starts != 1 {
-		t.Fatalf("sweep started %d grouped runs, want exactly one", starts)
-	}
-	environment := systemdEnvironment(t, firstStart)
-	data, err := os.ReadFile(environment["MINOS_GROUP_CANDIDATES"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var candidates []Facts
-	if err := json.Unmarshal(data, &candidates); err != nil {
-		t.Fatalf("decode candidates %q: %v", data, err)
-	}
-	if len(candidates) != 1 || candidates[0].PR != "2" {
-		t.Fatalf("lead candidates = %#v, want eligible sibling #2", candidates)
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var firstStart []string
+			starts := 0
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					starts++
+					if firstStart == nil {
+						firstStart = append([]string(nil), args...)
+					}
+				}
+				return nil, nil
+			}
+			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			if firstStart == nil {
+				t.Fatal("sweep did not start the primary lead")
+			}
+			if starts != 1 {
+				t.Fatalf("sweep started %d grouped runs, want exactly one", starts)
+			}
+			environment := systemdEnvironment(t, firstStart)
+			if got := environment["MINOS_RESUME"] == "true"; got != test.continuing {
+				t.Fatalf("MINOS_RESUME set = %t, want %t", got, test.continuing)
+			}
+			data, err := os.ReadFile(environment["MINOS_GROUP_CANDIDATES"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var candidates []Facts
+			if err := json.Unmarshal(data, &candidates); err != nil {
+				t.Fatalf("decode candidates %q: %v", data, err)
+			}
+			if len(candidates) != 1 || candidates[0].PR != "2" {
+				t.Fatalf("lead candidates = %#v, want eligible sibling #2", candidates)
+			}
+		})
 	}
 }
 
