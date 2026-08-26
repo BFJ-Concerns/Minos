@@ -164,10 +164,15 @@ members record is `$MINOS_RUN_DIR/members.json` — this pull request's
 own facts first, then the facts each claim command returned — written at
 claim and fixed from then on in *membership*: no member joins mid-run,
 and a small pull request arriving later is a later pass's ordinary work.
-The record fixes each member's identity — its number and branch names —
-never its coordinates: a member's current head and target are always
-taken from a fresh per-member snapshot at the point of use, because the
-run's own syncs and waves move them. A blocking outcome on one member
+The record fixes each member's identity — its number and branch names. When
+review input is built, `review-inputs.mjs` takes a fresh per-member snapshot and
+carries that snapshot's head and target into the workflow; the resulting
+verdict records those reviewed coordinates on its member entry. Operations this
+lifecycle explicitly bases on current forge state, such as a later sync or
+finishing, take another fresh per-member snapshot. Publication of an existing
+review verdict instead passes that verdict member's recorded reviewed head and
+target as explicit guard coordinates: if either moved, the guard rejects the
+write rather than publishing the verdict against an unreviewed revision. A blocking outcome on one member
 never holds a clean member back (step 8 carries the split; a chain's
 order is read from the members' target branches). When no grouping happened —
 no candidates, or the judgement declined them — the run owns this one
@@ -261,6 +266,8 @@ pull request and every grouped passage in this lifecycle is inert.
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" "$MINOS_HEAD_SHA" \
      > "$MINOS_RUN_DIR/setup-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
@@ -292,6 +299,8 @@ pull request and every grouped passage in this lifecycle is inert.
    node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" "$MINOS_HEAD_SHA" \
      --reconcile-only --objections "$MINOS_RUN_DIR/setup-objections.json" \
      > "$MINOS_RUN_DIR/setup-retry-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-retry-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
@@ -496,6 +505,8 @@ pull request and every grouped passage in this lifecycle is inert.
      --command FAILING_COMMAND --exit-status EXIT_STATUS \
      --evidence CAPTURED_OUTPUT_FILE \
      > "$MINOS_RUN_DIR/gate-repair-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/gate-repair-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
@@ -693,11 +704,16 @@ pull request and every grouped passage in this lifecycle is inert.
 
    ```sh
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+     ENSEMBLE_RUN_RECORD=on \
+     ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/NAME" \
      "${MINOS_SETUP_WORKSPACE%/*}/time-on-exit" "$MINOS_RUN_DIR/timings.ndjson" NAME \
      "${MINOS_SETUP_WORKSPACE%/*}/flag-on-exit" "$MINOS_RUN_DIR/NAME.done" \
      "${MINOS_SETUP_WORKSPACE%/*}/publish-on-exit" "$MINOS_RUN_DIR/NAME.json" \
      sh -c 'node /opt/minos/runtime/ensemble.mjs ... 2> "$MINOS_RUN_DIR/NAME.log"'
    ```
+
+   The shared wrapper is the sole setting for `ENSEMBLE_RUN_RECORD_DIR`:
+   substitute `NAME` with the stage name from the wrapped workflow block.
 
    `publish-on-exit` collects the command's stdout beside the result file
    and renames it into place only on a clean exit, so `NAME.json` is never
@@ -839,9 +855,13 @@ pull request and every grouped passage in this lifecycle is inert.
    Build the main review input from disk and write it to a file:
 
    ```sh
+   REVIEW_MEMBERS_ARGS=()
+   if [ -f "$MINOS_RUN_DIR/members.json" ]; then
+     REVIEW_MEMBERS_ARGS=(--members "$MINOS_RUN_DIR/members.json")
+   fi
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-inputs.mjs" \
      "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
-     --loop-record "$MINOS_LOOP_RECORD" \
+     --loop-record "$MINOS_LOOP_RECORD" "${REVIEW_MEMBERS_ARGS[@]}" \
      > "$MINOS_RUN_DIR/review-args.json"
    ```
 
@@ -950,6 +970,20 @@ pull request and every grouped passage in this lifecycle is inert.
    `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
    terminal marker, and stop.
+
+   Do not publish the verdict here. The publication-before-fix operation below
+   detects a verdict carrying `members` and `memberReviews` and redirects its
+   one review write through `publish-member-reviews.mjs`, retiring the former
+   primary-only review call for that shape. The executable passes each
+   member's recorded reviewed head and target as explicit guard coordinates
+   and issues that member’s addressed review, including an
+   empty scripted review for a member with no findings. A solo member takes
+   this same publication path. It does not write a terminal-shaped `Minos`
+   status while the loop is still working. On a terminal classification the
+   same operation posts `request-changes` for a member with blocking findings
+   and writes that member's `attention` status after its review. A clean
+   member review is not a completion marker: finishing owns clean status
+   publication after the repository-brief stage has passed.
 5. Save each complete review verdict, then read this sweep's mechanical
    digest:
 
@@ -1014,8 +1048,10 @@ pull request and every grouped passage in this lifecycle is inert.
    ```
 
    This one production operation prepares an immutable wave without agents. A
-   `working` preparation materialises the exact sweep review, publishes it
-   through the guarded forge command, and starts the effectful `fix.js`
+   member-shaped preparation publishes exactly one addressed review per member
+   through the member publisher; the former primary-only review call is used
+   only for a legacy verdict without members. A `working` preparation then
+   starts the effectful `fix.js`
    dispatcher only after the command returns `outcome: "applied"`. An exact
    pre-existing review is applied and may continue; every other publication
    result returns `incomplete` without starting the dispatcher. On an
@@ -1139,9 +1175,13 @@ pull request and every grouped passage in this lifecycle is inert.
    `Out-of-scope observation`, and `Review brief misconfiguration`. Publication
    is presentation-class: its failure never fails the run.
 
-   If `requestChangesReview` is present, materialise it exactly, post it with
-   `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE
-   COMMENTS_FILE`, and set status `attention`.
+   If `requestChangesReview` is present on a legacy verdict without `members`
+   and `memberReviews`, materialise it exactly, post it with `"$MINOS_BIN"
+   forge review HEAD TARGET request-changes BODY_FILE COMMENTS_FILE`, and set
+   status `attention`. For a member-shaped verdict, the publication-before-fix
+   operation has already published each attributed member's terminal review
+   and each blocking member's `attention` status: do not post a second
+   primary-only request-changes review.
    Review prose talks only about the code, never about Minos, its process or a
    round number. Operational conditions — head moved, forge unreadable, review
    not reached — are always carried by the `Minos` status, never by a review.
@@ -1214,6 +1254,8 @@ pull request and every grouped passage in this lifecycle is inert.
    node "${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs" \
      BRIEF_RESULT --single-wave \
      > "$MINOS_RUN_DIR/brief-fix-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/brief-fix-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/fix.js" \
@@ -1387,6 +1429,8 @@ pull request and every grouped passage in this lifecycle is inert.
      --skill "$MINOS_ROOT_CAUSE_SKILL" \
      --evidence "$MINOS_RUN_DIR/check-logs.json" \
      > "$MINOS_RUN_DIR/rootcause-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/rootcause-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \

@@ -27,10 +27,10 @@ if [ -r "$events_file" ]; then
   )" || commands="[]"
 fi
 
-# Worker timings come from the Ensemble run records already on disk: the
-# adjudication wrapper retains its record under ensemble-records/, and
-# directly launched workflows write theirs under the run-private home. Both
-# roots may be absent on a run that dispatched nothing.
+# Worker timings come from the Ensemble run records already on disk. The
+# adjudication wrapper and directly launched workflows retain their records
+# under ensemble-records/. The run-private home root is the launcher's live
+# fallback when recording is enabled without naming a record directory.
 workers="[]"
 agent_files=""
 for record_root in "$run_dir/ensemble-records" \

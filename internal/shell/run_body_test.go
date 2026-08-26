@@ -1193,6 +1193,114 @@ func TestVendoredEnsembleResolvesConfiguredConcurrencyFromRunEnvironment(t *test
 	}
 }
 
+func TestLifecycleEnsembleLaunchesRetainRunRecords(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	for _, launch := range []struct {
+		name   string
+		marker string
+	}{
+		{name: "setup", marker: `> "$MINOS_RUN_DIR/setup-args.json"`},
+		{name: "setup-retry", marker: `> "$MINOS_RUN_DIR/setup-retry-args.json"`},
+		{name: "gate-repair", marker: `> "$MINOS_RUN_DIR/gate-repair-args.json"`},
+		{name: "brief-fix", marker: `> "$MINOS_RUN_DIR/brief-fix-args.json"`},
+		{name: "finishing-rootcause", marker: `> "$MINOS_RUN_DIR/rootcause-args.json"`},
+	} {
+		t.Run(launch.name, func(t *testing.T) {
+			assertLifecycleEnsembleRecordLaunch(t, launch.name, launch.marker)
+
+			runDir := filepath.Join(t.TempDir(), "run")
+			archive := launchEnsembleRecordProbe(t, runDir, launch.name)
+			if !strings.HasPrefix(archive, filepath.Join(runDir, "ensemble-records", launch.name)+string(filepath.Separator)) {
+				t.Fatalf("%s archive = %q, want it below the run record root", launch.name, archive)
+			}
+		})
+	}
+}
+
+func assertLifecycleEnsembleRecordLaunch(t *testing.T, name, marker string) {
+	t.Helper()
+	lifecycle, err := os.ReadFile(filepath.Join("..", "..", "lifecycle", "lifecycle.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(lifecycle), marker)
+	if start < 0 {
+		t.Fatalf("lifecycle omits %s launch marker", name)
+	}
+	block := string(lifecycle)[start:]
+	if end := strings.Index(block, "```"); end >= 0 {
+		block = block[:end]
+	}
+	for _, want := range []string{
+		`ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR"`,
+		`ENSEMBLE_RUN_RECORD=on`,
+		`node /opt/minos/runtime/ensemble.mjs`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("%s launch omits %q:\n%s", name, want, block)
+		}
+	}
+	if strings.Contains(block, "ENSEMBLE_RUN_RECORD_DIR=") {
+		t.Fatalf("%s launch sets ENSEMBLE_RUN_RECORD_DIR instead of relying on the shared wrapper:\n%s", name, block)
+	}
+	if !strings.Contains(string(lifecycle), `ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/NAME"`) {
+		t.Fatal("shared lifecycle wrapper omits ENSEMBLE_RUN_RECORD_DIR")
+	}
+}
+
+func assertFixDispatchRetainsEnsembleRecord(t *testing.T) {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join("..", "..", "workflows", "publish-before-fix.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`ENSEMBLE_STATUS_DIR: env.MINOS_RUN_DIR`,
+		`ENSEMBLE_RUN_RECORD: "on"`,
+		`ENSEMBLE_RUN_RECORD_DIR: runRecordRoot`,
+	} {
+		if !strings.Contains(string(source), want) {
+			t.Fatalf("fix dispatch omits %q", want)
+		}
+	}
+}
+
+// launchEnsembleRecordProbe drives the vendored launcher rather than making a
+// record-shaped fixture. The deliberately invalid workflow exits non-zero only
+// after the launcher has opened and finalised its immutable run record.
+func launchEnsembleRecordProbe(t *testing.T, runDir, name string) string {
+	t.Helper()
+	bundle, err := filepath.Abs(filepath.Join("..", "..", "runtime", "ensemble.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := filepath.Join(t.TempDir(), "invalid-workflow.mjs")
+	if err := os.WriteFile(workflow, []byte("export default {};\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordRoot := filepath.Join(runDir, "ensemble-records", name)
+	cmd := exec.CommandContext(t.Context(), "node", bundle, workflow)
+	cmd.Dir = t.TempDir()
+	cmd.Env = environmentWithOverrides(map[string]string{
+		"HOME":                    filepath.Join(runDir, "home"),
+		"XDG_CONFIG_HOME":         filepath.Join(runDir, "config"),
+		"XDG_DATA_HOME":           filepath.Join(runDir, "data"),
+		"ENSEMBLE_STATUS_DIR":     runDir,
+		"ENSEMBLE_RUN_RECORD":     "on",
+		"ENSEMBLE_RUN_RECORD_DIR": recordRoot,
+	})
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("vendored Ensemble accepted invalid probe workflow\n%s", output)
+	}
+	manifests, err := filepath.Glob(filepath.Join(recordRoot, "runs", "*", "*", "*", "manifest.json"))
+	if err != nil || len(manifests) != 1 {
+		t.Fatalf("%s manifests = %v, error = %v; want one launcher-created record", name, manifests, err)
+	}
+	return filepath.Dir(manifests[0])
+}
+
 func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *testing.T) {
 	sourceRoot := t.TempDir()
 	for _, directory := range []string{"scripts", "runtime", "workflows"} {
