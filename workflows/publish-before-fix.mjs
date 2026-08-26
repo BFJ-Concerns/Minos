@@ -95,7 +95,7 @@ function terminalMemberReview(plan, review) {
         return {
           member: member.id,
           verdict: "comment",
-          body: "No confirmed findings in the reviewed code.",
+          body: "No blocking findings in the reviewed code.",
           comments: [],
           status: "clean",
         };

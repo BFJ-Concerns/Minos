@@ -579,6 +579,7 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.equal(result.requestChanges.length, 0);
       assert.equal(fixture.state.postCount, 1);
       assert.equal(fixture.state.reviews[0].state, "COMMENT");
+      assert.match(fixture.state.reviews[0].body, /^No blocking findings in the reviewed code\./);
       assert.equal(fixture.state.reviews[0].body.includes(SENTINEL), false);
       assert.deepEqual(fixture.state.comments.get(fixture.state.reviews[0].id), []);
       assert.equal(fixture.state.statusPostCount, 0);
@@ -586,6 +587,54 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     } finally {
       await fixture.close();
     }
+  });
+
+  await t.test("a mixed terminal group holds only the member with a blocking finding", async () => {
+    const blocking = finding({ member: "primary" });
+    const low = finding({ member: "sibling", severity: "Low", title: "minor sibling issue" });
+    const preparedInput = input([blocking, low], {
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "terminal",
+        basis: "the final round leaves one member blocked while its sibling has only overflow",
+      },
+    });
+    preparedInput.review.members = [
+      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, target: TARGET, head: HEAD },
+      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2, target: TARGET, head: HEAD },
+    ];
+    preparedInput.review.memberReviews = [
+      { member: "primary", verdict: "comment", body: "Confirmed findings in the reviewed code.", comments: [], status: "attention" },
+      { member: "sibling", verdict: "comment", body: "Confirmed findings in the reviewed code.", comments: [], status: "attention" },
+    ];
+
+    const root = mkdtempSync(join(tmpdir(), "minos-mixed-member-publication-"));
+    const callLog = join(root, "calls.log");
+    const minosBin = join(root, "minos-fixture");
+    writeFileSync(minosBin, `#!/bin/sh
+printf '%s\\n' "$*" >> '${callLog}'
+if [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; printf '{"outcome":"applied"}\\n'; elif [ "$6" = status ]; then printf '{"outcome":"applied"}\\n'; fi
+`);
+    chmodSync(minosBin, 0o755);
+    const result = await publishBeforeFix({
+      input: preparedInput,
+      head: HEAD,
+      target: TARGET,
+      minosBin,
+      launcher: "/unused/ensemble.mjs",
+      workflowScript: fixScriptPath,
+      runDispatch: async () => assert.fail("terminal publication must not dispatch fixes"),
+    });
+
+    assert.equal(result.status, "complete");
+    assert.deepEqual(result.publication, { outcome: "applied", reviews: 2 });
+    const calls = readFileSync(callLog, "utf8").trim().split("\n");
+    assert.ok(calls.some((call) => call.includes(`subject 1 review ${HEAD} ${TARGET} request-changes`)));
+    assert.ok(calls.some((call) => call.includes(`subject 1 status ${HEAD} ${TARGET} attention`)));
+    assert.ok(calls.some((call) => call.includes(`sibling 2 review ${HEAD} ${TARGET} comment`)));
+    assert.equal(calls.some((call) => call.includes(`sibling 2 status ${HEAD} ${TARGET}`)), false);
+    assert.ok(calls.includes(`content 1 Confirmed code findings remain unresolved. [{"path":"${blocking.path}","body":"**${blocking.title}**\\n\\n${blocking.explanation}\\n\\nSeverity: ${blocking.severity}. Confidence: ${blocking.confidence}.","line":${blocking.line}}]`));
+    assert.ok(calls.includes("content 2 No blocking findings in the reviewed code. []"));
   });
 
   await t.test("a terminal blocking finding retained only in the loop record holds its member", async () => {
