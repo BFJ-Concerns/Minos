@@ -280,8 +280,19 @@ test("a wave records one lead push for all distinct agent commits", async () => 
   const findings = [finding("first", "High", "a.go", 1), finding("second", "Low", "b.go", 2)];
   const { result } = await run(args(findings));
   assert.deepEqual(result.integration.commits, ["fix-dispatch-1-commit", "fix-dispatch-2-commit"]);
+  assert.deepEqual(result.integration.memberCommits, []);
   assert.equal(result.integration.pushCount, 1);
   assert.deepEqual(result.integration.author, { name: "Minos", email: "minos@example.invalid" });
+});
+
+test("a grouped wave assigns each completed commit to its finding member", async () => {
+  const first = { ...finding("first", "High", "a.go", 1), member: "first-member" };
+  const second = { ...finding("second", "High", "b.go", 2), member: "second-member" };
+  const { result } = await run(args([first, second]));
+  assert.deepEqual(result.integration.memberCommits, [
+    { member: "first-member", commits: ["fix-dispatch-1-commit"] },
+    { member: "second-member", commits: ["fix-dispatch-2-commit"] },
+  ]);
 });
 
 test("fix assignments name the configured gate as the lead's to run, never the worker's", async () => {

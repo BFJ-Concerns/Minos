@@ -56,14 +56,16 @@ function annexeOrientation(annexe, date = "2026-08-17") {
   };
 }
 
-function fixture(orientation, findings) {
+function fixture(orientation, findings, members = undefined) {
   const dir = mkdtempSync(join(tmpdir(), "publish-overflow-"));
   scratchDirs.push(dir);
   const orientationPath = join(dir, "orientation.json");
   const findingsPath = join(dir, "findings.json");
+  const membersPath = join(dir, "members.json");
   writeFileSync(orientationPath, JSON.stringify(orientation));
   writeFileSync(findingsPath, JSON.stringify(findings));
-  return { dir, orientationPath, findingsPath };
+  if (members !== undefined) writeFileSync(membersPath, JSON.stringify(members));
+  return { dir, orientationPath, findingsPath, ...(members === undefined ? {} : { membersPath }) };
 }
 
 function run(args) {
@@ -206,6 +208,28 @@ test("annexe grounding files findings, observations, and brief misconfigurations
     contents.match(/- Review brief misconfiguration: [^\n]+/)?.[0] || "",
     /Review finding|Out-of-scope observation/,
   );
+});
+
+test("member overflow filing retains each member's source attribution", () => {
+  const annexe = annexeFixture();
+  const members = { members: [
+    { id: "first", owner: "first-owner", repo: "first-repo", number: 11 },
+    { id: "second", owner: "second-owner", repo: "second-repo", number: 22 },
+  ] };
+  const { orientationPath, findingsPath, membersPath } = fixture(annexeOrientation(annexe.clone), [
+    finding("first-only overflow", { member: "first" }),
+    finding("second-only overflow", { member: "second", line: 15 }),
+  ], members);
+
+  const result = run([orientationPath, findingsPath, "--members", membersPath]);
+  assert.equal(result.status, 0);
+  const contents = annexe.git(annexe.origin, "show", "main:ISSUES.md");
+  const first = contents.match(/- Review finding: first-only overflow[^\n]+/)?.[0] || "";
+  const second = contents.match(/- Review finding: second-only overflow[^\n]+/)?.[0] || "";
+  assert.match(first, /Filed by Minos from first-owner\/first-repo#11, 2026-08-17/);
+  assert.match(second, /Filed by Minos from second-owner\/second-repo#22, 2026-08-17/);
+  assert.doesNotMatch(first, /second-owner|second-repo#22/);
+  assert.doesNotMatch(second, /first-owner|first-repo#11/);
 });
 
 test("an entry already carrying its marker is not rewritten, even retitled in case or spacing", () => {

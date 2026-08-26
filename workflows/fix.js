@@ -62,6 +62,17 @@ function writeUpComment(finding, writeUp) {
   return { path: finding.path, body: writeUp, line: finding.line };
 }
 
+function memberCommitGroups(fixed) {
+  const byMember = new Map();
+  for (const { finding, commit } of fixed) {
+    if (typeof finding?.member !== "string" || finding.member === "" || typeof commit !== "string" || commit === "") continue;
+    const commits = byMember.get(finding.member) || [];
+    if (!commits.includes(commit)) commits.push(commit);
+    byMember.set(finding.member, commits);
+  }
+  return [...byMember].map(([member, commits]) => ({ member, commits }));
+}
+
 function verificationInstruction(verification) {
   const configured = [
     ["build", verification.build],
@@ -190,7 +201,7 @@ if (plan.classification === "single-wave") {
       const entry = returned.get(finding.key);
       if (result && result.commit && entry && entry.status === "fixed" && entry.writeUp) {
         usedCommit = true;
-        fixed.push({ finding, writeUp: entry.writeUp });
+        fixed.push({ finding, writeUp: entry.writeUp, commit: result.commit });
       } else {
         confirmedUnfixed.push({
           key: finding.key,
@@ -218,6 +229,7 @@ if (plan.classification === "single-wave") {
     requestChangesReview: null,
     integration: {
       commits: uniqueCommits,
+      memberCommits: memberCommitGroups(fixed),
       pushCount: uniqueCommits.length > 0 ? 1 : 0,
       author: { name: "Minos", email: "minos@example.invalid" },
     },
@@ -338,6 +350,7 @@ return {
   requestChangesReview: null,
   integration: {
     commits: uniqueCommits,
+    memberCommits: memberCommitGroups([...fixed.values()]),
     pushCount: uniqueCommits.length > 0 ? 1 : 0,
     author: { name: "Minos", email: "minos@example.invalid" },
   },

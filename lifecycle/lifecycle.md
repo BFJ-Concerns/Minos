@@ -1091,11 +1091,22 @@ pull request and every grouped passage in this lifecycle is inert.
    repair. Keep them with the saved result. The terminal filing publishes only
    observations from the current complete adjudicated review or brief verdict,
    not observations from a fix result.
-   When `integration.commits` is non-empty, write that array unchanged to a
-   file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
-   "$MINOS_WORKSPACE" COMMITS_FILE`. That script verifies every commit's Minos
-   author, cherry-picks the wave and performs exactly one push to
-   `$MINOS_HEAD_BRANCH`. No fix agent may push.
+   When `integration.commits` is non-empty, a solo run writes that array
+   unchanged to a file and runs `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
+   `"$MINOS_WORKSPACE" COMMITS_FILE`. A grouped run instead consumes
+   `integration.memberCommits`: every entry names a member and only the
+   completed commits licensed by that member's findings. Resolve each named
+   member from `$MINOS_RUN_DIR/members.json`, take its fresh addressed
+   `"$MINOS_BIN" forge --member OWNER REPO NUMBER snapshot`, and require a
+   non-empty `head_branch`; a missing member, branch, or snapshot is a fault,
+   never a member to skip. For each non-empty entry write its commits to a
+   separate file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
+   `"$MINOS_WORKSPACE" COMMITS_FILE --member-branch HEAD_BRANCH`. The script
+   detaches the shared workspace at that member branch before cherry-picking,
+   verifies every commit's Minos author, and pushes once to that branch only.
+   It records the member branch as protected and creates the same one-use
+   push permit for every push, so the guard applies independently to every
+   touched member. No fix agent may push.
 
    The workspace's pre-push guard protects the recorded pull-request ref by
    destination ref name, regardless of the remote name or whether Git was
@@ -1150,19 +1161,29 @@ pull request and every grouped passage in this lifecycle is inert.
    the sweep digest, `requestChangesReview`, or any fix input. Run:
 
    ```sh
+   OVERFLOW_MEMBER_ARGS=()
+   if [ -f "$MINOS_RUN_DIR/members.json" ]; then
+     OVERFLOW_MEMBER_ARGS=(--members "$MINOS_RUN_DIR/members.json")
+   fi
    node "${MINOS_REVIEW_WORKFLOW%/*}/publish-overflow.mjs" \
-     "$MINOS_ORIENTATION" PUBLICATION_FILE \
+     "$MINOS_ORIENTATION" PUBLICATION_FILE "${OVERFLOW_MEMBER_ARGS[@]}" \
      > "$MINOS_RUN_DIR/overflow-result.json"
    ```
 
    With an annexe it appends each entry once to `ISSUES.md`, commits and
-   pushes the annexe itself. Without an annexe its result is
-   `destination: "pull-request"` with one `body`/`comments` payload:
-   materialise those to files and post them as one `comment` review with
-   `"$MINOS_BIN" forge review HEAD TARGET comment BODY_FILE COMMENTS_FILE`,
-   still without fix agents. The rendered labels distinguish `Review finding`,
-   `Out-of-scope observation`, and `Review brief misconfiguration`. Publication
-   is presentation-class: its failure never fails the run.
+   pushes the annexe itself. On a grouped run it derives each entry's source
+   attribution from its fixed member coordinates, so an entry for one member
+   cannot claim the primary or another member's project. Without an annexe a
+   solo result is `destination: "pull-request"` with one `body`/`comments`
+   payload: materialise those to files and post them as one `comment` review
+   with `"$MINOS_BIN" forge review HEAD TARGET comment BODY_FILE COMMENTS_FILE`.
+   A grouped repository result instead has one publication per member; resolve
+   that member's record and post each payload with
+   `"$MINOS_BIN" forge --member OWNER REPO NUMBER review MEMBER_HEAD
+   MEMBER_TARGET comment BODY_FILE COMMENTS_FILE`. Still do not start fix
+   agents. The rendered labels distinguish `Review finding`, `Out-of-scope
+   observation`, and `Review brief misconfiguration`. Publication is
+   presentation-class: its failure never fails the run.
 
    If `requestChangesReview` is present on a legacy verdict without `members`
    and `memberReviews`, materialise it exactly, post it with `"$MINOS_BIN"
