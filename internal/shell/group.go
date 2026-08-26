@@ -246,6 +246,58 @@ func releaseGroupMemberGuards(runsDir, holder string) error {
 	return nil
 }
 
+func adoptableGroupMembers(ctx context.Context, cfg ServiceConfig, facts Facts, unit string, handoff *runHandoff) (string, bool) {
+	paths, err := filepath.Glob(filepath.Join(cfg.Runs.Dir, ".group-members", "*"))
+	if err != nil {
+		return fmt.Sprintf("list grouped members: %v", err), false
+	}
+	guarded := make(map[string]bool)
+	for _, path := range paths {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				continue
+			}
+			return fmt.Sprintf("read grouped member guard %s: %v", filepath.Base(path), readErr), false
+		}
+		if strings.TrimSpace(string(data)) == unit {
+			guarded[filepath.Base(path)] = true
+		}
+	}
+	if len(guarded) == 0 && len(handoff.MemberHeads) == 0 {
+		return "", true
+	}
+	if len(guarded) != len(handoff.MemberHeads) {
+		return fmt.Sprintf("continuation records %d member heads for %d guarded members", len(handoff.MemberHeads), len(guarded)), false
+	}
+	for _, member := range handoff.MemberHeads {
+		memberUnit := UnitName(Facts{Owner: member.Owner, Repo: member.Repo, PR: member.Number})
+		if !guarded[memberUnit] {
+			return fmt.Sprintf("continuation member %s has no matching group guard", member.Number), false
+		}
+	}
+
+	adapter, err := newBehaviouralForge(cfg, facts.Forge)
+	if err != nil {
+		return fmt.Sprintf("prepare grouped member snapshots: %v", err), false
+	}
+	repository := forge.Repository{Owner: facts.Owner, Name: facts.Repo}
+	for _, member := range handoff.MemberHeads {
+		pullRequest, parseErr := strconv.ParseInt(member.Number, 10, 64)
+		if parseErr != nil {
+			return fmt.Sprintf("parse grouped member %q: %v", member.Number, parseErr), false
+		}
+		snapshot, snapshotErr := adapter.Snapshot(ctx, repository, pullRequest)
+		if snapshotErr != nil {
+			return fmt.Sprintf("snapshot grouped member %s: %v", member.Number, snapshotErr), false
+		}
+		if snapshot.HeadSHA != member.Head {
+			return fmt.Sprintf("grouped member %s head moved from %s to %s", member.Number, member.Head, snapshot.HeadSHA), false
+		}
+	}
+	return "", true
+}
+
 func validContinuationHolder(runsDir, holder string) bool {
 	handoff, err := readRunHandoffStructure(handoffPath(runsDir, holder))
 	if err != nil {

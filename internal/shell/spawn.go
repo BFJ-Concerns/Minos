@@ -112,6 +112,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	handoffFile := handoffPath(cfg.Runs.Dir, unit)
 	var handoff *runHandoff
 	handoffRejected := false
+	groupHandoffRejected := false
 	if _, statErr := os.Stat(handoffFile); statErr == nil {
 		handoff, err = readRunHandoff(handoffFile, facts)
 		if err != nil {
@@ -135,8 +136,21 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	reviewResultAlreadyCarried := false
 	if handoff != nil {
 		if reason, valid := adoptableRunDirectory(cfg, unit, facts, handoff); valid {
-			runDir = handoff.RunDir
-			adopted = true
+			if memberReason, membersValid := adoptableGroupMembers(ctx, cfg, facts, unit, handoff); membersValid {
+				runDir = handoff.RunDir
+				adopted = true
+			} else {
+				progressDecision = continuationProgressUnknown
+				fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, memberReason)
+				rejectRunHandoff(handoffFile, fmt.Errorf("%s", memberReason))
+				if _, statErr := os.Stat(handoffFile); statErr == nil {
+					return SpawnResult{}, fmt.Errorf("invalidate grouped continuation handoff %s", handoffFile)
+				} else if !os.IsNotExist(statErr) {
+					return SpawnResult{}, fmt.Errorf("confirm grouped continuation invalidation: %w", statErr)
+				}
+				handoff = nil
+				groupHandoffRejected = true
+			}
 		} else {
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
@@ -171,7 +185,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	if !adopted {
 		progressDecision = continuationProgressUnknown
-		if handoff != nil {
+		if handoff != nil || groupHandoffRejected {
 			// A fresh successor does not inherit members.json. Release the old
 			// group's guards before its reused unit name can suppress those members.
 			if err := releaseGroupMemberGuards(cfg.Runs.Dir, unit); err != nil {

@@ -83,6 +83,9 @@ successor the preserved workspace:
 {
   "kind": "minos-run-handoff-v1",
   "pullRequest": { "owner": "OWNER", "repo": "REPOSITORY", "number": "NUMBER" },
+  "memberHeads": [
+    { "owner": "OWNER", "repo": "REPOSITORY", "number": "MEMBER_NUMBER", "head": "FRESH_MEMBER_HEAD_SHA" }
+  ],
   "head": "FRESH_SNAPSHOT_HEAD_SHA",
   "runDir": "$MINOS_RUN_DIR value",
   "stoppedAt": "concise description of the stopping point",
@@ -105,6 +108,12 @@ are both the fresh snapshot's `head_sha`, and the progress and loop-record
 write `{"round":0,"confirmedFixed":[],"confirmedUnfixed":[]}` to it. The
 snapshot's head is load-bearing: `$MINOS_HEAD_SHA` is the current head
 established by setup and may already be stale after a later repair push. Write
+`memberHeads` only for a grouped run: immediately before the handoff, take a
+fresh `snapshot-member` for every non-primary member and record every member's
+identity and `head_sha`. The successor adopts the preserved group only when
+that list exactly matches its guarded membership and every head is unchanged;
+a missing or moved member head starts a fresh run and releases the old guards.
+Omit `memberHeads` for a singleton. Write
 the complete handoff to `"$MINOS_HANDOFF.tmp"`, then atomically `mv` it to
 `"$MINOS_HANDOFF"`. Finally run
 `printf 'continuation\n' > "$MINOS_RUN_DIR/lead-complete"` as the

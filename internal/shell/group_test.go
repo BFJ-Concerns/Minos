@@ -303,6 +303,98 @@ func TestSpawnRunReleasesGroupMembersWhenContinuationHeadMoved(t *testing.T) {
 	}
 }
 
+func TestSpawnRunValidatesGroupedMemberHeadsBeforeContinuation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		currentHead string
+		wantOutcome ReconcileDecision
+		wantResume  bool
+	}{
+		{name: "unchanged member continues", currentHead: "member-head", wantOutcome: SpawnContinued, wantResume: true},
+		{name: "moved member starts fresh", currentHead: "foreign-member-head", wantOutcome: SpawnStarted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			memberPull := stackedFixturePull(2, "main", "member")
+			memberPull["head"].(map[string]any)["sha"] = test.currentHead
+			state.setStackedChildren([]map[string]any{memberPull})
+			cfg, repo, primary := state.service(t)
+			cfg.Runs.MaxConcurrent = 2
+			primary.HeadSHA, primary.BaseSHA = state.headSHA(), state.targetSHA()
+			member := Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: "2"}
+			guard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))
+			if err := os.MkdirAll(filepath.Dir(guard), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(guard, []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runDir := filepath.Join(cfg.Runs.Dir, UnitName(primary)+"-preserved")
+			if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			progress := handoffProgress{Stage: "review", Round: 1, Head: primary.HeadSHA, LatestReview: 3}
+			handoffFile := writeTestHandoff(t, cfg, primary, runDir, primary.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
+			data, err := os.ReadFile(handoffFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var handoff runHandoff
+			if err := json.Unmarshal(data, &handoff); err != nil {
+				t.Fatal(err)
+			}
+			handoff.Progress = &progress
+			handoff.Predecessor = &handoffProgress{Stage: "setup", Round: 1, Head: primary.HeadSHA, LatestReview: 3}
+			handoff.MemberHeads = []handoffMember{{Owner: primary.Owner, Repo: primary.Repo, Number: "2", Head: "member-head"}}
+			data, err = json.Marshal(handoff)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(handoffFile, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var systemdArgs []string
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					systemdArgs = append([]string(nil), args...)
+				}
+				return nil, nil
+			}
+			result, err := SpawnRun(t.Context(), cfg, repo, primary, AdmissionContext{GroupCandidatesJSON: "[]"}, RunClassReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Outcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", result.Outcome, test.wantOutcome)
+			}
+			resumed := slices.Contains(systemdArgs, "MINOS_RESUME=true")
+			if resumed != test.wantResume {
+				t.Fatalf("MINOS_RESUME set = %t, want %t", resumed, test.wantResume)
+			}
+			_, guardErr := os.Stat(guard)
+			if test.wantResume && guardErr != nil {
+				t.Fatalf("unchanged member guard was released: %v", guardErr)
+			}
+			if !test.wantResume && !os.IsNotExist(guardErr) {
+				t.Fatalf("moved member guard survived fresh start: %v", guardErr)
+			}
+			if !test.wantResume {
+				if slices.ContainsFunc(systemdArgs, func(argument string) bool {
+					return strings.HasPrefix(argument, "MINOS_PREDECESSOR_PROGRESS=")
+				}) {
+					t.Fatal("moved member inherited predecessor continuation progress")
+				}
+				if _, err := os.Stat(handoffFile + ".rejected"); err != nil {
+					t.Fatalf("moved-member handoff was not rejected: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestSpawnRunAdmitsUnrelatedPullRequestWhileLiveGroupGuardExists(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
