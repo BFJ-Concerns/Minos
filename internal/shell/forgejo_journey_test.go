@@ -1008,8 +1008,12 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 			if firstStart == nil {
 				t.Fatal("sweep did not start the primary lead")
 			}
-			if starts != 1 {
-				t.Fatalf("sweep started %d grouped runs, want exactly one", starts)
+			wantStarts := 1
+			if test.establishedMembers {
+				wantStarts = 2
+			}
+			if starts != wantStarts {
+				t.Fatalf("sweep started %d runs, want %d", starts, wantStarts)
 			}
 			environment := systemdEnvironment(t, firstStart)
 			if got := environment["MINOS_RESUME"] == "true"; got != test.continuing {

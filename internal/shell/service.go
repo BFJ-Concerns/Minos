@@ -275,9 +275,10 @@ const (
 )
 
 type ReconcileResult struct {
-	Decision     ReconcileDecision
-	BlockingUnit string
-	Detail       string
+	Decision            ReconcileDecision
+	BlockingUnit        string
+	Detail              string
+	GroupCandidatesPath string
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
@@ -348,7 +349,12 @@ func reconcilePullRequestSnapshotWithCandidates(ctx context.Context, cfg Service
 	if err != nil {
 		return ReconcileResult{}, err
 	}
-	return ReconcileResult{Decision: outcome.Outcome, BlockingUnit: outcome.BlockingUnit, Detail: outcome.Detail}, nil
+	return ReconcileResult{
+		Decision:            outcome.Outcome,
+		BlockingUnit:        outcome.BlockingUnit,
+		Detail:              outcome.Detail,
+		GroupCandidatesPath: outcome.GroupCandidatesPath,
+	}, nil
 }
 
 // pullRequestAdmissionEligibility holds the non-writing admission chain shared

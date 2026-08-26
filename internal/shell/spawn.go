@@ -24,9 +24,10 @@ var commandCombinedOutput = func(ctx context.Context, name string, args ...strin
 }
 
 type SpawnResult struct {
-	Outcome      ReconcileDecision
-	BlockingUnit string
-	Detail       string
+	Outcome             ReconcileDecision
+	BlockingUnit        string
+	Detail              string
+	GroupCandidatesPath string
 }
 
 const runOwnerMarker = ".runwrap-owner"
@@ -327,9 +328,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{}, fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if progressDecision == continuationProgressAdvanced {
-		return SpawnResult{Outcome: SpawnContinued}, nil
+		return SpawnResult{Outcome: SpawnContinued, GroupCandidatesPath: admission.GroupCandidatesJSON}, nil
 	}
-	return SpawnResult{Outcome: SpawnStarted}, nil
+	return SpawnResult{Outcome: SpawnStarted, GroupCandidatesPath: admission.GroupCandidatesJSON}, nil
 }
 
 func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {

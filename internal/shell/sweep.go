@@ -127,7 +127,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 		// Candidate membership is fixed when a primary is admitted. Suppress its
 		// surfaced siblings only for that admission pass; a unit already live at
 		// the start of a later pass owns only members carrying durable guards.
-		if result.Decision != SpawnStarted && result.Decision != SpawnContinued {
+		if (result.Decision != SpawnStarted && result.Decision != SpawnContinued) || result.GroupCandidatesPath == "" {
 			continue
 		}
 		var siblings []Facts
