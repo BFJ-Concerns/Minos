@@ -112,7 +112,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	handoffFile := handoffPath(cfg.Runs.Dir, unit)
 	var handoff *runHandoff
 	handoffRejected := false
-	groupHandoffRejected := false
 	if _, statErr := os.Stat(handoffFile); statErr == nil {
 		handoff, err = readRunHandoff(handoffFile, facts)
 		if err != nil {
@@ -149,7 +148,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 					return SpawnResult{}, fmt.Errorf("confirm grouped continuation invalidation: %w", statErr)
 				}
 				handoff = nil
-				groupHandoffRejected = true
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
@@ -185,12 +183,11 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	if !adopted {
 		progressDecision = continuationProgressUnknown
-		if handoff != nil || handoffRejected || groupHandoffRejected {
-			// A fresh successor does not inherit members.json. Release the old
-			// group's guards before its reused unit name can suppress those members.
-			if err := releaseGroupMemberGuards(cfg.Runs.Dir, unit); err != nil {
-				return SpawnResult{}, fmt.Errorf("release rejected continuation group members: %w", err)
-			}
+		// A fresh run does not inherit the previous run's fixed membership.
+		// Release the old group's guards before this reused unit name becomes
+		// live and can make those guards appear current again.
+		if err := releaseGroupMemberGuards(cfg.Runs.Dir, unit); err != nil {
+			return SpawnResult{}, fmt.Errorf("release previous group members: %w", err)
 		}
 	}
 	if adopted {

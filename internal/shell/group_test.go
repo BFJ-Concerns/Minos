@@ -332,6 +332,57 @@ func TestSpawnRunSuppressesGroupMemberWhileHolderAwaitsContinuation(t *testing.T
 	}
 }
 
+func TestSpawnRunReleasesPreviousGroupMembersBeforeFreshUnitReuse(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Runs.MaxConcurrent = 2
+	primary := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1", HeadSHA: "new-head"}
+	member := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "2", HeadSHA: "member-head"}
+	guard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))
+	if err := os.MkdirAll(filepath.Dir(guard), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(guard, []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	primaryStarted := false
+	memberStarted := false
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemctl" && primaryStarted {
+			return []byte(UnitName(primary) + ".service loaded active running Minos lead\n"), nil
+		}
+		if name == "systemd-run" {
+			if slices.Contains(args, UnitName(primary)) {
+				primaryStarted = true
+			}
+			if slices.Contains(args, UnitName(member)) {
+				memberStarted = true
+			}
+		}
+		return nil, nil
+	}
+	result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, primary, AdmissionContext{}, RunClassReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnStarted || !primaryStarted {
+		t.Fatalf("fresh primary result = %+v, started = %t", result, primaryStarted)
+	}
+	if _, err := os.Stat(guard); !os.IsNotExist(err) {
+		t.Fatalf("previous group guard survived fresh unit reuse: %v", err)
+	}
+	result, err = SpawnRun(t.Context(), cfg, RepoConfig{}, member, AdmissionContext{}, RunClassReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnStarted || !memberStarted {
+		t.Fatalf("released member result = %+v, started = %t", result, memberStarted)
+	}
+}
+
 func TestSpawnRunReleasesGroupMembersWhenContinuationHeadMoved(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
