@@ -94,7 +94,7 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 			t.Fatal(err)
 		}
 		runGit(t, worktree, "add", name)
-		runGit(t, worktree, "-c", "user.name="+authorName, "-c", "user.email="+authorEmail, "commit", "-m", "fix: repair "+name)
+		runGit(t, worktree, "commit", "--author="+authorName+" <"+authorEmail+">", "-m", "fix: repair "+name)
 		return gitOutput(t, worktree, "rev-parse", "HEAD")
 	}
 	runIntegration := func(branch, commit string) (string, error) {
