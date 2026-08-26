@@ -219,23 +219,34 @@ pull request and every grouped passage in this lifecycle is inert.
    Write this pull request's own facts first, then the granted members'
    facts, with one sentence of the grouping
    judgement's basis, to `$MINOS_RUN_DIR/members.json`; membership is fixed
-   from this point. You create the required linked worktree for each claimed
-   member before reconciliation: make a member-specific directory beneath
+   from this point. Reconcile claimed members in dependency order, base
+   first: a member whose target branch is another claimed member's source
+   branch runs only after that predecessor has published its reconciliation.
+   Immediately before each member, run `"$MINOS_BIN" forge snapshot-member
+   OWNER REPO NUMBER` and use that fresh snapshot's `target_sha` as
+   `EXPECTED_TARGET`; keep `EXPECTED_HEAD` from the member's claim facts, and
+   if the snapshot's `head_sha` no longer equals it, apply the run-wide
+   foreign-head-movement discipline instead of absorbing the move as
+   reconciliation. This fresh target read lets a stacked child follow its
+   predecessor's newly published head rather than the coordinate captured
+   when all members were claimed. Create the required linked worktree for
+   that member before reconciliation: make a member-specific directory beneath
    `$MINOS_RUN_DIR/worktrees`, then run `git -C "$MINOS_WORKSPACE" worktree
    add --detach MEMBER_WORKSPACE HEAD`. `HEAD` is only the linked worktree's
    safe initial checkout; the member reconciliation script fetches and checks
    out the claimed member head. Run
    `"${MINOS_SETUP_WORKSPACE%/*}/sync-member-target" MEMBER_WORKSPACE NUMBER
    SOURCE_BRANCH TARGET_BRANCH EXPECTED_HEAD EXPECTED_TARGET METHOD` with the
-   values returned in the member facts and the repository's configured sync
-   method. The script checks the member's head out in that linked worktree and
+   identity, branches, and head returned in the member facts, the freshly
+   snapped target, and the repository's configured sync method. The script
+   checks the member's head out in that linked worktree and
    pins the member's target under a member-scoped ref. Never
    run `sync-target` itself for a member: it syncs the invoking
    workspace's HEAD — the primary's tree — and its fetch would move this
    run's pinned `refs/minos/target`. Setup's pushed target reconciliation
    applies per member this way, and each member's pushed sync becomes
-   that member's current head, read thereafter from fresh per-member
-   snapshots. A candidates file that is absent or
+   that member's current head, which the next dependent member's fresh
+   snapshot observes. A candidates file that is absent or
    empty, or a judgement that declines every candidate, leaves this a
    single-pull-request run with no members record.
 

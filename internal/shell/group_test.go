@@ -420,3 +420,27 @@ func TestForgeCommandClaimMemberClaimsFixtureSiblingAndWritesGuard(t *testing.T)
 		t.Fatalf("fixture member claim = assignment paths:%v reaction paths:%v assignees:%v reactions:%v", state.assignmentWritePaths, state.reactionWritePaths, state.assignees, state.reactions)
 	}
 }
+
+func TestForgeCommandSnapshotMemberReadsRequestedMember(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
+	cfg, repo, primary := state.service(t)
+	cfg = writeSweepFixtureConfig(t, state)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", primary.Forge)
+	t.Setenv("MINOS_OWNER", primary.Owner)
+	t.Setenv("MINOS_REPO_NAME", primary.Repo)
+	t.Setenv("MINOS_PR", primary.PR)
+
+	var stdout bytes.Buffer
+	if err := ForgeCommand(t.Context(), []string{"snapshot-member", repo.Owner, repo.Repo, "2"}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot forge.Snapshot
+	if err := json.Unmarshal(stdout.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.PullRequest != 2 || snapshot.HeadBranch != "sibling" || snapshot.TargetBranch != "main" {
+		t.Fatalf("member snapshot = %#v", snapshot)
+	}
+}

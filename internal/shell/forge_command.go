@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|head-movement|check-logs|claim|claim-member|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge snapshot|snapshot-member|head-movement|check-logs|claim|claim-member|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
 	adapter, guard, botLogin, err := leadForge()
 	if err != nil {
@@ -29,6 +29,22 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("usage: minos forge snapshot")
 		}
 		snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(snapshot)
+	case "snapshot-member":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge snapshot-member OWNER REPO NUMBER")
+		}
+		if args[1] != guard.Repository.Owner || args[2] != guard.Repository.Name {
+			return fmt.Errorf("member is outside this run repository")
+		}
+		pullRequest, err := strconv.ParseInt(args[3], 10, 64)
+		if err != nil {
+			return fmt.Errorf("member number: %w", err)
+		}
+		snapshot, err := adapter.Snapshot(ctx, guard.Repository, pullRequest)
 		if err != nil {
 			return err
 		}
