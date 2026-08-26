@@ -17,7 +17,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos receive|sweep|run|forge|alert")
+		return fmt.Errorf("usage: minos receive|sweep|run|forge|alert|operator")
 	}
 	ctx := context.Background()
 	switch args[0] {
@@ -31,6 +31,8 @@ func run(args []string) error {
 		return shell.ForgeCommand(ctx, args[1:], os.Stdout)
 	case "alert":
 		return shell.AlertCommand(ctx, args[1:])
+	case "operator":
+		return shell.OperatorCommand(ctx, args[1:], os.Stdout)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

@@ -164,14 +164,7 @@ func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot f
 	if err != nil {
 		return AdmissionContext{}
 	}
-	var latest forge.IssueComment
-	found = false
-	for _, comment := range comments {
-		if comment.User == botLogin && (!found || comment.ID > latest.ID) {
-			latest = comment
-			found = true
-		}
-	}
+	latest, found := latestOwnedComment(comments, botLogin)
 	if !found {
 		return AdmissionContext{}
 	}
@@ -183,15 +176,30 @@ func releasedHoldContext(ctx context.Context, adapter *forge.Adapter, snapshot f
 }
 
 func parseHeldComment(body string) (string, string, bool) {
+	stage, diagnosis, found := heldCommentFields(body)
+	if !found || (stage != "finishing" && stage != "review") || diagnosis == "" {
+		return "", "", false
+	}
+	return stage, diagnosis, true
+}
+
+func latestOwnedComment(comments []forge.IssueComment, botLogin string) (forge.IssueComment, bool) {
+	var latest forge.IssueComment
+	found := false
+	for _, comment := range comments {
+		if comment.User == botLogin && (!found || comment.ID > latest.ID) {
+			latest, found = comment, true
+		}
+	}
+	return latest, found
+}
+
+func heldCommentFields(body string) (string, string, bool) {
 	stageLine, diagnosis, found := strings.Cut(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
-	if !found || (stageLine != "Held at: finishing" && stageLine != "Held at: review") {
+	if !found || !strings.HasPrefix(stageLine, "Held at: ") {
 		return "", "", false
 	}
-	diagnosis = strings.TrimSpace(diagnosis)
-	if diagnosis == "" {
-		return "", "", false
-	}
-	return strings.TrimPrefix(stageLine, "Held at: "), diagnosis, true
+	return strings.TrimPrefix(stageLine, "Held at: "), strings.TrimSpace(diagnosis), true
 }
 
 func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
