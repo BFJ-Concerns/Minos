@@ -131,15 +131,40 @@ for (const worker of record.workers || []) {
     worker.span_breakdown = unparseable(null, 'unreadable ensemble record');
     continue;
   }
-  const agent = archivedAgents.files[0];
-  if (!agent) {
+  if (archivedAgents.files.length === 0) {
     worker.span_breakdown = unparseable(null, 'unresolved ensemble record');
     continue;
   }
-  let detail;
-  try { detail = JSON.parse(fs.readFileSync(agent, 'utf8')); }
-  catch {
-    worker.span_breakdown = unparseable(null, 'unreadable or invalid agent record');
+  if (worker.id === null || worker.id === undefined) {
+    worker.span_breakdown = unparseable(null, 'unresolved archived agent identity');
+    continue;
+  }
+  let detail = null;
+  let invalidAgentRecord = false;
+  let duplicateIdentity = false;
+  for (const agent of archivedAgents.files) {
+    let candidate;
+    try { candidate = JSON.parse(fs.readFileSync(agent, 'utf8')); }
+    catch {
+      invalidAgentRecord = true;
+      continue;
+    }
+    if (candidate.id !== worker.id) continue;
+    if (detail !== null) {
+      duplicateIdentity = true;
+      break;
+    }
+    detail = candidate;
+  }
+  if (duplicateIdentity) {
+    worker.span_breakdown = unparseable(null, 'ambiguous archived agent identity');
+    continue;
+  }
+  if (detail === null) {
+    const reason = invalidAgentRecord
+      ? 'unreadable or invalid agent record'
+      : 'unresolved archived agent identity';
+    worker.span_breakdown = unparseable(null, reason);
     continue;
   }
   worker.span_breakdown = analyseTranscripts(detail.transcripts || [], recordRoot);

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,7 @@ type timingEvent struct {
 
 type timingWorker struct {
 	Record        string  `json:"record"`
+	ID            *int    `json:"id"`
 	Label         *string `json:"label"`
 	Engine        *string `json:"engine"`
 	Model         *string `json:"model"`
@@ -328,6 +330,52 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 	}
 }
 
+func TestArchivedSpanAnalysisMatchesSiblingAgentsByWorkerIdentity(t *testing.T) {
+	runDir := t.TempDir()
+	recordRoot := filepath.Join(runDir, "ensemble-records", "mixed")
+	writeArchivedSpanAgentAt(t, recordRoot, 1, "codex", "codex-app-server-events", `
+{"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-26T00:01:00Z","method":"item/started","params":{"item":{"id":"build","type":"commandExecution","command":"go build ./..."}}}
+{"recordedAt":"2026-08-26T00:03:00Z","method":"item/completed","params":{"item":{"id":"build","type":"commandExecution"}}}
+{"recordedAt":"2026-08-26T00:04:00Z","method":"turn/completed"}
+`)
+	writeArchivedSpanAgentAt(t, recordRoot, 2, "claude", "claude-session-jsonl", `
+{"timestamp":"2026-08-26T01:00:00Z","type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}}]}}
+{"timestamp":"2026-08-26T01:05:00Z","type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}
+{"timestamp":"2026-08-26T01:07:00Z","type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}
+`)
+	writeArchivedSpanAgentAt(t, recordRoot, 3, "codex", "codex-app-server-events", `
+{"recordedAt":"2026-08-26T02:00:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-26T02:08:00Z","method":"turn/completed"}
+`)
+
+	recordPath := filepath.Join(runDir, "timing-record.json")
+	if output, err := runCollectTimings(t, nil, runDir, recordPath); err != nil {
+		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	output, err := runArchivedSpanAnalysis(t, recordPath, runDir)
+	if err != nil {
+		t.Fatalf("analyse-archived-spans: %v\n%s", err, output)
+	}
+	var analysed timingRecord
+	if err := json.Unmarshal(output, &analysed); err != nil {
+		t.Fatalf("analysis does not produce a timing record: %v\n%s", err, output)
+	}
+	byID := map[int]timingWorker{}
+	for _, worker := range analysed.Workers {
+		if worker.ID == nil {
+			t.Fatalf("worker has no identity: %+v", worker)
+		}
+		byID[*worker.ID] = worker
+	}
+	if len(byID) != 3 {
+		t.Fatalf("workers by identity = %+v, want three sibling agents", byID)
+	}
+	assertArchivedSpan(t, byID[1].SpanBreakdown, "codex-app-server-events", 120000, 0, 120000)
+	assertArchivedSpan(t, byID[2].SpanBreakdown, "claude-session-jsonl", 0, 300000, 120000)
+	assertArchivedSpan(t, byID[3].SpanBreakdown, "codex-app-server-events", 0, 0, 480000)
+}
+
 func TestArchivedSpanAnalysisScopesToCollectedRecordRootsAndReportsUnresolvedRecords(t *testing.T) {
 	runDir := t.TempDir()
 	writeArchivedSpanAgent(t, runDir, "valid", "codex-app-server-events", `
@@ -343,20 +391,21 @@ func TestArchivedSpanAnalysisScopesToCollectedRecordRootsAndReportsUnresolvedRec
 	}
 	// A cloned repository may itself contain an agent-shaped file.  It is not
 	// an Ensemble record and must never be considered by this wind-down pass.
-	writeArchivedSpanAgentAt(t, filepath.Join(runDir, "repository"), "codex-app-server-events", `
+	writeArchivedSpanAgentAt(t, filepath.Join(runDir, "repository"), 1, "codex", "codex-app-server-events", `
 {"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
 {"recordedAt":"2026-08-26T00:01:00Z","method":"turn/completed"}
 `)
 	fallbackRecord := "home/.local/share/ensemble/runs/cwd/hash/fallback"
-	writeArchivedSpanAgentAt(t, filepath.Join(runDir, filepath.FromSlash(fallbackRecord)), "codex-app-server-events", `
+	writeArchivedSpanAgentAt(t, filepath.Join(runDir, filepath.FromSlash(fallbackRecord)), 1, "codex", "codex-app-server-events", `
 {"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
 {"recordedAt":"2026-08-26T00:02:00Z","method":"turn/completed"}
 `)
+	id := 1
 	record := timingRecord{Workers: []timingWorker{
-		{Record: "ensemble-records/valid"},
-		{Record: fallbackRecord},
-		{Record: "ensemble-records/broken"},
-		{Record: "repository"},
+		{Record: "ensemble-records/valid", ID: &id},
+		{Record: fallbackRecord, ID: &id},
+		{Record: "ensemble-records/broken", ID: &id},
+		{Record: "repository", ID: &id},
 	}}
 	recordPath := filepath.Join(runDir, "timing-record.json")
 	encoded, err := json.Marshal(record)
@@ -465,16 +514,18 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 
 func writeArchivedSpanAgent(t *testing.T, runDir, record, source, transcript string) {
 	t.Helper()
-	writeArchivedSpanAgentAt(t, filepath.Join(runDir, "ensemble-records", record), source, transcript)
+	writeArchivedSpanAgentAt(t, filepath.Join(runDir, "ensemble-records", record), 1, "codex", source, transcript)
 }
 
-func writeArchivedSpanAgentAt(t *testing.T, recordRoot, source, transcript string) {
+func writeArchivedSpanAgentAt(t *testing.T, recordRoot string, id int, engine, source, transcript string) {
 	t.Helper()
-	dir := filepath.Join(recordRoot, "agents", "0001")
+	agentDir := fmt.Sprintf("%04d", id)
+	dir := filepath.Join(recordRoot, "agents", agentDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	agent := `{"id":1,"engine":"codex","label":"fixture","phase":"Analyse","status":"complete","execution_ms":240000,"attempts":[{"attempt":1,"started_at":"2026-08-26T00:00:00Z","ended_at":"2026-08-26T00:04:00Z"}],"transcripts":[{"path":"agents/0001/transcript.jsonl","source":"` + source + `"}]}`
+	agent := fmt.Sprintf(`{"id":%d,"engine":%q,"label":"fixture-%d","phase":"Analyse","status":"complete","execution_ms":240000,"attempts":[{"attempt":1,"started_at":"2026-08-26T00:00:00Z","ended_at":"2026-08-26T00:04:00Z"}],"transcripts":[{"path":%q,"source":%q}]}`,
+		id, engine, id, filepath.ToSlash(filepath.Join("agents", agentDir, "transcript.jsonl")), source)
 	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(agent), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -798,7 +849,7 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 		}
 		records[fixture.name] = filepath.ToSlash(relative)
 	}
-	writeArchivedSpanAgentAt(t, filepath.Join(runDir, records["record-a"]), "codex-app-server-events", `
+	writeArchivedSpanAgentAt(t, filepath.Join(runDir, records["record-a"]), 1, "codex", "codex-app-server-events", `
 {"recordedAt":"2026-08-17T00:21:00Z","method":"turn/start"}
 {"recordedAt":"2026-08-17T00:22:00Z","method":"item/started","params":{"item":{"id":"test","type":"commandExecution","command":"go test ./..."}}}
 {"recordedAt":"2026-08-17T00:24:00Z","method":"item/completed","params":{"item":{"id":"test","type":"commandExecution"}}}
