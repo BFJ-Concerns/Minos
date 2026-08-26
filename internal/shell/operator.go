@@ -84,7 +84,7 @@ func operatorHeldCommand(ctx context.Context, args []string, stdout io.Writer) e
 			if err != nil {
 				return fmt.Errorf("%s#%s: read forge snapshot: %w", fact.RepoSlug(), fact.PR, err)
 			}
-			entry, found, err := heldPullRequest(ctx, adapter, cfg.Service.BotLogin, fact, snapshot)
+			entry, found, err := heldPullRequest(ctx, adapter, cfg.Service.BotLogin, currentEnvironmentStamp(cfg), fact, snapshot)
 			if err != nil {
 				return fmt.Errorf("%s#%s: read held context: %w", fact.RepoSlug(), fact.PR, err)
 			}
@@ -99,11 +99,11 @@ func operatorHeldCommand(ctx context.Context, args []string, stdout io.Writer) e
 	return json.NewEncoder(stdout).Encode(held)
 }
 
-func heldPullRequest(ctx context.Context, adapter *forge.Adapter, botLogin string, facts Facts, snapshot forge.Snapshot) (HeldPullRequest, bool, error) {
+func heldPullRequest(ctx context.Context, adapter *forge.Adapter, botLogin, envStamp string, facts Facts, snapshot forge.Snapshot) (HeldPullRequest, bool, error) {
 	entry := HeldPullRequest{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo, PullRequest: facts.PR}
 	if status, found := latestOwnedStatus(snapshot, botLogin); found && status.Description == product.Held().Description() {
-		boundTarget, _ := heldBinding(status.TargetURL)
-		if boundTarget == snapshot.TargetSHA {
+		boundTarget, boundStamp := heldBinding(status.TargetURL)
+		if boundTarget == snapshot.TargetSHA && boundStamp == envStamp {
 			entry.Class = product.Held().Name()
 			pullRequest, err := strconv.ParseInt(facts.PR, 10, 64)
 			if err != nil {

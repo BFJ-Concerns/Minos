@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -626,10 +627,20 @@ func TestForgejoOperatorListsCurrentHoldsAndBlockedVerdicts(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build minos CLI: %v\n%s", err, output)
 	}
+	binaryContent, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryStamp := fmt.Sprintf("%x", sha256.Sum256(binaryContent))[:12]
+	target := state.targetSHA()
+	state.mu.Lock()
+	state.operatorPullRequests[0].statuses = []map[string]any{heldFixtureStatus(1, state.server.URL, "held-head", target, binaryStamp)}
+	state.mu.Unlock()
 	cliOutput, err := exec.Command(binary, "operator", "held", "--config", cfg.Root).CombinedOutput()
 	if err != nil {
 		t.Fatalf("run minos operator held: %v\n%s", err, cliOutput)
 	}
+	listed = nil
 	if err := json.Unmarshal(cliOutput, &listed); err != nil {
 		t.Fatal(err)
 	}
