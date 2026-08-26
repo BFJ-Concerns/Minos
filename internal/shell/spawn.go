@@ -184,6 +184,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			return SpawnResult{}, err
 		}
 	}
+	// A continuation resumes the group the original lead fixed in members.json.
+	// Do not invite it to reconsider newly eligible siblings from this sweep.
+	if adopted {
+		if _, membersErr := os.Stat(filepath.Join(runDir, "members.json")); !os.IsNotExist(membersErr) {
+			admission.GroupCandidatesJSON = ""
+		}
+	}
 	reviewResultCarried := false
 	cleanupSpawnFailure := func() {
 		if adopted {

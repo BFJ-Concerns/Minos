@@ -139,24 +139,45 @@ func TestResolvedGroupTargetFollowsStackedChain(t *testing.T) {
 	}
 }
 
-func TestGroupMemberGuardSuppressesOnlyWhileHolderIsLive(t *testing.T) {
+func TestGroupMemberGuardSuppressesWhileHolderIsLiveOrContinuable(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	runs := t.TempDir()
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = runs
+	primaryFacts := Facts{Owner: "owner", Repo: "repo", PR: "1", HeadSHA: "head"}
+	primary := UnitName(primaryFacts)
 	member := "minos-run-owner-repo-pr2"
 	if err := os.MkdirAll(filepath.Dir(groupMemberGuardPath(runs, member)), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(groupMemberGuardPath(runs, member), []byte("minos-run-owner-repo-pr1\n"), 0o600); err != nil {
+	if err := os.WriteFile(groupMemberGuardPath(runs, member), []byte(primary+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) {
-		return []byte("minos-run-owner-repo-pr1.service loaded active running Minos lead\n"), nil
+		return []byte(primary + ".service loaded active running Minos lead\n"), nil
 	}
 	if !groupMemberGuardActive(t.Context(), runs, member) {
 		t.Fatal("live group holder did not suppress member")
 	}
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+	runDir := filepath.Join(runs, primary+"-preserved")
+	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	handoff := writeTestHandoff(t, cfg, primaryFacts, runDir, primaryFacts.HeadSHA, json.RawMessage(`{"round":0,"confirmedUnfixed":[]}`))
+	if !groupMemberGuardActive(t.Context(), runs, member) {
+		t.Fatal("continuable group holder did not suppress member")
+	}
+	if err := sweepDeadGroupMemberGuards(t.Context(), runs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(groupMemberGuardPath(runs, member)); err != nil {
+		t.Fatalf("continuable group holder guard was swept: %v", err)
+	}
+	if err := os.Remove(handoff); err != nil {
+		t.Fatal(err)
+	}
 	if groupMemberGuardActive(t.Context(), runs, member) {
 		t.Fatal("dead group holder suppressed member")
 	}
@@ -187,6 +208,42 @@ func TestSpawnRunSuppressesLiveGroupMemberWithoutSpendingConcurrency(t *testing.
 	}
 	if result.Outcome != SpawnSuppressed || result.BlockingUnit != "minos-run-owner-repo-pr1.service" {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSpawnRunSuppressesGroupMemberWhileHolderAwaitsContinuation(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Runs.MaxConcurrent = 2
+	primary := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1", HeadSHA: "head"}
+	member := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "2"}
+	guard := groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))
+	if err := os.MkdirAll(filepath.Dir(guard), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(guard, []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(cfg.Runs.Dir, UnitName(primary)+"-preserved")
+	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestHandoff(t, cfg, primary, runDir, primary.HeadSHA, json.RawMessage(`{"round":0,"confirmedUnfixed":[]}`))
+	starts := 0
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			starts++
+		}
+		return nil, nil
+	}
+	result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, member, AdmissionContext{}, RunClassReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != SpawnSuppressed || result.BlockingUnit != UnitName(primary)+".service" || starts != 0 {
+		t.Fatalf("continuation-gap member result = %+v, starts = %d", result, starts)
 	}
 }
 

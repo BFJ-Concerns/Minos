@@ -950,11 +950,13 @@ func TestForgejoSweepMeasuresPullRequestSnapshotReadsPerPass(t *testing.T) {
 
 func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		continuing bool
+		name               string
+		continuing         bool
+		establishedMembers bool
 	}{
 		{name: "started primary"},
 		{name: "continued primary", continuing: true},
+		{name: "continued group with fixed membership", continuing: true, establishedMembers: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
@@ -966,7 +968,12 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 				facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 				current := handoffProgress{Stage: "fix", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
 				predecessor := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
-				_, _ = writeProgressHandoff(t, cfg, facts, current, &predecessor)
+				runDir, _ := writeProgressHandoff(t, cfg, facts, current, &predecessor)
+				if test.establishedMembers {
+					if err := os.WriteFile(filepath.Join(runDir, "members.json"), []byte(`{"members":[{"number":"1"}]}`), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 
 			original := commandCombinedOutput
@@ -1008,7 +1015,14 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 			if got := environment["MINOS_RESUME"] == "true"; got != test.continuing {
 				t.Fatalf("MINOS_RESUME set = %t, want %t", got, test.continuing)
 			}
-			data, err := os.ReadFile(environment["MINOS_GROUP_CANDIDATES"])
+			candidatePath := environment["MINOS_GROUP_CANDIDATES"]
+			if test.establishedMembers {
+				if candidatePath != "" {
+					t.Fatalf("continued group received fresh candidate path %q", candidatePath)
+				}
+				return
+			}
+			data, err := os.ReadFile(candidatePath)
 			if err != nil {
 				t.Fatal(err)
 			}

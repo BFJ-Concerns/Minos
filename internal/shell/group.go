@@ -189,10 +189,26 @@ func liveGroupMemberHolder(runsDir, memberUnit string, active []string) (string,
 			return unit, true
 		}
 	}
+	if validContinuationHolder(runsDir, holder) {
+		return holder + ".service", true
+	}
 	return "", false
 }
 
-func sweepDeadGroupMemberGuards(runsDir string, active []string) error {
+func sweepDeadGroupMemberGuards(ctx context.Context, runsDir string) error {
+	// Serialize cleanup with SpawnRun: a successor consumes its handoff before
+	// systemd exposes the replacement unit, so cleanup must not observe that
+	// internal transition as an abandoned group.
+	unlock, err := lockAdmission(runsDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	active, err := activeRunUnitNames(ctx)
+	if err != nil {
+		return err
+	}
+
 	paths, err := filepath.Glob(filepath.Join(runsDir, ".group-members", "*"))
 	if err != nil {
 		return err
@@ -205,6 +221,26 @@ func sweepDeadGroupMemberGuards(runsDir string, active []string) error {
 		}
 	}
 	return nil
+}
+
+func validContinuationHolder(runsDir, holder string) bool {
+	handoff, err := readRunHandoffStructure(handoffPath(runsDir, holder))
+	if err != nil {
+		return false
+	}
+	facts := Facts{
+		Owner:   handoff.PullRequest.Owner,
+		Repo:    handoff.PullRequest.Repo,
+		PR:      handoff.PullRequest.Number,
+		HeadSHA: handoff.Head,
+	}
+	if UnitName(facts) != holder {
+		return false
+	}
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = runsDir
+	_, valid := adoptableRunDirectory(cfg, holder, facts, handoff)
+	return valid
 }
 
 func claimGroupMember(ctx context.Context, cfg ServiceConfig, repo RepoConfig, primary Facts, owner, name, number string) (Facts, error) {
