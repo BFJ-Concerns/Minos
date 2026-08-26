@@ -337,41 +337,51 @@ func TestSyncMemberTargetRejectsTargetMovedPastExpectedSnapshot(t *testing.T) {
 }
 
 func TestSyncMemberTargetConflictCanBeResolvedAndResumed(t *testing.T) {
-	remote, primary := createSyncFixture(t, true, true)
-	installPushCounter(t, remote)
-	commonDir := installMemberPushGuard(t, primary)
-	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
-	target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
-	member := filepath.Join(t.TempDir(), "member")
-	runGit(t, primary, "worktree", "add", "--detach", member, target)
+	for _, method := range []string{"merge", "rebase"} {
+		t.Run(method, func(t *testing.T) {
+			remote, primary := createSyncFixture(t, true, true)
+			installPushCounter(t, remote)
+			commonDir := installMemberPushGuard(t, primary)
+			head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+			target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+			member := filepath.Join(t.TempDir(), "member")
+			runGit(t, primary, "worktree", "add", "--detach", member, target)
 
-	output, err := runSyncMemberTarget(member, head, target, "merge")
-	if err == nil || !strings.Contains(string(output), `"outcome":"conflict"`) {
-		t.Fatalf("first member sync = %v\n%s", err, output)
-	}
-	assertContainsFile(t, filepath.Join(commonDir, "minos-member-sync-2"), head)
-	output, err = runSyncMemberTarget(member, head, target, "merge")
-	if err == nil || !strings.Contains(string(output), "finish the current merge or rebase") {
-		t.Fatalf("unresolved member sync = %v\n%s", err, output)
-	}
-	if err := os.WriteFile(filepath.Join(member, "shared.txt"), []byte("resolved\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, member, "add", "shared.txt")
-	runGit(t, member, "commit", "-m", "Merge target branch for grouped member")
-	resolved := gitOutput(t, member, "rev-parse", "HEAD")
-	output, err = runSyncMemberTarget(member, head, target, "merge")
-	if err != nil || !strings.Contains(string(output), `"outcome":"synced"`) {
-		t.Fatalf("resumed member sync = %v\n%s", err, output)
-	}
-	if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != resolved {
-		t.Fatalf("remote member branch = %q, want resolved head %q", got, resolved)
-	}
-	if got := readPushCount(t, remote); got != 1 {
-		t.Fatalf("pushes = %d, want one", got)
-	}
-	if _, err := os.Stat(filepath.Join(commonDir, "minos-member-sync-2")); !os.IsNotExist(err) {
-		t.Fatalf("completed member reconciliation record remains: %v", err)
+			output, err := runSyncMemberTarget(member, head, target, method)
+			if err == nil || !strings.Contains(string(output), `"outcome":"conflict"`) ||
+				!strings.Contains(string(output), `"operation":"`+method+`"`) {
+				t.Fatalf("first member sync = %v\n%s", err, output)
+			}
+			assertContainsFile(t, filepath.Join(commonDir, "minos-member-sync-2"), head)
+			output, err = runSyncMemberTarget(member, head, target, method)
+			if err == nil || !strings.Contains(string(output), "finish the current merge or rebase") {
+				t.Fatalf("unresolved member sync = %v\n%s", err, output)
+			}
+			if err := os.WriteFile(filepath.Join(member, "shared.txt"), []byte("resolved\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, member, "add", "shared.txt")
+			if method == "rebase" {
+				runGit(t, member, "-c", "core.editor=true", "rebase", "--continue")
+			} else {
+				runGit(t, member, "commit", "-m", "Merge target branch for grouped member")
+			}
+			resolved := gitOutput(t, member, "rev-parse", "HEAD")
+			output, err = runSyncMemberTarget(member, head, target, method)
+			if err != nil || !strings.Contains(string(output), `"outcome":"synced"`) ||
+				!strings.Contains(string(output), `"method":"`+method+`"`) {
+				t.Fatalf("resumed member sync = %v\n%s", err, output)
+			}
+			if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != resolved {
+				t.Fatalf("remote member branch = %q, want resolved head %q", got, resolved)
+			}
+			if got := readPushCount(t, remote); got != 1 {
+				t.Fatalf("pushes = %d, want one", got)
+			}
+			if _, err := os.Stat(filepath.Join(commonDir, "minos-member-sync-2")); !os.IsNotExist(err) {
+				t.Fatalf("completed member reconciliation record remains: %v", err)
+			}
+		})
 	}
 }
 
