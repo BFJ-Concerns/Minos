@@ -954,10 +954,14 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(initialGate, /before preparing or[\s\S]*dispatching the next repair/);
   assert.match(initialGate, /memory-pressure[\s\S]*pressure-boundary handoff/);
-  assert.match(initialGate, /gateRepairLadder[\s\S]*authoritative progress record/);
+  assert.match(initialGate, /gateRepairLadder[\s\S]*authoritative\s+progress record/);
   assert.match(initialGate, /do not poll for pressure while[\s\S]*workflow or forge write[\s\S]*is in flight/);
+  const pressureCheckpoint = initialGate.indexOf("At the top of every gate-repair-ladder iteration");
+  const repairDispatch = initialGate.indexOf("rootcause-inputs.mjs");
+  assert.ok(pressureCheckpoint >= 0, "the pressure checkpoint anchor must be present");
+  assert.ok(repairDispatch >= 0, "the repair dispatch anchor must be present");
   assert.ok(
-    initialGate.indexOf("At the top of every gate-repair-ladder iteration") < initialGate.indexOf("rootcause-inputs.mjs"),
+    pressureCheckpoint < repairDispatch,
     "the pressure checkpoint must precede the repair dispatch",
   );
   assert.match(

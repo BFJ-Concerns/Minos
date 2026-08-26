@@ -483,8 +483,10 @@ pull request and every grouped passage in this lifecycle is inert.
    When it exists, take the pressure-boundary handoff now with `stoppedAt`
    set to `gate-repair-ladder`. Put the complete, exact current
    `$MINOS_RUN_DIR/gate-repair-ladder.log` text in the handoff's
-   `gateRepairLadder` field; the C27 successor restores that field as its
-   authoritative progress record. This is a checkpoint within this bounded
+   `gateRepairLadder` field. If no comparison has yet been logged, carry an
+   empty string: that is the authoritative first-iteration record, not a
+   malformed handoff. The C27 successor restores the field as its authoritative
+   progress record. This is a checkpoint within this bounded
    loop only; do not poll for pressure while a repair workflow or forge write
    is in flight.
 

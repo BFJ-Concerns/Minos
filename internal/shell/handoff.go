@@ -119,9 +119,6 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 			return nil, err
 		}
 	}
-	if handoff.GateRepairLadder != nil && strings.TrimSpace(*handoff.GateRepairLadder) == "" {
-		return nil, fmt.Errorf("gateRepairLadder must be non-empty when present")
-	}
 	return &handoff, nil
 }
 

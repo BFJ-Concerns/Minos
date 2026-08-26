@@ -227,7 +227,7 @@ func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
 	}
 }
 
-func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
+func TestSpawnRunAdoptsContinuationAndSeedsLoopRecord(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	var systemdArgs []string
@@ -249,7 +249,7 @@ func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
 	}
 	runRecord := json.RawMessage(`{"round":3,"confirmedFixed":[{"key":"repaired"}],"confirmedUnfixed":[{"key":"known"}]}`)
 	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, runRecord)
-	ladder := "build still fails: missing header\nrepair changed the failure to missing symbol\n"
+	ladder := ""
 	handoffData, err := os.ReadFile(handoffFile)
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +289,7 @@ func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
 	if string(seed) != string(runRecord) {
 		t.Fatalf("seed = %s, want verbatim %s", seed, runRecord)
 	}
-	assertContainsFile(t, filepath.Join(runDir, "gate-repair-ladder.log"), ladder)
+	assertFileEmpty(t, filepath.Join(runDir, "gate-repair-ladder.log"))
 	if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
 		t.Fatalf("consumed handoff still exists or stat failed: %v", err)
 	}
@@ -1029,12 +1029,6 @@ func TestRunHandoffKeepsExistingShapeCompatibility(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err := readRunHandoffStructure(path)
-			if name == "empty gate repair ladder" {
-				if err == nil || !strings.Contains(err.Error(), "gateRepairLadder must be non-empty") {
-					t.Fatalf("empty ladder error = %v", err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("existing handoff shape rejected: %v", err)
 			}

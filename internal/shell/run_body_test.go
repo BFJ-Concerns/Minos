@@ -1450,12 +1450,12 @@ case "$1" in
     printf '[{"id":"abcdef12","sessionId":"session-one","status":null,"state":"%s"}]\n' "$terminal_state" |
       tee "$record.terminal"
     ;;
-	  stop)
-	    printf 'stop %s\n' "$2" >>"$record.calls"
-	    if [ -n "${MINOS_TEST_CGROUP_ON_STOP:-}" ]; then
-	      printf 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n' >"$MINOS_TEST_CGROUP_ON_STOP"
-	    fi
-	    while IFS= read -r pid; do
+  stop)
+    printf 'stop %s\n' "$2" >>"$record.calls"
+    if [ -n "${MINOS_TEST_CGROUP_ON_STOP:-}" ]; then
+      printf 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n' >"$MINOS_TEST_CGROUP_ON_STOP"
+    fi
+    while IFS= read -r pid; do
       kill "$pid" 2>/dev/null || true
     done <"$record.pids"
     ;;
