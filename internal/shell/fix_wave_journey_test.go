@@ -62,6 +62,96 @@ func TestIntegrateWaveCherryPicksMinosCommitsAndPushesOnce(t *testing.T) {
 	}
 }
 
+func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
+	remote, workspace := createBareFixtureRemote(t, "base.txt", "base\n")
+	installPushCounter(t, remote)
+	runGit(t, workspace, "config", "user.name", "Minos")
+	runGit(t, workspace, "config", "user.email", "minos@example.invalid")
+	base := gitOutput(t, workspace, "rev-parse", "HEAD")
+	for _, branch := range []string{"member-one", "member-two", "untouched", "bad-member"} {
+		runGit(t, workspace, "push", "origin", "HEAD:refs/heads/"+branch)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "push-count"), []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	guard, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", "pre-push-guard"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commonDir, "hooks", "pre-push"), guard, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commonDir, "minos-protected-ref"), []byte("refs/heads/main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	makeCommit := func(name, authorName, authorEmail string) string {
+		worktree := filepath.Join(t.TempDir(), "agent")
+		runGit(t, workspace, "worktree", "add", "--detach", worktree, base)
+		if err := os.WriteFile(filepath.Join(worktree, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, worktree, "add", name)
+		runGit(t, worktree, "-c", "user.name="+authorName, "-c", "user.email="+authorEmail, "commit", "-m", "fix: repair "+name)
+		return gitOutput(t, worktree, "rev-parse", "HEAD")
+	}
+	runIntegration := func(branch, commit string) (string, error) {
+		commitsPath := filepath.Join(t.TempDir(), branch+".json")
+		if err := os.WriteFile(commitsPath, []byte("[\""+commit+"\"]"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(filepath.Join("..", "..", "workflows", "integrate-wave"), workspace, commitsPath, "--member-branch", branch)
+		cmd.Env = append(os.Environ(),
+			"MINOS_HEAD_BRANCH=main",
+			"MINOS_GIT_AUTHOR_NAME=Minos",
+			"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
+		)
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}
+
+	first := makeCommit("one.txt", "Minos", "minos@example.invalid")
+	if output, err := runIntegration("member-one", first); err != nil {
+		t.Fatalf("member one integration: %v\n%s", err, output)
+	}
+	second := makeCommit("two.txt", "Minos", "minos@example.invalid")
+	if output, err := runIntegration("member-two", second); err != nil {
+		t.Fatalf("member two integration: %v\n%s", err, output)
+	}
+
+	if got := readPushCount(t, remote); got != 2 {
+		t.Fatalf("push count = %d, want one push per touched member", got)
+	}
+	if got := gitOutput(t, remote, "show", "refs/heads/member-one:one.txt"); got != "one.txt" {
+		t.Fatalf("member one repair = %q", got)
+	}
+	if _, err := exec.Command("git", "--git-dir", remote, "show", "refs/heads/member-one:two.txt").CombinedOutput(); err == nil {
+		t.Fatal("member one received member two material")
+	}
+	if got := gitOutput(t, remote, "show", "refs/heads/member-two:two.txt"); got != "two.txt" {
+		t.Fatalf("member two repair = %q", got)
+	}
+	if _, err := exec.Command("git", "--git-dir", remote, "show", "refs/heads/member-two:one.txt").CombinedOutput(); err == nil {
+		t.Fatal("member two received member one material")
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/untouched"); got != base {
+		t.Fatalf("untouched member moved to %q, want %q", got, base)
+	}
+
+	bad := makeCommit("bad.txt", "Untrusted", "untrusted@example.invalid")
+	if output, err := runIntegration("bad-member", bad); err == nil || !strings.Contains(output, "authored by Untrusted <untrusted@example.invalid>") {
+		t.Fatalf("bad member authorship refusal = %v\n%s", err, output)
+	}
+	if got := readPushCount(t, remote); got != 2 {
+		t.Fatalf("authorship refusal pushed %d times, want 2", got)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/bad-member"); got != base {
+		t.Fatalf("bad member moved to %q, want %q", got, base)
+	}
+}
+
 func TestPublishOverflowPushesAnnexeOnceAndEmitsRepositoryFallback(t *testing.T) {
 	t.Run("annexe", func(t *testing.T) {
 		remote, _ := createBareFixtureRemote(t, "README.md", "# Commission\n")
