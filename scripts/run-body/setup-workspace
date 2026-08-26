@@ -47,6 +47,10 @@ guidance_has_content() {
   [ -f "$1" ] && grep -q '[^[:space:]]' "$1"
 }
 
+workspace_is_git_repository() {
+  git -C "$MINOS_WORKSPACE" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
 forge_get "/api/v1/repos/${MINOS_OWNER}/${MINOS_REPO_NAME}/pulls/${MINOS_PR}"
 if [ "$response_status" != "200" ]; then
   echo "setup-workspace: pull request lookup returned HTTP $response_status" >&2
@@ -97,15 +101,19 @@ pull_request_record="${MINOS_RUN_DIR}/pull-request.json"
 jq '{number: (.number // null), title: (.title // ""), body: (.body // "")}' \
   "$response_file" >"$pull_request_record"
 
-if [ "$resume" = true ]; then
-  if [ ! -d "$MINOS_WORKSPACE" ]; then
-    echo "setup-workspace: preserved workspace is missing: $MINOS_WORKSPACE" >&2
-    exit 1
+reuse_workspace="$resume"
+if [ "$reuse_workspace" = true ]; then
+  if ! workspace_is_git_repository; then
+    echo "setup-workspace: preserved workspace is not a Git repository; cloning fresh" >&2
+    rm -rf -- "$MINOS_WORKSPACE"
+    reuse_workspace=false
+  else
+    git -C "$MINOS_WORKSPACE" merge --abort 2>/dev/null || true
+    git -C "$MINOS_WORKSPACE" reset --hard
+    git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
   fi
-  git -C "$MINOS_WORKSPACE" merge --abort 2>/dev/null || true
-  git -C "$MINOS_WORKSPACE" reset --hard
-  git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
-else
+fi
+if [ "$reuse_workspace" = false ]; then
   git -c "http.extraHeader=Authorization: token ${forge_token}" clone --no-checkout "$repository_url" "$MINOS_WORKSPACE"
   git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
 fi

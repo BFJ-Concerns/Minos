@@ -126,6 +126,50 @@ func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testi
 	assertContainsFile(t, filepath.Join(commonDir, "hooks", "pre-push"), "minos-protected-ref")
 }
 
+func TestSetupWorkspaceResumeReclonesInvalidGitWorkspaceAndReestablishesSafetyState(t *testing.T) {
+	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
+	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
+	server := newSetupForge(t, head, repository, annexe)
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	orientation := filepath.Join(runDir, "orientation.json")
+	runSetupWorkspace(t, server.URL, runDir, workspace, orientation, head)
+	if err := os.RemoveAll(filepath.Join(workspace, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workspace, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "abandoned.txt"), []byte("not a repository\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := setupWorkspaceCommand(t, server.URL, runDir, workspace, orientation, head)
+	cmd.Env = append(cmd.Env, "MINOS_RESUME=true")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("resume with invalid workspace failed: %v\n%s", err, output)
+	}
+
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("re-cloned workspace head = %q, want %q", got, head)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "abandoned.txt")); !os.IsNotExist(err) {
+		t.Fatalf("invalid workspace residue remains or stat failed: %v", err)
+	}
+	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	protectedRef, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(protectedRef)); got != "refs/heads/feature" {
+		t.Fatalf("protected ref = %q, want pull-request branch", got)
+	}
+	assertContainsFile(t, filepath.Join(commonDir, "hooks", "pre-push"), "minos-protected-ref")
+	if state := readOrientation(t, orientation); state.Head != head || state.Grounding != "annexe" {
+		t.Fatalf("orientation after fresh clone = %+v", state)
+	}
+}
+
 func TestSetupWorkspaceRefusesOnlyForeignHeadMovement(t *testing.T) {
 	for _, test := range []struct {
 		name, movement string
