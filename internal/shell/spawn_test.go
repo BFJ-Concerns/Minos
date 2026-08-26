@@ -314,7 +314,7 @@ func TestSpawnRunRefusesContinuationDirectorySymlinkEscapingRunsDirectory(t *tes
 	writeTestHandoff(t, cfg, facts, apparent, facts.HeadSHA, json.RawMessage(`{"round":3,"confirmedUnfixed":[]}`))
 
 	stderr := captureStderr(t, func() {
-		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 			t.Fatal(err)
 		}
 	})
