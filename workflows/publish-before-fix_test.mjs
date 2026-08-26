@@ -150,7 +150,7 @@ function memberInput(findings = [finding()], overrides = {}) {
     ...prepared,
     review: {
       ...prepared.review,
-      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 }],
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, target: TARGET, head: HEAD }],
       memberReviews: [{
         member: "primary",
         verdict: "comment",
@@ -413,7 +413,7 @@ test("an ordinary solo run publishes its findings exactly once through the membe
       status: "complete",
       reviewed: { target: TARGET, head: HEAD },
       confirmedFindings: [confirmed],
-      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 }],
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, target: TARGET, head: HEAD }],
       memberReviews: [{
         member: "primary",
         verdict: "comment",
@@ -462,7 +462,7 @@ test("a terminal solo run with no findings still publishes one clean member revi
       status: "complete",
       reviewed: { target: TARGET, head: HEAD },
       confirmedFindings: [],
-      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 }],
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, target: TARGET, head: HEAD }],
       memberReviews: [{
         member: "primary",
         verdict: "comment",
@@ -781,11 +781,12 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
-  await t.test("a moved head rejection starts no dispatcher or agent", async () => {
+  await t.test("a moved member head rejection starts no dispatcher or agent", async () => {
     const fixture = await forgeFixture({ actualHead: "3333333333333333333333333333333333333333" });
     try {
-      const { result, events, prompts } = await runCase({ minosBin, fixture });
+      const { result, events, prompts } = await runCase({ minosBin, fixture, preparedInput: memberInput() });
       assert.equal(result.status, "incomplete");
+      assert.ok(result.publication, JSON.stringify(result));
       assert.equal(result.publication.outcome, "rejected");
       assert.equal(result.publication.reason, "head moved");
       assert.equal(fixture.state.postCount, 0);

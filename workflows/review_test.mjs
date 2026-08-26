@@ -350,8 +350,8 @@ test("terminal member publication writes each member's own request-changes revie
   writeFileSync(verdictPath, JSON.stringify({
     status: "complete",
     members: [
-      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 },
-      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2 },
+      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, head: "reviewed-head-1", target: "reviewed-target-1" },
+      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2, head: "reviewed-head-2", target: "reviewed-target-2" },
     ],
     memberReviews: [
       { member: "primary", verdict: "comment", body: "Primary body.", comments: [{ body: "primary finding" }], status: "attention" },
@@ -364,22 +364,20 @@ test("terminal member publication writes each member's own request-changes revie
   });
   const calls = readFileSync(callLog, "utf8").trim().split("\n");
   assert.deepEqual(calls.filter((call) => !call.startsWith("content ")).map((call) => call.split(" ").slice(0, 6).join(" ")), [
-    "forge --member minos-e2e-owner subject 1 snapshot",
     "forge --member minos-e2e-owner subject 1 review",
     "forge --member minos-e2e-owner subject 1 status",
-    "forge --member minos-e2e-owner sibling 2 snapshot",
     "forge --member minos-e2e-owner sibling 2 review",
     "forge --member minos-e2e-owner sibling 2 status",
   ]);
-  assert.ok(calls.some((call) => call.includes("review head-1 target-1 request-changes")));
-  assert.ok(calls.some((call) => call.includes("status head-1 target-1 attention")));
-  assert.ok(calls.some((call) => call.includes("review head-2 target-2 request-changes")));
-  assert.ok(calls.some((call) => call.includes("status head-2 target-2 attention")));
+  assert.ok(calls.some((call) => call.includes("review reviewed-head-1 reviewed-target-1 request-changes")));
+  assert.ok(calls.some((call) => call.includes("status reviewed-head-1 reviewed-target-1 attention")));
+  assert.ok(calls.some((call) => call.includes("review reviewed-head-2 reviewed-target-2 request-changes")));
+  assert.ok(calls.some((call) => call.includes("status reviewed-head-2 reviewed-target-2 attention")));
   assert.ok(calls.includes('content 1 Primary body. [{"body":"primary finding"}]'));
   assert.ok(calls.includes('content 2 Sibling body. [{"body":"sibling finding"}]'));
 });
 
-test("terminal member publication writes a clean review and status for every member", () => {
+test("terminal member publication writes every clean review before finishing status", () => {
   const root = mkdtempSync(join(tmpdir(), "minos-clean-member-publication-"));
   const callLog = join(root, "calls.log");
   const minosBin = join(root, "minos-fixture");
@@ -389,8 +387,8 @@ test("terminal member publication writes a clean review and status for every mem
   writeFileSync(verdictPath, JSON.stringify({
     status: "complete",
     members: [
-      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 },
-      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2 },
+      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, head: "reviewed-head-1", target: "reviewed-target-1" },
+      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2, head: "reviewed-head-2", target: "reviewed-target-2" },
     ],
     memberReviews: [
       { member: "primary", verdict: "comment", body: "No confirmed findings in the reviewed code.", comments: [], status: "clean" },
@@ -403,17 +401,12 @@ test("terminal member publication writes a clean review and status for every mem
   });
   const calls = readFileSync(callLog, "utf8").trim().split("\n");
   assert.deepEqual(calls.filter((call) => !call.startsWith("content ")).map((call) => call.split(" ").slice(0, 6).join(" ")), [
-    "forge --member minos-e2e-owner subject 1 snapshot",
     "forge --member minos-e2e-owner subject 1 review",
-    "forge --member minos-e2e-owner subject 1 status",
-    "forge --member minos-e2e-owner sibling 2 snapshot",
     "forge --member minos-e2e-owner sibling 2 review",
-    "forge --member minos-e2e-owner sibling 2 status",
   ]);
-  assert.ok(calls.some((call) => call.includes("review head-1 target-1 comment")));
-  assert.ok(calls.some((call) => call.includes("status head-1 target-1 clean")));
-  assert.ok(calls.some((call) => call.includes("review head-2 target-2 comment")));
-  assert.ok(calls.some((call) => call.includes("status head-2 target-2 clean")));
+  assert.ok(calls.some((call) => call.includes("review reviewed-head-1 reviewed-target-1 comment")));
+  assert.ok(calls.some((call) => call.includes("review reviewed-head-2 reviewed-target-2 comment")));
+  assert.equal(calls.some((call) => call.includes(" status ")), false, "clean member completion waits for finishing");
   assert.ok(calls.includes("content 1 No confirmed findings in the reviewed code. []"));
   assert.ok(calls.includes("content 2 No confirmed findings in the reviewed code. []"));
 });
@@ -1072,10 +1065,9 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   );
   assert.match(lifecycle, /A solo member takes\s+this same publication path/);
   assert.match(lifecycle, /does not write a terminal-shaped `Minos`[\s\S]*while the loop is still working/);
-  assert.match(
-    lifecycle,
-    /`requestChangesReview` is present on a legacy verdict without `members`[\s\S]*member-shaped verdict[\s\S]*do not post a\s+second primary-only request-changes review/,
-  );
+  assert.match(lifecycle, /blocking member's `attention` status/);
+  assert.match(lifecycle, /`requestChangesReview` is present on a legacy verdict without `members`/);
+  assert.match(lifecycle, /member-shaped verdict[\s\S]*do not post a second[\s\S]*primary-only request-changes review/);
   assert.match(
     lifecycle,
     /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,
