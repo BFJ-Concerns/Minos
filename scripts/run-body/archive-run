@@ -59,7 +59,7 @@ archive_ssh() {
     -path './run-report.md' -o -path './report.md' -o -path './failure.log' -o -path './failures.log' -o \
     -path './home/.claude/projects/*' -o -path './home/.codex/sessions/*.jsonl' -o \
     -path './ensemble-records/*' -o -path './loop-record.json' -o \
-    -path './timings.ndjson' -o -path './timing-record.json' \
+    -path './timings.ndjson' -o -path './timing-record.json' -o -path './cgroup-death-evidence' \
   \) -print0 2>/dev/null |
     tar --null --files-from=- -cf - 2>/dev/null |
     zstd -q -T0 -c 2>/dev/null |

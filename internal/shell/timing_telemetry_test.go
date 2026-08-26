@@ -516,6 +516,9 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "timings.ndjson"), []byte(event), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(runDir, "cgroup-death-evidence"), []byte("[memory.events]\noom_kill 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	writeTimingFixtureAgentRecord(t,
 		filepath.Join(runDir, "ensemble-records", "record-a", "agents", "0001", "agent.json"),
 		"2026-08-17T00:21:00Z", "2026-08-17T00:25:00Z")
@@ -597,6 +600,13 @@ exec sh -c "$last"
 	}
 	if _, err := os.Stat(sidecar + ".partial"); !os.IsNotExist(err) {
 		t.Fatalf("partial sidecar left beside the delivered one: %v", err)
+	}
+	archiveListing, err := exec.Command("tar", "-tf", tarballs[0]).CombinedOutput()
+	if err != nil {
+		t.Fatalf("list delivered tarball: %v\n%s", err, archiveListing)
+	}
+	if !strings.Contains(string(archiveListing), "cgroup-death-evidence") {
+		t.Fatalf("delivered tarball lacks cgroup death evidence:\n%s", archiveListing)
 	}
 }
 

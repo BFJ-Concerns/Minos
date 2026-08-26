@@ -49,6 +49,26 @@ append_failure() {
   fi
 }
 
+capture_cgroup_death_evidence() {
+  # A terminal lead state is the last point at which this run's cgroup still
+  # describes the failure. Keep the raw kernel counters in the run directory
+  # for the archive and postmortem; this is evidence, not another memory
+  # judgement or lifecycle store.
+  evidence="$MINOS_RUN_DIR/cgroup-death-evidence"
+  evidence_tmp="${evidence}.tmp"
+  {
+    printf 'captured_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 'unknown')"
+    for counter_file in memory.events memory.peak memory.pressure; do
+      printf '[%s]\n' "$counter_file"
+      if [ -r "$cgroup_dir/$counter_file" ]; then
+        cat "$cgroup_dir/$counter_file"
+      else
+        printf 'unavailable\n'
+      fi
+    done
+  } >"$evidence_tmp" && mv "$evidence_tmp" "$evidence"
+}
+
 on_exit() {
   status="$1"
   trap - 0
@@ -464,6 +484,12 @@ while :; do
 
   # 3. Claude has reported an unrecoverable terminal state.
   if [ "$agent_state" = "failed" ] || [ "$agent_state" = "stopped" ]; then
+    if ! capture_cgroup_death_evidence; then
+      supervisor_failure=true
+      failure_stage="cgroup-death-evidence"
+      failure_cause="could not write cgroup death evidence $MINOS_RUN_DIR/cgroup-death-evidence"
+      exit 1
+    fi
     break
   fi
 
