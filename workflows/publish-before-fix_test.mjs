@@ -562,6 +562,68 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
+  await t.test("a terminal sub-threshold finding remains an overflow and does not hold the member", async () => {
+    const low = finding({ member: "primary", severity: "Low" });
+    const preparedInput = memberInput([low], {
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "terminal",
+        basis: "the only finding is below the threshold",
+      },
+    });
+    const fixture = await forgeFixture();
+    try {
+      const { result, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      assert.equal(result.status, "complete");
+      assert.equal(result.classification, "terminal");
+      assert.equal(result.requestChanges.length, 0);
+      assert.equal(fixture.state.postCount, 1);
+      assert.equal(fixture.state.reviews[0].state, "COMMENT");
+      assert.equal(fixture.state.reviews[0].body.includes(SENTINEL), false);
+      assert.deepEqual(fixture.state.comments.get(fixture.state.reviews[0].id), []);
+      assert.equal(fixture.state.statusPostCount, 0);
+      assert.deepEqual(prompts, []);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("a terminal blocking finding retained only in the loop record holds its member", async () => {
+    const prior = finding({ member: "primary" });
+    const preparedInput = memberInput([], {
+      runRecord: {
+        round: 1,
+        confirmedUnfixed: [{
+          key: JSON.stringify([prior.path, prior.line, prior.title]),
+          finding: prior,
+          attempts: 1,
+          reason: "the previous repair could not resolve it",
+        }],
+      },
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "terminal",
+        basis: "the previous blocking finding remains unresolved",
+      },
+    });
+    const fixture = await forgeFixture();
+    try {
+      const { result, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      assert.equal(result.status, "complete");
+      assert.equal(result.classification, "terminal");
+      assert.equal(result.requestChanges.length, 1);
+      assert.equal(fixture.state.postCount, 1);
+      assert.equal(fixture.state.reviews[0].state, "REQUEST_CHANGES");
+      assert.match(fixture.state.reviews[0].body, /Confirmed code findings remain unresolved/);
+      assert.equal(fixture.state.statusPostCount, 1);
+      assert.equal(fixture.state.statuses[0].state, "failure");
+      assert.match(fixture.state.comments.get(fixture.state.reviews[0].id)[0].body, new RegExp(SENTINEL));
+      assert.deepEqual(prompts, []);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   await t.test("an outside-hunk confirmed finding reaches a durable fallback before dispatch", async () => {
     const sourceLine = 7423;
     const preparedInput = input([finding({

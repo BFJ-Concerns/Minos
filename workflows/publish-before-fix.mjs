@@ -61,6 +61,49 @@ async function defaultDispatch({ launcher, workflowScript, planPath, cwd, env })
 
 const memberPublisher = join(dirname(fileURLToPath(import.meta.url)), "publish-member-reviews.mjs");
 
+// Terminal publication is an effect of the fix plan, not a replay of the
+// review envelope. The plan is where the threshold and the persisted
+// confirmed-unfixed findings meet, so it alone decides which members hold.
+function terminalMemberReview(plan, review) {
+  if (review.members.some((member) => !member || typeof member.id !== "string" || member.id === ""))
+    return { reason: "terminal member coordinates are incomplete" };
+  const knownMembers = new Set(review.members.map((member) => member.id));
+  const blocking = new Map(review.members.map((member) => [member.id, []]));
+  const comments = plan.requestChangesReview ? plan.requestChangesReview.comments : [];
+  if (comments.length !== plan.requestChanges.length)
+    return { reason: "terminal request-changes payload is incomplete" };
+  for (let index = 0; index < plan.requestChanges.length; index += 1) {
+    const member = plan.requestChanges[index]?.finding?.member;
+    if (typeof member !== "string" || !knownMembers.has(member))
+      return { reason: "terminal blocking finding has no publishable member" };
+    blocking.get(member).push(comments[index]);
+  }
+  return {
+    review: {
+      ...review,
+      memberReviews: review.members.map((member) => {
+        const memberComments = blocking.get(member.id);
+        if (memberComments.length > 0) {
+          return {
+            member: member.id,
+            verdict: "request-changes",
+            body: plan.requestChangesReview.body,
+            comments: memberComments,
+            status: "attention",
+          };
+        }
+        return {
+          member: member.id,
+          verdict: "comment",
+          body: "No confirmed findings in the reviewed code.",
+          comments: [],
+          status: "clean",
+        };
+      }),
+    },
+  };
+}
+
 async function defaultMemberPublication({ verdictPath, minosBin, terminal, cwd, env }) {
   return runCommand(process.execPath, [memberPublisher, verdictPath, ...(terminal ? ["--terminal"] : [])], {
     cwd,
@@ -104,6 +147,11 @@ export async function publishBeforeFix({
     return publicationFailure(plan, "prepared wave does not match the requested head and target");
   }
 
+  const publicationReview = plan.classification === "terminal"
+    ? terminalMemberReview(plan, input.review)
+    : { review: input.review };
+  if (publicationReview.reason) return publicationFailure(plan, publicationReview.reason);
+
   const operationDir = mkdtempSync(join(tmpdir(), "minos-publication-before-fix-"));
   try {
     const bodyPath = join(operationDir, "sweep-review.md");
@@ -115,14 +163,14 @@ export async function publishBeforeFix({
       writeFileSync(commentsPath, JSON.stringify(plan.sweepReview.comments), { mode: 0o600 });
     }
     writeFileSync(planPath, JSON.stringify(plan), { mode: 0o600 });
-    writeFileSync(verdictPath, JSON.stringify(input.review), { mode: 0o600 });
+    writeFileSync(verdictPath, JSON.stringify(publicationReview.review), { mode: 0o600 });
 
     let forgeResult;
     try {
       forgeResult = hasMemberPublication
         ? await runMemberPublication({
             verdictPath,
-            review: input.review,
+            review: publicationReview.review,
             terminal: plan.classification === "terminal",
             minosBin,
             cwd,
