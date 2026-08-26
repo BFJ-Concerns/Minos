@@ -17,9 +17,13 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|snapshot-member|head-movement|check-logs|claim|claim-member|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge snapshot|snapshot-member|head-movement|check-logs|claim|claim-member|status[-member]|review[-member]|comment[-member]|reaction[-member]|reaction-remove[-member]|label-remove[-member]|merge[-member]|delete-source-branch[-member]")
 	}
 	adapter, guard, botLogin, err := leadForge()
+	if err != nil {
+		return err
+	}
+	guard, args, err = memberAddressedForgeWrite(args, guard)
 	if err != nil {
 		return err
 	}
@@ -119,11 +123,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		return emitForgeResult(stdout, "status", adapter.SetProductStatus(ctx, guard, state))
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
-			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|request-changes-checks|comment BODY_FILE [COMMENTS_FILE]")
+			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|approve-chain-wait|request-changes|request-changes-checks|comment BODY_FILE [COMMENTS_FILE]")
 		}
 		checkCaused := args[3] == "request-changes-checks"
+		chainWait := args[3] == "approve-chain-wait"
 		verdict, ok := map[string]forge.ReviewVerdict{
-			"approve": forge.ReviewApprove, "request-changes": forge.ReviewRequestChanges,
+			"approve": forge.ReviewApprove, "approve-chain-wait": forge.ReviewApprove, "request-changes": forge.ReviewRequestChanges,
 			"request-changes-checks": forge.ReviewRequestChanges, "comment": forge.ReviewVerdictComment,
 		}[args[3]]
 		if !ok {
@@ -137,6 +142,9 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		recordValues := map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA}
 		if checkCaused {
 			recordValues[product.RecordCauseKey] = product.RecordCauseRequiredChecks
+		}
+		if chainWait {
+			recordValues[product.RecordCauseKey] = product.RecordCauseChainWait
 		}
 		record, err := product.FormatRecord(recordValues)
 		if err != nil {
@@ -211,6 +219,55 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	default:
 		return fmt.Errorf("unknown forge action %q", args[0])
 	}
+}
+
+var memberForgeWriteActions = map[string]string{
+	"status-member":               "status",
+	"review-member":               "review",
+	"comment-member":              "comment",
+	"reaction-member":             "reaction",
+	"reaction-remove-member":      "reaction-remove",
+	"label-remove-member":         "label-remove",
+	"merge-member":                "merge",
+	"delete-source-branch-member": "delete-source-branch",
+}
+
+// memberAddressedForgeWrite selects a claimed grouped member before the
+// ordinary guarded writer runs. The durable group guard binds that member to
+// this primary run, so repository coordinates alone cannot widen its write
+// authority to an arbitrary pull request.
+func memberAddressedForgeWrite(args []string, guard forge.Guard) (forge.Guard, []string, error) {
+	action, memberWrite := memberForgeWriteActions[args[0]]
+	if !memberWrite {
+		return guard, args, nil
+	}
+	if len(args) < 4 {
+		return forge.Guard{}, nil, fmt.Errorf("usage: minos forge %s OWNER REPO NUMBER ...", args[0])
+	}
+	if args[1] != guard.Repository.Owner || args[2] != guard.Repository.Name {
+		return forge.Guard{}, nil, fmt.Errorf("member is outside this run repository")
+	}
+	pullRequest, err := strconv.ParseInt(args[3], 10, 64)
+	if err != nil || pullRequest <= 0 {
+		if err == nil {
+			err = fmt.Errorf("must be positive")
+		}
+		return forge.Guard{}, nil, fmt.Errorf("member number: %w", err)
+	}
+	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
+	if err != nil {
+		return forge.Guard{}, nil, err
+	}
+	if pullRequest != guard.PullRequest {
+		primary := Facts{Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
+		member := Facts{Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: args[3]}
+		binding, err := os.ReadFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(member)))
+		if err != nil || strings.TrimSpace(string(binding)) != UnitName(primary) {
+			return forge.Guard{}, nil, fmt.Errorf("member is not claimed by this run")
+		}
+	}
+	guard.PullRequest = pullRequest
+	return guard, append([]string{action}, args[4:]...), nil
 }
 
 func leadForge() (*forge.Adapter, forge.Guard, string, error) {

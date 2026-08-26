@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -534,5 +535,86 @@ func TestForgeCommandSnapshotMemberReadsRequestedMember(t *testing.T) {
 	}
 	if snapshot.PullRequest != 2 || snapshot.HeadBranch != "sibling" || snapshot.TargetBranch != "main" {
 		t.Fatalf("member snapshot = %#v", snapshot)
+	}
+}
+
+func TestMemberAddressedForgeWritesSelectOnlyAClaimedMember(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, primary := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	member := Facts{Owner: primary.Owner, Repo: primary.Repo, PR: "2"}
+	if err := os.MkdirAll(filepath.Dir(groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(member)), []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	primaryNumber, _ := strconv.ParseInt(primary.PR, 10, 64)
+	guard := forge.Guard{Repository: forge.Repository{Owner: primary.Owner, Name: primary.Repo}, PullRequest: primaryNumber}
+
+	for addressed, action := range memberForgeWriteActions {
+		t.Run(addressed, func(t *testing.T) {
+			selected, rewritten, err := memberAddressedForgeWrite([]string{addressed, primary.Owner, primary.Repo, "2", "tail"}, guard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selected.PullRequest != 2 || !slices.Equal(rewritten, []string{action, "tail"}) {
+				t.Fatalf("selected guard/args = %#v/%#v", selected, rewritten)
+			}
+		})
+	}
+	if _, _, err := memberAddressedForgeWrite([]string{"status-member", primary.Owner, primary.Repo, "3", "tail"}, guard); err == nil || !strings.Contains(err.Error(), "not claimed") {
+		t.Fatalf("unclaimed member error = %v", err)
+	}
+}
+
+func TestForgeCommandStatusMemberWritesTheClaimedMembersRecord(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
+	cfg, _, primary := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", primary.Forge)
+	t.Setenv("MINOS_OWNER", primary.Owner)
+	t.Setenv("MINOS_REPO_NAME", primary.Repo)
+	t.Setenv("MINOS_PR", primary.PR)
+	member := Facts{Owner: primary.Owner, Repo: primary.Repo, PR: "2"}
+	if err := os.MkdirAll(filepath.Dir(groupMemberGuardPath(cfg.Runs.Dir, UnitName(member))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(member)), []byte(UnitName(primary)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ForgeCommand(t.Context(), []string{
+		"status-member", primary.Owner, primary.Repo, "2", "head-sibling", "target-main", "working",
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.statusPostRequests) != 1 || !strings.Contains(fmt.Sprint(state.statusPostRequests[0].Payload["target_url"]), "/pulls/2#minos-target-target-main") {
+		t.Fatalf("member status posts = %#v", state.statusPostRequests)
+	}
+}
+
+func TestForgeCommandApproveChainWaitRecordsItsTargetBoundCause(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	configureForgeCommandFixture(t, state)
+	bodyPath := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(bodyPath, []byte("Waiting for the preceding grouped member.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgeCommand(t.Context(), []string{
+		"review", state.headSHA(), state.targetSHA(), "approve-chain-wait", bodyPath,
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	writes, payload := state.reviewWriteFacts()
+	record, ok := product.TrailingRecord(fmt.Sprint(payload["body"]))
+	if writes != 1 || payload["event"] != "APPROVED" || !ok ||
+		record[product.RecordCauseKey] != product.RecordCauseChainWait || record[product.RecordTargetKey] != state.targetSHA() {
+		t.Fatalf("chain-wait review = writes:%d payload:%#v record:%#v", writes, payload, record)
 	}
 }

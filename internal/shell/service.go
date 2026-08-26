@@ -100,13 +100,18 @@ func trustedReview(snapshot forge.Snapshot, commits []forge.Commit, botLogin str
 }
 
 func checkCausedVerdictSpent(review forge.Review, snapshot forge.Snapshot) bool {
-	if strings.ToUpper(review.State) != "REQUEST_CHANGES" && strings.ToUpper(review.State) != "REQUESTED_CHANGES" {
+	record, ok := product.TrailingRecord(review.Body)
+	if !ok || record[product.RecordTargetKey] == "" || record[product.RecordTargetKey] == snapshot.TargetSHA || snapshot.HeadRepository != snapshot.TargetRepository {
 		return false
 	}
-	record, ok := product.TrailingRecord(review.Body)
-	return ok && record[product.RecordCauseKey] == product.RecordCauseRequiredChecks &&
-		record[product.RecordTargetKey] != "" && record[product.RecordTargetKey] != snapshot.TargetSHA &&
-		snapshot.HeadRepository == snapshot.TargetRepository
+	switch strings.ToUpper(review.State) {
+	case "REQUEST_CHANGES", "REQUESTED_CHANGES":
+		return record[product.RecordCauseKey] == product.RecordCauseRequiredChecks
+	case "APPROVED", "APPROVE":
+		return record[product.RecordCauseKey] == product.RecordCauseChainWait
+	default:
+		return false
+	}
 }
 
 func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, bool) {

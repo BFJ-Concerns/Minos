@@ -2663,6 +2663,13 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		head := strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/statuses/")
 		s.statuses = append([]map[string]any{payload}, s.statuses...)
 		s.statusesByCommit[head] = append([]map[string]any{payload}, s.statusesByCommit[head]...)
+		for _, child := range s.stackedChildren {
+			if child["head"].(map[string]any)["sha"] == head {
+				statuses, _ := child["statuses"].([]map[string]any)
+				child["statuses"] = append([]map[string]any{payload}, statuses...)
+				break
+			}
+		}
 		s.statusWrites++
 		s.writeSequence = append(s.writeSequence, "status:"+fmt.Sprint(payload["description"]))
 		s.statusPostRequests = append(s.statusPostRequests, statusPostRequest{Head: head, Payload: mapsClone(payload)})

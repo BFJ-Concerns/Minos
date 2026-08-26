@@ -228,9 +228,17 @@ pull request and every grouped passage in this lifecycle is inert.
    Write this pull request's own facts first, then the granted members'
    facts, with one sentence of the grouping
    judgement's basis, to `$MINOS_RUN_DIR/members.json`; membership is fixed
-   from this point. Reconcile claimed members in dependency order, base
-   first: a member whose target branch is another claimed member's source
-   branch runs only after that predecessor has published its reconciliation.
+   from this point. Every later forge write for a non-primary member must use
+   the member-addressed counterpart with its identity before the ordinary
+   arguments: `status-member`, `review-member`, `comment-member`,
+   `reaction-member`, `reaction-remove-member`, `label-remove-member`,
+   `merge-member`, or `delete-source-branch-member`, each invoked as
+   `"$MINOS_BIN" forge ACTION-member OWNER REPO NUMBER ...`. These commands
+   require the member's durable guard to name this run; never use a primary
+   writer with a member's head and target. Reconcile claimed members in
+   dependency order, base first: a member whose target branch is another
+   claimed member's source branch runs only after that predecessor has
+   published its reconciliation.
    Immediately before each member, run `"$MINOS_BIN" forge snapshot-member
    OWNER REPO NUMBER` and use that fresh snapshot's `target_sha` as
    `EXPECTED_TARGET`; keep `EXPECTED_HEAD` from the member's claim facts, and
@@ -1298,11 +1306,13 @@ pull request and every grouped passage in this lifecycle is inert.
    as a solo run would leave it, and affects no other member. A chain
    member whose own result is clean but whose predecessor ended blocked
    **waits, expressed as a hold**: publish its approve review with
-   `"$MINOS_BIN" forge review HEAD TARGET approve-chain-wait BODY_FILE` —
+   `"$MINOS_BIN" forge review-member OWNER REPO NUMBER HEAD TARGET
+   approve-chain-wait BODY_FILE` —
    the command appends the machine-readable trailing record (cause
    `chain-wait`, and as TARGET the target SHA this verdict was rendered
    against) that lets the sweep spend the approval when the target moves —
-   then set `"$MINOS_BIN" forge status HEAD TARGET held` and post the
+   then set `"$MINOS_BIN" forge status-member OWNER REPO NUMBER HEAD TARGET
+   held` and post the
    comment opening with `Held at: finishing`, naming the blocked
    predecessor it waits on. When the predecessor eventually merges, the
    member's target moves, the sweep re-admits it, and the released
