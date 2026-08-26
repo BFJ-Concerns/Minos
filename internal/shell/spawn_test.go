@@ -316,6 +316,64 @@ func TestSpawnRunAdoptsContinuationAndSeedsLoopRecord(t *testing.T) {
 	}
 }
 
+func TestSpawnRunRefusesContinuationDirectorySymlinkEscapingRunsDirectory(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "systemctl":
+			return nil, nil
+		case "systemd-run":
+			systemdArgs = append([]string(nil), args...)
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command %q", name)
+			return nil, nil
+		}
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	cfg.Runs.Dir = t.TempDir()
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+	escaped := filepath.Join(t.TempDir(), UnitName(facts)+"-preserved")
+	if err := os.MkdirAll(filepath.Join(escaped, "workspace", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	apparent := filepath.Join(cfg.Runs.Dir, filepath.Base(escaped))
+	if err := os.Symlink(escaped, apparent); err != nil {
+		t.Fatal(err)
+	}
+	writeTestHandoff(t, cfg, facts, apparent, facts.HeadSHA, json.RawMessage(`{"round":3,"confirmedUnfixed":[]}`))
+
+	stderr := captureStderr(t, func() {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stderr, "continuation workspace not reused") || !strings.Contains(stderr, "runDir is not a direct, unit-named child of runs.dir") {
+		t.Fatalf("continuation refusal = %q", stderr)
+	}
+	if got := argumentValue(systemdArgs, "MINOS_RUN_DIR"); got == "" || got == apparent {
+		t.Fatalf("fresh run directory = %q, escaping continuation = %q", got, apparent)
+	}
+	if slices.Contains(systemdArgs, "MINOS_RESUME=true") {
+		t.Fatalf("escaping continuation unexpectedly resumed: %v", systemdArgs)
+	}
+}
+
+func TestAdoptableRunDirectoryReportsMissingDirectory(t *testing.T) {
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = t.TempDir()
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+	handoff := &runHandoff{RunDir: filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-reaped")}
+
+	reason, ok := adoptableRunDirectory(cfg, UnitName(facts), facts, handoff)
+	if ok || reason != "runDir does not exist as a directory" {
+		t.Fatalf("adoption = (%q, %t), want missing-directory refusal", reason, ok)
+	}
+}
+
 func TestSpawnRunCarriesCompleteReviewVerdictAcrossContinuation(t *testing.T) {
 	for _, rejectedHandoff := range []bool{false, true} {
 		name := "accepted handoff"
