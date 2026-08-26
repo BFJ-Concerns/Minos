@@ -254,6 +254,7 @@ func TestSyncMemberTargetReconcilesMovedTargetAndKeepsPrimaryPin(t *testing.T) {
 			remote, primary := createSyncFixture(t, true, false)
 			installPushCounter(t, remote)
 			commonDir := installMemberPushGuard(t, primary)
+			installMemberProtectedRef(t, commonDir, "feature")
 			head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
 			target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
 			primaryPin := gitOutput(t, primary, "rev-parse", "HEAD")
@@ -304,6 +305,8 @@ func TestSyncMemberTargetReconcilesMovedTargetAndKeepsPrimaryPin(t *testing.T) {
 
 func TestSyncMemberTargetRejectsTargetMovedPastExpectedSnapshot(t *testing.T) {
 	remote, primary := createSyncFixture(t, true, false)
+	commonDir := gitOutput(t, primary, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	installMemberProtectedRef(t, commonDir, "feature")
 	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
 	expectedTarget := gitOutput(t, remote, "rev-parse", "refs/heads/main")
 
@@ -342,6 +345,7 @@ func TestSyncMemberTargetConflictCanBeResolvedAndResumed(t *testing.T) {
 			remote, primary := createSyncFixture(t, true, true)
 			installPushCounter(t, remote)
 			commonDir := installMemberPushGuard(t, primary)
+			installMemberProtectedRef(t, commonDir, "feature")
 			head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
 			target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
 			member := filepath.Join(t.TempDir(), "member")
@@ -387,7 +391,8 @@ func TestSyncMemberTargetConflictCanBeResolvedAndResumed(t *testing.T) {
 
 func TestSyncMemberTargetConcurrentSourceMoveLosesPushLease(t *testing.T) {
 	remote, primary := createSyncFixture(t, true, false)
-	installMemberPushGuard(t, primary)
+	commonDir := installMemberPushGuard(t, primary)
+	installMemberProtectedRef(t, commonDir, "feature")
 	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
 	target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
 	member := filepath.Join(t.TempDir(), "member")
@@ -396,7 +401,7 @@ func TestSyncMemberTargetConcurrentSourceMoveLosesPushLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commonDir := gitOutput(t, primary, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	commonDir = gitOutput(t, primary, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	hook := "#!/bin/sh\nset -eu\ngit --git-dir=\"" + remote + "\" update-ref refs/heads/feature \"" + target + "\"\nexec \"" + guard + "\" \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(commonDir, "hooks", "pre-push"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
@@ -425,6 +430,13 @@ func installMemberPushGuard(t *testing.T, workspace string) string {
 		t.Fatal(err)
 	}
 	return commonDir
+}
+
+func installMemberProtectedRef(t *testing.T, commonDir, branch string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(commonDir, "minos-protected-ref.member-2"), []byte("refs/heads/"+branch+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func runSyncMemberTarget(workspace, head, target, method string) ([]byte, error) {

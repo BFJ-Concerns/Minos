@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -83,7 +84,7 @@ func TestClaimGroupMemberRefusesBranchlessPullRequestBeforeClaiming(t *testing.T
 	t.Cleanup(func() { commandCombinedOutput = original })
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 
-	_, err := claimGroupMember(t.Context(), cfg, repo, primary, repo.Owner, repo.Repo, "2")
+	_, err := claimGroupMember(t.Context(), cfg, repo, primary, repo.Owner, repo.Repo, "2", "")
 	if err == nil || !strings.Contains(err.Error(), "no longer eligible") {
 		t.Fatalf("claim error = %v, want eligibility refusal", err)
 	}
@@ -585,7 +586,7 @@ func TestClaimGroupMemberRefusesOwnLiveUnit(t *testing.T) {
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) {
 		return []byte("minos-run-minos-e2e-owner-subject-pr2.service loaded active running Minos lead\n"), nil
 	}
-	_, err := claimGroupMember(t.Context(), cfg, repo, primary, repo.Owner, repo.Repo, "2")
+	_, err := claimGroupMember(t.Context(), cfg, repo, primary, repo.Owner, repo.Repo, "2", "")
 	if err == nil || !strings.Contains(err.Error(), "already has a live run") {
 		t.Fatalf("claim error = %v, want live-run refusal", err)
 	}
@@ -595,12 +596,15 @@ func TestForgeCommandClaimMemberClaimsFixtureSiblingAndWritesGuard(t *testing.T)
 	state := newForgejoFixtureState(t)
 	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
 	cfg, repo, primary := state.service(t)
+	_, workspace := createSyncFixture(t, true, false)
+	commonDir := installMemberPushGuard(t, workspace)
 	cfg = writeSweepFixtureConfig(t, state)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
 	t.Setenv("MINOS_FORGE", primary.Forge)
 	t.Setenv("MINOS_OWNER", primary.Owner)
 	t.Setenv("MINOS_REPO_NAME", primary.Repo)
 	t.Setenv("MINOS_PR", primary.PR)
+	t.Setenv("MINOS_WORKSPACE", workspace)
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
@@ -622,6 +626,16 @@ func TestForgeCommandClaimMemberClaimsFixtureSiblingAndWritesGuard(t *testing.T)
 	}
 	if string(guard) != UnitName(primary)+"\n" {
 		t.Fatalf("guard = %q, want primary unit", guard)
+	}
+	assertContainsFile(t, filepath.Join(commonDir, "minos-protected-ref.member-2"), "refs/heads/sibling")
+	if err := os.WriteFile(filepath.Join(workspace, "claimed-member.txt"), []byte("claimed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", "claimed-member.txt")
+	runGit(t, workspace, "commit", "-m", "attempt member update")
+	push := exec.Command("git", "-C", workspace, "push", "origin", "HEAD:refs/heads/sibling")
+	if output, err := push.CombinedOutput(); err == nil || !strings.Contains(string(output), "controlled branch updates") {
+		t.Fatalf("unpermitted push after member claim = %v\n%s", err, output)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()

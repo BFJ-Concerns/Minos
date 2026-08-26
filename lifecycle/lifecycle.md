@@ -222,8 +222,9 @@ pull request and every grouped passage in this lifecycle is inert.
    you take, run `"$MINOS_BIN" forge claim-member OWNER REPO NUMBER`: under
    the service's admission lock it re-reads forge state, refuses a member
    that is no longer eligible or already owned by a live run or group, and
-   otherwise guards the member against duplicate runs, claims it on the
-   forge (assign + 👀), and returns the member's facts as one JSON line. A
+   otherwise registers the member's source branch with the shared push guard,
+   guards the member against duplicate runs, claims it on the forge (assign +
+   👀), and returns the member's facts as one JSON line. A
    refusal simply drops that candidate — take what was granted and move on.
    Write this pull request's own facts first, then the granted members'
    facts, with one sentence of the grouping

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -365,7 +366,7 @@ func validContinuationHolder(runsDir, holder string) bool {
 	return valid
 }
 
-func claimGroupMember(ctx context.Context, cfg ServiceConfig, repo RepoConfig, primary Facts, owner, name, number string) (Facts, error) {
+func claimGroupMember(ctx context.Context, cfg ServiceConfig, repo RepoConfig, primary Facts, owner, name, number, workspace string) (Facts, error) {
 	if owner != repo.Owner || name != repo.Repo {
 		return Facts{}, fmt.Errorf("member is outside this run repository")
 	}
@@ -406,6 +407,16 @@ func claimGroupMember(ctx context.Context, cfg ServiceConfig, repo RepoConfig, p
 	if _, guarded := liveGroupMemberHolder(cfg.Runs.Dir, UnitName(facts), active); guarded {
 		return Facts{}, fmt.Errorf("member is guarded by a live run")
 	}
+	protectedRefFile, err := registerMemberProtectedRef(ctx, workspace, facts.PR, facts.HeadRef)
+	if err != nil {
+		return Facts{}, err
+	}
+	keepProtectedRef := false
+	defer func() {
+		if !keepProtectedRef {
+			_ = os.Remove(protectedRefFile)
+		}
+	}()
 	if err := os.MkdirAll(filepath.Join(cfg.Runs.Dir, ".group-members"), 0o700); err != nil {
 		return Facts{}, err
 	}
@@ -417,5 +428,39 @@ func claimGroupMember(ctx context.Context, cfg ServiceConfig, repo RepoConfig, p
 		_ = os.Remove(groupMemberGuardPath(cfg.Runs.Dir, UnitName(facts)))
 		return Facts{}, fmt.Errorf("claim member: %s", result.Reason)
 	}
+	keepProtectedRef = true
 	return facts, nil
+}
+
+func registerMemberProtectedRef(ctx context.Context, workspace, number, branch string) (string, error) {
+	if workspace == "" {
+		return "", fmt.Errorf("protect member branch: MINOS_WORKSPACE is not set")
+	}
+	protectedRef := "refs/heads/" + branch
+	if output, err := exec.CommandContext(ctx, "git", "check-ref-format", protectedRef).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("protect member branch: invalid source branch %q: %s", branch, strings.TrimSpace(string(output)))
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", workspace, "rev-parse", "--path-format=absolute", "--git-common-dir").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("protect member branch: locate shared Git directory: %s", strings.TrimSpace(string(output)))
+	}
+	commonDir := strings.TrimSpace(string(output))
+	if !filepath.IsAbs(commonDir) {
+		return "", fmt.Errorf("protect member branch: shared Git directory is not absolute")
+	}
+	protectedRefFile := filepath.Join(commonDir, "minos-protected-ref.member-"+number)
+	file, err := os.OpenFile(protectedRefFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("protect member branch: create protected-ref record: %w", err)
+	}
+	if _, err := fmt.Fprintln(file, protectedRef); err != nil {
+		_ = file.Close()
+		_ = os.Remove(protectedRefFile)
+		return "", fmt.Errorf("protect member branch: write protected-ref record: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(protectedRefFile)
+		return "", fmt.Errorf("protect member branch: close protected-ref record: %w", err)
+	}
+	return protectedRefFile, nil
 }

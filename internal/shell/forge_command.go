@@ -106,7 +106,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("lead repository is not configured")
 		}
 		primary := Facts{Forge: os.Getenv("MINOS_FORGE"), Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
-		facts, err := claimGroupMember(ctx, cfg, repo, primary, args[1], args[2], args[3])
+		facts, err := claimGroupMember(ctx, cfg, repo, primary, args[1], args[2], args[3], os.Getenv("MINOS_WORKSPACE"))
 		if err != nil {
 			return err
 		}

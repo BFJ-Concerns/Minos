@@ -27,8 +27,10 @@ if [ ! -f "${workspace%/}/.git" ]; then
 fi
 push_ref="refs/heads/${source_branch}"
 protected_ref_file="${common_dir}/minos-protected-ref.member-${member}"
-printf '%s\n' "$push_ref" >"$protected_ref_file"
-chmod 0600 "$protected_ref_file"
+if [ ! -f "$protected_ref_file" ] || [ ! -r "$protected_ref_file" ] ||
+  [ "$(cat "$protected_ref_file")" != "$push_ref" ]; then
+  echo "sync-member-target: claimed member protected-ref record does not match its source branch" >&2; exit 1
+fi
 source_ref="refs/minos/member/${member}/source"
 target_ref="refs/minos/member/${member}/target"
 git -C "$workspace" fetch --no-tags origin \
