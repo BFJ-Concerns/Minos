@@ -335,6 +335,54 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("member terminal publication leaves the next pass completed", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		configureForgeCommandFixture(t, state)
+		cfg, repo, facts := state.service(t)
+		directory := t.TempDir()
+		bodyPath := filepath.Join(directory, "body.md")
+		commentsPath := filepath.Join(directory, "comments.json")
+		if err := os.WriteFile(bodyPath, []byte("Confirmed findings in the reviewed code.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(commentsPath, []byte("[]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		prefix := []string{"--member", facts.Owner, facts.Repo, facts.PR}
+		if err := ForgeCommand(t.Context(), append(prefix,
+			"review", state.headSHA(), state.targetSHA(), "request-changes", bodyPath, commentsPath,
+		), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ForgeCommand(t.Context(), append(prefix,
+			"status", state.headSHA(), state.targetSHA(), "attention",
+		), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if writes, payload := state.reviewWriteFacts(); writes != 1 || payload["event"] != "REQUEST_CHANGES" {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		if writes, _ := state.statusWriteFacts(); writes != 1 {
+			t.Fatalf("status writes = %d, want one terminal status", writes)
+		}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("completed member-shaped pull request reached %s", name)
+			return nil, nil
+		}
+		for pass := 1; pass <= 2; pass++ {
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != "nothing" {
+				t.Fatalf("pass %d result = %q, want nothing", pass, result)
+			}
+		}
+	})
+
 	t.Run("incomplete pull request with a comment review starts a fresh attempt", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setReviews([]map[string]any{{

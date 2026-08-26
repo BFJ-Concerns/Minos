@@ -5,9 +5,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [verdictPath] = process.argv.slice(2);
-if (!verdictPath || process.argv.length !== 3) {
-  process.stderr.write("usage: node workflows/publish-member-reviews.mjs VERDICT\n");
+const [verdictPath, mode] = process.argv.slice(2);
+const terminal = mode === "--terminal";
+if (!verdictPath || (process.argv.length !== 3 && !(process.argv.length === 4 && terminal))) {
+  process.stderr.write("usage: node workflows/publish-member-reviews.mjs VERDICT [--terminal]\n");
   process.exitCode = 2;
 } else {
   const verdict = JSON.parse(readFileSync(verdictPath, "utf8"));
@@ -33,11 +34,28 @@ if (!verdictPath || process.argv.length !== 3) {
       writeFileSync(commentsPath, JSON.stringify(review.comments), { mode: 0o600 });
       const publication = JSON.parse(execFileSync(
         minos,
-        [...prefix, "review", snapshot.head_sha, snapshot.target_sha, review.verdict, bodyPath, commentsPath],
+        [
+          ...prefix,
+          "review",
+          snapshot.head_sha,
+          snapshot.target_sha,
+          terminal && review.status === "attention" ? "request-changes" : review.verdict,
+          bodyPath,
+          commentsPath,
+        ],
         { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
       ));
       if (publication.outcome !== "applied")
         throw new Error(`member ${member.id} review publication returned ${String(publication.outcome || "no outcome")}`);
+      if (terminal) {
+        const status = JSON.parse(execFileSync(
+          minos,
+          [...prefix, "status", snapshot.head_sha, snapshot.target_sha, review.status],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+        ));
+        if (status.outcome !== "applied")
+          throw new Error(`member ${member.id} status publication returned ${String(status.outcome || "no outcome")}`);
+      }
     }
     process.stdout.write(`${JSON.stringify({ outcome: "applied", reviews: verdict.members.length })}\n`);
   } finally {

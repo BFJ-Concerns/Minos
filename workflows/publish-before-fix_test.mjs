@@ -144,6 +144,26 @@ function input(findings = [finding()], overrides = {}) {
   };
 }
 
+function memberInput(findings = [finding()], overrides = {}) {
+  const prepared = input(findings, overrides);
+  return {
+    ...prepared,
+    review: {
+      ...prepared.review,
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 }],
+      memberReviews: [{
+        member: "primary",
+        verdict: "comment",
+        body: findings.length > 0
+          ? "Confirmed findings in the reviewed code."
+          : "No confirmed findings in the reviewed code.",
+        comments: findings.map(({ path, line, explanation }) => ({ path, line, body: explanation })),
+        status: findings.length > 0 ? "attention" : "clean",
+      }],
+    },
+  };
+}
+
 function assignedFindings(prompt) {
   const match = prompt.match(/Confirmed findings: (\[[^\n]+\])/);
   assert.ok(match, "fix prompt carries finding data");
@@ -186,7 +206,9 @@ async function forgeFixture(options = {}) {
     reviews: [],
     comments: new Map(),
     issueComments: [],
+    statuses: [],
     postCount: 0,
+    statusPostCount: 0,
     commentReadCount: 0,
     issueCommentPostCount: 0,
     issueCommentReadCount: 0,
@@ -202,11 +224,20 @@ async function forgeFixture(options = {}) {
       response.end(JSON.stringify({ login: "Minos" }));
       return;
     }
+    if (request.method === "GET" && url.pathname === "/api/v1/repos/minos-e2e-owner/subject") {
+      response.end(JSON.stringify({
+        full_name: "minos-e2e-owner/subject",
+        default_branch: "main",
+        allow_merge_commits: true,
+      }));
+      return;
+    }
     if (request.method === "GET" && url.pathname === pullPath) {
       response.end(JSON.stringify({
         number: 1,
         state: "open",
         merged: false,
+        user: { login: "review-author" },
         head: { sha: state.actualHead },
         base: {
           ref: "main",
@@ -217,6 +248,28 @@ async function forgeFixture(options = {}) {
     }
     if (request.method === "GET" && url.pathname === "/api/v1/repos/minos-e2e-owner/subject/branches/main") {
       response.end(JSON.stringify({ commit: { id: TARGET } }));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `${pullPath.replace("/pulls/", "/issues/")}/dependencies`) {
+      response.end("[]");
+      return;
+    }
+    const statusesPath = `/api/v1/repos/minos-e2e-owner/subject/commits/${state.actualHead}/statuses`;
+    if (request.method === "GET" && url.pathname === statusesPath) {
+      response.end(JSON.stringify(state.statuses));
+      return;
+    }
+    const statusWritePath = `/api/v1/repos/minos-e2e-owner/subject/statuses/${state.actualHead}`;
+    if (request.method === "POST" && url.pathname === statusWritePath) {
+      state.statusPostCount += 1;
+      const payload = JSON.parse(await requestBody(request));
+      const status = {
+        id: state.statuses.length + 1,
+        ...payload,
+        creator: { login: "Minos" },
+      };
+      state.statuses.unshift(status);
+      response.end(JSON.stringify(status));
       return;
     }
     if (request.method === "GET" && url.pathname === `${pullPath}/reviews`) {
@@ -337,7 +390,7 @@ function seedExactReview(fixture, plan, comments = plan.sweepReview.comments) {
   })));
 }
 
-async function runCase({ minosBin, fixture, preparedInput = input(), events = [], prompts = [] }) {
+async function runCase({ minosBin, fixture, preparedInput = input(), events = [], prompts = [], diagnostics = [] }) {
   const result = await publishBeforeFix({
     input: preparedInput,
     head: HEAD,
@@ -348,9 +401,9 @@ async function runCase({ minosBin, fixture, preparedInput = input(), events = []
     env: fixture.env,
     runDispatch: dispatchRecorder(events, prompts),
     onEvent: (event) => events.push(event),
-    diagnostics: () => {},
+    diagnostics: (message) => diagnostics.push(message),
   });
-  return { result, events, prompts };
+  return { result, events, prompts, diagnostics };
 }
 
 test("an ordinary solo run publishes its findings exactly once through the member path", async () => {
@@ -379,9 +432,10 @@ test("an ordinary solo run publishes its findings exactly once through the membe
     minosBin: "/unused/minos",
     launcher: "/unused/ensemble.mjs",
     workflowScript: fixScriptPath,
-    runMemberPublication: async ({ review }) => {
+    runMemberPublication: async ({ review, terminal }) => {
       memberPublications += 1;
       assert.equal(review.members.length, 1);
+      assert.equal(terminal, false);
       return { code: 0, signal: null, stdout: '{"outcome":"applied","reviews":1}\n', stderr: "" };
     },
     runForge: async () => {
@@ -427,8 +481,9 @@ test("a terminal solo run with no findings still publishes one clean member revi
     minosBin: "/unused/minos",
     launcher: "/unused/ensemble.mjs",
     workflowScript: fixScriptPath,
-    runMemberPublication: async () => {
+    runMemberPublication: async ({ terminal }) => {
       publications += 1;
+      assert.equal(terminal, true);
       return { code: 0, signal: null, stdout: '{"outcome":"applied","reviews":1}\n', stderr: "" };
     },
     runDispatch: async () => {
@@ -452,10 +507,16 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
   await t.test("new exact review is read back before dispatcher start and agent call", async () => {
     const fixture = await forgeFixture();
     try {
-      const { result, events, prompts } = await runCase({ minosBin, fixture });
-      assert.equal(result.status, "complete");
+      const { result, events, prompts, diagnostics } = await runCase({
+        minosBin,
+        fixture,
+        preparedInput: memberInput(),
+      });
+      assert.equal(result.status, "complete", `${result.reason}\n${diagnostics.join("\n")}`);
       assert.equal(result.publication.outcome, "applied");
       assert.equal(fixture.state.postCount, 1);
+      assert.equal(fixture.state.reviews[0].state, "COMMENT");
+      assert.equal(fixture.state.statusPostCount, 0, "a working round must not publish a terminal status");
       assert.ok(fixture.state.commentReadCount > 0, "guarded adaptation read comments back");
       assert.match(fixture.state.comments.get(1)[0].body, new RegExp(SENTINEL));
       assert.match(prompts[0], new RegExp(SENTINEL));
@@ -468,6 +529,34 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.equal(events.filter((event) => event.startsWith("fix-agent-called:")).length, 1);
       assert.equal(events[0].split(":")[1], events[1].split(":")[1]);
       assert.equal(events[1].split(":")[1], events[2].split(":")[1]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("a terminal ordinary run publishes request changes and attention before the next sweep", async () => {
+    const confirmed = finding({ member: "primary" });
+    const preparedInput = memberInput([confirmed], {
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "terminal",
+        basis: "the final round leaves a blocking finding",
+      },
+    });
+    const fixture = await forgeFixture();
+    try {
+      const { result, events, prompts, diagnostics } = await runCase({ minosBin, fixture, preparedInput });
+      assert.equal(result.status, "complete", `${result.reason}\n${diagnostics.join("\n")}`);
+      assert.equal(result.classification, "terminal");
+      assert.deepEqual(result.publication, { outcome: "applied", reviews: 1 });
+      assert.equal(fixture.state.postCount, 1);
+      assert.equal(fixture.state.reviews[0].state, "REQUEST_CHANGES");
+      assert.equal(fixture.state.statusPostCount, 1);
+      assert.equal(fixture.state.statuses[0].state, "failure");
+      assert.equal(fixture.state.statuses[0].description, "Changes need attention");
+      assert.equal(events.filter((event) => event.startsWith("forge-review-confirmed:")).length, 1);
+      assert.equal(events.filter((event) => event.startsWith("fix-dispatch-started:")).length, 0);
+      assert.deepEqual(prompts, []);
     } finally {
       await fixture.close();
     }

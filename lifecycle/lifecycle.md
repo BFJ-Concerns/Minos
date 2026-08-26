@@ -944,8 +944,9 @@ pull request and every grouped passage in this lifecycle is inert.
    snapshot per member and issues that member’s addressed review, including an
    empty scripted review for a member with no findings. A solo member takes
    this same publication path. It does not write a terminal-shaped `Minos`
-   status while the loop is still working; per-member statuses remain part of
-   the terminal handling and finishing below.
+   status while the loop is still working. On a terminal classification the
+   same operation posts `request-changes` for a member with blocking findings
+   and writes each member's `attention` or `clean` status after its review.
 5. Save each complete review verdict, then read this sweep's mechanical
    digest:
 
@@ -1134,9 +1135,8 @@ pull request and every grouped passage in this lifecycle is inert.
    and `memberReviews`, materialise it exactly, post it with `"$MINOS_BIN"
    forge review HEAD TARGET request-changes BODY_FILE COMMENTS_FILE`, and set
    status `attention`. For a member-shaped verdict, the publication-before-fix
-   operation has already published each attributed member review: do not post a
-   second primary-only request-changes review. Carry each member review's result
-   into the per-member terminal handling below, where its final status is set.
+   operation has already published each attributed member's terminal review
+   and status: do not post a second primary-only request-changes review.
    Review prose talks only about the code, never about Minos, its process or a
    round number. Operational conditions — head moved, forge unreadable, review
    not reached — are always carried by the `Minos` status, never by a review.

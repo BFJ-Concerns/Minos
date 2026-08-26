@@ -61,8 +61,8 @@ async function defaultDispatch({ launcher, workflowScript, planPath, cwd, env })
 
 const memberPublisher = join(dirname(fileURLToPath(import.meta.url)), "publish-member-reviews.mjs");
 
-async function defaultMemberPublication({ verdictPath, minosBin, cwd, env }) {
-  return runCommand(process.execPath, [memberPublisher, verdictPath], {
+async function defaultMemberPublication({ verdictPath, minosBin, terminal, cwd, env }) {
+  return runCommand(process.execPath, [memberPublisher, verdictPath, ...(terminal ? ["--terminal"] : [])], {
     cwd,
     env: { ...env, ...(minosBin ? { MINOS_BIN: minosBin } : {}) },
   });
@@ -120,7 +120,14 @@ export async function publishBeforeFix({
     let forgeResult;
     try {
       forgeResult = hasMemberPublication
-        ? await runMemberPublication({ verdictPath, review: input.review, minosBin, cwd, env })
+        ? await runMemberPublication({
+            verdictPath,
+            review: input.review,
+            terminal: plan.classification === "terminal",
+            minosBin,
+            cwd,
+            env,
+          })
         : await runForge({ minosBin, head, target, bodyPath, commentsPath, cwd, env });
     } catch (error) {
       return publicationFailure(plan, `review publication command failed: ${error.message}`);
