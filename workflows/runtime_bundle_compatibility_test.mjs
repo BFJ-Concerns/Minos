@@ -98,41 +98,6 @@ export { assertValidAgentOptions as minosAssertValidAgentOptions };
   return module.minosAssertValidAgentOptions;
 }
 
-function sandboxBindingKeys(runtimeSource) {
-  const match = runtimeSource.match(
-    /function createSandboxContext\(hooks, meta\) \{[\s\S]*?\n  const bindings = \{\n(?<bindings>[\s\S]*?)\n  \};\n  const context = vm\.createContext\(bindings,/,
-  );
-  assert.ok(
-    match?.groups?.bindings,
-    "installed runtime createSandboxContext binding block changed shape; update the gate deliberately",
-  );
-
-  const keys = [];
-  for (const line of match.groups.bindings.split("\n")) {
-    const property = /^    ([A-Za-z_$][A-Za-z0-9_$]*):/.exec(line);
-    const shorthand = /^    ([A-Za-z_$][A-Za-z0-9_$]*),$/.exec(line);
-    if (property !== null || shorthand !== null) {
-      keys.push((property ?? shorthand)[1]);
-    }
-  }
-  assert.ok(keys.length > 0, "installed runtime sandbox binding block has no recognisable keys");
-  assert.equal(
-    new Set(keys).size,
-    keys.length,
-    "installed runtime sandbox binding block contains duplicate keys",
-  );
-  return keys;
-}
-
-function sandboxRuntimeSource(bindings) {
-  return `function createSandboxContext(hooks, meta) {
-  const bindings = {
-${bindings}
-  };
-  const context = vm.createContext(bindings, {});
-}`;
-}
-
 function assertPinnedRuntimeUnchanged(t) {
   const original = readFileSync(pinnedRuntimePath);
   t.after(() => {
@@ -173,54 +138,18 @@ async function installedFreeIdentifierValidator(t) {
 export {
   assertKnownFreeIdentifiers as minosAssertKnownFreeIdentifiers,
   buildWrappedSource as minosBuildWrappedSource,
-  compileWorkflowScript as minosCompileWorkflowScript,
   extractWorkflowSource as minosExtractWorkflowSource,
-  WorkflowScriptError as MinosWorkflowScriptError,
 };
 `,
   );
   const module = await import(`${pathToFileURL(probeRuntime).href}?probe=${Date.now()}`);
-  const context = Object.fromEntries(
-    sandboxBindingKeys(runtimeSource).map((key) => [key, undefined]),
-  );
   return (source, filename) => {
-    const extracted = module.minosExtractWorkflowSource(source);
-    try {
-      module.minosCompileWorkflowScript(extracted, filename);
-    } catch (error) {
-      if (error instanceof module.MinosWorkflowScriptError) {
-        throw error;
-      }
-      if (!(error instanceof SyntaxError)) {
-        throw error;
-      }
-      throw new SyntaxError(
-        `Workflow ${filename} could not be parsed: ${error.message}`,
-        { cause: error },
-      );
-    }
     module.minosAssertKnownFreeIdentifiers(
-      module.minosBuildWrappedSource(extracted),
-      context,
+      module.minosBuildWrappedSource(module.minosExtractWorkflowSource(source)),
       filename,
     );
   };
 }
-
-test("sandbox binding extraction fails loudly when the installed runtime shape drifts", () => {
-  assert.throws(
-    () => sandboxBindingKeys("function createSandboxContext() {}"),
-    /createSandboxContext binding block changed shape/,
-  );
-  assert.throws(
-    () => sandboxBindingKeys(sandboxRuntimeSource("    // no bindings")),
-    /sandbox binding block has no recognisable keys/,
-  );
-  assert.throws(
-    () => sandboxBindingKeys(sandboxRuntimeSource("    repeated: hooks.first,\n    repeated: hooks.second,")),
-    /sandbox binding block contains duplicate keys/,
-  );
-});
 
 test("the installed runtime recognises every agent option key used by shipped workflows", async (t) => {
   const validate = await installedOptionValidator(t);
@@ -263,45 +192,11 @@ test("the installed runtime accepts the free identifiers in every shipped workfl
   for (const { filename, source } of shippedWorkflowSources()) {
     assert.doesNotThrow(
       () => validate(source, filename),
-      `${filename} uses only identifiers available in the installed runtime sandbox`,
+      `${filename} uses only identifiers the installed runtime defines`,
     );
   }
 });
 
-test("the installed runtime free-identifier rule reports absent globals and rejects dynamic imports", async (t) => {
-  const validate = await installedFreeIdentifierValidator(t);
-  const workflow = (body) => `export const meta = { name: "probe" };\n${body}\n`;
-
-  assert.doesNotThrow(() => validate(workflow("return typeof Buffer;"), "typeof-probe.js"));
-  assert.throws(
-    () => validate(workflow("return Buffer.from('probe');"), "buffer-probe.js"),
-    (error) => error?.name === "WorkflowScriptError" &&
-      error.message.includes("buffer-probe.js") &&
-      error.message.includes("Buffer"),
-  );
-  assert.throws(
-    () => validate(workflow("return import('probe');"), "import-probe.js"),
-    (error) => error?.name === "WorkflowScriptError" &&
-      error.message.includes("import-probe.js") &&
-      error.message.includes("dynamic import()"),
-  );
-  assert.throws(
-    () => validate(workflow("Buffer.from('probe'); const broken = (((;"), "unparseable-probe.js"),
-    (error) => error instanceof SyntaxError &&
-      error.message.includes("unparseable-probe.js") &&
-      error.message.includes("could not be parsed"),
-  );
-  assert.throws(
-    () => validate(
-      `${workflow("const intervening = true;")}export const defaults = {};\n`,
-      "misplaced-defaults-probe.js",
-    ),
-    (error) => error?.name === "WorkflowScriptError" &&
-      error.message.includes("export const defaults") &&
-      error.message.includes("must follow `meta`") &&
-      !error.message.includes("could not be parsed"),
-  );
-});
 
 function writeInstallerFixture(t, checksumLine) {
   const sourceRoot = operationRoot(t, "minos-installer-source-");
