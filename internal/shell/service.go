@@ -330,14 +330,26 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if reason, deferred := dependencyDeferral(snapshot); deferred {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason)}, nil
 	}
-	outcome, err := SpawnRun(ctx, cfg, repo, facts, admission)
+	runClass := RunClassReview
+	if structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
+		runClass = RunClassMaintenance
+	}
+	outcome, err := SpawnRun(ctx, cfg, repo, facts, admission, runClass)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
 	return ReconcileResult{Decision: outcome.Outcome, BlockingUnit: outcome.BlockingUnit, Detail: outcome.Detail}, nil
 }
 
+func structuralBranch(branch string, prefixes []string) bool {
+	return branchMatchesPrefix(branch, prefixes)
+}
+
 func workInProgressBranch(branch string, prefixes []string) bool {
+	return branchMatchesPrefix(branch, prefixes)
+}
+
+func branchMatchesPrefix(branch string, prefixes []string) bool {
 	if branch == "" {
 		return false
 	}
