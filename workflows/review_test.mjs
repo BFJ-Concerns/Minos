@@ -1062,6 +1062,10 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   assert.match(lifecycle, /does not write a terminal-shaped `Minos`[\s\S]*while the loop is still working/);
   assert.match(
     lifecycle,
+    /`requestChangesReview` is present on a legacy verdict without `members`[\s\S]*member-shaped verdict[\s\S]*do not post a\s+second primary-only request-changes review/,
+  );
+  assert.match(
+    lifecycle,
     /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,
   );
   assert.match(

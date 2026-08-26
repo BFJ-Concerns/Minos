@@ -1130,9 +1130,13 @@ pull request and every grouped passage in this lifecycle is inert.
    still without fix agents. Overflow publication is presentation-class:
    its failure never fails the run.
 
-   If `requestChangesReview` is present, materialise it exactly, post it with
-   `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE
-   COMMENTS_FILE`, and set status `attention`.
+   If `requestChangesReview` is present on a legacy verdict without `members`
+   and `memberReviews`, materialise it exactly, post it with `"$MINOS_BIN"
+   forge review HEAD TARGET request-changes BODY_FILE COMMENTS_FILE`, and set
+   status `attention`. For a member-shaped verdict, the publication-before-fix
+   operation has already published each attributed member review: do not post a
+   second primary-only request-changes review. Carry each member review's result
+   into the per-member terminal handling below, where its final status is set.
    Review prose talks only about the code, never about Minos, its process or a
    round number. Operational conditions — head moved, forge unreadable, review
    not reached — are always carried by the `Minos` status, never by a review.
