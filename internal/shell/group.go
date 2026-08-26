@@ -223,6 +223,29 @@ func sweepDeadGroupMemberGuards(ctx context.Context, runsDir string) error {
 	return nil
 }
 
+func releaseGroupMemberGuards(runsDir, holder string) error {
+	paths, err := filepath.Glob(filepath.Join(runsDir, ".group-members", "*"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if strings.TrimSpace(string(data)) != holder {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func validContinuationHolder(runsDir, holder string) bool {
 	handoff, err := readRunHandoffStructure(handoffPath(runsDir, holder))
 	if err != nil {
