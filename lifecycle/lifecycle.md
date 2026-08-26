@@ -261,6 +261,8 @@ pull request and every grouped passage in this lifecycle is inert.
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" "$MINOS_HEAD_SHA" \
      > "$MINOS_RUN_DIR/setup-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
@@ -292,6 +294,8 @@ pull request and every grouped passage in this lifecycle is inert.
    node "${MINOS_REVIEW_WORKFLOW%/*}/setup-inputs.mjs" "$MINOS_HEAD_SHA" \
      --reconcile-only --objections "$MINOS_RUN_DIR/setup-objections.json" \
      > "$MINOS_RUN_DIR/setup-retry-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-retry-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
@@ -496,6 +500,8 @@ pull request and every grouped passage in this lifecycle is inert.
      --command FAILING_COMMAND --exit-status EXIT_STATUS \
      --evidence CAPTURED_OUTPUT_FILE \
      > "$MINOS_RUN_DIR/gate-repair-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/gate-repair-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
@@ -693,11 +699,16 @@ pull request and every grouped passage in this lifecycle is inert.
 
    ```sh
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+     ENSEMBLE_RUN_RECORD=on \
+     ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/NAME" \
      "${MINOS_SETUP_WORKSPACE%/*}/time-on-exit" "$MINOS_RUN_DIR/timings.ndjson" NAME \
      "${MINOS_SETUP_WORKSPACE%/*}/flag-on-exit" "$MINOS_RUN_DIR/NAME.done" \
      "${MINOS_SETUP_WORKSPACE%/*}/publish-on-exit" "$MINOS_RUN_DIR/NAME.json" \
      sh -c 'node /opt/minos/runtime/ensemble.mjs ... 2> "$MINOS_RUN_DIR/NAME.log"'
    ```
+
+   The shared wrapper is the sole setting for `ENSEMBLE_RUN_RECORD_DIR`:
+   substitute `NAME` with the stage name from the wrapped workflow block.
 
    `publish-on-exit` collects the command's stdout beside the result file
    and renames it into place only on a clean exit, so `NAME.json` is never
@@ -1214,6 +1225,8 @@ pull request and every grouped passage in this lifecycle is inert.
    node "${MINOS_REVIEW_WORKFLOW%/*}/fix-inputs.mjs" \
      BRIEF_RESULT --single-wave \
      > "$MINOS_RUN_DIR/brief-fix-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/brief-fix-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/fix.js" \
@@ -1387,6 +1400,8 @@ pull request and every grouped passage in this lifecycle is inert.
      --skill "$MINOS_ROOT_CAUSE_SKILL" \
      --evidence "$MINOS_RUN_DIR/check-logs.json" \
      > "$MINOS_RUN_DIR/rootcause-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/rootcause-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \

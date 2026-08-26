@@ -632,6 +632,37 @@ test("a failed single-wave brief fix is not retried and cannot pass the stage", 
   assert.equal(result.rerunReview, false);
 });
 
+test("a fixer that returns no result records the missing attempt outcome", async () => {
+  const original = finding("transition", "High", "internal/state.go", 41);
+  const { result, calls } = await run(args([original]), () => null);
+
+  assert.equal(calls.length, 2, "the ordinary retry policy reaches both attempts");
+  assert.equal(result.runRecord.confirmedUnfixed.length, 1);
+  const [unfixed] = result.runRecord.confirmedUnfixed;
+  assert.equal(unfixed.key, '["internal/state.go",41,"transition"]');
+  assert.equal(unfixed.finding.title, original.title);
+  assert.equal(unfixed.attempts, 2);
+  assert.equal(unfixed.reason, "fix attempt returned no result");
+  assert.notEqual(unfixed.reason, "fix failed twice");
+});
+
+test("a fixer result without a repair write-up records the missing write-up", async () => {
+  const original = finding("transition", "High", "internal/state.go", 41);
+  const { result, calls } = await run(args([original]), (_label, prompt) => ({
+    commit: "",
+    fixes: assignedFindings(prompt).map((item) => ({ findingKey: item.key, status: "failed" })),
+  }));
+
+  assert.equal(calls.length, 2, "the ordinary retry policy reaches both attempts");
+  assert.equal(result.runRecord.confirmedUnfixed.length, 1);
+  const [unfixed] = result.runRecord.confirmedUnfixed;
+  assert.equal(unfixed.key, '["internal/state.go",41,"transition"]');
+  assert.equal(unfixed.finding.title, original.title);
+  assert.equal(unfixed.attempts, 2);
+  assert.equal(unfixed.reason, "fix attempt returned no repair write-up");
+  assert.notEqual(unfixed.reason, "fix failed twice");
+});
+
 test("published review prose discusses code without process or round labels", async () => {
   const { result } = await run(args([finding("transition", "High", "state.go", 4)]));
   const prose = JSON.stringify([result.sweepReview, result.fixReview]);
