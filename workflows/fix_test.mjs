@@ -632,6 +632,23 @@ test("a failed single-wave brief fix is not retried and cannot pass the stage", 
   assert.equal(result.rerunReview, false);
 });
 
+test("a fixer that returns no write-up still leaves a recorded failure reason", async () => {
+  const original = finding("transition", "High", "internal/state.go", 41);
+  const { result, calls } = await run(args([original]), () => null);
+
+  assert.equal(calls.length, 2, "the ordinary retry policy reaches both attempts");
+  assert.deepEqual(result.runRecord.confirmedUnfixed, [{
+    key: result.runRecord.confirmedUnfixed[0].key,
+    finding: {
+      ...original,
+      key: result.runRecord.confirmedUnfixed[0].key,
+      identity: result.runRecord.confirmedUnfixed[0].finding.identity,
+    },
+    attempts: 2,
+    reason: "fix failed twice",
+  }]);
+});
+
 test("published review prose discusses code without process or round labels", async () => {
   const { result } = await run(args([finding("transition", "High", "state.go", 4)]));
   const prose = JSON.stringify([result.sweepReview, result.fixReview]);

@@ -519,6 +519,16 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	writeTimingFixtureAgentRecord(t,
 		filepath.Join(runDir, "ensemble-records", "record-a", "agents", "0001", "agent.json"),
 		"2026-08-17T00:21:00Z", "2026-08-17T00:25:00Z")
+	// Gate repair and fix dispatches now retain their real launcher records in
+	// the same archive root. These are deliberately normal agent records, so
+	// the timing collector must report exactly these workers rather than test
+	// fixture directories as phantom agents.
+	writeTimingFixtureAgentRecord(t,
+		filepath.Join(runDir, "ensemble-records", "gate-repair", "agents", "0001", "agent.json"),
+		"2026-08-17T00:26:00Z", "2026-08-17T00:27:00Z")
+	writeTimingFixtureAgentRecord(t,
+		filepath.Join(runDir, "ensemble-records", "fix", "agents", "0001", "agent.json"),
+		"2026-08-17T00:28:00Z", "2026-08-17T00:29:00Z")
 
 	bin := filepath.Join(root, "bin")
 	destination := filepath.Join(root, "destination")
@@ -592,8 +602,29 @@ exec sh -c "$last"
 	if record.Kind != "minos-timing-record-v1" {
 		t.Fatalf("sidecar kind = %q", record.Kind)
 	}
-	if len(record.Commands) != 1 || len(record.Workers) != 1 {
-		t.Fatalf("sidecar carries %d commands, %d workers, want 1 and 1", len(record.Commands), len(record.Workers))
+	if len(record.Commands) != 1 || len(record.Workers) != 3 {
+		t.Fatalf("sidecar carries %d commands, %d workers, want 1 and 3 genuine workers", len(record.Commands), len(record.Workers))
+	}
+	workerRecords := make(map[string]bool, len(record.Workers))
+	for _, worker := range record.Workers {
+		workerRecords[worker.Record] = true
+	}
+	for _, want := range []string{"ensemble-records/record-a", "ensemble-records/gate-repair", "ensemble-records/fix"} {
+		if !workerRecords[want] {
+			t.Fatalf("timing record omits genuine worker record %q: %#v", want, record.Workers)
+		}
+	}
+	archiveListing, err := exec.Command("tar", "-tf", tarballs[0]).CombinedOutput()
+	if err != nil {
+		t.Fatalf("list delivered tarball: %v\n%s", err, archiveListing)
+	}
+	for _, want := range []string{
+		"ensemble-records/gate-repair/agents/0001/agent.json",
+		"ensemble-records/fix/agents/0001/agent.json",
+	} {
+		if !strings.Contains(string(archiveListing), want) {
+			t.Fatalf("delivered tarball omits %q:\n%s", want, archiveListing)
+		}
 	}
 	if _, err := os.Stat(sidecar + ".partial"); !os.IsNotExist(err) {
 		t.Fatalf("partial sidecar left beside the delivered one: %v", err)

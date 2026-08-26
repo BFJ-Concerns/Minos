@@ -480,6 +480,9 @@ pull request and every grouped passage in this lifecycle is inert.
      --command FAILING_COMMAND --exit-status EXIT_STATUS \
      --evidence CAPTURED_OUTPUT_FILE \
      > "$MINOS_RUN_DIR/gate-repair-args.json"
+   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+   ENSEMBLE_RUN_RECORD=on \
+   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/gate-repair" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/gate-repair-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
@@ -677,6 +680,8 @@ pull request and every grouped passage in this lifecycle is inert.
 
    ```sh
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
+     ENSEMBLE_RUN_RECORD=on \
+     ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/NAME" \
      "${MINOS_SETUP_WORKSPACE%/*}/time-on-exit" "$MINOS_RUN_DIR/timings.ndjson" NAME \
      "${MINOS_SETUP_WORKSPACE%/*}/flag-on-exit" "$MINOS_RUN_DIR/NAME.done" \
      "${MINOS_SETUP_WORKSPACE%/*}/publish-on-exit" "$MINOS_RUN_DIR/NAME.json" \
