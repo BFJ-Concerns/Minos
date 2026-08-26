@@ -1093,7 +1093,7 @@ pull request and every grouped passage in this lifecycle is inert.
    not observations from a fix result.
    When `integration.commits` is non-empty, a solo run writes that array
    unchanged to a file and runs `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
-   `"$MINOS_WORKSPACE" COMMITS_FILE`. A grouped run instead consumes
+   "$MINOS_WORKSPACE" COMMITS_FILE`. A grouped run instead consumes
    `integration.memberCommits`: every entry names a member and only the
    completed commits licensed by that member's findings. Resolve each named
    member from `$MINOS_RUN_DIR/members.json`, take its fresh addressed
@@ -1101,7 +1101,7 @@ pull request and every grouped passage in this lifecycle is inert.
    non-empty `head_branch`; a missing member, branch, or snapshot is a fault,
    never a member to skip. For each non-empty entry write its commits to a
    separate file and run `"${MINOS_REVIEW_WORKFLOW%/*}/integrate-wave"
-   `"$MINOS_WORKSPACE" COMMITS_FILE --member-branch HEAD_BRANCH`. The script
+   "$MINOS_WORKSPACE" COMMITS_FILE --member-branch HEAD_BRANCH`. The script
    detaches the shared workspace at that member branch before cherry-picking,
    verifies every commit's Minos author, and pushes once to that branch only.
    It records the member branch as protected and creates the same one-use

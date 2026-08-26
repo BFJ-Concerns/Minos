@@ -31,14 +31,11 @@ if ! jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and len
   exit 1
 fi
 
-# A member branch starts from its own published head.  Reusing the primary
-# workspace is safe only after detaching it at that member's remote branch;
-# otherwise the first member's repair would become an ancestor of the next
-# member's push.
-if [ "$branch" != "$MINOS_HEAD_BRANCH" ]; then
-  git -C "$workspace" fetch origin "refs/heads/${branch}"
-  git -C "$workspace" checkout --detach "origin/${branch}"
-fi
+# Every destination branch, including the primary's, starts from its own
+# published head. Reusing the workspace without this reset would make the
+# previous member's repair an ancestor of a later primary push.
+git -C "$workspace" fetch origin "refs/heads/${branch}"
+git -C "$workspace" checkout --detach "origin/${branch}"
 
 for commit in $(jq -r '.[]' "$commits_file"); do
   if ! git -C "$workspace" cat-file -e "${commit}^{commit}"; then

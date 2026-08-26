@@ -111,17 +111,54 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
+	assertUnpermittedPushIsRefused := func(branch, name string) {
+		worktree := filepath.Join(t.TempDir(), "unpermitted")
+		runGit(t, workspace, "worktree", "add", "--detach", worktree, "HEAD")
+		if err := os.WriteFile(filepath.Join(worktree, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, worktree, "add", name)
+		runGit(t, worktree, "commit", "-m", "test: unpermitted "+name)
+		push := exec.Command("git", "-C", worktree, "push", "origin", "HEAD:refs/heads/"+branch)
+		output, err := push.CombinedOutput()
+		if err == nil || !strings.Contains(string(output), "controlled branch updates must use a permitted Minos publisher") {
+			t.Fatalf("unpermitted %s push = %v\n%s", branch, err, output)
+		}
+	}
 
 	first := makeCommit("one.txt", "Minos", "minos@example.invalid")
 	if output, err := runIntegration("member-one", first); err != nil {
 		t.Fatalf("member one integration: %v\n%s", err, output)
 	}
+	if got := gitOutput(t, workspace, "show", "HEAD:one.txt"); got != "one.txt" {
+		t.Fatalf("member one workspace repair = %q", got)
+	}
+	protectedRefs, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(protectedRefs); got != "refs/heads/main\nrefs/heads/member-one\n" {
+		t.Fatalf("protected refs after member one = %q", got)
+	}
+	assertUnpermittedPushIsRefused("member-one", "unpermitted-one.txt")
 	second := makeCommit("two.txt", "Minos", "minos@example.invalid")
 	if output, err := runIntegration("member-two", second); err != nil {
 		t.Fatalf("member two integration: %v\n%s", err, output)
 	}
+	protectedRefs, err = os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(protectedRefs); got != "refs/heads/main\nrefs/heads/member-one\nrefs/heads/member-two\n" {
+		t.Fatalf("protected refs after member two = %q", got)
+	}
+	assertUnpermittedPushIsRefused("member-two", "unpermitted-two.txt")
+	primary := makeCommit("primary.txt", "Minos", "minos@example.invalid")
+	if output, err := runIntegration("main", primary); err != nil {
+		t.Fatalf("primary integration after members: %v\n%s", err, output)
+	}
 
-	if got := readPushCount(t, remote); got != 2 {
+	if got := readPushCount(t, remote); got != 3 {
 		t.Fatalf("push count = %d, want one push per touched member", got)
 	}
 	if got := gitOutput(t, remote, "show", "refs/heads/member-one:one.txt"); got != "one.txt" {
@@ -136,6 +173,14 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	if _, err := exec.Command("git", "--git-dir", remote, "show", "refs/heads/member-two:one.txt").CombinedOutput(); err == nil {
 		t.Fatal("member two received member one material")
 	}
+	if got := gitOutput(t, remote, "show", "refs/heads/main:primary.txt"); got != "primary.txt" {
+		t.Fatalf("primary repair = %q", got)
+	}
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if _, err := exec.Command("git", "--git-dir", remote, "show", "refs/heads/main:"+name).CombinedOutput(); err == nil {
+			t.Fatalf("primary received member material %s", name)
+		}
+	}
 	if got := gitOutput(t, remote, "rev-parse", "refs/heads/untouched"); got != base {
 		t.Fatalf("untouched member moved to %q, want %q", got, base)
 	}
@@ -144,8 +189,8 @@ func TestIntegrateWaveKeepsGroupedMemberRepairsAndGuardsSeparate(t *testing.T) {
 	if output, err := runIntegration("bad-member", bad); err == nil || !strings.Contains(output, "authored by Untrusted <untrusted@example.invalid>") {
 		t.Fatalf("bad member authorship refusal = %v\n%s", err, output)
 	}
-	if got := readPushCount(t, remote); got != 2 {
-		t.Fatalf("authorship refusal pushed %d times, want 2", got)
+	if got := readPushCount(t, remote); got != 3 {
+		t.Fatalf("authorship refusal pushed %d times, want 3", got)
 	}
 	if got := gitOutput(t, remote, "rev-parse", "refs/heads/bad-member"); got != base {
 		t.Fatalf("bad member moved to %q, want %q", got, base)

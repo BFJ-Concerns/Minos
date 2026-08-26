@@ -62,14 +62,15 @@ function writeUpComment(finding, writeUp) {
   return { path: finding.path, body: writeUp, line: finding.line };
 }
 
-function memberCommitGroups(fixed) {
+function memberCommitGroups(fixed, requiresMemberAttribution) {
   const byMember = new Map();
   const memberByCommit = new Map();
   const hasMemberAttribution = fixed.some(({ finding }) => typeof finding?.member === "string" && finding.member !== "");
   for (const { finding, commit } of fixed) {
     if (typeof commit !== "string" || commit === "") continue;
     if (typeof finding?.member !== "string" || finding.member === "") {
-      if (hasMemberAttribution) return { reason: "completed grouped repair has no member attribution" };
+      if (requiresMemberAttribution || hasMemberAttribution)
+        return { reason: "completed grouped repair has no member attribution" };
       continue;
     }
     const assigned = memberByCommit.get(commit);
@@ -224,7 +225,7 @@ if (plan.classification === "single-wave") {
     if (usedCommit) commits.push(result.commit);
   });
   const uniqueCommits = [...new Set(commits)];
-  const memberCommits = memberCommitGroups(fixed);
+  const memberCommits = memberCommitGroups(fixed, plan.input.memberAttributionRequired);
   if (memberCommits.reason) return failedResult(plan, memberCommits.reason);
   return {
     status: "complete",
@@ -347,7 +348,7 @@ const confirmedFixed = [
 ];
 const uniqueCommits = [...new Set(commits)];
 const writeUps = [...fixed.values()];
-const memberCommits = memberCommitGroups(writeUps);
+const memberCommits = memberCommitGroups(writeUps, plan.input.memberAttributionRequired);
 if (memberCommits.reason) return failedResult(plan, memberCommits.reason);
 return {
   status: "complete",
