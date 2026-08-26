@@ -659,6 +659,13 @@ func TestForgejoOperatorListsCurrentHoldsAndBlockedVerdicts(t *testing.T) {
 				"id": float64(4), "body": "Held at: review\nThe target changed after this hold.", "user": map[string]any{"login": "Minos"},
 			}},
 		},
+		{
+			pullRequest: state.operatorPullRequest(5, "released-verdict-head"),
+			reviews: []map[string]any{{
+				"id": float64(5), "state": "REQUEST_CHANGES", "commit_id": "released-verdict-head", "user": map[string]any{"login": "Minos"},
+				"body": "Required checks were red before the target moved.\n\n<!-- Minos: cause=required-checks head=released-verdict-head target=superseded-target -->",
+			}},
+		},
 	})
 
 	var output bytes.Buffer
