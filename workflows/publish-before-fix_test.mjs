@@ -353,6 +353,97 @@ async function runCase({ minosBin, fixture, preparedInput = input(), events = []
   return { result, events, prompts };
 }
 
+test("an ordinary solo run publishes its findings exactly once through the member path", async () => {
+  const confirmed = finding({ member: "primary" });
+  const preparedInput = input([confirmed], {
+    review: {
+      status: "complete",
+      reviewed: { target: TARGET, head: HEAD },
+      confirmedFindings: [confirmed],
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 }],
+      memberReviews: [{
+        member: "primary",
+        verdict: "comment",
+        body: "Confirmed findings in the reviewed code.",
+        comments: [{ body: SENTINEL }],
+        status: "attention",
+      }],
+    },
+  });
+  let memberPublications = 0;
+  let legacyPublications = 0;
+  const result = await publishBeforeFix({
+    input: preparedInput,
+    head: HEAD,
+    target: TARGET,
+    minosBin: "/unused/minos",
+    launcher: "/unused/ensemble.mjs",
+    workflowScript: fixScriptPath,
+    runMemberPublication: async ({ review }) => {
+      memberPublications += 1;
+      assert.equal(review.members.length, 1);
+      return { code: 0, signal: null, stdout: '{"outcome":"applied","reviews":1}\n', stderr: "" };
+    },
+    runForge: async () => {
+      legacyPublications += 1;
+      return { code: 0, signal: null, stdout: '{"outcome":"applied"}\n', stderr: "" };
+    },
+    runDispatch: async ({ plan }) => ({
+      code: 0,
+      signal: null,
+      stdout: `${JSON.stringify({ ...plan, integration: { commits: [], pushCount: 0 } })}\n`,
+      stderr: "",
+    }),
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(memberPublications, 1);
+  assert.equal(legacyPublications, 0);
+  assert.deepEqual(result.publication, { outcome: "applied", reviews: 1 });
+});
+
+test("a terminal solo run with no findings still publishes one clean member review", async () => {
+  const preparedInput = input([], {
+    review: {
+      status: "complete",
+      reviewed: { target: TARGET, head: HEAD },
+      confirmedFindings: [],
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 }],
+      memberReviews: [{
+        member: "primary",
+        verdict: "comment",
+        body: "No confirmed findings in the reviewed code.",
+        comments: [],
+        status: "clean",
+      }],
+    },
+  });
+  let publications = 0;
+  let dispatches = 0;
+  const result = await publishBeforeFix({
+    input: preparedInput,
+    head: HEAD,
+    target: TARGET,
+    minosBin: "/unused/minos",
+    launcher: "/unused/ensemble.mjs",
+    workflowScript: fixScriptPath,
+    runMemberPublication: async () => {
+      publications += 1;
+      return { code: 0, signal: null, stdout: '{"outcome":"applied","reviews":1}\n', stderr: "" };
+    },
+    runDispatch: async () => {
+      dispatches += 1;
+      throw new Error("terminal review must not dispatch");
+    },
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.classification, "terminal");
+  assert.equal(publications, 1);
+  assert.equal(dispatches, 0);
+  assert.deepEqual(result.publication, { outcome: "applied", reviews: 1 });
+});
+
 test("publication-before-fix owns the real publication barrier and fix dispatch", async (t) => {
   const buildRoot = mkdtempSync(join(tmpdir(), "minos-publication-binary-"));
   const minosBin = join(buildRoot, "minos");

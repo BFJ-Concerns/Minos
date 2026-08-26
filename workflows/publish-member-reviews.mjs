@@ -31,9 +31,15 @@ if (!verdictPath || process.argv.length !== 3) {
       const commentsPath = join(scratch, `${member.id}.json`);
       writeFileSync(bodyPath, review.body, { mode: 0o600 });
       writeFileSync(commentsPath, JSON.stringify(review.comments), { mode: 0o600 });
-      execFileSync(minos, [...prefix, "review", snapshot.head_sha, snapshot.target_sha, review.verdict, bodyPath, commentsPath], { stdio: "inherit" });
-      execFileSync(minos, [...prefix, "status", snapshot.head_sha, snapshot.target_sha, review.status], { stdio: "inherit" });
+      const publication = JSON.parse(execFileSync(
+        minos,
+        [...prefix, "review", snapshot.head_sha, snapshot.target_sha, review.verdict, bodyPath, commentsPath],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+      ));
+      if (publication.outcome !== "applied")
+        throw new Error(`member ${member.id} review publication returned ${String(publication.outcome || "no outcome")}`);
     }
+    process.stdout.write(`${JSON.stringify({ outcome: "applied", reviews: verdict.members.length })}\n`);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

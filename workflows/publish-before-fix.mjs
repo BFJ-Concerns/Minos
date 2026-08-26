@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 
@@ -58,6 +59,15 @@ async function defaultDispatch({ launcher, workflowScript, planPath, cwd, env })
   );
 }
 
+const memberPublisher = join(dirname(fileURLToPath(import.meta.url)), "publish-member-reviews.mjs");
+
+async function defaultMemberPublication({ verdictPath, minosBin, cwd, env }) {
+  return runCommand(process.execPath, [memberPublisher, verdictPath], {
+    cwd,
+    env: { ...env, ...(minosBin ? { MINOS_BIN: minosBin } : {}) },
+  });
+}
+
 export async function publishBeforeFix({
   input,
   head,
@@ -69,6 +79,7 @@ export async function publishBeforeFix({
   cwd = process.cwd(),
   env = process.env,
   runForge = defaultForge,
+  runMemberPublication = defaultMemberPublication,
   runDispatch = defaultDispatch,
   onEvent = () => {},
   diagnostics = (message) => { process.stderr.write(message); },
@@ -76,14 +87,15 @@ export async function publishBeforeFix({
   const plan = prepareFixWave(input);
   if (plan.fingerprint) onEvent(`fix-plan-created:${plan.fingerprint}`);
   if (plan.status !== "complete") return plan;
+  const hasMemberPublication = Array.isArray(input.review.members) && Array.isArray(input.review.memberReviews);
   if (plan.classification === "terminal") {
     // A carried verdict judged an earlier head, so it may only drive repairs;
     // standing as a terminal round would end the loop on a head it never saw.
     if (carriedFrom)
       return publicationFailure(plan, "a carried verdict cannot stand as a terminal round at a moved head");
-    return plan;
+    if (!hasMemberPublication) return plan;
   }
-  if (plan.classification !== "working")
+  if (plan.classification !== "working" && plan.classification !== "terminal")
     return publicationFailure(plan, `publication-before-fix refuses ${String(plan.classification)} preparation`);
   if (carriedFrom) {
     if (input.review.reviewed.head !== carriedFrom.head || input.review.reviewed.target !== carriedFrom.target)
@@ -97,38 +109,45 @@ export async function publishBeforeFix({
     const bodyPath = join(operationDir, "sweep-review.md");
     const commentsPath = join(operationDir, "sweep-review-comments.json");
     const planPath = join(operationDir, "fix-wave-plan.json");
-    writeFileSync(bodyPath, plan.sweepReview.body, { mode: 0o600 });
-    writeFileSync(commentsPath, JSON.stringify(plan.sweepReview.comments), { mode: 0o600 });
+    const verdictPath = join(operationDir, "review-result.json");
+    if (!hasMemberPublication) {
+      writeFileSync(bodyPath, plan.sweepReview.body, { mode: 0o600 });
+      writeFileSync(commentsPath, JSON.stringify(plan.sweepReview.comments), { mode: 0o600 });
+    }
     writeFileSync(planPath, JSON.stringify(plan), { mode: 0o600 });
+    writeFileSync(verdictPath, JSON.stringify(input.review), { mode: 0o600 });
 
     let forgeResult;
     try {
-      forgeResult = await runForge({ minosBin, head, target, bodyPath, commentsPath, cwd, env });
+      forgeResult = hasMemberPublication
+        ? await runMemberPublication({ verdictPath, review: input.review, minosBin, cwd, env })
+        : await runForge({ minosBin, head, target, bodyPath, commentsPath, cwd, env });
     } catch (error) {
-      return publicationFailure(plan, `sweep review publication command failed: ${error.message}`);
+      return publicationFailure(plan, `review publication command failed: ${error.message}`);
     }
     if (forgeResult.stderr) diagnostics(forgeResult.stderr);
 
     let publication;
     try {
-      publication = parseSingleJSONLine(forgeResult.stdout, "sweep review publication command");
+      publication = parseSingleJSONLine(forgeResult.stdout, "review publication command");
     } catch (error) {
       return publicationFailure(plan, error.message);
     }
     if (forgeResult.code !== 0)
       return publicationFailure(
         plan,
-        `sweep review publication command exited ${forgeResult.signal || forgeResult.code}`,
+        `review publication command exited ${forgeResult.signal || forgeResult.code}`,
         publication,
       );
     if (publication.outcome !== "applied")
       return publicationFailure(
         plan,
-        `sweep review publication returned ${String(publication.outcome || "no outcome")}`,
+        `review publication returned ${String(publication.outcome || "no outcome")}`,
         publication,
       );
 
     onEvent(`forge-review-confirmed:${plan.fingerprint}`);
+    if (plan.classification === "terminal") return { ...plan, publication };
     onEvent(`fix-dispatch-started:${plan.fingerprint}`);
     let dispatchResult;
     try {

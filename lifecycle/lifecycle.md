@@ -937,15 +937,15 @@ pull request and every grouped passage in this lifecycle is inert.
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
    terminal marker, and stop.
 
-   When the verdict carries `members` and `memberReviews`, publish the member
-   results before any wave with `node
-   "${MINOS_REVIEW_WORKFLOW%/*}/publish-member-reviews.mjs"
-   "$MINOS_RUN_DIR/review-result.json"`.
-
-   The executable takes a fresh snapshot per member and issues that member’s
-   addressed review and `Minos` status, including an empty scripted review for
-   a member with no findings. A solo member takes this same publication path;
-   later brief-stage and terminal status handling remains separate.
+   Do not publish the verdict here. The publication-before-fix operation below
+   detects a verdict carrying `members` and `memberReviews` and redirects its
+   one review write through `publish-member-reviews.mjs`, retiring the former
+   primary-only review call for that shape. The executable takes a fresh
+   snapshot per member and issues that member’s addressed review, including an
+   empty scripted review for a member with no findings. A solo member takes
+   this same publication path. It does not write a terminal-shaped `Minos`
+   status while the loop is still working; per-member statuses remain part of
+   the terminal handling and finishing below.
 5. Save each complete review verdict, then read this sweep's mechanical
    digest:
 
@@ -1010,8 +1010,10 @@ pull request and every grouped passage in this lifecycle is inert.
    ```
 
    This one production operation prepares an immutable wave without agents. A
-   `working` preparation materialises the exact sweep review, publishes it
-   through the guarded forge command, and starts the effectful `fix.js`
+   member-shaped preparation publishes exactly one addressed review per member
+   through the member publisher; the former primary-only review call is used
+   only for a legacy verdict without members. A `working` preparation then
+   starts the effectful `fix.js`
    dispatcher only after the command returns `outcome: "applied"`. An exact
    pre-existing review is applied and may continue; every other publication
    result returns `incomplete` without starting the dispatcher. On an

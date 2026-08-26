@@ -340,11 +340,11 @@ test("the members CLI carries the diff returned by each fresh snapshot", () => {
   assert.match(input.members[0].diff, /\+after/);
 });
 
-test("member publication writes each member's own review and status", () => {
+test("member publication writes each member's own review without an early terminal status", () => {
   const root = mkdtempSync(join(tmpdir(), "minos-member-publication-"));
   const callLog = join(root, "calls.log");
   const minosBin = join(root, "minos-fixture");
-  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; elif [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; fi\n`);
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; elif [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; printf '{"outcome":"applied"}\\n'; fi\n`);
   chmodSync(minosBin, 0o755);
   const verdictPath = join(root, "verdict.json");
   writeFileSync(verdictPath, JSON.stringify({
@@ -366,20 +366,18 @@ test("member publication writes each member's own review and status", () => {
   assert.deepEqual(calls.filter((call) => !call.startsWith("content ")).map((call) => call.split(" ").slice(0, 6).join(" ")), [
     "forge --member minos-e2e-owner subject 1 snapshot",
     "forge --member minos-e2e-owner subject 1 review",
-    "forge --member minos-e2e-owner subject 1 status",
     "forge --member minos-e2e-owner sibling 2 snapshot",
     "forge --member minos-e2e-owner sibling 2 review",
-    "forge --member minos-e2e-owner sibling 2 status",
   ]);
   assert.ok(calls.includes('content 1 Primary body. [{"body":"primary finding"}]'));
   assert.ok(calls.includes('content 2 Sibling body. [{"body":"sibling finding"}]'));
 });
 
-test("member publication writes a clean review and status for every member", () => {
+test("member publication writes a clean review for every member without an early terminal status", () => {
   const root = mkdtempSync(join(tmpdir(), "minos-clean-member-publication-"));
   const callLog = join(root, "calls.log");
   const minosBin = join(root, "minos-fixture");
-  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; elif [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; fi\n`);
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; elif [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; printf '{"outcome":"applied"}\\n'; fi\n`);
   chmodSync(minosBin, 0o755);
   const verdictPath = join(root, "verdict.json");
   writeFileSync(verdictPath, JSON.stringify({
@@ -401,10 +399,8 @@ test("member publication writes a clean review and status for every member", () 
   assert.deepEqual(calls.filter((call) => !call.startsWith("content ")).map((call) => call.split(" ").slice(0, 6).join(" ")), [
     "forge --member minos-e2e-owner subject 1 snapshot",
     "forge --member minos-e2e-owner subject 1 review",
-    "forge --member minos-e2e-owner subject 1 status",
     "forge --member minos-e2e-owner sibling 2 snapshot",
     "forge --member minos-e2e-owner sibling 2 review",
-    "forge --member minos-e2e-owner sibling 2 status",
   ]);
   assert.ok(calls.includes("content 1 No confirmed findings in the reviewed code. []"));
   assert.ok(calls.includes("content 2 No confirmed findings in the reviewed code. []"));
@@ -1058,8 +1054,12 @@ test("grouped runs keep the forge record per member and split on a blocking outc
     lifecycle,
     /REVIEW_MEMBERS_ARGS=\(\)[\s\S]*if \[ -f "\$MINOS_RUN_DIR\/members\.json" \]; then[\s\S]*REVIEW_MEMBERS_ARGS=\(--members "\$MINOS_RUN_DIR\/members\.json"\)/,
   );
-  assert.match(lifecycle, /When the verdict carries `members` and `memberReviews`, publish the member[\s\S]*publish-member-reviews\.mjs/);
-  assert.match(lifecycle, /A solo member takes this same publication path/);
+  assert.match(
+    lifecycle,
+    /publication-before-fix operation[\s\S]*redirects its\s+one review write through `publish-member-reviews\.mjs`[\s\S]*former\s+primary-only review call/,
+  );
+  assert.match(lifecycle, /A solo member takes\s+this same publication path/);
+  assert.match(lifecycle, /does not write a terminal-shaped `Minos`[\s\S]*while the loop is still working/);
   assert.match(
     lifecycle,
     /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,
