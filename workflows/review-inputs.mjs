@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,8 @@ const target = process.argv[2];
 const head = process.argv[3];
 let recordPath;
 let recordContent;
+let membersPath;
+let membersContent;
 let argumentError = null;
 for (let index = 4; index < process.argv.length; index += 1) {
   const argument = process.argv[index];
@@ -19,18 +22,33 @@ for (let index = 4; index < process.argv.length; index += 1) {
       recordPath = value;
       index += 1;
     }
+  } else if (argument === "--members") {
+    if (membersPath !== undefined) argumentError = "review members were supplied more than once";
+    const value = process.argv[index + 1];
+    if (!value || value.startsWith("--")) argumentError = "--members requires a file";
+    else {
+      membersPath = value;
+      index += 1;
+    }
   } else argumentError = `unexpected review input argument ${argument}`;
 }
-if (recordPath !== undefined && existsSync(recordPath)) {
+if (!argumentError && recordPath !== undefined && existsSync(recordPath)) {
   try {
     recordContent = readFileSync(recordPath, "utf8");
   } catch {
     argumentError = `review loop record is unreadable: ${recordPath}`;
   }
 }
+if (!argumentError && membersPath !== undefined) {
+  try {
+    membersContent = readFileSync(membersPath, "utf8");
+  } catch {
+    argumentError = `review members are unreadable: ${membersPath}`;
+  }
+}
 if (!target || !head || argumentError) {
   if (argumentError) process.stderr.write(`${argumentError}\n`);
-  process.stderr.write("usage: node workflows/review-inputs.mjs TARGET HEAD [--loop-record FILE]\n");
+  process.stderr.write("usage: node workflows/review-inputs.mjs TARGET HEAD [--loop-record FILE] [--members FILE]\n");
   process.exitCode = 2;
 } else {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -99,6 +117,40 @@ if (!target || !head || argumentError) {
       priorFindings = null;
     }
   }
+  let members;
+  if (membersContent !== undefined) {
+    try {
+      const record = JSON.parse(membersContent);
+      const entries = Array.isArray(record) ? record : record && Array.isArray(record.members) ? record.members : null;
+      if (!entries) members = null;
+      else {
+        const minosBin = process.env.MINOS_BIN;
+        members = entries.map((member) => {
+          if (!member || typeof member !== "object" ||
+              typeof member.id !== "string" || member.id === "" ||
+              typeof member.owner !== "string" || member.owner === "" ||
+              typeof member.repo !== "string" || member.repo === "" ||
+              !Number.isInteger(member.number) || member.number < 1) return null;
+          if (!minosBin) return null;
+          const snapshot = JSON.parse(execFileSync(
+            minosBin,
+            ["forge", "--member", member.owner, member.repo, String(member.number), "snapshot"],
+            { encoding: "utf8" },
+          ));
+          if (typeof snapshot.head_sha !== "string" || snapshot.head_sha === "" ||
+              typeof snapshot.target_sha !== "string" || snapshot.target_sha === "") return null;
+          const diff = execFileSync(
+            "git", ["-C", orientation.repository || process.cwd(), "diff", "--no-ext-diff", "--no-color", snapshot.target_sha, snapshot.head_sha],
+            { encoding: "utf8" },
+          );
+          return { ...member, head: snapshot.head_sha, target: snapshot.target_sha, diff };
+        });
+      }
+    } catch {
+      members = null;
+    }
+  }
+  const primaryNumber = Number(process.env.MINOS_PR);
   process.stdout.write(JSON.stringify({
     target,
     head,
@@ -106,5 +158,16 @@ if (!target || !head || argumentError) {
     ...(pullRequest === undefined ? {} : { pullRequest }),
     instructionBriefs,
     priorFindings,
+    ...(membersContent === undefined
+      ? { members: [{
+        id: "primary",
+        owner: process.env.MINOS_OWNER,
+        repo: process.env.MINOS_REPO_NAME,
+        number: Number.isInteger(primaryNumber) ? primaryNumber : null,
+        target,
+        head,
+        ...(pullRequest === undefined ? {} : pullRequest),
+      }] }
+      : { members }),
   }) + "\n");
 }

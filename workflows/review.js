@@ -127,6 +127,7 @@ function validExplorationResult(result) {
   return result.plan.every((unit) =>
     unit && typeof unit === "object" && !Array.isArray(unit) &&
     typeof unit.id === "string" && unit.id !== "" &&
+    typeof unit.member === "string" && memberIds.has(unit.member) &&
     typeof unit.concern === "string" && unit.concern !== "" &&
     ["correctness", "security", "testing", "design"].includes(unit.specialistType) &&
     Array.isArray(unit.scope) && unit.scope.length > 0 &&
@@ -210,8 +211,9 @@ function orientationPacket(target, head, files, units) {
 const findingShape = {
   type: "object",
   additionalProperties: false,
-  required: ["title", "severity", "confidence", "path", "line", "explanation"],
+  required: ["member", "title", "severity", "confidence", "path", "line", "explanation"],
   properties: {
+    member: { type: "string" },
     title: { type: "string" },
     severity: { type: "string", enum: ["Critical", "High", "Medium", "Low"] },
     confidence: { type: "integer", minimum: 0, maximum: 100 },
@@ -287,9 +289,10 @@ const explorationSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["id", "concern", "scope", "specialistType"],
+        required: ["id", "member", "concern", "scope", "specialistType"],
         properties: {
           id: { type: "string" },
+          member: { type: "string" },
           concern: { type: "string" },
           scope: { type: "array", minItems: 1, items: { type: "string" } },
           specialistType: { type: "string", enum: ["correctness", "security", "testing", "design"] },
@@ -335,6 +338,17 @@ if (missingBriefs.length > 0)
 const projectGuidance = projectGuidanceFromInput(input);
 if (!projectGuidance) throw new Error("deterministic input omitted reviewed-project guidance");
 const pullRequestDescription = pullRequestFromInput(input);
+const members = input && input.members;
+const memberEntries = Array.isArray(members)
+  ? members
+  : members && typeof members === "object" && Array.isArray(members.members)
+    ? members.members
+    : null;
+if (!memberEntries || memberEntries.length === 0 || memberEntries.some((member) =>
+  !member || typeof member !== "object" || Array.isArray(member) ||
+  typeof member.id !== "string" || member.id === ""
+)) throw new Error("deterministic input needs a non-empty members record with member ids");
+const memberIds = new Set(memberEntries.map((member) => member.id));
 const priorFindings = input && input.priorFindings;
 const validPriorEntry = (entry) => Boolean(
   entry && typeof entry === "object" && !Array.isArray(entry) &&
@@ -391,6 +405,7 @@ const explorationResult = await agent(
     pullRequestDescription,
     ROLE_BRIEFS.exploration,
     `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.` +
+      ` The members record below is the complete attribution vocabulary. Plan each unit against exactly one member and return that member id.\nMembers: ${JSON.stringify(memberEntries)}` +
       repairedSitesContext
   ),
   {
@@ -439,7 +454,7 @@ function specialistPrompt(unit) {
     pullRequestDescription,
     unit.roleBrief,
     `Orientation packet: ${orientation}\n` +
-      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.` +
+      `Assigned concern: ${unit.concern}\nAssigned member: ${unit.member}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that member's concern and scope against ${target}...${head}. Every finding must carry assigned member ${unit.member}.` +
       suppressionContext
   );
 }
@@ -583,8 +598,9 @@ verifierGroups.forEach((group, groupIndex) => {
 
 const proposedFindings = proposed.map((item) => ({
   id: item.id,
-  source: item.unit.concern,
   ...item.finding,
+  source: item.unit.concern,
+  member: item.unit.member,
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
   rawVerifier: verifierByFinding.get(item.id),
@@ -592,6 +608,7 @@ const proposedFindings = proposed.map((item) => ({
 
 return {
   reviewed: { target, head, occasion },
+  members: memberEntries,
   stage: "present",
   exploration,
   requiredModelEvidence: legs,
@@ -601,6 +618,7 @@ return {
   misconfigurations: [],
   dispatches: specialistUnits.map((unit) => ({
     id: unit.id,
+    member: unit.member,
     label: unit.label,
     concern: unit.concern,
     scope: unit.scope,

@@ -15,11 +15,13 @@ const legs = [
 
 const envelope = {
   reviewed: { target: "target-sha", head: "head-sha", occasion: null },
+  members: [{ id: "primary" }],
   stage: "present",
   requiredModelEvidence: legs,
   proposedFindings: [{
     id: "specialist-1:1",
     source: "Correctness",
+    member: "primary",
     title: "Distinct failure",
     severity: "High",
     confidence: 86,
@@ -38,6 +40,7 @@ const envelope = {
 
 const zeroLegEnvelope = {
   reviewed: { target: "target-sha", head: "head-sha", occasion: null },
+  members: [{ id: "primary" }],
   stage: "absent",
   requiredModelEvidence: [],
   proposedFindings: [],
@@ -478,6 +481,20 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
   assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /proposed finding 1 is absent or malformed/);
 });
+
+for (const [description, finding] of [
+  ["missing attribution", (({ member, ...rest }) => rest)(envelope.proposedFindings[0])],
+  ["unknown attribution", { ...envelope.proposedFindings[0], member: "other-member" }],
+]) {
+  test(`a confirmed finding with ${description} withholds the verdict`, async (t) => {
+    const fixtureArchiveDir = fixtureArchive(t);
+    const adapterVerdict = await adjudicate({
+      envelope: { ...envelope, proposedFindings: [finding] },
+      recordDir: fixtureArchiveDir,
+    });
+    assertWithheld(adapterVerdict, /member attribution/);
+  });
+}
 
 for (const [description, findingField] of [
   ["an empty source", { source: "" }],

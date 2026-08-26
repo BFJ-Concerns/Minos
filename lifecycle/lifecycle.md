@@ -823,9 +823,13 @@ pull request and every grouped passage in this lifecycle is inert.
    Build the main review input from disk and write it to a file:
 
    ```sh
+   REVIEW_MEMBERS_ARGS=()
+   if [ -f "$MINOS_RUN_DIR/members.json" ]; then
+     REVIEW_MEMBERS_ARGS=(--members "$MINOS_RUN_DIR/members.json")
+   fi
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-inputs.mjs" \
      "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
-     --loop-record "$MINOS_LOOP_RECORD" \
+     --loop-record "$MINOS_LOOP_RECORD" "${REVIEW_MEMBERS_ARGS[@]}" \
      > "$MINOS_RUN_DIR/review-args.json"
    ```
 
@@ -932,6 +936,13 @@ pull request and every grouped passage in this lifecycle is inert.
    `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀 with
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
    terminal marker, and stop.
+
+   When the verdict carries `members` and `memberReviews`, publish the member
+   results before any wave with `node
+   "${MINOS_REVIEW_WORKFLOW%/*}/publish-member-reviews.mjs"
+   "$MINOS_RUN_DIR/review-result.json"`. The executable takes a fresh snapshot
+   per member and issues that member’s addressed review and `Minos` status,
+   including an empty scripted review for a member with no findings.
 5. Save each complete review verdict, then read this sweep's mechanical
    digest:
 

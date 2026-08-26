@@ -122,6 +122,7 @@ function emptyEnvelope(input) {
       occasion: input && typeof input.occasion === "string" ? input.occasion : null,
     },
     stage: "absent",
+    members: [{ id: "primary" }],
     requiredModelEvidence: [],
     proposedFindings: [],
     outOfScopeObservations: [],
@@ -615,6 +616,7 @@ const proposedFindings = proposed.map((item) => ({
   id: findingId(item),
   source: item.unit.title,
   ...item.finding,
+  member: "primary",
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
   rawVerifier: verifierByFinding.get(findingId(item)),
@@ -623,6 +625,7 @@ const proposedFindings = proposed.map((item) => ({
 return {
   reviewed: { target: input.target, head: input.head, occasion: input.occasion || null },
   stage: "present",
+  members: [{ id: "primary" }],
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,

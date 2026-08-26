@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { memberIdsFrom } from "./member-record.mjs";
 
 const LOW_COMBINED_CONFIDENCE = 70;
 
@@ -28,6 +29,16 @@ function reviewedFrom(envelope) {
     head: reviewed && typeof reviewed.head === "string" ? reviewed.head : null,
     occasion: reviewed && typeof reviewed.occasion === "string" ? reviewed.occasion : null,
   };
+}
+
+function memberIdsFor(envelope, incomplete) {
+  if (envelope && envelope.members === undefined) return new Set(["primary"]);
+  const ids = memberIdsFrom(envelope && envelope.members);
+  if (!ids) {
+    incomplete.push("envelope members record is absent or malformed");
+    return null;
+  }
+  return ids;
 }
 
 function emptyVerdict(envelope, reason) {
@@ -318,9 +329,19 @@ export async function adjudicate({ envelope, recordDir }) {
 
   const evidenceByLabel = new Map(modelEvidence.map((entry) => [entry.label, entry]));
   const proposedFindings = Array.isArray(envelope.proposedFindings) ? envelope.proposedFindings : [];
+  const memberIds = envelope.members === undefined && proposedFindings.length === 0
+    ? null
+    : memberIdsFor(envelope, incomplete);
   const adjudicated = proposedFindings.map((proposed, index) => {
     if (!validProposedFinding(proposed)) {
       incomplete.push(`proposed finding ${index + 1} is absent or malformed`);
+      return null;
+    }
+    const member = proposed.member === undefined && envelope.members === undefined
+      ? "primary"
+      : proposed.member;
+    if (!memberIds || !memberIds.has(member)) {
+      incomplete.push(`proposed finding ${index + 1} has an absent or unknown member attribution`);
       return null;
     }
     const reviewEvidence = evidenceByLabel.get(proposed.proposingLabel);
@@ -350,6 +371,7 @@ export async function adjudicate({ envelope, recordDir }) {
     const { proposingLabel, verifyLabel, rawVerifier: omittedVerifier, ...finding } = proposed;
     return {
       ...finding,
+      member,
       verifierConfidence: rawVerifier && Number.isInteger(rawVerifier.confidence) ? rawVerifier.confidence : null,
       combinedConfidence,
       verdict,
@@ -377,11 +399,24 @@ export async function adjudicate({ envelope, recordDir }) {
   const comments = confirmedFindings.map(findingComment);
   const isBriefReview = Array.isArray(envelope.dispatches) &&
     envelope.dispatches.some((dispatch) => dispatch && typeof dispatch.brief === "string");
+  const memberReviews = complete && memberIds
+    ? [...memberIds].map((member) => {
+      const findings = confirmedFindings.filter((finding) => finding.member === member);
+      return {
+        member,
+        verdict: "comment",
+        body: isBriefReview ? "Repository review brief findings." : "Confirmed findings in the reviewed code.",
+        comments: findings.map(findingComment),
+        status: findings.length > 0 ? "attention" : "clean",
+      };
+    })
+    : [];
 
   return {
     status: complete ? "complete" : "incomplete",
     complete,
     reviewed: reviewedFrom(envelope),
+    members: Array.isArray(envelope.members) ? envelope.members : undefined,
     incomplete,
     infrastructureFailure: null,
     confirmedFindings,
@@ -393,6 +428,7 @@ export async function adjudicate({ envelope, recordDir }) {
           comments,
         }
       : null,
+    memberReviews,
     ran,
     skipped,
     misconfigurations,
