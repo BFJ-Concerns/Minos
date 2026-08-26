@@ -27,15 +27,23 @@ type timingEvent struct {
 }
 
 type timingWorker struct {
-	Record      string  `json:"record"`
-	Label       *string `json:"label"`
-	Engine      *string `json:"engine"`
-	Model       *string `json:"model"`
-	Status      *string `json:"status"`
-	QueuedMs    *int64  `json:"queued_ms"`
-	ExecutionMs *int64  `json:"execution_ms"`
-	StartedAt   *string `json:"started_at"`
-	EndedAt     *string `json:"ended_at"`
+	Record        string  `json:"record"`
+	Label         *string `json:"label"`
+	Engine        *string `json:"engine"`
+	Model         *string `json:"model"`
+	Status        *string `json:"status"`
+	QueuedMs      *int64  `json:"queued_ms"`
+	ExecutionMs   *int64  `json:"execution_ms"`
+	StartedAt     *string `json:"started_at"`
+	EndedAt       *string `json:"ended_at"`
+	SpanBreakdown *struct {
+		Status      string  `json:"status"`
+		Format      *string `json:"format"`
+		Reason      string  `json:"reason"`
+		BuildMs     *int64  `json:"build_ms"`
+		TestMs      *int64  `json:"test_ms"`
+		ReasoningMs *int64  `json:"reasoning_ms"`
+	} `json:"span_breakdown"`
 }
 
 type timingPhase struct {
@@ -85,6 +93,12 @@ func runCollectTimings(t *testing.T, env map[string]string, args ...string) ([]b
 	for key, value := range env {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
+	return cmd.CombinedOutput()
+}
+
+func runArchivedSpanAnalysis(t *testing.T, recordPath, archiveRoot string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "analyse-archived-spans"), recordPath, archiveRoot)
 	return cmd.CombinedOutput()
 }
 
@@ -243,6 +257,86 @@ func TestCollectTimingsSummarisesPhasesAndFlagsTheStraggler(t *testing.T) {
 	}
 	if balanced.Straggler {
 		t.Fatalf("a balanced phase was flagged as straggling:\n%s", content)
+	}
+}
+
+func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(t *testing.T) {
+	runDir := t.TempDir()
+	writeArchivedSpanAgent(t, runDir, "codex", "codex-app-server-events", `
+{"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-26T00:01:00Z","method":"item/started","params":{"item":{"id":"build","type":"commandExecution","command":"go build ./..."}}}
+{"recordedAt":"2026-08-26T00:03:00Z","method":"item/completed","params":{"item":{"id":"build","type":"commandExecution"}}}
+{"recordedAt":"2026-08-26T00:04:00Z","method":"turn/completed"}
+`)
+	writeArchivedSpanAgent(t, runDir, "claude", "claude-session-jsonl", `
+{"timestamp":"2026-08-26T01:00:00Z","type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}}]}}
+{"timestamp":"2026-08-26T01:02:00Z","type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}
+{"timestamp":"2026-08-26T01:03:00Z","type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}
+`)
+	writeArchivedSpanAgent(t, runDir, "unknown", "future-session-jsonl", `{"at":"2026-08-26T02:00:00Z"}`)
+
+	recordPath := filepath.Join(runDir, "timing-record.json")
+	if output, err := runCollectTimings(t, nil, runDir, recordPath); err != nil {
+		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	before, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseline timingRecord
+	if err := json.Unmarshal(before, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if len(baseline.Workers) != 3 || baseline.Workers[0].SpanBreakdown != nil {
+		t.Fatalf("the timing collector must expose only its existing arm wall data before archive analysis: %+v", baseline.Workers)
+	}
+
+	output, err := runArchivedSpanAnalysis(t, recordPath, runDir)
+	if err != nil {
+		t.Fatalf("analyse-archived-spans: %v\n%s", err, output)
+	}
+	var analysed timingRecord
+	if err := json.Unmarshal(output, &analysed); err != nil {
+		t.Fatalf("analysis does not produce a timing record: %v\n%s", err, output)
+	}
+	byRecord := map[string]timingWorker{}
+	for _, worker := range analysed.Workers {
+		byRecord[worker.Record] = worker
+	}
+	assertArchivedSpan(t, byRecord["ensemble-records/codex"].SpanBreakdown, "codex-app-server-events", 120000, 0, 120000)
+	assertArchivedSpan(t, byRecord["ensemble-records/claude"].SpanBreakdown, "claude-session-jsonl", 0, 120000, 60000)
+	unknown := byRecord["ensemble-records/unknown"].SpanBreakdown
+	if unknown == nil || unknown.Status != "unparseable" || unknown.Format == nil || *unknown.Format != "future-session-jsonl" {
+		t.Fatalf("unknown transcript was attributed instead of refused: %+v", unknown)
+	}
+}
+
+func writeArchivedSpanAgent(t *testing.T, runDir, record, source, transcript string) {
+	t.Helper()
+	dir := filepath.Join(runDir, "ensemble-records", record, "agents", "0001")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := `{"id":1,"engine":"codex","label":"` + record + `","phase":"Analyse","status":"complete","execution_ms":240000,"attempts":[{"attempt":1,"started_at":"2026-08-26T00:00:00Z","ended_at":"2026-08-26T00:04:00Z"}],"transcripts":[{"path":"agents/0001/transcript.jsonl","source":"` + source + `"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(agent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), []byte(strings.TrimSpace(transcript)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertArchivedSpan(t *testing.T, span *struct {
+	Status      string  `json:"status"`
+	Format      *string `json:"format"`
+	Reason      string  `json:"reason"`
+	BuildMs     *int64  `json:"build_ms"`
+	TestMs      *int64  `json:"test_ms"`
+	ReasoningMs *int64  `json:"reasoning_ms"`
+}, format string, build, test, reasoning int64) {
+	t.Helper()
+	if span == nil || span.Status != "parsed" || span.Format == nil || *span.Format != format || span.BuildMs == nil || *span.BuildMs != build || span.TestMs == nil || *span.TestMs != test || span.ReasoningMs == nil || *span.ReasoningMs != reasoning {
+		t.Fatalf("span = %+v, want parsed %s with %d/%d/%d ms", span, format, build, test, reasoning)
 	}
 }
 
