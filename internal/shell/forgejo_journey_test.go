@@ -681,6 +681,31 @@ func TestForgejoOperatorDoesNotListReleasedHold(t *testing.T) {
 	}
 }
 
+func TestForgejoOperatorDoesNotListStaleEnvironmentHold(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, _ := state.service(t)
+	writeOperatorFixtureConfig(t, cfg)
+	state.setOperatorPullRequests([]operatorFixturePullRequest{{
+		pullRequest: state.operatorPullRequest(1, "stale-environment-hold-head"),
+		statuses:    []map[string]any{heldFixtureStatus(1, state.server.URL, "stale-environment-hold-head", state.targetSHA(), "stale-environment-stamp")},
+		comments: []map[string]any{{
+			"id": float64(1), "body": "Held at: review\nThe run environment changed after this hold.", "user": map[string]any{"login": "Minos"},
+		}},
+	}})
+
+	var output bytes.Buffer
+	if err := OperatorCommand(t.Context(), []string{"held", "--config", cfg.Root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var listed []HeldPullRequest
+	if err := json.Unmarshal(output.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(listed, []HeldPullRequest{}) {
+		t.Fatalf("stale environment hold listed = %#v, want empty", listed)
+	}
+}
+
 func TestForgejoOperatorForceUsesSpawnRunAdmission(t *testing.T) {
 	for _, test := range []struct {
 		name       string
