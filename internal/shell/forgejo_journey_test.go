@@ -358,6 +358,54 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("member terminal publication leaves the next pass completed", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		configureForgeCommandFixture(t, state)
+		cfg, repo, facts := state.service(t)
+		directory := t.TempDir()
+		bodyPath := filepath.Join(directory, "body.md")
+		commentsPath := filepath.Join(directory, "comments.json")
+		if err := os.WriteFile(bodyPath, []byte("Confirmed findings in the reviewed code.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(commentsPath, []byte("[]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		prefix := []string{"--member", facts.Owner, facts.Repo, facts.PR}
+		if err := ForgeCommand(t.Context(), append(prefix,
+			"review", state.headSHA(), state.targetSHA(), "request-changes", bodyPath, commentsPath,
+		), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ForgeCommand(t.Context(), append(prefix,
+			"status", state.headSHA(), state.targetSHA(), "attention",
+		), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if writes, payload := state.reviewWriteFacts(); writes != 1 || payload["event"] != "REQUEST_CHANGES" {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		if writes, _ := state.statusWriteFacts(); writes != 1 {
+			t.Fatalf("status writes = %d, want one terminal status", writes)
+		}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("completed member-shaped pull request reached %s", name)
+			return nil, nil
+		}
+		for pass := 1; pass <= 2; pass++ {
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != "nothing" {
+				t.Fatalf("pass %d result = %q, want nothing", pass, result)
+			}
+		}
+	})
+
 	t.Run("incomplete pull request with a comment review starts a fresh attempt", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setReviews([]map[string]any{{
@@ -1693,6 +1741,145 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			t.Fatalf("trailing record = %#v, valid = %t", record, ok)
 		}
 	})
+}
+
+func TestForgeMemberWritesStayOnTheirOwnPullRequests(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
+
+	var writes []string
+	var requests []string
+	reviews := map[string][]map[string]any{}
+	comments := map[string]map[string][]map[string]any{}
+	statuses := map[string][]map[string]any{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		requests = append(requests, r.Method+" "+path)
+		if r.Method == http.MethodGet && path == "/api/v1/user" {
+			writeFixtureJSON(t, w, map[string]any{"login": "Minos"})
+			return
+		}
+		if strings.HasSuffix(path, "/statuses") && r.Method == http.MethodGet {
+			headID := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/commits/"), "/statuses")
+			writeFixtureJSON(t, w, statuses[headID])
+			return
+		}
+		if strings.Contains(path, "/statuses/") {
+			if r.Method == http.MethodPost {
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				member := "unknown"
+				if targetURL, ok := payload["target_url"].(string); ok {
+					for _, candidate := range []string{"1", "2"} {
+						if strings.Contains(targetURL, "/pulls/"+candidate+"#") {
+							member = candidate
+						}
+					}
+				}
+				payload["id"] = len(statuses[head]) + 1
+				payload["creator"] = map[string]any{"login": "Minos"}
+				statuses[head] = append([]map[string]any{payload}, statuses[head]...)
+				writes = append(writes, "status:"+member)
+				writeFixtureJSON(t, w, payload)
+				return
+			}
+		}
+		if r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/branches/main" {
+			writeFixtureJSON(t, w, map[string]any{"commit": map[string]any{"id": target}})
+			return
+		}
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) < 7 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "repos" || parts[5] != "pulls" {
+			http.Error(w, "unexpected fixture request", http.StatusNotFound)
+			return
+		}
+		member := parts[6]
+		switch {
+		case r.Method == http.MethodGet && len(parts) == 7:
+			memberNumber, err := strconv.Atoi(member)
+			if err != nil {
+				http.Error(w, "invalid pull request", http.StatusBadRequest)
+				return
+			}
+			writeFixtureJSON(t, w, map[string]any{
+				"number": memberNumber, "state": "open", "merged": false,
+				"head": map[string]any{"sha": head},
+				"base": map[string]any{"ref": "main", "sha": target, "repo": map[string]any{"full_name": "minos-e2e-owner/subject"}},
+			})
+		case r.Method == http.MethodGet && len(parts) == 8 && parts[7] == "reviews":
+			writeFixtureJSON(t, w, reviews[member])
+		case r.Method == http.MethodPost && len(parts) == 8 && parts[7] == "reviews":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			id := int64(len(reviews[member]) + 1)
+			review := map[string]any{"id": id, "state": payload["event"], "commit_id": payload["commit_id"], "body": payload["body"], "user": map[string]any{"login": "Minos"}}
+			reviews[member] = append(reviews[member], review)
+			commentRows := []map[string]any{}
+			for index, raw := range payload["comments"].([]any) {
+				comment := mapsClone(raw.(map[string]any))
+				comment["id"] = index + 1
+				comment["pull_request_review_id"] = id
+				comment["position"] = comment["new_position"]
+				comment["original_position"] = float64(0)
+				comment["diff_hunk"] = "@@ -41,3 +41,3 @@"
+				delete(comment, "new_position")
+				commentRows = append(commentRows, comment)
+			}
+			if comments[member] == nil {
+				comments[member] = map[string][]map[string]any{}
+			}
+			comments[member][strconv.FormatInt(id, 10)] = commentRows
+			writes = append(writes, "review:"+member+":"+fmt.Sprint(commentRows[0]["body"]))
+			writeFixtureJSON(t, w, review)
+		case r.Method == http.MethodGet && len(parts) == 10 && parts[7] == "reviews" && parts[9] == "comments":
+			writeFixtureJSON(t, w, comments[member][parts[8]])
+		default:
+			http.Error(w, "unexpected fixture request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cfg, _, _ := state.service(t)
+	cfg.Forges["forgejo"] = ForgeConfig{Adaptation: state.adaptationPath, APIBase: server.URL, WebhookSecretFile: state.tokenPath, CredentialFile: state.tokenPath}
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	for _, member := range []struct{ number, finding string }{{"1", "primary-only finding"}, {"2", "sibling-only finding"}} {
+		bodyPath := filepath.Join(t.TempDir(), member.number+".md")
+		commentsPath := filepath.Join(t.TempDir(), member.number+".json")
+		if err := os.WriteFile(bodyPath, []byte("Member review.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal([]requestedReviewComment{{Path: "internal/state.go", Line: 41, Body: member.finding}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(commentsPath, encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		prefix := []string{"--member", "minos-e2e-owner", "subject", member.number}
+		if err := ForgeCommand(t.Context(), append(prefix, "review", head, target, "comment", bodyPath, commentsPath), &bytes.Buffer{}); err != nil {
+			t.Fatalf("review: %v; requests: %v", err, requests)
+		}
+		if err := ForgeCommand(t.Context(), append(prefix, "status", head, target, "attention"), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if !slices.Equal(writes, []string{
+		"review:1:primary-only finding", "status:1", "review:2:sibling-only finding", "status:2",
+	}) {
+		t.Fatalf("member write sequence = %v", writes)
+	}
 }
 
 func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.T) {

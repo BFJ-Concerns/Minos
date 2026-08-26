@@ -144,6 +144,26 @@ function input(findings = [finding()], overrides = {}) {
   };
 }
 
+function memberInput(findings = [finding()], overrides = {}) {
+  const prepared = input(findings, overrides);
+  return {
+    ...prepared,
+    review: {
+      ...prepared.review,
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, target: TARGET, head: HEAD }],
+      memberReviews: [{
+        member: "primary",
+        verdict: "comment",
+        body: findings.length > 0
+          ? "Confirmed findings in the reviewed code."
+          : "No confirmed findings in the reviewed code.",
+        comments: findings.map(({ path, line, explanation }) => ({ path, line, body: explanation })),
+        status: findings.length > 0 ? "attention" : "clean",
+      }],
+    },
+  };
+}
+
 function assignedFindings(prompt) {
   const match = prompt.match(/Confirmed findings: (\[[^\n]+\])/);
   assert.ok(match, "fix prompt carries finding data");
@@ -186,7 +206,9 @@ async function forgeFixture(options = {}) {
     reviews: [],
     comments: new Map(),
     issueComments: [],
+    statuses: [],
     postCount: 0,
+    statusPostCount: 0,
     commentReadCount: 0,
     issueCommentPostCount: 0,
     issueCommentReadCount: 0,
@@ -202,11 +224,20 @@ async function forgeFixture(options = {}) {
       response.end(JSON.stringify({ login: "Minos" }));
       return;
     }
+    if (request.method === "GET" && url.pathname === "/api/v1/repos/minos-e2e-owner/subject") {
+      response.end(JSON.stringify({
+        full_name: "minos-e2e-owner/subject",
+        default_branch: "main",
+        allow_merge_commits: true,
+      }));
+      return;
+    }
     if (request.method === "GET" && url.pathname === pullPath) {
       response.end(JSON.stringify({
         number: 1,
         state: "open",
         merged: false,
+        user: { login: "review-author" },
         head: { sha: state.actualHead },
         base: {
           ref: "main",
@@ -217,6 +248,28 @@ async function forgeFixture(options = {}) {
     }
     if (request.method === "GET" && url.pathname === "/api/v1/repos/minos-e2e-owner/subject/branches/main") {
       response.end(JSON.stringify({ commit: { id: TARGET } }));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `${pullPath.replace("/pulls/", "/issues/")}/dependencies`) {
+      response.end("[]");
+      return;
+    }
+    const statusesPath = `/api/v1/repos/minos-e2e-owner/subject/commits/${state.actualHead}/statuses`;
+    if (request.method === "GET" && url.pathname === statusesPath) {
+      response.end(JSON.stringify(state.statuses));
+      return;
+    }
+    const statusWritePath = `/api/v1/repos/minos-e2e-owner/subject/statuses/${state.actualHead}`;
+    if (request.method === "POST" && url.pathname === statusWritePath) {
+      state.statusPostCount += 1;
+      const payload = JSON.parse(await requestBody(request));
+      const status = {
+        id: state.statuses.length + 1,
+        ...payload,
+        creator: { login: "Minos" },
+      };
+      state.statuses.unshift(status);
+      response.end(JSON.stringify(status));
       return;
     }
     if (request.method === "GET" && url.pathname === `${pullPath}/reviews`) {
@@ -337,7 +390,7 @@ function seedExactReview(fixture, plan, comments = plan.sweepReview.comments) {
   })));
 }
 
-async function runCase({ minosBin, fixture, preparedInput = input(), events = [], prompts = [] }) {
+async function runCase({ minosBin, fixture, preparedInput = input(), events = [], prompts = [], diagnostics = [] }) {
   const result = await publishBeforeFix({
     input: preparedInput,
     head: HEAD,
@@ -348,10 +401,103 @@ async function runCase({ minosBin, fixture, preparedInput = input(), events = []
     env: fixture.env,
     runDispatch: dispatchRecorder(events, prompts),
     onEvent: (event) => events.push(event),
-    diagnostics: () => {},
+    diagnostics: (message) => diagnostics.push(message),
   });
-  return { result, events, prompts };
+  return { result, events, prompts, diagnostics };
 }
+
+test("an ordinary solo run publishes its findings exactly once through the member path", async () => {
+  const confirmed = finding({ member: "primary" });
+  const preparedInput = input([confirmed], {
+    review: {
+      status: "complete",
+      reviewed: { target: TARGET, head: HEAD },
+      confirmedFindings: [confirmed],
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, target: TARGET, head: HEAD }],
+      memberReviews: [{
+        member: "primary",
+        verdict: "comment",
+        body: "Confirmed findings in the reviewed code.",
+        comments: [{ body: SENTINEL }],
+        status: "attention",
+      }],
+    },
+  });
+  let memberPublications = 0;
+  let legacyPublications = 0;
+  const result = await publishBeforeFix({
+    input: preparedInput,
+    head: HEAD,
+    target: TARGET,
+    minosBin: "/unused/minos",
+    launcher: "/unused/ensemble.mjs",
+    workflowScript: fixScriptPath,
+    runMemberPublication: async ({ review, terminal }) => {
+      memberPublications += 1;
+      assert.equal(review.members.length, 1);
+      assert.equal(terminal, false);
+      return { code: 0, signal: null, stdout: '{"outcome":"applied","reviews":1}\n', stderr: "" };
+    },
+    runForge: async () => {
+      legacyPublications += 1;
+      return { code: 0, signal: null, stdout: '{"outcome":"applied"}\n', stderr: "" };
+    },
+    runDispatch: async ({ plan }) => ({
+      code: 0,
+      signal: null,
+      stdout: `${JSON.stringify({ ...plan, integration: { commits: [], pushCount: 0 } })}\n`,
+      stderr: "",
+    }),
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(memberPublications, 1);
+  assert.equal(legacyPublications, 0);
+  assert.deepEqual(result.publication, { outcome: "applied", reviews: 1 });
+});
+
+test("a terminal solo run with no findings still publishes one clean member review", async () => {
+  const preparedInput = input([], {
+    review: {
+      status: "complete",
+      reviewed: { target: TARGET, head: HEAD },
+      confirmedFindings: [],
+      members: [{ id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, target: TARGET, head: HEAD }],
+      memberReviews: [{
+        member: "primary",
+        verdict: "comment",
+        body: "No confirmed findings in the reviewed code.",
+        comments: [],
+        status: "clean",
+      }],
+    },
+  });
+  let publications = 0;
+  let dispatches = 0;
+  const result = await publishBeforeFix({
+    input: preparedInput,
+    head: HEAD,
+    target: TARGET,
+    minosBin: "/unused/minos",
+    launcher: "/unused/ensemble.mjs",
+    workflowScript: fixScriptPath,
+    runMemberPublication: async ({ terminal }) => {
+      publications += 1;
+      assert.equal(terminal, true);
+      return { code: 0, signal: null, stdout: '{"outcome":"applied","reviews":1}\n', stderr: "" };
+    },
+    runDispatch: async () => {
+      dispatches += 1;
+      throw new Error("terminal review must not dispatch");
+    },
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.classification, "terminal");
+  assert.equal(publications, 1);
+  assert.equal(dispatches, 0);
+  assert.deepEqual(result.publication, { outcome: "applied", reviews: 1 });
+});
 
 test("publication-before-fix owns the real publication barrier and fix dispatch", async (t) => {
   const buildRoot = mkdtempSync(join(tmpdir(), "minos-publication-binary-"));
@@ -361,10 +507,16 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
   await t.test("new exact review is read back before dispatcher start and agent call", async () => {
     const fixture = await forgeFixture();
     try {
-      const { result, events, prompts } = await runCase({ minosBin, fixture });
-      assert.equal(result.status, "complete");
+      const { result, events, prompts, diagnostics } = await runCase({
+        minosBin,
+        fixture,
+        preparedInput: memberInput(),
+      });
+      assert.equal(result.status, "complete", `${result.reason}\n${diagnostics.join("\n")}`);
       assert.equal(result.publication.outcome, "applied");
       assert.equal(fixture.state.postCount, 1);
+      assert.equal(fixture.state.reviews[0].state, "COMMENT");
+      assert.equal(fixture.state.statusPostCount, 0, "a working round must not publish a terminal status");
       assert.ok(fixture.state.commentReadCount > 0, "guarded adaptation read comments back");
       assert.match(fixture.state.comments.get(1)[0].body, new RegExp(SENTINEL));
       assert.match(prompts[0], new RegExp(SENTINEL));
@@ -377,6 +529,145 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
       assert.equal(events.filter((event) => event.startsWith("fix-agent-called:")).length, 1);
       assert.equal(events[0].split(":")[1], events[1].split(":")[1]);
       assert.equal(events[1].split(":")[1], events[2].split(":")[1]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("a terminal ordinary run publishes request changes and attention before the next sweep", async () => {
+    const confirmed = finding({ member: "primary" });
+    const preparedInput = memberInput([confirmed], {
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "terminal",
+        basis: "the final round leaves a blocking finding",
+      },
+    });
+    const fixture = await forgeFixture();
+    try {
+      const { result, events, prompts, diagnostics } = await runCase({ minosBin, fixture, preparedInput });
+      assert.equal(result.status, "complete", `${result.reason}\n${diagnostics.join("\n")}`);
+      assert.equal(result.classification, "terminal");
+      assert.deepEqual(result.publication, { outcome: "applied", reviews: 1 });
+      assert.equal(fixture.state.postCount, 1);
+      assert.equal(fixture.state.reviews[0].state, "REQUEST_CHANGES");
+      assert.equal(fixture.state.statusPostCount, 1);
+      assert.equal(fixture.state.statuses[0].state, "failure");
+      assert.equal(fixture.state.statuses[0].description, "Changes need attention");
+      assert.equal(events.filter((event) => event.startsWith("forge-review-confirmed:")).length, 1);
+      assert.equal(events.filter((event) => event.startsWith("fix-dispatch-started:")).length, 0);
+      assert.deepEqual(prompts, []);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("a terminal sub-threshold finding remains an overflow and does not hold the member", async () => {
+    const low = finding({ member: "primary", severity: "Low" });
+    const preparedInput = memberInput([low], {
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "terminal",
+        basis: "the only finding is below the threshold",
+      },
+    });
+    const fixture = await forgeFixture();
+    try {
+      const { result, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      assert.equal(result.status, "complete");
+      assert.equal(result.classification, "terminal");
+      assert.equal(result.requestChanges.length, 0);
+      assert.equal(fixture.state.postCount, 1);
+      assert.equal(fixture.state.reviews[0].state, "COMMENT");
+      assert.match(fixture.state.reviews[0].body, /^No blocking findings in the reviewed code\./);
+      assert.equal(fixture.state.reviews[0].body.includes(SENTINEL), false);
+      assert.deepEqual(fixture.state.comments.get(fixture.state.reviews[0].id), []);
+      assert.equal(fixture.state.statusPostCount, 0);
+      assert.deepEqual(prompts, []);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  await t.test("a mixed terminal group holds only the member with a blocking finding", async () => {
+    const blocking = finding({ member: "primary" });
+    const low = finding({ member: "sibling", severity: "Low", title: "minor sibling issue" });
+    const preparedInput = input([blocking, low], {
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "terminal",
+        basis: "the final round leaves one member blocked while its sibling has only overflow",
+      },
+    });
+    preparedInput.review.members = [
+      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, target: TARGET, head: HEAD },
+      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2, target: TARGET, head: HEAD },
+    ];
+    preparedInput.review.memberReviews = [
+      { member: "primary", verdict: "comment", body: "Confirmed findings in the reviewed code.", comments: [], status: "attention" },
+      { member: "sibling", verdict: "comment", body: "Confirmed findings in the reviewed code.", comments: [], status: "attention" },
+    ];
+
+    const root = mkdtempSync(join(tmpdir(), "minos-mixed-member-publication-"));
+    const callLog = join(root, "calls.log");
+    const minosBin = join(root, "minos-fixture");
+    writeFileSync(minosBin, `#!/bin/sh
+printf '%s\\n' "$*" >> '${callLog}'
+if [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; printf '{"outcome":"applied"}\\n'; elif [ "$6" = status ]; then printf '{"outcome":"applied"}\\n'; fi
+`);
+    chmodSync(minosBin, 0o755);
+    const result = await publishBeforeFix({
+      input: preparedInput,
+      head: HEAD,
+      target: TARGET,
+      minosBin,
+      launcher: "/unused/ensemble.mjs",
+      workflowScript: fixScriptPath,
+      runDispatch: async () => assert.fail("terminal publication must not dispatch fixes"),
+    });
+
+    assert.equal(result.status, "complete");
+    assert.deepEqual(result.publication, { outcome: "applied", reviews: 2 });
+    const calls = readFileSync(callLog, "utf8").trim().split("\n");
+    assert.ok(calls.some((call) => call.includes(`subject 1 review ${HEAD} ${TARGET} request-changes`)));
+    assert.ok(calls.some((call) => call.includes(`subject 1 status ${HEAD} ${TARGET} attention`)));
+    assert.ok(calls.some((call) => call.includes(`sibling 2 review ${HEAD} ${TARGET} comment`)));
+    assert.equal(calls.some((call) => call.includes(`sibling 2 status ${HEAD} ${TARGET}`)), false);
+    assert.ok(calls.includes(`content 1 Confirmed code findings remain unresolved. [{"path":"${blocking.path}","body":"**${blocking.title}**\\n\\n${blocking.explanation}\\n\\nSeverity: ${blocking.severity}. Confidence: ${blocking.confidence}.","line":${blocking.line}}]`));
+    assert.ok(calls.includes("content 2 No blocking findings in the reviewed code. []"));
+  });
+
+  await t.test("a terminal blocking finding retained only in the loop record holds its member", async () => {
+    const prior = finding({ member: "primary" });
+    const preparedInput = memberInput([], {
+      runRecord: {
+        round: 1,
+        confirmedUnfixed: [{
+          key: JSON.stringify([prior.path, prior.line, prior.title]),
+          finding: prior,
+          attempts: 1,
+          reason: "the previous repair could not resolve it",
+        }],
+      },
+      decision: {
+        kind: "minos-sweep-decision-v1",
+        classification: "terminal",
+        basis: "the previous blocking finding remains unresolved",
+      },
+    });
+    const fixture = await forgeFixture();
+    try {
+      const { result, prompts } = await runCase({ minosBin, fixture, preparedInput });
+      assert.equal(result.status, "complete");
+      assert.equal(result.classification, "terminal");
+      assert.equal(result.requestChanges.length, 1);
+      assert.equal(fixture.state.postCount, 1);
+      assert.equal(fixture.state.reviews[0].state, "REQUEST_CHANGES");
+      assert.match(fixture.state.reviews[0].body, /Confirmed code findings remain unresolved/);
+      assert.equal(fixture.state.statusPostCount, 1);
+      assert.equal(fixture.state.statuses[0].state, "failure");
+      assert.match(fixture.state.comments.get(fixture.state.reviews[0].id)[0].body, new RegExp(SENTINEL));
+      assert.deepEqual(prompts, []);
     } finally {
       await fixture.close();
     }
@@ -601,11 +892,12 @@ test("publication-before-fix owns the real publication barrier and fix dispatch"
     }
   });
 
-  await t.test("a moved head rejection starts no dispatcher or agent", async () => {
+  await t.test("a moved member head rejection starts no dispatcher or agent", async () => {
     const fixture = await forgeFixture({ actualHead: "3333333333333333333333333333333333333333" });
     try {
-      const { result, events, prompts } = await runCase({ minosBin, fixture });
+      const { result, events, prompts } = await runCase({ minosBin, fixture, preparedInput: memberInput() });
       assert.equal(result.status, "incomplete");
+      assert.ok(result.publication, JSON.stringify(result));
       assert.equal(result.publication.outcome, "rejected");
       assert.equal(result.publication.reason, "head moved");
       assert.equal(fixture.state.postCount, 0);

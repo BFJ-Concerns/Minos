@@ -154,6 +154,14 @@ test("a bare full-extent brief with no trigger is skipped without dispatch", asy
   }]);
 });
 
+test("a repository brief keeps its primary attribution but does not create a member review", async (t) => {
+  const { result } = await run(args());
+  assert.deepEqual(result.members, [{ id: "primary" }]);
+  assert.ok(result.proposedFindings.every((entry) => entry.member === "primary"));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.deepEqual(verdict.memberReviews, []);
+});
+
 test("relevance gates full-extent briefs and remains an explicit Terra leg", async () => {
   const candidate = brief(".review/errors.md", "---\nextent: full\nsweep: whole-tree\nrelevance: Error-path changes.\n---\nJudge errors.");
   const met = await run(args({ briefs: [candidate] }), responder({ specialist: () => specialistResult([]) }));
