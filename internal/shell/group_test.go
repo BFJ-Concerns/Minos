@@ -43,7 +43,8 @@ func TestGroupCandidateEnumerationExcludesNonMembersAtTheEnumerationSeam(t *test
 	differentTarget := stackedFixturePull(5, "release", "release-member")
 	live := stackedFixturePull(6, "main", "already-running")
 	guarded := stackedFixturePull(7, "main", "guarded")
-	state.setStackedChildren([]map[string]any{eligible, fork, structural, differentTarget, live, guarded})
+	branchless := stackedFixturePull(8, "main", "refs/pull/8/head")
+	state.setStackedChildren([]map[string]any{eligible, fork, structural, differentTarget, live, guarded, branchless})
 	cfg, repo, primary := state.service(t)
 	repo.StructuralBranchPrefixes = []string{"structural/"}
 	if err := os.MkdirAll(filepath.Dir(groupMemberGuardPath(cfg.Runs.Dir, UnitName(Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: "7"}))), 0o700); err != nil {
@@ -53,7 +54,7 @@ func TestGroupCandidateEnumerationExcludesNonMembersAtTheEnumerationSeam(t *test
 		t.Fatal(err)
 	}
 	all := []sweepCandidate{{repo: repo, facts: primary}}
-	for number := 2; number <= 7; number++ {
+	for number := 2; number <= 8; number++ {
 		all = append(all, sweepCandidate{repo: repo, facts: Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: strconv.Itoa(number)}})
 	}
 	original := commandCombinedOutput
@@ -71,6 +72,28 @@ func TestGroupCandidateEnumerationExcludesNonMembersAtTheEnumerationSeam(t *test
 	}
 	if len(candidates) != 1 || candidates[0].PR != "2" {
 		t.Fatalf("group candidates = %#v, want only eligible sibling #2", candidates)
+	}
+}
+
+func TestClaimGroupMemberRefusesBranchlessPullRequestBeforeClaiming(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "refs/pull/2/head")})
+	cfg, repo, primary := state.service(t)
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+	_, err := claimGroupMember(t.Context(), cfg, repo, primary, repo.Owner, repo.Repo, "2")
+	if err == nil || !strings.Contains(err.Error(), "no longer eligible") {
+		t.Fatalf("claim error = %v, want eligibility refusal", err)
+	}
+	if _, err := os.Stat(groupMemberGuardPath(cfg.Runs.Dir, UnitName(Facts{Owner: repo.Owner, Repo: repo.Repo, PR: "2"}))); !os.IsNotExist(err) {
+		t.Fatalf("branchless member guard was written: %v", err)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.assignmentWritePaths) != 0 || len(state.reactionWritePaths) != 0 {
+		t.Fatalf("branchless member was claimed: assignment paths:%v reaction paths:%v", state.assignmentWritePaths, state.reactionWritePaths)
 	}
 }
 

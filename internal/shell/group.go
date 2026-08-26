@@ -124,7 +124,7 @@ func groupCandidatesForRepo(ctx context.Context, cfg ServiceConfig, repo RepoCon
 // terminal status; grouping must never re-claim a pull request with a terminal
 // Minos result while that repair is pending.
 func groupMemberEligible(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (bool, error) {
-	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadRepository != facts.Owner+"/"+facts.Repo || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) || workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
+	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadBranch == "" || snapshot.HeadRepository != facts.Owner+"/"+facts.Repo || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) || workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
 		return false, nil
 	}
 	pr, err := strconv.ParseInt(facts.PR, 10, 64)
