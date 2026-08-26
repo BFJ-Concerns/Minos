@@ -231,7 +231,7 @@ test("the script emits an envelope with every routed leg and raw verifier output
   assert.ok(calls.every((call) => !("fallbackModel" in call.opts)));
 });
 
-test("a two-member input keeps each finding attributed through verification", async () => {
+test("a two-member input keeps each finding attributed through verification and member publication", async (t) => {
   const members = { members: [
     { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1, diff: "primary diff" },
     { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2, diff: "sibling diff" },
@@ -260,6 +260,17 @@ test("a two-member input keeps each finding attributed through verification", as
     ],
   );
   assert.match(calls.find((call) => call.opts.label === "exploration").prompt, /sibling diff/);
+
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.deepEqual(verdict.memberReviews.map(({ member, status }) => ({ member, status })), [
+    { member: "primary", status: "attention" },
+    { member: "sibling", status: "attention" },
+  ]);
+  assert.match(verdict.memberReviews[0].comments[0].body, /primary finding/);
+  assert.doesNotMatch(verdict.memberReviews[0].comments[0].body, /sibling finding/);
+  assert.match(verdict.memberReviews[1].comments[0].body, /sibling finding/);
+  assert.doesNotMatch(verdict.memberReviews[1].comments[0].body, /primary finding/);
 });
 
 test("the members CLI snapshots each member and carries its fresh diff", () => {
@@ -285,11 +296,44 @@ test("the members CLI snapshots each member and carries its fresh diff", () => {
   ]);
 });
 
-test("member publication writes a clean review and status for every member", () => {
+test("the members CLI carries the diff returned by each fresh snapshot", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-member-input-diff-"));
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace);
+  execFileSync("git", ["-C", workspace, "init", "--quiet"]);
+  execFileSync("git", ["-C", workspace, "config", "user.name", "Minos"]);
+  execFileSync("git", ["-C", workspace, "config", "user.email", "minos@example.invalid"]);
+  writeFileSync(join(workspace, "member.txt"), "before\n");
+  execFileSync("git", ["-C", workspace, "add", "member.txt"]);
+  execFileSync("git", ["-C", workspace, "commit", "--quiet", "-m", "base"]);
+  const target = execFileSync("git", ["-C", workspace, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(workspace, "member.txt"), "after\n");
+  execFileSync("git", ["-C", workspace, "commit", "-am", "member change", "--quiet"]);
+  const head = execFileSync("git", ["-C", workspace, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const guidancePath = join(root, "guidance.md");
+  const orientationPath = join(root, "orientation.json");
+  const membersPath = join(root, "members.json");
+  const minosBin = join(root, "minos-fixture");
+  writeFileSync(guidancePath, "fixture guidance\n");
+  writeFileSync(orientationPath, JSON.stringify({ repository: workspace, guidance: guidancePath }));
+  writeFileSync(membersPath, JSON.stringify({ members: [
+    { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 },
+  ] }));
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '{"head_sha":"${head}","target_sha":"${target}"}\\n'\n`);
+  chmodSync(minosBin, 0o755);
+  const input = JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head, "--members", membersPath], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_BIN: minosBin },
+  }));
+  assert.match(input.members[0].diff, /-before/);
+  assert.match(input.members[0].diff, /\+after/);
+});
+
+test("member publication writes each member's own review and status", () => {
   const root = mkdtempSync(join(tmpdir(), "minos-member-publication-"));
   const callLog = join(root, "calls.log");
   const minosBin = join(root, "minos-fixture");
-  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; else printf '{"outcome":"applied"}\\n'; fi\n`);
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; elif [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; fi\n`);
   chmodSync(minosBin, 0o755);
   const verdictPath = join(root, "verdict.json");
   writeFileSync(verdictPath, JSON.stringify({
@@ -299,8 +343,8 @@ test("member publication writes a clean review and status for every member", () 
       { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2 },
     ],
     memberReviews: [
-      { member: "primary", verdict: "comment", body: "Clean.", comments: [], status: "clean" },
-      { member: "sibling", verdict: "comment", body: "Clean.", comments: [], status: "clean" },
+      { member: "primary", verdict: "comment", body: "Primary body.", comments: [{ body: "primary finding" }], status: "attention" },
+      { member: "sibling", verdict: "comment", body: "Sibling body.", comments: [{ body: "sibling finding" }], status: "attention" },
     ],
   }));
   execFileSync(process.execPath, [publishMembersScriptPath, verdictPath], {
@@ -308,7 +352,7 @@ test("member publication writes a clean review and status for every member", () 
     stdio: "pipe",
   });
   const calls = readFileSync(callLog, "utf8").trim().split("\n");
-  assert.deepEqual(calls.map((call) => call.split(" ").slice(0, 6).join(" ")), [
+  assert.deepEqual(calls.filter((call) => !call.startsWith("content ")).map((call) => call.split(" ").slice(0, 6).join(" ")), [
     "forge --member minos-e2e-owner subject 1 snapshot",
     "forge --member minos-e2e-owner subject 1 review",
     "forge --member minos-e2e-owner subject 1 status",
@@ -316,6 +360,8 @@ test("member publication writes a clean review and status for every member", () 
     "forge --member minos-e2e-owner sibling 2 review",
     "forge --member minos-e2e-owner sibling 2 status",
   ]);
+  assert.ok(calls.includes('content 1 Primary body. [{"body":"primary finding"}]'));
+  assert.ok(calls.includes('content 2 Sibling body. [{"body":"sibling finding"}]'));
 });
 
 test("malformed exploration scope entries fail closed before specialist dispatch", async (t) => {
@@ -917,6 +963,20 @@ test("review inputs provide stable empty context and fail closed on malformed re
   assert.doesNotMatch(result.stderr, /^\s+at /m);
 });
 
+test("review inputs refuse a member entry without forge coordinates", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-invalid-member-input-"));
+  const membersPath = join(root, "members.json");
+  writeFileSync(membersPath, JSON.stringify({ members: [{ id: "primary", owner: "minos-e2e-owner" }] }));
+  const result = spawnSync(process.execPath, [inputScriptPath, "target", "head", "--members", membersPath], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: "unused" },
+  });
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /review members need non-empty ids and forge coordinates/);
+  assert.match(result.stderr, /usage: node workflows\/review-inputs\.mjs/);
+});
+
 test("the deterministic review input rejects empty guidance", () => {
   for (const guidanceContent of ["", " \n\t"])
     assert.throws(() => enumeratedArgs("aaa111", "bbb222", { guidanceContent }), /guidance document is empty/);
@@ -948,6 +1008,7 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   assert.match(lifecycle, /no line count, file count, or member count decides it/);
   assert.match(lifecycle, /forge claim-member OWNER REPO NUMBER/);
   assert.match(lifecycle, /--members "\$MINOS_RUN_DIR\/members\.json"/);
+  assert.match(lifecycle, /Only a grouped run has `\$MINOS_RUN_DIR\/members\.json`[\s\S]*if \[ -f "\$MINOS_RUN_DIR\/members\.json" \]/);
   assert.match(
     lifecycle,
     /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,

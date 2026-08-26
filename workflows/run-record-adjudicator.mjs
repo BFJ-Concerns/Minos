@@ -399,7 +399,7 @@ export async function adjudicate({ envelope, recordDir }) {
   const comments = confirmedFindings.map(findingComment);
   const isBriefReview = Array.isArray(envelope.dispatches) &&
     envelope.dispatches.some((dispatch) => dispatch && typeof dispatch.brief === "string");
-  const memberReviews = complete && memberIds
+  const memberReviews = complete && !isBriefReview && Array.isArray(envelope.members) && memberIds
     ? [...memberIds].map((member) => {
       const findings = confirmedFindings.filter((finding) => finding.member === member);
       return {

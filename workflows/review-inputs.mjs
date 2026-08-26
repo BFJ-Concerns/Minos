@@ -46,6 +46,21 @@ if (!argumentError && membersPath !== undefined) {
     argumentError = `review members are unreadable: ${membersPath}`;
   }
 }
+if (!argumentError && membersContent !== undefined) {
+  try {
+    const record = JSON.parse(membersContent);
+    const entries = Array.isArray(record) ? record : record && Array.isArray(record.members) ? record.members : null;
+    if (!entries || entries.length === 0 || entries.some((member) =>
+      !member || typeof member !== "object" || Array.isArray(member) ||
+      typeof member.id !== "string" || member.id === "" ||
+      typeof member.owner !== "string" || member.owner === "" ||
+      typeof member.repo !== "string" || member.repo === "" ||
+      !Number.isInteger(member.number) || member.number < 1
+    )) argumentError = "review members need non-empty ids and forge coordinates";
+  } catch {
+    argumentError = "review members are not JSON";
+  }
+}
 if (!target || !head || argumentError) {
   if (argumentError) process.stderr.write(`${argumentError}\n`);
   process.stderr.write("usage: node workflows/review-inputs.mjs TARGET HEAD [--loop-record FILE] [--members FILE]\n");
@@ -119,36 +134,25 @@ if (!target || !head || argumentError) {
   }
   let members;
   if (membersContent !== undefined) {
-    try {
-      const record = JSON.parse(membersContent);
-      const entries = Array.isArray(record) ? record : record && Array.isArray(record.members) ? record.members : null;
-      if (!entries) members = null;
-      else {
-        const minosBin = process.env.MINOS_BIN;
-        members = entries.map((member) => {
-          if (!member || typeof member !== "object" ||
-              typeof member.id !== "string" || member.id === "" ||
-              typeof member.owner !== "string" || member.owner === "" ||
-              typeof member.repo !== "string" || member.repo === "" ||
-              !Number.isInteger(member.number) || member.number < 1) return null;
-          if (!minosBin) return null;
-          const snapshot = JSON.parse(execFileSync(
-            minosBin,
-            ["forge", "--member", member.owner, member.repo, String(member.number), "snapshot"],
-            { encoding: "utf8" },
-          ));
-          if (typeof snapshot.head_sha !== "string" || snapshot.head_sha === "" ||
-              typeof snapshot.target_sha !== "string" || snapshot.target_sha === "") return null;
-          const diff = execFileSync(
-            "git", ["-C", orientation.repository || process.cwd(), "diff", "--no-ext-diff", "--no-color", snapshot.target_sha, snapshot.head_sha],
-            { encoding: "utf8" },
-          );
-          return { ...member, head: snapshot.head_sha, target: snapshot.target_sha, diff };
-        });
-      }
-    } catch {
-      members = null;
-    }
+    const record = JSON.parse(membersContent);
+    const entries = Array.isArray(record) ? record : record.members;
+    const minosBin = process.env.MINOS_BIN;
+    if (!minosBin) throw new Error("MINOS_BIN is required for grouped review members");
+    members = entries.map((member) => {
+      const snapshot = JSON.parse(execFileSync(
+        minosBin,
+        ["forge", "--member", member.owner, member.repo, String(member.number), "snapshot"],
+        { encoding: "utf8" },
+      ));
+      if (typeof snapshot.head_sha !== "string" || snapshot.head_sha === "" ||
+          typeof snapshot.target_sha !== "string" || snapshot.target_sha === "")
+        throw new Error(`member ${member.id} snapshot is unusable`);
+      const diff = execFileSync(
+        "git", ["-C", orientation.repository || process.cwd(), "diff", "--no-ext-diff", "--no-color", snapshot.target_sha, snapshot.head_sha],
+        { encoding: "utf8" },
+      );
+      return { ...member, head: snapshot.head_sha, target: snapshot.target_sha, diff };
+    });
   }
   const primaryNumber = Number(process.env.MINOS_PR);
   process.stdout.write(JSON.stringify({
