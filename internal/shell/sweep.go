@@ -124,6 +124,12 @@ func SweepCommand(ctx context.Context, args []string) error {
 		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
 			log.Print(message)
 		}
+		// Candidate membership is fixed when a primary is admitted. Suppress its
+		// surfaced siblings only for that admission pass; a unit already live at
+		// the start of a later pass owns only members carrying durable guards.
+		if result.Decision != SpawnStarted && result.Decision != SpawnContinued {
+			continue
+		}
 		var siblings []Facts
 		if decodeErr := json.Unmarshal([]byte(groupCandidates[unit]), &siblings); decodeErr != nil && groupCandidates[unit] != "" {
 			log.Printf("%s#%s: decode admitted group candidates: %v", candidate.facts.RepoSlug(), candidate.facts.PR, decodeErr)

@@ -1022,8 +1022,9 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 		})
 	}
 
-	t.Run("primary live from previous pass", func(t *testing.T) {
+	t.Run("primary live from previous pass does not own unclaimed sibling", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
+		state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
 		cfg := writeSweepFixtureConfig(t, state)
 		setSweepFixtureMaxConcurrent(t, cfg, 3)
 
@@ -1059,12 +1060,11 @@ func TestForgejoSweepDeliversEligibleGroupCandidatesToOneLead(t *testing.T) {
 			t.Fatalf("first sweep started %d runs, want one primary", starts)
 		}
 
-		state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
 		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
 			t.Fatal(err)
 		}
-		if starts != 1 {
-			t.Fatalf("two passes started %d grouped runs, want the one live primary", starts)
+		if starts != 2 {
+			t.Fatalf("two passes started %d runs, want the live primary and newly eligible sibling", starts)
 		}
 	})
 }

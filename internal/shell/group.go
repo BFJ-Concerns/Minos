@@ -101,7 +101,7 @@ func groupCandidatesForRepo(ctx context.Context, cfg ServiceConfig, repo RepoCon
 	}
 	for _, primary := range candidates {
 		snapshot, ok := snapshots[primary.facts.PR]
-		if !ok {
+		if !ok || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
 			continue
 		}
 		members := make([]Facts, 0, len(membersByTarget[resolvedGroupTarget(snapshot, snapshots, map[string]bool{})]))

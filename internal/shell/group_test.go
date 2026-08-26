@@ -73,6 +73,24 @@ func TestGroupCandidateEnumerationExcludesNonMembersAtTheEnumerationSeam(t *test
 	}
 }
 
+func TestGroupCandidateEnumerationDoesNotGiveStructuralPrimaryOrdinarySiblings(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
+	})
+	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
+	cfg, repo, primary := state.service(t)
+	repo.StructuralBranchPrefixes = []string{"structural/"}
+	all := []sweepCandidate{{repo: repo, facts: primary}, {repo: repo, facts: Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: "2"}}}
+	encoded, err := groupCandidatesJSON(t.Context(), cfg, repo, primary, all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoded != "[]" {
+		t.Fatalf("structural primary group candidates = %s, want none", encoded)
+	}
+}
+
 func TestGroupCandidateEnumerationExcludesEachAdmissionDeferral(t *testing.T) {
 	for _, test := range []struct {
 		name   string
