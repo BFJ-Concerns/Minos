@@ -56,7 +56,7 @@ func TestSpawnRunRemovesReadOnlyTreeWhenStartFails(t *testing.T) {
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 
-	if _, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{}); err == nil {
+	if _, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{}, RunClassReview); err == nil {
 		t.Fatal("SpawnRun succeeded despite systemd-run failure")
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
@@ -76,7 +76,7 @@ func TestSpawnRunReportsSuppressedForActiveUnit(t *testing.T) {
 
 	cfg := ServiceConfig{}
 	cfg.Runs.Dir = t.TempDir()
-	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, Facts{Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{})
+	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, Facts{Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{}, RunClassReview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,13 +122,19 @@ func TestSpawnRunAdmitsUpToTheConfiguredConcurrency(t *testing.T) {
 
 	var outcomes []ReconcileDecision
 	for _, pr := range []string{"1", "2", "3"} {
-		result, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: pr}, AdmissionContext{})
+		result, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: pr}, AdmissionContext{}, RunClassReview)
 		if err != nil {
 			t.Fatal(err)
 		}
 		outcomes = append(outcomes, result.Outcome)
 		if pr == "3" && result.BlockingUnit != "minos-run-owner-repo-pr1.service" {
 			t.Fatalf("blocking unit = %q, want the lowest-named active unit", result.BlockingUnit)
+		}
+		if pr == "3" {
+			want := "all 2/2 run slots are occupied by active units minos-run-owner-repo-pr1.service, minos-run-owner-repo-pr2.service"
+			if result.Detail != want {
+				t.Fatalf("cap suppression detail = %q, want %q", result.Detail, want)
+			}
 		}
 	}
 	if !slices.Equal(outcomes, []ReconcileDecision{SpawnStarted, SpawnStarted, SpawnSuppressed}) {
@@ -159,7 +165,7 @@ func TestSpawnRunSuppressesOwnLiveUnitWithoutConsumingItsHandoff(t *testing.T) {
 	}
 	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, json.RawMessage(`{"round":0,"confirmedUnfixed":[]}`))
 
-	result, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+	result, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +198,7 @@ func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
 			cfg.Runs.MaxConcurrent = maxConcurrent
 			repo := RepoConfig{}
 			repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
-			if _, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{}); err != nil {
+			if _, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{}, RunClassReview); err != nil {
 				t.Fatal(err)
 			}
 			assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
@@ -215,7 +221,7 @@ func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
 	cfg.Runs.Dir = t.TempDir()
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
-	result, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{})
+	result, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}, AdmissionContext{}, RunClassReview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,53 +233,144 @@ func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
 	}
 }
 
-func TestSpawnRunAdoptsValidatedContinuationAndSeedsLoopRecord(t *testing.T) {
+func TestSpawnRunAdoptsContinuationAndSeedsLoopRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		ladder string
+	}{
+		{name: "empty first-iteration ladder", ladder: ""},
+		{name: "non-empty mid-ladder progress", ladder: "build still fails: missing header\nrepair changed the failure to missing symbol\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var systemdArgs []string
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "systemctl" {
+					return nil, nil
+				}
+				systemdArgs = append([]string(nil), args...)
+				return nil, nil
+			}
+
+			cfg := ServiceConfig{Root: "/etc/minos"}
+			cfg.Runs.Dir = t.TempDir()
+			cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+			facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+			runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
+			if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			runRecord := json.RawMessage(`{"round":3,"confirmedFixed":[{"key":"repaired"}],"confirmedUnfixed":[{"key":"known"}]}`)
+			handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, runRecord)
+			handoffData, err := os.ReadFile(handoffFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var handoff runHandoff
+			if err := json.Unmarshal(handoffData, &handoff); err != nil {
+				t.Fatal(err)
+			}
+			handoff.GateRepairLadder = &tc.ladder
+			handoffData, err = json.Marshal(handoff)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(handoffFile, handoffData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Outcome != SpawnStarted {
+				t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
+			}
+			for _, value := range []string{
+				"MINOS_RUN_DIR=" + runDir,
+				"MINOS_RESUME=true",
+				"MINOS_HANDOFF=" + handoffFile,
+				"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
+			} {
+				assertArgument(t, systemdArgs, value)
+			}
+			seed, err := os.ReadFile(filepath.Join(runDir, "loop-record.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(seed) != string(runRecord) {
+				t.Fatalf("seed = %s, want verbatim %s", seed, runRecord)
+			}
+			restoredLadder, err := os.ReadFile(filepath.Join(runDir, "gate-repair-ladder.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(restoredLadder) != tc.ladder {
+				t.Fatalf("restored ladder = %q, want verbatim %q", restoredLadder, tc.ladder)
+			}
+			if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
+				t.Fatalf("consumed handoff still exists or stat failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestSpawnRunRefusesContinuationDirectorySymlinkEscapingRunsDirectory(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	var systemdArgs []string
 	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if name == "systemctl" {
+		switch name {
+		case "systemctl":
+			return nil, nil
+		case "systemd-run":
+			systemdArgs = append([]string(nil), args...)
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command %q", name)
 			return nil, nil
 		}
-		systemdArgs = append([]string(nil), args...)
-		return nil, nil
 	}
 
-	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
 	cfg.Runs.Dir = t.TempDir()
-	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
-	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
-	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+	escaped := filepath.Join(t.TempDir(), UnitName(facts)+"-preserved")
+	if err := os.MkdirAll(filepath.Join(escaped, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runRecord := json.RawMessage(`{"round":3,"confirmedFixed":[{"key":"repaired"}],"confirmedUnfixed":[{"key":"known"}]}`)
-	handoffFile := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, runRecord)
+	apparent := filepath.Join(cfg.Runs.Dir, filepath.Base(escaped))
+	if err := os.Symlink(escaped, apparent); err != nil {
+		t.Fatal(err)
+	}
+	writeTestHandoff(t, cfg, facts, apparent, facts.HeadSHA, json.RawMessage(`{"round":3,"confirmedUnfixed":[]}`))
 
-	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{})
-	if err != nil {
-		t.Fatal(err)
+	stderr := captureStderr(t, func() {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stderr, "continuation workspace not reused") || !strings.Contains(stderr, "runDir is not a direct, unit-named child of runs.dir") {
+		t.Fatalf("continuation refusal = %q", stderr)
 	}
-	if outcome.Outcome != SpawnStarted {
-		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
+	if got := argumentValue(systemdArgs, "MINOS_RUN_DIR"); got == "" || got == apparent {
+		t.Fatalf("fresh run directory = %q, escaping continuation = %q", got, apparent)
 	}
-	for _, value := range []string{
-		"MINOS_RUN_DIR=" + runDir,
-		"MINOS_RESUME=true",
-		"MINOS_HANDOFF=" + handoffFile,
-		"MINOS_LOOP_RECORD=" + filepath.Join(runDir, "loop-record.json"),
-	} {
-		assertArgument(t, systemdArgs, value)
+	if slices.Contains(systemdArgs, "MINOS_RESUME=true") {
+		t.Fatalf("escaping continuation unexpectedly resumed: %v", systemdArgs)
 	}
-	seed, err := os.ReadFile(filepath.Join(runDir, "loop-record.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(seed) != string(runRecord) {
-		t.Fatalf("seed = %s, want verbatim %s", seed, runRecord)
-	}
-	if _, err := os.Stat(handoffFile); !os.IsNotExist(err) {
-		t.Fatalf("consumed handoff still exists or stat failed: %v", err)
+}
+
+func TestAdoptableRunDirectoryReportsMissingDirectory(t *testing.T) {
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = t.TempDir()
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
+	handoff := &runHandoff{RunDir: filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-reaped")}
+
+	reason, ok := adoptableRunDirectory(cfg, UnitName(facts), facts, handoff)
+	if ok || reason != "runDir does not exist as a directory" {
+		t.Fatalf("adoption = (%q, %t), want missing-directory refusal", reason, ok)
 	}
 }
 
@@ -297,7 +394,7 @@ func TestSpawnRunCarriesCompleteReviewVerdictAcrossContinuation(t *testing.T) {
 			}
 
 			stderr := captureStderr(t, func() {
-				if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+				if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -344,7 +441,7 @@ func TestSpawnRunRefusesAmbiguousPredecessorReviewVerdicts(t *testing.T) {
 	}
 
 	stderr := captureStderr(t, func() {
-		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -367,7 +464,7 @@ func TestSpawnRunCarriesVerdictThroughSuccessiveRejectedHandoffs(t *testing.T) {
 	if err := os.WriteFile(firstHandoff, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 		t.Fatal(err)
 	}
 	firstSuccessor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
@@ -386,7 +483,7 @@ func TestSpawnRunCarriesVerdictThroughSuccessiveRejectedHandoffs(t *testing.T) {
 		t.Fatal(err)
 	}
 	stderr := captureStderr(t, func() {
-		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -413,7 +510,7 @@ func TestSpawnRunDemotesHeadMismatchedVerdictsForAdoptedContinuation(t *testing.
 			writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
 
 			stderr := captureStderr(t, func() {
-				if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+				if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -451,7 +548,7 @@ func TestSpawnRunPrefersExactVerdictOverLeftoverStaleCarry(t *testing.T) {
 	writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
 
 	stderr := captureStderr(t, func() {
-		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -480,7 +577,7 @@ func TestSpawnRunRemovesHeadMismatchedCarryWhenHandoffIsRejected(t *testing.T) {
 	}
 
 	stderr := captureStderr(t, func() {
-		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+		if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -510,7 +607,7 @@ func TestSpawnRunLaunchesWhenSiblingStaleCarryCannotBeRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{})
+	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview)
 	if err != nil {
 		t.Fatalf("SpawnRun failed on an untrusted sibling carry: %v", err)
 	}
@@ -546,7 +643,7 @@ func TestSpawnRunRestoresMovedVerdictWhenRejectedHandoffSpawnFails(t *testing.T)
 		return []byte("failed"), errors.New("spawn failed")
 	}
 
-	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err == nil {
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err == nil {
 		t.Fatal("SpawnRun succeeded, want systemd-run failure")
 	}
 	if _, err := os.Stat(verdictPath); err != nil {
@@ -568,7 +665,7 @@ func TestSpawnRunRestoresMovedVerdictWhenAcceptedHandoffSpawnFails(t *testing.T)
 		return []byte("failed"), errors.New("spawn failed")
 	}
 
-	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err == nil {
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err == nil {
 		t.Fatal("SpawnRun succeeded, want systemd-run failure")
 	}
 	if _, err := os.Stat(verdictPath); err != nil {
@@ -606,7 +703,7 @@ func TestSpawnRunRefusesUntrustedReviewVerdicts(t *testing.T) {
 			}
 			writeTestHandoff(t, cfg, facts, predecessor, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
 			stderr := captureStderr(t, func() {
-				if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+				if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -690,7 +787,7 @@ func TestSpawnRunKeepsValidLoopRecordWhenHeadMoved(t *testing.T) {
 	runRecord := json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`)
 	writeTestHandoff(t, cfg, facts, oldRunDir, "old-head", runRecord)
 
-	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 		t.Fatal(err)
 	}
 	runDir := argumentValue(systemdArgs, "MINOS_RUN_DIR")
@@ -728,7 +825,7 @@ func TestSpawnRunRejectsMalformedHandoffAndStartsFresh(t *testing.T) {
 	if err := os.WriteFile(handoffFile, []byte(`{"kind":"wrong"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err != nil {
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(handoffFile + ".rejected"); err != nil {
@@ -758,7 +855,7 @@ func TestSpawnRunDoesNotDeleteAdoptedDirectoryWhenSystemdStartFails(t *testing.T
 		t.Fatal(err)
 	}
 	writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, json.RawMessage(`{"round":1,"confirmedUnfixed":[]}`))
-	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}); err == nil {
+	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts, AdmissionContext{}, RunClassReview); err == nil {
 		t.Fatal("SpawnRun succeeded despite systemd-run failure")
 	}
 	if _, err := os.Stat(runDir); err != nil {
@@ -807,7 +904,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		HeadSHA: "head", BaseSHA: "target", BaseRef: "main", HeadRef: "feature",
 	}
 
-	outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+	outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -837,6 +934,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_AUTO_MERGE=true",
 		"MINOS_REVIEW_THRESHOLD=Medium",
 		"MINOS_MAX_ROUNDS=7",
+		"MINOS_RUN_CLASS=review",
 		"MINOS_RELEASED_HOLD_HEAD=",
 		"MINOS_RELEASED_HOLD_STAGE=",
 		"MINOS_RELEASED_HOLD_DIAGNOSIS=",
@@ -928,7 +1026,7 @@ func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
 				group.Add(1)
 				go func() {
 					defer group.Done()
-					outcome, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: pr}, AdmissionContext{})
+					outcome, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: pr}, AdmissionContext{}, RunClassReview)
 					results <- outcome
 					errors <- err
 				}()
@@ -998,10 +1096,11 @@ func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head
 func TestRunHandoffKeepsExistingShapeCompatibility(t *testing.T) {
 	base := `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"head","runDir":"/runs/run","stoppedAt":"stage","writtenAt":"fixture","runRecord":{"round":0,"confirmedUnfixed":[]}}`
 	tests := map[string]string{
-		"unknown field":       strings.TrimSuffix(base, "}") + `,"futureField":true}`,
-		"trailing content":    base + ` {"ignored":true}`,
-		"empty existing data": `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"","runDir":"","stoppedAt":"","writtenAt":"fixture","runRecord":{"round":0,"confirmedUnfixed":[]}}`,
-		"non-RFC timestamp":   base,
+		"unknown field":            strings.TrimSuffix(base, "}") + `,"futureField":true}`,
+		"trailing content":         base + ` {"ignored":true}`,
+		"empty existing data":      `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"","runDir":"","stoppedAt":"","writtenAt":"fixture","runRecord":{"round":0,"confirmedUnfixed":[]}}`,
+		"non-RFC timestamp":        base,
+		"empty gate repair ladder": strings.TrimSuffix(base, "}") + `,"gateRepairLadder":"  "}`,
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -1009,7 +1108,8 @@ func TestRunHandoffKeepsExistingShapeCompatibility(t *testing.T) {
 			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := readRunHandoffStructure(path); err != nil {
+			_, err := readRunHandoffStructure(path)
+			if err != nil {
 				t.Fatalf("existing handoff shape rejected: %v", err)
 			}
 		})
