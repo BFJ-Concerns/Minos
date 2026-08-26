@@ -937,22 +937,15 @@ pull request and every grouped passage in this lifecycle is inert.
    `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the non-clean
    terminal marker, and stop.
 
-   Only a grouped run has `$MINOS_RUN_DIR/members.json`. When that record exists
-   and the verdict carries `members` and `memberReviews`, publish the member
-   results before any wave:
-
-   ```sh
-   if [ -f "$MINOS_RUN_DIR/members.json" ]; then
-     node "${MINOS_REVIEW_WORKFLOW%/*}/publish-member-reviews.mjs" \
-       "$MINOS_RUN_DIR/review-result.json"
-   fi
-   ```
+   When the verdict carries `members` and `memberReviews`, publish the member
+   results before any wave with `node
+   "${MINOS_REVIEW_WORKFLOW%/*}/publish-member-reviews.mjs"
+   "$MINOS_RUN_DIR/review-result.json"`.
 
    The executable takes a fresh snapshot per member and issues that member’s
    addressed review and `Minos` status, including an empty scripted review for
-   a member with no findings. A solo run continues through its established
-   publication and finishing paths, so it does not write a completion marker
-   before the brief stage and terminal decision.
+   a member with no findings. A solo member takes this same publication path;
+   later brief-stage and terminal status handling remains separate.
 5. Save each complete review verdict, then read this sweep's mechanical
    digest:
 

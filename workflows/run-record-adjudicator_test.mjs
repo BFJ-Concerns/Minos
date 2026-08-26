@@ -118,6 +118,7 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   );
   assert.equal("new_position" in adapterVerdict.reviewBody.comments[0], false);
   assert.equal(adapterVerdict.reviewBody.body, "Repository review brief findings.");
+  assert.deepEqual(adapterVerdict.memberReviews, []);
   assert.equal(adapterVerdict.briefFixRequired, true);
   assert.deepEqual(adapterVerdict.ran, [{ brief: ".review/errors.md", title: "Error handling" }]);
   assert.deepEqual(adapterVerdict.skipped, []);

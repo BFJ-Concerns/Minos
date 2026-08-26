@@ -364,6 +364,41 @@ test("member publication writes each member's own review and status", () => {
   assert.ok(calls.includes('content 2 Sibling body. [{"body":"sibling finding"}]'));
 });
 
+test("member publication writes a clean review and status for every member", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-clean-member-publication-"));
+  const callLog = join(root, "calls.log");
+  const minosBin = join(root, "minos-fixture");
+  writeFileSync(minosBin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${callLog}'\nif [ "$6" = snapshot ]; then printf '{"head_sha":"head-%s","target_sha":"target-%s"}\\n' "$5" "$5"; elif [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10}" >> '${callLog}'; printf ' ' >> '${callLog}'; cat "\${11}" >> '${callLog}'; printf '\\n' >> '${callLog}'; fi\n`);
+  chmodSync(minosBin, 0o755);
+  const verdictPath = join(root, "verdict.json");
+  writeFileSync(verdictPath, JSON.stringify({
+    status: "complete",
+    members: [
+      { id: "primary", owner: "minos-e2e-owner", repo: "subject", number: 1 },
+      { id: "sibling", owner: "minos-e2e-owner", repo: "sibling", number: 2 },
+    ],
+    memberReviews: [
+      { member: "primary", verdict: "comment", body: "No confirmed findings in the reviewed code.", comments: [], status: "clean" },
+      { member: "sibling", verdict: "comment", body: "No confirmed findings in the reviewed code.", comments: [], status: "clean" },
+    ],
+  }));
+  execFileSync(process.execPath, [publishMembersScriptPath, verdictPath], {
+    env: { ...process.env, MINOS_BIN: minosBin },
+    stdio: "pipe",
+  });
+  const calls = readFileSync(callLog, "utf8").trim().split("\n");
+  assert.deepEqual(calls.filter((call) => !call.startsWith("content ")).map((call) => call.split(" ").slice(0, 6).join(" ")), [
+    "forge --member minos-e2e-owner subject 1 snapshot",
+    "forge --member minos-e2e-owner subject 1 review",
+    "forge --member minos-e2e-owner subject 1 status",
+    "forge --member minos-e2e-owner sibling 2 snapshot",
+    "forge --member minos-e2e-owner sibling 2 review",
+    "forge --member minos-e2e-owner sibling 2 status",
+  ]);
+  assert.ok(calls.includes("content 1 No confirmed findings in the reviewed code. []"));
+  assert.ok(calls.includes("content 2 No confirmed findings in the reviewed code. []"));
+});
+
 test("malformed exploration scope entries fail closed before specialist dispatch", async (t) => {
   for (const malformedScope of [
     ["internal/group_execution.rs],"],
@@ -602,7 +637,7 @@ test("an empty plan completes through the adjudicator's no-findings path", async
   assert.deepEqual(verdict.memberReviews, [{
     member: "primary",
     verdict: "comment",
-    body: "Confirmed findings in the reviewed code.",
+    body: "No confirmed findings in the reviewed code.",
     comments: [],
     status: "clean",
   }]);
@@ -1008,7 +1043,8 @@ test("grouped runs keep the forge record per member and split on a blocking outc
   assert.match(lifecycle, /no line count, file count, or member count decides it/);
   assert.match(lifecycle, /forge claim-member OWNER REPO NUMBER/);
   assert.match(lifecycle, /--members "\$MINOS_RUN_DIR\/members\.json"/);
-  assert.match(lifecycle, /Only a grouped run has `\$MINOS_RUN_DIR\/members\.json`[\s\S]*if \[ -f "\$MINOS_RUN_DIR\/members\.json" \]/);
+  assert.match(lifecycle, /When the verdict carries `members` and `memberReviews`, publish the member[\s\S]*publish-member-reviews\.mjs/);
+  assert.match(lifecycle, /A solo member takes this same publication path/);
   assert.match(
     lifecycle,
     /a blocking outcome splits the group[\s\S]*siblings in any order, a stacked chain base-first[\s\S]*affects no other member/,

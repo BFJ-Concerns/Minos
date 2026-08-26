@@ -405,7 +405,9 @@ export async function adjudicate({ envelope, recordDir }) {
       return {
         member,
         verdict: "comment",
-        body: isBriefReview ? "Repository review brief findings." : "Confirmed findings in the reviewed code.",
+        body: findings.length > 0
+          ? "Confirmed findings in the reviewed code."
+          : "No confirmed findings in the reviewed code.",
         comments: findings.map(findingComment),
         status: findings.length > 0 ? "attention" : "clean",
       };
