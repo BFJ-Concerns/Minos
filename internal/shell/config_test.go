@@ -144,6 +144,24 @@ func TestLoadRepoConfigDecodesWorkInProgressBranchPrefixes(t *testing.T) {
 	}
 }
 
+func TestLoadRepoConfigDecodesStructuralBranchPrefixes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\nstructural-branch-prefixes = [\"structural/\"]\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
+	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repos, err := LoadRepoConfigs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || len(repos[0].StructuralBranchPrefixes) != 1 || repos[0].StructuralBranchPrefixes[0] != "structural/" {
+		t.Fatalf("structural prefixes = %+v", repos)
+	}
+}
+
 func TestLoadRepoConfigRejectsEmptyWorkInProgressBranchPrefix(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
@@ -155,6 +173,21 @@ func TestLoadRepoConfigRejectsEmptyWorkInProgressBranchPrefix(t *testing.T) {
 	}
 	_, err := LoadRepoConfigs(root)
 	if err == nil || !strings.Contains(err.Error(), "work-in-progress-branch-prefixes") {
+		t.Fatalf("error = %v, want empty prefix validation", err)
+	}
+}
+
+func TestLoadRepoConfigRejectsEmptyStructuralBranchPrefix(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\nstructural-branch-prefixes = [\"\"]\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
+	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadRepoConfigs(root)
+	if err == nil || !strings.Contains(err.Error(), "structural-branch-prefixes") {
 		t.Fatalf("error = %v, want empty prefix validation", err)
 	}
 }

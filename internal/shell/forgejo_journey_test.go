@@ -22,8 +22,12 @@ import (
 func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 	t.Run("draft pull request is not started", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
-		state.changePullRequest(func(pullRequest map[string]any) { pullRequest["draft"] = true })
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["draft"] = true
+			pullRequest["head"].(map[string]any)["ref"] = "structural/draft"
+		})
 		cfg, repo, facts := state.service(t)
+		repo.StructuralBranchPrefixes = []string{"structural/"}
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })
@@ -66,11 +70,14 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 	})
 
 	for _, test := range []struct {
-		name   string
-		branch string
+		name      string
+		branch    string
+		prefixes  []string
+		wantClass string
 	}{
-		{name: "unmatched branch is started", branch: "feature/rework"},
-		{name: "empty head branch is started", branch: ""},
+		{name: "structural branch starts a maintenance run", branch: "structural/rework", prefixes: []string{"structural/"}, wantClass: "maintenance"},
+		{name: "ordinary branch starts a review run", branch: "feature/rework", prefixes: []string{"structural/"}, wantClass: "review"},
+		{name: "empty head branch starts a review run", branch: "", prefixes: []string{"structural/"}, wantClass: "review"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
@@ -78,13 +85,16 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 				pullRequest["head"].(map[string]any)["ref"] = test.branch
 			})
 			cfg, repo, facts := state.service(t)
-			repo.WorkInProgressBranchPrefixes = []string{"structural/"}
+			repo.StructuralBranchPrefixes = test.prefixes
 
 			original := commandCombinedOutput
 			t.Cleanup(func() { commandCombinedOutput = original })
-			var commands []string
-			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			var commands, systemdArgs []string
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
 				commands = append(commands, name)
+				if name == "systemd-run" {
+					systemdArgs = append([]string(nil), args...)
+				}
 				return nil, nil
 			}
 
@@ -94,6 +104,9 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 			}
 			if result.Decision != "started" || !slices.Equal(commands, []string{"systemctl", "systemd-run"}) {
 				t.Fatalf("result = %q, commands = %v", result, commands)
+			}
+			if got := systemdEnvironment(t, systemdArgs)["MINOS_RUN_CLASS"]; got != test.wantClass {
+				t.Fatalf("MINOS_RUN_CLASS = %q, want %q", got, test.wantClass)
 			}
 		})
 	}
@@ -105,12 +118,19 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 			"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
 		}})
 		cfg, repo, facts := state.service(t)
+		repo.StructuralBranchPrefixes = []string{"structural/"}
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["ref"] = "structural/blocked"
+		})
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })
-		var commands []string
-		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		var commands, systemdArgs []string
+		commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
 			commands = append(commands, name)
+			if name == "systemd-run" {
+				systemdArgs = append([]string(nil), args...)
+			}
 			return nil, nil
 		}
 
@@ -135,6 +155,9 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 		if result.Decision != "started" || !slices.Equal(commands, []string{"systemctl", "systemd-run"}) {
 			t.Fatalf("result after close = %q, commands = %v", result, commands)
+		}
+		if got := systemdEnvironment(t, systemdArgs)["MINOS_RUN_CLASS"]; got != "maintenance" {
+			t.Fatalf("MINOS_RUN_CLASS = %q, want maintenance", got)
 		}
 	})
 

@@ -32,7 +32,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -85,7 +85,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,7 +160,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 					return nil, nil
 				}
 
-				outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+				outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -214,7 +214,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -265,7 +265,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -315,7 +315,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 				starts++
 				return nil, nil
 			}
-			outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{})
+			outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -407,7 +407,7 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	}
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = filepath.Join("..", "..", "scripts", "run-body", "run-body")
-	if _, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}); err != nil {
+	if _, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview); err != nil {
 		t.Fatal(err)
 	}
 	environment := systemdEnvironment(t, systemdArgs)

@@ -67,7 +67,14 @@ func runMemoryMax() string {
 	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB)
 }
 
-func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext) (SpawnResult, error) {
+type RunClass string
+
+const (
+	RunClassReview      RunClass = "review"
+	RunClassMaintenance RunClass = "maintenance"
+)
+
+func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext, runClass RunClass) (SpawnResult, error) {
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
 	if err != nil {
@@ -241,6 +248,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_AUTO_MERGE":              fmt.Sprintf("%t", repo.Policy.AutoMerge),
 		"MINOS_REVIEW_THRESHOLD":        repo.Review.Threshold,
 		"MINOS_MAX_ROUNDS":              maximumRounds,
+		"MINOS_RUN_CLASS":               string(runClass),
 		"MINOS_RELEASED_HOLD_HEAD":      admission.ReleasedHoldHead,
 		"MINOS_RELEASED_HOLD_STAGE":     admission.ReleasedHoldStage,
 		"MINOS_RELEASED_HOLD_DIAGNOSIS": admission.ReleasedHoldDiagnosis,

@@ -171,6 +171,31 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	fixture.assertProcessesStopped(t)
 }
 
+func TestRunBodySelectsGuideForRunClassAndRejectsMissingMaintenanceGuide(t *testing.T) {
+	t.Run("maintenance uses the maintenance guide", func(t *testing.T) {
+		fixture := newRunBodyFixture(t)
+		maintenanceGuide := filepath.Join(fixture.root, "maintenance.md")
+		if err := os.WriteFile(maintenanceGuide, []byte("Follow the maintenance playbook exactly.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fixture.appendConfig(t, map[string]string{"MINOS_MAINTENANCE_INSTRUCTION": maintenanceGuide})
+
+		fixture.run(t, map[string]string{"MINOS_RUN_CLASS": "maintenance"})
+		assertContainsFile(t, fixture.record+".argv", "Follow the maintenance playbook exactly.")
+	})
+
+	t.Run("missing maintenance guide fails before launch", func(t *testing.T) {
+		fixture := newRunBodyFixture(t)
+		fixture.appendConfig(t, map[string]string{"MINOS_MAINTENANCE_INSTRUCTION": ""})
+
+		output, err := fixture.execute(map[string]string{"MINOS_RUN_CLASS": "maintenance"})
+		if err == nil {
+			t.Fatalf("run-body accepted a maintenance run without a maintenance guide\n%s", output)
+		}
+		assertFailureLine(t, fixture.failureLog, "stage=configuration", "cause=MINOS_MAINTENANCE_INSTRUCTION is required")
+	})
+}
+
 func TestRunBodyExportsSocketSafeTempDirectoryForLongRunName(t *testing.T) {
 	fixture := newRunBodyFixtureWithShortRoot(t).withRun(
 		"minos-run-BFJ-Concerns-Gizmo-pr85-123456789",
