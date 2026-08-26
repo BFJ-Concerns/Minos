@@ -1190,12 +1190,17 @@ func assertLifecycleEnsembleRecordLaunch(t *testing.T, name, marker string) {
 	for _, want := range []string{
 		`ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR"`,
 		`ENSEMBLE_RUN_RECORD=on`,
-		`ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/` + name + `"`,
 		`node /opt/minos/runtime/ensemble.mjs`,
 	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("%s launch omits %q:\n%s", name, want, block)
 		}
+	}
+	if strings.Contains(block, "ENSEMBLE_RUN_RECORD_DIR=") {
+		t.Fatalf("%s launch sets ENSEMBLE_RUN_RECORD_DIR instead of relying on the shared wrapper:\n%s", name, block)
+	}
+	if !strings.Contains(string(lifecycle), `ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/NAME"`) {
+		t.Fatal("shared lifecycle wrapper omits ENSEMBLE_RUN_RECORD_DIR")
 	}
 }
 

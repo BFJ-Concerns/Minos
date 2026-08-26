@@ -936,7 +936,7 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
-    /ENSEMBLE_STATUS_DIR="\$MINOS_RUN_DIR"[\s\S]*ENSEMBLE_RUN_RECORD=on[\s\S]*ENSEMBLE_RUN_RECORD_DIR="\$MINOS_RUN_DIR\/ensemble-records\/gate-repair"[\s\S]*rootcause\.js/,
+    /ENSEMBLE_STATUS_DIR="\$MINOS_RUN_DIR"[\s\S]*ENSEMBLE_RUN_RECORD=on[\s\S]*rootcause\.js/,
   );
   assert.match(initialGate, /when it is empty, no test command is\s+configured, so skip it/);
   assert.match(

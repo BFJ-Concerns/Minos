@@ -259,7 +259,6 @@ pull request and every grouped passage in this lifecycle is inert.
      > "$MINOS_RUN_DIR/setup-args.json"
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
    ENSEMBLE_RUN_RECORD=on \
-   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/setup" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
@@ -293,7 +292,6 @@ pull request and every grouped passage in this lifecycle is inert.
      > "$MINOS_RUN_DIR/setup-retry-args.json"
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
    ENSEMBLE_RUN_RECORD=on \
-   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/setup-retry" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/setup-retry-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/setup.js" \
@@ -488,7 +486,6 @@ pull request and every grouped passage in this lifecycle is inert.
      > "$MINOS_RUN_DIR/gate-repair-args.json"
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
    ENSEMBLE_RUN_RECORD=on \
-   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/gate-repair" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/gate-repair-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
@@ -693,6 +690,9 @@ pull request and every grouped passage in this lifecycle is inert.
      "${MINOS_SETUP_WORKSPACE%/*}/publish-on-exit" "$MINOS_RUN_DIR/NAME.json" \
      sh -c 'node /opt/minos/runtime/ensemble.mjs ... 2> "$MINOS_RUN_DIR/NAME.log"'
    ```
+
+   The shared wrapper is the sole setting for `ENSEMBLE_RUN_RECORD_DIR`:
+   substitute `NAME` with the stage name from the wrapped workflow block.
 
    `publish-on-exit` collects the command's stdout beside the result file
    and renames it into place only on a clean exit, so `NAME.json` is never
@@ -1192,7 +1192,6 @@ pull request and every grouped passage in this lifecycle is inert.
      > "$MINOS_RUN_DIR/brief-fix-args.json"
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
    ENSEMBLE_RUN_RECORD=on \
-   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/brief-fix" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/brief-fix-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/fix.js" \
@@ -1368,7 +1367,6 @@ pull request and every grouped passage in this lifecycle is inert.
      > "$MINOS_RUN_DIR/rootcause-args.json"
    ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
    ENSEMBLE_RUN_RECORD=on \
-   ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/finishing-rootcause" \
    node /opt/minos/runtime/ensemble.mjs \
      --json-args @"$MINOS_RUN_DIR/rootcause-args.json" \
      "${MINOS_REVIEW_WORKFLOW%/*}/rootcause.js" \
