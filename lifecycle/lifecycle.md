@@ -1181,8 +1181,7 @@ pull request and every grouped passage in this lifecycle is inert.
    that member's record and post each payload with
    `"$MINOS_BIN" forge --member OWNER REPO NUMBER review MEMBER_HEAD
    MEMBER_TARGET comment BODY_FILE COMMENTS_FILE`. Still do not start fix
-   agents. The rendered labels distinguish `Review finding`, `Out-of-scope
-   observation`, and `Review brief misconfiguration`. Publication is
+   agents. The rendered labels distinguish `Review finding`, `Out-of-scope observation`, and `Review brief misconfiguration`. Publication is
    presentation-class: its failure never fails the run.
 
    If `requestChangesReview` is present on a legacy verdict without `members`
