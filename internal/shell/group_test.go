@@ -18,6 +18,7 @@ import (
 )
 
 func TestGroupCandidateEnumerationSurfacesSameTargetSibling(t *testing.T) {
+	stubNoActiveRunUnits(t)
 	state := newForgejoFixtureState(t)
 	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
 	cfg, repo, primary := state.service(t)
@@ -99,6 +100,7 @@ func TestClaimGroupMemberRefusesBranchlessPullRequestBeforeClaiming(t *testing.T
 }
 
 func TestGroupCandidateEnumerationDoesNotGiveStructuralPrimaryOrdinarySiblings(t *testing.T) {
+	stubNoActiveRunUnits(t)
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
@@ -117,6 +119,7 @@ func TestGroupCandidateEnumerationDoesNotGiveStructuralPrimaryOrdinarySiblings(t
 }
 
 func TestGroupCandidateEnumerationExcludesEachAdmissionDeferral(t *testing.T) {
+	stubNoActiveRunUnits(t)
 	for _, test := range []struct {
 		name   string
 		mutate func(*forgejoFixtureState, map[string]any, ServiceConfig, Facts)
@@ -153,6 +156,18 @@ func TestGroupCandidateEnumerationExcludesEachAdmissionDeferral(t *testing.T) {
 				t.Fatalf("group candidates = %s, want excluded ineligible sibling", encoded)
 			}
 		})
+	}
+}
+
+func stubNoActiveRunUnits(t *testing.T) {
+	t.Helper()
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name != "systemctl" {
+			t.Fatalf("command = %s, want systemctl", name)
+		}
+		return nil, nil
 	}
 }
 
