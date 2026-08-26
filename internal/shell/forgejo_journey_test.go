@@ -816,6 +816,118 @@ func TestForgejoOperatorForceUsesSpawnRunAdmission(t *testing.T) {
 	}
 }
 
+func TestForgejoOperatorForcePreservesEligibilityDeferrals(t *testing.T) {
+	t.Run("work-in-progress branch", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["ref"] = "wip/rework"
+		})
+		cfg, _, facts := state.service(t)
+		writeOperatorFixtureConfig(t, cfg)
+		repoConfigPath := filepath.Join(cfg.Root, "repos", "subject.toml")
+		repoConfig, err := os.ReadFile(repoConfigPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repoConfig = bytes.Replace(repoConfig, []byte("repo = \"subject\"\n"), []byte("repo = \"subject\"\nwork-in-progress-branch-prefixes = [\"wip/\"]\n"), 1)
+		if err := os.WriteFile(repoConfigPath, repoConfig, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("work-in-progress pull request reached %s", name)
+			return nil, nil
+		}
+
+		var output bytes.Buffer
+		err = OperatorCommand(t.Context(), []string{"force", "--config", cfg.Root, facts.Forge, facts.Owner, facts.Repo, facts.PR}, &output)
+		if err == nil || !strings.Contains(err.Error(), `force refused: work-in-progress branch "wip/rework"`) {
+			t.Fatalf("force error = %v", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name       string
+		configure  func(*forgejoFixtureState)
+		wantReason string
+	}{
+		{
+			name: "open dependency",
+			configure: func(state *forgejoFixtureState) {
+				state.setDependencies([]map[string]any{{
+					"number": 7, "state": "open",
+					"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+				}})
+			},
+			wantReason: "force refused: open dependencies: minos-e2e-owner/prerequisite#7",
+		},
+		{
+			name: "unavailable dependency state",
+			configure: func(state *forgejoFixtureState) {
+				state.setDependenciesFailure(http.StatusServiceUnavailable)
+			},
+			wantReason: "force refused: dependency state unavailable: forge returned HTTP 503",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			test.configure(state)
+			cfg, _, facts := state.service(t)
+			writeOperatorFixtureConfig(t, cfg)
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				t.Fatalf("dependency-deferred pull request reached %s", name)
+				return nil, nil
+			}
+
+			var output bytes.Buffer
+			err := OperatorCommand(t.Context(), []string{"force", "--config", cfg.Root, facts.Forge, facts.Owner, facts.Repo, facts.PR}, &output)
+			if err == nil || !strings.Contains(err.Error(), test.wantReason) {
+				t.Fatalf("force error = %v", err)
+			}
+		})
+	}
+}
+
+func TestForgejoOperatorForceCarriesReleasedHoldContext(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	state.setStatuses([]map[string]any{heldFixtureStatus(7, state.server.URL, state.headSHA(), "earlier-target", currentEnvironmentStamp(cfg))})
+	state.setIssueComments([]map[string]any{{
+		"id": float64(9), "body": "Held at: finishing\nTarget tests fail.", "user": map[string]any{"login": "Minos"},
+	}})
+	writeOperatorFixtureConfig(t, cfg)
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+
+	var output bytes.Buffer
+	if err := OperatorCommand(t.Context(), []string{"force", "--config", cfg.Root, facts.Forge, facts.Owner, facts.Repo, facts.PR}, &output); err != nil {
+		t.Fatal(err)
+	}
+	environment := systemdEnvironment(t, systemdArgs)
+	for key, want := range map[string]string{
+		"MINOS_RELEASED_HOLD_HEAD":      state.headSHA(),
+		"MINOS_RELEASED_HOLD_STAGE":     "finishing",
+		"MINOS_RELEASED_HOLD_DIAGNOSIS": "Target tests fail.",
+	} {
+		if got := environment[key]; got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestForgejoCheckCausedVerdictSpending(t *testing.T) {
 	for _, test := range []struct {
 		name         string

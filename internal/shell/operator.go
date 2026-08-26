@@ -169,19 +169,32 @@ func operatorForceCommand(ctx context.Context, args []string, stdout io.Writer) 
 	if err != nil {
 		return err
 	}
-	_, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
+	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
 	if err != nil {
 		return err
 	}
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return fmt.Errorf("%s#%s is not an open, ready pull request", facts.RepoSlug(), facts.PR)
 	}
+	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
+		return fmt.Errorf("%s#%s: force refused: work-in-progress branch %q", facts.RepoSlug(), facts.PR, snapshot.HeadBranch)
+	}
+	if reason, deferred := dependencyDeferral(snapshot); deferred {
+		return fmt.Errorf("%s#%s: force refused: %s", facts.RepoSlug(), facts.PR, reason)
+	}
 	facts.HeadSHA, facts.BaseSHA, facts.BaseRef, facts.HeadRef = snapshot.HeadSHA, snapshot.TargetSHA, snapshot.TargetBranch, snapshot.HeadBranch
+	pullRequest, _ := strconv.ParseInt(facts.PR, 10, 64)
+	repository := forge.Repository{Owner: facts.Owner, Name: facts.Repo}
+	commits, commitsErr := adapter.PullRequestCommits(ctx, repository, pullRequest)
+	if commitsErr != nil {
+		commits = []forge.Commit{{SHA: snapshot.HeadSHA, Author: cfg.Service.BotLogin}}
+	}
+	admission := releasedHoldContext(ctx, adapter, snapshot, repository, pullRequest, cfg.Service.BotLogin, commits, currentEnvironmentStamp(cfg))
 	runClass := RunClassReview
 	if structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
 		runClass = RunClassMaintenance
 	}
-	result, err := SpawnRun(ctx, cfg, repo, facts, AdmissionContext{}, runClass)
+	result, err := SpawnRun(ctx, cfg, repo, facts, admission, runClass)
 	if err != nil {
 		return err
 	}
