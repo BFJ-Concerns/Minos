@@ -248,25 +248,44 @@ func TestSyncTargetNoOpCleanAndConflictJourneys(t *testing.T) {
 	})
 }
 
-func TestSyncMemberTargetChecksOutTheMemberInItsLinkedWorktreeAndKeepsPrimaryPin(t *testing.T) {
-	remote, primary := createSyncFixture(t, false, false)
-	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
-	target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
-	primaryPin := gitOutput(t, primary, "rev-parse", "HEAD")
-	runGit(t, primary, "update-ref", "refs/minos/target", primaryPin)
-	member := filepath.Join(t.TempDir(), "member")
-	runGit(t, primary, "worktree", "add", "--detach", member, target)
+func TestSyncMemberTargetReconcilesMovedTargetAndKeepsPrimaryPin(t *testing.T) {
+	for _, method := range []string{"merge", "rebase"} {
+		t.Run(method, func(t *testing.T) {
+			remote, primary := createSyncFixture(t, true, false)
+			installPushCounter(t, remote)
+			head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+			target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+			primaryPin := gitOutput(t, primary, "rev-parse", "HEAD")
+			runGit(t, primary, "update-ref", "refs/minos/target", primaryPin)
+			member := filepath.Join(t.TempDir(), "member")
+			runGit(t, primary, "worktree", "add", "--detach", member, target)
 
-	command := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "sync-member-target"), member, "2", "feature", "main", head, target, "merge")
-	output, err := command.CombinedOutput()
-	if err != nil || !strings.Contains(string(output), `"outcome":"unchanged"`) {
-		t.Fatalf("sync-member-target: %v\n%s", err, output)
-	}
-	if got := gitOutput(t, member, "rev-parse", "HEAD"); got != head {
-		t.Fatalf("member HEAD = %q, want checked-out member head %q", got, head)
-	}
-	if got := gitOutput(t, primary, "rev-parse", "refs/minos/target"); got != primaryPin {
-		t.Fatalf("primary target pin = %q, want unchanged %q", got, primaryPin)
+			command := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "sync-member-target"), member, "2", "feature", "main", head, target, method)
+			output, err := command.CombinedOutput()
+			if err != nil || !strings.Contains(string(output), `"outcome":"synced"`) ||
+				!strings.Contains(string(output), `"method":"`+method+`"`) {
+				t.Fatalf("sync-member-target: %v\n%s", err, output)
+			}
+			pushedHead := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+			if pushedHead == head {
+				t.Fatal("member target sync did not publish a new source head")
+			}
+			if got := gitOutput(t, member, "rev-parse", "HEAD"); got != pushedHead {
+				t.Fatalf("member HEAD = %q, want published head %q", got, pushedHead)
+			}
+			if got := readPushCount(t, remote); got != 1 {
+				t.Fatalf("pushes = %d, want one", got)
+			}
+			if err := exec.Command("git", "--git-dir", remote, "merge-base", "--is-ancestor", target, pushedHead).Run(); err != nil {
+				t.Fatal("published member source does not contain moved target")
+			}
+			if got := gitOutput(t, primary, "rev-parse", "HEAD"); got != primaryPin {
+				t.Fatalf("primary HEAD = %q, want unchanged %q", got, primaryPin)
+			}
+			if got := gitOutput(t, primary, "rev-parse", "refs/minos/target"); got != primaryPin {
+				t.Fatalf("primary target pin = %q, want unchanged %q", got, primaryPin)
+			}
+		})
 	}
 }
 
