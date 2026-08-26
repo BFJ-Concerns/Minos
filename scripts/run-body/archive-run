@@ -53,6 +53,19 @@ archive_ssh() {
 "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/collect-timings" \
   "$run_dir" "$run_dir/timing-record.json" || true
 
+# The breakdown belongs in the static sidecar, not on the status request that
+# reads it.  A malformed or unavailable transcript leaves the ordinary timing
+# record intact: archive delivery remains best-effort telemetry.
+if [ -r "$run_dir/timing-record.json" ]; then
+  analysed_record="$run_dir/timing-record.analysed.json"
+  if "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/analyse-archived-spans" \
+    "$run_dir/timing-record.json" "$run_dir" >"$analysed_record" 2>/dev/null; then
+    mv "$analysed_record" "$run_dir/timing-record.json"
+  else
+    rm -f "$analysed_record"
+  fi
+fi
+
 (
   cd "$run_dir" || exit 1
   find . -type f \( \

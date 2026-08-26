@@ -67,25 +67,6 @@ ls -1 2>/dev/null |
   done
 ")" || fail "the archive host could not be reached"
 
-# The sidecar is the existing finished-run consumer.  Enrich it only while
-# listing archived runs: no live command invokes this archive reader.
-scratch="$(mktemp -d)" || fail "could not create archive analysis directory"
-trap 'rm -rf "$scratch"' EXIT HUP INT TERM
-printf '%s\n' "$listing" | while IFS='	' read -r sidecar encoded; do
-  [ -n "$sidecar" ] || continue
-  archive="${sidecar%.timings.json}.tar.zst"
-  sidecar_file="$scratch/sidecar.json"
-  archive_dir="$scratch/archive"
-  rm -rf "$archive_dir"
-  mkdir "$archive_dir"
-  if printf '%s' "$encoded" | base64 -d >"$sidecar_file" 2>/dev/null &&
-    archive_ssh "cd '$MINOS_ARCHIVE_DESTINATION' && zstd -dc -- '$archive'" |
-      tar -xf - -C "$archive_dir" 2>/dev/null &&
-    analysed="$("$(CDPATH= cd -- "$(dirname "$0")" && pwd)/analyse-archived-spans" "$sidecar_file" "$archive_dir" 2>/dev/null)"; then
-    printf '%s\t%s\n' "$sidecar" "$(printf '%s' "$analysed" | base64 -w0)"
-  else
-    # A missing or unreadable archive must not hide an otherwise readable
-    # timing record from the finished-run projection.
-    printf '%s\t%s\n' "$sidecar" "$encoded"
-  fi
-done
+# The sidecars are already complete static records.  Do not fetch tarballs on
+# this request path: it shares the service process that receives webhooks.
+printf '%s\n' "$listing"

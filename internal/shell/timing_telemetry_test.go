@@ -270,10 +270,26 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 {"recordedAt":"2026-08-26T00:04:00Z","method":"turn/completed"}
 `)
 	writeArchivedSpanAgent(t, runDir, "claude", "claude-session-jsonl", `
+{"type":"custom-title","customTitle":"ensemble fixture"}
 {"timestamp":"2026-08-26T01:00:00Z","type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}}]}}
+{"type":"file-history-snapshot","snapshot":{}}
 {"timestamp":"2026-08-26T01:02:00Z","type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}
 {"timestamp":"2026-08-26T01:03:00Z","type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}
 `)
+	// A retry has its own archived transcript.  The projection must account for
+	// both attempts before calling the worker's breakdown parsed.
+	secondCodexTranscript := filepath.Join(runDir, "ensemble-records", "codex", "agents", "0001", "attempt-2.jsonl")
+	if err := os.WriteFile(secondCodexTranscript, []byte(`{"recordedAt":"2026-08-26T00:04:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-26T00:05:00Z","method":"item/started","params":{"item":{"id":"build-2","type":"commandExecution","command":"cargo build"}}}
+{"recordedAt":"2026-08-26T00:09:00Z","method":"item/completed","params":{"item":{"id":"build-2","type":"commandExecution"}}}
+{"recordedAt":"2026-08-26T00:10:00Z","method":"turn/completed"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secondCodexAgent := filepath.Join(runDir, "ensemble-records", "codex", "agents", "0001", "agent.json")
+	if err := os.WriteFile(secondCodexAgent, []byte(`{"id":1,"engine":"codex","label":"codex","phase":"Analyse","status":"complete","execution_ms":600000,"attempts":[{"attempt":1},{"attempt":2}],"transcripts":[{"path":"agents/0001/transcript.jsonl","source":"codex-app-server-events"},{"path":"agents/0001/attempt-2.jsonl","source":"codex-app-server-events"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	writeArchivedSpanAgent(t, runDir, "unknown", "future-session-jsonl", `{"at":"2026-08-26T02:00:00Z"}`)
 
 	recordPath := filepath.Join(runDir, "timing-record.json")
@@ -304,7 +320,7 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 	for _, worker := range analysed.Workers {
 		byRecord[worker.Record] = worker
 	}
-	assertArchivedSpan(t, byRecord["ensemble-records/codex"].SpanBreakdown, "codex-app-server-events", 120000, 0, 120000)
+	assertArchivedSpan(t, byRecord["ensemble-records/codex"].SpanBreakdown, "codex-app-server-events", 360000, 0, 240000)
 	assertArchivedSpan(t, byRecord["ensemble-records/claude"].SpanBreakdown, "claude-session-jsonl", 0, 120000, 60000)
 	unknown := byRecord["ensemble-records/unknown"].SpanBreakdown
 	if unknown == nil || unknown.Status != "unparseable" || unknown.Format == nil || *unknown.Format != "future-session-jsonl" {
@@ -312,7 +328,7 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 	}
 }
 
-func TestListRecentTimingsEnrichesTheArchivedTimingRecord(t *testing.T) {
+func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	root := t.TempDir()
 	archiveRoot := filepath.Join(root, "archive-root")
 	writeArchivedSpanAgent(t, archiveRoot, "codex", "codex-app-server-events", `
@@ -323,6 +339,13 @@ func TestListRecentTimingsEnrichesTheArchivedTimingRecord(t *testing.T) {
 	sidecar := filepath.Join(root, "sidecar.json")
 	if output, err := runCollectTimings(t, nil, archiveRoot, sidecar); err != nil {
 		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	analysed, err := runArchivedSpanAnalysis(t, sidecar, archiveRoot)
+	if err != nil {
+		t.Fatalf("analyse-archived-spans: %v\n%s", err, analysed)
+	}
+	if err := os.WriteFile(sidecar, analysed, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	destination := filepath.Join(root, "destination")
 	if err := os.Mkdir(destination, 0o755); err != nil {
@@ -343,7 +366,7 @@ func TestListRecentTimingsEnrichesTheArchivedTimingRecord(t *testing.T) {
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeScript(t, filepath.Join(bin, "ssh"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nexec sh -c \"$last\"\n")
+	writeScript(t, filepath.Join(bin, "ssh"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nprintf '%s\\n' \"$last\" >>\"$SSH_LOG\"\nexec sh -c \"$last\"\n")
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nif [ -n \"$last\" ] && [ -f \"$last\" ]; then exec cat \"$last\"; fi\nexec cat\n")
 	identity := filepath.Join(root, "identity")
 	knownHosts := filepath.Join(root, "known-hosts")
@@ -356,8 +379,9 @@ func TestListRecentTimingsEnrichesTheArchivedTimingRecord(t *testing.T) {
 	if err := os.WriteFile(config, []byte("MINOS_ARCHIVE_HOST=fixture\nMINOS_ARCHIVE_DESTINATION=\""+destination+"\"\nMINOS_ARCHIVE_IDENTITY_FILE=\""+identity+"\"\nMINOS_ARCHIVE_KNOWN_HOSTS=\""+knownHosts+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	sshLog := filepath.Join(root, "ssh.log")
 	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "list-recent-timings"), "20260826T000000Z", "1")
-	cmd.Env = append(os.Environ(), "MINOS_ARCHIVE_CONFIG="+config, "PATH="+bin+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "MINOS_ARCHIVE_CONFIG="+config, "SSH_LOG="+sshLog, "PATH="+bin+":"+os.Getenv("PATH"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("list-recent-timings: %v\n%s", err, output)
@@ -375,6 +399,13 @@ func TestListRecentTimingsEnrichesTheArchivedTimingRecord(t *testing.T) {
 		t.Fatalf("enriched sidecar does not parse: %v\n%s", err, decoded)
 	}
 	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 0, 120000, 60000)
+	log, err := os.ReadFile(sshLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(log), "zstd -dc") || strings.Contains(string(log), ".tar.zst") {
+		t.Fatalf("recent listing fetched an archive instead of its sidecar:\n%s", log)
+	}
 }
 
 func writeArchivedSpanAgent(t *testing.T, runDir, record, source, transcript string) {
@@ -384,6 +415,21 @@ func writeArchivedSpanAgent(t *testing.T, runDir, record, source, transcript str
 		t.Fatal(err)
 	}
 	agent := `{"id":1,"engine":"codex","label":"` + record + `","phase":"Analyse","status":"complete","execution_ms":240000,"attempts":[{"attempt":1,"started_at":"2026-08-26T00:00:00Z","ended_at":"2026-08-26T00:04:00Z"}],"transcripts":[{"path":"agents/0001/transcript.jsonl","source":"` + source + `"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(agent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), []byte(strings.TrimSpace(transcript)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeArchivedSpanAgentAt(t *testing.T, recordRoot, source, transcript string) {
+	t.Helper()
+	dir := filepath.Join(recordRoot, "agents", "0001")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := `{"id":1,"engine":"codex","label":"fixture","phase":"Analyse","status":"complete","execution_ms":240000,"attempts":[{"attempt":1,"started_at":"2026-08-26T00:00:00Z","ended_at":"2026-08-26T00:04:00Z"}],"transcripts":[{"path":"agents/0001/transcript.jsonl","source":"` + source + `"}]}`
 	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(agent), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -707,6 +753,12 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 		}
 		records[fixture.name] = filepath.ToSlash(relative)
 	}
+	writeArchivedSpanAgentAt(t, filepath.Join(runDir, records["record-a"]), "codex-app-server-events", `
+{"recordedAt":"2026-08-17T00:21:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-17T00:22:00Z","method":"item/started","params":{"item":{"id":"test","type":"commandExecution","command":"go test ./..."}}}
+{"recordedAt":"2026-08-17T00:24:00Z","method":"item/completed","params":{"item":{"id":"test","type":"commandExecution"}}}
+{"recordedAt":"2026-08-17T00:25:00Z","method":"turn/completed"}
+`)
 
 	bin := filepath.Join(root, "bin")
 	destination := filepath.Join(root, "destination")
@@ -790,6 +842,11 @@ exec sh -c "$last"
 	for _, want := range []string{records["record-a"], records["gate-repair"], records["fix"]} {
 		if !workerRecords[want] {
 			t.Fatalf("timing record omits genuine worker record %q: %#v", want, record.Workers)
+		}
+	}
+	for _, worker := range record.Workers {
+		if worker.Record == records["record-a"] {
+			assertArchivedSpan(t, worker.SpanBreakdown, "codex-app-server-events", 0, 120000, 120000)
 		}
 	}
 	archiveListing, err := exec.Command("tar", "-tf", tarballs[0]).CombinedOutput()

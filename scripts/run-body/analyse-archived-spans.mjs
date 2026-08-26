@@ -33,7 +33,10 @@ function addIntervals(entries, categoryAt, format) {
   let previous = null;
   for (const entry of entries) {
     const now = ms(entry.at);
-    if (now === null) return unparseable(format, 'missing or invalid timestamp');
+    // Claude session files contain metadata and UI events without timestamps.
+    // They carry no interval boundary, so retain the surrounding timed events
+    // rather than refusing an otherwise readable archived session.
+    if (now === null) continue;
     if (previous !== null && now >= previous.at) result[previous.category] += now - previous.at;
     previous = { at: now, category: categoryAt(entry) };
   }
@@ -80,17 +83,36 @@ function agentFiles(directory) {
   }
   return output;
 }
+function analyseTranscripts(transcripts, recordRoot) {
+  const archived = transcripts.filter(item => item && item.source && item.path);
+  if (archived.length === 0) return unparseable(null, 'no archived transcript');
+  const source = archived[0].source;
+  if (!['codex-app-server-events', 'claude-session-jsonl'].includes(source)) {
+    return unparseable(source, 'unsupported transcript format');
+  }
+  if (archived.some(item => item.source !== source)) {
+    return unparseable(null, 'mixed transcript formats');
+  }
+  const total = empty(source);
+  for (const transcript of archived) {
+    const transcriptPath = path.join(recordRoot, transcript.path);
+    const span = source === 'codex-app-server-events' ? codex(transcriptPath) : claude(transcriptPath);
+    // A parsed total must cover every recorded attempt.  Refusing a malformed
+    // attempt is safer than presenting only the successful-looking remainder.
+    if (span.status !== 'parsed') return span;
+    total.build_ms += span.build_ms;
+    total.test_ms += span.test_ms;
+    total.reasoning_ms += span.reasoning_ms;
+  }
+  return total;
+}
+const archivedAgents = agentFiles(archiveRoot);
 for (const worker of record.workers || []) {
-  const agent = agentFiles(archiveRoot).find(file => path.dirname(path.dirname(path.dirname(file))).endsWith(worker.record));
+  const agent = archivedAgents.find(file => path.dirname(path.dirname(path.dirname(file))).endsWith(worker.record));
   if (!agent) continue;
   let detail;
   try { detail = JSON.parse(fs.readFileSync(agent, 'utf8')); } catch { continue; }
-  const transcript = (detail.transcripts || []).find(item => item && item.source);
-  if (!transcript) { worker.span_breakdown = unparseable(null, 'no archived transcript'); continue; }
   const recordRoot = path.dirname(path.dirname(path.dirname(agent)));
-  const transcriptPath = path.join(recordRoot, transcript.path);
-  if (transcript.source === 'codex-app-server-events') worker.span_breakdown = codex(transcriptPath);
-  else if (transcript.source === 'claude-session-jsonl') worker.span_breakdown = claude(transcriptPath);
-  else worker.span_breakdown = unparseable(transcript.source, 'unsupported transcript format');
+  worker.span_breakdown = analyseTranscripts(detail.transcripts || [], recordRoot);
 }
 process.stdout.write(JSON.stringify(record));
