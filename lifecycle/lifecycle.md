@@ -1173,8 +1173,9 @@ pull request and every grouped passage in this lifecycle is inert.
    threshold (marked `kind: "fix-attempts-failed"`): failed repairs never
    promote a sub-threshold finding into a request-changes hold. Write the
    `overflow` array unchanged to a publication file. Append the current complete
-   adjudicated verdict's `outOfScopeObservations`, each with
-   `kind: "out-of-scope-observation"`, and its `misconfigurations`, each with
+   adjudicated verdict's `outOfScopeObservations`, each with its originating
+   `member` preserved and `kind: "out-of-scope-observation"`, and its
+   `misconfigurations`, each with its originating `member` preserved and
    `kind: "review-brief-misconfiguration"`, `brief` copied from `brief`,
    `reason` copied from `reason`, and `misconfigurationKind` copied from its
    original `kind`. These are distinct non-finding channels: do not add them to
@@ -1269,7 +1270,9 @@ pull request and every grouped passage in this lifecycle is inert.
    are also terminal triage material. Map them into a publication file —
    observations as `kind: "out-of-scope-observation"`; misconfigurations as
    `kind: "review-brief-misconfiguration"` with `brief`, `reason`, and
-   `misconfigurationKind` preserved — then invoke the member-aware
+   `misconfigurationKind` preserved. Preserve each entry's originating
+   `member` (the brief workflow attributes this primary-workspace stage to
+   `primary`) — then invoke the member-aware
    `publish-overflow.mjs` block from step 6, including `--members
    "$MINOS_RUN_DIR/members.json"` whenever that record exists and the same
    per-member handling of repository-grounded publications. Do not mix either

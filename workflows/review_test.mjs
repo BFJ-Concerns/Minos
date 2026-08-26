@@ -260,7 +260,11 @@ test("a two-member input keeps each finding attributed through verification and 
     specialist: (label) => specialistResult([finding({
       member: label.includes("security") ? "sibling" : "primary",
       title: label.includes("security") ? "sibling finding" : "primary finding",
-    })]),
+    })], undefined, [observation({ title: `${label} observation` })]),
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      outOfScopeObservations: [observation({ member: "sibling", title: `${label} observation` })],
+    }),
   }));
   assert.deepEqual(result.members, members.members);
   assert.deepEqual(
@@ -271,6 +275,14 @@ test("a two-member input keeps each finding attributed through verification and 
     ],
   );
   assert.match(calls.find((call) => call.opts.label === "exploration").prompt, /sibling diff/);
+  assert.deepEqual(
+    result.outOfScopeObservations.map(({ member, title }) => ({ member, title })),
+    [
+      { member: "primary", title: "specialist-1-correctness-gpt observation" },
+      { member: "sibling", title: "specialist-2-security-gpt observation" },
+      { member: "sibling", title: "verify-1-claude observation" },
+    ],
+  );
 
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
@@ -482,6 +494,7 @@ test("an out-of-scope observation leaves the specialist without entering finding
   assert.deepEqual(result.outOfScopeObservations, [{
     id: "specialist-1-correctness-gpt:observation:1",
     source: "correctness concern logic",
+    member: "primary",
     title: "pre-existing defect",
     path: "internal/legacy.go",
     line: 9,
@@ -532,12 +545,13 @@ test("a verifier observation reaches the result alongside its verdicts", async (
   const { result, calls } = await runScript(ARGS, responder({
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      outOfScopeObservations: [observation({ title: "residual defect the verdict cannot carry" })],
+      outOfScopeObservations: [observation({ member: "primary", title: "residual defect the verdict cannot carry" })],
     }),
   }));
   assert.deepEqual(result.outOfScopeObservations, [{
     id: "verify-1-claude:observation:1",
     source: "verification",
+    member: "primary",
     title: "residual defect the verdict cannot carry",
     path: "internal/legacy.go",
     line: 9,
@@ -549,7 +563,7 @@ test("a verifier observation reaches the result alongside its verdicts", async (
   assert.ok(!schema.required.includes("outOfScopeObservations"));
   assert.deepEqual(
     schema.properties.outOfScopeObservations.items.required,
-    ["title", "path", "line", "explanation"],
+    ["member", "title", "path", "line", "explanation"],
   );
 });
 

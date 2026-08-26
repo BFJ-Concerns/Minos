@@ -155,8 +155,9 @@ function dispositionsFrom(briefs, incomplete) {
   return { ran, skipped };
 }
 
-function misconfigurationsFrom(entries, incomplete) {
+function misconfigurationsFrom(entries, incomplete, memberIds) {
   const misconfigurations = [];
+  const effectiveMemberIds = memberIds || new Set(["primary"]);
   for (const entry of entries) {
     if (
       !entry || typeof entry !== "object" ||
@@ -168,9 +169,17 @@ function misconfigurationsFrom(entries, incomplete) {
       incomplete.push("envelope contains a malformed brief misconfiguration");
       continue;
     }
+    const member = typeof entry.member === "string" && entry.member !== ""
+      ? entry.member
+      : effectiveMemberIds.size === 1 ? [...effectiveMemberIds][0] : null;
+    if (!member || !effectiveMemberIds.has(member)) {
+      incomplete.push("envelope brief misconfiguration has absent or unknown member attribution");
+      continue;
+    }
     misconfigurations.push({
       brief: entry.brief,
       title: entry.title,
+      member,
       kind: entry.kind,
       reason: entry.reason,
     });
@@ -385,6 +394,7 @@ export async function adjudicate({ envelope, recordDir }) {
   const misconfigurations = misconfigurationsFrom(
     Array.isArray(envelope.misconfigurations) ? envelope.misconfigurations : [],
     incomplete,
+    memberIds,
   );
   const complete = incomplete.length === 0;
   const confirmedFindings = complete ? adjudicated.filter((finding) => finding.verdict === "confirmed") : [];

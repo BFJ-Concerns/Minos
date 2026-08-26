@@ -219,6 +219,8 @@ test("member overflow filing retains each member's source attribution", () => {
   const { orientationPath, findingsPath, membersPath } = fixture(annexeOrientation(annexe.clone), [
     finding("first-only overflow", { member: "first" }),
     finding("second-only overflow", { member: "second", line: 15 }),
+    observation("first-only observation", { member: "first" }),
+    misconfiguration("Second-only misconfiguration", { member: "second" }),
   ], members);
 
   const result = run([orientationPath, findingsPath, "--members", membersPath]);
@@ -230,6 +232,10 @@ test("member overflow filing retains each member's source attribution", () => {
   assert.match(second, /Filed by Minos from second-owner\/second-repo#22, 2026-08-17/);
   assert.doesNotMatch(first, /second-owner|second-repo#22/);
   assert.doesNotMatch(second, /first-owner|first-repo#11/);
+  const observed = contents.match(/- Out-of-scope observation: first-only observation[^\n]+/)?.[0] || "";
+  const misconfigured = contents.match(/- Review brief misconfiguration: Second-only misconfiguration[^\n]+/)?.[0] || "";
+  assert.match(observed, /Filed by Minos from first-owner\/first-repo#11, 2026-08-17/);
+  assert.match(misconfigured, /Filed by Minos from second-owner\/second-repo#22, 2026-08-17/);
 });
 
 test("member-attributed overflow refuses when the members record is absent", () => {
