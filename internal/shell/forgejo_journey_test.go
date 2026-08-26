@@ -604,6 +604,13 @@ func TestForgejoOperatorListsCurrentHoldsAndBlockedVerdicts(t *testing.T) {
 			}},
 		},
 		{pullRequest: state.operatorPullRequest(3, "ordinary-head")},
+		{
+			pullRequest: state.operatorPullRequest(4, "released-hold-head"),
+			statuses:    []map[string]any{heldFixtureStatus(4, state.server.URL, "released-hold-head", "superseded-target", currentEnvironmentStamp(cfg))},
+			comments: []map[string]any{{
+				"id": float64(4), "body": "Held at: review\nThe target changed after this hold.", "user": map[string]any{"login": "Minos"},
+			}},
+		},
 	})
 
 	var output bytes.Buffer
@@ -646,6 +653,31 @@ func TestForgejoOperatorListsCurrentHoldsAndBlockedVerdicts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(listed, want) {
 		t.Fatalf("CLI held pull requests = %#v, want %#v", listed, want)
+	}
+}
+
+func TestForgejoOperatorDoesNotListReleasedHold(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, _ := state.service(t)
+	writeOperatorFixtureConfig(t, cfg)
+	state.setOperatorPullRequests([]operatorFixturePullRequest{{
+		pullRequest: state.operatorPullRequest(1, "released-hold-head"),
+		statuses:    []map[string]any{heldFixtureStatus(1, state.server.URL, "released-hold-head", "superseded-target", currentEnvironmentStamp(cfg))},
+		comments: []map[string]any{{
+			"id": float64(1), "body": "Held at: review\nThe target changed after this hold.", "user": map[string]any{"login": "Minos"},
+		}},
+	}})
+
+	var output bytes.Buffer
+	if err := OperatorCommand(t.Context(), []string{"held", "--config", cfg.Root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var listed []HeldPullRequest
+	if err := json.Unmarshal(output.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(listed, []HeldPullRequest{}) {
+		t.Fatalf("released hold listed = %#v, want empty", listed)
 	}
 }
 

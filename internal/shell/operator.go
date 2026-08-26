@@ -127,21 +127,15 @@ func heldPullRequest(ctx context.Context, adapter *forge.Adapter, botLogin, envS
 }
 
 func latestHeldComment(comments []forge.IssueComment, botLogin string) (string, string) {
-	var latest forge.IssueComment
-	found := false
-	for _, comment := range comments {
-		if comment.User == botLogin && (!found || comment.ID > latest.ID) {
-			latest, found = comment, true
-		}
-	}
+	latest, found := latestOwnedComment(comments, botLogin)
 	if !found {
 		return "", ""
 	}
-	stageLine, reason, found := strings.Cut(strings.ReplaceAll(latest.Body, "\r\n", "\n"), "\n")
-	if !found || !strings.HasPrefix(stageLine, "Held at: ") {
+	stage, reason, found := heldCommentFields(latest.Body)
+	if !found {
 		return "", ""
 	}
-	return strings.TrimPrefix(stageLine, "Held at: "), strings.TrimSpace(reason)
+	return stage, reason
 }
 
 func blockedVerdict(review forge.Review, snapshot forge.Snapshot) (string, string, bool) {
