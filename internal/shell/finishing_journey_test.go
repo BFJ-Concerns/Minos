@@ -253,6 +253,7 @@ func TestSyncMemberTargetReconcilesMovedTargetAndKeepsPrimaryPin(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			remote, primary := createSyncFixture(t, true, false)
 			installPushCounter(t, remote)
+			commonDir := installMemberPushGuard(t, primary)
 			head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
 			target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
 			primaryPin := gitOutput(t, primary, "rev-parse", "HEAD")
@@ -260,8 +261,7 @@ func TestSyncMemberTargetReconcilesMovedTargetAndKeepsPrimaryPin(t *testing.T) {
 			member := filepath.Join(t.TempDir(), "member")
 			runGit(t, primary, "worktree", "add", "--detach", member, target)
 
-			command := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "sync-member-target"), member, "2", "feature", "main", head, target, method)
-			output, err := command.CombinedOutput()
+			output, err := runSyncMemberTarget(member, head, target, method)
 			if err != nil || !strings.Contains(string(output), `"outcome":"synced"`) ||
 				!strings.Contains(string(output), `"method":"`+method+`"`) {
 				t.Fatalf("sync-member-target: %v\n%s", err, output)
@@ -276,6 +276,19 @@ func TestSyncMemberTargetReconcilesMovedTargetAndKeepsPrimaryPin(t *testing.T) {
 			if got := readPushCount(t, remote); got != 1 {
 				t.Fatalf("pushes = %d, want one", got)
 			}
+			assertContainsFile(t, filepath.Join(commonDir, "minos-protected-ref.member-2"), "refs/heads/feature")
+			if err := os.WriteFile(filepath.Join(member, "unpermitted.txt"), []byte("unpermitted\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, member, "add", "unpermitted.txt")
+			runGit(t, member, "commit", "-m", "unpermitted member update")
+			push := exec.Command("git", "-C", member, "push", "origin", "HEAD:refs/heads/feature")
+			if output, err := push.CombinedOutput(); err == nil || !strings.Contains(string(output), "controlled branch updates") {
+				t.Fatalf("unpermitted member push = %v\n%s", err, output)
+			}
+			if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != pushedHead {
+				t.Fatalf("remote member branch moved without a permit: got %q, want %q", got, pushedHead)
+			}
 			if err := exec.Command("git", "--git-dir", remote, "merge-base", "--is-ancestor", target, pushedHead).Run(); err != nil {
 				t.Fatal("published member source does not contain moved target")
 			}
@@ -287,6 +300,92 @@ func TestSyncMemberTargetReconcilesMovedTargetAndKeepsPrimaryPin(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSyncMemberTargetConflictCanBeResolvedAndResumed(t *testing.T) {
+	remote, primary := createSyncFixture(t, true, true)
+	installPushCounter(t, remote)
+	commonDir := installMemberPushGuard(t, primary)
+	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+	target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+	member := filepath.Join(t.TempDir(), "member")
+	runGit(t, primary, "worktree", "add", "--detach", member, target)
+
+	output, err := runSyncMemberTarget(member, head, target, "merge")
+	if err == nil || !strings.Contains(string(output), `"outcome":"conflict"`) {
+		t.Fatalf("first member sync = %v\n%s", err, output)
+	}
+	assertContainsFile(t, filepath.Join(commonDir, "minos-member-sync-2"), head)
+	output, err = runSyncMemberTarget(member, head, target, "merge")
+	if err == nil || !strings.Contains(string(output), "finish the current merge or rebase") {
+		t.Fatalf("unresolved member sync = %v\n%s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(member, "shared.txt"), []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, member, "add", "shared.txt")
+	runGit(t, member, "commit", "-m", "Merge target branch for grouped member")
+	resolved := gitOutput(t, member, "rev-parse", "HEAD")
+	output, err = runSyncMemberTarget(member, head, target, "merge")
+	if err != nil || !strings.Contains(string(output), `"outcome":"synced"`) {
+		t.Fatalf("resumed member sync = %v\n%s", err, output)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != resolved {
+		t.Fatalf("remote member branch = %q, want resolved head %q", got, resolved)
+	}
+	if got := readPushCount(t, remote); got != 1 {
+		t.Fatalf("pushes = %d, want one", got)
+	}
+	if _, err := os.Stat(filepath.Join(commonDir, "minos-member-sync-2")); !os.IsNotExist(err) {
+		t.Fatalf("completed member reconciliation record remains: %v", err)
+	}
+}
+
+func TestSyncMemberTargetConcurrentSourceMoveLosesPushLease(t *testing.T) {
+	remote, primary := createSyncFixture(t, true, false)
+	installMemberPushGuard(t, primary)
+	head := gitOutput(t, remote, "rev-parse", "refs/heads/feature")
+	target := gitOutput(t, remote, "rev-parse", "refs/heads/main")
+	member := filepath.Join(t.TempDir(), "member")
+	runGit(t, primary, "worktree", "add", "--detach", member, target)
+	guard, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "pre-push-guard"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commonDir := gitOutput(t, primary, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	hook := "#!/bin/sh\nset -eu\ngit --git-dir=\"" + remote + "\" update-ref refs/heads/feature \"" + target + "\"\nexec \"" + guard + "\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(commonDir, "hooks", "pre-push"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runSyncMemberTarget(member, head, target, "merge")
+	if err == nil {
+		t.Fatalf("member sync unexpectedly overwrote the concurrent source move:\n%s", output)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "refs/heads/feature"); got != target {
+		t.Fatalf("remote member branch = %q, want concurrent value %q", got, target)
+	}
+}
+
+func installMemberPushGuard(t *testing.T, workspace string) string {
+	t.Helper()
+	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	guard, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", "pre-push-guard"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commonDir, "hooks", "pre-push"), guard, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commonDir, "minos-protected-ref"), []byte("refs/heads/primary\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return commonDir
+}
+
+func runSyncMemberTarget(workspace, head, target, method string) ([]byte, error) {
+	command := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "sync-member-target"), workspace, "2", "feature", "main", head, target, method)
+	return command.CombinedOutput()
 }
 
 type movedTargetSyncFacts struct {
