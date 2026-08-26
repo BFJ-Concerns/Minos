@@ -308,7 +308,7 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 		t.Fatalf("the timing collector must expose only its existing arm wall data before archive analysis: %+v", baseline.Workers)
 	}
 
-	output, err := runArchivedSpanAnalysis(t, recordPath, runDir)
+	output, err := runArchivedSpanAnalysis(t, recordPath, filepath.Join(runDir, "ensemble-records"))
 	if err != nil {
 		t.Fatalf("analyse-archived-spans: %v\n%s", err, output)
 	}
@@ -328,6 +328,54 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 	}
 }
 
+func TestArchivedSpanAnalysisScopesToEnsembleRecordsAndReportsBrokenAgentRecords(t *testing.T) {
+	runDir := t.TempDir()
+	writeArchivedSpanAgent(t, runDir, "valid", "codex-app-server-events", `
+{"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-26T00:01:00Z","method":"turn/completed"}
+`)
+	broken := filepath.Join(runDir, "ensemble-records", "broken", "agents", "0001", "agent.json")
+	if err := os.MkdirAll(filepath.Dir(broken), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(broken, []byte("not JSON\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A cloned repository may itself contain an agent-shaped file.  It is not
+	// an Ensemble record and must never be considered by this wind-down pass.
+	writeArchivedSpanAgentAt(t, filepath.Join(runDir, "repository"), "codex-app-server-events", `
+{"recordedAt":"2026-08-26T00:00:00Z","method":"turn/start"}
+{"recordedAt":"2026-08-26T00:01:00Z","method":"turn/completed"}
+`)
+	record := timingRecord{Workers: []timingWorker{
+		{Record: "ensemble-records/valid"},
+		{Record: "ensemble-records/broken"},
+		{Record: "repository"},
+	}}
+	recordPath := filepath.Join(runDir, "timing-record.json")
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recordPath, encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runArchivedSpanAnalysis(t, recordPath, filepath.Join(runDir, "ensemble-records"))
+	if err != nil {
+		t.Fatalf("analyse-archived-spans: %v\n%s", err, output)
+	}
+	if err := json.Unmarshal(output, &record); err != nil {
+		t.Fatalf("analysis does not produce a timing record: %v\n%s", err, output)
+	}
+	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 0, 0, 60000)
+	if span := record.Workers[1].SpanBreakdown; span == nil || span.Status != "unparseable" || span.Reason != "unreadable or invalid agent record" {
+		t.Fatalf("broken agent record was not reported as unparseable: %+v", span)
+	}
+	if record.Workers[2].SpanBreakdown != nil {
+		t.Fatalf("repository artefact was scanned as an Ensemble record: %+v", record.Workers[2].SpanBreakdown)
+	}
+}
+
 func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	root := t.TempDir()
 	archiveRoot := filepath.Join(root, "archive-root")
@@ -340,7 +388,7 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	if output, err := runCollectTimings(t, nil, archiveRoot, sidecar); err != nil {
 		t.Fatalf("collect-timings: %v\n%s", err, output)
 	}
-	analysed, err := runArchivedSpanAnalysis(t, sidecar, archiveRoot)
+	analysed, err := runArchivedSpanAnalysis(t, sidecar, filepath.Join(archiveRoot, "ensemble-records"))
 	if err != nil {
 		t.Fatalf("analyse-archived-spans: %v\n%s", err, analysed)
 	}
@@ -410,17 +458,7 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 
 func writeArchivedSpanAgent(t *testing.T, runDir, record, source, transcript string) {
 	t.Helper()
-	dir := filepath.Join(runDir, "ensemble-records", record, "agents", "0001")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	agent := `{"id":1,"engine":"codex","label":"` + record + `","phase":"Analyse","status":"complete","execution_ms":240000,"attempts":[{"attempt":1,"started_at":"2026-08-26T00:00:00Z","ended_at":"2026-08-26T00:04:00Z"}],"transcripts":[{"path":"agents/0001/transcript.jsonl","source":"` + source + `"}]}`
-	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(agent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), []byte(strings.TrimSpace(transcript)+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeArchivedSpanAgentAt(t, filepath.Join(runDir, "ensemble-records", record), source, transcript)
 }
 
 func writeArchivedSpanAgentAt(t *testing.T, recordRoot, source, transcript string) {

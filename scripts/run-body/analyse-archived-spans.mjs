@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-// Project an archived Ensemble transcript onto the timing record.  This is
-// deliberately an archive-side tool: live run-body never invokes it.
+// Project retained Ensemble transcripts onto the timing record.
 import fs from 'node:fs';
 import path from 'node:path';
 
 if (process.argv.length !== 4) {
-  console.error('usage: analyse-archived-spans TIMING_RECORD ARCHIVE_DIRECTORY');
+  console.error('usage: analyse-archived-spans TIMING_RECORD ENSEMBLE_RECORDS_DIRECTORY');
   process.exit(2);
 }
 
@@ -74,14 +73,20 @@ function claude(file) {
     return category;
   }, 'claude-session-jsonl');
 }
-function agentFiles(directory) {
+function agentFiles(directory, unreadableDirectories = []) {
+  let entries;
+  try { entries = fs.readdirSync(directory, { withFileTypes: true }); }
+  catch {
+    unreadableDirectories.push(directory);
+    return { files: [], unreadableDirectories };
+  }
   const output = [];
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+  for (const entry of entries) {
     const candidate = path.join(directory, entry.name);
-    if (entry.isDirectory()) output.push(...agentFiles(candidate));
+    if (entry.isDirectory()) output.push(...agentFiles(candidate, unreadableDirectories).files);
     else if (entry.name === 'agent.json') output.push(candidate);
   }
-  return output;
+  return { files: output, unreadableDirectories };
 }
 function analyseTranscripts(transcripts, recordRoot) {
   const archived = transcripts.filter(item => item && item.source && item.path);
@@ -108,11 +113,21 @@ function analyseTranscripts(transcripts, recordRoot) {
 }
 const archivedAgents = agentFiles(archiveRoot);
 for (const worker of record.workers || []) {
-  const agent = archivedAgents.find(file => path.dirname(path.dirname(path.dirname(file))).endsWith(worker.record));
+  const recordPath = worker.record && worker.record.replace(/^ensemble-records\//, '');
+  if (!recordPath) continue;
+  const recordRoot = path.join(archiveRoot, recordPath);
+  if (archivedAgents.unreadableDirectories.some(directory => directory === recordRoot || directory.startsWith(recordRoot + path.sep))) {
+    worker.span_breakdown = unparseable(null, 'unreadable ensemble record');
+    continue;
+  }
+  const agent = archivedAgents.files.find(file => path.dirname(path.dirname(path.dirname(file))) === recordRoot);
   if (!agent) continue;
   let detail;
-  try { detail = JSON.parse(fs.readFileSync(agent, 'utf8')); } catch { continue; }
-  const recordRoot = path.dirname(path.dirname(path.dirname(agent)));
+  try { detail = JSON.parse(fs.readFileSync(agent, 'utf8')); }
+  catch {
+    worker.span_breakdown = unparseable(null, 'unreadable or invalid agent record');
+    continue;
+  }
   worker.span_breakdown = analyseTranscripts(detail.transcripts || [], recordRoot);
 }
 process.stdout.write(JSON.stringify(record));

@@ -44,15 +44,11 @@ case "$cutoff$limit" in
   *[!0-9A-Za-z]*) fail "cutoff and limit must be alphanumeric" ;;
 esac
 
-archive_ssh() {
 ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
   -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \
   -o IdentitiesOnly=yes -o "IdentityFile=$MINOS_ARCHIVE_IDENTITY_FILE" \
   -o "UserKnownHostsFile=$MINOS_ARCHIVE_KNOWN_HOSTS" \
-"$MINOS_ARCHIVE_HOST" "$1"
-}
-
-listing="$(archive_ssh "
+  "$MINOS_ARCHIVE_HOST" "
 cd '$MINOS_ARCHIVE_DESTINATION' || exit 1
 ls -1 2>/dev/null |
   grep -e '\.timings\.json\$' |
@@ -65,8 +61,4 @@ ls -1 2>/dev/null |
     base64 -w0 <\"\$sidecar\" 2>/dev/null || base64 <\"\$sidecar\" | tr -d '\n'
     printf '\n'
   done
-")" || fail "the archive host could not be reached"
-
-# The sidecars are already complete static records.  Do not fetch tarballs on
-# this request path: it shares the service process that receives webhooks.
-printf '%s\n' "$listing"
+" || fail "the archive host could not be reached"
