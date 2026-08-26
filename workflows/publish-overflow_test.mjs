@@ -26,6 +26,28 @@ function finding(title, overrides = {}) {
   };
 }
 
+function observation(title, overrides = {}) {
+  return {
+    kind: "out-of-scope-observation",
+    title,
+    path: "internal/legacy.go",
+    line: 27,
+    explanation: `${title} is outside this pull request's declared scope`,
+    ...overrides,
+  };
+}
+
+function misconfiguration(title, overrides = {}) {
+  return {
+    kind: "review-brief-misconfiguration",
+    misconfigurationKind: "misconfigured-scope",
+    title,
+    brief: ".review/missing-scope.md",
+    reason: `${title} names a scope that is absent from the repository`,
+    ...overrides,
+  };
+}
+
 function annexeOrientation(annexe, date = "2026-08-17") {
   return {
     grounding: "annexe",
@@ -84,7 +106,7 @@ test("repository grounding returns one pull-request payload", () => {
   assert.equal(result.status, 0);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.destination, "pull-request");
-  assert.equal(payload.body, "Additional code findings for project triage.");
+  assert.equal(payload.body, "Additional review material for project triage.");
   assert.equal(payload.comments.length, 2);
   assert.deepEqual(
     payload.comments.map((comment) => ({ path: comment.path, line: comment.line })),
@@ -93,8 +115,35 @@ test("repository grounding returns one pull-request payload", () => {
       { path: "scripts/run-body/archive-run", line: 3 },
     ],
   );
-  assert.match(payload.comments[0].body, /\*\*stale cursor\*\*/);
+  assert.match(payload.comments[0].body, /\*\*Review finding: stale cursor\*\*/);
   assert.match(payload.comments[0].body, /Severity: Low\. Confidence: 88\./);
+});
+
+test("repository grounding labels findings, observations, and brief misconfigurations distinctly", () => {
+  const { orientationPath, findingsPath } = fixture({ grounding: "repository" }, [
+    finding("stale cursor"),
+    observation("legacy state leak"),
+    misconfiguration("Missing scope"),
+  ]);
+
+  const result = run([orientationPath, findingsPath]);
+  assert.equal(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.destination, "pull-request");
+  assert.equal(payload.comments.length, 3);
+  assert.match(payload.comments[0].body, /^\*\*Review finding: stale cursor\*\*/);
+  assert.match(payload.comments[1].body, /^\*\*Out-of-scope observation: legacy state leak\*\*/);
+  assert.match(payload.comments[2].body, /^\*\*Review brief misconfiguration: Missing scope\*\*/);
+  assert.deepEqual(
+    payload.comments.map(({ path, line }) => ({ path, line })),
+    [
+      { path: "internal/example.go", line: 14 },
+      { path: "internal/legacy.go", line: 27 },
+      { path: ".review/missing-scope.md", line: 1 },
+    ],
+  );
+  assert.doesNotMatch(payload.comments[1].body, /Review finding|Review brief misconfiguration/);
+  assert.doesNotMatch(payload.comments[2].body, /Review finding|Out-of-scope observation/);
 });
 
 test("unknown grounding and a missing annexe path both refuse", () => {
@@ -132,6 +181,31 @@ test("annexe grounding appends marked entries, commits, and pushes to origin", (
   assert.match(pushed, /record review findings for triage/);
   const pushedTree = annexe.git(annexe.origin, "show", "main:ISSUES.md");
   assert.equal(pushedTree, contents);
+});
+
+test("annexe grounding files findings, observations, and brief misconfigurations under their own labels", () => {
+  const annexe = annexeFixture();
+  const { orientationPath, findingsPath } = fixture(annexeOrientation(annexe.clone), [
+    finding("stale cursor"),
+    observation("legacy state leak"),
+    misconfiguration("Missing scope"),
+  ]);
+
+  const result = run([orientationPath, findingsPath]);
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), { destination: "annexe", written: 3, pushed: true });
+  const contents = annexe.git(annexe.origin, "show", "main:ISSUES.md");
+  assert.match(contents, /- Review finding: stale cursor \(Low, internal\/example\.go:14\)/);
+  assert.match(contents, /- Out-of-scope observation: legacy state leak \(out of scope, internal\/legacy\.go:27\)/);
+  assert.match(contents, /- Review brief misconfiguration: Missing scope \(misconfigured-scope, \.review\/missing-scope\.md\)/);
+  assert.doesNotMatch(
+    contents.match(/- Out-of-scope observation: [^\n]+/)?.[0] || "",
+    /Review finding|Review brief misconfiguration/,
+  );
+  assert.doesNotMatch(
+    contents.match(/- Review brief misconfiguration: [^\n]+/)?.[0] || "",
+    /Review finding|Out-of-scope observation/,
+  );
 });
 
 test("an entry already carrying its marker is not rewritten, even retitled in case or spacing", () => {

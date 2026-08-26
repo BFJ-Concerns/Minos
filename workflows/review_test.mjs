@@ -904,7 +904,11 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.match(lifecycle, /review-inputs\.mjs[\s\S]*--loop-record "\$MINOS_LOOP_RECORD"/);
   assert.match(
     lifecycle,
-    /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*do not publish them through this lifecycle/,
+    /`outOfScopeObservations`[\s\S]*?unverified observations, not findings[\s\S]*?terminal filing[\s\S]*?out-of-scope-observation[\s\S]*?never enter a review, fix input, sweep\s+decision, or run outcome/,
+  );
+  assert.match(
+    lifecycle,
+    /fix result may also carry `outOfScopeObservations`[\s\S]*?Keep them with the saved result[\s\S]*?terminal filing publishes only[\s\S]*?current complete adjudicated review or brief verdict[\s\S]*?not observations from a fix result/,
   );
   assert.match(lifecycle, /--digest[\s\S]*sweep-digest\.json/);
   assert.match(
@@ -919,6 +923,14 @@ test("the lifecycle uses one adjudicated review call and publication-owned fix w
   assert.match(lifecycle, /publish-before-fix[\s\S]*fix-args\.json[\s\S]*HEAD TARGET/);
   assert.match(lifecycle, /starts the effectful `fix\.js`[\s\S]*only after[\s\S]*`outcome: "applied"`/);
   assert.match(lifecycle, /Do not post the terminal sweep's sub-threshold[\s\S]*findings/);
+  assert.match(
+    lifecycle,
+    /`overflow` array unchanged[\s\S]*`outOfScopeObservations`[\s\S]*`misconfigurations`[\s\S]*review-brief-misconfiguration[\s\S]*do not add them to[\s\S]*sweep digest[\s\S]*requestChangesReview[\s\S]*fix input[\s\S]*PUBLICATION_FILE[\s\S]*Out-of-scope observation[\s\S]*Review brief misconfiguration[\s\S]*failure never fails the run/,
+  );
+  assert.match(
+    lifecycle,
+    /complete brief verdict's `outOfScopeObservations` and `misconfigurations`[\s\S]*same\s+two-positional `publish-overflow\.mjs` call[\s\S]*Do not mix either channel into the brief\s+review, `briefFixRequired`, or the single-wave fix input[\s\S]*failure degrades presentation and never changes the brief-stage outcome/,
+  );
   assert.doesNotMatch(lifecycle, /workflowProgress|resumeFromRunId|--workflow-script|briefReview/);
   assert.match(
     lifecycle,

@@ -12,18 +12,51 @@ if (!orientationPath || !findingsPath) {
 }
 
 const orientation = JSON.parse(readFileSync(orientationPath, "utf8"));
-const findings = JSON.parse(readFileSync(findingsPath, "utf8"));
-if (!Array.isArray(findings)) throw new Error("findings must be a JSON array");
+const entries = JSON.parse(readFileSync(findingsPath, "utf8"));
+if (!Array.isArray(entries)) throw new Error("findings must be a JSON array");
+
+function normaliseEntry(entry) {
+  if (entry.kind === "out-of-scope-observation") {
+    return {
+      ...entry,
+      label: "Out-of-scope observation",
+      severity: "out of scope",
+      confidence: null,
+    };
+  }
+  if (entry.kind === "review-brief-misconfiguration") {
+    return {
+      ...entry,
+      label: "Review brief misconfiguration",
+      path: entry.brief,
+      line: 1,
+      explanation: entry.reason,
+      severity: entry.misconfigurationKind || "misconfiguration",
+      confidence: null,
+    };
+  }
+  return {
+    ...entry,
+    label: entry.kind === "held-diagnosis" ? "Held diagnosis"
+      : entry.kind === "fix-attempts-failed" ? "Review finding (automated fixes failed)"
+      : "Review finding",
+  };
+}
+
+const findings = entries.map(normaliseEntry);
 
 function key(finding) {
   const title = String(finding.title || "").trim().toLowerCase().replace(/\s+/g, " ");
-  return Buffer.from(JSON.stringify([finding.path, finding.line, title])).toString("base64url");
+  const identity = finding.kind === "out-of-scope-observation" || finding.kind === "review-brief-misconfiguration"
+    ? [finding.kind, finding.path, finding.line, title]
+    : [finding.path, finding.line, title];
+  return Buffer.from(JSON.stringify(identity)).toString("base64url");
 }
 
 function inlineComment(finding) {
   return {
     path: finding.path,
-    body: `**${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}. Confidence: ${finding.confidence}.`,
+    body: `**${finding.label}: ${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}.${finding.confidence === null ? "" : ` Confidence: ${finding.confidence}.`}`,
     line: finding.line,
   };
 }
@@ -31,7 +64,7 @@ function inlineComment(finding) {
 if (orientation.grounding === "repository") {
   process.stdout.write(JSON.stringify({
     destination: "pull-request",
-    body: "Additional code findings for project triage.",
+    body: "Additional review material for project triage.",
     comments: findings.map(inlineComment),
   }) + "\n");
   process.exit(0);
@@ -52,10 +85,10 @@ let written = 0;
 for (const finding of findings) {
   const marker = `<!-- review-finding:${key(finding)} -->`;
   if (contents.includes(marker)) continue;
-  const label = finding.kind === "held-diagnosis" ? "Held diagnosis"
-    : finding.kind === "fix-attempts-failed" ? "Review finding (automated fixes failed)"
-    : "Review finding";
-  contents += `\n- ${label}: ${finding.title} (${finding.severity}, ${finding.path}:${finding.line}) — ${finding.explanation}. ${attribution}. ${marker}\n`;
+  const location = finding.kind === "review-brief-misconfiguration"
+    ? finding.path
+    : `${finding.path}:${finding.line}`;
+  contents += `\n- ${finding.label}: ${finding.title} (${finding.severity}, ${location}) — ${finding.explanation}. ${attribution}. ${marker}\n`;
   written++;
 }
 
