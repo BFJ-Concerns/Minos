@@ -38,6 +38,24 @@ without an internal containment layer.
 Planning and task records live in `../Minos-Annexe`. Keep its contract aligned
 with this boundary rather than treating older procedural text as authority.
 
+## The vendored Ensemble runtime
+
+`runtime/ensemble.mjs` is a vendored copy of the `ensemble-workflow` skill's
+bundle, pinned by `runtime/ensemble.mjs.sha256` and described by
+`runtime/ensemble.source-version`. It tracks that bundle: refresh it when it
+drifts rather than letting it age, because the review workflow runs on
+whatever is vendored here, not on whatever the skill ships.
+
+A refresh moves every pin with the bundle — the checksum file, the
+source-version, and the installed-digest pin in
+`internal/shell/run_body_test.go` — and preserves the file's executable
+mode, which two earlier refreshes each had to repair afterwards. The
+repository gate is the check that matters: the vm-context gate scrapes the
+vendored launcher's `createSandboxContext` for its binding set and the
+divergence gate drives the shipped workflow shapes through the runtime's
+own validator, so a bundle that renamed an agent option or changed the
+sandbox bindings turns them red.
+
 ## Memory accounting on the box
 
 Judge memory by anonymous memory plus swap and by pressure, never by
