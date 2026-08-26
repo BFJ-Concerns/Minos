@@ -163,13 +163,15 @@ members record is `$MINOS_RUN_DIR/members.json` — this pull request's
 own facts first, then the facts each claim command returned — written at
 claim and fixed from then on in *membership*: no member joins mid-run,
 and a small pull request arriving later is a later pass's ordinary work.
-The record fixes each member's identity — its number and branch names — and
-records the head and target each verdict reviewed. Operations this lifecycle
-explicitly bases on current forge state, such as a later sync or finishing,
-take a fresh per-member snapshot. Publication of an existing review verdict
-instead passes that verdict's recorded reviewed head and target as explicit
-guard coordinates: if either moved, the guard rejects the write rather than
-publishing the verdict against an unreviewed revision. A blocking outcome on one member
+The record fixes each member's identity — its number and branch names. When
+review input is built, `review-inputs.mjs` takes a fresh per-member snapshot and
+carries that snapshot's head and target into the workflow; the resulting
+verdict records those reviewed coordinates on its member entry. Operations this
+lifecycle explicitly bases on current forge state, such as a later sync or
+finishing, take another fresh per-member snapshot. Publication of an existing
+review verdict instead passes that verdict member's recorded reviewed head and
+target as explicit guard coordinates: if either moved, the guard rejects the
+write rather than publishing the verdict against an unreviewed revision. A blocking outcome on one member
 never holds a clean member back (step 8 carries the split; a chain's
 order is read from the members' target branches). When no grouping happened —
 no candidates, or the judgement declined them — the run owns this one
