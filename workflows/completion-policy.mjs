@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 export const DIGEST_KIND = "minos-sweep-digest-v1";
 export const DECISION_KIND = "minos-sweep-decision-v1";
 export const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
-export const DEFAULT_THRESHOLD = "High";
+export const DEFAULT_THRESHOLD = "Critical";
 
 // A configured command's exit status is a mechanical fact, not a lead
 // judgement. Empty commands are valid skips; configured commands pass or fail.

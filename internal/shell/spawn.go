@@ -290,6 +290,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_AUTO_MERGE":              fmt.Sprintf("%t", repo.Policy.AutoMerge),
 		"MINOS_REVIEW_THRESHOLD":        repo.Review.Threshold,
 		"MINOS_MAX_ROUNDS":              maximumRounds,
+		"MINOS_MAX_GATE_REPAIRS":        strconv.Itoa(repo.Gate.MaximumRepairs),
 		"MINOS_RUN_CLASS":               string(runClass),
 		"MINOS_RELEASED_HOLD_HEAD":      admission.ReleasedHoldHead,
 		"MINOS_RELEASED_HOLD_STAGE":     admission.ReleasedHoldStage,

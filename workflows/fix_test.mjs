@@ -888,7 +888,7 @@ test("a seeded continuation record reaches the digest and the first fix-wave led
 
   const digest = JSON.parse(execFileSync(process.execPath, [inputScriptPath, reviewPath, recordPath, "--digest"], {
     encoding: "utf8",
-    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root },
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_REVIEW_THRESHOLD: "High" },
   }));
   assert.equal(digest.round, 4);
   assert.equal(digest.thresholdIndication, "working");
@@ -903,7 +903,7 @@ test("a seeded continuation record reaches the digest and the first fix-wave led
   const input = JSON.parse(execFileSync(
     process.execPath,
     [inputScriptPath, reviewPath, recordPath, "--decision", decisionPath],
-    { encoding: "utf8", env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root } },
+    { encoding: "utf8", env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_REVIEW_THRESHOLD: "High" } },
   ));
   const plan = prepareFixWave(input);
   assert.equal(plan.round, 4);

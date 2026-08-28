@@ -108,24 +108,6 @@ func TestLoadServiceConfigRejectsUnknownKeys(t *testing.T) {
 	}
 }
 
-func TestLoadRepoConfigDefaultsReviewLoopKnobs(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
-	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	repos, err := LoadRepoConfigs(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(repos) != 1 || repos[0].Review.Threshold != "High" || repos[0].Review.MaximumRounds != 0 {
-		t.Fatalf("review defaults = %+v", repos)
-	}
-}
-
 func TestLoadRepoConfigDecodesWorkInProgressBranchPrefixes(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
@@ -192,21 +174,63 @@ func TestLoadRepoConfigRejectsEmptyStructuralBranchPrefix(t *testing.T) {
 	}
 }
 
-func TestLoadRepoConfigValidatesReviewLoopKnobs(t *testing.T) {
+func TestLoadRepoConfigDefaultsReviewLoopKnobs(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		review string
-		want   string
+		name           string
+		block          string
+		wantThreshold  string
+		wantGateRepair int
 	}{
-		{name: "threshold", review: "threshold = \"Urgent\"", want: "review.threshold"},
-		{name: "maximum rounds", review: "maximum-rounds = -1", want: "review.maximum-rounds"},
+		{name: "unset", wantThreshold: "Critical", wantGateRepair: DefaultMaximumGateRepairs},
+		{
+			name:           "explicit values survive",
+			block:          "[review]\nthreshold = \"Medium\"\n[gate]\nmaximum-repairs = 5\n",
+			wantThreshold:  "Medium",
+			wantGateRepair: 5,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\n[adaptation]\nrun-body = \"/tmp/run-body\"\n[review]\n" + test.review + "\n"
+			contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\n[adaptation]\nrun-body = \"/tmp/run-body\"\n" + test.block
+			if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			repos, err := LoadRepoConfigs(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(repos) != 1 {
+				t.Fatalf("repos = %d, want 1", len(repos))
+			}
+			if repos[0].Review.Threshold != test.wantThreshold {
+				t.Fatalf("threshold = %q, want %q", repos[0].Review.Threshold, test.wantThreshold)
+			}
+			if repos[0].Gate.MaximumRepairs != test.wantGateRepair {
+				t.Fatalf("gate.maximum-repairs = %d, want %d", repos[0].Gate.MaximumRepairs, test.wantGateRepair)
+			}
+		})
+	}
+}
+
+func TestLoadRepoConfigValidatesReviewLoopKnobs(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		block string
+		want  string
+	}{
+		{name: "threshold", block: "[review]\nthreshold = \"Urgent\"", want: "review.threshold"},
+		{name: "maximum rounds", block: "[review]\nmaximum-rounds = -1", want: "review.maximum-rounds"},
+		{name: "maximum gate repairs", block: "[gate]\nmaximum-repairs = -1", want: "gate.maximum-repairs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\n[adaptation]\nrun-body = \"/tmp/run-body\"\n" + test.block + "\n"
 			if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
 				t.Fatal(err)
 			}
