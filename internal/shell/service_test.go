@@ -283,3 +283,22 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 		})
 	}
 }
+
+func TestProvingPullRequestReadsTheMarkerURL(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		targetURL string
+		want      string
+	}{
+		{name: "plain marker url", targetURL: "https://forge.example/owner/repo/pulls/205", want: "#205"},
+		{name: "trailing fragment", targetURL: "https://forge.example/owner/repo/pulls/205#minos-target-abc", want: "#205"},
+		{name: "no pull request segment", targetURL: "https://forge.example/owner/repo"},
+		{name: "empty", targetURL: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := provingPullRequest(test.targetURL); got != test.want {
+				t.Fatalf("provingPullRequest(%q) = %q, want %q", test.targetURL, got, test.want)
+			}
+		})
+	}
+}

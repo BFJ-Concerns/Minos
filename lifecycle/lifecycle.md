@@ -666,6 +666,23 @@ pull request and every grouped passage in this lifecycle is inert.
    branch receives fixes its SHA changes, the sweep sees a new target URL,
    and a fresh run re-assesses the pull request automatically.
 
+   Before that held status, mark the target itself with `"$MINOS_BIN" forge
+   target-broken TARGET REASON`, passing one sentence naming the
+   target-side mechanism the diagnosis proved. The breakage belongs to the
+   target commit, not to this pull request, so every sibling reconciling
+   with that same commit will reach this same conclusion — at the cost of a
+   full run each. The marker lets admission defer them instead, and binds
+   to the target commit exactly as the held status does, so a target that
+   moves carries no marker and every deferred pull request admits again. It
+   is what makes this run's proof serve the whole queue rather than this
+   pull request alone, so one full proof is still paid for and only the
+   repetitions are saved. Write it only from this paragraph, where a
+   target-side cause has actually been proven — never from the stall or
+   infrastructure endings, whose causes are unproven by definition. This
+   write is presentation-class like the annexe filing: a rejected or
+   uncertain result degrades to the ordinary held ending and never fails
+   the run.
+
    The in-scope target-side shape never reaches that held paragraph on its
    own merits: a `target` verdict that is `intermittent` with locus
    `test-expectation` is the one the agent repairs, so it arrives with a
