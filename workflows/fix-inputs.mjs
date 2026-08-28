@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sweepDigest } from "./completion-policy.mjs";
+import { DEFAULT_THRESHOLD, sweepDigest } from "./completion-policy.mjs";
 import { prepareFixWave } from "./fix-wave-plan.mjs";
 
 const usage = "usage: node workflows/fix-inputs.mjs REVIEW_RESULT [RUN_RECORD] [--digest] [--decision FILE] [--single-wave] [--grouping FILE]\n";
@@ -108,7 +108,7 @@ if (argumentError || !reviewPath) {
     : { round: 0, confirmedFixed: [], confirmedUnfixed: [] };
   const digest = sweepDigest({
     review: JSON.parse(readFileSync(reviewPath, "utf8")),
-    threshold: process.env.MINOS_REVIEW_THRESHOLD || "High",
+    threshold: process.env.MINOS_REVIEW_THRESHOLD || DEFAULT_THRESHOLD,
     maximumRounds: process.env.MINOS_MAX_ROUNDS
       ? Number.parseInt(process.env.MINOS_MAX_ROUNDS, 10)
       : null,
@@ -137,7 +137,7 @@ if (argumentError || !reviewPath) {
   const warmTargetSource = readWarmTargetSource(process.env.MINOS_RUN_DIR);
   const result = {
     review: JSON.parse(readFileSync(reviewPath, "utf8")),
-    threshold: process.env.MINOS_REVIEW_THRESHOLD || "High",
+    threshold: process.env.MINOS_REVIEW_THRESHOLD || DEFAULT_THRESHOLD,
     maximumRounds,
     runRecord,
     singleWave,

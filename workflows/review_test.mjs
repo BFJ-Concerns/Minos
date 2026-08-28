@@ -1244,7 +1244,7 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
-    /bounded by progress, not a count[\s\S]*the red result\s+that repair was dispatched against[\s\S]*never the one that first entered the discipline[\s\S]*earns another repair\s+dispatch[\s\S]*same command failing the same way is a stall[\s\S]*your judgement[\s\S]*never a string comparison of gate\s+output[\s\S]*append its basis as one\s+sentence to `\$MINOS_RUN_DIR\/gate-repair-ladder\.log`[\s\S]*No counted ceiling[\s\S]*hard timeout is the failsafe/,
+    /bounded by progress, not a count[\s\S]*the red result\s+that repair was dispatched against[\s\S]*never the one that first entered the discipline[\s\S]*earns another repair\s+dispatch[\s\S]*same command failing the same way is a stall[\s\S]*your judgement[\s\S]*never a string comparison of gate\s+output[\s\S]*append its basis as one\s+sentence to `\$MINOS_RUN_DIR\/gate-repair-ladder\.log`[\s\S]*A counted ceiling sits behind the\s+progress rule[\s\S]*\$MINOS_MAX_GATE_REPAIRS[\s\S]*Record the running count[\s\S]*reaches the\s+ceiling[\s\S]*end the run as\s+\*\*attention\*\*[\s\S]*repair budget ran\s+out/,
   );
   assert.match(
     initialGate,

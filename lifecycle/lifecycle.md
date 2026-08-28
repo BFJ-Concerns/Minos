@@ -616,9 +616,19 @@ pull request and every grouped passage in this lifecycle is inert.
    sentence to `$MINOS_RUN_DIR/gate-repair-ladder.log`. An empty `commit`
    means the isolated agent made no mutation; there is nothing to re-run
    the gate against, so the red result it was dispatched against stands
-   unchanged and that dispatch is a stall. No counted ceiling sits behind
-   the progress rule; the run unit's hard timeout is the failsafe against
-   a runaway ladder.
+   unchanged and that dispatch is a stall. A counted ceiling sits behind the
+   progress rule: `$MINOS_MAX_GATE_REPAIRS` bounds how many repairs this
+   run may integrate across every gate repair it performs — this
+   discipline wherever it is entered, and finishing's own repair in step 8,
+   which shares this bound. Record the running count beside each comparison in
+   `$MINOS_RUN_DIR/gate-repair-ladder.log`. A ladder that reaches the
+   ceiling with the gate still red has spent its budget without proving a
+   cause, which is a stall however the last comparison read: end the run as
+   **attention** below, and say in its report that the repair budget ran
+   out rather than claiming a diagnosis the attempts did not reach. A suite
+   whose flakes surface a different failure each round satisfies the
+   progress rule indefinitely, so on that shape the ceiling is the only
+   bound that ends the ladder.
 
    One empty-commit result is not a stall: a `cause` verdict whose `side`
    is `target` — the breakage would be red without the pull request's

@@ -899,6 +899,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo.Policy.AutoMerge = true
 	repo.Review.Threshold = "Medium"
 	repo.Review.MaximumRounds = 7
+	repo.Gate.MaximumRepairs = 3
 	facts := Facts{
 		Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7",
 		HeadSHA: "head", BaseSHA: "target", BaseRef: "main", HeadRef: "feature",
@@ -934,6 +935,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_AUTO_MERGE=true",
 		"MINOS_REVIEW_THRESHOLD=Medium",
 		"MINOS_MAX_ROUNDS=7",
+		"MINOS_MAX_GATE_REPAIRS=3",
 		"MINOS_RUN_CLASS=review",
 		"MINOS_RELEASED_HOLD_HEAD=",
 		"MINOS_RELEASED_HOLD_STAGE=",
