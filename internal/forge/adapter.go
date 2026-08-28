@@ -144,6 +144,26 @@ func (a *Adapter) SetProductStatus(ctx context.Context, guard Guard, state produ
 	return decodeWriteResult(out, err)
 }
 
+// SetTargetBroken marks the guard's target commit as one whose own gate is
+// broken, so pull requests reconciling with it defer rather than each proving
+// the same breakage again. The write binds the target rather than the head:
+// the adaptation rejects it once the target branch has advanced past the
+// commit the breakage was proven against.
+func (a *Adapter) SetTargetBroken(ctx context.Context, guard Guard, reason string) WriteResult {
+	if guard.TargetSHA == "" || reason == "" {
+		return WriteResult{Outcome: WriteRejected, Reason: "target status needs a target commit and a reason"}
+	}
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "set-target-status",
+		Arguments: []string{
+			guard.Repository.Owner, guard.Repository.Name,
+			strconv.FormatInt(guard.PullRequest, 10),
+			guard.TargetSHA, a.serviceLogin, reason,
+		},
+	})
+	return decodeWriteResult(out, err)
+}
+
 func (a *Adapter) PostReview(ctx context.Context, guard Guard, verdict ReviewVerdict, body string, comments []ReviewComment) WriteResult {
 	payload, err := json.Marshal(reviewWritePayload{State: verdict, Body: body, Comments: comments})
 	if err != nil {

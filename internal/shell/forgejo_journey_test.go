@@ -1061,8 +1061,92 @@ func TestForgejoAdmissionCarriesReleasedHoldContextIntoSpawn(t *testing.T) {
 					t.Fatalf("%s = %q, want %q", key, got, want)
 				}
 			}
-			if test.moveHead && !slices.Equal(state.statusReadFacts(), []string{"moved-admitted-head"}) {
-				t.Fatalf("status reads = %v, want only moved admitted head", state.statusReadFacts())
+			if test.moveHead {
+				// A moved admitted head ends the released-hold walk at that
+				// head rather than reading back through predecessor commits.
+				// The target read that follows is the broken-target gate's,
+				// spent once on an otherwise-admissible pull request.
+				want := []string{"moved-admitted-head", state.targetSHA()}
+				if got := state.statusReadFacts(); !slices.Equal(got, want) {
+					t.Fatalf("status reads = %v, want %v", got, want)
+				}
+			}
+		})
+	}
+}
+
+func targetBrokenFixtureStatus(id int, apiBase, provingPR, creator string) map[string]any {
+	return map[string]any{
+		"id": float64(id), "status": "failure", "context": "Minos / target",
+		"creator":     map[string]any{"login": creator},
+		"description": "the shared-turn race renders two identical messages",
+		"target_url":  fmt.Sprintf("%s/minos-e2e-owner/subject/pulls/%s", apiBase, provingPR),
+	}
+}
+
+func TestForgejoBrokenTargetDefersSiblingsWithoutSpawning(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		markerOn    func(state *forgejoFixtureState) string
+		creator     string
+		wantDefer   bool
+		wantMention string
+	}{
+		{
+			name:        "a marker on the current target defers the run",
+			markerOn:    func(s *forgejoFixtureState) string { return s.targetSHA() },
+			creator:     "Minos",
+			wantDefer:   true,
+			wantMention: "#42",
+		},
+		{
+			name:      "a marker on a superseded target does not defer",
+			markerOn:  func(*forgejoFixtureState) string { return "some-older-target" },
+			creator:   "Minos",
+			wantDefer: false,
+		},
+		{
+			name:      "another account's marker is not a marker",
+			markerOn:  func(s *forgejoFixtureState) string { return s.targetSHA() },
+			creator:   "SomeBot",
+			wantDefer: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, repo, facts := state.service(t)
+			state.setCommitStatuses(test.markerOn(state),
+				[]map[string]any{targetBrokenFixtureStatus(3, state.server.URL, "42", test.creator)})
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			spawned := false
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					spawned = true
+				}
+				return nil, nil
+			}
+
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.wantDefer {
+				if !spawned {
+					t.Fatalf("decision = %q, want a spawned run", result.Decision)
+				}
+				return
+			}
+			if spawned {
+				t.Fatal("a broken target still spawned a run")
+			}
+			decision := string(result.Decision)
+			if !strings.HasPrefix(decision, deferredDecisionPrefix) {
+				t.Fatalf("decision = %q, want a deferral", decision)
+			}
+			if !strings.Contains(decision, "proven broken") || !strings.Contains(decision, test.wantMention) {
+				t.Fatalf("decision = %q, want the proving pull request named", decision)
 			}
 		})
 	}
@@ -3093,6 +3177,14 @@ func (s *forgejoFixtureState) setStatuses(statuses []map[string]any) {
 	s.statuses = statuses
 	head := s.pullRequest["head"].(map[string]any)["sha"].(string)
 	s.statusesByCommit[head] = statuses
+}
+
+// setCommitStatuses puts statuses on a commit that is not the pull-request
+// head — the target commit a broken-target marker lands on.
+func (s *forgejoFixtureState) setCommitStatuses(sha string, statuses []map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statusesByCommit[sha] = statuses
 }
 
 func (s *forgejoFixtureState) setIssueComments(comments []map[string]any) {

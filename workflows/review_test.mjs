@@ -1296,6 +1296,10 @@ test("configured command failures enter the repair discipline, never a review on
   );
   assert.match(
     initialGate,
+    /forge\s+target-broken TARGET REASON[\s\S]*every sibling reconciling\s+with that same commit will reach this same conclusion[\s\S]*binds\s+to the target commit exactly as the held status does[\s\S]*a target that\s+moves carries no marker[\s\S]*Write it only from this paragraph[\s\S]*never from the stall or\s+infrastructure endings[\s\S]*presentation-class/,
+  );
+  assert.match(
+    initialGate,
     /`side` of `infrastructure` at this gate[\s\S]*excludes the\s+reconciled tree[\s\S]*answered locally[\s\S]*run the exact configured commands again[\s\S]*green re-run continues exactly as a repaired gate would[\s\S]*same-failure judgement finds unchanged spends the exclusion[\s\S]*genuinely different failure is\s+progress[\s\S]*fresh-run push remedy belongs to finishing's forge\s+checks, never to this local gate/,
   );
   assert.match(

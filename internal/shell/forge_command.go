@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge [--member OWNER REPO NUMBER] snapshot|head-movement|check-logs|claim|claim-member|status|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge [--member OWNER REPO NUMBER] snapshot|head-movement|check-logs|claim|claim-member|status|target-broken|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
 	}
 	member := forge.Repository{}
 	var memberPR int64
@@ -119,6 +119,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
 		return emitForgeResult(stdout, "status", adapter.SetProductStatus(ctx, guard, state))
+	case "target-broken":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: minos forge target-broken TARGET REASON")
+		}
+		guard.TargetSHA = args[1]
+		return emitForgeResult(stdout, "target-broken", adapter.SetTargetBroken(ctx, guard, args[2]))
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
 			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|approve-chain-wait|request-changes|request-changes-checks|comment BODY_FILE [COMMENTS_FILE]")

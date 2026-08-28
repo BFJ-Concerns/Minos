@@ -11,6 +11,11 @@ import (
 const (
 	ForgejoProvider    = "forgejo"
 	OwnedStatusContext = "Minos"
+	// TargetStatusContext marks a target commit whose own gate a run has
+	// proven broken. It is separate from OwnedStatusContext because the
+	// marker lands on the target commit, which is usually some merged pull
+	// request's head and already carries that pull request's Minos status.
+	TargetStatusContext = "Minos / target"
 )
 
 type Repository struct {
