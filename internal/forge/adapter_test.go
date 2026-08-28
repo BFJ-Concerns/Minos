@@ -117,6 +117,64 @@ func TestSetProductStatusRejectsInvalidState(t *testing.T) {
 	}
 }
 
+func TestSetTargetBrokenPassesTargetAndReasonWithoutTheHead(t *testing.T) {
+	runner := &recordingRunner{
+		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
+		errors:  []error{nil},
+	}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := Guard{
+		Repository:  Repository{Owner: "owner", Name: "repo"},
+		PullRequest: 205,
+		HeadSHA:     "head-sha",
+		TargetSHA:   "target-sha",
+	}
+	result := adapter.SetTargetBroken(t.Context(), guard, "the shared-turn race renders two identical messages")
+	if result.Outcome != WriteApplied {
+		t.Fatalf("result = %#v", result)
+	}
+	request := runner.requests[0]
+	if request.Operation != "set-target-status" {
+		t.Fatalf("operation = %q, want set-target-status", request.Operation)
+	}
+	want := []string{
+		"owner", "repo", "205", "target-sha", "Minos",
+		"the shared-turn race renders two identical messages",
+	}
+	if !slices.Equal(request.Arguments, want) {
+		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
+	}
+}
+
+func TestSetTargetBrokenRejectsAnEmptyTargetOrReason(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		guard  Guard
+		reason string
+	}{
+		{name: "no target", guard: Guard{}, reason: "proven"},
+		{name: "no reason", guard: Guard{TargetSHA: "target-sha"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &recordingRunner{}
+			adapter, err := NewAdapter(runner, "Minos")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := adapter.SetTargetBroken(t.Context(), test.guard, test.reason)
+			if result.Outcome != WriteRejected {
+				t.Fatalf("result = %#v, want rejected", result)
+			}
+			if len(runner.requests) != 0 {
+				t.Fatal("an incomplete target marker reached the forge runner")
+			}
+		})
+	}
+}
+
 func TestIncompleteStatusUsesGuardedPullRequestAndTargetIdentity(t *testing.T) {
 	runner := &recordingRunner{
 		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},

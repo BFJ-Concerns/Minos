@@ -354,6 +354,9 @@ func reconcilePullRequestSnapshotWithCandidates(ctx context.Context, cfg Service
 	if eligibility.dependencyDeferred {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason)}, nil
 	}
+	if eligibility.targetBroken {
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.targetBrokenReason)}, nil
+	}
 	runClass := RunClassReview
 	if structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
 		runClass = RunClassMaintenance
@@ -381,10 +384,13 @@ type pullRequestAdmissionEligibility struct {
 	completedRun       bool
 	dependencyDeferred bool
 	dependencyReason   string
+	targetBroken       bool
+	targetBrokenReason string
 }
 
 func (e pullRequestAdmissionEligibility) admitsNewRun() bool {
-	return !e.workInProgress && !e.terminalReview && !e.completedRun && !e.dependencyDeferred
+	return !e.workInProgress && !e.terminalReview && !e.completedRun &&
+		!e.dependencyDeferred && !e.targetBroken
 }
 
 func assessPullRequestAdmission(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot, commits []forge.Commit) pullRequestAdmissionEligibility {
@@ -403,7 +409,65 @@ func assessPullRequestAdmission(ctx context.Context, cfg ServiceConfig, repo Rep
 	if reason, deferred := dependencyDeferral(snapshot); deferred {
 		return pullRequestAdmissionEligibility{dependencyDeferred: true, dependencyReason: reason}
 	}
+	// Last, because it is the only gate that costs a forge read: by here the
+	// pull request would otherwise start a run, so the read is spent once per
+	// admissible pull request rather than once per pull request swept.
+	if reason, broken := targetKnownBroken(ctx, adapter, repository, snapshot.TargetSHA, cfg.Service.BotLogin); broken {
+		return pullRequestAdmissionEligibility{targetBroken: true, targetBrokenReason: reason}
+	}
 	return pullRequestAdmissionEligibility{}
+}
+
+// targetKnownBroken reports whether a predecessor run has already proven this
+// exact target commit's own gate broken. The marker binds to the commit, so a
+// target that moves carries none and every deferred pull request admits again
+// without a release path of its own.
+func targetKnownBroken(ctx context.Context, adapter *forge.Adapter, repository forge.Repository, targetSHA, botLogin string) (string, bool) {
+	if targetSHA == "" {
+		return "", false
+	}
+	statuses, err := adapter.CommitStatuses(ctx, repository, targetSHA)
+	if err != nil {
+		// An unreadable target is not a proven-broken one. Failing open costs
+		// one ordinary run; failing closed would strand every pull request in
+		// the repository on a transient read error.
+		return "", false
+	}
+	var marker forge.Status
+	found := false
+	for _, status := range statuses {
+		if status.Provider == forge.ForgejoProvider && status.Context == forge.TargetStatusContext &&
+			status.Creator == botLogin && (!found || status.ID > marker.ID) {
+			marker, found = status, true
+		}
+	}
+	if !found {
+		return "", false
+	}
+	reason := "the target branch is already proven broken"
+	if proving := provingPullRequest(marker.TargetURL); proving != "" {
+		reason += " by " + proving
+	}
+	if marker.Description != "" {
+		reason += ": " + marker.Description
+	}
+	return reason, true
+}
+
+// provingPullRequest reads the "#N" reference back out of a target marker's
+// URL, so a deferral can name the pull request whose run proved the breakage.
+func provingPullRequest(targetURL string) string {
+	_, number, found := strings.Cut(targetURL, "/pulls/")
+	if !found || number == "" {
+		return ""
+	}
+	if cut := strings.IndexAny(number, "#?/"); cut >= 0 {
+		number = number[:cut]
+	}
+	if number == "" {
+		return ""
+	}
+	return "#" + number
 }
 
 func structuralBranch(branch string, prefixes []string) bool {
