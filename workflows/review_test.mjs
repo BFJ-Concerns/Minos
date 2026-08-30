@@ -737,5 +737,18 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Minos authors no commits, so every head movement is the author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
   assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review's\s+findings, a classification digest, or a run outcome/);
-  assert.match(lifecycle, /publish-observations\.mjs[\s\S]*Observations travel plainly marked\s+as unverified[\s\S]*Minos files nothing in reviewed projects' annexes/);
+  assert.match(lifecycle, /publish-observations\.mjs[\s\S]*Observations travel plainly marked\s+as unverified, never as findings[\s\S]*the pull request is the one delivery\s+surface[\s\S]*Minos files nothing in reviewed projects' annexes[\s\S]*publication is presentation-class: its failure degrades and never\s+fails the run/);
+});
+
+test("the lifecycle prescribes the verdict-classification seam", () => {
+  assert.match(lifecycle, /verdict-classification\.mjs" \\\s+--digest VERDICT_FILE "\$MINOS_REVIEW_THRESHOLD" \\\s+> "\$MINOS_RUN_DIR\/verdict-digest\.json"/);
+  assert.match(lifecycle, /`verdict-digest-brief\.json` for the brief verdict/);
+  assert.match(lifecycle, /digest lists every confirmed finding with its severity, confidence\s+values, and threshold position, and a `thresholdIndication` — what the\s+configured threshold alone would say/);
+  assert.match(lifecycle, /informed by the threshold rather than mechanically bound to it \(the\s+commission's balance rule\)/);
+  assert.match(lifecycle, /only two classes may be judged out —\s+a gap the pull-request description explicitly declares as known or out\s+of scope, where the project guidance does not contradict the\s+declaration \(`declared-out-of-scope`\), and a verifier-confirmed request\s+for a new safeguard[\s\S]*?no defect\s+in the change's own logic \(`speculative-hardening`\)/);
+  assert.match(lifecycle, /The one upward exception\s+is judging a below-threshold finding's severity an undergrade that\s+genuinely belongs at or above the threshold, named as such/);
+  assert.match(lifecycle, /`\$MINOS_RUN_DIR\/verdict-decision\.json` \(`verdict-decision-brief\.json`\s+for the brief verdict\)[\s\S]*?"kind": "minos-verdict-decision-v1"[\s\S]*?"basis":[\s\S]*?"gating": false, "class": "declared-out-of-scope"[\s\S]*?"gating": true, "undergrade":/);
+  assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);
+  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition — is corrected and re-validated rather than worked around;\s+nothing has touched the forge yet/);
+  assert.match(lifecycle, /The run's overall verdict is\s+`request-changes` when either validated decision is; `clean` only when\s+every validated decision is clean/);
 });

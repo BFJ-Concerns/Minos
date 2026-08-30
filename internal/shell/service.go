@@ -97,8 +97,8 @@ func completedRunStatus(snapshot forge.Snapshot, botLogin string) bool {
 	if !found {
 		return false
 	}
-	return latest.Description == product.Clean().Description() ||
-		latest.Description == product.Attention().Description()
+	_, completed := product.CompletionMarker(string(latest.State), latest.Description)
+	return completed
 }
 
 type ReconcileDecision string
@@ -216,12 +216,14 @@ func dependencyDeferral(snapshot forge.Snapshot) (string, bool) {
 }
 
 func terminalState(review forge.Review) (product.State, bool) {
+	var state product.State
 	switch strings.ToUpper(review.State) {
 	case "APPROVED", "APPROVE":
-		return product.Clean(), true
+		state = product.Clean()
 	case "REQUEST_CHANGES", "REQUESTED_CHANGES":
-		return product.Attention(), true
+		state = product.Attention()
 	default:
 		return product.State{}, false
 	}
+	return product.CompletionMarker(state.ForgeState(), state.Description())
 }

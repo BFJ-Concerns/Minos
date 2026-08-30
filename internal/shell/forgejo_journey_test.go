@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -222,6 +223,40 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 		if result.Decision != "nothing" {
 			t.Fatalf("result = %q, want nothing", result)
+		}
+	})
+
+	t.Run("failure status carrying a clean description starts a fresh run", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setStatuses([]map[string]any{{
+			"id": 7, "context": "Minos", "status": "failure", "description": product.Clean().Description(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+			"creator":    map[string]any{"login": "Minos"},
+		}})
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		var started bool
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			switch name {
+			case "systemctl":
+				return nil, nil
+			case "systemd-run":
+				started = true
+				return nil, nil
+			default:
+				t.Fatalf("unexpected command %q", name)
+				return nil, nil
+			}
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Decision != "started" || !started {
+			t.Fatalf("result = %q, started = %t; want a fresh attempt", result, started)
 		}
 	})
 
@@ -954,6 +989,90 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 	})
 }
 
+func TestForgeReviewPublishesEveryConfirmedAdjudicatedFinding(t *testing.T) {
+	t.Run("mixed gating and below-threshold findings share one request-changes review", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7, 42)
+		configureForgeCommandFixture(t, state)
+
+		verdict := adjudicatedReviewPayload(t, []map[string]any{
+			adjudicatedFinding("specialist-1:1", "High", "Gating state transition", 42, "The transition accepts an invalid state."),
+			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
+		})
+		postAdjudicatedReview(t, head, target, "request-changes", verdict)
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != head {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		posted := payload["comments"].([]any)
+		if len(posted) != 2 {
+			t.Fatalf("posted comments = %#v, want both confirmed findings", posted)
+		}
+		for _, want := range []struct {
+			position float64
+			body     string
+		}{{42, "Gating state transition"}, {7, "Advisory recovery wording"}} {
+			matched := false
+			for _, comment := range posted {
+				entry := comment.(map[string]any)
+				if entry["new_position"] == want.position && strings.Contains(entry["body"].(string), want.body) {
+					matched = true
+				}
+			}
+			if !matched {
+				t.Fatalf("posted comments = %#v, missing %#v", posted, want)
+			}
+		}
+	})
+
+	t.Run("below-threshold finding publishes in an approving review", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7)
+		configureForgeCommandFixture(t, state)
+
+		verdict := adjudicatedReviewPayload(t, []map[string]any{
+			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
+		})
+		postAdjudicatedReview(t, head, target, "approve", verdict)
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "APPROVED" {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		posted := payload["comments"].([]any)
+		if len(posted) != 1 || posted[0].(map[string]any)["new_position"] != float64(7) ||
+			!strings.Contains(posted[0].(map[string]any)["body"].(string), "Advisory recovery wording") {
+			t.Fatalf("posted comments = %#v", posted)
+		}
+	})
+
+	t.Run("unanchorable below-threshold finding falls back into the approving review body", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 10)
+		configureForgeCommandFixture(t, state)
+
+		verdict := adjudicatedReviewPayload(t, []map[string]any{
+			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 1, "The recovery path is difficult to identify."),
+		})
+		postAdjudicatedReview(t, head, target, "approve", verdict)
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "APPROVED" {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		if posted := payload["comments"].([]any); len(posted) != 0 {
+			t.Fatalf("inline comments = %#v, want body fallback", posted)
+		}
+		body := payload["body"].(string)
+		for _, want := range []string{"Findings that could not be anchored inline:", "`internal/review.go` line 1", "Advisory recovery wording"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("review body omitted %q: %q", want, body)
+			}
+		}
+	})
+}
+
 func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
@@ -1080,6 +1199,107 @@ func configureForgeCommandFixture(t *testing.T, state *forgejoFixtureState) {
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
 	t.Setenv("MINOS_PR", "1")
+}
+
+func adjudicatedFinding(id, severity, title string, line int, explanation string) map[string]any {
+	return map[string]any{
+		"id": id, "source": "Correctness", "title": title, "severity": severity,
+		"confidence": 86, "path": "internal/review.go", "line": line, "explanation": explanation,
+		"proposingLabel": "specialist", "verifyLabel": "verifier",
+		"rawVerifier": map[string]any{"verdict": "upheld", "confidence": 94, "reason": "The condition is reachable."},
+	}
+}
+
+func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[string]any {
+	t.Helper()
+	directory := t.TempDir()
+	envelopePath := filepath.Join(directory, "envelope.json")
+	recordDir := filepath.Join(directory, "record")
+	archive := filepath.Join(recordDir, "runs", "cwd", "namespace", "run")
+	if err := os.MkdirAll(archive, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(archive, "manifest.json"), []byte(`{"kind":"run_manifest","status":"complete"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index, record := range []map[string]any{
+		{"label": "specialist", "status": "complete", "resolved_model": "gpt-5.6-sol-served"},
+		{"label": "verifier", "status": "complete", "resolved_model": "claude-opus-5"},
+	} {
+		directory := filepath.Join(archive, "agents", strconv.Itoa(index+1))
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "agent.json"), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	envelope := map[string]any{
+		"reviewed": map[string]any{"target": "target-sha", "head": "head-sha", "occasion": nil}, "stage": "present",
+		"requiredModelEvidence": []any{
+			map[string]any{"label": "specialist", "role": "specialist", "pinnedModel": "gpt-5.6-sol"},
+			map[string]any{"label": "verifier", "role": "verifier", "pinnedModel": "claude-opus-5"},
+		}, "proposedFindings": findings,
+		"briefs": []any{}, "misconfigurations": []any{}, "dispatches": []any{}, "reviewers": []any{},
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envelopePath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := `import { readFile } from "node:fs/promises"; import { adjudicate } from "./workflows/run-record-adjudicator.mjs"; const [envelopePath, recordDir] = process.argv.slice(1); const envelope = JSON.parse(await readFile(envelopePath, "utf8")); process.stdout.write(JSON.stringify(await adjudicate({ envelope, recordDir })));`
+	cmd := exec.CommandContext(t.Context(), "node", "--input-type=module", "--eval", command, envelopePath, recordDir)
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("adjudicate review payload: %v\n%s", err, output)
+	}
+	var verdict map[string]any
+	if err := json.Unmarshal(output, &verdict); err != nil {
+		t.Fatalf("decode adjudicated payload: %v\n%s", err, output)
+	}
+	if verdict["status"] != "complete" {
+		t.Fatalf("adjudicated verdict = %#v", verdict)
+	}
+	return verdict
+}
+
+func postAdjudicatedReview(t *testing.T, head, target, event string, verdict map[string]any) {
+	t.Helper()
+	reviewBody, ok := verdict["reviewBody"].(map[string]any)
+	if !ok {
+		t.Fatalf("adjudicated verdict has no review body: %#v", verdict)
+	}
+	body, ok := reviewBody["body"].(string)
+	if !ok {
+		t.Fatalf("review body text = %#v", reviewBody["body"])
+	}
+	comments, err := json.Marshal(reviewBody["comments"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	bodyPath := filepath.Join(directory, "body.md")
+	commentsPath := filepath.Join(directory, "comments.json")
+	if err := os.WriteFile(bodyPath, []byte(body+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(commentsPath, comments, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgeCommand(t.Context(), []string{"review", head, target, event, bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func runReviewAttempts(
