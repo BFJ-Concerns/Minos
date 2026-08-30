@@ -133,7 +133,7 @@ func TestCompletedRunStatusMarksCleanAndAttentionHeads(t *testing.T) {
 			name: "another account's clean status is not a marker",
 			statuses: []forge.Status{{
 				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-				Creator: "SomeBot", Description: product.Clean().Description(),
+				Creator: "SomeBot", State: forge.StatusSuccess, Description: product.Clean().Description(),
 			}},
 		},
 		{name: "no statuses"},
