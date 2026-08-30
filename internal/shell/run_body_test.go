@@ -82,12 +82,6 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		"MINOS_FORGE=forgejo",
 		"MINOS_WORKSPACE=" + filepath.Join(fixture.runDir, "workspace"),
 		"MINOS_ORIENTATION=" + filepath.Join(fixture.runDir, "orientation.json"),
-		"MINOS_GIT_AUTHOR_NAME=Minos",
-		"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
-		"GIT_AUTHOR_NAME=Minos",
-		"GIT_AUTHOR_EMAIL=minos@example.invalid",
-		"GIT_COMMITTER_NAME=Minos",
-		"GIT_COMMITTER_EMAIL=minos@example.invalid",
 		"MINOS_OWNER=owner",
 		"MINOS_REPO_NAME=repository",
 		"MINOS_PR=17",
@@ -114,6 +108,12 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW",
 		"MINOS_ANTHROPIC_CREDENTIAL_FILE",
+		"MINOS_GIT_AUTHOR_NAME",
+		"MINOS_GIT_AUTHOR_EMAIL",
+		"GIT_AUTHOR_NAME",
+		"GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME",
+		"GIT_COMMITTER_EMAIL",
 	})
 	if after := snapshotDirectory(t, fixture.ambientHome); !reflect.DeepEqual(after, fixture.ambientHomeBefore) {
 		t.Fatalf("ambient home changed\nbefore: %#v\nafter:  %#v", fixture.ambientHomeBefore, after)
@@ -1254,8 +1254,6 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 	runBodyEnv := map[string]string{
 		"MINOS_CLAUDE":                   fixture.claudeStub,
 		"MINOS_LEAD_MODEL":               "claude-opus-5",
-		"MINOS_GIT_AUTHOR_NAME":          "Minos",
-		"MINOS_GIT_AUTHOR_EMAIL":         "minos@example.invalid",
 		"MINOS_CLAUDE_CONFIG_SEED":       claudeSeed,
 		"MINOS_CODEX_CONFIG_SEED":        codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION":    fixture.instructionPath,

@@ -12,9 +12,9 @@ The pull request is `$MINOS_OWNER/$MINOS_REPO_NAME#$MINOS_PR`. The observed
 head is `$MINOS_HEAD_SHA`; the target is `$MINOS_TARGET_SHA` on
 `$MINOS_BASE_REF`. The forge root is `$MINOS_API_BASE`, and
 `$MINOS_CREDENTIAL_FILE` contains the token. The clone is
-`$MINOS_RUN_DIR/workspace`, checked out detached at the observed head with
-the target pinned at `refs/minos/target`; read it, and read the change as
-the `refs/minos/target...HEAD` diff in the context of the head's own tree.
+`$MINOS_RUN_DIR/workspace`, checked out detached at the observed head. Read
+the change as the `$MINOS_TARGET_SHA...HEAD` diff in the context of the head's
+own tree.
 
 ## Terminal obligations
 
