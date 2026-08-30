@@ -104,10 +104,10 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 }
 
 func TestCompletedRunStatusMarksCleanAndAttentionHeads(t *testing.T) {
-	ownedStatus := func(id int64, description string) forge.Status {
+	ownedStatus := func(id int64, state forge.StatusState, description string) forge.Status {
 		return forge.Status{
 			ID: id, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-			Creator: "Minos", Description: description,
+			Creator: "Minos", State: state, Description: description,
 		}
 	}
 	tests := []struct {
@@ -115,23 +115,25 @@ func TestCompletedRunStatusMarksCleanAndAttentionHeads(t *testing.T) {
 		statuses []forge.Status
 		want     bool
 	}{
-		{name: "clean status completes the run", statuses: []forge.Status{ownedStatus(1, product.Clean().Description())}, want: true},
-		{name: "attention status completes the run", statuses: []forge.Status{ownedStatus(1, product.Attention().Description())}, want: true},
-		{name: "incomplete status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Incomplete().Description())}},
-		{name: "working status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Working().Description())}},
-		{name: "continuation status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Continuation().Description())}},
+		{name: "clean status completes the run", statuses: []forge.Status{ownedStatus(1, forge.StatusSuccess, product.Clean().Description())}, want: true},
+		{name: "attention status completes the run", statuses: []forge.Status{ownedStatus(1, forge.StatusFailure, product.Attention().Description())}, want: true},
+		{name: "clean description with failure state leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusFailure, product.Clean().Description())}},
+		{name: "attention description with success state leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusSuccess, product.Attention().Description())}},
+		{name: "incomplete status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusError, product.Incomplete().Description())}},
+		{name: "working status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusPending, product.Working().Description())}},
+		{name: "continuation status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusPending, product.Continuation().Description())}},
 		{
 			name: "later working status supersedes an older clean marker",
 			statuses: []forge.Status{
-				ownedStatus(11, product.Clean().Description()),
-				ownedStatus(12, product.Working().Description()),
+				ownedStatus(11, forge.StatusSuccess, product.Clean().Description()),
+				ownedStatus(12, forge.StatusPending, product.Working().Description()),
 			},
 		},
 		{
 			name: "another account's clean status is not a marker",
 			statuses: []forge.Status{{
 				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-				Creator: "SomeBot", Description: product.Clean().Description(),
+				Creator: "SomeBot", State: forge.StatusSuccess, Description: product.Clean().Description(),
 			}},
 		},
 		{name: "no statuses"},
