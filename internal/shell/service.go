@@ -130,6 +130,17 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
+	if staleApproval(snapshot, cfg.Service.BotLogin) {
+		guard := forge.Guard{
+			Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+			PullRequest: snapshot.PullRequest,
+			HeadSHA:     snapshot.HeadSHA,
+			TargetSHA:   snapshot.TargetSHA,
+		}
+		if result := adapter.RemoveReaction(ctx, guard, "+1"); result.Outcome != forge.WriteApplied {
+			return ReconcileResult{}, fmt.Errorf("remove stale approval reaction: %s: %s", result.Outcome, result.Reason)
+		}
+	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA
 	facts.BaseRef = snapshot.TargetBranch
@@ -153,6 +164,27 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		BlockingUnit: outcome.BlockingUnit,
 		Detail:       outcome.Detail,
 	}, nil
+}
+
+// staleApproval reports whether Minos approved a head the author has since
+// replaced without subsequently approving the current head. Reviews remain
+// SHA-bound evidence; the PR-wide reaction does not, so it must be removed
+// before another reconciliation decision is made.
+func staleApproval(snapshot forge.Snapshot, botLogin string) bool {
+	if review, found := currentReview(snapshot, botLogin); found {
+		if state, terminal := terminalState(review); terminal && state == product.Clean() {
+			return false
+		}
+	}
+	for _, review := range snapshot.Reviews {
+		if review.User != botLogin || review.CommitID == snapshot.HeadSHA {
+			continue
+		}
+		if state, terminal := terminalState(review); terminal && state == product.Clean() {
+			return true
+		}
+	}
+	return false
 }
 
 // pullRequestAdmissionEligibility holds the non-writing admission chain. The
