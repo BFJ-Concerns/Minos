@@ -343,6 +343,14 @@ export async function adjudicate({ envelope, recordDir }) {
     const { proposingLabel, verifyLabel, rawVerifier: omittedVerifier, ...finding } = proposed;
     return {
       ...finding,
+      proposingModel: reviewEvidence && {
+        pinnedModel: reviewEvidence.pinnedModel,
+        resolvedModel: reviewEvidence.resolvedModel,
+      },
+      verifyingModel: verifyEvidence && {
+        pinnedModel: verifyEvidence.pinnedModel,
+        resolvedModel: verifyEvidence.resolvedModel,
+      },
       verifierConfidence: rawVerifier && Number.isInteger(rawVerifier.confidence) ? rawVerifier.confidence : null,
       combinedConfidence,
       verdict,

@@ -108,6 +108,14 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
   assert.equal(adapterVerdict.reviewBody.comments.length, 1);
+  assert.equal(
+    adapterVerdict.reviewBody.comments[0].body,
+    "**Distinct failure**\n\n" +
+      "The changed branch accepts an invalid state.\n\n" +
+      "Severity: High.\n\n" +
+      "Proposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\n" +
+      "Verified by: `claude-opus-5`.",
+  );
   assert.deepEqual(
     adapterVerdict.reviewBody.comments.map(({ path, line }) => ({ path, line })),
     [{ path: "internal/review.go", line: 42 }],
@@ -258,12 +266,12 @@ test("every confirmed finding renders into the review payload regardless of seve
       {
         path: "internal/review.go",
         line: 42,
-        body: "**Distinct failure**\n\nThe changed branch accepts an invalid state.\n\nSeverity: High.",
+        body: "**Distinct failure**\n\nThe changed branch accepts an invalid state.\n\nSeverity: High.\n\nProposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\nVerified by: `claude-opus-5`.",
       },
       {
         path: "internal/review.go",
         line: 7,
-        body: "**Advisory wording obscures the recovery path**\n\nThe recovery path is correct but difficult to identify.\n\nSeverity: Low.",
+        body: "**Advisory wording obscures the recovery path**\n\nThe recovery path is correct but difficult to identify.\n\nSeverity: Low.\n\nProposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\nVerified by: `claude-opus-5`.",
       },
     ],
   );
@@ -276,7 +284,7 @@ test("every confirmed finding renders into the review payload regardless of seve
   });
   assert.equal(lowOnlyVerdict.status, "complete", lowOnlyVerdict.incomplete.join("\n"));
   assert.deepEqual(lowOnlyVerdict.reviewBody.comments.map((comment) => comment.body), [
-    "**Advisory wording obscures the recovery path**\n\nThe recovery path is correct but difficult to identify.\n\nSeverity: Low.",
+    "**Advisory wording obscures the recovery path**\n\nThe recovery path is correct but difficult to identify.\n\nSeverity: Low.\n\nProposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\nVerified by: `claude-opus-5`.",
   ]);
 });
 
