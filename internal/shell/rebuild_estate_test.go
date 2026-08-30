@@ -126,8 +126,6 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		"HOME=" + runHome,
 		"CLAUDE_CONFIG_DIR=" + filepath.Join(runHome, ".claude"),
 		"CODEX_HOME=" + filepath.Join(runHome, ".codex"),
-		"GIT_AUTHOR_NAME=Minos",
-		"GIT_AUTHOR_EMAIL=minos@example.invalid",
 	} {
 		assertContainsFile(t, record+".env", value)
 	}
@@ -564,8 +562,6 @@ esac
 	values := map[string]string{
 		"MINOS_CLAUDE":                claude,
 		"MINOS_LEAD_MODEL":            "claude-opus-5",
-		"MINOS_GIT_AUTHOR_NAME":       "Minos",
-		"MINOS_GIT_AUTHOR_EMAIL":      "minos@example.invalid",
 		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,
 		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION": instruction,
