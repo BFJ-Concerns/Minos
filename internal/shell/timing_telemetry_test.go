@@ -26,6 +26,12 @@ type timingEvent struct {
 	EndedAt    string `json:"ended_at"`
 	DurationMs *int64 `json:"duration_ms"`
 	ExitStatus int    `json:"exit_status"`
+	Attempt    int    `json:"attempt"`
+}
+
+type timingRefusal struct {
+	Name   *string `json:"name"`
+	Reason string  `json:"reason"`
 }
 
 type timingWorker struct {
@@ -71,9 +77,10 @@ type timingRecord struct {
 		Repository string `json:"repository"`
 		Number     string `json:"number"`
 	} `json:"pull_request"`
-	Commands []timingEvent  `json:"commands"`
-	Workers  []timingWorker `json:"workers"`
-	Phases   []timingPhase  `json:"phases"`
+	Commands []timingEvent   `json:"commands"`
+	Refusals []timingRefusal `json:"refusals"`
+	Workers  []timingWorker  `json:"workers"`
+	Phases   []timingPhase   `json:"phases"`
 	Memory   *struct {
 		Baseline         map[string]any   `json:"baseline"`
 		Final            map[string]any   `json:"final"`
@@ -679,8 +686,9 @@ func writeTimingFixtureAgentRecord(t *testing.T, path, startedAt, endedAt string
 
 func TestCollectTimingsAssemblesCommandsAndWorkersSorted(t *testing.T) {
 	runDir := t.TempDir()
-	events := `{"kind":"minos-timing-event-v1","name":"review","started_at":"2026-08-17T00:20:00Z","ended_at":"2026-08-17T00:40:00Z","duration_ms":1200000,"exit_status":0}
+	events := `{"kind":"minos-timing-event-v1","name":"review@2","started_at":"2026-08-17T00:20:00Z","ended_at":"2026-08-17T00:40:00Z","duration_ms":1200000,"exit_status":0}
 this line is not JSON and must cost one event, never the record
+{"kind":"minos-timing-event-v1","name":"build-round6b","started_at":"2026-08-17T00:10:00Z","ended_at":"2026-08-17T00:11:00Z","duration_ms":60000,"exit_status":0}
 {"kind":"minos-timing-event-v1","name":"build-command","started_at":"2026-08-17T00:02:00Z","ended_at":"2026-08-17T00:03:00Z","duration_ms":60000,"exit_status":0}
 `
 	if err := os.WriteFile(filepath.Join(runDir, "timings.ndjson"), []byte(events), 0o644); err != nil {
@@ -716,10 +724,13 @@ this line is not JSON and must cost one event, never the record
 		t.Fatalf("pull request identity = %+v", record.PullRequest)
 	}
 	if len(record.Commands) != 2 {
-		t.Fatalf("command count = %d, want 2 (the malformed line costs one event only)", len(record.Commands))
+		t.Fatalf("command count = %d, want 2 (malformed and refused names each cost one event only)", len(record.Commands))
 	}
-	if record.Commands[0].Name != "build-command" || record.Commands[1].Name != "review" {
+	if record.Commands[0].Name != "build-command" || record.Commands[1].Name != "review" || record.Commands[1].Attempt != 2 {
 		t.Fatalf("commands are not sorted by start: %q, %q", record.Commands[0].Name, record.Commands[1].Name)
+	}
+	if len(record.Refusals) != 1 || record.Refusals[0].Name == nil || *record.Refusals[0].Name != "build-round6b" || record.Refusals[0].Reason != "invalid step name" {
+		t.Fatalf("refusals = %+v, want the named improvised step refusal", record.Refusals)
 	}
 	if len(record.Workers) != 2 {
 		t.Fatalf("worker count = %d, want 2 (both record roots harvested)", len(record.Workers))

@@ -75,10 +75,57 @@ type statusRun struct {
 
 type statusStage struct {
 	Name       string `json:"name"`
+	Attempt    int    `json:"attempt"`
 	State      string `json:"state"`
 	StartedAt  string `json:"started_at,omitempty"`
 	EndedAt    string `json:"ended_at,omitempty"`
 	ExitStatus *int   `json:"exit_status,omitempty"`
+}
+
+// stepName is the lifecycle's one spelling for a run step. A first execution
+// is its base name; subsequent executions use @N, beginning at @2.
+type stepName struct {
+	Base    string
+	Attempt int
+}
+
+// parseStepName keeps residue consumers from guessing at old improvised step
+// names. Base names are lower-case words separated by hyphens; @ only starts a
+// repeat suffix, whose attempt number is at least two and has no leading zero.
+func parseStepName(name string) (stepName, bool) {
+	base, suffix, hasSuffix := strings.Cut(name, "@")
+	if base == "" || strings.Contains(suffix, "@") || !validStepBase(base) {
+		return stepName{}, false
+	}
+	if !hasSuffix {
+		return stepName{Base: base, Attempt: 1}, true
+	}
+	if len(suffix) == 0 || suffix[0] < '2' || suffix[0] > '9' {
+		return stepName{}, false
+	}
+	for _, character := range suffix[1:] {
+		if character < '0' || character > '9' {
+			return stepName{}, false
+		}
+	}
+	attempt, err := strconv.Atoi(suffix)
+	if err != nil {
+		return stepName{}, false
+	}
+	return stepName{Base: base, Attempt: attempt}, true
+}
+
+func validStepBase(base string) bool {
+	for index, character := range base {
+		if character >= 'a' && character <= 'z' {
+			continue
+		}
+		if character == '-' && index > 0 && index < len(base)-1 && base[index-1] != '-' && base[index+1] != '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // orientationDocument is the run's own record of which pull request it serves,
@@ -350,17 +397,20 @@ func commandStages(runDir string) []statusStage {
 	scanner := bufio.NewScanner(events)
 	for scanner.Scan() {
 		var event commandTimingEvent
-		if json.Unmarshal(scanner.Bytes(), &event) != nil ||
-			event.Kind != "minos-timing-event-v1" ||
-			!strings.HasSuffix(event.Name, "-command") {
+		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.Kind != "minos-timing-event-v1" {
 			continue
 		}
-		name := strings.TrimSuffix(event.Name, "-command")
-		if name == "" {
+		name, ok := parseStepName(event.Name)
+		if !ok || !strings.HasSuffix(name.Base, "-command") {
+			continue
+		}
+		name.Base = strings.TrimSuffix(name.Base, "-command")
+		if name.Base == "" {
 			continue
 		}
 		stage := statusStage{
-			Name:       name,
+			Name:       name.Base,
+			Attempt:    name.Attempt,
 			State:      stageUnknown,
 			StartedAt:  event.StartedAt,
 			EndedAt:    event.EndedAt,
@@ -386,17 +436,21 @@ func dispatchStages(runDir string) []statusStage {
 	}
 	stages := make([]statusStage, 0, len(matches))
 	for _, match := range matches {
-		name := strings.TrimSuffix(filepath.Base(match), dispatchArgsSuffix)
-		stage := statusStage{Name: name, State: stageRunning, StartedAt: fileModifiedTime(match)}
+		rawName := strings.TrimSuffix(filepath.Base(match), dispatchArgsSuffix)
+		name, ok := parseStepName(rawName)
+		if !ok {
+			continue
+		}
+		stage := statusStage{Name: name.Base, Attempt: name.Attempt, State: stageRunning, StartedAt: fileModifiedTime(match)}
 		// The result file is published only on a clean exit, so its presence
 		// settles the stage on its own. The completion flag is written
 		// whatever became of the command, but only a dispatch waited on in
 		// the background carries one — so a flag standing alone is a stage
 		// that ran and failed, while neither file means it is still going.
-		if ended := fileModifiedTime(filepath.Join(runDir, name+"-result.json")); ended != "" {
+		if ended := fileModifiedTime(filepath.Join(runDir, rawName+"-result.json")); ended != "" {
 			stage.EndedAt = ended
 			stage.State = stagePassed
-		} else if ended := fileModifiedTime(filepath.Join(runDir, name+"-result.done")); ended != "" {
+		} else if ended := fileModifiedTime(filepath.Join(runDir, rawName+"-result.done")); ended != "" {
 			stage.EndedAt = ended
 			stage.State = stageFailed
 		}
