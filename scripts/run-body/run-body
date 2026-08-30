@@ -1,6 +1,11 @@
 #!/usr/bin/env sh
 set -eu
 
+# Sourced before anything changes directory: $0 is the only handle on the
+# script's own directory and the run moves out of it.
+# shellcheck source=scripts/run-body/cgroup-memory.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/cgroup-memory.sh"
+
 prelaunch=true
 supervisor_failure=false
 failure_stage="configuration"
@@ -275,12 +280,7 @@ fi
 pressure_enabled=true
 pressure_latched=false
 pressure_samples=0
-if [ -n "${MINOS_CGROUP_DIR:-}" ]; then
-  cgroup_dir="$MINOS_CGROUP_DIR"
-else
-  cgroup_path="$(cut -d: -f3 /proc/self/cgroup 2>/dev/null | head -n 1)"
-  cgroup_dir="/sys/fs/cgroup${cgroup_path}"
-fi
+resolve_cgroup_dir
 
 disable_pressure_watch() {
   echo "run-body: memory-pressure watch disabled: $1" >&2
@@ -300,9 +300,8 @@ sample_memory_pressure() {
     disable_pressure_watch "memory.max has no ceiling"
     return 0
   fi
-  anon="$(awk '$1 == "anon" { print $2; exit }' "$cgroup_dir/memory.stat" 2>/dev/null || true)"
-  IFS= read -r swap_current <"$cgroup_dir/memory.swap.current" || swap_current=""
-  for memory_counter in "$memory_max" "$anon" "$swap_current"; do
+  read_cgroup_memory_counters
+  for memory_counter in "$memory_max" "$cgroup_anon" "$cgroup_swap"; do
     case "$memory_counter" in
       *[!0-9]*|'')
         disable_pressure_watch "cgroup memory counters are unavailable or malformed"
@@ -310,7 +309,7 @@ sample_memory_pressure() {
         ;;
     esac
   done
-  memory_pressure=$((anon + swap_current))
+  memory_pressure=$((cgroup_anon + cgroup_swap))
   # The running peak of genuine footprint is the capacity number the timing
   # record carries: what this run actually needed at its hungriest, sampled
   # every poll, ceilings and admission judgements read it later. Tracked past
@@ -330,7 +329,7 @@ sample_memory_pressure() {
 
   pressure_gib="$(awk -v bytes="$memory_pressure" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
   maximum_gib="$(awk -v bytes="$memory_max" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
-  swap_gib="$(awk -v bytes="$swap_current" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
+  swap_gib="$(awk -v bytes="$cgroup_swap" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
   if ! printf 'memory approaching the run ceiling: %s GiB of %s GiB in anonymous memory plus swap, %s GiB swap in use — finish this stage and hand off\n' \
     "$pressure_gib" "$maximum_gib" "$swap_gib" >"$pressure_signal"; then
     supervisor_failure=true
