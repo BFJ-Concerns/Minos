@@ -140,7 +140,7 @@ func LoadRepoConfigs(root string) ([]RepoConfig, error) {
 		}
 		repo.Path = path
 		if repo.Review.Threshold == "" {
-			repo.Review.Threshold = "Critical"
+			repo.Review.Threshold = "High"
 		}
 		if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
 			return nil, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)

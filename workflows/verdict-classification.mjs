@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 export const DIGEST_KIND = "minos-verdict-digest-v1";
 export const DECISION_KIND = "minos-verdict-decision-v1";
 export const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
-export const DEFAULT_THRESHOLD = "Critical";
+export const DEFAULT_THRESHOLD = "High";
 
 // The two classes the commission lets judge an at-or-above-threshold
 // confirmed finding out of gating. There is no third: any other basis for

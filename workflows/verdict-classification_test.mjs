@@ -70,6 +70,14 @@ test("digest with no at-or-above-threshold finding indicates clean", () => {
   assert.equal(digest.thresholdIndication, "clean");
 });
 
+test("an omitted threshold defaults High findings to the gating side", () => {
+  const digest = verdictDigest({ review: verdict([finding({ severity: "High" })]) });
+  assert.equal(digest.status, "complete");
+  assert.equal(digest.threshold, "High");
+  assert.deepEqual(digest.atOrAboveThresholdKeys, ["specialist-1:1"]);
+  assert.equal(digest.thresholdIndication, "request-changes");
+});
+
 test("digest fails closed on an incomplete review, an unknown threshold, and duplicate identities", () => {
   assert.equal(verdictDigest({ review: { status: "incomplete", confirmedFindings: [] } }).status, "invalid");
   assert.equal(verdictDigest({ review: verdict([]), threshold: "P1" }).status, "invalid");
@@ -194,15 +202,16 @@ test("CLI --digest and --validate run the same policy; argument errors exit 2", 
   const verdictPath = join(scratch, "verdict.json");
   writeFileSync(verdictPath, JSON.stringify(verdict([finding()])));
   const digest = JSON.parse(execFileSync(
-    process.execPath, [cliPath, "--digest", verdictPath, "High"], { encoding: "utf8" },
+    process.execPath, [cliPath, "--digest", verdictPath], { encoding: "utf8" },
   ));
   assert.equal(digest.status, "complete");
+  assert.equal(digest.threshold, "High");
   assert.equal(digest.thresholdIndication, "request-changes");
 
   const decisionPath = join(scratch, "decision.json");
   writeFileSync(decisionPath, JSON.stringify(decision(digest)));
   const validated = JSON.parse(execFileSync(
-    process.execPath, [cliPath, "--validate", verdictPath, decisionPath, "High"], { encoding: "utf8" },
+    process.execPath, [cliPath, "--validate", verdictPath, decisionPath], { encoding: "utf8" },
   ));
   assert.deepEqual(validated, { ok: true });
 
