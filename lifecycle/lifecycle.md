@@ -472,6 +472,19 @@ pull request and every grouped passage in this lifecycle is inert.
    this lifecycle directs, including the re-runs after fix waves and
    repairs.
 
+   A repeated execution of one step keeps the step's base name and takes
+   the attempt suffix `@N`: the first execution is bare (`build-command`),
+   the second is `build-command@2`, the third `build-command@3`, counting
+   every execution of that step across the whole run. The suffix is the
+   one sanctioned way to distinguish repeats — never an improvised form
+   like `build-round6b` or `gate-repair-r6d` — and `@` appears in a step
+   name nowhere else, so consumers parse the suffix rather than guess at
+   prose. The convention covers every name this lifecycle has you write
+   for a repeated step: configured-command events here, and a wrapped
+   workflow dispatch's `NAME` in step 4, where the suffix rides `NAME`
+   into every derived path so each attempt's records, logs and result
+   files stand apart.
+
    For each command, run `node
    "${MINOS_REVIEW_WORKFLOW%/*}/completion-policy.mjs" COMMAND EXIT_STATUS`,
    passing the configured string and its exit status. Read the CLI's one-line
@@ -779,6 +792,11 @@ pull request and every grouped passage in this lifecycle is inert.
 
    The shared wrapper is the sole setting for `ENSEMBLE_RUN_RECORD_DIR`:
    substitute `NAME` with the stage name from the wrapped workflow block.
+   A re-dispatch of a stage this run already dispatched takes the attempt
+   suffix from the step-name convention (step 3): `review@2` for the
+   second review sweep, applied to `NAME` everywhere it appears in the
+   wrapped command, so no attempt reads or clobbers a predecessor's
+   records.
 
    `publish-on-exit` collects the command's stdout beside the result file
    and renames it into place only on a clean exit, so `NAME.json` is never
