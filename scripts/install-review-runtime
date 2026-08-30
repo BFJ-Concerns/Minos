@@ -13,7 +13,10 @@ source_root="$(dirname "$script_dir")"
 # divergence — reported, never fatal — though a tool that is missing
 # outright fails whatever the expectation says. Every mismatch is
 # reported before the stop, naming the tool with both versions.
-declared_tools="$source_root/scripts/expected-tool-versions"
+# MINOS_EXPECTED_TOOLS points a non-deploy invocation (the repository's
+# own tests, which install for reasons other than deploying) at a fixture
+# set; a deploy leaves it unset and gets the shipped declarations.
+declared_tools="${MINOS_EXPECTED_TOOLS:-$source_root/scripts/expected-tool-versions}"
 if [ ! -f "$declared_tools" ]; then
   echo "preflight: declared tool set missing: $declared_tools" >&2
   exit 1
