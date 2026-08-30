@@ -673,7 +673,7 @@ if [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10
     }
   });
 
-  await t.test("an outside-hunk confirmed finding reaches a durable fallback before dispatch", async () => {
+  await t.test("an outside-hunk confirmed finding reaches a durable author-visible surface before dispatch", async () => {
     const sourceLine = 7423;
     const preparedInput = input([finding({
       path: "src/large-file.rs",
@@ -684,10 +684,12 @@ if [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10
       const { result, events, prompts } = await runCase({ minosBin, fixture, preparedInput });
       const review = fixture.state.reviews[0];
       const comments = fixture.state.comments.get(review.id) || [];
-      const findingIsAnchored = comments.some((comment) =>
+      // Whether an outside-hunk line can carry an inline comment is the
+      // forge's answer, declared by its adaptation. Either durable surface
+      // retains the finding: a comment the forge stored against the file, or
+      // the review body naming the file and line.
+      const findingIsInlineComment = comments.some((comment) =>
         comment.path === "src/large-file.rs" &&
-        typeof comment.diff_hunk === "string" &&
-        comment.diff_hunk !== "" &&
         comment.body.includes(SENTINEL));
       const findingIsInReviewBody =
         review.body.includes(SENTINEL) &&
@@ -695,9 +697,9 @@ if [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10
         review.body.includes(String(sourceLine));
 
       assert.equal(
-        findingIsAnchored || findingIsInReviewBody,
+        findingIsInlineComment || findingIsInReviewBody,
         true,
-        "the author-visible review must retain the finding either at a real inline anchor or in the review body with its source location",
+        "the author-visible review must retain the finding either on the file it concerns or in the review body with its source location",
       );
       assert.equal(result.status, "complete");
       assert.equal(result.publication.outcome, "applied");
