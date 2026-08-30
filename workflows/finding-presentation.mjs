@@ -18,9 +18,14 @@ export const REVIEW_BODIES = Object.freeze({
 });
 
 export function findingComment(finding) {
-  return {
+  const comment = {
     path: finding.path,
     body: `**${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}.`,
     line: finding.line,
   };
+  // A finding about a range says so, so the forge boundary can cover the
+  // lines it concerns rather than only the first of them.
+  if (Number.isInteger(finding.endLine) && finding.endLine > finding.line)
+    comment.end_line = finding.endLine;
+  return comment;
 }
