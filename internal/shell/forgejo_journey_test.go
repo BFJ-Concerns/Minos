@@ -1022,18 +1022,23 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 			t.Setenv("MINOS_REPO_NAME", "subject")
 			t.Setenv("MINOS_PR", "1")
+			t.Setenv("MINOS_LEAD_MODEL", "claude-opus-5")
 
+			leadModel := "claude-opus-5"
 			body := apiShape.Request["body"].(string)
+			attribution := "\n\nReviewed by: `" + leadModel + "`."
 			record, err := product.FormatRecord(map[string]string{"head": head, "target": target})
 			if err != nil {
 				t.Fatal(err)
 			}
-			expectedBody := body + "\n\n" + record
+			expectedBody := body + attribution + "\n\n" + record
 			if test.preseed {
 				review := mapsClone(apiShape.Review)
 				review["commit_id"] = head
 				review["body"] = expectedBody
-				state.setReviewWithComments(review, apiShape.Comments)
+				comments := []map[string]any{mapsClone(apiShape.Comments[0])}
+				comments[0]["body"] = comments[0]["body"].(string) + attribution
+				state.setReviewWithComments(review, comments)
 			}
 
 			bodyPath := filepath.Join(t.TempDir(), "body.md")
@@ -1077,6 +1082,9 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 				comment := postedComments[0].(map[string]any)
 				if comment["path"] != "internal/state.go" || comment["new_position"] != float64(41) {
 					t.Fatalf("review comment = %#v", comment)
+				}
+				if comment["body"] != "The transition accepts an invalid state.\n\nReviewed by: `"+leadModel+"`." {
+					t.Fatalf("review comment attribution = %#v", comment["body"])
 				}
 			}
 		})
