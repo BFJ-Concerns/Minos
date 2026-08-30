@@ -8,7 +8,7 @@ import { REVIEW_BODIES, findingComment } from "./finding-presentation.mjs";
 // finding — title, explanation, severity, location — and none of the
 // run's internals.
 
-test("a finding comment carries the finding, not the run's internals", () => {
+test("a finding comment carries its proposing and verifying model identities, not run internals", () => {
   const comment = findingComment({
     id: "specialist-2-gpt:1",
     source: "Does the change handle concurrent writers safely?",
@@ -20,16 +20,19 @@ test("a finding comment carries the finding, not the run's internals", () => {
     combinedConfidence: 58,
     path: "internal/store.go",
     line: 41,
-    proposingLabel: "specialist-2-gpt",
     verifyLabel: "verify-1-claude",
+    proposingModel: { pinnedModel: "gpt-5.6-sol", resolvedModel: "gpt-5.6-sol-served" },
+    verifyingModel: { pinnedModel: "claude-opus-5", resolvedModel: "claude-opus-5" },
   });
   assert.equal(comment.path, "internal/store.go");
   assert.equal(comment.line, 41);
   assert.equal(
     comment.body,
-    "**Lost update on concurrent write**\n\n" +
+      "**Lost update on concurrent write**\n\n" +
       "Two writers read the same revision and the later write wins silently.\n\n" +
-      "Severity: High.",
+      "Severity: High.\n\n" +
+      "Proposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\n" +
+      "Verified by: `claude-opus-5`.",
   );
   // The exact-body assertion above is the contract; these name the leaks
   // it exists to prevent, so a loosened rendering fails with the leak's
@@ -44,6 +47,22 @@ test("a finding comment carries the finding, not the run's internals", () => {
   ]) {
     assert.ok(!comment.body.includes(leaked), `payload leaked ${leaked}`);
   }
+});
+
+test("a finding without model evidence retains the no-attribution presentation baseline", () => {
+  const comment = findingComment({
+    title: "Lost update on concurrent write",
+    explanation: "Two writers read the same revision and the later write wins silently.",
+    severity: "High",
+    path: "internal/store.go",
+    line: 41,
+  });
+  assert.equal(
+    comment.body,
+    "**Lost update on concurrent write**\n\n" +
+      "Two writers read the same revision and the later write wins silently.\n\n" +
+      "Severity: High.",
+  );
 });
 
 test("the review body literals are one frozen authority", () => {

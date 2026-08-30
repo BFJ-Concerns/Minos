@@ -536,7 +536,10 @@ write, matching the target rule above.)
 
    For a complete brief verdict with confirmed findings, post its
    rendered `reviewBody` the same way as its own review group, carrying
-   its own validated decision's verdict. Never publish an all-clear brief
+   its own validated decision's verdict. The guarded review command writes
+   `Reviewed by: \`$MINOS_LEAD_MODEL\`.` to every review body and comment
+   when that configured identity is present; it is payload material only,
+   never a later read-back or decision input. Never publish an all-clear brief
    review and never post an "all clear" comment — the 👍 carries that.
 
    A confirmed finding that reached no durable surface is not a

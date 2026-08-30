@@ -16,10 +16,26 @@ export const REVIEW_BODIES = Object.freeze({
   brief: "Repository review brief findings.",
 });
 
+function modelAttribution(model) {
+  if (!model || typeof model !== "object") return null;
+  if (typeof model.resolvedModel === "string" && model.resolvedModel !== "") {
+    if (typeof model.pinnedModel === "string" && model.pinnedModel !== "" && model.pinnedModel !== model.resolvedModel)
+      return `\`${model.resolvedModel}\` (pinned \`${model.pinnedModel}\`)`;
+    return `\`${model.resolvedModel}\``;
+  }
+  if (typeof model.pinnedModel === "string" && model.pinnedModel !== "") return `\`${model.pinnedModel}\``;
+  return null;
+}
+
 export function findingComment(finding) {
+  const proposingModel = modelAttribution(finding.proposingModel);
+  const verifyingModel = modelAttribution(finding.verifyingModel);
+  const attribution = proposingModel && verifyingModel
+    ? `\n\nProposed by: ${proposingModel}.\nVerified by: ${verifyingModel}.`
+    : "";
   return {
     path: finding.path,
-    body: `**${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}.`,
+    body: `**${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}.${attribution}`,
     line: finding.line,
   };
 }
