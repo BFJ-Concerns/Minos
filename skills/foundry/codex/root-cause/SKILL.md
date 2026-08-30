@@ -143,11 +143,9 @@ doubles as a drift alarm — a ledger with many observations and no killed
 rivals is an investigation that is wandering — and every exit above can be
 written straight from it. It is an aid, not an obligation.
 
-<!-- foundry:variant ledger-location start -->
-
-Keep the ledger under `/tmp/codex/` rather than in the repository.
-
-<!-- foundry:variant ledger-location end -->
+Keep the ledger in a per-task directory under the machine's agent scratch
+area — the location the Scratch Space rule names — rather than in the
+repository's tree.
 
 ## Intermittent failures
 
