@@ -591,6 +591,117 @@ func TestMemoryTelemetrySnapshotsHonestCountersFromTheCgroup(t *testing.T) {
 	}
 }
 
+// The pressure watch and the telemetry snapshot read this run's cgroup through
+// one shared collector, so the anon-plus-swap figure the watch records as the
+// run's peak is the same figure the snapshot reports. The fixture's memory.stat
+// is laid out to punish a second, independent parse: the anon line is preceded
+// by keys that a looser match would take instead, and swap lives in its own
+// file. A copy that drifted would make these two numbers disagree.
+func TestCgroupMemoryCollectorFeedsBothTheWatchAndTheSnapshot(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := filepath.Join(fixture.root, "cgroup")
+	if err := os.MkdirAll(cgroup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"memory.current":      "18000000000\n",
+		"memory.max":          "22000000000\n",
+		"memory.stat":         "anon_thp 3300000000\nfile 12687937536\nanon 5100000000\nswapcached 770000000\nworkingset_refault_anon 14067688\nworkingset_refault_file 47279103\n",
+		"memory.swap.current": "2300000000\n",
+		"memory.events":       "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n",
+		"memory.peak":         "18000000000\n",
+		"memory.pressure":     "some avg10=0.12 avg60=0.16 avg300=2.37 total=1064808220\nfull avg10=0.00 avg60=0.09 avg300=1.72 total=880404397\n",
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(cgroup, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "memory-telemetry"), snapshotPath)
+	cmd.Env = append(os.Environ(), "MINOS_CGROUP_DIR="+cgroup)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("memory-telemetry: %v\n%s", err, combined)
+	}
+	content, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		Anon *float64 `json:"anon"`
+		Swap *float64 `json:"swap"`
+	}
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		t.Fatalf("snapshot does not parse: %v\n%s", err, content)
+	}
+	if snapshot.Anon == nil || snapshot.Swap == nil {
+		t.Fatalf("snapshot omits the footprint counters: %s", content)
+	}
+
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	if err != nil {
+		t.Fatalf("run-body: %v\n%s", err, output)
+	}
+	peak, err := os.ReadFile(filepath.Join(fixture.runDir, "memory-peak"))
+	if err != nil {
+		t.Fatalf("the pressure watch recorded no peak: %v\n%s", err, output)
+	}
+	want := fmt.Sprintf("%d", int64(*snapshot.Anon)+int64(*snapshot.Swap))
+	if strings.TrimSpace(string(peak)) != want {
+		t.Fatalf("watch peak = %s, snapshot anon+swap = %s — the two call paths parsed the cgroup differently",
+			strings.TrimSpace(string(peak)), want)
+	}
+	fixture.assertProcessesStopped(t)
+}
+
+// The shared collector's tolerance reaches both callers: one cgroup missing
+// anon disables the watch and leaves the field out of the snapshot.
+func TestCgroupMemoryCollectorToleratesAMissingCounterOnBothPaths(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, 900_000_000, 0)
+	if err := os.WriteFile(filepath.Join(cgroup, "memory.stat"), []byte("inactive_file 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "memory-telemetry"), snapshotPath)
+	cmd.Env = append(os.Environ(), "MINOS_CGROUP_DIR="+cgroup)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("memory-telemetry: %v\n%s", err, combined)
+	}
+	content, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		t.Fatalf("snapshot does not parse: %v\n%s", err, content)
+	}
+	if _, present := snapshot["anon"]; present {
+		t.Fatalf("snapshot invented an anon figure from a cgroup without one: %s", content)
+	}
+
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	if err != nil {
+		t.Fatalf("run-body: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "memory-pressure watch disabled: cgroup memory counters are unavailable or malformed") {
+		t.Fatalf("run-body kept judging memory without an anon counter:\n%s", output)
+	}
+	fixture.assertProcessesStopped(t)
+}
+
 func TestCollectTimingsCarriesMemoryStallAndThrashDeltas(t *testing.T) {
 	runDir := t.TempDir()
 	baseline := `{"kind":"minos-memory-snapshot-v1","sampled_at":"2026-08-22T00:00:00Z",` +
@@ -962,7 +1073,7 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 	if err := os.MkdirAll(tools, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"archive-run", "collect-timings", "memory-telemetry"} {
+	for _, name := range []string{"archive-run", "collect-timings", "memory-telemetry", "cgroup-memory.sh"} {
 		content, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", name))
 		if err != nil {
 			t.Fatal(err)
