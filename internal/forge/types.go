@@ -103,6 +103,10 @@ type ReviewComment struct {
 	Body        string `json:"body"`
 	NewPosition int64  `json:"new_position"`
 	OldPosition int64  `json:"old_position"`
+	// ExtraLinesCount is the number of lines after the anchored one the
+	// comment covers, as Forgejo's review-comment schema names it: zero is a
+	// single-line comment.
+	ExtraLinesCount int64 `json:"extra_lines_count"`
 }
 
 type reviewWritePayload struct {

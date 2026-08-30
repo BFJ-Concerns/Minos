@@ -562,6 +562,21 @@ test("an envelope carrying a members record makes the run incomplete", async (t)
   assertWithheld(adapterVerdict, "envelope carries a members record; grouped runs no longer exist");
 });
 
+test("a finding about a range reaches the review payload covering it", async (t) => {
+  const fixtureArchiveDir = fixtureArchive(t);
+  const rangeEnvelope = {
+    ...envelope,
+    proposedFindings: [{ ...envelope.proposedFindings[0], endLine: 46 }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: rangeEnvelope, recordDir: fixtureArchiveDir });
+
+  assert.equal(adapterVerdict.status, "complete");
+  assert.deepEqual(
+    adapterVerdict.reviewBody.comments.map(({ line, end_line: endLine }) => ({ line, endLine })),
+    [{ line: 42, endLine: 46 }],
+  );
+});
+
 for (const [description, findingField] of [
   ["an empty source", { source: "" }],
   ["an empty title", { title: "" }],
@@ -569,6 +584,7 @@ for (const [description, findingField] of [
   ["an unknown severity", { severity: "Wibble" }],
   ["an out-of-range confidence", { confidence: 999 }],
   ["an invalid line number", { line: -5 }],
+  ["an end line before its line", { endLine: 3 }],
 ]) {
   test(`a proposed finding with ${description} cannot become publishable`, { timeout: 1000 }, async (t) => {
     const fixtureArchiveDir = fixtureArchive(t);

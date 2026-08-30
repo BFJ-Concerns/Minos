@@ -65,6 +65,28 @@ test("a finding without model evidence retains the no-attribution presentation b
   );
 });
 
+test("a finding about a range carries its end line, a single-line finding does not", () => {
+  const range = findingComment({
+    title: "Duplicated decision",
+    explanation: "The three branches repeat one decision.",
+    severity: "Medium",
+    path: "internal/store.go",
+    line: 41,
+    endLine: 44,
+  });
+  assert.equal(range.line, 41);
+  assert.equal(range.end_line, 44);
+
+  const single = findingComment({
+    title: "Lost update",
+    explanation: "The later write wins silently.",
+    severity: "High",
+    path: "internal/store.go",
+    line: 41,
+  });
+  assert.ok(!("end_line" in single), "a single-line finding invented a range");
+});
+
 test("the review body literals are one frozen authority", () => {
   assert.deepEqual(REVIEW_BODIES, {
     findings: "Confirmed findings in the reviewed code.",

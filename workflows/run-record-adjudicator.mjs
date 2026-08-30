@@ -177,6 +177,8 @@ function validProposedFinding(finding) {
     Number.isInteger(finding.confidence) && finding.confidence >= 0 && finding.confidence <= 100 &&
     typeof finding.path === "string" && finding.path !== "" &&
     Number.isInteger(finding.line) && finding.line >= 1 &&
+    (finding.endLine === undefined || finding.endLine === null ||
+      (Number.isInteger(finding.endLine) && finding.endLine >= finding.line)) &&
     typeof finding.explanation === "string" && finding.explanation !== "" &&
     typeof finding.proposingLabel === "string" && finding.proposingLabel !== "" &&
     typeof finding.verifyLabel === "string" && finding.verifyLabel !== ""

@@ -9,7 +9,7 @@ input="$(cat)"
 if ! printf '%s' "$input" | jq -e '
   (.state == "APPROVE" or .state == "REQUEST_CHANGES" or .state == "COMMENT") and
   (.body | type) == "string" and
-  all(.comments[]?; (.path | type) == "string" and (.path | length) > 0 and (.body | type) == "string" and (.body | length) > 0 and .new_position > 0 and .old_position == 0)' >/dev/null; then
+  all(.comments[]?; (.path | type) == "string" and (.path | length) > 0 and (.body | type) == "string" and (.body | length) > 0 and ((.new_position > 0 and .old_position == 0) or (.old_position > 0 and .new_position == 0)) and (.extra_lines_count // 0) >= 0)' >/dev/null; then
   write_result rejected "invalid consolidated review payload"
   exit 0
 fi
@@ -28,7 +28,7 @@ forge_state="$requested_state"
 body="$(printf '%s' "$input" | jq -r '.body')"
 payload="$(printf '%s' "$input" | jq --arg head "$head" '
   {event:(if .state == "APPROVE" then "APPROVED" else .state end), body, commit_id:$head,
-   comments:[.comments[]? | {path, body, new_position}]}')"
+   comments:[.comments[]? | {path, body, new_position, old_position, extra_lines_count}]}')"
 
 review_presence() {
   reviews='[]'
