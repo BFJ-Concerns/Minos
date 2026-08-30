@@ -90,7 +90,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		leadModel := os.Getenv("MINOS_LEAD_MODEL")
 		if leadModel != "" {
 			attribution := "\n\nReviewed by: `" + leadModel + "`."
-			body = append([]byte(strings.TrimRight(string(body), "\r\n")), []byte(attribution)...)
+			addendum += attribution
 			for index := range comments {
 				comments[index].Body += attribution
 			}

@@ -1374,6 +1374,7 @@ func TestForgeReviewFoldsOffDiffFindingsIntoTheBody(t *testing.T) {
 	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
 	installStrictAdaptation(t, state)
 	configureForgeCommandFixture(t, state)
+	t.Setenv("MINOS_LEAD_MODEL", "claude-opus-5")
 	comments := []requestedReviewComment{
 		{Path: "src/code.txt", Line: 10, Body: "Anchored concern."},
 		{Path: "src/code.txt", Line: 1, Body: "Outside-hunk concern."},
@@ -1389,6 +1390,11 @@ func TestForgeReviewFoldsOffDiffFindingsIntoTheBody(t *testing.T) {
 		t.Fatalf("inline comments = %#v", posted)
 	}
 	body := payload["body"].(string)
+	addendum := strings.Index(body, "Findings that could not be anchored inline:")
+	attribution := strings.Index(body, "Reviewed by: `claude-opus-5`.")
+	if addendum < 0 || attribution < 0 || attribution < addendum {
+		t.Fatalf("review body order = %q", body)
+	}
 	for _, want := range []string{
 		"Findings that could not be anchored inline:",
 		"`src/code.txt` line 1",
@@ -1462,6 +1468,9 @@ func adjudicatedFinding(id, severity, title string, line int, explanation string
 
 func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[string]any {
 	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
 	directory := t.TempDir()
 	envelopePath := filepath.Join(directory, "envelope.json")
 	recordDir := filepath.Join(directory, "record")
