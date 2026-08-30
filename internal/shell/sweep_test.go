@@ -125,7 +125,7 @@ func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
 			wantReason: "open dependencies: minos-e2e-owner/prerequisite#7",
 		},
 		{
-			name: "terminal Minos review",
+			name: "terminal Minos review with its status",
 			configure: func(state *forgejoFixtureState, cfg ServiceConfig, facts Facts) {
 				state.setReviews([]map[string]any{{
 					"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
@@ -136,6 +136,16 @@ func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
 					"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
 					"target_url": statusTargetURL(cfg.Forges["forgejo"].APIBase, facts),
 					"creator":    map[string]any{"login": "Minos"},
+				}})
+			},
+			wantReason: "completed-marker",
+		},
+		{
+			name: "terminal Minos review while restoring its status",
+			configure: func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
+				state.setReviews([]map[string]any{{
+					"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
+					"body": "completed review", "user": map[string]any{"login": "Minos"},
 				}})
 			},
 			wantReason: "completed-marker",
