@@ -224,14 +224,16 @@ curl -H "Authorization: Bearer $(cat /etc/minos/status.token)" \
 The token is the whole gate, and the projection names repositories, branches
 and heads — keep it to the LAN and treat it as a credential.
 
-The projection's `sweep` field carries the sweep-deferral document: the
-outcome of the most recent completed pass. The sweep writes
-`.sweep-deferrals.json` atomically into the runs directory after each pass,
-recording every pull request that was deliberately deferred and its reason —
-work-in-progress branch prefix, completed review marker, or unresolved
-dependency — with a `completed_at` timestamp. The status endpoint reads this
-file on each request and serves it as `sweep`. A deployment with no completed
-pass yet returns no `sweep` field.
+The projection's `sweep` field carries the sweep-deferral document. At the
+end of each completed pass the sweep attempts to write
+`.sweep-deferrals.json` atomically into the runs directory, recording every
+pull request that was deliberately deferred and its reason — work-in-progress
+branch prefix, completed review marker, or unresolved dependency — with a
+`completed_at` timestamp. Publication is best-effort: a failed write logs
+the error and leaves the previous whole document (or none, if no earlier pass
+succeeded) in place, so the served record can lag the latest pass. The status
+endpoint reads this file on each request and serves it as `sweep`. A
+deployment with no completed pass yet returns no `sweep` field.
 
 To include finished runs, point the same `[runs]` block at the archive listing
 script and install it beside the others:

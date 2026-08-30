@@ -44,11 +44,14 @@ Published review comments carry model provenance: each finding is tagged with
 verified it, and the forge review command appends a `Reviewed by:` line naming
 the lead model (`MINOS_LEAD_MODEL`) to every review body and inline comment.
 
-The sweep writes `.sweep-deferrals.json` atomically into the runs directory at
-the end of each completed pass. It records the pull requests the pass
-deliberately deferred and why — work-in-progress branch prefix, completed
-review marker, or unresolved dependency — as a timestamped document. The status
-endpoint serves this as the `sweep` field in its projection.
+At the end of each completed pass the sweep attempts to write
+`.sweep-deferrals.json` atomically into the runs directory, recording the pull
+requests the pass deliberately deferred and why — work-in-progress branch
+prefix, completed review marker, or unresolved dependency — as a timestamped
+document. Publication is best-effort: a failed write logs the error and leaves
+the previous whole document (or none, if no earlier pass succeeded) in place,
+so the served record can lag the latest pass. The status endpoint serves this
+file as the `sweep` field in its projection.
 
 The lead is guided by [`lifecycle/lifecycle.md`](lifecycle/lifecycle.md),
 editable markdown fed to its session as standing launch instructions via
