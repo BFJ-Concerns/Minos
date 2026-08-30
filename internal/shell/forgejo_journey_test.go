@@ -669,6 +669,34 @@ run-body = "/opt/minos/run-body/run-body"
 		}
 	})
 
+	t.Run("unmoved head keeps its reaction", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.reactions = []string{"+1"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
+			"body": "approval at the current head", "user": map[string]any{"login": "Minos"},
+		}})
+		cfg := writeSweepFixtureConfig(t, state)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemd-run" {
+				t.Fatalf("current-head pull request sweep claimed a completed pull request")
+			}
+			return nil, nil
+		}
+
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if !slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 0 {
+			t.Fatalf("reactions = %v, removal writes = %d, want current-head +1 retained", state.reactions, state.reactionDeleteWrites)
+		}
+	})
+
 	t.Run("re-approved head keeps its reaction despite its historical approval", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		approvedHead := state.headSHA()
