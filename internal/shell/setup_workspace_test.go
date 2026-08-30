@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-func TestSetupWorkspaceChecksOutHeadClonesAnnexeAndConfiguresAuthor(t *testing.T) {
+func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testing.T) {
 	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
 	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
 	server := newSetupForge(t, head, repository, annexe)
@@ -73,7 +73,7 @@ func TestSetupWorkspaceChecksOutHeadClonesAnnexeAndConfiguresAuthor(t *testing.T
 	}
 }
 
-func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testing.T) {
+func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
 	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
 	server := newSetupForge(t, head, repository, annexe)
@@ -85,28 +85,11 @@ func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testi
 	if err := os.WriteFile(filepath.Join(workspace, "code.txt"), []byte("unfinished tracked change\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cache := filepath.Join(workspace, "target", "warm-cache")
-	if err := os.MkdirAll(filepath.Dir(cache), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cache, []byte("preserved\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	rerere := filepath.Join(commonDir, "rr-cache", "fixture", "postimage")
-	if err := os.MkdirAll(filepath.Dir(rerere), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(rerere, []byte("resolution\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(orientation, []byte(`{"stale":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(commonDir, "minos-protected-ref"), []byte("refs/heads/feature\nrefs/heads/preserved-member\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "members.json"), []byte(`{"members":[{"id":"primary","head_branch":"feature"},{"id":"member","head_branch":"recorded-member"}]}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(commonDir, "minos-protected-ref"), []byte("refs/heads/stale\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,8 +100,6 @@ func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testi
 	}
 
 	assertContainsFile(t, filepath.Join(workspace, "code.txt"), "reviewed code")
-	assertContainsFile(t, cache, "preserved")
-	assertContainsFile(t, rerere, "resolution")
 	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("resumed workspace head = %q, want %q", got, head)
 	}
@@ -126,14 +107,11 @@ func TestSetupWorkspaceWarmResumeKeepsCachesAndReestablishesSafetyState(t *testi
 	if state.Head != head || state.Grounding != "annexe" {
 		t.Fatalf("rewritten orientation = %+v", state)
 	}
-	if _, err := os.Stat(filepath.Join(runDir, "publication")); !os.IsNotExist(err) {
-		t.Fatalf("publication worktree still exists after resume: %v", err)
-	}
 	protectedRefs, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(protectedRefs), "refs/heads/feature\nrefs/heads/preserved-member\nrefs/heads/recorded-member\n"; got != want {
+	if got, want := string(protectedRefs), "refs/heads/feature\n"; got != want {
 		t.Fatalf("protected refs after resume = %q, want %q", got, want)
 	}
 	assertContainsFile(t, filepath.Join(commonDir, "hooks", "pre-push"), "minos-protected-ref")
@@ -183,43 +161,21 @@ func TestSetupWorkspaceResumeReclonesInvalidGitWorkspaceAndReestablishesSafetySt
 	}
 }
 
-func TestSetupWorkspaceRefusesOnlyForeignHeadMovement(t *testing.T) {
-	for _, test := range []struct {
-		name, movement string
-		wantSuccess    bool
-	}{
-		{name: "Minos-only movement proceeds", movement: "own", wantSuccess: true},
-		{name: "foreign movement refuses", movement: "foreign"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			repository, admitted := createGitRepository(t, "code.txt", "admitted\n")
-			if err := os.WriteFile(filepath.Join(repository, "code.txt"), []byte("moved\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			runGit(t, repository, "add", "code.txt")
-			runGit(t, repository, "commit", "-m", "move head")
-			observed := gitOutput(t, repository, "rev-parse", "HEAD")
-			annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
-			server := newSetupForge(t, observed, repository, annexe)
-			runDir := t.TempDir()
-			classifier := filepath.Join(runDir, "minos")
-			if err := os.WriteFile(classifier, []byte("#!/bin/sh\nprintf '%s\\n' '"+test.movement+"'\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			cmd := setupWorkspaceCommandForTarget(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), admitted, observed)
-			cmd.Env = append(cmd.Env, "MINOS_BIN="+classifier)
-			output, err := cmd.CombinedOutput()
-			if test.wantSuccess {
-				if err != nil {
-					t.Fatalf("setup-workspace failed: %v\n%s", err, output)
-				}
-				if got := gitOutput(t, filepath.Join(runDir, "workspace"), "rev-parse", "HEAD"); got != observed {
-					t.Fatalf("workspace head = %q, want %q", got, observed)
-				}
-			} else if err == nil || !strings.Contains(string(output), "through a foreign commit") {
-				t.Fatalf("error = %v, output = %q", err, output)
-			}
-		})
+func TestSetupWorkspaceRefusesMovedHead(t *testing.T) {
+	repository, admitted := createGitRepository(t, "code.txt", "admitted\n")
+	if err := os.WriteFile(filepath.Join(repository, "code.txt"), []byte("moved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repository, "add", "code.txt")
+	runGit(t, repository, "commit", "-m", "move head")
+	observed := gitOutput(t, repository, "rev-parse", "HEAD")
+	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
+	server := newSetupForge(t, observed, repository, annexe)
+	runDir := t.TempDir()
+	cmd := setupWorkspaceCommandForTarget(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), admitted, observed)
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "pull-request head moved from") {
+		t.Fatalf("error = %v, output = %q", err, output)
 	}
 }
 
@@ -298,64 +254,6 @@ func TestSetupWorkspaceRejectsEmptyRepositoryGuidanceFallback(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "repository fallback has no non-empty checked-in guidance") {
 		t.Fatalf("setup-workspace error = %v, output = %q", err, output)
-	}
-}
-
-func TestSetupResultReuseRunsCommandsOnlyWhenCurrentHeadEvidenceIsUnavailable(t *testing.T) {
-	policy := filepath.Join("..", "..", "workflows", "completion-policy.mjs")
-	result := func(head string) map[string]any {
-		return map[string]any{
-			"status":      "complete",
-			"environment": map[string]any{"ready": true},
-			"commandExecutions": map[string]any{
-				"head":  head,
-				"build": map[string]any{"command": "make build", "exitStatus": 0},
-				"test":  map[string]any{"command": "make test", "exitStatus": 0},
-			},
-		}
-	}
-
-	for _, test := range []struct {
-		name      string
-		record    any
-		head      string
-		wantReuse bool
-	}{
-		{name: "current head", record: result("head-719"), head: "head-719", wantReuse: true},
-		{name: "moved head", record: result("head-719"), head: "head-720"},
-		{name: "absent", record: nil, head: "head-719"},
-		{name: "partial", record: map[string]any{"status": "complete", "environment": map[string]any{"ready": true}}, head: "head-719"},
-		{name: "non-pass", record: func() any {
-			record := result("head-719")
-			record["commandExecutions"].(map[string]any)["test"] = map[string]any{"command": "make test", "exitStatus": 1}
-			return record
-		}(), head: "head-719"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			recordPath := filepath.Join(t.TempDir(), "setup-result.json")
-			if test.record != nil {
-				data, err := json.Marshal(test.record)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(recordPath, data, 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			output, err := exec.Command("node", policy, "--setup-result", recordPath, test.head, "make build", "make test").Output()
-			if err != nil {
-				t.Fatalf("setup reuse policy failed: %v", err)
-			}
-			var decision struct {
-				Reusable bool `json:"reusable"`
-			}
-			if err := json.Unmarshal(output, &decision); err != nil {
-				t.Fatal(err)
-			}
-			if decision.Reusable != test.wantReuse {
-				t.Fatalf("reusable = %v, want %v; current-head passing evidence must be the only no-execution path", decision.Reusable, test.wantReuse)
-			}
-		})
 	}
 }
 

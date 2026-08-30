@@ -30,9 +30,6 @@ const expectedCallSites = new Map([
   ["review.js", 3],
   ["review-briefs.js", 4],
   ["review-scope.js", 1],
-  ["fix.js", 3],
-  ["setup.js", 2],
-  ["rootcause.js", 1],
 ]);
 
 function operationRoot(t, prefix) {
@@ -164,7 +161,7 @@ test("the installed runtime recognises every agent option key used by shipped wo
 
   assert.deepEqual(
     [...new Set(callSites.flatMap(({ keys }) => keys))].sort(),
-    ["effort", "engine", "isolation", "label", "model", "phase", "schema"],
+    ["effort", "engine", "label", "model", "phase", "schema"],
   );
   for (const { filename, keys } of callSites) {
     assert.doesNotThrow(

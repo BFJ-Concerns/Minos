@@ -126,24 +126,6 @@ func TestLoadRepoConfigDecodesWorkInProgressBranchPrefixes(t *testing.T) {
 	}
 }
 
-func TestLoadRepoConfigDecodesStructuralBranchPrefixes(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\nstructural-branch-prefixes = [\"structural/\"]\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
-	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	repos, err := LoadRepoConfigs(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(repos) != 1 || len(repos[0].StructuralBranchPrefixes) != 1 || repos[0].StructuralBranchPrefixes[0] != "structural/" {
-		t.Fatalf("structural prefixes = %+v", repos)
-	}
-}
-
 func TestLoadRepoConfigRejectsEmptyWorkInProgressBranchPrefix(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
@@ -159,34 +141,17 @@ func TestLoadRepoConfigRejectsEmptyWorkInProgressBranchPrefix(t *testing.T) {
 	}
 }
 
-func TestLoadRepoConfigRejectsEmptyStructuralBranchPrefix(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "repos"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contents := "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\nstructural-branch-prefixes = [\"\"]\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
-	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := LoadRepoConfigs(root)
-	if err == nil || !strings.Contains(err.Error(), "structural-branch-prefixes") {
-		t.Fatalf("error = %v, want empty prefix validation", err)
-	}
-}
-
-func TestLoadRepoConfigDefaultsReviewLoopKnobs(t *testing.T) {
+func TestLoadRepoConfigDefaultsReviewThreshold(t *testing.T) {
 	for _, test := range []struct {
-		name           string
-		block          string
-		wantThreshold  string
-		wantGateRepair int
+		name          string
+		block         string
+		wantThreshold string
 	}{
-		{name: "unset", wantThreshold: "Critical", wantGateRepair: DefaultMaximumGateRepairs},
+		{name: "unset", wantThreshold: "Critical"},
 		{
-			name:           "explicit values survive",
-			block:          "[review]\nthreshold = \"Medium\"\n[gate]\nmaximum-repairs = 5\n",
-			wantThreshold:  "Medium",
-			wantGateRepair: 5,
+			name:          "explicit threshold survives",
+			block:         "[review]\nthreshold = \"Medium\"\n",
+			wantThreshold: "Medium",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -208,22 +173,17 @@ func TestLoadRepoConfigDefaultsReviewLoopKnobs(t *testing.T) {
 			if repos[0].Review.Threshold != test.wantThreshold {
 				t.Fatalf("threshold = %q, want %q", repos[0].Review.Threshold, test.wantThreshold)
 			}
-			if repos[0].Gate.MaximumRepairs != test.wantGateRepair {
-				t.Fatalf("gate.maximum-repairs = %d, want %d", repos[0].Gate.MaximumRepairs, test.wantGateRepair)
-			}
 		})
 	}
 }
 
-func TestLoadRepoConfigValidatesReviewLoopKnobs(t *testing.T) {
+func TestLoadRepoConfigValidatesReviewThreshold(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		block string
 		want  string
 	}{
 		{name: "threshold", block: "[review]\nthreshold = \"Urgent\"", want: "review.threshold"},
-		{name: "maximum rounds", block: "[review]\nmaximum-rounds = -1", want: "review.maximum-rounds"},
-		{name: "maximum gate repairs", block: "[gate]\nmaximum-repairs = -1", want: "gate.maximum-repairs"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()

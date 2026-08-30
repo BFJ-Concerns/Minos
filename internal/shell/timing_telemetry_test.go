@@ -821,16 +821,8 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "cgroup-death-evidence"), []byte("[memory.events]\noom_kill 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The archive proof starts at the two production launch boundaries. A tree
-	// lacking either retention setting fails before it can manufacture a record
-	// shape, then the real launcher creates the exact nested directories the
-	// archive and timing scripts consume below.
-	assertLifecycleEnsembleRecordLaunch(t, "gate-repair", `> "$MINOS_RUN_DIR/gate-repair-args.json"`)
-	assertFixDispatchRetainsEnsembleRecord(t)
-	// The launcher, rather than this test, creates each record root. Add one
-	// deterministic agent result to each launcher-created archive so the real
-	// timing and archive scripts exercise the production nested layout without
-	// talking to a model provider.
+	// Add a deterministic agent result under the nested layout the timing and
+	// archive scripts consume without talking to a model provider.
 	records := map[string]string{}
 	for _, fixture := range []struct {
 		name      string
@@ -838,10 +830,8 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 		endedAt   string
 	}{
 		{name: "record-a", startedAt: "2026-08-17T00:21:00Z", endedAt: "2026-08-17T00:25:00Z"},
-		{name: "gate-repair", startedAt: "2026-08-17T00:26:00Z", endedAt: "2026-08-17T00:27:00Z"},
-		{name: "fix", startedAt: "2026-08-17T00:28:00Z", endedAt: "2026-08-17T00:29:00Z"},
 	} {
-		archive := launchEnsembleRecordProbe(t, runDir, fixture.name)
+		archive := filepath.Join(runDir, "ensemble-records", fixture.name)
 		writeTimingFixtureAgentRecord(t, filepath.Join(archive, "agents", "0001", "agent.json"), fixture.startedAt, fixture.endedAt)
 		relative, err := filepath.Rel(runDir, archive)
 		if err != nil {
@@ -928,14 +918,14 @@ exec sh -c "$last"
 	if record.Kind != "minos-timing-record-v1" {
 		t.Fatalf("sidecar kind = %q", record.Kind)
 	}
-	if len(record.Commands) != 1 || len(record.Workers) != 3 {
-		t.Fatalf("sidecar carries %d commands, %d workers, want 1 and 3 genuine workers", len(record.Commands), len(record.Workers))
+	if len(record.Commands) != 1 || len(record.Workers) != 1 {
+		t.Fatalf("sidecar carries %d commands, %d workers, want 1 and 1 genuine worker", len(record.Commands), len(record.Workers))
 	}
 	workerRecords := make(map[string]bool, len(record.Workers))
 	for _, worker := range record.Workers {
 		workerRecords[worker.Record] = true
 	}
-	for _, want := range []string{records["record-a"], records["gate-repair"], records["fix"]} {
+	for _, want := range []string{records["record-a"]} {
 		if !workerRecords[want] {
 			t.Fatalf("timing record omits genuine worker record %q: %#v", want, record.Workers)
 		}
@@ -949,10 +939,7 @@ exec sh -c "$last"
 	if err != nil {
 		t.Fatalf("list delivered tarball: %v\n%s", err, archiveListing)
 	}
-	for _, want := range []string{
-		records["gate-repair"] + "/agents/0001/agent.json",
-		records["fix"] + "/agents/0001/agent.json",
-	} {
+	for _, want := range []string{records["record-a"] + "/agents/0001/agent.json"} {
 		if !strings.Contains(string(archiveListing), want) {
 			t.Fatalf("delivered tarball omits %q:\n%s", want, archiveListing)
 		}

@@ -21,7 +21,6 @@ test("an unverified observation survives adjudication without becoming a finding
   const observation = {
     id: "specialist-1-correctness-gpt:observation:1",
     source: "Correctness",
-    member: "primary",
     title: "pre-existing defect",
     path: "internal/legacy.go",
     line: 9,
@@ -56,29 +55,4 @@ test("an unverified observation survives adjudication without becoming a finding
   assert.ok(!("verdict" in verdict.outOfScopeObservations[0]));
   assert.ok(!("severity" in verdict.outOfScopeObservations[0]));
   assert.ok(!("confidence" in verdict.outOfScopeObservations[0]));
-});
-
-test("grouped observations retain known members and discard unattributed entries", () => {
-  const base = {
-    id: "specialist-1:observation:1",
-    source: "Correctness",
-    title: "pre-existing defect",
-    path: "internal/legacy.go",
-    line: 9,
-    explanation: "Unverified observation: unchanged code admits an invalid state.",
-    observingLabel: "specialist-1",
-    verified: false,
-  };
-  const envelope = {
-    members: [{ id: "primary" }, { id: "sibling" }],
-    outOfScopeObservations: [
-      { ...base, member: "sibling" },
-      { ...base, id: "missing-member" },
-      { ...base, id: "unknown-member", member: "unknown" },
-    ],
-  };
-
-  assert.deepEqual(attachOutOfScopeObservations({}, envelope).outOfScopeObservations, [
-    { ...base, member: "sibling" },
-  ]);
 });

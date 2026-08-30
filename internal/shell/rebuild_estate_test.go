@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+// fixtureStatusTargetURL mirrors the URL guarded-set-status writes: the pull
+// request's web URL with the pinned target recorded in the fragment.
+func fixtureStatusTargetURL(apiBase string, facts Facts) string {
+	webBase := strings.TrimSuffix(strings.TrimSuffix(apiBase, "/"), "/api/v1")
+	return fmt.Sprintf("%s/%s/%s/pulls/%s#minos-target-%s", webBase, facts.Owner, facts.Repo, facts.PR, facts.BaseSHA)
+}
+
 func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	codeRepository, head := createGitRepository(t, "code.txt", "estate reviewed head\n")
 	annexeRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n\nDistinctive grounding value: cinnabar-orbit-719.\n")
@@ -91,9 +98,8 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		t.Fatalf("first admission = %q, starts = %d; want one start", result, len(starts))
 	}
 	firstEnvironment := systemdEnvironment(t, starts[0])
-	firstEnvironment["MINOS_TEST_CONTINUATION_FINISH"] = "1"
 	runRecordedBody(t, runBody, firstEnvironment)
-	assertContainsFile(t, filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "lead-complete"), "continuation")
+	assertContainsFile(t, filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "lead-complete"), "clean")
 
 	workspace := firstEnvironment["MINOS_WORKSPACE"]
 	orientationPath := firstEnvironment["MINOS_ORIENTATION"]
@@ -114,7 +120,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	assertContainsFile(t, record+".acceptance", `"bypassPermissionsModeAccepted":true`)
 	assertContainsFile(t, record+".auth", "claude-auth-present")
 	assertContainsFile(t, record+".auth", "codex-auth-present")
-	assertContainsFile(t, record+".argv", "read the commission in the recorded annexe README")
+	assertContainsFile(t, record+".argv", "the recorded annexe README as the driving statement")
 	runHome := filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "home")
 	for _, value := range []string{
 		"HOME=" + runHome,
@@ -126,15 +132,6 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		assertContainsFile(t, record+".env", value)
 	}
 	assertContainsFile(t, record+".argv", "claude-opus-5")
-
-	if err := os.WriteFile(filepath.Join(workspace, "estate-repair.txt"), []byte("repair\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, workspace, "add", "estate-repair.txt")
-	runGit(t, workspace, "commit", "-m", "fix: exercise estate author")
-	if got := gitOutput(t, workspace, "log", "-1", "--format=%an <%ae>"); got != "Minos <minos@example.invalid>" {
-		t.Fatalf("repair author = %q, want Minos identity", got)
-	}
 
 	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["number"] = float64(2) })
 	secondFacts := facts
@@ -156,7 +153,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	}
 }
 
-func TestRebuildEstateStopsNonCleanLeadWithoutHoldingItForSilence(t *testing.T) {
+func TestRebuildEstateStopsNonCleanLead(t *testing.T) {
 	runBody, record, environment := startEstateRunBody(t)
 	environment["MINOS_TEST_NON_CLEAN_FINISH"] = "1"
 	environment["MINOS_LEAD_SILENCE_TIMEOUT"] = "1"
@@ -174,7 +171,7 @@ func TestRebuildEstateStopsNonCleanLeadWithoutHoldingItForSilence(t *testing.T) 
 	}
 
 	assertContainsFile(t, filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete"), "non-clean")
-	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=brief-fix cause=repairs-incomplete")
+	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=review cause=verdict-incomplete")
 	assertContainsFile(t, record+".terminal", `"state":"done"`)
 	assertContainsFile(t, record+".calls", "stop abcdef12")
 	attemptsData, err := os.ReadFile(record + ".attempts")
@@ -331,87 +328,6 @@ func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
 	}
 }
 
-func TestRebuildEstateTerminalRecoveryBindsPullRequestHeadTargetAndStatus(t *testing.T) {
-	for _, test := range []struct {
-		name          string
-		changeStatus  func(map[string]any)
-		wantRecovered bool
-	}{
-		{name: "matching terminal status", wantRecovered: false},
-		{name: "different pull request", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["target_url"] = strings.Replace(status["target_url"].(string), "/pulls/1#", "/pulls/2#", 1)
-		}},
-		{name: "different target", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["target_url"] = strings.Replace(status["target_url"].(string), "#minos-target-", "#minos-target-other-", 1)
-		}},
-		{name: "different terminal state", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["status"] = "failure"
-		}},
-		{name: "different status description", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["description"] = "Not the Minos terminal description"
-		}},
-		{name: "different status creator", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["creator"] = map[string]any{"login": "another-bot"}
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			state := newForgejoFixtureState(t)
-			state.setReviews([]map[string]any{{
-				"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
-				"body": "terminal review", "user": map[string]any{"login": "Minos"},
-			}})
-			cfg, repo, facts := state.service(t)
-			facts.HeadSHA = state.headSHA()
-			facts.BaseSHA = state.targetSHA()
-			status := map[string]any{
-				"id": 7, "context": "Minos", "status": "success", "description": "Changes approved",
-				"target_url": statusTargetURL(cfg.Forges["forgejo"].APIBase, facts),
-				"creator":    map[string]any{"login": "Minos"},
-			}
-			if test.changeStatus != nil {
-				test.changeStatus(status)
-			}
-			state.setStatuses([]map[string]any{status})
-
-			original := commandCombinedOutput
-			t.Cleanup(func() { commandCombinedOutput = original })
-			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
-				t.Fatalf("terminally reviewed pull request reached %s", name)
-				return nil, nil
-			}
-
-			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := ReconcileNothing
-			if test.wantRecovered {
-				want = ReconcileRecovered
-			}
-			if result.Decision != want {
-				t.Fatalf("result = %q, want %q", result, want)
-			}
-			writes, repairedTarget := state.statusWriteFacts()
-			if test.wantRecovered {
-				if writes != 1 || repairedTarget != statusTargetURL(cfg.Forges["forgejo"].APIBase, facts) {
-					t.Fatalf("recovery writes = %d, target = %v; want one exact identity write", writes, repairedTarget)
-				}
-			} else if writes != 0 {
-				t.Fatalf("matching status caused %d recovery writes", writes)
-			}
-			statusReads := state.statusReadFacts()
-			if len(statusReads) == 0 {
-				t.Fatal("terminal reconciliation made no current-head status read")
-			}
-			for _, commit := range statusReads {
-				if commit != facts.HeadSHA {
-					t.Fatalf("status read commit = %q, want current head %q", commit, facts.HeadSHA)
-				}
-			}
-		})
-	}
-}
-
 func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, facts := state.service(t)
@@ -445,7 +361,7 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *t
 	state.mu.Unlock()
 	if writes != 1 || written["state"] != "error" || written["context"] != "Minos" ||
 		written["description"] != "Review incomplete" ||
-		written["target_url"] != statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+		written["target_url"] != fixtureStatusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
 			Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
 		}) {
 		t.Fatalf("incomplete status writes = %d, payload = %#v", writes, written)
@@ -475,7 +391,7 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *t
 	if writesAfterMove != 2 {
 		t.Fatalf("pinned-target status write count = %d, want two", writesAfterMove)
 	}
-	wantMovedAnchor := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+	wantMovedAnchor := fixtureStatusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
 		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target + "-stale",
 	})
 	if movedAnchor != wantMovedAnchor {
@@ -523,10 +439,10 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 	if len(posts) != 4 {
 		t.Fatalf("forge received %d status posts, want exactly four: %#v", len(posts), posts)
 	}
-	wantTarget := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+	wantTarget := fixtureStatusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
 		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
 	})
-	wantNewTarget := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
+	wantNewTarget := fixtureStatusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
 		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: newTarget,
 	})
 	for index, want := range []struct {
@@ -548,164 +464,26 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 	}
 }
 
-func TestRebuildEstateReviewCompletionReactionJourneys(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		findingsFix bool
-	}{
-		{name: "clean brief stage"},
-		{name: "brief findings fixed on a fresh head", findingsFix: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			state := newForgejoFixtureState(t)
-			if test.findingsFix {
-				installAnchoredWorkspace(t, state, "internal/state.go", 41)
-			}
-			cfg, _, facts := state.service(t)
-			writeServiceConfig(t, cfg)
-			t.Setenv("MINOS_CONFIG", cfg.Root)
-			t.Setenv("MINOS_FORGE", facts.Forge)
-			t.Setenv("MINOS_OWNER", facts.Owner)
-			t.Setenv("MINOS_REPO_NAME", facts.Repo)
-			t.Setenv("MINOS_PR", facts.PR)
+func TestRebuildEstateCleanReviewAddsCompletionReaction(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
 
-			target := state.targetSHA()
-			head := state.headSHA()
-			wantReviews := 0
-			if test.findingsFix {
-				directory := t.TempDir()
-				bodyPath := filepath.Join(directory, "brief.md")
-				commentsPath := filepath.Join(directory, "comments.json")
-				if err := os.WriteFile(bodyPath, []byte("Repository review brief findings.\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(commentsPath, []byte(`[{"path":"internal/state.go","body":"Brief concern.","line":41}]`), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
-					t.Fatal(err)
-				}
-				wantReviews = 1
-				state.changePullRequest(func(pullRequest map[string]any) {
-					pullRequest["head"].(map[string]any)["sha"] = "feedfacefeedfacefeedfacefeedfacefeedface"
-				})
-				head = state.headSHA()
-			}
-
-			for attempt := 1; attempt <= 2; attempt++ {
-				if err := ForgeCommand(t.Context(), []string{"reaction", head, target, "+1"}, &bytes.Buffer{}); err != nil {
-					t.Fatalf("reaction attempt %d: %v", attempt, err)
-				}
-			}
-
-			state.mu.Lock()
-			defer state.mu.Unlock()
-			if state.reactionWrites != 1 || !slices.Contains(state.reactions, "+1") {
-				t.Fatalf("reactions = %v, writes = %d, want one +1 write", state.reactions, state.reactionWrites)
-			}
-			if state.reviewWrites != wantReviews {
-				t.Fatalf("review writes = %d, want %d", state.reviewWrites, wantReviews)
-			}
-			if test.findingsFix && state.reviewPayloads[0]["commit_id"] == head {
-				t.Fatalf("brief findings review and completion reaction both used %q; want reaction on the fresh repaired head", head)
-			}
-		})
-	}
-}
-
-func TestRebuildEstateBriefFixIncompleteResultStopsBeforeSuccessFields(t *testing.T) {
-	lifecyclePath := filepath.Join("..", "..", "lifecycle", "lifecycle.md")
-	lifecycle, err := os.ReadFile(lifecyclePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	instruction := string(lifecycle)
-	start := strings.Index(instruction, `> "$MINOS_RUN_DIR/brief-fix-result.json"`)
-	if start < 0 {
-		t.Fatal("lifecycle omits the brief-fix result")
-	}
-	end := strings.Index(instruction[start:], "`integration.commits`")
-	if end < 0 {
-		t.Fatal("lifecycle omits the brief-fix success fields")
-	}
-	briefFixStop := instruction[start : start+end]
-
-	for _, clause := range []string{
-		"Before reading any other result field, read `status`.",
-		"If it is `incomplete`",
-		"append its `reason` to `$MINOS_FAILURE_LOG`",
-		"set `\"$MINOS_BIN\" forge status",
-		`CURRENT_HEAD "$MINOS_TARGET_SHA" incomplete`,
-		`remove the 👀 with`,
-		`"$MINOS_BIN" forge reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`,
-		"write the non-clean terminal marker, and stop",
-	} {
-		at := strings.Index(briefFixStop, clause)
-		if at < 0 {
-			t.Fatalf("brief-fix incomplete stop omits %q", clause)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"reaction", state.headSHA(), state.targetSHA(), "+1"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("reaction attempt %d: %v", attempt, err)
 		}
-		briefFixStop = briefFixStop[at+len(clause):]
 	}
-}
 
-func TestRebuildEstateAllRunReachedTerminalOutcomesBindEyesCleanup(t *testing.T) {
-	lifecyclePath := filepath.Join("..", "..", "lifecycle", "lifecycle.md")
-	lifecycle, err := os.ReadFile(lifecyclePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name        string
-		instruction string
-		merged      bool
-		remove      bool
-	}{
-		{name: "merged", instruction: "Merged,", merged: true, remove: true},
-		{name: "request changes", instruction: "request-changes", remove: true},
-		{name: "clean without auto merge", instruction: "clean-without-auto-merge", remove: true},
-		{name: "held", instruction: "held,", remove: true},
-		{name: "incomplete", instruction: "every incomplete outcome", remove: true},
-		{name: "crash", instruction: "a crash alone leaves it", remove: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if !strings.Contains(string(lifecycle), test.instruction) {
-				t.Fatalf("lifecycle omits terminal outcome instruction %q", test.instruction)
-			}
-			state := newForgejoFixtureState(t)
-			state.reactions = []string{"eyes"}
-			if test.merged {
-				state.changePullRequest(func(pullRequest map[string]any) {
-					pullRequest["merged"] = true
-					pullRequest["state"] = "closed"
-				})
-			}
-			cfg, _, facts := state.service(t)
-			writeServiceConfig(t, cfg)
-			t.Setenv("MINOS_CONFIG", cfg.Root)
-			t.Setenv("MINOS_FORGE", facts.Forge)
-			t.Setenv("MINOS_OWNER", facts.Owner)
-			t.Setenv("MINOS_REPO_NAME", facts.Repo)
-			t.Setenv("MINOS_PR", facts.PR)
-
-			if test.remove {
-				for attempt := 1; attempt <= 2; attempt++ {
-					if err := ForgeCommand(t.Context(), []string{"reaction-remove", state.headSHA(), state.targetSHA(), "eyes"}, &bytes.Buffer{}); err != nil {
-						t.Fatalf("reaction removal attempt %d: %v", attempt, err)
-					}
-				}
-			}
-
-			state.mu.Lock()
-			defer state.mu.Unlock()
-			if test.remove {
-				if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
-					t.Fatalf("reactions = %v, delete writes = %d, want eyes absent after one write", state.reactions, state.reactionDeleteWrites)
-				}
-			} else if !slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 0 {
-				t.Fatalf("crash cleanup changed reactions = %v, delete writes = %d", state.reactions, state.reactionDeleteWrites)
-			}
-		})
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.reactionWrites != 1 || !slices.Contains(state.reactions, "+1") {
+		t.Fatalf("reactions = %v, writes = %d, want one +1 write", state.reactions, state.reactionWrites)
 	}
 }
 
@@ -728,16 +506,8 @@ case "$1" in
     printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
     guidance="$(jq -r '.guidance' "$MINOS_ORIENTATION")"
     cat "$guidance" >"$record.grounding"
-    if [ "${MINOS_TEST_CONTINUATION_FINISH:-}" = "1" ]; then
-      jq -n \
-        --arg owner "$MINOS_OWNER" --arg repo "$MINOS_REPO_NAME" --arg number "$MINOS_PR" \
-        --arg head "$MINOS_HEAD_SHA" --arg run_dir "$MINOS_RUN_DIR" \
-        '{kind:"minos-run-handoff-v1",pullRequest:{owner:$owner,repo:$repo,number:$number},head:$head,runDir:$run_dir,stoppedAt:"estate fixture",writtenAt:"fixture",runRecord:{round:0,confirmedUnfixed:[]}}' \
-        >"$MINOS_HANDOFF.tmp"
-      mv "$MINOS_HANDOFF.tmp" "$MINOS_HANDOFF"
-      printf 'continuation\n' >"$MINOS_RUN_DIR/lead-complete"
-    elif [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
-      printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=brief-fix cause=repairs-incomplete\n' \
+    if [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
+      printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=review cause=verdict-incomplete\n' \
         >>"$MINOS_FAILURE_LOG"
       printf 'non-clean\n' >"$MINOS_RUN_DIR/lead-complete"
     elif [ "${MINOS_TEST_UNMARKED_FINISH:-}" = "1" ]; then
@@ -779,11 +549,7 @@ esac
 	}
 	skills := filepath.Join(root, "skills")
 	for _, casting := range []string{"claude-code", "codex"} {
-		skill := filepath.Join(skills, casting, "root-cause")
-		if err := os.MkdirAll(skill, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("# Root Cause\n"), 0o644); err != nil {
+		if err := os.MkdirAll(filepath.Join(skills, casting), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -804,7 +570,6 @@ esac
 		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION": instruction,
 		"MINOS_REVIEW_WORKFLOW":       "/opt/minos/workflows/adjudicated-review",
-		"MINOS_ROOT_CAUSE_SKILL":      filepath.Join(skills, "codex", "root-cause"),
 		"MINOS_SKILLS_DIR":            skills,
 		"MINOS_SETUP_WORKSPACE":       setup,
 		"MINOS_BIN":                   "/usr/local/bin/minos",

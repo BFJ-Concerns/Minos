@@ -95,7 +95,7 @@ export function briefEngagement(briefs, occasion, changedPaths) {
     const disposition = deterministicDisposition(brief, front, occasion, changedPaths);
     const { misconfiguration, ...recorded } = disposition;
     if (misconfiguration)
-      misconfigurations.push({ ...base, member: "primary", kind: misconfiguration.skipKind, reason: misconfiguration.reason });
+      misconfigurations.push({ ...base, kind: misconfiguration.skipKind, reason: misconfiguration.reason });
     if (disposition.status === "skipped") {
       dispositions.push({ ...base, ...recorded });
       continue;

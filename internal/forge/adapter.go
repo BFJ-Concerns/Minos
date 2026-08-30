@@ -41,8 +41,6 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	if err := validateSnapshot(snapshot, repository, pullRequest); err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.CheckDecision = ReduceRequiredChecks(snapshot.RequiredChecks, snapshot.Statuses)
-	snapshot.FailedChecks = FailedRequiredChecks(snapshot.RequiredChecks, snapshot.Statuses)
 	return snapshot, nil
 }
 
