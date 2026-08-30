@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { memberIdsFrom } from "./member-record.mjs";
+import { REVIEW_BODIES, findingComment } from "./finding-presentation.mjs";
 
 const LOW_COMBINED_CONFIDENCE = 70;
 
@@ -201,17 +202,6 @@ function validProposedFinding(finding) {
     typeof finding.proposingLabel === "string" && finding.proposingLabel !== "" &&
     typeof finding.verifyLabel === "string" && finding.verifyLabel !== ""
   );
-}
-
-function findingComment(finding) {
-  return {
-    path: finding.path,
-    body:
-      `**${finding.source}: ${finding.title}**\n\n${finding.explanation}\n\n` +
-      `Severity: ${finding.severity}. Reviewer confidence: ${finding.confidence}. ` +
-      `Verifier confidence: ${finding.verifierConfidence}.`,
-    line: finding.line,
-  };
 }
 
 export async function adjudicate({ envelope, recordDir }) {
@@ -415,9 +405,7 @@ export async function adjudicate({ envelope, recordDir }) {
       return {
         member,
         verdict: "comment",
-        body: findings.length > 0
-          ? "Confirmed findings in the reviewed code."
-          : "No confirmed findings in the reviewed code.",
+        body: findings.length > 0 ? REVIEW_BODIES.findings : REVIEW_BODIES.clean,
         comments: findings.map(findingComment),
         status: findings.length > 0 ? "attention" : "clean",
       };
@@ -436,7 +424,7 @@ export async function adjudicate({ envelope, recordDir }) {
     reviewBody: complete && comments.length > 0
       ? {
           verdict: "comment",
-          body: isBriefReview ? "Repository review brief findings." : "Confirmed findings in the reviewed code.",
+          body: isBriefReview ? REVIEW_BODIES.brief : REVIEW_BODIES.findings,
           comments,
         }
       : null,

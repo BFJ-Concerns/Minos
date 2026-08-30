@@ -463,7 +463,7 @@ test("a lead grouping cannot redispatch a twice-failed finding across a round bo
   assert.equal(terminal.result.requestChangesReview.verdict, "request-changes");
   assert.deepEqual(terminal.result.requestChangesReview.comments[0], {
     path: "internal/state.go",
-    body: "**transition**\n\ntransition breaks the contract\n\nSeverity: High. Confidence: 90.",
+    body: "**transition**\n\ntransition breaks the contract\n\nSeverity: High.",
     line: 41,
   });
   assert.equal(terminal.calls.length, 0);
