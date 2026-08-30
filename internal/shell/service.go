@@ -97,8 +97,8 @@ func completedRunStatus(snapshot forge.Snapshot, botLogin string) bool {
 	if !found {
 		return false
 	}
-	return latest.Description == product.Clean().Description() ||
-		latest.Description == product.Attention().Description()
+	_, completed := product.CompletionMarker(string(latest.State), latest.Description)
+	return completed
 }
 
 type ReconcileDecision string
@@ -113,9 +113,13 @@ const (
 )
 
 type ReconcileResult struct {
-	Decision     ReconcileDecision
-	BlockingUnit string
-	Detail       string
+	Decision ReconcileDecision
+	// DeferralReason is set only when reconciliation deliberately leaves an
+	// open pull request unstarted. Sweep records it for the operator-facing
+	// projection; admission never reads that record back.
+	DeferralReason string
+	BlockingUnit   string
+	Detail         string
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
@@ -130,19 +134,31 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
+	if staleApproval(snapshot, cfg.Service.BotLogin) {
+		guard := forge.Guard{
+			Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+			PullRequest: snapshot.PullRequest,
+			HeadSHA:     snapshot.HeadSHA,
+			TargetSHA:   snapshot.TargetSHA,
+		}
+		if result := adapter.RemoveReaction(ctx, guard, "+1"); result.Outcome != forge.WriteApplied {
+			return ReconcileResult{}, fmt.Errorf("remove stale approval reaction: %s: %s", result.Outcome, result.Reason)
+		}
+	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA
 	facts.BaseRef = snapshot.TargetBranch
 	facts.HeadRef = snapshot.HeadBranch
 	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
 	if eligibility.workInProgress {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
+		reason := fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch)
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason), DeferralReason: reason}, nil
 	}
 	if eligibility.completedRun {
-		return ReconcileResult{Decision: ReconcileNothing}, nil
+		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker"}, nil
 	}
 	if eligibility.dependencyDeferred {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason)}, nil
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason), DeferralReason: eligibility.dependencyReason}, nil
 	}
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)
 	if err != nil {
@@ -153,6 +169,27 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		BlockingUnit: outcome.BlockingUnit,
 		Detail:       outcome.Detail,
 	}, nil
+}
+
+// staleApproval reports whether Minos approved a head the author has since
+// replaced without subsequently approving the current head. Reviews remain
+// SHA-bound evidence; the PR-wide reaction does not, so it must be removed
+// before another reconciliation decision is made.
+func staleApproval(snapshot forge.Snapshot, botLogin string) bool {
+	if review, found := currentReview(snapshot, botLogin); found {
+		if state, terminal := terminalState(review); terminal && state == product.Clean() {
+			return false
+		}
+	}
+	for _, review := range snapshot.Reviews {
+		if review.User != botLogin || review.CommitID == snapshot.HeadSHA {
+			continue
+		}
+		if state, terminal := terminalState(review); terminal && state == product.Clean() {
+			return true
+		}
+	}
+	return false
 }
 
 // pullRequestAdmissionEligibility holds the non-writing admission chain. The
@@ -216,12 +253,14 @@ func dependencyDeferral(snapshot forge.Snapshot) (string, bool) {
 }
 
 func terminalState(review forge.Review) (product.State, bool) {
+	var state product.State
 	switch strings.ToUpper(review.State) {
 	case "APPROVED", "APPROVE":
-		return product.Clean(), true
+		state = product.Clean()
 	case "REQUEST_CHANGES", "REQUESTED_CHANGES":
-		return product.Attention(), true
+		state = product.Attention()
 	default:
 		return product.State{}, false
 	}
+	return product.CompletionMarker(state.ForgeState(), state.Description())
 }

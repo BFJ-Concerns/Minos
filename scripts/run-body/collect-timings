@@ -19,12 +19,29 @@ fi
 # event, never the whole record.
 events_file="$run_dir/timings.ndjson"
 commands="[]"
+refusals="[]"
 if [ -r "$events_file" ]; then
-  commands="$(
+  command_lines="$(
     while IFS= read -r line || [ -n "$line" ]; do
       printf '%s\n' "$line" | jq -c 'select(type == "object")' 2>/dev/null || true
-    done <"$events_file" | jq -cs 'sort_by([.started_at // "", .name // ""])'
-  )" || commands="[]"
+    done <"$events_file"
+  )" || command_lines=""
+  collated="$(printf '%s\n' "$command_lines" | jq -cs '
+    def parse_step_name:
+      if (.name | type) != "string" then
+        {refusal: {name: null, reason: "timing event has no step name"}}
+      elif (.name | test("^[a-z]+(-[a-z]+)*(?:@(?:[2-9]|[1-9][0-9]+))?$")) then
+        (.name | capture("^(?<name>[a-z]+(?:-[a-z]+)*)(?:@(?<attempt>[2-9]|[1-9][0-9]+))?$")) as $step |
+        {command: (. + {name: $step.name, attempt: ($step.attempt // "1" | tonumber)})}
+      else
+        {refusal: {name: .name, reason: "invalid step name"}}
+      end;
+    map(try parse_step_name catch {refusal: {name: null, reason: "timing event has no step name"}})
+    | {commands: ([.[] | .command? | select(. != null)] | sort_by([.started_at // "", .name // ""])),
+       refusals: [.[] | .refusal? | select(. != null)]}'
+  )" || collated='{"commands":[],"refusals":[]}'
+  commands="$(printf '%s\n' "$collated" | jq -c '.commands')" || commands="[]"
+  refusals="$(printf '%s\n' "$collated" | jq -c '.refusals')" || refusals="[]"
 fi
 
 # Worker timings come from the Ensemble run records already on disk. The
@@ -142,12 +159,13 @@ if ! jq -n \
   --arg repository "${MINOS_REPO_NAME:-unknown}" \
   --arg number "${MINOS_PR:-unknown}" \
   --argjson commands "$commands" \
+  --argjson refusals "$refusals" \
   --argjson workers "$workers" \
   --argjson phases "$phases" \
   --argjson memory "$memory" \
   '{kind: "minos-timing-record-v1", generated_at: $generated_at,
     pull_request: {owner: $owner, repository: $repository, number: $number},
-    commands: $commands, workers: $workers, phases: $phases,
+    commands: $commands, refusals: $refusals, workers: $workers, phases: $phases,
     memory: $memory}' >"${output}.tmp"; then
   echo "collect-timings: could not assemble the timing record" >&2
   rm -f "${output}.tmp"

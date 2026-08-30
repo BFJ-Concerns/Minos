@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type sweepCandidate struct {
@@ -88,11 +90,18 @@ func SweepCommand(ctx context.Context, args []string) error {
 		log.Printf("inspect active runs for candidate ordering: %v", err)
 	}
 	candidates = orderSweepCandidates(candidates, activeUnits)
+	deferrals := []sweepDeferral{}
 	for _, candidate := range candidates {
 		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
 		if err != nil {
 			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
 			continue
+		}
+		if result.DeferralReason != "" {
+			deferrals = append(deferrals, sweepDeferral{
+				Forge: candidate.facts.Forge, Owner: candidate.facts.Owner, Repo: candidate.facts.Repo,
+				PR: candidate.facts.PR, Reason: result.DeferralReason,
+			})
 		}
 		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
 			log.Print(message)
@@ -104,6 +113,47 @@ func SweepCommand(ctx context.Context, args []string) error {
 	recordRepoSkips(ctx, cfg, skipped)
 	if attempted > 0 && unreadable == attempted {
 		return fmt.Errorf("every configured repo (%d) was unreadable this pass", attempted)
+	}
+	if err := publishSweepDeferrals(cfg, deferrals); err != nil {
+		log.Printf("publish sweep deferrals: %v", err)
+	}
+	return nil
+}
+
+var renameSweepDeferrals = os.Rename
+
+// publishSweepDeferrals replaces the previous completed pass as one document.
+// A failed publication leaves the previous whole record in place; it does not
+// change the completed sweep's outcome.
+func publishSweepDeferrals(cfg ServiceConfig, deferrals []sweepDeferral) error {
+	document := sweepDeferralDocument{
+		Kind:        sweepDeferralDocumentKind,
+		CompletedAt: time.Now().UTC().Format(time.RFC3339),
+		Deferrals:   deferrals,
+	}
+	content, err := json.Marshal(document)
+	if err != nil {
+		return fmt.Errorf("encode sweep deferrals: %w", err)
+	}
+	if err := os.MkdirAll(cfg.Runs.Dir, 0o755); err != nil {
+		return fmt.Errorf("create sweep state directory: %w", err)
+	}
+	path := sweepDeferralsPath(cfg)
+	temporary, err := os.CreateTemp(cfg.Runs.Dir, ".sweep-deferrals-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create sweep deferrals temporary file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write sweep deferrals: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close sweep deferrals: %w", err)
+	}
+	if err := renameSweepDeferrals(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish sweep deferrals: %w", err)
 	}
 	return nil
 }

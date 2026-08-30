@@ -26,6 +26,12 @@ type timingEvent struct {
 	EndedAt    string `json:"ended_at"`
 	DurationMs *int64 `json:"duration_ms"`
 	ExitStatus int    `json:"exit_status"`
+	Attempt    int    `json:"attempt"`
+}
+
+type timingRefusal struct {
+	Name   *string `json:"name"`
+	Reason string  `json:"reason"`
 }
 
 type timingWorker struct {
@@ -71,9 +77,10 @@ type timingRecord struct {
 		Repository string `json:"repository"`
 		Number     string `json:"number"`
 	} `json:"pull_request"`
-	Commands []timingEvent  `json:"commands"`
-	Workers  []timingWorker `json:"workers"`
-	Phases   []timingPhase  `json:"phases"`
+	Commands []timingEvent   `json:"commands"`
+	Refusals []timingRefusal `json:"refusals"`
+	Workers  []timingWorker  `json:"workers"`
+	Phases   []timingPhase   `json:"phases"`
 	Memory   *struct {
 		Baseline         map[string]any   `json:"baseline"`
 		Final            map[string]any   `json:"final"`
@@ -591,6 +598,169 @@ func TestMemoryTelemetrySnapshotsHonestCountersFromTheCgroup(t *testing.T) {
 	}
 }
 
+// The pressure watch and the telemetry snapshot read this run's cgroup through
+// one shared collector, so the anon-plus-swap figure the watch records as the
+// run's peak is the same figure the snapshot reports. The fixture's memory.stat
+// is laid out to punish a second, independent parse: the anon line is preceded
+// by keys that a looser match would take instead, and swap lives in its own
+// file. A copy that drifted would make these two numbers disagree.
+func TestCgroupMemoryCollectorFeedsBothTheWatchAndTheSnapshot(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := filepath.Join(fixture.root, "cgroup")
+	if err := os.MkdirAll(cgroup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"memory.current":      "18000000000\n",
+		"memory.max":          "22000000000\n",
+		"memory.stat":         "anon_thp 3300000000\nfile 12687937536\nanon 5100000000\nswapcached 770000000\nworkingset_refault_anon 14067688\nworkingset_refault_file 47279103\n",
+		"memory.swap.current": "2300000000\n",
+		"memory.events":       "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n",
+		"memory.peak":         "18000000000\n",
+		"memory.pressure":     "some avg10=0.12 avg60=0.16 avg300=2.37 total=1064808220\nfull avg10=0.00 avg60=0.09 avg300=1.72 total=880404397\n",
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(cgroup, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "memory-telemetry"), snapshotPath)
+	cmd.Env = append(os.Environ(), "MINOS_CGROUP_DIR="+cgroup)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("memory-telemetry: %v\n%s", err, combined)
+	}
+	content, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		Anon *float64 `json:"anon"`
+		Swap *float64 `json:"swap"`
+	}
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		t.Fatalf("snapshot does not parse: %v\n%s", err, content)
+	}
+	if snapshot.Anon == nil || snapshot.Swap == nil {
+		t.Fatalf("snapshot omits the footprint counters: %s", content)
+	}
+
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	if err != nil {
+		t.Fatalf("run-body: %v\n%s", err, output)
+	}
+	peak, err := os.ReadFile(filepath.Join(fixture.runDir, "memory-peak"))
+	if err != nil {
+		t.Fatalf("the pressure watch recorded no peak: %v\n%s", err, output)
+	}
+	want := fmt.Sprintf("%d", int64(*snapshot.Anon)+int64(*snapshot.Swap))
+	if strings.TrimSpace(string(peak)) != want {
+		t.Fatalf("watch peak = %s, snapshot anon+swap = %s — the two call paths parsed the cgroup differently",
+			strings.TrimSpace(string(peak)), want)
+	}
+	fixture.assertProcessesStopped(t)
+}
+
+// The shared collector's tolerance reaches both callers: one cgroup missing
+// anon disables the watch and leaves the field out of the snapshot.
+func TestCgroupMemoryCollectorToleratesAMissingCounterOnBothPaths(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, 900_000_000, 0)
+	if err := os.WriteFile(filepath.Join(cgroup, "memory.stat"), []byte("inactive_file 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "memory-telemetry"), snapshotPath)
+	cmd.Env = append(os.Environ(), "MINOS_CGROUP_DIR="+cgroup)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("memory-telemetry: %v\n%s", err, combined)
+	}
+	content, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		t.Fatalf("snapshot does not parse: %v\n%s", err, content)
+	}
+	if _, present := snapshot["anon"]; present {
+		t.Fatalf("snapshot invented an anon figure from a cgroup without one: %s", content)
+	}
+
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	if err != nil {
+		t.Fatalf("run-body: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "memory-pressure watch disabled: cgroup memory counters are unavailable or malformed") {
+		t.Fatalf("run-body kept judging memory without an anon counter:\n%s", output)
+	}
+	fixture.assertProcessesStopped(t)
+}
+
+// Two faithful copies of a counter read agree on every cgroup until one of
+// them drifts, so agreement alone cannot show that only one copy is left.
+// What can is the absence of the second reader: this run's cgroup is resolved
+// and its counters are parsed in one file of the run-body family, and every
+// other script in it reaches those numbers through that file. The terminal
+// death evidence is deliberately not caught here — it cats memory.events,
+// memory.peak and memory.pressure verbatim through the loop variable, taking
+// only the shared directory.
+func TestOnlyTheSharedFragmentResolvesTheCgroupAndReadsItsCounters(t *testing.T) {
+	signatures := []string{
+		"/proc/self/cgroup",
+		"$cgroup_dir/memory.stat",
+		"$cgroup_dir/memory.swap.current",
+		"$cgroup_dir/memory.pressure",
+	}
+	scripts := filepath.Join("..", "..", "scripts", "run-body")
+	const fragment = "cgroup-memory.sh"
+
+	shared, err := os.ReadFile(filepath.Join(scripts, fragment))
+	if err != nil {
+		// Reported rather than fatal, so the scan below still names whichever
+		// scripts are reading the cgroup for themselves.
+		t.Errorf("the shared cgroup fragment is missing: %v", err)
+	} else {
+		for _, signature := range signatures {
+			if !strings.Contains(string(shared), signature) {
+				t.Errorf("%s no longer carries %q, so the single-reader check below proves nothing", fragment, signature)
+			}
+		}
+	}
+
+	entries, err := os.ReadDir(scripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == fragment {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(scripts, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, signature := range signatures {
+			if strings.Contains(string(content), signature) {
+				t.Errorf("scripts/run-body/%s reads the cgroup itself (%q) — a second copy free to drift; source %s instead",
+					entry.Name(), signature, fragment)
+			}
+		}
+	}
+}
+
 func TestCollectTimingsCarriesMemoryStallAndThrashDeltas(t *testing.T) {
 	runDir := t.TempDir()
 	baseline := `{"kind":"minos-memory-snapshot-v1","sampled_at":"2026-08-22T00:00:00Z",` +
@@ -679,8 +849,10 @@ func writeTimingFixtureAgentRecord(t *testing.T, path, startedAt, endedAt string
 
 func TestCollectTimingsAssemblesCommandsAndWorkersSorted(t *testing.T) {
 	runDir := t.TempDir()
-	events := `{"kind":"minos-timing-event-v1","name":"review","started_at":"2026-08-17T00:20:00Z","ended_at":"2026-08-17T00:40:00Z","duration_ms":1200000,"exit_status":0}
+	events := `{"kind":"minos-timing-event-v1","name":"review@2","started_at":"2026-08-17T00:20:00Z","ended_at":"2026-08-17T00:40:00Z","duration_ms":1200000,"exit_status":0}
+{"kind":"minos-timing-event-v1","name":"review@10","started_at":"2026-08-17T00:30:00Z","ended_at":"2026-08-17T00:50:00Z","duration_ms":1200000,"exit_status":0}
 this line is not JSON and must cost one event, never the record
+{"kind":"minos-timing-event-v1","name":"build-round6b","started_at":"2026-08-17T00:10:00Z","ended_at":"2026-08-17T00:11:00Z","duration_ms":60000,"exit_status":0}
 {"kind":"minos-timing-event-v1","name":"build-command","started_at":"2026-08-17T00:02:00Z","ended_at":"2026-08-17T00:03:00Z","duration_ms":60000,"exit_status":0}
 `
 	if err := os.WriteFile(filepath.Join(runDir, "timings.ndjson"), []byte(events), 0o644); err != nil {
@@ -715,11 +887,14 @@ this line is not JSON and must cost one event, never the record
 	if record.PullRequest.Owner != "example" || record.PullRequest.Repository != "Relay" || record.PullRequest.Number != "53" {
 		t.Fatalf("pull request identity = %+v", record.PullRequest)
 	}
-	if len(record.Commands) != 2 {
-		t.Fatalf("command count = %d, want 2 (the malformed line costs one event only)", len(record.Commands))
+	if len(record.Commands) != 3 {
+		t.Fatalf("command count = %d, want 3 (malformed and refused names each cost one event only)", len(record.Commands))
 	}
-	if record.Commands[0].Name != "build-command" || record.Commands[1].Name != "review" {
-		t.Fatalf("commands are not sorted by start: %q, %q", record.Commands[0].Name, record.Commands[1].Name)
+	if record.Commands[0].Name != "build-command" || record.Commands[1].Name != "review" || record.Commands[1].Attempt != 2 || record.Commands[2].Name != "review" || record.Commands[2].Attempt != 10 {
+		t.Fatalf("commands are not sorted by start: %+v", record.Commands)
+	}
+	if len(record.Refusals) != 1 || record.Refusals[0].Name == nil || *record.Refusals[0].Name != "build-round6b" || record.Refusals[0].Reason != "invalid step name" {
+		t.Fatalf("refusals = %+v, want the named improvised step refusal", record.Refusals)
 	}
 	if len(record.Workers) != 2 {
 		t.Fatalf("worker count = %d, want 2 (both record roots harvested)", len(record.Workers))
@@ -962,7 +1137,7 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 	if err := os.MkdirAll(tools, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"archive-run", "collect-timings", "memory-telemetry"} {
+	for _, name := range []string{"archive-run", "collect-timings", "memory-telemetry", "cgroup-memory.sh"} {
 		content, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", name))
 		if err != nil {
 			t.Fatal(err)

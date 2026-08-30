@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -222,6 +223,40 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 		if result.Decision != "nothing" {
 			t.Fatalf("result = %q, want nothing", result)
+		}
+	})
+
+	t.Run("failure status carrying a clean description starts a fresh run", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setStatuses([]map[string]any{{
+			"id": 7, "context": "Minos", "status": "failure", "description": product.Clean().Description(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+			"creator":    map[string]any{"login": "Minos"},
+		}})
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		var started bool
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			switch name {
+			case "systemctl":
+				return nil, nil
+			case "systemd-run":
+				started = true
+				return nil, nil
+			default:
+				t.Fatalf("unexpected command %q", name)
+				return nil, nil
+			}
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Decision != "started" || !started {
+			t.Fatalf("result = %q, started = %t; want a fresh attempt", result, started)
 		}
 	})
 
@@ -573,6 +608,166 @@ func TestForgejoSweepReconciliationKeepsDecisionSnapshotFresh(t *testing.T) {
 	})
 }
 
+func TestForgejoReconciliationStripsStaleApprovalReaction(t *testing.T) {
+	staleApproval := func(t *testing.T) *forgejoFixtureState {
+		t.Helper()
+		state := newForgejoFixtureState(t)
+		approvedHead := state.headSHA()
+		state.reactions = []string{"+1"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "APPROVED", "commit_id": approvedHead,
+			"body": "approved before the author pushed again", "user": map[string]any{"login": "Minos"},
+		}})
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["sha"] = "head-after-approval"
+		})
+		return state
+	}
+
+	t.Run("sweep removes it before a deferred admission can claim", func(t *testing.T) {
+		state := staleApproval(t)
+		state.setDependencies([]map[string]any{{
+			"number": 7, "state": "open",
+			"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+		}})
+		cfg := writeSweepFixtureConfig(t, state)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemd-run" {
+				t.Fatalf("stale-approval sweep claimed a deferred pull request")
+			}
+			return nil, nil
+		}
+
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 1 {
+			t.Fatalf("reactions = %v, removal writes = %d, want stale +1 removed once", state.reactions, state.reactionDeleteWrites)
+		}
+		if !slices.Equal(state.writeSequence, []string{"reaction-remove:+1"}) {
+			t.Fatalf("forge writes = %v, want only the stale reaction removal", state.writeSequence)
+		}
+		if len(state.reviews) != 1 || state.reviews[0]["commit_id"] == state.pullRequest["head"].(map[string]any)["sha"] {
+			t.Fatalf("reviews = %#v, want the stale review retained", state.reviews)
+		}
+	})
+
+	t.Run("webhook removes it before a work-in-progress admission defers", func(t *testing.T) {
+		state := staleApproval(t)
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["ref"] = "structural/stale-approval"
+		})
+		cfg, _, _ := state.service(t)
+		cfg.Forges["local"] = cfg.Forges["forgejo"]
+		delete(cfg.Forges, "forgejo")
+		if err := os.WriteFile(cfg.Forges["local"].WebhookSecretFile, []byte("secret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		repoConfig := `forge = "local"
+owner = "minos-e2e-owner"
+repo = "subject"
+work-in-progress-branch-prefixes = ["structural/"]
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`
+		if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("stale-approval webhook reached admission command %s", name)
+			return nil, nil
+		}
+
+		fixture := readFixture(t, "001-pull_request-opened.json")
+		response, err := sendAuthenticatedHook(t, cfg, "pull_request", fixture.Body)
+		if err != nil {
+			t.Fatalf("handleHook() error = %v", err)
+		}
+		if response.Code != http.StatusAccepted || response.Body.String() != "deferred: work-in-progress branch \"structural/stale-approval\"\n" {
+			t.Fatalf("webhook response = %d %q", response.Code, response.Body.String())
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 1 {
+			t.Fatalf("reactions = %v, removal writes = %d, want stale +1 removed once", state.reactions, state.reactionDeleteWrites)
+		}
+	})
+
+	t.Run("unmoved head keeps its reaction", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.reactions = []string{"+1"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
+			"body": "approval at the current head", "user": map[string]any{"login": "Minos"},
+		}})
+		cfg := writeSweepFixtureConfig(t, state)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemd-run" {
+				t.Fatalf("current-head pull request sweep claimed a completed pull request")
+			}
+			return nil, nil
+		}
+
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if !slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 0 {
+			t.Fatalf("reactions = %v, removal writes = %d, want current-head +1 retained", state.reactions, state.reactionDeleteWrites)
+		}
+	})
+
+	t.Run("re-approved head keeps its reaction despite its historical approval", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		approvedHead := state.headSHA()
+		state.reactions = []string{"+1"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "APPROVED", "commit_id": approvedHead,
+			"body": "approval before the author pushed again", "user": map[string]any{"login": "Minos"},
+		}, {
+			"id": 42, "state": "APPROVED", "commit_id": "head-after-re-review",
+			"body": "approval after the author pushed again", "user": map[string]any{"login": "Minos"},
+		}})
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["sha"] = "head-after-re-review"
+		})
+		cfg := writeSweepFixtureConfig(t, state)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemd-run" {
+				t.Fatalf("re-approved pull request sweep claimed a completed pull request")
+			}
+			return nil, nil
+		}
+
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if !slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 0 {
+			t.Fatalf("reactions = %v, removal writes = %d, want re-approved +1 retained", state.reactions, state.reactionDeleteWrites)
+		}
+	})
+}
+
 func TestForgejoContinuationPriorityReadsListedHeadStatuses(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	state.setStatuses([]map[string]any{{
@@ -827,18 +1022,23 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 			t.Setenv("MINOS_REPO_NAME", "subject")
 			t.Setenv("MINOS_PR", "1")
+			t.Setenv("MINOS_LEAD_MODEL", "claude-opus-5")
 
+			leadModel := "claude-opus-5"
 			body := apiShape.Request["body"].(string)
+			attribution := "\n\nReviewed by: `" + leadModel + "`."
 			record, err := product.FormatRecord(map[string]string{"head": head, "target": target})
 			if err != nil {
 				t.Fatal(err)
 			}
-			expectedBody := body + "\n\n" + record
+			expectedBody := body + attribution + "\n\n" + record
 			if test.preseed {
 				review := mapsClone(apiShape.Review)
 				review["commit_id"] = head
 				review["body"] = expectedBody
-				state.setReviewWithComments(review, apiShape.Comments)
+				comments := []map[string]any{mapsClone(apiShape.Comments[0])}
+				comments[0]["body"] = comments[0]["body"].(string) + attribution
+				state.setReviewWithComments(review, comments)
 			}
 
 			bodyPath := filepath.Join(t.TempDir(), "body.md")
@@ -882,6 +1082,9 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 				comment := postedComments[0].(map[string]any)
 				if comment["path"] != "internal/state.go" || comment["new_position"] != float64(41) {
 					t.Fatalf("review comment = %#v", comment)
+				}
+				if comment["body"] != "The transition accepts an invalid state.\n\nReviewed by: `"+leadModel+"`." {
+					t.Fatalf("review comment attribution = %#v", comment["body"])
 				}
 			}
 		})
@@ -954,6 +1157,91 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 	})
 }
 
+func TestForgeReviewPublishesEveryConfirmedAdjudicatedFinding(t *testing.T) {
+	t.Run("mixed gating and below-threshold findings share one request-changes review", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7, 42)
+		configureForgeCommandFixture(t, state)
+
+		verdict := adjudicatedReviewPayload(t, []map[string]any{
+			adjudicatedFinding("specialist-1:1", "High", "Gating state transition", 42, "The transition accepts an invalid state."),
+			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
+		})
+		postAdjudicatedReview(t, head, target, "request-changes", verdict)
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != head {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		posted := payload["comments"].([]any)
+		if len(posted) != 2 {
+			t.Fatalf("posted comments = %#v, want both confirmed findings", posted)
+		}
+		for _, want := range []struct {
+			position float64
+			body     string
+		}{{42, "Gating state transition"}, {7, "Advisory recovery wording"}} {
+			matched := false
+			for _, comment := range posted {
+				entry := comment.(map[string]any)
+				if entry["new_position"] == want.position && strings.Contains(entry["body"].(string), want.body) {
+					matched = true
+				}
+			}
+			if !matched {
+				t.Fatalf("posted comments = %#v, missing %#v", posted, want)
+			}
+		}
+	})
+
+	t.Run("below-threshold finding publishes in an approving review", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7)
+		configureForgeCommandFixture(t, state)
+
+		verdict := adjudicatedReviewPayload(t, []map[string]any{
+			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
+		})
+		postAdjudicatedReview(t, head, target, "approve", verdict)
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "APPROVED" {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		posted := payload["comments"].([]any)
+		if len(posted) != 1 || posted[0].(map[string]any)["new_position"] != float64(7) ||
+			!strings.Contains(posted[0].(map[string]any)["body"].(string), "Advisory recovery wording") {
+			t.Fatalf("posted comments = %#v", posted)
+		}
+	})
+
+	t.Run("unanchorable below-threshold finding falls back into the approving review body", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 10)
+		installStrictAdaptation(t, state)
+		configureForgeCommandFixture(t, state)
+
+		verdict := adjudicatedReviewPayload(t, []map[string]any{
+			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 1, "The recovery path is difficult to identify."),
+		})
+		postAdjudicatedReview(t, head, target, "approve", verdict)
+
+		writes, payload := state.reviewWriteFacts()
+		if writes != 1 || payload["event"] != "APPROVED" {
+			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
+		}
+		if posted := payload["comments"].([]any); len(posted) != 0 {
+			t.Fatalf("inline comments = %#v, want body fallback", posted)
+		}
+		body := payload["body"].(string)
+		for _, want := range []string{"Findings that could not be anchored inline:", "`internal/review.go` line 1", "Advisory recovery wording"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("review body omitted %q: %q", want, body)
+			}
+		}
+	})
+}
+
 func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	head, target := installAnchoredWorkspace(t, state, "internal/state.go", 41)
@@ -1001,9 +1289,90 @@ func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.
 	}
 }
 
+// An adaptation that declares no out-of-hunk anchoring keeps the strict
+// geometry, and the findings it cannot place are named in the review body
+// rather than lost.
+// The deployed Forgejo adaptation declares that it carries out-of-hunk
+// comments, so the same finding the strict adaptation folds reaches the
+// author on its own line.
+func TestForgeReviewAnchorsOutOfHunkFindingsTheAdaptationDeclares(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
+	configureForgeCommandFixture(t, state)
+
+	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+		{Path: "src/code.txt", Line: 1, Body: "Outside-hunk concern."},
+		{Path: "untouched.txt", Line: 1, Body: "Untouched-file concern."},
+	}, 2)
+	writes, payload := state.reviewWriteFacts()
+	if writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	posted := payload["comments"].([]any)
+	if len(posted) != 1 {
+		t.Fatalf("inline comments = %#v", posted)
+	}
+	comment := posted[0].(map[string]any)
+	if comment["path"] != "src/code.txt" || comment["new_position"] != float64(1) {
+		t.Fatalf("out-of-hunk comment = %#v", comment)
+	}
+	body := payload["body"].(string)
+	if !strings.Contains(body, "Untouched-file concern.") {
+		t.Fatalf("a finding no capability can anchor left the review body: %q", body)
+	}
+	if strings.Contains(body, "Outside-hunk concern.") {
+		t.Fatalf("an anchored finding was also folded into the body: %q", body)
+	}
+}
+
+// A finding about code the change removed anchors on the deletion side: the
+// guarded review consumer accepts old_position naming the line, where it once
+// required it to be zero.
+func TestForgeReviewAnchorsDeletionSideFindings(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installDeletingWorkspace(t, state, "src/code.txt", 10, 22)
+	configureForgeCommandFixture(t, state)
+
+	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+		{Path: "src/code.txt", Line: 20, Body: "The removed guard was the only bounds check."},
+	}, 2)
+	writes, payload := state.reviewWriteFacts()
+	if writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	posted := payload["comments"].([]any)
+	if len(posted) != 1 {
+		t.Fatalf("inline comments = %#v", posted)
+	}
+	comment := posted[0].(map[string]any)
+	if comment["old_position"] != float64(20) || comment["new_position"] != float64(0) {
+		t.Fatalf("deletion-side comment = %#v", comment)
+	}
+}
+
+// A finding about several lines covers them all.
+func TestForgeReviewAnchorsMultiLineFindings(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10, 12)
+	configureForgeCommandFixture(t, state)
+
+	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+		{Path: "src/code.txt", Line: 10, EndLine: 12, Body: "The three branches repeat one decision."},
+	}, 2)
+	writes, payload := state.reviewWriteFacts()
+	if writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	comment := payload["comments"].([]any)[0].(map[string]any)
+	if comment["new_position"] != float64(10) || comment["extra_lines_count"] != float64(2) {
+		t.Fatalf("multi-line comment = %#v", comment)
+	}
+}
+
 func TestForgeReviewFoldsOffDiffFindingsIntoTheBody(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
+	installStrictAdaptation(t, state)
 	configureForgeCommandFixture(t, state)
 	comments := []requestedReviewComment{
 		{Path: "src/code.txt", Line: 10, Body: "Anchored concern."},
@@ -1082,6 +1451,107 @@ func configureForgeCommandFixture(t *testing.T, state *forgejoFixtureState) {
 	t.Setenv("MINOS_PR", "1")
 }
 
+func adjudicatedFinding(id, severity, title string, line int, explanation string) map[string]any {
+	return map[string]any{
+		"id": id, "source": "Correctness", "title": title, "severity": severity,
+		"confidence": 86, "path": "internal/review.go", "line": line, "explanation": explanation,
+		"proposingLabel": "specialist", "verifyLabel": "verifier",
+		"rawVerifier": map[string]any{"verdict": "upheld", "confidence": 94, "reason": "The condition is reachable."},
+	}
+}
+
+func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[string]any {
+	t.Helper()
+	directory := t.TempDir()
+	envelopePath := filepath.Join(directory, "envelope.json")
+	recordDir := filepath.Join(directory, "record")
+	archive := filepath.Join(recordDir, "runs", "cwd", "namespace", "run")
+	if err := os.MkdirAll(archive, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(archive, "manifest.json"), []byte(`{"kind":"run_manifest","status":"complete"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index, record := range []map[string]any{
+		{"label": "specialist", "status": "complete", "resolved_model": "gpt-5.6-sol-served"},
+		{"label": "verifier", "status": "complete", "resolved_model": "claude-opus-5"},
+	} {
+		directory := filepath.Join(archive, "agents", strconv.Itoa(index+1))
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "agent.json"), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	envelope := map[string]any{
+		"reviewed": map[string]any{"target": "target-sha", "head": "head-sha", "occasion": nil}, "stage": "present",
+		"requiredModelEvidence": []any{
+			map[string]any{"label": "specialist", "role": "specialist", "pinnedModel": "gpt-5.6-sol"},
+			map[string]any{"label": "verifier", "role": "verifier", "pinnedModel": "claude-opus-5"},
+		}, "proposedFindings": findings,
+		"briefs": []any{}, "misconfigurations": []any{}, "dispatches": []any{}, "reviewers": []any{},
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envelopePath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := `import { readFile } from "node:fs/promises"; import { adjudicate } from "./workflows/run-record-adjudicator.mjs"; const [envelopePath, recordDir] = process.argv.slice(1); const envelope = JSON.parse(await readFile(envelopePath, "utf8")); process.stdout.write(JSON.stringify(await adjudicate({ envelope, recordDir })));`
+	cmd := exec.CommandContext(t.Context(), "node", "--input-type=module", "--eval", command, envelopePath, recordDir)
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("adjudicate review payload: %v\n%s", err, output)
+	}
+	var verdict map[string]any
+	if err := json.Unmarshal(output, &verdict); err != nil {
+		t.Fatalf("decode adjudicated payload: %v\n%s", err, output)
+	}
+	if verdict["status"] != "complete" {
+		t.Fatalf("adjudicated verdict = %#v", verdict)
+	}
+	return verdict
+}
+
+func postAdjudicatedReview(t *testing.T, head, target, event string, verdict map[string]any) {
+	t.Helper()
+	reviewBody, ok := verdict["reviewBody"].(map[string]any)
+	if !ok {
+		t.Fatalf("adjudicated verdict has no review body: %#v", verdict)
+	}
+	body, ok := reviewBody["body"].(string)
+	if !ok {
+		t.Fatalf("review body text = %#v", reviewBody["body"])
+	}
+	comments, err := json.Marshal(reviewBody["comments"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	bodyPath := filepath.Join(directory, "body.md")
+	commentsPath := filepath.Join(directory, "comments.json")
+	if err := os.WriteFile(bodyPath, []byte(body+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(commentsPath, comments, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgeCommand(t.Context(), []string{"review", head, target, event, bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runReviewAttempts(
 	t *testing.T,
 	state *forgejoFixtureState,
@@ -1118,6 +1588,80 @@ func mapsClone(source map[string]any) map[string]any {
 		clone[key] = value
 	}
 	return clone
+}
+
+// installStrictAdaptation serves the run from an adaptation that declares no
+// anchoring capability, the shape of a forge that only accepts comments
+// inside a diff hunk.
+func installStrictAdaptation(t *testing.T, state *forgejoFixtureState) {
+	t.Helper()
+	strict := t.TempDir()
+	entries, err := os.ReadDir(state.adaptationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == "capabilities.json" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents, err := os.ReadFile(filepath.Join(state.adaptationPath, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(strict, entry.Name()), contents, info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state.adaptationPath = strict
+}
+
+// installDeletingWorkspace stages a change that removes a block of lines, so a
+// finding about the removed code has no new-side line to anchor on.
+func installDeletingWorkspace(t *testing.T, state *forgejoFixtureState, path string, from, to int) (head, target string) {
+	t.Helper()
+	workspace := t.TempDir()
+	runGit(t, workspace, "init", "-q")
+	runGit(t, workspace, "config", "user.name", "Minos Test")
+	runGit(t, workspace, "config", "user.email", "minos@example.invalid")
+
+	lines := make([]string, to+8)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("line %d", index+1)
+	}
+	fullPath := filepath.Join(workspace, path)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-q", "-m", "target")
+	target = strings.TrimSpace(gitOutput(t, workspace, "rev-parse", "HEAD"))
+
+	remaining := append(append([]string{}, lines[:from-1]...), lines[to:]...)
+	if err := os.WriteFile(fullPath, []byte(strings.Join(remaining, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-q", "-m", "head")
+	head = strings.TrimSpace(gitOutput(t, workspace, "rev-parse", "HEAD"))
+
+	diff, err := mergeBaseDiff(t.Context(), workspace, target, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.setDiffNewSide(newSideIntervals(diff))
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["sha"] = head
+		pullRequest["base"].(map[string]any)["sha"] = target
+	})
+	t.Setenv("MINOS_WORKSPACE", workspace)
+	return head, target
 }
 
 func installAnchoredWorkspace(t *testing.T, state *forgejoFixtureState, path string, changedLines ...int) (head, target string) {
