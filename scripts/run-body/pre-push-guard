@@ -5,14 +5,17 @@ set -eu
 # review-only: no publisher exists that may update the pull-request branch,
 # so every update to a protected ref is refused outright — there is no
 # permit, environment variable, or override that lifts the refusal (C33).
-# The record fails closed: an unreadable or malformed protected-ref record
-# refuses the whole push rather than guessing what it protected.
+# The record fails closed: a missing, unreadable or malformed protected-ref
+# record refuses the whole push rather than guessing what it protected.
 
 common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
 protected_refs=""
 
 for protected_ref_file in "${common_dir}/minos-protected-ref"; do
-  [ -e "$protected_ref_file" ] || continue
+  if [ ! -e "$protected_ref_file" ]; then
+    echo "pre-push-guard: protected-ref record is missing: $protected_ref_file" >&2
+    exit 1
+  fi
   if [ ! -f "$protected_ref_file" ] || [ ! -r "$protected_ref_file" ]; then
     echo "pre-push-guard: protected-ref record is present but unreadable: $protected_ref_file" >&2
     exit 1
