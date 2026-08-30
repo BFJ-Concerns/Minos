@@ -737,7 +737,7 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Minos authors no commits, so every head movement is the author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
   assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review's\s+findings, a classification digest, or a run outcome/);
-  assert.match(lifecycle, /publish-observations\.mjs[\s\S]*Observations travel plainly marked\s+as unverified[\s\S]*Minos files nothing in reviewed projects' annexes/);
+  assert.match(lifecycle, /publish-observations\.mjs[\s\S]*Observations travel plainly marked\s+as unverified, never as findings[\s\S]*the pull request is the one delivery\s+surface[\s\S]*Minos files nothing in reviewed projects' annexes[\s\S]*publication is presentation-class: its failure degrades and never\s+fails the run/);
 });
 
 test("the lifecycle prescribes the verdict-classification seam", () => {
