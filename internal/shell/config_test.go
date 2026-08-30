@@ -147,7 +147,7 @@ func TestLoadRepoConfigDefaultsReviewThreshold(t *testing.T) {
 		block         string
 		wantThreshold string
 	}{
-		{name: "unset", wantThreshold: "Critical"},
+		{name: "unset", wantThreshold: "High"},
 		{
 			name:          "explicit threshold survives",
 			block:         "[review]\nthreshold = \"Medium\"\n",
