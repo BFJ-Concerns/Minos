@@ -226,6 +226,40 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("failure status carrying a clean description starts a fresh run", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.setStatuses([]map[string]any{{
+			"id": 7, "context": "Minos", "status": "failure", "description": product.Clean().Description(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+			"creator":    map[string]any{"login": "Minos"},
+		}})
+		cfg, repo, facts := state.service(t)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		var started bool
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			switch name {
+			case "systemctl":
+				return nil, nil
+			case "systemd-run":
+				started = true
+				return nil, nil
+			default:
+				t.Fatalf("unexpected command %q", name)
+				return nil, nil
+			}
+		}
+
+		result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Decision != "started" || !started {
+			t.Fatalf("result = %q, started = %t; want a fresh attempt", result, started)
+		}
+	})
+
 	t.Run("incomplete pull request with a comment review starts a fresh attempt", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setReviews([]map[string]any{{
