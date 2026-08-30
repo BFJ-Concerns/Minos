@@ -215,6 +215,71 @@ test("operator attention follows the combined-confidence threshold", async (t) =
   assert.deepEqual(highVerdict.operatorAttention, []);
 });
 
+test("every confirmed finding renders into the review payload regardless of severity", async (t) => {
+  const lowSeverityLegs = [
+    ...legs,
+    { label: "specialist-2", role: "specialist", pinnedModel: "gpt-5.6-sol" },
+    { label: "verify-2", role: "verifier", pinnedModel: "claude-opus-5" },
+  ];
+  const recordsWithLowSeverityLegs = {
+    exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
+    "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
+    "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
+    "specialist-2": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
+    "verify-2": { status: "complete", resolved_model: "claude-opus-5" },
+  };
+  const fixtureArchiveDir = fixtureArchive(t, { records: recordsWithLowSeverityLegs });
+  const lowSeverityFinding = {
+    ...envelope.proposedFindings[0],
+    id: "specialist-2:1",
+    title: "Advisory wording obscures the recovery path",
+    severity: "Low",
+    path: "internal/review.go",
+    line: 7,
+    explanation: "The recovery path is correct but difficult to identify.",
+    confidence: 71,
+    proposingLabel: "specialist-2",
+    verifyLabel: "verify-2",
+    rawVerifier: { verdict: "upheld", confidence: 74, reason: "The wording reaches operators." },
+  };
+  const mixedVerdict = await adjudicate({
+    envelope: {
+      ...envelope,
+      requiredModelEvidence: lowSeverityLegs,
+      proposedFindings: [...envelope.proposedFindings, lowSeverityFinding],
+    },
+    recordDir: fixtureArchiveDir,
+  });
+
+  assert.equal(mixedVerdict.status, "complete", mixedVerdict.incomplete.join("\n"));
+  assert.deepEqual(
+    mixedVerdict.reviewBody.comments.map(({ path, line, body }) => ({ path, line, body })),
+    [
+      {
+        path: "internal/review.go",
+        line: 42,
+        body: "**Distinct failure**\n\nThe changed branch accepts an invalid state.\n\nSeverity: High.",
+      },
+      {
+        path: "internal/review.go",
+        line: 7,
+        body: "**Advisory wording obscures the recovery path**\n\nThe recovery path is correct but difficult to identify.\n\nSeverity: Low.",
+      },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(mixedVerdict.reviewBody), /confidence|proposingLabel|verifyLabel|rawVerifier/);
+
+  const lowOnlyFixtureArchiveDir = fixtureArchive(t, { records: recordsWithLowSeverityLegs });
+  const lowOnlyVerdict = await adjudicate({
+    envelope: { ...envelope, requiredModelEvidence: lowSeverityLegs, proposedFindings: [lowSeverityFinding] },
+    recordDir: lowOnlyFixtureArchiveDir,
+  });
+  assert.equal(lowOnlyVerdict.status, "complete", lowOnlyVerdict.incomplete.join("\n"));
+  assert.deepEqual(lowOnlyVerdict.reviewBody.comments.map((comment) => comment.body), [
+    "**Advisory wording obscures the recovery path**\n\nThe recovery path is correct but difficult to identify.\n\nSeverity: Low.",
+  ]);
+});
+
 test("an unexpected resolved_model family does not withhold a complete verdict", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
