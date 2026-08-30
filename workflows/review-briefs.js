@@ -542,26 +542,28 @@ for (const [brief, inapplicable] of inapplicableByBrief) {
 
 phase("Verify");
 const verifierGroups = [];
-for (const unit of dispatched) {
-  const unitFindings = proposed.filter((item) => item.unit === unit);
-  for (let offset = 0; offset < unitFindings.length; offset += MAX_FINDINGS_PER_VERIFIER) {
-    const items = unitFindings.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
-    const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
-    const label = `verify-brief-${items[0].unitIndex + 1}-${groupIndex}-claude`;
-    const findingIds = items.map(findingId);
-    const group = { items, label, findingIds };
-    verifierGroups.push(group);
-    items.forEach((item) => { item.verifyLabel = label; });
-    addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
-  }
+for (let offset = 0; offset < proposed.length; offset += MAX_FINDINGS_PER_VERIFIER) {
+  const items = proposed.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
+  const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
+  const label = `verify-brief-${groupIndex}-claude`;
+  const findingIds = items.map(findingId);
+  const group = { items, label, findingIds };
+  verifierGroups.push(group);
+  items.forEach((item) => { item.verifyLabel = label; });
+  addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
 }
 const verifierResults = await parallel(verifierGroups.map((group) => () => agent(
   groundedPrompt(
     verifierInstruction,
     guidance,
     `Try to disprove each repository-brief finding against ${input.target}...${input.head} and the cited code.\n` +
-      `Concern: ${group.items[0].unit.title}\nProposing specialist: ${group.items[0].unit.label}\n` +
-      `Findings: ${JSON.stringify(group.items.map((item, index) => ({ id: group.findingIds[index], ...item.finding })))}`,
+      `Findings: ${JSON.stringify(group.items.map((item, index) => ({
+        id: group.findingIds[index],
+        concern: item.unit.concern,
+        unit: item.unit.concern || item.unit.title,
+        proposingSpecialist: item.unit.label,
+        ...item.finding,
+      })))}`,
   ),
   {
     engine: "claude",
