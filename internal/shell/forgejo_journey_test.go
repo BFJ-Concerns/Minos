@@ -1543,22 +1543,32 @@ func postAdjudicatedReview(t *testing.T, head, target, event string, verdict map
 	if !ok {
 		t.Fatalf("review body text = %#v", reviewBody["body"])
 	}
-	comments, err := json.Marshal(reviewBody["comments"])
-	if err != nil {
+	if err := postFixtureReview(t, head, target, event, body, reviewBody["comments"]); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// postFixtureReview writes a fixture review payload and posts it through the
+// same command surface the journey paths exercise.
+func postFixtureReview(t *testing.T, head, target, event, body string, comments any) error {
+	t.Helper()
 	directory := t.TempDir()
 	bodyPath := filepath.Join(directory, "body.md")
 	commentsPath := filepath.Join(directory, "comments.json")
 	if err := os.WriteFile(bodyPath, []byte(body+"\n"), 0o600); err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if err := os.WriteFile(commentsPath, comments, 0o600); err != nil {
-		t.Fatal(err)
+	encoded, err := json.Marshal(comments)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(commentsPath, encoded, 0o600); err != nil {
+		return err
 	}
 	if err := ForgeCommand(t.Context(), []string{"review", head, target, event, bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
+		return err
 	}
+	return nil
 }
 
 func runReviewAttempts(
@@ -1569,23 +1579,8 @@ func runReviewAttempts(
 	attempts int,
 ) {
 	t.Helper()
-	directory := t.TempDir()
-	bodyPath := filepath.Join(directory, "body.md")
-	commentsPath := filepath.Join(directory, "comments.json")
-	if err := os.WriteFile(bodyPath, []byte(body+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(comments)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(commentsPath, encoded, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	for attempt := 1; attempt <= attempts; attempt++ {
-		if err := ForgeCommand(t.Context(), []string{
-			"review", head, target, "comment", bodyPath, commentsPath,
-		}, &bytes.Buffer{}); err != nil {
+		if err := postFixtureReview(t, head, target, "comment", body, comments); err != nil {
 			t.Fatalf("review attempt %d: %v", attempt, err)
 		}
 	}

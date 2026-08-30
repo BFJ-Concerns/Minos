@@ -145,14 +145,16 @@ func publishSweepDeferrals(cfg ServiceConfig, deferrals []sweepDeferral) error {
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if _, err := temporary.Write(content); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write sweep deferrals: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close sweep deferrals: %w", err)
-	}
-	if err := renameSweepDeferrals(temporaryPath, path); err != nil {
+	if err := writeServiceStateAtomically(temporary, temporaryPath, path, content, renameSweepDeferrals); err != nil {
+		var writeError *serviceStateWriteError
+		if errors.As(err, &writeError) {
+			switch writeError.stage {
+			case "write":
+				return fmt.Errorf("write sweep deferrals: %w", err)
+			case "close":
+				return fmt.Errorf("close sweep deferrals: %w", err)
+			}
+		}
 		return fmt.Errorf("publish sweep deferrals: %w", err)
 	}
 	return nil
