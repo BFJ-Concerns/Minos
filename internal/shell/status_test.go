@@ -193,6 +193,41 @@ func TestStatusReportsAFailedDispatchAsFailed(t *testing.T) {
 	}
 }
 
+func TestStatusSplitsAttemptSuffixesBeforeClassifyingResidue(t *testing.T) {
+	cfg := statusTestConfig(t)
+	runDir := writeStatusRunDirectory(t, cfg)
+	writeStatusFile(t, filepath.Join(runDir, "timings.ndjson"),
+		`{"kind":"minos-timing-event-v1","name":"test-command@2","started_at":"2026-08-21T20:00:00Z","ended_at":"2026-08-21T20:01:00Z","exit_status":0}`+"\n"+
+			`{"kind":"minos-timing-event-v1","name":"test-command@10","started_at":"2026-08-21T20:02:00Z","ended_at":"2026-08-21T20:03:00Z","exit_status":0}`+"\n"+
+			`{"kind":"minos-timing-event-v1","name":"build-round6b-command","started_at":"2026-08-21T20:04:00Z","ended_at":"2026-08-21T20:05:00Z","exit_status":0}`+"\n")
+	writeStatusFile(t, filepath.Join(runDir, "review@2-args.json"), "{}")
+	writeStatusFile(t, filepath.Join(runDir, "review@2-result.json"), `{"verdict":"complete"}`)
+	writeStatusFile(t, filepath.Join(runDir, "review@10-args.json"), "{}")
+	writeStatusFile(t, filepath.Join(runDir, "review@10-result.json"), `{"verdict":"complete"}`)
+	writeStatusFile(t, filepath.Join(runDir, "gate-repair-r6d-args.json"), "{}")
+	stubStatusCommands(t)
+
+	run := readStatusDocument(t, cfg).Runs[0]
+	if len(run.Stages) != 4 {
+		t.Fatalf("stages = %+v, want only the valid command and dispatch attempts", run.Stages)
+	}
+	for _, stage := range run.Stages {
+		if stage.Name == "test" && stage.Attempt == 2 && stage.State == stagePassed {
+			continue
+		}
+		if stage.Name == "test" && stage.Attempt == 10 && stage.State == stagePassed {
+			continue
+		}
+		if stage.Name == "review" && stage.Attempt == 2 && stage.State == stagePassed {
+			continue
+		}
+		if stage.Name == "review" && stage.Attempt == 10 && stage.State == stagePassed {
+			continue
+		}
+		t.Fatalf("stage = %+v, want valid base name and attempt 2 or 10 only", stage)
+	}
+}
+
 func TestStatusReportsAJustStartedRunAsStarting(t *testing.T) {
 	cfg := statusTestConfig(t)
 	// The unit is live but has written nothing yet: no run directory, so no
