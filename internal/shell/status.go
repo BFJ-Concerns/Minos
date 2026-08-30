@@ -45,11 +45,31 @@ const (
 )
 
 type statusDocument struct {
-	Kind          string       `json:"kind"`
-	GeneratedAt   string       `json:"generated_at"`
-	MaxConcurrent int          `json:"max_concurrent"`
-	Repos         []statusRepo `json:"repos"`
-	Runs          []statusRun  `json:"runs"`
+	Kind          string                 `json:"kind"`
+	GeneratedAt   string                 `json:"generated_at"`
+	MaxConcurrent int                    `json:"max_concurrent"`
+	Repos         []statusRepo           `json:"repos"`
+	Runs          []statusRun            `json:"runs"`
+	Sweep         *sweepDeferralDocument `json:"sweep,omitempty"`
+}
+
+const sweepDeferralDocumentKind = "minos-sweep-deferrals-v1"
+
+// sweepDeferralDocument is the sweep's one-pass operator record. Its
+// CompletedAt is deliberately written by the sweep, rather than inferred by
+// the request that happens to read it.
+type sweepDeferralDocument struct {
+	Kind        string          `json:"kind"`
+	CompletedAt string          `json:"completed_at"`
+	Deferrals   []sweepDeferral `json:"deferrals"`
+}
+
+type sweepDeferral struct {
+	Forge  string `json:"forge"`
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	PR     string `json:"pr"`
+	Reason string `json:"reason"`
 }
 
 type statusRepo struct {
@@ -210,11 +230,30 @@ func statusSnapshot(ctx context.Context, cfg ServiceConfig) (statusDocument, err
 		MaxConcurrent: cfg.MaxConcurrentRuns(),
 		Repos:         configuredStatusRepos(cfg),
 		Runs:          make([]statusRun, 0, len(units)),
+		Sweep:         readSweepDeferrals(cfg),
 	}
 	for _, unitName := range units {
 		document.Runs = append(document.Runs, describeRun(ctx, cfg, unitName))
 	}
 	return document, nil
+}
+
+func sweepDeferralsPath(cfg ServiceConfig) string {
+	return filepath.Join(cfg.Runs.Dir, ".sweep-deferrals.json")
+}
+
+// A failed read is intentionally absent from the projection. A stale, whole
+// record remains useful; a malformed one must not make the status request fail.
+func readSweepDeferrals(cfg ServiceConfig) *sweepDeferralDocument {
+	content, err := os.ReadFile(sweepDeferralsPath(cfg))
+	if err != nil {
+		return nil
+	}
+	var document sweepDeferralDocument
+	if json.Unmarshal(content, &document) != nil || document.Kind != sweepDeferralDocumentKind {
+		return nil
+	}
+	return &document
 }
 
 func configuredStatusRepos(cfg ServiceConfig) []statusRepo {

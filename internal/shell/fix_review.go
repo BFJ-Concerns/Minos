@@ -34,7 +34,7 @@ func readFixReview(path string) (fixReview, error) {
 	}
 	for index, comment := range review.Comments {
 		if !validRequestedReviewComment(comment) {
-			return fixReview{}, fmt.Errorf("fix review comment %d needs path, body and a positive line", index+1)
+			return fixReview{}, fmt.Errorf("fix review comment %d needs path, body, a positive line and an end line no earlier than it", index+1)
 		}
 	}
 	return review, nil
@@ -44,7 +44,7 @@ func renderFixReview(review fixReview) string {
 	var rendered strings.Builder
 	rendered.WriteString(strings.TrimRight(review.Body, "\r\n"))
 	for _, comment := range review.Comments {
-		fmt.Fprintf(&rendered, "\n\n- `%s` line %d: %s", comment.Path, comment.Line, comment.Body)
+		fmt.Fprintf(&rendered, "\n\n- `%s` %s: %s", comment.Path, comment.location(), comment.Body)
 	}
 	return rendered.String()
 }

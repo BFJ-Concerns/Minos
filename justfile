@@ -39,6 +39,7 @@ shell-check:
     for script in scripts/install-review-runtime scripts/provision-* scripts/adaptations/forgejo/* scripts/run-body/*; do
         case "$script" in
             *.mjs) node --check "$script" || exit 1 ;;
+            *.json) jq empty "$script" || exit 1 ;;
             *) sh -n "$script" || exit 1 ;;
         esac
     done
