@@ -54,7 +54,14 @@ func TestPrePushGuardFailsClosedForUnusableProtectedRefRecord(t *testing.T) {
 		{
 			name: "unreadable",
 			prepare: func(t *testing.T, fixture *prePushGuardFixture) {
-				fixture.writeProtectedRef(t, "refs/heads/main\n", 0o000)
+				// A directory at the record path is unreadable as a file for
+				// every uid; chmod 0o000 would not deter root (CI containers).
+				if err := os.Remove(fixture.protectedRef); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(fixture.protectedRef, 0o755); err != nil {
+					t.Fatal(err)
+				}
 			},
 			want: "protected-ref record is present but unreadable",
 		},
