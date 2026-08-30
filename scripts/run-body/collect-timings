@@ -30,8 +30,8 @@ if [ -r "$events_file" ]; then
     def parse_step_name:
       if (.name | type) != "string" then
         {refusal: {name: null, reason: "timing event has no step name"}}
-      elif (.name | test("^[a-z]+(-[a-z]+)*(?:@[2-9][0-9]*)?$")) then
-        (.name | capture("^(?<name>[a-z]+(?:-[a-z]+)*)(?:@(?<attempt>[2-9][0-9]*))?$")) as $step |
+      elif (.name | test("^[a-z]+(-[a-z]+)*(?:@(?:[2-9]|[1-9][0-9]+))?$")) then
+        (.name | capture("^(?<name>[a-z]+(?:-[a-z]+)*)(?:@(?<attempt>[2-9]|[1-9][0-9]+))?$")) as $step |
         {command: (. + {name: $step.name, attempt: ($step.attempt // "1" | tonumber)})}
       else
         {refusal: {name: .name, reason: "invalid step name"}}

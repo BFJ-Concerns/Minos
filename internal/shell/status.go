@@ -100,16 +100,16 @@ func parseStepName(name string) (stepName, bool) {
 	if !hasSuffix {
 		return stepName{Base: base, Attempt: 1}, true
 	}
-	if len(suffix) == 0 || suffix[0] < '2' || suffix[0] > '9' {
+	if len(suffix) == 0 || suffix[0] == '0' {
 		return stepName{}, false
 	}
-	for _, character := range suffix[1:] {
+	for _, character := range suffix {
 		if character < '0' || character > '9' {
 			return stepName{}, false
 		}
 	}
 	attempt, err := strconv.Atoi(suffix)
-	if err != nil {
+	if err != nil || attempt < 2 {
 		return stepName{}, false
 	}
 	return stepName{Base: base, Attempt: attempt}, true
@@ -405,9 +405,6 @@ func commandStages(runDir string) []statusStage {
 			continue
 		}
 		name.Base = strings.TrimSuffix(name.Base, "-command")
-		if name.Base == "" {
-			continue
-		}
 		stage := statusStage{
 			Name:       name.Base,
 			Attempt:    name.Attempt,
