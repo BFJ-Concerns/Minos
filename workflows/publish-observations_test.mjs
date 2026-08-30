@@ -56,10 +56,26 @@ test("observations and misconfigurations render as unverified non-findings in on
       "This was noticed outside the review's scope and has not been verified.",
   );
 
-  // The exact bodies above pin both channel labels and their common
-  // unverified marking. Name the leaks they prevent: neither channel may
-  // acquire confirmed-finding language or an annexe destination.
-  for (const [channel, comment] of [["observation", observation], ["misconfiguration", misconfiguration]]) {
+});
+
+test("observation channels exclude finding language and annexe destinations", () => {
+  const payload = runCli([
+    {
+      kind: "out-of-scope-observation",
+      title: "Unrelated nil deref",
+      path: "pkg/server.go",
+      line: 12,
+      explanation: "A nil map write outside the reviewed range.",
+    },
+    {
+      kind: "review-brief-misconfiguration",
+      title: "Security brief",
+      brief: ".review/security.md",
+      reason: "declared scope directory does not exist",
+    },
+  ]);
+
+  for (const [channel, comment] of [["observation", payload.comments[0]], ["misconfiguration", payload.comments[1]]]) {
     assert.ok(!/finding/i.test(comment.body), `${channel} rendered as a finding`);
     assert.ok(!/annexe/i.test(comment.body), `${channel} named an annexe delivery path`);
   }
