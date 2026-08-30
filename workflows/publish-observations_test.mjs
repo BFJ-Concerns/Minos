@@ -16,7 +16,7 @@ function runCli(entries) {
   return JSON.parse(execFileSync(process.execPath, [cliPath, entriesPath], { encoding: "utf8" }));
 }
 
-test("observations and misconfigurations render as one pull-request payload", () => {
+test("observations and misconfigurations render as unverified non-findings in one pull-request payload", () => {
   const payload = runCli([
     {
       kind: "out-of-scope-observation",
@@ -32,24 +32,37 @@ test("observations and misconfigurations render as one pull-request payload", ()
       reason: "declared scope directory does not exist",
     },
   ]);
-  assert.equal(payload.destination, "pull-request");
+  assert.equal(payload.destination, "pull-request", "observations must not be routed to a reviewed project's annexe");
+  assert.equal(payload.body, "Unverified observations from the review, for the author's judgement.");
   assert.equal(payload.comments.length, 2);
 
   const observation = payload.comments[0];
   assert.equal(observation.path, "pkg/server.go");
   assert.equal(observation.line, 12);
-  // The unverified marking is the payload's whole point: material here has
-  // no verifier verdict and must never read as a finding.
-  assert.match(observation.body, /Out-of-scope observation \(unverified\)/);
-  assert.match(observation.body, /has not been verified/);
+  assert.equal(
+    observation.body,
+    "**Out-of-scope observation (unverified): Unrelated nil deref**\n\n" +
+      "A nil map write outside the reviewed range.\n\n" +
+      "This was noticed outside the review's scope and has not been verified.",
+  );
 
   const misconfiguration = payload.comments[1];
   assert.equal(misconfiguration.path, ".review/security.md");
   assert.equal(misconfiguration.line, 1);
-  assert.match(misconfiguration.body, /Review brief misconfiguration/);
-  assert.match(misconfiguration.body, /declared scope directory does not exist/);
+  assert.equal(
+    misconfiguration.body,
+    "**Review brief misconfiguration: Security brief**\n\n" +
+      "declared scope directory does not exist\n\n" +
+      "This was noticed outside the review's scope and has not been verified.",
+  );
 
-  assert.match(payload.body, /Unverified observations/);
+  // The exact bodies above pin both channel labels and their common
+  // unverified marking. Name the leaks they prevent: neither channel may
+  // acquire confirmed-finding language or an annexe destination.
+  for (const [channel, comment] of [["observation", observation], ["misconfiguration", misconfiguration]]) {
+    assert.ok(!/finding/i.test(comment.body), `${channel} rendered as a finding`);
+    assert.ok(!/annexe/i.test(comment.body), `${channel} named an annexe delivery path`);
+  }
 });
 
 test("a confirmed-finding kind is refused: findings ride the review, never this channel", () => {
