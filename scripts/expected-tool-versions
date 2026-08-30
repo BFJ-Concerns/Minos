@@ -1,7 +1,7 @@
 # The tool versions a deploy expects on the box — the set the repository
 # gate runs against. One tab-separated line per tool: name, the command
-# that reports its version, and the token that must appear somewhere in
-# that command's output. `any` records an accepted divergence: the
+# that reports its version, and the token that must appear in the first
+# line of that command's output. `any` records an accepted divergence: the
 # observed version is reported, never failing the preflight — absence of
 # the tool still fails it. Update a line when the gate's own toolchain
 # moves; a deploy onto a box whose versions drift instead stops loudly

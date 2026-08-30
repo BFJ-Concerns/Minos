@@ -24,7 +24,9 @@ fi
 preflight_mismatches=0
 while IFS="	" read -r tool version_command expected; do
   case "$tool" in ''|\#*) continue ;; esac
-  if observed="$($version_command 2>&1)"; then
+  # </dev/null keeps a stdin-reading version command from swallowing the
+  # remaining declaration lines the loop is still reading.
+  if observed="$($version_command < /dev/null 2>&1)"; then
     observed="$(printf '%s\n' "$observed" | head -n 1)"
   else
     echo "preflight: $tool: mismatch — expected $expected, observed missing (${version_command%% *} not runnable)" >&2
