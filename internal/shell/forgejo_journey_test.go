@@ -608,6 +608,166 @@ func TestForgejoSweepReconciliationKeepsDecisionSnapshotFresh(t *testing.T) {
 	})
 }
 
+func TestForgejoReconciliationStripsStaleApprovalReaction(t *testing.T) {
+	staleApproval := func(t *testing.T) *forgejoFixtureState {
+		t.Helper()
+		state := newForgejoFixtureState(t)
+		approvedHead := state.headSHA()
+		state.reactions = []string{"+1"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "APPROVED", "commit_id": approvedHead,
+			"body": "approved before the author pushed again", "user": map[string]any{"login": "Minos"},
+		}})
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["sha"] = "head-after-approval"
+		})
+		return state
+	}
+
+	t.Run("sweep removes it before a deferred admission can claim", func(t *testing.T) {
+		state := staleApproval(t)
+		state.setDependencies([]map[string]any{{
+			"number": 7, "state": "open",
+			"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+		}})
+		cfg := writeSweepFixtureConfig(t, state)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemd-run" {
+				t.Fatalf("stale-approval sweep claimed a deferred pull request")
+			}
+			return nil, nil
+		}
+
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 1 {
+			t.Fatalf("reactions = %v, removal writes = %d, want stale +1 removed once", state.reactions, state.reactionDeleteWrites)
+		}
+		if !slices.Equal(state.writeSequence, []string{"reaction-remove:+1"}) {
+			t.Fatalf("forge writes = %v, want only the stale reaction removal", state.writeSequence)
+		}
+		if len(state.reviews) != 1 || state.reviews[0]["commit_id"] == state.pullRequest["head"].(map[string]any)["sha"] {
+			t.Fatalf("reviews = %#v, want the stale review retained", state.reviews)
+		}
+	})
+
+	t.Run("webhook removes it before a work-in-progress admission defers", func(t *testing.T) {
+		state := staleApproval(t)
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["ref"] = "structural/stale-approval"
+		})
+		cfg, _, _ := state.service(t)
+		cfg.Forges["local"] = cfg.Forges["forgejo"]
+		delete(cfg.Forges, "forgejo")
+		if err := os.WriteFile(cfg.Forges["local"].WebhookSecretFile, []byte("secret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		repoConfig := `forge = "local"
+owner = "minos-e2e-owner"
+repo = "subject"
+work-in-progress-branch-prefixes = ["structural/"]
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`
+		if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			t.Fatalf("stale-approval webhook reached admission command %s", name)
+			return nil, nil
+		}
+
+		fixture := readFixture(t, "001-pull_request-opened.json")
+		response, err := sendAuthenticatedHook(t, cfg, "pull_request", fixture.Body)
+		if err != nil {
+			t.Fatalf("handleHook() error = %v", err)
+		}
+		if response.Code != http.StatusAccepted || response.Body.String() != "deferred: work-in-progress branch \"structural/stale-approval\"\n" {
+			t.Fatalf("webhook response = %d %q", response.Code, response.Body.String())
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 1 {
+			t.Fatalf("reactions = %v, removal writes = %d, want stale +1 removed once", state.reactions, state.reactionDeleteWrites)
+		}
+	})
+
+	t.Run("unmoved head keeps its reaction", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.reactions = []string{"+1"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
+			"body": "approval at the current head", "user": map[string]any{"login": "Minos"},
+		}})
+		cfg := writeSweepFixtureConfig(t, state)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemd-run" {
+				t.Fatalf("current-head pull request sweep claimed a completed pull request")
+			}
+			return nil, nil
+		}
+
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if !slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 0 {
+			t.Fatalf("reactions = %v, removal writes = %d, want current-head +1 retained", state.reactions, state.reactionDeleteWrites)
+		}
+	})
+
+	t.Run("re-approved head keeps its reaction despite its historical approval", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		approvedHead := state.headSHA()
+		state.reactions = []string{"+1"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "APPROVED", "commit_id": approvedHead,
+			"body": "approval before the author pushed again", "user": map[string]any{"login": "Minos"},
+		}, {
+			"id": 42, "state": "APPROVED", "commit_id": "head-after-re-review",
+			"body": "approval after the author pushed again", "user": map[string]any{"login": "Minos"},
+		}})
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["sha"] = "head-after-re-review"
+		})
+		cfg := writeSweepFixtureConfig(t, state)
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemd-run" {
+				t.Fatalf("re-approved pull request sweep claimed a completed pull request")
+			}
+			return nil, nil
+		}
+
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if !slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 0 {
+			t.Fatalf("reactions = %v, removal writes = %d, want re-approved +1 retained", state.reactions, state.reactionDeleteWrites)
+		}
+	})
+}
+
 func TestForgejoContinuationPriorityReadsListedHeadStatuses(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	state.setStatuses([]map[string]any{{
