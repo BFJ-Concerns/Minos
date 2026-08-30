@@ -7,6 +7,9 @@ if [ "$#" -ne 1 ]; then
 fi
 output="$1"
 
+# shellcheck source=scripts/run-body/cgroup-memory.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/cgroup-memory.sh"
+
 # One honest memory snapshot of the calling process's own cgroup: anonymous
 # footprint and swap, PSI stall totals, and workingset refaults. memory.current
 # is deliberately absent — it counts page cache, which builds inflate to any
@@ -14,29 +17,19 @@ output="$1"
 # Written at run start and again before the timing record is assembled, so the
 # record can carry the run's stall and thrash deltas. Best-effort residue: an
 # unreadable cgroup writes nothing and exits clean.
-if [ -n "${MINOS_CGROUP_DIR:-}" ]; then
-  cgroup_dir="$MINOS_CGROUP_DIR"
-else
-  cgroup_path="$(cut -d: -f3 /proc/self/cgroup 2>/dev/null | head -n 1)"
-  cgroup_dir="/sys/fs/cgroup${cgroup_path}"
-fi
+resolve_cgroup_dir
 for counter_file in memory.stat memory.pressure; do
   [ -r "$cgroup_dir/$counter_file" ] || exit 0
 done
 
 sampled_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-anon="$(awk '$1 == "anon" { print $2; exit }' "$cgroup_dir/memory.stat")"
-refault_anon="$(awk '$1 == "workingset_refault_anon" { print $2; exit }' "$cgroup_dir/memory.stat")"
-refault_file="$(awk '$1 == "workingset_refault_file" { print $2; exit }' "$cgroup_dir/memory.stat")"
-swap_current="$(cat "$cgroup_dir/memory.swap.current" 2>/dev/null || echo "")"
-stall_some_us="$(awk '$1 == "some" { sub("total=", "", $NF); print $NF; exit }' "$cgroup_dir/memory.pressure")"
-stall_full_us="$(awk '$1 == "full" { sub("total=", "", $NF); print $NF; exit }' "$cgroup_dir/memory.pressure")"
+read_cgroup_memory_counters
 
 jq -n \
   --arg sampled_at "$sampled_at" \
-  --arg anon "$anon" --arg swap "$swap_current" \
-  --arg stall_some_us "$stall_some_us" --arg stall_full_us "$stall_full_us" \
-  --arg refault_anon "$refault_anon" --arg refault_file "$refault_file" \
+  --arg anon "$cgroup_anon" --arg swap "$cgroup_swap" \
+  --arg stall_some_us "$cgroup_stall_some_us" --arg stall_full_us "$cgroup_stall_full_us" \
+  --arg refault_anon "$cgroup_refault_anon" --arg refault_file "$cgroup_refault_file" \
   '{kind: "minos-memory-snapshot-v1", sampled_at: $sampled_at}
    + ([["anon", $anon], ["swap", $swap],
        ["stall_some_us", $stall_some_us], ["stall_full_us", $stall_full_us],
