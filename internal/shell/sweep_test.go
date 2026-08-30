@@ -106,7 +106,7 @@ func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
 		{
 			name: "work in progress branch",
 			configure: func(state *forgejoFixtureState, cfg ServiceConfig, _ Facts) {
-				setSweepFixtureWorkInProgressPrefix(t, cfg, "structural/")
+				editSweepFixtureTOML(t, cfg, "work-in-progress-branch-prefixes = [\"structural/\"]\n")
 				state.changePullRequest(func(pullRequest map[string]any) {
 					pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
 				})
@@ -186,7 +186,7 @@ func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
 func TestSweepContinuesWhenDeferralProjectionCannotBePublished(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg := writeSweepFixtureConfig(t, state)
-	setSweepFixtureWorkInProgressPrefix(t, cfg, "structural/")
+	editSweepFixtureTOML(t, cfg, "work-in-progress-branch-prefixes = [\"structural/\"]\n")
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
 	})
@@ -207,16 +207,16 @@ func TestSweepContinuesWhenDeferralProjectionCannotBePublished(t *testing.T) {
 	}
 }
 
-func setSweepFixtureWorkInProgressPrefix(t *testing.T, cfg ServiceConfig, prefix string) {
+func editSweepFixtureTOML(t *testing.T, cfg ServiceConfig, addition string) {
 	t.Helper()
 	path := filepath.Join(cfg.Root, "repos", "subject.toml")
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated := bytes.Replace(content, []byte("repo = \"subject\"\n"), []byte("repo = \"subject\"\nwork-in-progress-branch-prefixes = [\""+prefix+"\"]\n"), 1)
+	updated := bytes.Replace(content, []byte("repo = \"subject\"\n"), []byte("repo = \"subject\"\n"+addition), 1)
 	if bytes.Equal(updated, content) {
-		t.Fatal("sweep fixture repo configuration has no repository field")
+		t.Fatal("sweep fixture TOML edit made no change")
 	}
 	if err := os.WriteFile(path, updated, 0o600); err != nil {
 		t.Fatal(err)
