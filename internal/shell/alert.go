@@ -43,6 +43,31 @@ type repoSkipRecord struct {
 	LastError string `json:"last_error"`
 }
 
+type serviceStateWriteError struct {
+	stage string
+	err   error
+}
+
+func (err *serviceStateWriteError) Error() string { return err.err.Error() }
+
+func (err *serviceStateWriteError) Unwrap() error { return err.err }
+
+// writeServiceStateAtomically writes complete service-local state to a
+// temporary file before replacing its destination with the supplied rename.
+func writeServiceStateAtomically(temporary *os.File, temporaryPath, destination string, content []byte, rename func(string, string) error) error {
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
+		return &serviceStateWriteError{stage: "write", err: err}
+	}
+	if err := temporary.Close(); err != nil {
+		return &serviceStateWriteError{stage: "close", err: err}
+	}
+	if err := rename(temporaryPath, destination); err != nil {
+		return &serviceStateWriteError{stage: "rename", err: err}
+	}
+	return nil
+}
+
 func sweepSkipStatePath(cfg ServiceConfig) string {
 	return filepath.Join(cfg.Runs.Dir, ".sweep-skips.json")
 }
@@ -90,11 +115,12 @@ func recordRepoSkips(ctx context.Context, cfg ServiceConfig, skipped map[string]
 		return
 	}
 	temp := sweepSkipStatePath(cfg) + ".tmp"
-	if err := os.WriteFile(temp, content, 0o600); err != nil {
+	temporary, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		log.Printf("sweep skip state: %v", err)
 		return
 	}
-	if err := os.Rename(temp, sweepSkipStatePath(cfg)); err != nil {
+	if err := writeServiceStateAtomically(temporary, temp, sweepSkipStatePath(cfg), content, os.Rename); err != nil {
 		log.Printf("sweep skip state: %v", err)
 	}
 }
