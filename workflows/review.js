@@ -81,14 +81,11 @@ function pullRequestSection(pullRequest) {
   );
 }
 
-function reviewedMemberSection(context) {
-  const diff = context.diff === null
-    ? "The deterministic input carries no separate diff text for this solo member; read the reviewed range directly."
-    : `<member-diff>\n${context.diff}\n</member-diff>`;
+function reviewedChangeSection(target, head, pullRequest) {
   return (
-    `<review-member id=${JSON.stringify(context.id)} target=${JSON.stringify(context.target)} head=${JSON.stringify(context.head)}>\n` +
-    pullRequestSection(context.pullRequest) +
-    `${diff}\n</review-member>`
+    `<reviewed-change target=${JSON.stringify(target)} head=${JSON.stringify(head)}>\n` +
+    pullRequestSection(pullRequest) +
+    `The deterministic input carries no separate diff text; read the reviewed range directly.\n</reviewed-change>`
   );
 }
 
@@ -138,7 +135,6 @@ function validExplorationResult(result) {
   return result.plan.every((unit) =>
     unit && typeof unit === "object" && !Array.isArray(unit) &&
     typeof unit.id === "string" && unit.id !== "" &&
-    typeof unit.member === "string" && memberIds.has(unit.member) &&
     typeof unit.concern === "string" && unit.concern !== "" &&
     ["correctness", "security", "testing", "design"].includes(unit.specialistType) &&
     Array.isArray(unit.scope) && unit.scope.length > 0 &&
@@ -212,9 +208,8 @@ function orientationPacket(target, head, files, units) {
 const findingShape = {
   type: "object",
   additionalProperties: false,
-  required: ["member", "title", "severity", "confidence", "path", "line", "explanation"],
+  required: ["title", "severity", "confidence", "path", "line", "explanation"],
   properties: {
-    member: { type: "string" },
     title: { type: "string" },
     severity: { type: "string", enum: ["Critical", "High", "Medium", "Low"] },
     confidence: { type: "integer", minimum: 0, maximum: 100 },
@@ -233,15 +228,6 @@ const outOfScopeObservationShape = {
     path: { type: "string" },
     line: { type: "integer", minimum: 1 },
     explanation: { type: "string" },
-  },
-};
-
-const memberOutOfScopeObservationShape = {
-  ...outOfScopeObservationShape,
-  required: ["member", ...outOfScopeObservationShape.required],
-  properties: {
-    member: { type: "string" },
-    ...outOfScopeObservationShape.properties,
   },
 };
 
@@ -299,10 +285,9 @@ const explorationSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["id", "member", "concern", "scope", "specialistType"],
+        required: ["id", "concern", "scope", "specialistType"],
         properties: {
           id: { type: "string" },
-          member: { type: "string" },
           concern: { type: "string" },
           scope: { type: "array", minItems: 1, items: { type: "string" } },
           specialistType: { type: "string", enum: ["correctness", "security", "testing", "design"] },
@@ -330,7 +315,7 @@ const verifierSchema = {
   required: ["verdicts"],
   properties: {
     verdicts: { type: "array", items: verifierVerdictShape },
-    outOfScopeObservations: { type: "array", items: memberOutOfScopeObservationShape },
+    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
   },
 };
 
@@ -348,43 +333,6 @@ if (missingBriefs.length > 0)
 const projectGuidance = projectGuidanceFromInput(input);
 if (!projectGuidance) throw new Error("deterministic input omitted reviewed-project guidance");
 const pullRequestDescription = pullRequestFromInput(input);
-const members = input && input.members;
-const memberEntries = Array.isArray(members)
-  ? members
-  : members && typeof members === "object" && Array.isArray(members.members)
-    ? members.members
-    : null;
-if (!memberEntries || memberEntries.length === 0 || memberEntries.some((member) =>
-  !member || typeof member !== "object" || Array.isArray(member) ||
-  typeof member.id !== "string" || member.id === "" ||
-  typeof member.target !== "string" || member.target === "" ||
-  typeof member.head !== "string" || member.head === "" ||
-  (memberEntries.length > 1 && typeof member.diff !== "string")
-)) throw new Error("deterministic input needs members with ids, reviewed coordinates, and grouped-member diffs");
-const memberIds = new Set(memberEntries.map((member) => member.id));
-const memberContexts = new Map(memberEntries.map((member) => [member.id, {
-  id: member.id,
-  target: member.target,
-  head: member.head,
-  diff: typeof member.diff === "string" ? member.diff : null,
-  pullRequest: pullRequestFromInput({ pullRequest: member }),
-}]));
-const priorFindings = input && input.priorFindings;
-const validPriorEntry = (entry) => Boolean(
-  entry && typeof entry === "object" && !Array.isArray(entry) &&
-  typeof entry.key === "string" && entry.key !== "" &&
-  entry.finding && typeof entry.finding === "object" && !Array.isArray(entry.finding) &&
-  typeof entry.finding.title === "string" &&
-  typeof entry.finding.path === "string" &&
-  Number.isInteger(entry.finding.line) && entry.finding.line >= 1 &&
-  typeof entry.finding.explanation === "string"
-);
-if (!priorFindings || typeof priorFindings !== "object" || Array.isArray(priorFindings) ||
-    !Array.isArray(priorFindings.confirmedFixed) ||
-    !Array.isArray(priorFindings.confirmedUnfixed) ||
-    !priorFindings.confirmedFixed.every(validPriorEntry) ||
-    !priorFindings.confirmedUnfixed.every(validPriorEntry))
-  throw new Error("deterministic input needs priorFindings with valid confirmedFixed and confirmedUnfixed arrays");
 
 const legs = [];
 function addLeg(label, role, pinnedModel, findingIds = null) {
@@ -411,22 +359,13 @@ function incompleteExploration(reason) {
 
 phase("Explore");
 addLeg("exploration", "exploration", GPT_EXPLORER_MODEL);
-const repairedSites = priorFindings.confirmedFixed.map(
-  (entry) => `${entry.finding.path}:${entry.finding.line} (${entry.finding.title})`
-);
-const repairedSitesContext = repairedSites.length > 0
-  ? `\nEarlier rounds reviewed this pull request and repairs have since landed at these sites: ${repairedSites.join("; ")}. ` +
-    "Ensure the plan's unit scopes cover every repaired site's path: the repairs are the newest code in the range, and a defect repaired in one arm of a construct is a prime candidate to persist in its symmetric siblings."
-  : "";
 const explorationResult = await agent(
   rolePrompt(
     roleBriefs,
     projectGuidance,
     pullRequestDescription,
     ROLE_BRIEFS.exploration,
-    `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.` +
-      ` The members record below is the complete attribution vocabulary. Plan each unit against exactly one member and return that member id.\nMembers: ${JSON.stringify(memberEntries)}` +
-      repairedSitesContext
+    `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.`
   ),
   {
     engine: "codex",
@@ -457,32 +396,15 @@ for (const unit of specialistUnits)
   addLeg(unit.label, "specialist", PROPOSER_MODEL);
 
 function specialistPrompt(unit) {
-  const memberContext = memberContexts.get(unit.member);
-  const orientation = orientationPacket(
-    memberContext.target,
-    memberContext.head,
-    exploration.files,
-    specialistUnits.filter((candidate) => candidate.member === unit.member),
-  );
-  const hasPriorFindings = priorFindings.confirmedFixed.length > 0 ||
-    priorFindings.confirmedUnfixed.length > 0;
-  const suppressionContext = hasPriorFindings
-    ? `\nPrior findings from earlier rounds: ${JSON.stringify(priorFindings)}\n` +
-      "Do not present a substantially equivalent, already-dispositioned finding as a fresh discovery. " +
-      "You must judge equivalence from the current code and evidence. A regression of a repair, a materially different nearby defect, or a genuinely new finding remains reportable." +
-      (priorFindings.confirmedFixed.length > 0
-        ? " Each confirmedFixed entry names a repaired site. Where a repaired site falls in your scope, read the repair as it now stands and give its symmetric siblings — parallel arms of the same construct, mirrored branches, analogous call sites — the same reading: a defect repaired in one arm is a prime candidate to persist in its siblings."
-        : "")
-    : "";
+  const orientation = orientationPacket(target, head, exploration.files, specialistUnits);
   return rolePrompt(
     roleBriefs,
     projectGuidance,
     null,
     unit.roleBrief,
     `Orientation packet: ${orientation}\n` +
-      `${reviewedMemberSection(memberContext)}\n` +
-      `Assigned concern: ${unit.concern}\nAssigned member: ${unit.member}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that member's concern and scope against ${memberContext.target}...${memberContext.head}. Every finding must carry assigned member ${unit.member}.` +
-      suppressionContext
+      `${reviewedChangeSection(target, head, pullRequestDescription)}\n` +
+      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
   );
 }
 
@@ -523,7 +445,6 @@ specialistUnits.forEach((unit, unitIndex) => {
     outOfScopeObservations.push({
       id: `${unit.label}:observation:${observationIndex + 1}`,
       source: unit.concern,
-      member: unit.member,
       ...observation,
       observingLabel: unit.label,
       verified: false,
@@ -570,11 +491,9 @@ const verifierResults = await parallel(
         projectGuidance,
         null,
         ROLE_BRIEFS.verifier,
-        `Try to disprove each proposed finding against its assigned reviewed-member context and the cited code.\n` +
-          `Reviewed member contexts:\n${[...new Set(group.items.map((item) => item.unit.member))]
-            .map((member) => reviewedMemberSection(memberContexts.get(member))).join("\n")}\n` +
+        `Try to disprove each proposed finding against the reviewed change and the cited code.\n` +
+          `${reviewedChangeSection(target, head, pullRequestDescription)}\n` +
           `Proposing specialists: ${[...new Set(group.items.map((item) => item.unit.label))].join(", ")}\n` +
-          `Every out-of-scope observation must carry the member it concerns, chosen from ${JSON.stringify([...new Set(group.items.map((item) => item.unit.member))])}.\n` +
           `Findings: ${JSON.stringify(group.items.map((item) => ({ id: item.id, ...item.finding })))}`
       ),
       {
@@ -631,7 +550,6 @@ const proposedFindings = proposed.map((item) => ({
   id: item.id,
   ...item.finding,
   source: item.unit.concern,
-  member: item.unit.member,
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
   rawVerifier: verifierByFinding.get(item.id),
@@ -639,7 +557,6 @@ const proposedFindings = proposed.map((item) => ({
 
 return {
   reviewed: { target, head, occasion },
-  members: memberEntries,
   stage: "present",
   exploration,
   requiredModelEvidence: legs,
@@ -649,7 +566,6 @@ return {
   misconfigurations: [],
   dispatches: specialistUnits.map((unit) => ({
     id: unit.id,
-    member: unit.member,
     label: unit.label,
     concern: unit.concern,
     scope: unit.scope,

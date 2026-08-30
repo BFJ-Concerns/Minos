@@ -11,11 +11,6 @@ import (
 const (
 	ForgejoProvider    = "forgejo"
 	OwnedStatusContext = "Minos"
-	// TargetStatusContext marks a target commit whose own gate a run has
-	// proven broken. It is separate from OwnedStatusContext because the
-	// marker lands on the target commit, which is usually some merged pull
-	// request's head and already carries that pull request's Minos status.
-	TargetStatusContext = "Minos / target"
 )
 
 type Repository struct {
@@ -64,63 +59,36 @@ type Review struct {
 	User     string `json:"user"`
 }
 
-type IssueComment struct {
-	ID   int64  `json:"id"`
-	Body string `json:"body"`
-	User string `json:"user"`
-}
-
-type Commit struct {
-	SHA    string `json:"sha"`
-	Author string `json:"author"`
-}
-
 type Dependency struct {
 	Repository string `json:"repository"`
 	Number     int64  `json:"number"`
 }
 
 type Snapshot struct {
-	AuthenticatedUser     string          `json:"authenticated_user"`
-	Repository            string          `json:"repository"`
-	PullRequest           int64           `json:"pull_request"`
-	State                 string          `json:"state"`
-	Merged                bool            `json:"merged"`
-	Draft                 bool            `json:"draft"`
-	Author                string          `json:"author"`
-	Mergeable             bool            `json:"mergeable"`
-	HeadSHA               string          `json:"head_sha"`
-	HeadBranch            string          `json:"head_branch"`
-	HeadRepository        string          `json:"head_repository"`
-	TargetSHA             string          `json:"target_sha"`
-	TargetBranch          string          `json:"target_branch"`
-	TargetRepository      string          `json:"target_repository"`
-	DefaultBranch         string          `json:"default_branch"`
-	SourceProtected       bool            `json:"source_protected"`
-	CanMerge              bool            `json:"can_merge"`
-	TargetSyncMethod      string          `json:"target_sync_method"`
-	RequiredChecks        []CheckIdentity `json:"required_checks"`
-	FailedChecks          []CheckIdentity `json:"failed_checks"`
-	Statuses              []Status        `json:"statuses"`
-	Labels                []string        `json:"labels"`
-	Reviews               []Review        `json:"reviews"`
-	DependenciesAvailable bool            `json:"dependencies_available"`
-	DependencyError       string          `json:"dependency_error,omitempty"`
-	OpenDependencies      []Dependency    `json:"open_dependencies"`
-	AllowedMergeMethods   []MergeMethod   `json:"allowed_merge_methods"`
-
-	CheckDecision CheckDecision `json:"check_decision"`
+	AuthenticatedUser     string       `json:"authenticated_user"`
+	Repository            string       `json:"repository"`
+	PullRequest           int64        `json:"pull_request"`
+	State                 string       `json:"state"`
+	Merged                bool         `json:"merged"`
+	Draft                 bool         `json:"draft"`
+	Author                string       `json:"author"`
+	Mergeable             bool         `json:"mergeable"`
+	HeadSHA               string       `json:"head_sha"`
+	HeadBranch            string       `json:"head_branch"`
+	HeadRepository        string       `json:"head_repository"`
+	TargetSHA             string       `json:"target_sha"`
+	TargetBranch          string       `json:"target_branch"`
+	TargetRepository      string       `json:"target_repository"`
+	DefaultBranch         string       `json:"default_branch"`
+	SourceProtected       bool         `json:"source_protected"`
+	CanMerge              bool         `json:"can_merge"`
+	Statuses              []Status     `json:"statuses"`
+	Labels                []string     `json:"labels"`
+	Reviews               []Review     `json:"reviews"`
+	DependenciesAvailable bool         `json:"dependencies_available"`
+	DependencyError       string       `json:"dependency_error,omitempty"`
+	OpenDependencies      []Dependency `json:"open_dependencies"`
 }
-
-type MergeMethod string
-
-const (
-	MergeMethodMerge       MergeMethod = "merge"
-	MergeMethodRebase      MergeMethod = "rebase"
-	MergeMethodRebaseMerge MergeMethod = "rebase-merge"
-	MergeMethodSquash      MergeMethod = "squash"
-	MergeMethodFastForward MergeMethod = "fast-forward-only"
-)
 
 type ReviewVerdict string
 
@@ -142,19 +110,6 @@ type reviewWritePayload struct {
 	Body     string          `json:"body"`
 	Comments []ReviewComment `json:"comments"`
 }
-
-type CheckIdentity struct {
-	Provider string `json:"provider"`
-	Context  string `json:"context"`
-}
-
-type CheckDecision string
-
-const (
-	ChecksPass    CheckDecision = "pass"
-	ChecksPending CheckDecision = "pending"
-	ChecksFail    CheckDecision = "fail"
-)
 
 type WriteOutcome string
 

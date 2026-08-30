@@ -13,10 +13,6 @@ import (
 
 const DefaultConfigRoot = "/etc/minos"
 
-// DefaultMaximumGateRepairs bounds how many repairs one run's gate repair
-// ladder may integrate before the run ends held.
-const DefaultMaximumGateRepairs = 2
-
 var errRepoNotOptedIn = errors.New("repository is not opted in")
 
 type ServiceConfig struct {
@@ -90,22 +86,12 @@ type RepoConfig struct {
 	Owner                        string   `toml:"owner"`
 	Repo                         string   `toml:"repo"`
 	WorkInProgressBranchPrefixes []string `toml:"work-in-progress-branch-prefixes"`
-	StructuralBranchPrefixes     []string `toml:"structural-branch-prefixes"`
 	Adaptation                   struct {
-		Build   string `toml:"build"`
-		Test    string `toml:"test"`
 		RunBody string `toml:"run-body"`
 	} `toml:"adaptation"`
-	Policy struct {
-		AutoMerge bool `toml:"auto-merge"`
-	} `toml:"policy"`
 	Review struct {
-		Threshold     string `toml:"threshold"`
-		MaximumRounds int    `toml:"maximum-rounds"`
+		Threshold string `toml:"threshold"`
 	} `toml:"review"`
-	Gate struct {
-		MaximumRepairs int `toml:"maximum-repairs"`
-	} `toml:"gate"`
 }
 
 func LoadServiceConfig(root string) (ServiceConfig, error) {
@@ -156,34 +142,15 @@ func LoadRepoConfigs(root string) ([]RepoConfig, error) {
 		if repo.Review.Threshold == "" {
 			repo.Review.Threshold = "Critical"
 		}
-		// The gate repair ladder ends on a stall, but a suite whose flakes
-		// surface a different failure each round keeps earning dispatches on
-		// the progress rule alone. The ceiling is the bound that always
-		// applies, so an unset value takes the default rather than meaning
-		// unbounded.
-		if repo.Gate.MaximumRepairs == 0 {
-			repo.Gate.MaximumRepairs = DefaultMaximumGateRepairs
-		}
 		if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
 			return nil, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
 		}
 		if !validReviewThreshold(repo.Review.Threshold) {
 			return nil, fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", path)
 		}
-		if repo.Review.MaximumRounds < 0 {
-			return nil, fmt.Errorf("%s: review.maximum-rounds cannot be negative", path)
-		}
-		if repo.Gate.MaximumRepairs < 0 {
-			return nil, fmt.Errorf("%s: gate.maximum-repairs cannot be negative", path)
-		}
 		for _, prefix := range repo.WorkInProgressBranchPrefixes {
 			if prefix == "" {
 				return nil, fmt.Errorf("%s: work-in-progress-branch-prefixes cannot contain an empty prefix", path)
-			}
-		}
-		for _, prefix := range repo.StructuralBranchPrefixes {
-			if prefix == "" {
-				return nil, fmt.Errorf("%s: structural-branch-prefixes cannot contain an empty prefix", path)
 			}
 		}
 		repos = append(repos, repo)

@@ -17,27 +17,9 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge [--member OWNER REPO NUMBER] snapshot|head-movement|check-logs|claim|claim-member|status|target-broken|review|comment|reaction|reaction-remove|label-remove|merge|delete-source-branch")
+		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|reaction|reaction-remove")
 	}
-	member := forge.Repository{}
-	var memberPR int64
-	if args[0] == "--member" {
-		if len(args) < 5 {
-			return fmt.Errorf("usage: minos forge --member OWNER REPO NUMBER ACTION ...")
-		}
-		parsed, parseErr := strconv.ParseInt(args[3], 10, 64)
-		if parseErr != nil || parsed < 1 {
-			return fmt.Errorf("member pull-request number %q is invalid", args[3])
-		}
-		member, memberPR, args = forge.Repository{Owner: args[1], Name: args[2]}, parsed, args[4:]
-		if member.Owner == "" || member.Name == "" {
-			return fmt.Errorf("member coordinates are incomplete")
-		}
-		if len(args) == 0 {
-			return fmt.Errorf("usage: minos forge --member OWNER REPO NUMBER ACTION ...")
-		}
-	}
-	adapter, guard, botLogin, err := leadForge(member, memberPR)
+	adapter, guard, _, err := leadForge()
 	if err != nil {
 		return err
 	}
@@ -51,67 +33,14 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(snapshot)
-	case "head-movement":
-		if len(args) != 3 {
-			return fmt.Errorf("usage: minos forge head-movement EARLIER LATER")
-		}
-		commits, err := adapter.PullRequestCommits(ctx, guard.Repository, guard.PullRequest)
-		if err != nil {
-			return err
-		}
-		movement := "foreign"
-		if forge.OwnMovement(commits, args[1], args[2], botLogin) {
-			movement = "own"
-		}
-		_, err = fmt.Fprintln(stdout, movement)
-		return err
-	case "check-logs":
-		if len(args) != 3 {
-			return fmt.Errorf("usage: minos forge check-logs HEAD TARGET")
-		}
-		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		evidence, err := adapter.CheckLogs(ctx, guard)
-		if err != nil {
-			return err
-		}
-		_, err = stdout.Write(evidence)
-		return err
 	case "claim":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: minos forge claim")
 		}
 		return emitForgeResult(stdout, "claim", adapter.Claim(ctx, guard.Repository, guard.PullRequest))
-	case "claim-member":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge claim-member OWNER REPO NUMBER")
-		}
-		cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
-		if err != nil {
-			return err
-		}
-		repos, err := LoadRepoConfigs(cfg.Root)
-		if err != nil {
-			return err
-		}
-		var repo RepoConfig
-		for _, candidate := range repos {
-			if candidate.Forge == os.Getenv("MINOS_FORGE") && candidate.Owner == guard.Repository.Owner && candidate.Repo == guard.Repository.Name {
-				repo = candidate
-				break
-			}
-		}
-		if repo.Repo == "" {
-			return fmt.Errorf("lead repository is not configured")
-		}
-		primary := Facts{Forge: os.Getenv("MINOS_FORGE"), Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
-		facts, err := claimGroupMember(ctx, cfg, repo, primary, args[1], args[2], args[3], os.Getenv("MINOS_WORKSPACE"))
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(stdout).Encode(facts)
 	case "status":
 		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|incomplete|held|clean|merged|continuation")
+			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|incomplete|clean|continuation")
 		}
 		state, ok := namedProductState(args[3])
 		if !ok {
@@ -119,21 +48,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
 		return emitForgeResult(stdout, "status", adapter.SetProductStatus(ctx, guard, state))
-	case "target-broken":
-		if len(args) != 3 {
-			return fmt.Errorf("usage: minos forge target-broken TARGET REASON")
-		}
-		guard.TargetSHA = args[1]
-		return emitForgeResult(stdout, "target-broken", adapter.SetTargetBroken(ctx, guard, args[2]))
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
-			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|approve-chain-wait|request-changes|request-changes-checks|comment BODY_FILE [COMMENTS_FILE]")
+			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|comment BODY_FILE [COMMENTS_FILE]")
 		}
-		checkCaused := args[3] == "request-changes-checks"
-		chainWait := args[3] == "approve-chain-wait"
 		verdict, ok := map[string]forge.ReviewVerdict{
-			"approve": forge.ReviewApprove, "approve-chain-wait": forge.ReviewApprove, "request-changes": forge.ReviewRequestChanges,
-			"request-changes-checks": forge.ReviewRequestChanges, "comment": forge.ReviewVerdictComment,
+			"approve": forge.ReviewApprove, "request-changes": forge.ReviewRequestChanges, "comment": forge.ReviewVerdictComment,
 		}[args[3]]
 		if !ok {
 			return fmt.Errorf("unknown review verdict %q", args[3])
@@ -143,14 +63,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		recordValues := map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA}
-		if checkCaused {
-			recordValues[product.RecordCauseKey] = product.RecordCauseRequiredChecks
-		}
-		if chainWait {
-			recordValues[product.RecordCauseKey] = product.RecordCauseChainWait
-		}
-		record, err := product.FormatRecord(recordValues)
+		record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA})
 		if err != nil {
 			return err
 		}
@@ -175,21 +88,6 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		text := strings.TrimRight(string(body), "\r\n") + addendum + "\n\n" + record
 		return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text, comments))
-	case "comment":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge comment HEAD TARGET FIX_REVIEW_FILE")
-		}
-		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		fixReview, err := readFixReview(args[3])
-		if err != nil {
-			return err
-		}
-		record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA})
-		if err != nil {
-			return err
-		}
-		text := renderFixReview(fixReview) + "\n\n" + record
-		return emitForgeResult(stdout, "comment", adapter.PostComment(ctx, guard, text))
 	case "reaction":
 		if len(args) != 4 {
 			return fmt.Errorf("usage: minos forge reaction HEAD TARGET CONTENT")
@@ -202,30 +100,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
 		return emitForgeResult(stdout, "reaction-remove", adapter.RemoveReaction(ctx, guard, args[3]))
-	case "label-remove":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge label-remove HEAD TARGET LABEL")
-		}
-		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		return emitForgeResult(stdout, "label-remove", adapter.RemoveLabel(ctx, guard, args[3]))
-	case "merge":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge merge HEAD TARGET METHOD")
-		}
-		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		return emitForgeResult(stdout, "merge", adapter.Merge(ctx, guard, forge.MergeMethod(args[3])))
-	case "delete-source-branch":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge delete-source-branch HEAD TARGET BRANCH")
-		}
-		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		return emitForgeResult(stdout, "delete-source-branch", adapter.DeleteSourceBranch(ctx, guard, args[3]))
 	default:
 		return fmt.Errorf("unknown forge action %q", args[0])
 	}
 }
 
-func leadForge(member forge.Repository, memberPR int64) (*forge.Adapter, forge.Guard, string, error) {
+func leadForge() (*forge.Adapter, forge.Guard, string, error) {
 	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
 		return nil, forge.Guard{}, "", err
@@ -242,21 +122,6 @@ func leadForge(member forge.Repository, memberPR int64) (*forge.Adapter, forge.G
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: os.Getenv("MINOS_OWNER"), Name: os.Getenv("MINOS_REPO_NAME")},
 		PullRequest: pr,
-	}
-	if memberPR != 0 {
-		if member != guard.Repository {
-			return nil, forge.Guard{}, "", fmt.Errorf("member is outside this run repository")
-		}
-		if memberPR != guard.PullRequest {
-			primary := Facts{Owner: guard.Repository.Owner, Repo: guard.Repository.Name, PR: strconv.FormatInt(guard.PullRequest, 10)}
-			claimed := Facts{Owner: member.Owner, Repo: member.Name, PR: strconv.FormatInt(memberPR, 10)}
-			binding, err := os.ReadFile(groupMemberGuardPath(cfg.Runs.Dir, UnitName(claimed)))
-			if err != nil || strings.TrimSpace(string(binding)) != UnitName(primary) {
-				return nil, forge.Guard{}, "", fmt.Errorf("member is not claimed by this run")
-			}
-		}
-		guard.Repository = member
-		guard.PullRequest = memberPR
 	}
 	if guard.Repository.Owner == "" || guard.Repository.Name == "" {
 		return nil, forge.Guard{}, "", fmt.Errorf("pull-request environment is incomplete")

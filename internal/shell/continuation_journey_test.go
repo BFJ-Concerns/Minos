@@ -12,12 +12,12 @@ import (
 )
 
 func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
-	t.Run("same stage round and publication ends as attention", func(t *testing.T) {
+	t.Run("same stage and publication ends as attention", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		cfg, repo, facts := state.service(t)
 		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 		state.reactions = []string{"eyes"}
-		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		progress := handoffProgress{Stage: "review", Head: facts.HeadSHA, LatestReview: 7}
 		runDir, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
 		failureLog := filepath.Join(t.TempDir(), "failures.log")
 		cfg.Runs.FailureLog = failureLog
@@ -32,14 +32,14 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if outcome.Outcome != SpawnAttention {
 			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
 		}
-		wantDetail := `successor made no progress beyond stage "review" round 2 and published no new head or review`
+		wantDetail := `successor made no progress beyond stage "review" and published no new head or review`
 		if outcome.Detail != wantDetail {
 			t.Fatalf("detail = %q, want %q", outcome.Detail, wantDetail)
 		}
@@ -67,7 +67,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		cfg, repo, facts := state.service(t)
 		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 		state.reactions = []string{"eyes"}
-		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		progress := handoffProgress{Stage: "review", Head: facts.HeadSHA, LatestReview: 7}
 		runDir, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
 		if err := os.RemoveAll(runDir); err != nil {
 			t.Fatal(err)
@@ -85,7 +85,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +107,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 		oldFacts := facts
 		oldFacts.HeadSHA = "old-head-sha"
-		progress := handoffProgress{Stage: "review", Round: 2, Head: oldFacts.HeadSHA, LatestReview: 7}
+		progress := handoffProgress{Stage: "review", Head: oldFacts.HeadSHA, LatestReview: 7}
 		_, _ = writeProgressHandoff(t, cfg, oldFacts, progress, &progress)
 
 		original := commandCombinedOutput
@@ -121,7 +121,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,7 +146,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 				cfg, repo, facts := state.service(t)
 				facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 				state.reactions = []string{"eyes"}
-				progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+				progress := handoffProgress{Stage: "review", Head: facts.HeadSHA, LatestReview: 7}
 				_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
 				cfg.Runs.FailureLog = test.path(t)
 
@@ -160,7 +160,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 					return nil, nil
 				}
 
-				outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
+				outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -182,7 +182,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		cfg, repo, facts := state.service(t)
 		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 		state.reactions = []string{"eyes"}
-		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		progress := handoffProgress{Stage: "review", Head: facts.HeadSHA, LatestReview: 7}
 		_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
 		data, err := os.ReadFile(handoffFile)
 		if err != nil {
@@ -214,7 +214,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -231,7 +231,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		cfg, repo, facts := state.service(t)
 		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
 		state.reactions = []string{"eyes"}
-		progress := handoffProgress{Stage: "review", Round: 2, Head: facts.HeadSHA, LatestReview: 7}
+		progress := handoffProgress{Stage: "review", Head: facts.HeadSHA, LatestReview: 7}
 		_, handoffFile := writeProgressHandoff(t, cfg, facts, progress, &progress)
 		foreignRunDir := filepath.Join(cfg.Runs.Dir, "foreign-unit-existing")
 		if err := os.MkdirAll(foreignRunDir, 0o700); err != nil {
@@ -265,7 +265,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 			return nil, nil
 		}
 
-		outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -288,11 +288,10 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		predecessor *handoffProgress
 		current     handoffProgress
 	}{
-		{name: "later round", predecessor: &handoffProgress{Stage: "review", Round: 1, Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}},
-		{name: "different stage", predecessor: &handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "fix", Round: 2, Head: "head", LatestReview: 7}},
-		{name: "published head", predecessor: &handoffProgress{Stage: "review", Round: 2, Head: "old-head", LatestReview: 7}, current: handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}},
-		{name: "published review", predecessor: &handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 8}},
-		{name: "legacy progress is unknown", current: handoffProgress{Stage: "review", Round: 2, Head: "head", LatestReview: 7}},
+		{name: "different stage", predecessor: &handoffProgress{Stage: "review", Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "fix", Head: "head", LatestReview: 7}},
+		{name: "published head", predecessor: &handoffProgress{Stage: "review", Head: "old-head", LatestReview: 7}, current: handoffProgress{Stage: "review", Head: "head", LatestReview: 7}},
+		{name: "published review", predecessor: &handoffProgress{Stage: "review", Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "review", Head: "head", LatestReview: 8}},
+		{name: "legacy progress is unknown", current: handoffProgress{Stage: "review", Head: "head", LatestReview: 7}},
 	}
 	for _, test := range tests {
 		t.Run(test.name+" permits a successor", func(t *testing.T) {
@@ -315,7 +314,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 				starts++
 				return nil, nil
 			}
-			outcome, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview)
+			outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -341,11 +340,11 @@ func writeProgressHandoff(t *testing.T, cfg ServiceConfig, facts Facts, progress
 	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`))
+	path := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 	data, err := json.Marshal(runHandoff{
 		Kind: runHandoffKind, PullRequest: handoffPull{Owner: facts.Owner, Repo: facts.Repo, Number: facts.PR},
 		Head: facts.HeadSHA, RunDir: runDir, StoppedAt: progress.Stage, WrittenAt: "2026-08-03T21:00:00Z",
-		RunRecord: json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`), Predecessor: predecessor, Progress: &progress,
+		Predecessor: predecessor, Progress: &progress,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -378,10 +377,7 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "memory-pressure"), []byte("predecessor pressure\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handoff := writeTestHandoff(
-		t, cfg, facts, runDir, facts.HeadSHA,
-		json.RawMessage(`{"round":2,"confirmedUnfixed":[]}`),
-	)
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	body := filepath.Join(fixture.root, "predecessor-body")
 	writeScript(t, body, "#!/usr/bin/env sh\nexit 0\n")
@@ -407,7 +403,7 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	}
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = filepath.Join("..", "..", "scripts", "run-body", "run-body")
-	if _, err := SpawnRun(t.Context(), cfg, repo, facts, AdmissionContext{}, RunClassReview); err != nil {
+	if _, err := SpawnRun(t.Context(), cfg, repo, facts); err != nil {
 		t.Fatal(err)
 	}
 	environment := systemdEnvironment(t, systemdArgs)

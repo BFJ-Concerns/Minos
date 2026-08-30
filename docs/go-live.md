@@ -1,17 +1,17 @@
 # Deployment
 
 Minos runs on a disposable single-tenant machine with Claude Code, the Codex
-CLI, Node.js, Git, Go, curl, jq and the repository toolchains installed. The
-machine itself is the containment boundary.
+CLI, Node.js, Git, Go, curl and jq installed. The machine itself is the
+containment boundary. Reviews never build or test the reviewed repository,
+so no repository toolchains are needed.
 
 1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
 2. Install `scripts/adaptations/forgejo` under
    `/opt/minos/adaptations/forgejo`; install every executable under
    `scripts/run-body/` under `/opt/minos/run-body` with the same basename and
    executable mode: `run-body`, `setup-workspace`, `pre-push-guard`,
-   `reconcile-target`, `complete-reconciliation`, `reopen-conflict`,
-   `show-resolutions`, `sync-target`, `watch-snapshot`, `flag-on-exit`,
-   `publish-on-exit`, `time-on-exit`, `collect-timings` and `archive-run`.
+   `flag-on-exit`, `publish-on-exit`, `time-on-exit`, `collect-timings`,
+   `memory-telemetry`, `list-recent-timings` and `archive-run`.
    Install `scripts/provision-archive-transport` and
    `scripts/provision-failure-checkout` under `/opt/minos`, with executable
    mode. Install `lifecycle`
@@ -39,14 +39,14 @@ machine itself is the containment boundary.
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
      non-interactive Codex ChatGPT authentication state; and
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
-   `MINOS_ROOT_CAUSE_SKILL`, `MINOS_SKILLS_DIR`, `MINOS_ARCHIVE_RUN` and the
+   `MINOS_SKILLS_DIR`, `MINOS_ARCHIVE_RUN` and the
    other installed paths match the deployment. Configure `archive.env` with the archive SSH host,
    destination, identity and pinned known-hosts file.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
-   defaults to one when unset. Run units share a fixed 20 GiB whole-box
+   defaults to one when unset. Run units share a fixed 22 GiB whole-box
    memory envelope live, through the `minos-runs.slice` unit: the slice
-   holds `MemoryHigh=18G` and `MemoryMax=20G`, so no run feels any pressure
+   holds `MemoryHigh=20G` and `MemoryMax=22G`, so no run feels any pressure
    until the runs *together* approach the envelope — a lone run may use all
    of it — reclaim then pushes them back, and only combined demand the
    envelope cannot hold kills, taking the biggest consumer. Each unit also
@@ -60,15 +60,13 @@ machine itself is the containment boundary.
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
    memory peak**. The journal's figure includes reclaimable page cache and
-   pegs at `MemoryMax` on essentially every run that builds anything, so it
-   overstates the real footprint by an order of magnitude — and reading it
-   the other way round is just as wrong: a run the journal shows at ~2 GiB
-   can carry 8–9 GiB of real anonymous demand at its build peaks. Raising
-   the cap to three on the journal's cache-inflated figure has already
-   thrashed the box into mass continuations once (2026-08-16, reverted the
-   same day). Measure anonymous demand from the unit cgroup's `memory.stat`
-   (`anon`) plus `memory.swap.current` at peak — the same metric the run's
-   pressure watch reads.
+   pegs at `MemoryMax`, so it overstates the real footprint by an order of
+   magnitude. Raising the cap on the journal's cache-inflated figure has
+   already thrashed the box into mass continuations once (2026-08-16,
+   reverted the same day). Measure anonymous demand from the unit cgroup's
+   `memory.stat` (`anon`) plus `memory.swap.current` at peak — the same
+   metric the run's pressure watch reads. Review-only runs build nothing,
+   so real demand sits far below the old build peaks.
 
    `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
    3600-second no-output backstop. Keep the lifecycle's fallback wake shorter
@@ -100,9 +98,8 @@ machine itself is the containment boundary.
    `$HOME/.codex/skills` — so every spawned session finds the casting made for
    its tool. Each run also gets a private disk-backed `TMPDIR` beneath the
    storage root's `tmp/` directory, alongside `runs/` (the shared tmpfs `/tmp`
-   cannot hold concurrent runs' test artefacts), and Playwright browsers persist
-   per repository through `PLAYWRIGHT_BROWSERS_PATH` in the shared cache
-   alongside sccache. The lead and Ensemble workers therefore inherit both
+   cannot hold concurrent runs' artefacts). The lead and Ensemble workers
+   therefore inherit both
    engines' configured authentication without an interactive login. Gateway
    settings reach the Claude workers through the
    same inherited environment; Codex continues to use its own `CODEX_HOME`
@@ -137,8 +134,7 @@ treating that stop as success. The lead invokes review and repository-brief
 workflows through `/opt/minos/workflows/adjudicated-review`; the wrapper runs
 the selected script with `/opt/minos/runtime/ensemble.mjs` and asks the sibling
 run-record adapter to confirm every required leg ran to completion and every
-finding carries a verdict. Fix workflows
-use the same launcher directly. The foreground run body waits for the exact
+finding carries a verdict. The foreground run body waits for the exact
 background session and stops it at one of those terminal conditions. The
 transient systemd unit bounds a wedged run at 12 hours.
 
@@ -161,14 +157,8 @@ failure log, Claude transcripts, Codex rollouts and exact Ensemble record tree.
 The sweep fetches and rebases its append-only commit onto `origin/main` before
 pushing with the configured Forgejo token header.
 
-When a required check is genuinely red or the pull request carries the
-`Flaky Test` label, the lead dispatches a fix agent with the vendored root-cause
-skill on the same `codex` / `gpt-5.6-sol` pin as the other fix agents. It
-diagnoses the failure, fixes only what it proves, and pushes the result for
-fresh build and test verification.
-
 The receiver handles new events immediately. The sweep periodically starts any
-open, non-draft pull request whose current head has no Minos review.
+open, non-draft pull request whose current head carries no completion marker.
 
 ## Reading run liveness
 

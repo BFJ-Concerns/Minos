@@ -12,29 +12,18 @@ import (
 const runHandoffKind = "minos-run-handoff-v1"
 
 type runHandoff struct {
-	Kind             string           `json:"kind"`
-	PullRequest      handoffPull      `json:"pullRequest"`
-	MemberHeads      []handoffMember  `json:"memberHeads,omitempty"`
-	Head             string           `json:"head"`
-	RunDir           string           `json:"runDir"`
-	StoppedAt        string           `json:"stoppedAt"`
-	WrittenAt        string           `json:"writtenAt"`
-	RunRecord        json.RawMessage  `json:"runRecord"`
-	Predecessor      *handoffProgress `json:"predecessorProgress,omitempty"`
-	Progress         *handoffProgress `json:"progress,omitempty"`
-	GateRepairLadder *string          `json:"gateRepairLadder,omitempty"`
-}
-
-type handoffMember struct {
-	Owner  string `json:"owner"`
-	Repo   string `json:"repo"`
-	Number string `json:"number"`
-	Head   string `json:"head"`
+	Kind        string           `json:"kind"`
+	PullRequest handoffPull      `json:"pullRequest"`
+	Head        string           `json:"head"`
+	RunDir      string           `json:"runDir"`
+	StoppedAt   string           `json:"stoppedAt"`
+	WrittenAt   string           `json:"writtenAt"`
+	Predecessor *handoffProgress `json:"predecessorProgress,omitempty"`
+	Progress    *handoffProgress `json:"progress,omitempty"`
 }
 
 type handoffProgress struct {
 	Stage        string `json:"stage"`
-	Round        int    `json:"round"`
 	Head         string `json:"head"`
 	LatestReview int64  `json:"latestReview"`
 }
@@ -43,12 +32,6 @@ type handoffPull struct {
 	Owner  string `json:"owner"`
 	Repo   string `json:"repo"`
 	Number string `json:"number"`
-}
-
-type handoffRunRecord struct {
-	Round            *int               `json:"round"`
-	ConfirmedFixed   json.RawMessage    `json:"confirmedFixed"`
-	ConfirmedUnfixed *[]json.RawMessage `json:"confirmedUnfixed"`
 }
 
 type savedReviewResult struct {
@@ -83,6 +66,7 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 	}
 	var handoff runHandoff
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&handoff); err != nil {
 		return nil, fmt.Errorf("parse JSON: %w", err)
 	}
@@ -92,38 +76,9 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 	if handoff.PullRequest.Owner == "" || handoff.PullRequest.Repo == "" || handoff.PullRequest.Number == "" {
 		return nil, fmt.Errorf("pull request identity must be complete")
 	}
-	seenMembers := make(map[string]bool, len(handoff.MemberHeads))
-	for _, member := range handoff.MemberHeads {
-		if member.Owner != handoff.PullRequest.Owner || member.Repo != handoff.PullRequest.Repo || member.Number == "" || member.Head == "" {
-			return nil, fmt.Errorf("member head identities must be complete and belong to the pull-request repository")
-		}
-		if member.Number == handoff.PullRequest.Number || seenMembers[member.Number] {
-			return nil, fmt.Errorf("member head pull-request numbers must be unique and exclude the primary")
-		}
-		seenMembers[member.Number] = true
-	}
-	var record handoffRunRecord
-	if err := json.Unmarshal(handoff.RunRecord, &record); err != nil {
-		return nil, fmt.Errorf("runRecord: %w", err)
-	}
-	if record.Round == nil || *record.Round < 0 {
-		return nil, fmt.Errorf("runRecord.round must be a non-negative integer")
-	}
-	if len(record.ConfirmedFixed) > 0 {
-		var confirmedFixed []json.RawMessage
-		if err := json.Unmarshal(record.ConfirmedFixed, &confirmedFixed); err != nil || confirmedFixed == nil {
-			return nil, fmt.Errorf("runRecord.confirmedFixed must be an array")
-		}
-	}
-	if record.ConfirmedUnfixed == nil {
-		return nil, fmt.Errorf("runRecord.confirmedUnfixed must be an array")
-	}
 	if handoff.Progress != nil {
 		if err := validateHandoffProgress("progress", handoff.Progress); err != nil {
 			return nil, err
-		}
-		if handoff.Progress.Round != *record.Round {
-			return nil, fmt.Errorf("progress.round must match runRecord.round")
 		}
 		if handoff.Progress.Head != handoff.Head {
 			return nil, fmt.Errorf("progress.head must match head")
@@ -143,9 +98,6 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 func validateHandoffProgress(name string, progress *handoffProgress) error {
 	if strings.TrimSpace(progress.Stage) == "" {
 		return fmt.Errorf("%s.stage must be non-empty", name)
-	}
-	if progress.Round < 0 {
-		return fmt.Errorf("%s.round must be a non-negative integer", name)
 	}
 	if strings.TrimSpace(progress.Head) == "" {
 		return fmt.Errorf("%s.head must be non-empty", name)
@@ -170,11 +122,10 @@ func compareContinuationProgress(handoff *runHandoff) continuationProgressDecisi
 	}
 	previous, current := handoff.Predecessor, handoff.Progress
 	if current.Head != previous.Head || current.LatestReview > previous.LatestReview ||
-		current.Round > previous.Round ||
-		(current.Round == previous.Round && current.Stage != previous.Stage) {
+		current.Stage != previous.Stage {
 		return continuationProgressAdvanced
 	}
-	if current.Round == previous.Round && current.Stage == previous.Stage &&
+	if current.Stage == previous.Stage &&
 		current.Head == previous.Head && current.LatestReview == previous.LatestReview {
 		return continuationProgressStalled
 	}

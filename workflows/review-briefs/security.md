@@ -18,10 +18,9 @@ incomplete sweep, not a completed review.
 
 If you notice a real defect outside those bounds, do not return it as a finding.
 Record the lead and move on; do not investigate outside your assigned boundary.
-Return it in `outOfScopeObservations` for routing to the reviewed project's
-annexe `ISSUES.md`, or to the pull request when the project has no annexe. Give
-its title, path, line and explanation, and state plainly in the explanation that
-it was not verified. A failure to record it is presentation failure and must not
+Return it in `outOfScopeObservations`: it reaches the pull request as an
+unverified observation — never as a finding. Give its title, path, line and
+explanation, and state plainly in the explanation that it was not verified. A failure to record it is presentation failure and must not
 fail the review.
 
 If the assigned concern and scope contain nothing to judge, return

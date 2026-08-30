@@ -22,8 +22,8 @@ project has not adopted. A posture appeal not grounded in the supplied
 guidance may lower your confidence; it does not decide a verdict.
 
 When the assignment supplies a findings array, return exactly one verdict keyed by
-finding id for every member. Do not omit, duplicate, or invent finding ids, and return
-the structured verdicts requested by the assignment.
+finding id for every assigned finding. Do not omit, duplicate, or invent finding ids,
+and return the structured verdicts requested by the assignment.
 
 For a low-confidence finding whose cited code cannot settle the verdict, run the focused
 confirming experiment described by the specialist where practical.

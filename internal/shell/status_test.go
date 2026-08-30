@@ -61,23 +61,14 @@ func TestStatusRefusesRequestsWithoutTheConfiguredToken(t *testing.T) {
 	}
 }
 
-func TestStatusReportsLiveRunIdentityStageAndTimings(t *testing.T) {
+func TestStatusReportsLiveRunIdentityDispatchStageAndTimings(t *testing.T) {
 	cfg := statusTestConfig(t)
 	runDir := writeStatusRunDirectory(t, cfg)
-	// A finished dispatch, then one still running: the run is in gate repair.
-	writeStatusFile(t, filepath.Join(runDir, "setup-args.json"), "{}")
-	writeStatusFile(t, filepath.Join(runDir, "setup-result.done"), "0\n")
-	writeStatusFile(t, filepath.Join(runDir, "setup-result.json"), `{"verdict":"ready"}`)
-	// A foreground dispatch publishes its result but no completion flag; the
-	// result alone settles it as passed.
-	writeStatusFile(t, filepath.Join(runDir, "fix-args.json"), "{}")
-	writeStatusFile(t, filepath.Join(runDir, "fix-result.json"), `{"applied":1}`)
-	writeStatusFile(t, filepath.Join(runDir, "test-command-output.log"), "suite output\n")
-	writeStatusFile(t, filepath.Join(runDir, "timings.ndjson"),
-		`{"kind":"minos-timing-event-v1","name":"test-command",`+
-			`"started_at":"2026-08-21T20:02:00Z","ended_at":"2026-08-21T20:03:00Z",`+
-			`"duration_ms":60000,"exit_status":1}`+"\n")
-	writeStatusFile(t, filepath.Join(runDir, "gate-repair-args.json"), "{}")
+	// A finished review, then a review-brief workflow still running.
+	writeStatusFile(t, filepath.Join(runDir, "review-args.json"), "{}")
+	writeStatusFile(t, filepath.Join(runDir, "review-result.done"), "0\n")
+	writeStatusFile(t, filepath.Join(runDir, "review-result.json"), `{"status":"complete"}`)
+	writeStatusFile(t, filepath.Join(runDir, "review-brief-args.json"), "{}")
 	cfg.Runs.TimingsCommand = statusTimingsScript(t, `{"kind":"minos-timing-record-v1","workers":[]}`)
 	stubStatusCommands(t)
 
@@ -96,14 +87,14 @@ func TestStatusReportsLiveRunIdentityStageAndTimings(t *testing.T) {
 	if run.Owner != "example" || run.Repo != "Relay" || run.PR != "96" || run.Forge != "forgejo" {
 		t.Fatalf("identity = %s/%s#%s on %q, want example/Relay#96 on forgejo", run.Owner, run.Repo, run.PR, run.Forge)
 	}
-	if run.Head != "6fb27999e7bc27d3778d7128593aba2ea833c281" {
-		t.Fatalf("head = %q, want the current head the run moved to", run.Head)
+	if run.Head != "58c2a8dce6310320b4868d954b22fcbdc81bca57" {
+		t.Fatalf("head = %q, want the head recorded in the run orientation", run.Head)
 	}
 	if run.StartedAt != "2026-08-21T20:01:44Z" {
 		t.Fatalf("started_at = %q, want the unit's active-enter time", run.StartedAt)
 	}
-	if run.Stage != "gate-repair" {
-		t.Fatalf("stage = %q, want gate-repair", run.Stage)
+	if run.Stage != "review-brief" {
+		t.Fatalf("stage = %q, want review-brief", run.Stage)
 	}
 	if want := `{"kind":"minos-timing-record-v1","workers":[]}`; string(run.Timings) != want {
 		t.Fatalf("timings = %s, want %s", run.Timings, want)
@@ -112,11 +103,8 @@ func TestStatusReportsLiveRunIdentityStageAndTimings(t *testing.T) {
 	for _, stage := range run.Stages {
 		states[stage.Name] = stage.State
 	}
-	if states["setup"] != stagePassed || states["test"] != stageFailed || states["gate-repair"] != stageRunning {
-		t.Fatalf("stage states = %v, want setup passed, test failed, gate-repair running", states)
-	}
-	if states["fix"] != stagePassed {
-		t.Fatalf("stage states = %v, want an unflagged dispatch with a result counted as passed", states)
+	if states["review"] != stagePassed || states["review-brief"] != stageRunning {
+		t.Fatalf("stage states = %v, want review passed and review-brief running", states)
 	}
 	if len(document.Repos) != 1 || document.Repos[0].Repo != "Relay" {
 		t.Fatalf("repos = %v, want the configured repository", document.Repos)
@@ -192,7 +180,7 @@ func TestStatusReportsAnUnreadableRunWithoutFailingTheRequest(t *testing.T) {
 func TestStatusReportsNullTimingsWhenTheRecordCannotBeAssembled(t *testing.T) {
 	cfg := statusTestConfig(t)
 	runDir := writeStatusRunDirectory(t, cfg)
-	writeStatusFile(t, filepath.Join(runDir, "setup-args.json"), "{}")
+	writeStatusFile(t, filepath.Join(runDir, "review-args.json"), "{}")
 	failing := filepath.Join(t.TempDir(), "collect-timings")
 	writeScript(t, failing, "#!/bin/sh\necho 'could not assemble the timing record' >&2\nexit 1\n")
 	cfg.Runs.TimingsCommand = failing
@@ -203,8 +191,8 @@ func TestStatusReportsNullTimingsWhenTheRecordCannotBeAssembled(t *testing.T) {
 	if string(run.Timings) != "null" {
 		t.Fatalf("timings = %s, want null", run.Timings)
 	}
-	if run.Stage != "setup" {
-		t.Fatalf("stage = %q, want setup", run.Stage)
+	if run.Stage != "review" {
+		t.Fatalf("stage = %q, want review", run.Stage)
 	}
 }
 
@@ -241,9 +229,6 @@ func writeStatusRunDirectory(t *testing.T, cfg ServiceConfig) string {
 	orientation := `{"head":"58c2a8dce6310320b4868d954b22fcbdc81bca57",
 "source":{"owner":"example","repo":"Relay","pr":"96"}}`
 	writeStatusFile(t, filepath.Join(runDir, "orientation.json"), orientation)
-	reconciliation := `{"outcome":"reconciled","publish":true,` +
-		`"merge":"6fb27999e7bc27d3778d7128593aba2ea833c281"}`
-	writeStatusFile(t, filepath.Join(runDir, "reconciliation.json"), reconciliation)
 	return runDir
 }
 

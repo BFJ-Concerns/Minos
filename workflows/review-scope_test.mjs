@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { briefEngagement } from "./brief-dispositions.mjs";
-import { sweepDigest } from "./completion-policy.mjs";
+import { verdictDigest } from "./verdict-classification.mjs";
 import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
@@ -191,13 +191,6 @@ test("relevance-conditioned and misconfigured briefs settle conservatively", () 
   const misconfiguredInput = enumeratedArgs({ briefs: [misconfiguredBrief] });
   assert.equal(misconfiguredInput.briefsEngage, false);
   assert.equal(misconfiguredInput.briefDispositions[0].skipKind, "misconfigured-scope");
-  assert.deepEqual(misconfiguredInput.briefMisconfigurations, [{
-    brief: ".review/gone/tidy.md",
-    title: "Tidy",
-    member: "primary",
-    kind: "misconfigured-scope",
-    reason: "brief scope gone/ matches no repository directory",
-  }]);
 });
 
 test("a repository without .review/ yields an idle engagement record", () => {
@@ -299,7 +292,6 @@ test("nothing-engages returns a complete clean review envelope", async (t) => {
   assert.equal(verdict.status, "complete", (verdict.incomplete || []).join("\n"));
   assert.deepEqual(verdict.confirmedFindings, []);
   assert.equal(verdict.skipped.length, 4);
-  assert.equal(verdict.briefFixRequired, false);
 });
 
 test("review-required carries the leg's reason without changing the envelope shape", async () => {
@@ -429,9 +421,11 @@ test("the wrapper attaches a valid scope decision to the adjudicated verdict", a
   assert.equal(verdict.skipped.length, 4);
   assert.deepEqual(verdict.confirmedFindings, []);
 
-  const digest = sweepDigest({ review: verdict });
-  assert.equal(digest.thresholdIndication, "terminal");
-  assert.deepEqual(digest.candidates, []);
+  const digest = verdictDigest({ review: verdict });
+  assert.equal(digest.status, "complete");
+  assert.equal(digest.thresholdIndication, "clean");
+  assert.deepEqual(digest.findings, []);
+  assert.deepEqual(digest.atOrAboveThresholdKeys, []);
 });
 
 test("verdicts for envelopes without a scope decision are unchanged", async (t) => {
@@ -467,6 +461,6 @@ test("the lifecycle runs the gate first and treats it as an optimisation, never 
   assert.match(lifecycle, /The gate is an\s+optimisation, never a blocker/);
   assert.match(
     lifecycle,
-    /engagement gate's\s+`nothing-engages` verdict[\s\S]*Do not build the brief input or launch the brief\s+workflow[\s\S]*`briefFixRequired` false/,
+    /engagement gate's\s+`nothing-engages` verdict[\s\S]*stage is already settled[\s\S]*nothing to run, judge, or publish/,
   );
 });

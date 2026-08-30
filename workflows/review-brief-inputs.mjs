@@ -75,7 +75,6 @@ if (argumentError) {
   const instructionPaths = [
     "workflows/review-briefs/repository.md",
     "workflows/review-briefs/verifier.md",
-    "workflows/review-briefs/fixer.md",
   ];
   const instructionBriefs = instructionPaths.map((path) => ({
     path,

@@ -140,11 +140,9 @@ function incomplete(reason, envelope = null) {
     confirmedFindings: [],
     operatorAttention: [],
     reviewBody: null,
-    memberReviews: [],
     ran: [],
     skipped: [],
     misconfigurations: [],
-    briefFixRequired: false,
     modelEvidence: [],
   }, envelope);
 }

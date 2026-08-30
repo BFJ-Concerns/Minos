@@ -12,16 +12,6 @@ func TestIncompleteStateExtendsProductVocabulary(t *testing.T) {
 	}
 }
 
-func TestHeldStateExtendsProductVocabulary(t *testing.T) {
-	state := Held()
-	if state.Name() != "held" || state.ForgeState() != "pending" || state.Description() != "Blocked on target branch" {
-		t.Fatalf("held state = %#v", state)
-	}
-	if !state.Valid() {
-		t.Fatal("held state is not part of the product vocabulary")
-	}
-}
-
 func TestContinuationStateExtendsProductVocabulary(t *testing.T) {
 	state := Continuation()
 	if state.Name() != "continuation" || state.ForgeState() != "pending" ||

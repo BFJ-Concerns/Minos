@@ -82,7 +82,7 @@ func TestNewSideIntervalsDistinguishesAddedContentFromHeaders(t *testing.T) {
 	}
 }
 
-func TestAnchorReviewCommentsSplitsMembersAndRendersTruthfulFallback(t *testing.T) {
+func TestAnchorReviewCommentsSplitsInlineCommentsAndRendersTruthfulFallback(t *testing.T) {
 	workspace, target, head := anchoredReviewRepository(t)
 	requested := []requestedReviewComment{
 		{Path: "src/code.txt", Line: 10, Body: "Anchored concern."},

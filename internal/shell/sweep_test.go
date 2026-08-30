@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -27,9 +28,8 @@ func TestSweepDecisionMessage(t *testing.T) {
 		{name: "suppressed duplicate", result: ReconcileResult{Decision: SpawnSuppressed, BlockingUnit: "minos-run-owner-repository-pr12.service"}, want: "owner/repository#12: suppressed by active unit minos-run-owner-repository-pr12.service"},
 		{name: "suppressed concurrency cap", result: ReconcileResult{Decision: SpawnSuppressed, Detail: "all 2/2 run slots are occupied by active units minos-run-owner-other-pr9.service, minos-run-owner-third-pr4.service"}, want: "owner/repository#12: suppressed because all 2/2 run slots are occupied by active units minos-run-owner-other-pr9.service, minos-run-owner-third-pr4.service"},
 		{name: "continued", result: ReconcileResult{Decision: SpawnContinued}, want: "owner/repository#12: continued previous run"},
-		{name: "recovered", result: ReconcileResult{Decision: ReconcileRecovered}, want: "owner/repository#12: recovered terminal Minos status"},
 		{name: "nothing", result: ReconcileResult{Decision: ReconcileNothing}, want: "owner/repository#12: nothing to do"},
-		{name: "attention", result: ReconcileResult{Decision: SpawnAttention, Detail: `successor made no progress beyond stage "review" round 2 and published no new head or review`}, want: `owner/repository#12: attention: stopped stalled continuation because its successor made no progress beyond stage "review" round 2 and published no new head or review`},
+		{name: "attention", result: ReconcileResult{Decision: SpawnAttention, Detail: `successor made no progress beyond stage "review" and published no new head or review`}, want: `owner/repository#12: attention: stopped stalled continuation because its successor made no progress beyond stage "review" and published no new head or review`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -49,7 +49,7 @@ func TestSweepDecisionMessageCoversReachableVocabulary(t *testing.T) {
 		case SpawnSuppressed:
 			result.BlockingUnit = "minos-run-other-repo-pr9.service"
 		case SpawnAttention:
-			result.Detail = `successor made no progress beyond stage "review" round 2 and published no new head or review`
+			result.Detail = `successor made no progress beyond stage "review" and published no new head or review`
 		}
 		results = append(results, result)
 	}
@@ -108,7 +108,7 @@ func TestTerminalPullRequestExpiresHandoffBeforeFollowingResidueSweep(t *testing
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "21", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeSweepTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestOpenPullRequestMissingFromListingKeepsHandoff(t *testing.T) {
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "22", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeSweepTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := expireInactiveRunHandoffs(t.Context(), cfg, []RepoConfig{{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo}}); err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestUnconfiguredRepositoryExpiresHandoff(t *testing.T) {
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "removed-repository", PR: "23", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeSweepTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := expireInactiveRunHandoffs(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -163,6 +163,24 @@ func TestUnconfiguredRepositoryExpiresHandoff(t *testing.T) {
 	if _, err := os.Stat(handoff); !os.IsNotExist(err) {
 		t.Fatalf("unconfigured repository handoff still exists: %v", err)
 	}
+}
+
+func writeSweepTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head string) string {
+	t.Helper()
+	path := handoffPath(cfg.Runs.Dir, UnitName(facts))
+	data, err := json.Marshal(runHandoff{
+		Kind:        runHandoffKind,
+		PullRequest: handoffPull{Owner: facts.Owner, Repo: facts.Repo, Number: facts.PR},
+		Head:        head,
+		RunDir:      runDir,
+		StoppedAt:   "test boundary",
+		WrittenAt:   "2026-08-30T21:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, path, string(data))
+	return path
 }
 
 func TestOrderSweepCandidatesInterleavesReposWithinEachPriorityClass(t *testing.T) {

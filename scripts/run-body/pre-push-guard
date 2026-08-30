@@ -1,20 +1,17 @@
 #!/usr/bin/env sh
 set -eu
 
+# Installed by setup-workspace as the run clone's pre-push hook. Minos is
+# review-only: no publisher exists that may update the pull-request branch,
+# so every update to a protected ref is refused outright — there is no
+# permit, environment variable, or override that lifts the refusal (C33).
+# The record fails closed: an unreadable or malformed protected-ref record
+# refuses the whole push rather than guessing what it protected.
+
 common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
-common_dir_resolved="$(CDPATH= cd -P -- "$common_dir" && pwd -P)"
 protected_refs=""
-controlled_permit=""
-expected_permitted_update=""
 
-permit_is_in_common_dir() {
-  permit_path="$1"
-  permit_parent="$(dirname "$permit_path")"
-  permit_parent_resolved="$(CDPATH= cd -P -- "$permit_parent" 2>/dev/null && pwd -P)" || return 1
-  [ "$permit_parent_resolved" = "$common_dir_resolved" ] && [ ! -L "$permit_path" ]
-}
-
-for protected_ref_file in "${common_dir}/minos-protected-ref" "${common_dir}"/minos-protected-ref.member-*; do
+for protected_ref_file in "${common_dir}/minos-protected-ref"; do
   [ -e "$protected_ref_file" ] || continue
   if [ ! -f "$protected_ref_file" ] || [ ! -r "$protected_ref_file" ]; then
     echo "pre-push-guard: protected-ref record is present but unreadable: $protected_ref_file" >&2
@@ -46,96 +43,9 @@ done
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   if [ -n "$protected_refs" ] && printf '%s' "$protected_refs" | grep -Fqx "$remote_ref"; then
-    integrate_permit="${MINOS_INTEGRATE_WAVE_PUSH_PERMIT:-}"
-    sync_permit="${MINOS_SYNC_TARGET_PUSH_PERMIT:-}"
-    reconcile_permit="${MINOS_RECONCILE_TARGET_PUSH_PERMIT:-}"
-    permit_count=0
-    [ -z "$integrate_permit" ] || permit_count=$((permit_count + 1))
-    [ -z "$sync_permit" ] || permit_count=$((permit_count + 1))
-    [ -z "$reconcile_permit" ] || permit_count=$((permit_count + 1))
-    if [ "$permit_count" -gt 1 ]; then
-      echo "pre-push-guard: refusing to update $remote_ref to $local_sha: multiple controlled-push permits were supplied" >&2
-      exit 1
-    elif [ -n "$integrate_permit" ]; then
-      permit="$integrate_permit"
-      expected_permitted_update="$remote_ref $local_sha $remote_sha"
-      case "$permit" in
-        "$common_dir"/minos-integrate-wave-push.*)
-          permit_is_in_common_dir "$permit" || {
-            echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the integrate-wave push permit is outside the shared Git directory" >&2
-            exit 1
-          }
-          ;;
-        *)
-          echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the integrate-wave push permit is outside the shared Git directory" >&2
-          exit 1
-          ;;
-      esac
-    elif [ -n "$sync_permit" ]; then
-      permit="$sync_permit"
-      expected_permitted_update="$remote_ref $local_sha $remote_sha"
-      case "$permit" in
-        "$common_dir"/minos-sync-target-push.*)
-          permit_is_in_common_dir "$permit" || {
-            echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the sync-target push permit is outside the shared Git directory" >&2
-            exit 1
-          }
-          ;;
-        *)
-          echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the sync-target push permit is outside the shared Git directory" >&2
-          exit 1
-          ;;
-      esac
-    elif [ -n "$reconcile_permit" ]; then
-      permit="$reconcile_permit"
-      expected_permitted_update="$remote_ref $local_sha $remote_sha"
-      case "$permit" in
-        "$common_dir"/minos-reconcile-target-push.*)
-          permit_is_in_common_dir "$permit" || {
-            echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the reconcile-target push permit is outside the shared Git directory" >&2
-            exit 1
-          }
-          ;;
-        *)
-          echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the reconcile-target push permit is outside the shared Git directory" >&2
-          exit 1
-          ;;
-      esac
-    else
-      echo "pre-push-guard: refusing to update $remote_ref to $local_sha: controlled branch updates must use a permitted Minos publisher" >&2
-      exit 1
-    fi
-
-    if [ ! -e "$permit" ]; then
-      echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the controlled-push permit is absent or already used" >&2
-      exit 1
-    fi
-    if [ ! -f "$permit" ] || [ ! -r "$permit" ]; then
-      echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the controlled-push permit is unreadable" >&2
-      exit 1
-    fi
-    if ! recorded_permitted_update="$(cat "$permit")"; then
-      echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the controlled-push permit could not be read" >&2
-      exit 1
-    fi
-    if [ "$recorded_permitted_update" != "$expected_permitted_update" ]; then
-      echo "pre-push-guard: refusing to update $remote_ref to $local_sha: the controlled-push permit authorises a different ref update" >&2
-      exit 1
-    fi
-    controlled_permit="$permit"
+    echo "pre-push-guard: refusing to update $remote_ref to $local_sha: Minos never writes to the pull-request branch" >&2
+    exit 1
   fi
 done
 
-if [ -n "$controlled_permit" ]; then
-  claimed_permit="${controlled_permit}.claimed.$$"
-  if ! mv "$controlled_permit" "$claimed_permit" 2>/dev/null; then
-    echo "pre-push-guard: refusing controlled update: the controlled-push permit is absent or already used" >&2
-    exit 1
-  fi
-  trap 'rm -f "$claimed_permit"' 0 1 2 3 15
-  if ! recorded_permitted_update="$(cat "$claimed_permit")" ||
-    [ "$recorded_permitted_update" != "$expected_permitted_update" ]; then
-    echo "pre-push-guard: refusing controlled update: the claimed controlled-push permit no longer matches the validated ref update" >&2
-    exit 1
-  fi
-fi
+exit 0
