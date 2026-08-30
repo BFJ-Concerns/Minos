@@ -146,18 +146,8 @@ function validExplorationResult(result) {
   );
 }
 
-// The Ensemble sandbox exposes no Buffer or TextEncoder global, so byte
-// lengths must be computed in plain JavaScript.
 function utf8ByteLength(text) {
-  let bytes = 0;
-  for (const character of text) {
-    const code = character.codePointAt(0);
-    if (code <= 0x7f) bytes += 1;
-    else if (code <= 0x7ff) bytes += 2;
-    else if (code <= 0xffff) bytes += 3;
-    else bytes += 4;
-  }
-  return bytes;
+  return Buffer.byteLength(text, "utf8");
 }
 
 function orientationPacket(target, head, files, units) {

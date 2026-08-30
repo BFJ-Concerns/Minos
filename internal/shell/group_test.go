@@ -17,16 +17,29 @@ import (
 	"bfj/minos/internal/product"
 )
 
+// groupCandidatesForTest resolves the lead-facing sibling list for one
+// primary the way the sweep does: active units first, then the
+// per-primary grouping.
+func groupCandidatesForTest(t *testing.T, cfg ServiceConfig, primary Facts, all []sweepCandidate) string {
+	t.Helper()
+	active, err := activeRunUnitNames(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, _, err := groupCandidatesByPrimary(t.Context(), cfg, all, active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return groups[UnitName(primary)]
+}
+
 func TestGroupCandidateEnumerationSurfacesSameTargetSibling(t *testing.T) {
 	stubNoActiveRunUnits(t)
 	state := newForgejoFixtureState(t)
 	state.setStackedChildren([]map[string]any{stackedFixturePull(2, "main", "sibling")})
 	cfg, repo, primary := state.service(t)
 	all := []sweepCandidate{{repo: repo, facts: primary}, {repo: repo, facts: Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: "2"}}}
-	encoded, err := groupCandidatesJSON(t.Context(), cfg, repo, primary, all)
-	if err != nil {
-		t.Fatal(err)
-	}
+	encoded := groupCandidatesForTest(t, cfg, primary, all)
 	var candidates []Facts
 	if err := json.Unmarshal([]byte(encoded), &candidates); err != nil {
 		t.Fatal(err)
@@ -64,10 +77,7 @@ func TestGroupCandidateEnumerationExcludesNonMembersAtTheEnumerationSeam(t *test
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) {
 		return []byte("minos-run-minos-e2e-owner-subject-pr6.service loaded active running Minos lead\nminos-run-owner-repo-pr1.service loaded active running Minos lead\n"), nil
 	}
-	encoded, err := groupCandidatesJSON(t.Context(), cfg, repo, primary, all)
-	if err != nil {
-		t.Fatal(err)
-	}
+	encoded := groupCandidatesForTest(t, cfg, primary, all)
 	var candidates []Facts
 	if err := json.Unmarshal([]byte(encoded), &candidates); err != nil {
 		t.Fatal(err)
@@ -109,11 +119,7 @@ func TestGroupCandidateEnumerationDoesNotGiveStructuralPrimaryOrdinarySiblings(t
 	cfg, repo, primary := state.service(t)
 	repo.StructuralBranchPrefixes = []string{"structural/"}
 	all := []sweepCandidate{{repo: repo, facts: primary}, {repo: repo, facts: Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: "2"}}}
-	encoded, err := groupCandidatesJSON(t.Context(), cfg, repo, primary, all)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if encoded != "[]" {
+	if encoded := groupCandidatesForTest(t, cfg, primary, all); encoded != "[]" {
 		t.Fatalf("structural primary group candidates = %s, want none", encoded)
 	}
 }
@@ -148,11 +154,8 @@ func TestGroupCandidateEnumerationExcludesEachAdmissionDeferral(t *testing.T) {
 			cfg, repo, primary := state.service(t)
 			repo.WorkInProgressBranchPrefixes = []string{"wip/"}
 			test.mutate(state, child, cfg, primary)
-			encoded, err := groupCandidatesJSON(t.Context(), cfg, repo, primary, []sweepCandidate{{repo: repo, facts: primary}, {repo: repo, facts: Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: "2"}}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if encoded != "[]" {
+			all := []sweepCandidate{{repo: repo, facts: primary}, {repo: repo, facts: Facts{Forge: primary.Forge, Owner: primary.Owner, Repo: primary.Repo, PR: "2"}}}
+			if encoded := groupCandidatesForTest(t, cfg, primary, all); encoded != "[]" {
 				t.Fatalf("group candidates = %s, want excluded ineligible sibling", encoded)
 			}
 		})
@@ -197,7 +200,14 @@ func TestGroupMemberGuardSuppressesWhileHolderIsLiveOrContinuable(t *testing.T) 
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) {
 		return []byte(primary + ".service loaded active running Minos lead\n"), nil
 	}
-	if !groupMemberGuardActive(t.Context(), runs, member) {
+	memberGuardedNow := func() bool {
+		active, err := activeRunUnitNames(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return groupMemberGuardedBy(runs, member, active)
+	}
+	if !memberGuardedNow() {
 		t.Fatal("live group holder did not suppress member")
 	}
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
@@ -206,7 +216,7 @@ func TestGroupMemberGuardSuppressesWhileHolderIsLiveOrContinuable(t *testing.T) 
 		t.Fatal(err)
 	}
 	handoff := writeTestHandoff(t, cfg, primaryFacts, runDir, primaryFacts.HeadSHA, json.RawMessage(`{"round":0,"confirmedUnfixed":[]}`))
-	if !groupMemberGuardActive(t.Context(), runs, member) {
+	if !memberGuardedNow() {
 		t.Fatal("continuable group holder did not suppress member")
 	}
 	if err := os.Remove(handoff); err != nil {
@@ -215,7 +225,7 @@ func TestGroupMemberGuardSuppressesWhileHolderIsLiveOrContinuable(t *testing.T) 
 	if err := sweepDeadGroupMemberGuards(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if groupMemberGuardActive(t.Context(), runs, member) {
+	if memberGuardedNow() {
 		t.Fatal("dead group holder suppressed member")
 	}
 	if !strings.Contains(groupMemberGuardPath(runs, member), ".group-members") {
