@@ -99,15 +99,9 @@ storage-state dumps. Transient captures never belong in the repository, where
 they accumulate as untracked litter or, worse, get committed by accident; the
 one exception is deliberate test fixtures, covered below.
 
-<!-- foundry:variant scratch-workspace start -->
-
-On this target, `<scratch>` is the session's scratchpad directory — the path the harness
-announces in the system prompt's *Scratchpad Directory* section. It is session-specific, so
-take it from that announcement rather than hardcoding a path. If no scratchpad is announced,
-create a session directory under the system temp location (`mktemp -d`) and use that —
-never a directory inside a project working tree.
-
-<!-- foundry:variant scratch-workspace end -->
+`<scratch>` is a per-task directory you create with `mktemp -d` under the
+machine's agent scratch area — the location the Scratch Space rule names —
+never a path inside a project working tree.
 
 - **Run `playwright-cli` from `<scratch>`, not from the repository.** The CLI
   writes an auto-snapshot into `.playwright-cli/` under the *current working
