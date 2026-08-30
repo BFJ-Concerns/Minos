@@ -100,7 +100,7 @@ costs the successor the preserved workspace:
   "runDir": "$MINOS_RUN_DIR value",
   "stoppedAt": "concise description of the stopping point",
   "writtenAt": "RFC 3339 timestamp",
-  "predecessorProgress": { "the complete JSON object from $MINOS_PREDECESSOR_PROGRESS, when set": "" },
+  "predecessorProgress": { the complete JSON object from $MINOS_PREDECESSOR_PROGRESS, when set },
   "progress": {
     "stage": "stable name of the lifecycle stage just completed",
     "head": "FRESH_SNAPSHOT_HEAD_SHA",
@@ -132,10 +132,12 @@ the moved head fresh. Movement of the *target* is different: carry on
 against the pinned target — it fixes both the code context and the
 diff geometry — and let the review stand for the coordinates it judged.
 
-Every guarded forge write is bound to the exact head and target you pass
-it; a write refused because the coordinates moved is this rule firing at
-the forge boundary — take the ending above rather than retrying with fresh
-coordinates.
+Every guarded forge write carries the exact head and target you pass it,
+and refuses when the pull-request head has moved past that head; a write
+refused that way is this rule firing at the forge boundary — take the
+ending above rather than retrying with fresh coordinates. (The target
+rides along as recorded context; target movement does not refuse a
+write, matching the target rule above.)
 
 1. The setup script has prepared the clone at the current pull-request head
    in `$MINOS_WORKSPACE` — either fresh or a validated preserved
@@ -462,6 +464,9 @@ coordinates.
      > "$MINOS_RUN_DIR/verdict-digest.json"
    ```
 
+   (`verdict-digest-brief.json` for the brief verdict, parallel to the
+   decision filenames below.)
+
    The digest lists every confirmed finding with its severity, confidence
    values, and threshold position, and a `thresholdIndication` — what the
    configured threshold alone would say. Classification is your judgement,
@@ -543,8 +548,8 @@ coordinates.
    Then publish the unverified side material, best-effort: collect the
    complete verdicts' `outOfScopeObservations` (as
    `kind: "out-of-scope-observation"`) and `misconfigurations` (as
-   `kind: "review-brief-misconfiguration"` with `brief` and `reason`
-   preserved) into one JSON array file and render it:
+   `kind: "review-brief-misconfiguration"` with `title`, `brief` and
+   `reason` preserved) into one JSON array file and render it:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/publish-observations.mjs" ENTRIES_FILE \

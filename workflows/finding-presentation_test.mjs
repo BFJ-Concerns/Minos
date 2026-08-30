@@ -51,7 +51,6 @@ test("the review body literals are one frozen authority", () => {
     findings: "Confirmed findings in the reviewed code.",
     clean: "No confirmed findings in the reviewed code.",
     brief: "Repository review brief findings.",
-    unresolved: "Confirmed code findings remain unresolved.",
   });
   assert.ok(Object.isFrozen(REVIEW_BODIES));
 });

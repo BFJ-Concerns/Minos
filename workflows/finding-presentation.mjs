@@ -14,7 +14,6 @@ export const REVIEW_BODIES = Object.freeze({
   findings: "Confirmed findings in the reviewed code.",
   clean: "No confirmed findings in the reviewed code.",
   brief: "Repository review brief findings.",
-  unresolved: "Confirmed code findings remain unresolved.",
 });
 
 export function findingComment(finding) {

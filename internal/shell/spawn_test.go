@@ -948,15 +948,14 @@ func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head
 	return path
 }
 
-func TestRunHandoffKeepsExistingShapeCompatibility(t *testing.T) {
+func TestRunHandoffShapeToleranceMatchesTheDeclaredContract(t *testing.T) {
 	base := `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"head","runDir":"/runs/run","stoppedAt":"stage","writtenAt":"fixture"}`
-	tests := map[string]string{
-		"unknown field":       strings.TrimSuffix(base, "}") + `,"futureField":true}`,
+	accepted := map[string]string{
 		"trailing content":    base + ` {"ignored":true}`,
 		"empty existing data": `{"kind":"minos-run-handoff-v1","pullRequest":{"owner":"owner","repo":"repository","number":"17"},"head":"","runDir":"","stoppedAt":"","writtenAt":"fixture"}`,
 		"non-RFC timestamp":   base,
 	}
-	for name, content := range tests {
+	for name, content := range accepted {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "handoff.json")
 			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -964,10 +963,23 @@ func TestRunHandoffKeepsExistingShapeCompatibility(t *testing.T) {
 			}
 			_, err := readRunHandoffStructure(path)
 			if err != nil {
-				t.Fatalf("existing handoff shape rejected: %v", err)
+				t.Fatalf("declared handoff shape rejected: %v", err)
 			}
 		})
 	}
+	// The lifecycle tells the lead field names are validated strictly. A
+	// misspelled optional field silently dropping progress is the hazard the
+	// strict decode removes; schema evolution rides the versioned kind.
+	t.Run("unknown field", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "handoff.json")
+		content := strings.TrimSuffix(base, "}") + `,"futureField":true}`
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readRunHandoffStructure(path); err == nil {
+			t.Fatal("unknown handoff field was accepted")
+		}
+	})
 }
 
 func TestRunHandoffRejectsInvalidProgress(t *testing.T) {

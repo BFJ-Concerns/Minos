@@ -66,6 +66,7 @@ func readRunHandoffStructure(path string) (*runHandoff, error) {
 	}
 	var handoff runHandoff
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&handoff); err != nil {
 		return nil, fmt.Errorf("parse JSON: %w", err)
 	}

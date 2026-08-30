@@ -53,7 +53,7 @@ function decision(digest, overrides = {}) {
 test("digest reports threshold position per finding and the advisory indication", () => {
   const digest = completeDigest([
     finding(),
-    finding({ title: "Sloppy log wording", severity: "Low", line: 7 }),
+    finding({ id: "specialist-2:1", title: "Sloppy log wording", severity: "Low", line: 7 }),
   ]);
   assert.equal(digest.kind, DIGEST_KIND);
   assert.equal(digest.threshold, "High");
@@ -76,6 +76,32 @@ test("digest fails closed on an incomplete review, an unknown threshold, and dup
   const duplicated = verdictDigest({ review: verdict([finding(), finding()]) });
   assert.equal(duplicated.status, "invalid");
   assert.match(duplicated.reason, /duplicate identities/);
+});
+
+test("digest keys by the verdict's finding id, so two findings at one site stay distinct", () => {
+  const digest = completeDigest([
+    finding({ id: "specialist-1:1" }),
+    finding({ id: "specialist-2:1" }),
+  ]);
+  assert.equal(digest.status, "complete");
+  assert.deepEqual(digest.findings.map((entry) => entry.key), ["specialist-1:1", "specialist-2:1"]);
+});
+
+test("an unknown class or malformed undergrade is refused wherever it appears", () => {
+  const digest = completeDigest([finding()]);
+  const unknownClass = decision(digest, {
+    findings: [{ key: digest.findings[0].key, gating: true, class: "just-because" }],
+  });
+  const refused = validateVerdictDecision(unknownClass, digest);
+  assert.equal(refused.ok, false);
+  assert.match(refused.reason, /unknown class/);
+
+  const badUndergrade = decision(digest, {
+    findings: [{ key: digest.findings[0].key, gating: true, undergrade: "  " }],
+  });
+  const refusedUndergrade = validateVerdictDecision(badUndergrade, digest);
+  assert.equal(refusedUndergrade.ok, false);
+  assert.match(refusedUndergrade.reason, /undergrade must be a non-empty string/);
 });
 
 test("a coherent decision validates", () => {
@@ -125,7 +151,7 @@ test("gating a below-threshold finding requires an undergrade basis naming it", 
 });
 
 test("every confirmed finding needs exactly one disposition", () => {
-  const digest = completeDigest([finding(), finding({ title: "Second defect", line: 9 })]);
+  const digest = completeDigest([finding(), finding({ id: "specialist-3:1", title: "Second defect", line: 9 })]);
   const missing = decision(digest, { findings: [decision(digest).findings[0]] });
   const refusedMissing = validateVerdictDecision(missing, digest);
   assert.equal(refusedMissing.ok, false);

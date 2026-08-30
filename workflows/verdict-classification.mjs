@@ -23,7 +23,12 @@ export function atOrAboveThreshold(finding, threshold) {
   return SEVERITY[finding.severity] >= SEVERITY[threshold];
 }
 
+// The adjudicated verdict's own finding ids are the identity vocabulary:
+// unique by construction, so two specialists confirming the same defect at
+// the same site stay two disposable findings. The content key is only the
+// fallback for a verdict without ids.
 function findingKey(finding) {
+  if (typeof finding.id === "string" && finding.id !== "") return finding.id;
   const title = String(finding.title || "").trim().toLowerCase().replace(/\s+/g, " ");
   return JSON.stringify([finding.path, finding.line, title]);
 }
@@ -120,6 +125,10 @@ export function validateVerdictDecision(decision, digest) {
     disposed.add(disposition.key);
     if (disposition.gating !== true && disposition.gating !== false)
       return { ok: false, reason: `finding disposition must set gating true or false: ${disposition.key}` };
+    if (disposition.class !== undefined && !NEVER_GATING_CLASSES.includes(disposition.class))
+      return { ok: false, reason: `finding disposition carries an unknown class: ${disposition.key}` };
+    if (disposition.undergrade !== undefined && (typeof disposition.undergrade !== "string" || disposition.undergrade.trim() === ""))
+      return { ok: false, reason: `finding disposition undergrade must be a non-empty string: ${disposition.key}` };
     if (finding.atOrAboveThreshold && disposition.gating === false) {
       if (!NEVER_GATING_CLASSES.includes(disposition.class))
         return {
