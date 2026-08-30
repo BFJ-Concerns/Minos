@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -37,6 +38,65 @@ func TestSweepDecisionMessage(t *testing.T) {
 				t.Fatalf("message = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestSweepPublishesOneCompleteReplacementOfDeferrals(t *testing.T) {
+	cfg := scratchTestConfig(t)
+	stale := sweepDeferralDocument{Kind: sweepDeferralDocumentKind, CompletedAt: "2001-02-03T04:05:06Z", Deferrals: []sweepDeferral{{PR: "old", Reason: "stale"}}}
+	staleJSON, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, sweepDeferralsPath(cfg), string(staleJSON))
+	want := []sweepDeferral{
+		{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "12", Reason: "open dependencies: owner/prerequisite#7"},
+		{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "13", Reason: `work-in-progress branch "structural/rework"`},
+		{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "14", Reason: "completed-marker"},
+	}
+	originalRename := renameSweepDeferrals
+	t.Cleanup(func() { renameSweepDeferrals = originalRename })
+	var renamed bool
+	renameSweepDeferrals = func(temporary, destination string) error {
+		content, err := os.ReadFile(temporary)
+		if err != nil {
+			return err
+		}
+		var beforeRename sweepDeferralDocument
+		if err := json.Unmarshal(content, &beforeRename); err != nil {
+			return err
+		}
+		if len(beforeRename.Deferrals) != len(want) {
+			t.Fatalf("temporary document deferrals = %#v, want %#v", beforeRename.Deferrals, want)
+		}
+		renamed = true
+		return originalRename(temporary, destination)
+	}
+
+	if err := publishSweepDeferrals(cfg, want); err != nil {
+		t.Fatal(err)
+	}
+	if !renamed {
+		t.Fatal("sweep document was not published through rename")
+	}
+	content, err := os.ReadFile(sweepDeferralsPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got sweepDeferralDocument
+	if err := json.Unmarshal(content, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != sweepDeferralDocumentKind || got.CompletedAt == stale.CompletedAt {
+		t.Fatalf("replacement = %#v, want a new completed sweep document", got)
+	}
+	if len(got.Deferrals) != len(want) {
+		t.Fatalf("replacement deferrals = %#v, want %#v", got.Deferrals, want)
+	}
+	for index, deferral := range want {
+		if got.Deferrals[index] != deferral {
+			t.Fatalf("replacement deferral %d = %#v, want %#v", index, got.Deferrals[index], deferral)
+		}
 	}
 }
 

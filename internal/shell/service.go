@@ -288,7 +288,11 @@ const (
 )
 
 type ReconcileResult struct {
-	Decision            ReconcileDecision
+	Decision ReconcileDecision
+	// DeferralReason is set only when reconciliation deliberately leaves an
+	// open pull request unstarted. Sweep records it for the operator-facing
+	// projection; admission never reads that record back.
+	DeferralReason      string
 	BlockingUnit        string
 	Detail              string
 	GroupCandidatesPath string
@@ -328,7 +332,8 @@ func reconcilePullRequestSnapshotWithCandidates(ctx context.Context, cfg Service
 	admission.GroupCandidatesJSON = candidates
 	eligibility := assessPullRequestAdmission(ctx, cfg, repo, facts, adapter, snapshot, commits)
 	if eligibility.workInProgress {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
+		reason := fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch)
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason), DeferralReason: reason}, nil
 	}
 	if eligibility.terminalReview {
 		if hasTerminalStatus(snapshot, cfg, facts, eligibility.terminalState) {
@@ -349,13 +354,13 @@ func reconcilePullRequestSnapshotWithCandidates(ctx context.Context, cfg Service
 		}
 	}
 	if eligibility.completedRun {
-		return ReconcileResult{Decision: ReconcileNothing}, nil
+		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker"}, nil
 	}
 	if eligibility.dependencyDeferred {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason)}, nil
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason), DeferralReason: eligibility.dependencyReason}, nil
 	}
 	if eligibility.targetBroken {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.targetBrokenReason)}, nil
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.targetBrokenReason), DeferralReason: eligibility.targetBrokenReason}, nil
 	}
 	runClass := RunClassReview
 	if structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
