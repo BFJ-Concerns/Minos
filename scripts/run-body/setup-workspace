@@ -7,14 +7,10 @@ set -eu
 : "${MINOS_REPO_NAME:?MINOS_REPO_NAME is required}"
 : "${MINOS_PR:?MINOS_PR is required}"
 : "${MINOS_HEAD_SHA:?MINOS_HEAD_SHA is required}"
-: "${MINOS_TARGET_SHA:?MINOS_TARGET_SHA is required}"
-: "${MINOS_BASE_REF:?MINOS_BASE_REF is required}"
 : "${MINOS_HEAD_BRANCH:?MINOS_HEAD_BRANCH is required}"
 : "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 : "${MINOS_WORKSPACE:?MINOS_WORKSPACE is required}"
 : "${MINOS_ORIENTATION:?MINOS_ORIENTATION is required}"
-: "${MINOS_GIT_AUTHOR_NAME:?MINOS_GIT_AUTHOR_NAME is required}"
-: "${MINOS_GIT_AUTHOR_EMAIL:?MINOS_GIT_AUTHOR_EMAIL is required}"
 
 resume=false
 if [ -n "${MINOS_RESUME:-}" ]; then
@@ -71,11 +67,6 @@ if [ -z "$repository_url" ]; then
   echo "setup-workspace: pull request omitted the source repository clone URL" >&2
   exit 1
 fi
-target_repository_url="$(jq -r '.base.repo.clone_url // ""' "$response_file")"
-if [ -z "$target_repository_url" ]; then
-  echo "setup-workspace: pull request omitted the target repository clone URL" >&2
-  exit 1
-fi
 # The author's declared intent and scope travel with the run so the review
 # workflow can weigh explicit out-of-scope declarations.
 pull_request_record="${MINOS_RUN_DIR}/pull-request.json"
@@ -89,7 +80,6 @@ if [ "$reuse_workspace" = true ]; then
     rm -rf -- "$MINOS_WORKSPACE"
     reuse_workspace=false
   else
-    git -C "$MINOS_WORKSPACE" merge --abort 2>/dev/null || true
     git -C "$MINOS_WORKSPACE" reset --hard
     git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
   fi
@@ -103,10 +93,6 @@ if [ "$checked_out_head" != "$MINOS_HEAD_SHA" ]; then
   echo "setup-workspace: checked out $checked_out_head, expected $MINOS_HEAD_SHA" >&2
   exit 1
 fi
-git -C "$MINOS_WORKSPACE" config user.name "$MINOS_GIT_AUTHOR_NAME"
-git -C "$MINOS_WORKSPACE" config user.email "$MINOS_GIT_AUTHOR_EMAIL"
-git -C "$MINOS_WORKSPACE" config http.extraHeader "Authorization: token ${forge_token}"
-
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 run_date="$(date -u '+%Y-%m-%d')"
 common_dir="$(git -C "$MINOS_WORKSPACE" rev-parse --path-format=absolute --git-common-dir)"
@@ -141,18 +127,6 @@ protected_refs_tmp=""
 # authorise one (C33). A separate clone inherits neither protection.
 install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
 
-# The review judges the target-to-head diff, so the target commit must be
-# reachable locally; a fork's target lives in the base repository, hence the
-# explicit fetch. The pinned ref also stops a mid-setup target move from
-# silently changing what the review diffs against.
-git -C "$MINOS_WORKSPACE" fetch --no-tags "$target_repository_url" \
-  "+refs/heads/${MINOS_BASE_REF}:refs/minos/target"
-observed_target="$(git -C "$MINOS_WORKSPACE" rev-parse refs/minos/target)"
-if [ "$observed_target" != "$MINOS_TARGET_SHA" ]; then
-  echo "setup-workspace: pull-request target moved from $MINOS_TARGET_SHA to $observed_target" >&2
-  exit 1
-fi
-
 annexe_name="${MINOS_REPO_NAME}-Annexe"
 annexe_path="$(dirname "$MINOS_WORKSPACE")/${annexe_name}"
 forge_get "/api/v1/repos/${MINOS_OWNER}/${annexe_name}"
@@ -171,9 +145,6 @@ case "$response_status" in
     else
       git -c "http.extraHeader=Authorization: token ${forge_token}" clone "$annexe_url" "$annexe_path"
     fi
-    git -C "$annexe_path" config user.name "$MINOS_GIT_AUTHOR_NAME"
-    git -C "$annexe_path" config user.email "$MINOS_GIT_AUTHOR_EMAIL"
-    git -C "$annexe_path" config http.extraHeader "Authorization: token ${forge_token}"
     annexe_guidance="$annexe_path/README.md"
     if ! guidance_has_content "$annexe_guidance"; then
       echo "setup-workspace: annexe README.md guidance is missing or empty" >&2

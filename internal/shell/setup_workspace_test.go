@@ -26,9 +26,6 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("workspace head = %q, want %q", got, head)
 	}
-	if got := gitOutput(t, workspace, "config", "--get", "http.extraHeader"); got != "Authorization: token forge-token" {
-		t.Fatalf("workspace Git authentication = %q, want forge token header", got)
-	}
 	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	protectedRef, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
 	if err != nil {
@@ -39,12 +36,6 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 	}
 	annexePath := filepath.Join(runDir, "repository-Annexe")
 	assertContainsFile(t, filepath.Join(annexePath, "README.md"), "# Commission")
-	if got := gitOutput(t, annexePath, "config", "--get", "http.extraHeader"); got != "Authorization: token forge-token" {
-		t.Fatalf("annexe Git authentication = %q, want forge token header", got)
-	}
-	if got := gitOutput(t, annexePath, "config", "user.name"); got != "Minos" {
-		t.Fatalf("annexe Git author = %q, want Minos", got)
-	}
 
 	state := readOrientation(t, orientation)
 	if state.Grounding != "annexe" || state.Guidance != filepath.Join(annexePath, "README.md") {
@@ -63,14 +54,6 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 	assertContainsFile(t, pullRequestRecord, `"title": "Fixture change"`)
 	assertContainsFile(t, pullRequestRecord, `"body": "Not in scope: a concrete transport."`)
 
-	if err := os.WriteFile(filepath.Join(workspace, "repair.txt"), []byte("repair\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, workspace, "add", "repair.txt")
-	runGit(t, workspace, "commit", "-m", "fix: repair subject")
-	if got := gitOutput(t, workspace, "log", "-1", "--format=%an <%ae>"); got != "Minos <minos@example.invalid>" {
-		t.Fatalf("commit author = %q, want Minos identity", got)
-	}
 }
 
 func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
@@ -172,7 +155,7 @@ func TestSetupWorkspaceRefusesMovedHead(t *testing.T) {
 	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
 	server := newSetupForge(t, observed, repository, annexe)
 	runDir := t.TempDir()
-	cmd := setupWorkspaceCommandForTarget(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), admitted, observed)
+	cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), admitted)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "pull-request head moved from") {
 		t.Fatalf("error = %v, output = %q", err, output)
@@ -257,6 +240,34 @@ func TestSetupWorkspaceRejectsEmptyRepositoryGuidanceFallback(t *testing.T) {
 	}
 }
 
+func TestSetupWorkspaceLeavesOnlyCloneAndGuardState(t *testing.T) {
+	repository, head := createGitRepository(t, "AGENTS.md", "MINOS_REPOSITORY_GUIDANCE_COBALT_719\n")
+	server := newSetupForge(t, head, repository, "")
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	runSetupWorkspace(t, server.URL, runDir, workspace, filepath.Join(runDir, "orientation.json"), head)
+
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("workspace head after clone-only setup = %q, want %q", got, head)
+	}
+	if output, err := exec.Command("git", "-C", workspace, "show-ref", "--verify", "--quiet", "refs/minos/target").CombinedOutput(); err == nil {
+		t.Fatalf("setup fetched a target ref: %s", output)
+	}
+	for _, path := range []string{
+		filepath.Join(runDir, "reconciliation.json"),
+		filepath.Join(workspace, "reconciliation.json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("setup left reconciliation state at %s: %v", path, err)
+		}
+	}
+	for _, key := range []string{"user.name", "user.email", "http.extraHeader"} {
+		if output, err := exec.Command("git", "-C", workspace, "config", "--local", "--get", key).CombinedOutput(); err == nil {
+			t.Fatalf("setup retained %s plumbing: %q", key, output)
+		}
+	}
+}
+
 type orientationState struct {
 	Repository  string `json:"repository"`
 	Head        string `json:"head"`
@@ -320,18 +331,13 @@ func newSetupForge(t *testing.T, head, repository, annexe string) *httptest.Serv
 
 func runSetupWorkspace(t *testing.T, apiBase, runDir, workspace, orientation, head string) {
 	t.Helper()
-	cmd := setupWorkspaceCommandForTarget(t, apiBase, runDir, workspace, orientation, head, head)
+	cmd := setupWorkspaceCommand(t, apiBase, runDir, workspace, orientation, head)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("setup-workspace failed: %v\n%s", err, output)
 	}
 }
 
 func setupWorkspaceCommand(t *testing.T, apiBase, runDir, workspace, orientation, head string) *exec.Cmd {
-	t.Helper()
-	return setupWorkspaceCommandForTarget(t, apiBase, runDir, workspace, orientation, head, head)
-}
-
-func setupWorkspaceCommandForTarget(t *testing.T, apiBase, runDir, workspace, orientation, head, target string) *exec.Cmd {
 	t.Helper()
 	credential := filepath.Join(runDir, "forge.token")
 	if err := os.WriteFile(credential, []byte("forge-token\n"), 0o600); err != nil {
@@ -346,14 +352,10 @@ func setupWorkspaceCommandForTarget(t *testing.T, apiBase, runDir, workspace, or
 		"MINOS_REPO_NAME=repository",
 		"MINOS_PR=17",
 		"MINOS_HEAD_SHA="+head,
-		"MINOS_TARGET_SHA="+target,
-		"MINOS_BASE_REF=main",
 		"MINOS_HEAD_BRANCH=feature",
 		"MINOS_RUN_DIR="+runDir,
 		"MINOS_WORKSPACE="+workspace,
 		"MINOS_ORIENTATION="+orientation,
-		"MINOS_GIT_AUTHOR_NAME=Minos",
-		"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
 	)
 	return cmd
 }
