@@ -1,17 +1,16 @@
 # Minos
 
-Minos reviews and repairs pull requests. A webhook or periodic sweep starts one
-Claude Code lead on `claude-opus-5` on a disposable box. The lead claims the
-pull request, clones the repository, runs its build and tests as configured, and
-invokes the shipped review workflows through the installed Ensemble CLI and
-adjudication wrapper. Independent reviewers cover the whole diff, with breadth
-scaled to the diff and the repository's `.review/` briefs honoured; the opposite
-model family verifies every proposed finding. Explicit Ensemble engine dispatch
-guarantees that pairing. The adapter checks that every leg completed and every
-finding has a complete verifier verdict before returning a result to the lead.
-An incomplete run publishes no review and sets no clean status. The lead
-repairs confirmed problems, reviews the new head again, publishes the result to
-the forge, and may merge when repository policy permits it.
+Minos reviews pull requests. A webhook or periodic sweep starts one Claude Code
+lead on `claude-opus-5` on a disposable box. The lead claims the pull request,
+clones the repository, and invokes the shipped review workflows through the
+installed Ensemble CLI and adjudication wrapper. Independent reviewers cover the
+whole diff, with breadth scaled to the diff and the repository's `.review/`
+briefs honoured; the opposite model family verifies every proposed finding.
+Explicit Ensemble engine dispatch guarantees that pairing. The adapter checks
+that every leg completed and every finding has a complete verifier verdict before
+returning a result to the lead. An incomplete run publishes no review and sets no
+clean status. The lead classifies the verdict, publishes the result to the forge,
+and stops. Minos never builds, tests, fixes, or merges the reviewed change.
 
 The implementation deliberately has no lifecycle database, stage machine,
 heartbeat, incident system, preflight framework, model-admission gate, coverage
@@ -29,7 +28,7 @@ minos receive --config /etc/minos
 minos sweep --config /etc/minos
 ```
 
-The lead uses `minos forge claim`, `snapshot`, `status`, `review` and `merge`.
+The lead uses `minos forge claim`, `snapshot`, `status` and `review`.
 Forge adaptations live in `scripts/adaptations/forgejo`. The review entry point
 is `workflows/adjudicated-review`; it runs `workflows/review.js` through the
 vendored Ensemble launcher and passes the result to
@@ -39,6 +38,20 @@ confident "nothing engages" verdict is itself a complete clean review, so a
 pull request that gives no specialist or `.review/` brief any work skips the
 full review launch. The workflow decision logic and
 adjudication are exercised by `node --test workflows/*_test.mjs`.
+
+Published review comments carry model provenance: each finding is tagged with
+`Proposed by:` and `Verified by:` lines naming the models that proposed and
+verified it, and the forge review command appends a `Reviewed by:` line naming
+the lead model (`MINOS_LEAD_MODEL`) to every review body and inline comment.
+
+At the end of each completed pass the sweep attempts to write
+`.sweep-deferrals.json` atomically into the runs directory, recording the pull
+requests the pass deliberately deferred and why — work-in-progress branch
+prefix, completed review marker, or unresolved dependency — as a timestamped
+document. Publication is best-effort: a failed write logs the error and leaves
+the previous whole document (or none, if no earlier pass succeeded) in place,
+so the served record can lag the latest pass. The status endpoint serves this
+file as the `sweep` field in its projection.
 
 The lead is guided by [`lifecycle/lifecycle.md`](lifecycle/lifecycle.md),
 editable markdown fed to its session as standing launch instructions via

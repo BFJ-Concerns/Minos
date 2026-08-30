@@ -159,6 +159,10 @@ pushing with the configured Forgejo token header.
 
 The receiver handles new events immediately. The sweep periodically starts any
 open, non-draft pull request whose current head carries no completion marker.
+Before reconciling a pull request, the sweep strips any stale Minos approval
+reaction (👍) left on a head the author has since replaced: reviews are
+SHA-bound evidence, but the PR-wide reaction is not, so it is removed before
+another reconciliation decision is made.
 
 ## Reading run liveness
 
@@ -219,6 +223,17 @@ curl -H "Authorization: Bearer $(cat /etc/minos/status.token)" \
 
 The token is the whole gate, and the projection names repositories, branches
 and heads — keep it to the LAN and treat it as a credential.
+
+The projection's `sweep` field carries the sweep-deferral document. At the
+end of each completed pass the sweep attempts to write
+`.sweep-deferrals.json` atomically into the runs directory, recording every
+pull request that was deliberately deferred and its reason — work-in-progress
+branch prefix, completed review marker, or unresolved dependency — with a
+`completed_at` timestamp. Publication is best-effort: a failed write logs
+the error and leaves the previous whole document (or none, if no earlier pass
+succeeded) in place, so the served record can lag the latest pass. The status
+endpoint reads this file on each request and serves it as `sweep`. A
+deployment with no completed pass yet returns no `sweep` field.
 
 To include finished runs, point the same `[runs]` block at the archive listing
 script and install it beside the others:
