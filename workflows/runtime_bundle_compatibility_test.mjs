@@ -77,12 +77,22 @@ function valuesFor(keys) {
   return Object.fromEntries(keys.map((key) => [key, values[key]]));
 }
 
-async function installedOptionValidator(t) {
-  const root = operationRoot(t, "minos-installed-runtime-");
-  const installation = spawnSync(installerPath, [root], {
+// Installing in place is not a deploy: the preflight's declared tool set
+// describes the box, not whichever machine runs this gate, so in-place
+// installs point it at an empty fixture set.
+function installInPlace(root) {
+  const fixtureTools = join(root, "expected-tool-versions");
+  writeFileSync(fixtureTools, "# no declared tools for the gate's install\n");
+  return spawnSync(installerPath, [root], {
     cwd: repositoryRoot,
     encoding: "utf8",
+    env: { ...process.env, MINOS_EXPECTED_TOOLS: fixtureTools },
   });
+}
+
+async function installedOptionValidator(t) {
+  const root = operationRoot(t, "minos-installed-runtime-");
+  const installation = installInPlace(root);
   assert.equal(installation.status, 0, installation.stderr);
   assert.match(installation.stdout, /ensemble\.mjs: OK/);
 
@@ -122,10 +132,7 @@ function shippedWorkflowSources() {
 async function installedFreeIdentifierValidator(t) {
   assertPinnedRuntimeUnchanged(t);
   const root = operationRoot(t, "minos-installed-runtime-globals-");
-  const installation = spawnSync(installerPath, [root], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
+  const installation = installInPlace(root);
   assert.equal(installation.status, 0, installation.stderr);
   assert.match(installation.stdout, /ensemble\.mjs: OK/);
 
@@ -205,6 +212,9 @@ function writeInstallerFixture(t, checksumLine) {
   mkdirSync(join(sourceRoot, "workflows"), { recursive: true });
   copyFileSync(installerPath, join(sourceRoot, "scripts", "install-review-runtime"));
   chmodSync(join(sourceRoot, "scripts", "install-review-runtime"), 0o755);
+  // The fixture declares no tools, so the preflight passes without
+  // reading the machine the tests happen to run on.
+  writeFileSync(join(sourceRoot, "scripts", "expected-tool-versions"), "# fixture declared tool set\n");
 
   const bundle = "DISTINCT-INSTALLER-BUNDLE-0728\n";
   writeFileSync(join(sourceRoot, "runtime", "ensemble.mjs"), bundle);

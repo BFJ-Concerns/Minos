@@ -5,6 +5,51 @@ destination_root="${1:?usage: install-review-runtime DESTINATION_ROOT}"
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 source_root="$(dirname "$script_dir")"
 
+# Preflight: the box's tool versions are checked against the declared set
+# before anything is installed, so a deploy cannot quietly land onto a box
+# whose tools differ from the ones the gate ran against. The declared set
+# is data (scripts/expected-tool-versions), one tab-separated line per
+# tool: name, version command, expected token. `any` marks an accepted
+# divergence — reported, never fatal — though a tool that is missing
+# outright fails whatever the expectation says. Every mismatch is
+# reported before the stop, naming the tool with both versions.
+# MINOS_EXPECTED_TOOLS points a non-deploy invocation (the repository's
+# own tests, which install for reasons other than deploying) at a fixture
+# set; a deploy leaves it unset and gets the shipped declarations.
+declared_tools="${MINOS_EXPECTED_TOOLS:-$source_root/scripts/expected-tool-versions}"
+if [ ! -f "$declared_tools" ]; then
+  echo "preflight: declared tool set missing: $declared_tools" >&2
+  exit 1
+fi
+preflight_mismatches=0
+while IFS="	" read -r tool version_command expected; do
+  case "$tool" in ''|\#*) continue ;; esac
+  if observed="$($version_command 2>&1)"; then
+    observed="$(printf '%s\n' "$observed" | head -n 1)"
+  else
+    echo "preflight: $tool: mismatch — expected $expected, observed missing (${version_command%% *} not runnable)" >&2
+    preflight_mismatches=$((preflight_mismatches + 1))
+    continue
+  fi
+  if [ "$expected" = "any" ]; then
+    echo "preflight: $tool: accepted divergence ($observed)"
+    continue
+  fi
+  case "$observed" in
+    *"$expected"*)
+      echo "preflight: $tool: parity ($observed)"
+      ;;
+    *)
+      echo "preflight: $tool: mismatch — expected $expected, observed $observed" >&2
+      preflight_mismatches=$((preflight_mismatches + 1))
+      ;;
+  esac
+done < "$declared_tools"
+if [ "$preflight_mismatches" -gt 0 ]; then
+  echo "preflight: $preflight_mismatches tool version mismatch(es); nothing installed" >&2
+  exit 1
+fi
+
 install -d -m 755 "$destination_root/runtime"
 install -m 644 "$source_root/runtime/ensemble.mjs" "$destination_root/runtime/ensemble.mjs"
 install -m 644 "$source_root/runtime/ensemble.mjs.sha256" "$destination_root/runtime/ensemble.mjs.sha256"

@@ -19,9 +19,14 @@ machine itself is the containment boundary.
    `/opt/minos/skills/foundry`. That tree holds the vendored skills one
    directory per agent tool — `codex/` and `claude-code/` — so a spawned
    session is handed the copy cast for the tool it runs on.
-3. Run `scripts/install-review-runtime /opt/minos`. It installs the complete
-   test-free review runtime under `/opt/minos`: the vendored Ensemble launcher
-   and its provenance files, the adjudication wrapper and adapter, and every
+3. Run `scripts/install-review-runtime /opt/minos`. Before installing
+   anything it checks the box's tool versions against
+   `scripts/expected-tool-versions` — the set the repository gate runs
+   against — and stops on any mismatch, naming each drifted tool with both
+   versions; upgrade the box's tools (or record a deliberate divergence as
+   `any` in that file) and re-run. It then installs the complete test-free
+   review runtime under `/opt/minos`: the vendored Ensemble launcher and
+   its provenance files, the adjudication wrapper and adapter, and every
    non-test workflow file. It also verifies the launcher against
    `ensemble.mjs.sha256`.
 4. Copy `deploy/etc/minos` to `/etc/minos`, replace the placeholder values,

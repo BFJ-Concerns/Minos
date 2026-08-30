@@ -1312,6 +1312,7 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 	for _, name := range []string{"ensemble.mjs", "ensemble.mjs.sha256", "ensemble.source-version"} {
 		copyFixtureFile(t, filepath.Join("..", "..", "runtime", name), filepath.Join(sourceRoot, "runtime", name), 0o644)
 	}
+	declareExpectedTools(t, sourceRoot)
 	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "adjudicated-review"), []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

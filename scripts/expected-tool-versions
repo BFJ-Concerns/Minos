@@ -1,0 +1,14 @@
+# The tool versions a deploy expects on the box — the set the repository
+# gate runs against. One tab-separated line per tool: name, the command
+# that reports its version, and the token that must appear somewhere in
+# that command's output. `any` records an accepted divergence: the
+# observed version is reported, never failing the preflight — absence of
+# the tool still fails it. Update a line when the gate's own toolchain
+# moves; a deploy onto a box whose versions drift instead stops loudly
+# before anything is installed (see install-review-runtime).
+jq	jq --version	jq-1.8.2
+node	node --version	v24.14.0
+go	go version	go1.27.0
+git	git --version	any
+claude	claude --version	2.1.251
+codex	codex --version	codex-cli 0.151.0

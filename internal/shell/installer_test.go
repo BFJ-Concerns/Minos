@@ -24,7 +24,22 @@ func installerSourceRoot(t *testing.T) string {
 	for _, name := range []string{"ensemble.mjs", "ensemble.mjs.sha256", "ensemble.source-version"} {
 		copyFixtureFile(t, filepath.Join("..", "..", "runtime", name), filepath.Join(sourceRoot, "runtime", name), 0o644)
 	}
+	// The fixture declares no tools, so the preflight passes without
+	// reading the machine the tests happen to run on; preflight tests
+	// declare their own tools against a stubbed PATH.
+	declareExpectedTools(t, sourceRoot)
 	return sourceRoot
+}
+
+func declareExpectedTools(t *testing.T, sourceRoot string, lines ...string) {
+	t.Helper()
+	content := "# test fixture declared tool set\n"
+	for _, line := range lines {
+		content += line + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "scripts", "expected-tool-versions"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func runInstaller(t *testing.T, sourceRoot, destination string) {
