@@ -702,6 +702,58 @@ func TestCgroupMemoryCollectorToleratesAMissingCounterOnBothPaths(t *testing.T) 
 	fixture.assertProcessesStopped(t)
 }
 
+// Two faithful copies of a counter read agree on every cgroup until one of
+// them drifts, so agreement alone cannot show that only one copy is left.
+// What can is the absence of the second reader: this run's cgroup is resolved
+// and its counters are parsed in one file of the run-body family, and every
+// other script in it reaches those numbers through that file. The terminal
+// death evidence is deliberately not caught here — it cats memory.events,
+// memory.peak and memory.pressure verbatim through the loop variable, taking
+// only the shared directory.
+func TestOnlyTheSharedFragmentResolvesTheCgroupAndReadsItsCounters(t *testing.T) {
+	signatures := []string{
+		"/proc/self/cgroup",
+		"$cgroup_dir/memory.stat",
+		"$cgroup_dir/memory.swap.current",
+		"$cgroup_dir/memory.pressure",
+	}
+	scripts := filepath.Join("..", "..", "scripts", "run-body")
+	const fragment = "cgroup-memory.sh"
+
+	shared, err := os.ReadFile(filepath.Join(scripts, fragment))
+	if err != nil {
+		// Reported rather than fatal, so the scan below still names whichever
+		// scripts are reading the cgroup for themselves.
+		t.Errorf("the shared cgroup fragment is missing: %v", err)
+	} else {
+		for _, signature := range signatures {
+			if !strings.Contains(string(shared), signature) {
+				t.Errorf("%s no longer carries %q, so the single-reader check below proves nothing", fragment, signature)
+			}
+		}
+	}
+
+	entries, err := os.ReadDir(scripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == fragment {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(scripts, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, signature := range signatures {
+			if strings.Contains(string(content), signature) {
+				t.Errorf("scripts/run-body/%s reads the cgroup itself (%q) — a second copy free to drift; source %s instead",
+					entry.Name(), signature, fragment)
+			}
+		}
+	}
+}
+
 func TestCollectTimingsCarriesMemoryStallAndThrashDeltas(t *testing.T) {
 	runDir := t.TempDir()
 	baseline := `{"kind":"minos-memory-snapshot-v1","sampled_at":"2026-08-22T00:00:00Z",` +
