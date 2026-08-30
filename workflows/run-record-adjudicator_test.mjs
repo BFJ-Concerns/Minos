@@ -108,6 +108,14 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
   assert.equal(adapterVerdict.reviewBody.comments.length, 1);
+  assert.equal(
+    adapterVerdict.reviewBody.comments[0].body,
+    "**Distinct failure**\n\n" +
+      "The changed branch accepts an invalid state.\n\n" +
+      "Severity: High.\n\n" +
+      "Proposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\n" +
+      "Verified by: `claude-opus-5`.",
+  );
   assert.deepEqual(
     adapterVerdict.reviewBody.comments.map(({ path, line }) => ({ path, line })),
     [{ path: "internal/review.go", line: 42 }],

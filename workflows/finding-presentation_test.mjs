@@ -20,6 +20,7 @@ test("a finding comment carries its proposing and verifying model identities, no
     combinedConfidence: 58,
     path: "internal/store.go",
     line: 41,
+    verifyLabel: "verify-1-claude",
     proposingModel: { pinnedModel: "gpt-5.6-sol", resolvedModel: "gpt-5.6-sol-served" },
     verifyingModel: { pinnedModel: "claude-opus-5", resolvedModel: "claude-opus-5" },
   });
