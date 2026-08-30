@@ -3,18 +3,11 @@ owner = "REPLACE_WITH_FORGEJO_OWNER"
 repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 # work-in-progress-branch-prefixes is optional. Prefixes are literal and case-sensitive:
 # "structural" also matches "structural-notes"; use "structural/" for that directory convention.
+# Long-lived integration branches (structural lanes, say) park under this knob.
 # work-in-progress-branch-prefixes = ["REPLACE_WITH_BRANCH_PREFIX/"]
 
 [adaptation]
-build = "REPLACE_WITH_BUILD_COMMAND"
-# The canonical verify entrypoint the repository's own CI also runs, so the
-# gate Minos verifies against and the gate CI applies cannot drift apart.
-test = "just verify"
 run-body = "/opt/minos/run-body/run-body"
-
-[policy]
-auto-merge = false
 
 [review]
 threshold = "High"
-# maximum-rounds is optional and defaults unset.
