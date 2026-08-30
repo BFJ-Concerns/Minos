@@ -656,6 +656,39 @@ test("repository-brief verifier pools findings from separate units with their ow
   ]);
 });
 
+test("repository-brief verifier identifies unpartitioned brief units in a pooled payload", async () => {
+  const first = brief(".review/pkg/check-one.md", "---\nrelevance: Package changes.\n---\nJudge the first package concern.");
+  const second = brief(".review/cmd/check-two.md", "---\nrelevance: Command changes.\n---\nJudge the second command concern.");
+  const { calls } = await run(args({
+    briefs: [first, second],
+    changedPaths: ["pkg/x.go", "cmd/main.go"],
+  }), responder({
+    specialist: (label) => specialistResult([
+      finding({ title: label.includes("check-one") ? "package finding" : "command finding" }),
+    ]),
+  }));
+
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
+  assert.equal(verifierCalls.length, 1);
+  const findings = JSON.parse(verifierCalls[0].prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+  assert.deepEqual(findings.map(({ title, concern, unit, proposingSpecialist }) => ({
+    title, concern, unit, proposingSpecialist,
+  })), [
+    {
+      title: "package finding",
+      concern: null,
+      unit: "Check One",
+      proposingSpecialist: "repository-review-pkg-check-one-md-gpt",
+    },
+    {
+      title: "command finding",
+      concern: null,
+      unit: "Check Two",
+      proposingSpecialist: "repository-review-cmd-check-two-md-gpt",
+    },
+  ]);
+});
+
 test("slug-colliding brief labels retain verdicts for their own findings", async () => {
   const first = brief(".review/pkg/check.one.md", "# First\nJudge the first concern.");
   const second = brief(".review/pkg/check-one.md", "# Second\nJudge the second concern.");

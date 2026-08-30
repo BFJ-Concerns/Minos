@@ -560,6 +560,7 @@ const verifierResults = await parallel(verifierGroups.map((group) => () => agent
       `Findings: ${JSON.stringify(group.items.map((item, index) => ({
         id: group.findingIds[index],
         concern: item.unit.concern,
+        unit: item.unit.concern || item.unit.title,
         proposingSpecialist: item.unit.label,
         ...item.finding,
       })))}`,
