@@ -167,15 +167,20 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 }
 
 // staleApproval reports whether Minos approved a head the author has since
-// replaced. Reviews remain SHA-bound evidence; the PR-wide reaction does not,
-// so it must be removed before another reconciliation decision is made.
+// replaced without subsequently approving the current head. Reviews remain
+// SHA-bound evidence; the PR-wide reaction does not, so it must be removed
+// before another reconciliation decision is made.
 func staleApproval(snapshot forge.Snapshot, botLogin string) bool {
+	if review, found := currentReview(snapshot, botLogin); found {
+		if state, terminal := terminalState(review); terminal && state == product.Clean() {
+			return false
+		}
+	}
 	for _, review := range snapshot.Reviews {
 		if review.User != botLogin || review.CommitID == snapshot.HeadSHA {
 			continue
 		}
-		switch strings.ToUpper(review.State) {
-		case "APPROVED", "APPROVE":
+		if state, terminal := terminalState(review); terminal && state == product.Clean() {
 			return true
 		}
 	}

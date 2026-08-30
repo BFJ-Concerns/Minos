@@ -669,20 +669,27 @@ run-body = "/opt/minos/run-body/run-body"
 		}
 	})
 
-	t.Run("unmoved approval keeps its reaction", func(t *testing.T) {
+	t.Run("re-approved head keeps its reaction despite its historical approval", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
+		approvedHead := state.headSHA()
 		state.reactions = []string{"+1"}
 		state.setReviews([]map[string]any{{
-			"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
-			"body": "current approval", "user": map[string]any{"login": "Minos"},
+			"id": 41, "state": "APPROVED", "commit_id": approvedHead,
+			"body": "approval before the author pushed again", "user": map[string]any{"login": "Minos"},
+		}, {
+			"id": 42, "state": "APPROVED", "commit_id": "head-after-re-review",
+			"body": "approval after the author pushed again", "user": map[string]any{"login": "Minos"},
 		}})
+		state.changePullRequest(func(pullRequest map[string]any) {
+			pullRequest["head"].(map[string]any)["sha"] = "head-after-re-review"
+		})
 		cfg := writeSweepFixtureConfig(t, state)
 
 		original := commandCombinedOutput
 		t.Cleanup(func() { commandCombinedOutput = original })
 		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
 			if name == "systemd-run" {
-				t.Fatalf("current approval sweep claimed a completed pull request")
+				t.Fatalf("re-approved pull request sweep claimed a completed pull request")
 			}
 			return nil, nil
 		}
@@ -693,7 +700,7 @@ run-body = "/opt/minos/run-body/run-body"
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		if !slices.Contains(state.reactions, "+1") || state.reactionDeleteWrites != 0 {
-			t.Fatalf("reactions = %v, removal writes = %d, want current +1 retained", state.reactions, state.reactionDeleteWrites)
+			t.Fatalf("reactions = %v, removal writes = %d, want re-approved +1 retained", state.reactions, state.reactionDeleteWrites)
 		}
 	})
 }
