@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"go/ast"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"bfj/minos/internal/forge"
+	"bfj/minos/internal/product"
 )
 
 func TestSweepDecisionMessage(t *testing.T) {
@@ -41,7 +43,7 @@ func TestSweepDecisionMessage(t *testing.T) {
 	}
 }
 
-func TestSweepPublishesOneCompleteReplacementOfDeferrals(t *testing.T) {
+func TestPublishSweepDeferralsReplacesThePreviousDocumentAtomically(t *testing.T) {
 	cfg := scratchTestConfig(t)
 	stale := sweepDeferralDocument{Kind: sweepDeferralDocumentKind, CompletedAt: "2001-02-03T04:05:06Z", Deferrals: []sweepDeferral{{PR: "old", Reason: "stale"}}}
 	staleJSON, err := json.Marshal(stale)
@@ -49,11 +51,7 @@ func TestSweepPublishesOneCompleteReplacementOfDeferrals(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, sweepDeferralsPath(cfg), string(staleJSON))
-	want := []sweepDeferral{
-		{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "12", Reason: "open dependencies: owner/prerequisite#7"},
-		{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "13", Reason: `work-in-progress branch "structural/rework"`},
-		{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "14", Reason: "completed-marker"},
-	}
+	want := []sweepDeferral{{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "12", Reason: "deferred"}}
 	originalRename := renameSweepDeferrals
 	t.Cleanup(func() { renameSweepDeferrals = originalRename })
 	var renamed bool
@@ -97,6 +95,124 @@ func TestSweepPublishesOneCompleteReplacementOfDeferrals(t *testing.T) {
 		if got.Deferrals[index] != deferral {
 			t.Fatalf("replacement deferral %d = %#v, want %#v", index, got.Deferrals[index], deferral)
 		}
+	}
+}
+
+func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*forgejoFixtureState, ServiceConfig, Facts)
+		wantReason string
+	}{
+		{
+			name: "work in progress branch",
+			configure: func(state *forgejoFixtureState, cfg ServiceConfig, _ Facts) {
+				setSweepFixtureWorkInProgressPrefix(t, cfg, "structural/")
+				state.changePullRequest(func(pullRequest map[string]any) {
+					pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
+				})
+			},
+			wantReason: `work-in-progress branch "structural/rework"`,
+		},
+		{
+			name: "open dependency",
+			configure: func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
+				state.setDependencies([]map[string]any{{
+					"number": 7, "state": "open",
+					"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+				}})
+			},
+			wantReason: "open dependencies: minos-e2e-owner/prerequisite#7",
+		},
+		{
+			name: "terminal Minos review",
+			configure: func(state *forgejoFixtureState, cfg ServiceConfig, facts Facts) {
+				state.setReviews([]map[string]any{{
+					"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
+					"body": "completed review", "user": map[string]any{"login": "Minos"},
+				}})
+				facts.BaseSHA = state.targetSHA()
+				state.setStatuses([]map[string]any{{
+					"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
+					"target_url": statusTargetURL(cfg.Forges["forgejo"].APIBase, facts),
+					"creator":    map[string]any{"login": "Minos"},
+				}})
+			},
+			wantReason: "completed-marker",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg := writeSweepFixtureConfig(t, state)
+			_, _, facts := state.service(t)
+			test.configure(state, cfg, facts)
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					t.Fatalf("deferred pull request started a run")
+				}
+				return nil, nil
+			}
+
+			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			content, err := os.ReadFile(sweepDeferralsPath(cfg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document sweepDeferralDocument
+			if err := json.Unmarshal(content, &document); err != nil {
+				t.Fatal(err)
+			}
+			if len(document.Deferrals) != 1 || document.Deferrals[0].Reason != test.wantReason {
+				t.Fatalf("recorded deferrals = %#v, want one with reason %q", document.Deferrals, test.wantReason)
+			}
+		})
+	}
+}
+
+func TestSweepContinuesWhenDeferralProjectionCannotBePublished(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg := writeSweepFixtureConfig(t, state)
+	setSweepFixtureWorkInProgressPrefix(t, cfg, "structural/")
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
+	})
+	originalRename := renameSweepDeferrals
+	t.Cleanup(func() { renameSweepDeferrals = originalRename })
+	renameSweepDeferrals = func(_, _ string) error { return os.ErrPermission }
+	originalCommand := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = originalCommand })
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			t.Fatalf("deferred pull request started a run")
+		}
+		return nil, nil
+	}
+
+	if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+		t.Fatalf("projection write failed the completed sweep: %v", err)
+	}
+}
+
+func setSweepFixtureWorkInProgressPrefix(t *testing.T, cfg ServiceConfig, prefix string) {
+	t.Helper()
+	path := filepath.Join(cfg.Root, "repos", "subject.toml")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := bytes.Replace(content, []byte("repo = \"subject\"\n"), []byte("repo = \"subject\"\nwork-in-progress-branch-prefixes = [\""+prefix+"\"]\n"), 1)
+	if bytes.Equal(updated, content) {
+		t.Fatal("sweep fixture repo configuration has no repository field")
+	}
+	if err := os.WriteFile(path, updated, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

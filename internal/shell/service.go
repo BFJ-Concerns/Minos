@@ -337,7 +337,7 @@ func reconcilePullRequestSnapshotWithCandidates(ctx context.Context, cfg Service
 	}
 	if eligibility.terminalReview {
 		if hasTerminalStatus(snapshot, cfg, facts, eligibility.terminalState) {
-			return ReconcileResult{Decision: ReconcileNothing}, nil
+			return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker"}, nil
 		}
 		pr, _ := strconv.ParseInt(facts.PR, 10, 64)
 		result := adapter.SetProductStatus(ctx, forge.Guard{
@@ -346,9 +346,9 @@ func reconcilePullRequestSnapshotWithCandidates(ctx context.Context, cfg Service
 		}, eligibility.terminalState)
 		switch result.Outcome {
 		case forge.WriteApplied:
-			return ReconcileResult{Decision: ReconcileRecovered}, nil
+			return ReconcileResult{Decision: ReconcileRecovered, DeferralReason: "completed-marker"}, nil
 		case forge.WriteRejected:
-			return ReconcileResult{Decision: ReconcileNothing}, nil
+			return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker"}, nil
 		default:
 			return ReconcileResult{}, fmt.Errorf("restore terminal Minos status: %s", result.Reason)
 		}

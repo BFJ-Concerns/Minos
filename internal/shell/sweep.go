@@ -168,7 +168,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 		return fmt.Errorf("every configured repo (%d) was unreadable this pass", attempted)
 	}
 	if err := publishSweepDeferrals(cfg, deferrals); err != nil {
-		return err
+		log.Printf("publish sweep deferrals: %v", err)
 	}
 	return nil
 }
@@ -176,8 +176,8 @@ func SweepCommand(ctx context.Context, args []string) error {
 var renameSweepDeferrals = os.Rename
 
 // publishSweepDeferrals replaces the previous completed pass as one document.
-// A pass which cannot publish remains incomplete, leaving the previous whole
-// record in place rather than presenting a partial new pass.
+// A failed publication leaves the previous whole record in place; it does not
+// change the completed sweep's outcome.
 func publishSweepDeferrals(cfg ServiceConfig, deferrals []sweepDeferral) error {
 	document := sweepDeferralDocument{
 		Kind:        sweepDeferralDocumentKind,
