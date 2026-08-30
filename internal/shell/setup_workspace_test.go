@@ -268,6 +268,51 @@ func TestSetupWorkspaceLeavesOnlyCloneAndGuardState(t *testing.T) {
 	}
 }
 
+func TestSetupWorkspaceFetchesForkTargetObjectWithoutChangingWorkspaceState(t *testing.T) {
+	targetRepository, target := createGitRepository(t, "AGENTS.md", "target guidance\n")
+	headRepository, head := createGitRepository(t, "AGENTS.md", "head guidance\n")
+	server := newSetupForgeForTarget(t, head, headRepository, target, targetRepository, "")
+
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	runGit(t, filepath.Dir(workspace), "clone", "--no-checkout", headRepository, workspace)
+	runGit(t, workspace, "checkout", "--detach", head)
+	if output, err := exec.Command("git", "-C", workspace, "cat-file", "-e", target+"^{commit}").CombinedOutput(); err == nil {
+		t.Fatalf("head clone unexpectedly contains target object %s", output)
+	}
+	expectedHead := gitOutput(t, workspace, "rev-parse", "HEAD")
+	expectedRefs := gitOutput(t, workspace, "for-each-ref", "--format=%(refname) %(objectname)")
+	expectedStatus := gitOutput(t, workspace, "status", "--porcelain")
+	if err := os.RemoveAll(workspace); err != nil {
+		t.Fatal(err)
+	}
+
+	runSetupWorkspaceWithTarget(t, server.URL, runDir, workspace, filepath.Join(runDir, "orientation.json"), head, target)
+
+	if got := gitOutput(t, workspace, "cat-file", "-e", target+"^{commit}"); got != "" {
+		t.Fatalf("target object lookup output = %q, want empty", got)
+	}
+	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != expectedHead {
+		t.Fatalf("workspace head = %q, want unchanged %q", got, expectedHead)
+	}
+	if got := gitOutput(t, workspace, "for-each-ref", "--format=%(refname) %(objectname)"); got != expectedRefs {
+		t.Fatalf("workspace refs = %q, want unchanged %q", got, expectedRefs)
+	}
+	if got := gitOutput(t, workspace, "status", "--porcelain"); got != expectedStatus {
+		t.Fatalf("workspace status = %q, want unchanged %q", got, expectedStatus)
+	}
+	if output, err := exec.Command("git", "-C", workspace, "show-ref", "--verify", "--quiet", "refs/minos/target").CombinedOutput(); err == nil {
+		t.Fatalf("setup created target ref: %s", output)
+	}
+	commonDir := gitOutput(t, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if _, err := os.Stat(filepath.Join(commonDir, "FETCH_HEAD")); !os.IsNotExist(err) {
+		t.Fatalf("setup recorded target fetch state: %v", err)
+	}
+	if output := gitOutput(t, workspace, "fsck", "--unreachable", "--no-reflogs"); !strings.Contains(output, "unreachable commit "+target) {
+		t.Fatalf("target object is not unreferenced: %q", output)
+	}
+}
+
 type orientationState struct {
 	Repository  string `json:"repository"`
 	Head        string `json:"head"`
@@ -299,6 +344,11 @@ func readOrientation(t *testing.T, path string) orientationState {
 
 func newSetupForge(t *testing.T, head, repository, annexe string) *httptest.Server {
 	t.Helper()
+	return newSetupForgeForTarget(t, head, repository, head, repository, annexe)
+}
+
+func newSetupForgeForTarget(t *testing.T, head, repository, target, targetRepository, annexe string) *httptest.Server {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "token forge-token" {
 			http.Error(w, "unauthorised", http.StatusUnauthorized)
@@ -312,8 +362,8 @@ func newSetupForge(t *testing.T, head, repository, annexe string) *httptest.Serv
 				"title":"Fixture change",
 				"body":"Not in scope: a concrete transport.",
 				"head":{"sha":%q,"ref":"feature","repo":{"clone_url":%q,"full_name":"owner/repository"}},
-				"base":{"ref":"main","repo":{"clone_url":%q,"full_name":"owner/repository"}}
-			}`, head, repository, repository)
+				"base":{"sha":%q,"ref":"main","repo":{"clone_url":%q,"full_name":"owner/repository"}}
+			}`, head, repository, target, targetRepository)
 		case "/api/v1/repos/owner/repository-Annexe":
 			if annexe == "" {
 				http.Error(w, "not found", http.StatusNotFound)
@@ -331,13 +381,23 @@ func newSetupForge(t *testing.T, head, repository, annexe string) *httptest.Serv
 
 func runSetupWorkspace(t *testing.T, apiBase, runDir, workspace, orientation, head string) {
 	t.Helper()
-	cmd := setupWorkspaceCommand(t, apiBase, runDir, workspace, orientation, head)
+	runSetupWorkspaceWithTarget(t, apiBase, runDir, workspace, orientation, head, head)
+}
+
+func runSetupWorkspaceWithTarget(t *testing.T, apiBase, runDir, workspace, orientation, head, target string) {
+	t.Helper()
+	cmd := setupWorkspaceCommandWithTarget(t, apiBase, runDir, workspace, orientation, head, target)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("setup-workspace failed: %v\n%s", err, output)
 	}
 }
 
 func setupWorkspaceCommand(t *testing.T, apiBase, runDir, workspace, orientation, head string) *exec.Cmd {
+	t.Helper()
+	return setupWorkspaceCommandWithTarget(t, apiBase, runDir, workspace, orientation, head, head)
+}
+
+func setupWorkspaceCommandWithTarget(t *testing.T, apiBase, runDir, workspace, orientation, head, target string) *exec.Cmd {
 	t.Helper()
 	credential := filepath.Join(runDir, "forge.token")
 	if err := os.WriteFile(credential, []byte("forge-token\n"), 0o600); err != nil {
@@ -352,6 +412,7 @@ func setupWorkspaceCommand(t *testing.T, apiBase, runDir, workspace, orientation
 		"MINOS_REPO_NAME=repository",
 		"MINOS_PR=17",
 		"MINOS_HEAD_SHA="+head,
+		"MINOS_TARGET_SHA="+target,
 		"MINOS_HEAD_BRANCH=feature",
 		"MINOS_RUN_DIR="+runDir,
 		"MINOS_WORKSPACE="+workspace,
