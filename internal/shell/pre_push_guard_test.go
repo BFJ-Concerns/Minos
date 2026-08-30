@@ -8,6 +8,17 @@ import (
 	"testing"
 )
 
+func TestPrePushGuardRefusesProtectedPushWithValidRecordAndCleanEnvironment(t *testing.T) {
+	fixture := newPrePushGuardFixture(t)
+
+	output, err := fixture.push("HEAD:refs/heads/main")
+	if err == nil {
+		t.Fatalf("protected push with a valid record and clean environment succeeded:\n%s", output)
+	}
+	assertPrePushGuardOutput(t, output, "refusing to update refs/heads/main")
+	fixture.assertRemoteRef(t, "refs/heads/main", fixture.initialHead)
+}
+
 func TestPrePushGuardRefusesProtectedPushWithPermitShapedEnvironment(t *testing.T) {
 	fixture := newPrePushGuardFixture(t)
 	permit := fixture.permitForProtectedPush(t, "minos-integrate-wave-push.test")
@@ -67,9 +78,7 @@ func TestPrePushGuardFailsClosedForUnusableProtectedRefRecord(t *testing.T) {
 			if err == nil {
 				t.Fatalf("protected push with %s record succeeded:\n%s", test.name, output)
 			}
-			if test.name != "missing" {
-				assertPrePushGuardOutput(t, output, test.want)
-			}
+			assertPrePushGuardOutput(t, output, test.want)
 			fixture.assertRemoteRef(t, "refs/heads/main", fixture.initialHead)
 		})
 	}
