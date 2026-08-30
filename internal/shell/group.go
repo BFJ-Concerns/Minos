@@ -15,18 +15,6 @@ import (
 
 // groupCandidatesJSON surfaces sweep siblings only.  It deliberately makes no
 // judgement about which (if any) should become members.
-func groupCandidatesJSON(ctx context.Context, cfg ServiceConfig, repo RepoConfig, primary Facts, all []sweepCandidate) (string, error) {
-	active, err := activeRunUnitNames(ctx)
-	if err != nil {
-		return "", err
-	}
-	groups, _, err := groupCandidatesByPrimary(ctx, cfg, all, active)
-	if err != nil {
-		return "", err
-	}
-	return groups[UnitName(primary)], nil
-}
-
 // groupCandidatesByPrimary snapshots each sweep candidate once and returns the
 // lead-facing sibling list for every primary. The active-unit snapshot comes
 // from the sweep so candidates already running on their own are not surfaced.
@@ -58,11 +46,7 @@ func groupCandidatesByPrimary(ctx context.Context, cfg ServiceConfig, all []swee
 }
 
 func groupCandidatesForRepo(ctx context.Context, cfg ServiceConfig, repo RepoConfig, candidates []sweepCandidate, active []string, groups map[string]string, passSnapshots map[string]groupedCandidateSnapshot) error {
-	eligibleInRepo := 0
-	for range candidates {
-		eligibleInRepo++
-	}
-	if eligibleInRepo < 2 {
+	if len(candidates) < 2 {
 		return nil
 	}
 	adapter, err := newBehaviouralForge(cfg, repo.Forge)
@@ -86,9 +70,6 @@ func groupCandidatesForRepo(ctx context.Context, cfg ServiceConfig, repo RepoCon
 	}
 	membersByTarget := make(map[string][]Facts)
 	for number, snapshot := range snapshots {
-		if snapshot.State != "open" || snapshot.Merged || snapshot.Draft || snapshot.HeadRepository != repo.Owner+"/"+repo.Repo || structuralBranch(snapshot.HeadBranch, repo.StructuralBranchPrefixes) {
-			continue
-		}
 		facts := Facts{Forge: repo.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: number, HeadSHA: snapshot.HeadSHA, BaseRef: snapshot.TargetBranch, BaseSHA: snapshot.TargetSHA, HeadRef: snapshot.HeadBranch}
 		eligible, eligibilityErr := groupMemberEligible(ctx, cfg, repo, facts, adapter, snapshot)
 		if eligibilityErr != nil || !eligible {
@@ -165,15 +146,6 @@ func resolvedGroupTarget(snapshot forge.Snapshot, snapshots map[string]forge.Sna
 func groupMemberGuardPath(runsDir, unit string) string {
 	return filepath.Join(runsDir, ".group-members", unit)
 }
-func groupMemberGuardActive(ctx context.Context, runsDir, memberUnit string) bool {
-	active, err := activeRunUnitNames(ctx)
-	if err != nil {
-		return true
-	}
-	_, guarded := liveGroupMemberHolder(runsDir, memberUnit, active)
-	return guarded
-}
-
 func groupMemberGuardedBy(runsDir, memberUnit string, active []string) bool {
 	_, guarded := liveGroupMemberHolder(runsDir, memberUnit, active)
 	return guarded
