@@ -585,7 +585,7 @@ test("a met relevance runs a scoped brief even when its scope is untouched", asy
   assert.equal(skipped.result.briefs[0].skipKind, "relevance");
 });
 
-test("every repository-brief finding reaches verification beyond the former bound", async () => {
+test("repository-brief verifier batches retain every finding beyond six", async () => {
   const { result, calls } = await run(args(), responder({
     specialist: () => specialistResult([
       finding({ title: "one" }),
@@ -603,11 +603,90 @@ test("every repository-brief finding reaches verification beyond the former boun
   assert.ok(result.proposedFindings.every((entry) => entry.rawVerifier?.verdict === "upheld"));
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
   assert.deepEqual(verifierCalls.map((call) => call.opts.label), [
-    "verify-brief-1-1-claude", "verify-brief-1-2-claude",
+    "verify-brief-1-claude", "verify-brief-2-claude",
   ]);
   assert.match(verifierCalls[0].prompt, /"title":"six survives"/);
   assert.doesNotMatch(verifierCalls[0].prompt, /"title":"seven survives"/);
   assert.match(verifierCalls[1].prompt, /"title":"seven survives"/);
+});
+
+test("repository-brief verifier pools findings from separate units with their own context", async () => {
+  const first = brief(".review/pkg/errors.md", "---\nextent: full\nsweep: per-file\n---\n# Errors\nJudge error paths.");
+  const second = brief(".review/cmd/design.md", "---\nextent: full\nsweep: per-file\n---\n# Design\nJudge command design.");
+  const { result, calls } = await run(args({
+    briefs: [first, second],
+    changedPaths: ["pkg/x.go", "cmd/main.go"],
+    trackedFiles: [{ path: "pkg/x.go", bytes: 100 }, { path: "cmd/main.go", bytes: 100 }],
+  }), responder({
+    partition: (_label, prompt) => {
+      const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
+      return {
+        units: [{
+          id: files[0] === "pkg/x.go" ? "error-paths" : "command-design",
+          concern: files[0] === "pkg/x.go" ? "error-path behaviour" : "command design",
+          files,
+        }],
+      };
+    },
+    specialist: (label) => specialistResult([
+      finding({ title: label.includes("errors") ? "error finding" : "design finding" }),
+    ]),
+  }));
+
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
+  assert.equal(verifierCalls.length, 1);
+  assert.equal(verifierCalls[0].opts.label, "verify-brief-1-claude");
+  const findings = JSON.parse(verifierCalls[0].prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+  assert.deepEqual(findings.map(({ title, concern, proposingSpecialist }) => ({
+    title, concern, proposingSpecialist,
+  })), [
+    {
+      title: "error finding",
+      concern: "error-path behaviour",
+      proposingSpecialist: "repository-review-pkg-errors-md-1-gpt",
+    },
+    {
+      title: "design finding",
+      concern: "command design",
+      proposingSpecialist: "repository-review-cmd-design-md-1-gpt",
+    },
+  ]);
+  assert.deepEqual(result.proposedFindings.map((entry) => entry.verifyLabel), [
+    "verify-brief-1-claude", "verify-brief-1-claude",
+  ]);
+});
+
+test("repository-brief verifier identifies unpartitioned brief units in a pooled payload", async () => {
+  const first = brief(".review/pkg/check-one.md", "---\nrelevance: Package changes.\n---\nJudge the first package concern.");
+  const second = brief(".review/cmd/check-two.md", "---\nrelevance: Command changes.\n---\nJudge the second command concern.");
+  const { calls } = await run(args({
+    briefs: [first, second],
+    changedPaths: ["pkg/x.go", "cmd/main.go"],
+  }), responder({
+    specialist: (label) => specialistResult([
+      finding({ title: label.includes("check-one") ? "package finding" : "command finding" }),
+    ]),
+  }));
+
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
+  assert.equal(verifierCalls.length, 1);
+  const findings = JSON.parse(verifierCalls[0].prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+  assert.deepEqual(findings.map(({ title, concern, unit, proposingSpecialist }) => ({
+    title, concern, unit, proposingSpecialist,
+  })), [
+    {
+      title: "package finding",
+      concern: null,
+      unit: "Check One",
+      proposingSpecialist: "repository-review-pkg-check-one-md-gpt",
+    },
+    {
+      title: "command finding",
+      concern: null,
+      unit: "Check Two",
+      proposingSpecialist: "repository-review-cmd-check-two-md-gpt",
+    },
+  ]);
 });
 
 test("slug-colliding brief labels retain verdicts for their own findings", async () => {
@@ -618,14 +697,14 @@ test("slug-colliding brief labels retain verdicts for their own findings", async
       finding({ title: prompt.includes(first.path) ? "first finding" : "second finding" }),
     ]),
     verify: (_label, prompt) => {
-      const [entry] = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      const entries = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
       return {
-        verdicts: [{
+        verdicts: entries.map((entry) => ({
           findingId: entry.id,
           verdict: entry.title === "first finding" ? "upheld" : "refuted",
           confidence: 92,
           reason: `verdict for ${entry.title}`,
-        }],
+        })),
       };
     },
   }));
