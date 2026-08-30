@@ -39,9 +39,6 @@ web_base="${MINOS_API_BASE%/api/v1}"
 target_url="${web_base%/}/${owner}/${repo}/pulls/${pr}#minos-target-${target}"
 # A hold binds to the run environment as well as the target, so a Minos
 # deploy can spend it when the blocking cause was environmental.
-if [ "$description" = "Blocked on target branch" ] && [ -n "${MINOS_ENV_STAMP:-}" ]; then
-  target_url="${target_url}+minos-env-${MINOS_ENV_STAMP}"
-fi
 payload="$(jq -nc --arg state "$state" --arg context "$context" --arg description "$description" --arg target_url "$target_url" '{state:$state,context:$context,description:$description,target_url:$target_url}')"
 
 status_present() {

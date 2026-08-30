@@ -1,6 +1,6 @@
 // The one authority for what Minos publishes onto a pull request about
 // its findings. Every plain-Node producer of forge review payloads — the
-// run-record adjudicator, the fix-wave planner — renders through this
+// run-record adjudicator above all — renders through this
 // module, so what a clean review says, what a blocking review says, and
 // what a finding comment carries cannot drift between producers.
 //

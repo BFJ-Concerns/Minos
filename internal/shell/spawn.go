@@ -24,10 +24,9 @@ var commandCombinedOutput = func(ctx context.Context, name string, args ...strin
 }
 
 type SpawnResult struct {
-	Outcome             ReconcileDecision
-	BlockingUnit        string
-	Detail              string
-	GroupCandidatesPath string
+	Outcome      ReconcileDecision
+	BlockingUnit string
+	Detail       string
 }
 
 const runOwnerMarker = ".runwrap-owner"
@@ -68,14 +67,7 @@ func runMemoryMax() string {
 	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB)
 }
 
-type RunClass string
-
-const (
-	RunClassReview      RunClass = "review"
-	RunClassMaintenance RunClass = "maintenance"
-)
-
-func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext, runClass RunClass) (SpawnResult, error) {
+func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
 	if err != nil {
@@ -94,9 +86,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return strings.TrimSuffix(name, ".service") == unit
 	}); own >= 0 {
 		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[own]}, nil
-	}
-	if holder, guarded := liveGroupMemberHolder(cfg.Runs.Dir, unit, active); guarded {
-		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: holder}, nil
 	}
 	if len(active) >= cfg.MaxConcurrentRuns() {
 		return SpawnResult{
@@ -135,20 +124,8 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	reviewResultAlreadyCarried := false
 	if handoff != nil {
 		if reason, valid := adoptableRunDirectory(cfg, unit, facts, handoff); valid {
-			if memberReason, membersValid := adoptableGroupMembers(ctx, cfg, facts, unit, handoff); membersValid {
-				runDir = handoff.RunDir
-				adopted = true
-			} else {
-				progressDecision = continuationProgressUnknown
-				fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, memberReason)
-				rejectRunHandoff(handoffFile, fmt.Errorf("%s", memberReason))
-				if _, statErr := os.Stat(handoffFile); statErr == nil {
-					return SpawnResult{}, fmt.Errorf("invalidate grouped continuation handoff %s", handoffFile)
-				} else if !os.IsNotExist(statErr) {
-					return SpawnResult{}, fmt.Errorf("confirm grouped continuation invalidation: %w", statErr)
-				}
-				handoff = nil
-			}
+			runDir = handoff.RunDir
+			adopted = true
 		} else {
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
@@ -183,12 +160,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	if !adopted {
 		progressDecision = continuationProgressUnknown
-		// A fresh run does not inherit the previous run's fixed membership.
-		// Release the old group's guards before this reused unit name becomes
-		// live and can make those guards appear current again.
-		if err := releaseGroupMemberGuards(cfg.Runs.Dir, unit); err != nil {
-			return SpawnResult{}, fmt.Errorf("release previous group members: %w", err)
-		}
 	}
 	if adopted {
 		for _, stale := range []string{"lead-complete", "memory-pressure"} {
@@ -203,12 +174,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			return SpawnResult{}, err
 		}
 	}
-	// A continuation resumes the membership the original lead fixed, including
-	// an original singleton for which there is no members.json. Do not invite it
-	// to reconsider newly eligible siblings from this sweep.
-	if adopted {
-		admission.GroupCandidatesJSON = ""
-	}
 	reviewResultCarried := false
 	cleanupSpawnFailure := func() {
 		if adopted {
@@ -222,14 +187,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), reviewResultPath)
 		}
 		_ = removeRunDir(runDir)
-	}
-	if admission.GroupCandidatesJSON != "" {
-		candidatesPath := filepath.Join(runDir, "group-candidates.json")
-		if err := os.WriteFile(candidatesPath, []byte(admission.GroupCandidatesJSON), 0o600); err != nil {
-			cleanupSpawnFailure()
-			return SpawnResult{}, fmt.Errorf("write group candidates: %w", err)
-		}
-		admission.GroupCandidatesJSON = candidatesPath
 	}
 	if reviewResultPath != "" {
 		carriedResult := filepath.Join(runDir, "carried-review-result.json")
@@ -247,57 +204,32 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{}, fmt.Errorf("create run ownership marker: %w", err)
 	}
 	if handoff != nil {
-		if err := os.WriteFile(filepath.Join(runDir, "loop-record.json"), handoff.RunRecord, 0o600); err != nil {
-			cleanupSpawnFailure()
-			return SpawnResult{}, fmt.Errorf("seed continuation loop record: %w", err)
-		}
-		if handoff.GateRepairLadder != nil {
-			if err := os.WriteFile(filepath.Join(runDir, "gate-repair-ladder.log"), []byte(*handoff.GateRepairLadder), 0o600); err != nil {
-				cleanupSpawnFailure()
-				return SpawnResult{}, fmt.Errorf("restore continuation gate repair ladder: %w", err)
-			}
-		}
 		if err := os.Remove(handoffFile); err != nil {
 			cleanupSpawnFailure()
 			return SpawnResult{}, fmt.Errorf("consume continuation handoff: %w", err)
 		}
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
-	maximumRounds := ""
-	if repo.Review.MaximumRounds > 0 {
-		maximumRounds = strconv.Itoa(repo.Review.MaximumRounds)
-	}
 	env := map[string]string{
-		"MINOS_RUN_DIR":                 runDir,
-		"MINOS_CONFIG":                  cfg.Root,
-		"MINOS_FORGE":                   facts.Forge,
-		"MINOS_WORKSPACE":               filepath.Join(runDir, "workspace"),
-		"MINOS_ORIENTATION":             filepath.Join(runDir, "orientation.json"),
-		"MINOS_HANDOFF":                 handoffFile,
-		"MINOS_LOOP_RECORD":             filepath.Join(runDir, "loop-record.json"),
-		"MINOS_OWNER":                   facts.Owner,
-		"MINOS_REPO_NAME":               facts.Repo,
-		"MINOS_PR":                      facts.PR,
-		"MINOS_HEAD_SHA":                facts.HeadSHA,
-		"MINOS_TARGET_SHA":              facts.BaseSHA,
-		"MINOS_BASE_REF":                facts.BaseRef,
-		"MINOS_HEAD_BRANCH":             facts.HeadRef,
-		"MINOS_API_BASE":                forgeConfig.APIBase,
-		"MINOS_CREDENTIAL_FILE":         forgeConfig.CredentialFile,
-		"MINOS_BUILD_CMD":               repo.Adaptation.Build,
-		"MINOS_TEST_CMD":                repo.Adaptation.Test,
-		"MINOS_RUN_BODY":                repo.Adaptation.RunBody,
-		"MINOS_AUTO_MERGE":              fmt.Sprintf("%t", repo.Policy.AutoMerge),
-		"MINOS_REVIEW_THRESHOLD":        repo.Review.Threshold,
-		"MINOS_MAX_ROUNDS":              maximumRounds,
-		"MINOS_MAX_GATE_REPAIRS":        strconv.Itoa(repo.Gate.MaximumRepairs),
-		"MINOS_RUN_CLASS":               string(runClass),
-		"MINOS_RELEASED_HOLD_HEAD":      admission.ReleasedHoldHead,
-		"MINOS_RELEASED_HOLD_STAGE":     admission.ReleasedHoldStage,
-		"MINOS_RELEASED_HOLD_DIAGNOSIS": admission.ReleasedHoldDiagnosis,
-		"MINOS_GROUP_CANDIDATES":        admission.GroupCandidatesJSON,
-		"ENSEMBLE_CONCURRENCY_CLAUDE":   strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
-		"ENSEMBLE_CONCURRENCY_CODEX":    strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
+		"MINOS_RUN_DIR":               runDir,
+		"MINOS_CONFIG":                cfg.Root,
+		"MINOS_FORGE":                 facts.Forge,
+		"MINOS_WORKSPACE":             filepath.Join(runDir, "workspace"),
+		"MINOS_ORIENTATION":           filepath.Join(runDir, "orientation.json"),
+		"MINOS_HANDOFF":               handoffFile,
+		"MINOS_OWNER":                 facts.Owner,
+		"MINOS_REPO_NAME":             facts.Repo,
+		"MINOS_PR":                    facts.PR,
+		"MINOS_HEAD_SHA":              facts.HeadSHA,
+		"MINOS_TARGET_SHA":            facts.BaseSHA,
+		"MINOS_BASE_REF":              facts.BaseRef,
+		"MINOS_HEAD_BRANCH":           facts.HeadRef,
+		"MINOS_API_BASE":              forgeConfig.APIBase,
+		"MINOS_CREDENTIAL_FILE":       forgeConfig.CredentialFile,
+		"MINOS_RUN_BODY":              repo.Adaptation.RunBody,
+		"MINOS_REVIEW_THRESHOLD":      repo.Review.Threshold,
+		"ENSEMBLE_CONCURRENCY_CLAUDE": strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
+		"ENSEMBLE_CONCURRENCY_CODEX":  strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
 	}
 	if cfg.Ensemble.AgentCeiling > 0 {
 		env["ENSEMBLE_AGENT_CEILING"] = strconv.Itoa(cfg.Ensemble.AgentCeiling)
@@ -339,13 +271,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{}, fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if progressDecision == continuationProgressAdvanced {
-		return SpawnResult{Outcome: SpawnContinued, GroupCandidatesPath: admission.GroupCandidatesJSON}, nil
+		return SpawnResult{Outcome: SpawnContinued}, nil
 	}
-	return SpawnResult{Outcome: SpawnStarted, GroupCandidatesPath: admission.GroupCandidatesJSON}, nil
+	return SpawnResult{Outcome: SpawnStarted}, nil
 }
 
 func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {
-	cause := fmt.Sprintf("successor made no progress beyond stage %q round %d and published no new head or review", handoff.Progress.Stage, handoff.Progress.Round)
+	cause := fmt.Sprintf("successor made no progress beyond stage %q and published no new head or review", handoff.Progress.Stage)
 	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
 		time.Now().UTC().Format(time.RFC3339), facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
 	appendStalledContinuationFailure(cfg.Runs.FailureLog, failureLine)

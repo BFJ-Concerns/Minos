@@ -58,18 +58,13 @@ if [ "$response_status" != "200" ]; then
   exit 1
 fi
 
+# Minos authors no commits, so every head movement is the author's: the
+# admitted head no longer exists as the thing to review, and the sweep will
+# claim the new head fresh.
 observed_head="$(jq -r '.head.sha // ""' "$response_file")"
 if [ "$observed_head" != "$MINOS_HEAD_SHA" ]; then
-  movement='foreign'
-  if [ -n "$observed_head" ] && [ -n "${MINOS_BIN:-}" ]; then
-    movement="$("$MINOS_BIN" forge head-movement "$MINOS_HEAD_SHA" "$observed_head" 2>/dev/null || true)"
-  fi
-  if [ "$movement" != "own" ]; then
-    echo "setup-workspace: pull-request head moved from $MINOS_HEAD_SHA to ${observed_head:-unknown} through a foreign commit" >&2
-    exit 1
-  fi
-  MINOS_HEAD_SHA="$observed_head"
-  export MINOS_HEAD_SHA
+  echo "setup-workspace: pull-request head moved from $MINOS_HEAD_SHA to ${observed_head:-unknown}" >&2
+  exit 1
 fi
 repository_url="$(jq -r '.head.repo.clone_url // ""' "$response_file")"
 if [ -z "$repository_url" ]; then
@@ -81,21 +76,6 @@ if [ -z "$target_repository_url" ]; then
   echo "setup-workspace: pull request omitted the target repository clone URL" >&2
   exit 1
 fi
-head_repository="$(jq -r '.head.repo.full_name // ""' "$response_file")"
-base_repository="$(jq -r '.base.repo.full_name // ""' "$response_file")"
-observed_head_branch="$(jq -r '.head.ref // ""' "$response_file")"
-is_fork=false
-if [ -n "$head_repository" ] && [ -n "$base_repository" ]; then
-  [ "$head_repository" = "$base_repository" ] || is_fork=true
-elif [ "$repository_url" != "$target_repository_url" ]; then
-  is_fork=true
-fi
-case "$observed_head_branch" in
-  ""|refs/pull/*/head) has_publication=false ;;
-  *) has_publication=true ;;
-esac
-[ "$is_fork" = false ] || has_publication=false
-
 # The author's declared intent and scope travel with the run so the review
 # workflow can weigh explicit out-of-scope declarations.
 pull_request_record="${MINOS_RUN_DIR}/pull-request.json"
@@ -126,9 +106,6 @@ fi
 git -C "$MINOS_WORKSPACE" config user.name "$MINOS_GIT_AUTHOR_NAME"
 git -C "$MINOS_WORKSPACE" config user.email "$MINOS_GIT_AUTHOR_EMAIL"
 git -C "$MINOS_WORKSPACE" config http.extraHeader "Authorization: token ${forge_token}"
-git -C "$MINOS_WORKSPACE" config rerere.enabled true
-git -C "$MINOS_WORKSPACE" config rerere.autoUpdate true
-git -C "$MINOS_WORKSPACE" config merge.conflictStyle zdiff3
 
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 run_date="$(date -u '+%Y-%m-%d')"
@@ -156,38 +133,18 @@ append_protected_ref() {
 }
 
 append_protected_ref "refs/heads/${MINOS_HEAD_BRANCH}"
-if [ "$resume" = true ] && [ -e "$protected_refs" ]; then
-  if [ ! -f "$protected_refs" ] || [ ! -r "$protected_refs" ] || [ ! -s "$protected_refs" ]; then
-    echo "setup-workspace: preserved protected-ref record is unreadable or empty" >&2
-    exit 1
-  fi
-  while IFS= read -r protected_ref; do
-    append_protected_ref "$protected_ref"
-  done <"$protected_refs"
-fi
-members_file="${MINOS_RUN_DIR}/members.json"
-if [ -f "$members_file" ]; then
-  if ! jq -e '
-    (if type == "array" then . else .members end) as $members |
-    ($members | type == "array" and length > 0) and
-    all($members[]; type == "object" and (.head_branch | type == "string" and length > 0))
-  ' "$members_file" >/dev/null; then
-    echo "setup-workspace: members record must contain non-empty head branches" >&2
-    exit 1
-  fi
-  jq -r 'if type == "array" then .[] else .members[] end | .head_branch' "$members_file" |
-    while IFS= read -r member_branch; do
-      append_protected_ref "refs/heads/${member_branch}"
-    done
-fi
 chmod 0600 "$protected_refs_tmp"
 mv "$protected_refs_tmp" "$protected_refs"
 protected_refs_tmp=""
-# This hook binds every checkout sharing the common Git directory and requires
-# a controlled-publisher permit for every grouped pull-request branch. A
-# separate clone inherits neither protection.
+# This hook binds every checkout sharing the common Git directory and refuses
+# every update to the pull-request branch: no publisher exists that could
+# authorise one (C33). A separate clone inherits neither protection.
 install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
 
+# The review judges the target-to-head diff, so the target commit must be
+# reachable locally; a fork's target lives in the base repository, hence the
+# explicit fetch. The pinned ref also stops a mid-setup target move from
+# silently changing what the review diffs against.
 git -C "$MINOS_WORKSPACE" fetch --no-tags "$target_repository_url" \
   "+refs/heads/${MINOS_BASE_REF}:refs/minos/target"
 observed_target="$(git -C "$MINOS_WORKSPACE" rev-parse refs/minos/target)"
@@ -264,26 +221,3 @@ case "$response_status" in
     exit 1
     ;;
 esac
-
-jq -n \
-  --argjson fork "$is_fork" \
-  --argjson publish "$has_publication" \
-  --arg target "$MINOS_TARGET_SHA" \
-  --arg target_branch "$MINOS_BASE_REF" \
-  --arg target_repository_url "$target_repository_url" \
-  --arg base_head "$MINOS_HEAD_SHA" \
-  '{
-    outcome:"unnecessary",
-    fork:$fork,
-    publish:$publish,
-    target:$target,
-    targetBranch:$target_branch,
-    targetRepositoryUrl:$target_repository_url,
-    baseHead:$base_head,
-    merge:null,
-    conflicts:[],
-    preimageDir:null,
-    autoMergeTree:null
-  }' >"${MINOS_RUN_DIR}/reconciliation.json"
-
-"$script_dir/reconcile-target" "$MINOS_WORKSPACE" "$MINOS_HEAD_SHA"

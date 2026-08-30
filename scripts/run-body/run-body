@@ -130,26 +130,9 @@ failure_cause="MINOS_CLAUDE_CONFIG_SEED is required"
 : "${MINOS_CLAUDE_CONFIG_SEED:?MINOS_CLAUDE_CONFIG_SEED is required}"
 failure_cause="MINOS_CODEX_CONFIG_SEED is required"
 : "${MINOS_CODEX_CONFIG_SEED:?MINOS_CODEX_CONFIG_SEED is required}"
-run_class="${MINOS_RUN_CLASS:-review}"
-case "$run_class" in
-  review)
-    failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
-    : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
-    instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
-    ;;
-  maintenance)
-    failure_cause="MINOS_MAINTENANCE_INSTRUCTION is required"
-    : "${MINOS_MAINTENANCE_INSTRUCTION:?MINOS_MAINTENANCE_INSTRUCTION is required}"
-    instruction_path="$MINOS_MAINTENANCE_INSTRUCTION"
-    ;;
-  *)
-    failure_cause="MINOS_RUN_CLASS must be review or maintenance"
-    echo "run-body: MINOS_RUN_CLASS must be review or maintenance" >&2
-    exit 1
-    ;;
-esac
-failure_cause="MINOS_ROOT_CAUSE_SKILL is required"
-: "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
+failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
+: "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
+instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
 failure_cause="MINOS_SKILLS_DIR is required"
 : "${MINOS_SKILLS_DIR:?MINOS_SKILLS_DIR is required}"
 failure_cause="MINOS_SETUP_WORKSPACE is required"
@@ -202,31 +185,10 @@ XDG_STATE_HOME="${MINOS_RUN_DIR%/}/state"
 # emptying the timing record's worker rows and dodging the archive.
 XDG_DATA_HOME="$HOME/.local/share"
 failure_stage="runtime-home"
-failure_cause="MINOS_FORGE is required for the shared cache path"
-: "${MINOS_FORGE:?MINOS_FORGE is required for the shared cache path}"
-failure_cause="MINOS_OWNER is required for the shared cache path"
-: "${MINOS_OWNER:?MINOS_OWNER is required for the shared cache path}"
-failure_cause="MINOS_REPO_NAME is required for the shared cache path"
-: "${MINOS_REPO_NAME:?MINOS_REPO_NAME is required for the shared cache path}"
-for cache_component in "$MINOS_FORGE" "$MINOS_OWNER" "$MINOS_REPO_NAME"; do
-  case "$cache_component" in
-  . | .. | */*)
-    failure_cause="forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash"
-    echo "run-body: $failure_cause" >&2
-    exit 1
-    ;;
-  esac
-done
 MINOS_RUNS_DIR="$(dirname "${MINOS_RUN_DIR%/}")"
-MINOS_SHARED_CACHE_DIR="$(dirname "$MINOS_RUNS_DIR")/cache/$MINOS_FORGE/$MINOS_OWNER/$MINOS_REPO_NAME"
-SCCACHE_DIR="$MINOS_SHARED_CACHE_DIR/rust/sccache"
-GOCACHE="$MINOS_SHARED_CACHE_DIR/go/build"
-GOMODCACHE="$MINOS_SHARED_CACHE_DIR/go/modules"
-npm_config_cache="$MINOS_SHARED_CACHE_DIR/node/npm"
-PLAYWRIGHT_BROWSERS_PATH="$MINOS_SHARED_CACHE_DIR/playwright/browsers"
-# Repository test suites write large artefacts to temp; the box's shared
-# tmpfs /tmp cannot hold concurrent runs' output. Keep a short, private temp
-# path on the same disk-backed Minos storage and remove it with the run.
+# Workers write large artefacts to temp; the box's shared tmpfs /tmp cannot
+# hold concurrent runs' output. Keep a short, private temp path on the same
+# disk-backed Minos storage and remove it with the run.
 MINOS_RUN_TMP_ROOT="$(dirname "$MINOS_RUNS_DIR")/tmp"
 failure_cause="could not create run temp directory root $MINOS_RUN_TMP_ROOT"
 mkdir -p "$MINOS_RUN_TMP_ROOT"
@@ -235,24 +197,13 @@ chmod 700 "$MINOS_RUN_TMP_ROOT"
 failure_cause="could not create isolated run temp directory in $MINOS_RUN_TMP_ROOT"
 run_tmpdir="$(mktemp -d "$MINOS_RUN_TMP_ROOT/t.XXXXXXXXXX")"
 TMPDIR="$run_tmpdir"
-PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export HOME CLAUDE_CONFIG_DIR CODEX_HOME XDG_STATE_HOME XDG_DATA_HOME \
-  MINOS_SHARED_CACHE_DIR \
-  SCCACHE_DIR GOCACHE GOMODCACHE npm_config_cache PLAYWRIGHT_BROWSERS_PATH \
-  TMPDIR PATH
+  TMPDIR
 failure_stage="runtime-home"
-failure_cause="could not create isolated runtime home, state, cache and tool directories"
-mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
-  "$SCCACHE_DIR" "$GOCACHE" "$GOMODCACHE" "$npm_config_cache" \
-  "$PLAYWRIGHT_BROWSERS_PATH" \
-  "$HOME/.cargo/bin" "$HOME/.local/bin"
-failure_cause="could not secure isolated runtime home, state, cache and tool directories"
-chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
-  "$MINOS_SHARED_CACHE_DIR" "$MINOS_SHARED_CACHE_DIR/rust" "$SCCACHE_DIR" \
-  "$MINOS_SHARED_CACHE_DIR/go" "$GOCACHE" "$GOMODCACHE" \
-  "$MINOS_SHARED_CACHE_DIR/node" "$npm_config_cache" \
-  "$MINOS_SHARED_CACHE_DIR/playwright" "$PLAYWRIGHT_BROWSERS_PATH" "$TMPDIR" \
-  "$HOME/.cargo/bin" "$HOME/.local/bin"
+failure_cause="could not create isolated runtime home and state directories"
+mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME"
+failure_cause="could not secure isolated runtime home and state directories"
+chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" "$TMPDIR"
 failure_stage="claude-seed"
 failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
 cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
@@ -284,17 +235,6 @@ failure_cause="workspace setup failed"
 setup_head="$(jq -r '.head // empty' "$MINOS_ORIENTATION" 2>/dev/null || true)"
 if [ -n "$setup_head" ]; then
   MINOS_HEAD_SHA="$setup_head"
-  export MINOS_HEAD_SHA
-fi
-
-# A mainline setup may publish its reconciliation merge. From this point the
-# run must bind every forge action to that pushed head, while local-only fork
-# and AGit setups retain the head that admitted the run.
-if jq -e '.publish == true and .outcome == "reconciled"' \
-  "$MINOS_RUN_DIR/reconciliation.json" >/dev/null; then
-  failure_cause="published reconciliation state omitted its merge head"
-  MINOS_HEAD_SHA="$(jq -er '.merge | select(type == "string" and length > 0)' \
-    "$MINOS_RUN_DIR/reconciliation.json")"
   export MINOS_HEAD_SHA
 fi
 
