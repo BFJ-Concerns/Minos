@@ -81,6 +81,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 				guard.TargetSHA,
 				guard.HeadSHA,
 				requested,
+				readAnchoringCapabilities(leadAdaptationDirectory()),
 			)
 			if diagnostic != "" {
 				fmt.Fprintf(os.Stderr, "forge review: %s\n", diagnostic)
@@ -135,6 +136,18 @@ func leadForge() (*forge.Adapter, forge.Guard, string, error) {
 		return nil, forge.Guard{}, "", fmt.Errorf("pull-request environment is incomplete")
 	}
 	return adapter, guard, cfg.Service.BotLogin, nil
+}
+
+// leadAdaptationDirectory locates the adaptation serving this run, so the
+// review boundary can read what its forge declares it can anchor. A
+// configuration this command could not read leaves the strict geometry in
+// place rather than failing the publication.
+func leadAdaptationDirectory() string {
+	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
+	if err != nil {
+		return ""
+	}
+	return cfg.Forges[os.Getenv("MINOS_FORGE")].Adaptation
 }
 
 func namedProductState(name string) (product.State, bool) {

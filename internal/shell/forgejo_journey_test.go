@@ -1218,6 +1218,7 @@ func TestForgeReviewPublishesEveryConfirmedAdjudicatedFinding(t *testing.T) {
 	t.Run("unanchorable below-threshold finding falls back into the approving review body", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 10)
+		installStrictAdaptation(t, state)
 		configureForgeCommandFixture(t, state)
 
 		verdict := adjudicatedReviewPayload(t, []map[string]any{
@@ -1288,9 +1289,90 @@ func TestForgeBriefReviewRemainsDistinctFromSweepReviewAndIdempotent(t *testing.
 	}
 }
 
+// An adaptation that declares no out-of-hunk anchoring keeps the strict
+// geometry, and the findings it cannot place are named in the review body
+// rather than lost.
+// The deployed Forgejo adaptation declares that it carries out-of-hunk
+// comments, so the same finding the strict adaptation folds reaches the
+// author on its own line.
+func TestForgeReviewAnchorsOutOfHunkFindingsTheAdaptationDeclares(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
+	configureForgeCommandFixture(t, state)
+
+	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+		{Path: "src/code.txt", Line: 1, Body: "Outside-hunk concern."},
+		{Path: "untouched.txt", Line: 1, Body: "Untouched-file concern."},
+	}, 2)
+	writes, payload := state.reviewWriteFacts()
+	if writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	posted := payload["comments"].([]any)
+	if len(posted) != 1 {
+		t.Fatalf("inline comments = %#v", posted)
+	}
+	comment := posted[0].(map[string]any)
+	if comment["path"] != "src/code.txt" || comment["new_position"] != float64(1) {
+		t.Fatalf("out-of-hunk comment = %#v", comment)
+	}
+	body := payload["body"].(string)
+	if !strings.Contains(body, "Untouched-file concern.") {
+		t.Fatalf("a finding no capability can anchor left the review body: %q", body)
+	}
+	if strings.Contains(body, "Outside-hunk concern.") {
+		t.Fatalf("an anchored finding was also folded into the body: %q", body)
+	}
+}
+
+// A finding about code the change removed anchors on the deletion side: the
+// guarded review consumer accepts old_position naming the line, where it once
+// required it to be zero.
+func TestForgeReviewAnchorsDeletionSideFindings(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installDeletingWorkspace(t, state, "src/code.txt", 10, 22)
+	configureForgeCommandFixture(t, state)
+
+	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+		{Path: "src/code.txt", Line: 20, Body: "The removed guard was the only bounds check."},
+	}, 2)
+	writes, payload := state.reviewWriteFacts()
+	if writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	posted := payload["comments"].([]any)
+	if len(posted) != 1 {
+		t.Fatalf("inline comments = %#v", posted)
+	}
+	comment := posted[0].(map[string]any)
+	if comment["old_position"] != float64(20) || comment["new_position"] != float64(0) {
+		t.Fatalf("deletion-side comment = %#v", comment)
+	}
+}
+
+// A finding about several lines covers them all.
+func TestForgeReviewAnchorsMultiLineFindings(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10, 12)
+	configureForgeCommandFixture(t, state)
+
+	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+		{Path: "src/code.txt", Line: 10, EndLine: 12, Body: "The three branches repeat one decision."},
+	}, 2)
+	writes, payload := state.reviewWriteFacts()
+	if writes != 1 {
+		t.Fatalf("review writes = %d, want one", writes)
+	}
+	comment := payload["comments"].([]any)[0].(map[string]any)
+	if comment["new_position"] != float64(10) || comment["extra_lines_count"] != float64(2) {
+		t.Fatalf("multi-line comment = %#v", comment)
+	}
+}
+
 func TestForgeReviewFoldsOffDiffFindingsIntoTheBody(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
+	installStrictAdaptation(t, state)
 	configureForgeCommandFixture(t, state)
 	comments := []requestedReviewComment{
 		{Path: "src/code.txt", Line: 10, Body: "Anchored concern."},
@@ -1506,6 +1588,80 @@ func mapsClone(source map[string]any) map[string]any {
 		clone[key] = value
 	}
 	return clone
+}
+
+// installStrictAdaptation serves the run from an adaptation that declares no
+// anchoring capability, the shape of a forge that only accepts comments
+// inside a diff hunk.
+func installStrictAdaptation(t *testing.T, state *forgejoFixtureState) {
+	t.Helper()
+	strict := t.TempDir()
+	entries, err := os.ReadDir(state.adaptationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == "capabilities.json" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents, err := os.ReadFile(filepath.Join(state.adaptationPath, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(strict, entry.Name()), contents, info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state.adaptationPath = strict
+}
+
+// installDeletingWorkspace stages a change that removes a block of lines, so a
+// finding about the removed code has no new-side line to anchor on.
+func installDeletingWorkspace(t *testing.T, state *forgejoFixtureState, path string, from, to int) (head, target string) {
+	t.Helper()
+	workspace := t.TempDir()
+	runGit(t, workspace, "init", "-q")
+	runGit(t, workspace, "config", "user.name", "Minos Test")
+	runGit(t, workspace, "config", "user.email", "minos@example.invalid")
+
+	lines := make([]string, to+8)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("line %d", index+1)
+	}
+	fullPath := filepath.Join(workspace, path)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-q", "-m", "target")
+	target = strings.TrimSpace(gitOutput(t, workspace, "rev-parse", "HEAD"))
+
+	remaining := append(append([]string{}, lines[:from-1]...), lines[to:]...)
+	if err := os.WriteFile(fullPath, []byte(strings.Join(remaining, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-q", "-m", "head")
+	head = strings.TrimSpace(gitOutput(t, workspace, "rev-parse", "HEAD"))
+
+	diff, err := mergeBaseDiff(t.Context(), workspace, target, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.setDiffNewSide(newSideIntervals(diff))
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["sha"] = head
+		pullRequest["base"].(map[string]any)["sha"] = target
+	})
+	t.Setenv("MINOS_WORKSPACE", workspace)
+	return head, target
 }
 
 func installAnchoredWorkspace(t *testing.T, state *forgejoFixtureState, path string, changedLines ...int) (head, target string) {

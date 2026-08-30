@@ -44,11 +44,31 @@ const (
 )
 
 type statusDocument struct {
-	Kind          string       `json:"kind"`
-	GeneratedAt   string       `json:"generated_at"`
-	MaxConcurrent int          `json:"max_concurrent"`
-	Repos         []statusRepo `json:"repos"`
-	Runs          []statusRun  `json:"runs"`
+	Kind          string                 `json:"kind"`
+	GeneratedAt   string                 `json:"generated_at"`
+	MaxConcurrent int                    `json:"max_concurrent"`
+	Repos         []statusRepo           `json:"repos"`
+	Runs          []statusRun            `json:"runs"`
+	Sweep         *sweepDeferralDocument `json:"sweep,omitempty"`
+}
+
+const sweepDeferralDocumentKind = "minos-sweep-deferrals-v1"
+
+// sweepDeferralDocument is the sweep's one-pass operator record. Its
+// CompletedAt is deliberately written by the sweep, rather than inferred by
+// the request that happens to read it.
+type sweepDeferralDocument struct {
+	Kind        string          `json:"kind"`
+	CompletedAt string          `json:"completed_at"`
+	Deferrals   []sweepDeferral `json:"deferrals"`
+}
+
+type sweepDeferral struct {
+	Forge  string `json:"forge"`
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	PR     string `json:"pr"`
+	Reason string `json:"reason"`
 }
 
 type statusRepo struct {
@@ -74,10 +94,57 @@ type statusRun struct {
 
 type statusStage struct {
 	Name       string `json:"name"`
+	Attempt    int    `json:"attempt"`
 	State      string `json:"state"`
 	StartedAt  string `json:"started_at,omitempty"`
 	EndedAt    string `json:"ended_at,omitempty"`
 	ExitStatus *int   `json:"exit_status,omitempty"`
+}
+
+// stepName is the lifecycle's one spelling for a run step. A first execution
+// is its base name; subsequent executions use @N, beginning at @2.
+type stepName struct {
+	Base    string
+	Attempt int
+}
+
+// parseStepName keeps residue consumers from guessing at old improvised step
+// names. Base names are lower-case words separated by hyphens; @ only starts a
+// repeat suffix, whose attempt number is at least two and has no leading zero.
+func parseStepName(name string) (stepName, bool) {
+	base, suffix, hasSuffix := strings.Cut(name, "@")
+	if base == "" || strings.Contains(suffix, "@") || !validStepBase(base) {
+		return stepName{}, false
+	}
+	if !hasSuffix {
+		return stepName{Base: base, Attempt: 1}, true
+	}
+	if len(suffix) == 0 || suffix[0] == '0' {
+		return stepName{}, false
+	}
+	for _, character := range suffix {
+		if character < '0' || character > '9' {
+			return stepName{}, false
+		}
+	}
+	attempt, err := strconv.Atoi(suffix)
+	if err != nil || attempt < 2 {
+		return stepName{}, false
+	}
+	return stepName{Base: base, Attempt: attempt}, true
+}
+
+func validStepBase(base string) bool {
+	for index, character := range base {
+		if character >= 'a' && character <= 'z' {
+			continue
+		}
+		if character == '-' && index > 0 && index < len(base)-1 && base[index-1] != '-' && base[index+1] != '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // orientationDocument is the run's own record of which pull request it serves,
@@ -148,11 +215,30 @@ func statusSnapshot(ctx context.Context, cfg ServiceConfig) (statusDocument, err
 		MaxConcurrent: cfg.MaxConcurrentRuns(),
 		Repos:         configuredStatusRepos(cfg),
 		Runs:          make([]statusRun, 0, len(units)),
+		Sweep:         readSweepDeferrals(cfg),
 	}
 	for _, unitName := range units {
 		document.Runs = append(document.Runs, describeRun(ctx, cfg, unitName))
 	}
 	return document, nil
+}
+
+func sweepDeferralsPath(cfg ServiceConfig) string {
+	return filepath.Join(cfg.Runs.Dir, ".sweep-deferrals.json")
+}
+
+// A failed read is intentionally absent from the projection. A stale, whole
+// record remains useful; a malformed one must not make the status request fail.
+func readSweepDeferrals(cfg ServiceConfig) *sweepDeferralDocument {
+	content, err := os.ReadFile(sweepDeferralsPath(cfg))
+	if err != nil {
+		return nil
+	}
+	var document sweepDeferralDocument
+	if json.Unmarshal(content, &document) != nil || document.Kind != sweepDeferralDocumentKind {
+		return nil
+	}
+	return &document
 }
 
 func configuredStatusRepos(cfg ServiceConfig) []statusRepo {
@@ -310,17 +396,21 @@ func dispatchStages(runDir string) []statusStage {
 	}
 	stages := make([]statusStage, 0, len(matches))
 	for _, match := range matches {
-		name := strings.TrimSuffix(filepath.Base(match), dispatchArgsSuffix)
-		stage := statusStage{Name: name, State: stageRunning, StartedAt: fileModifiedTime(match)}
+		rawName := strings.TrimSuffix(filepath.Base(match), dispatchArgsSuffix)
+		name, ok := parseStepName(rawName)
+		if !ok {
+			continue
+		}
+		stage := statusStage{Name: name.Base, Attempt: name.Attempt, State: stageRunning, StartedAt: fileModifiedTime(match)}
 		// The result file is published only on a clean exit, so its presence
 		// settles the stage on its own. The completion flag is written
 		// whatever became of the command, but only a dispatch waited on in
 		// the background carries one — so a flag standing alone is a stage
 		// that ran and failed, while neither file means it is still going.
-		if ended := fileModifiedTime(filepath.Join(runDir, name+"-result.json")); ended != "" {
+		if ended := fileModifiedTime(filepath.Join(runDir, rawName+"-result.json")); ended != "" {
 			stage.EndedAt = ended
 			stage.State = stagePassed
-		} else if ended := fileModifiedTime(filepath.Join(runDir, name+"-result.done")); ended != "" {
+		} else if ended := fileModifiedTime(filepath.Join(runDir, rawName+"-result.done")); ended != "" {
 			stage.EndedAt = ended
 			stage.State = stageFailed
 		}

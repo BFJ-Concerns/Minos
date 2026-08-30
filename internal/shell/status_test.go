@@ -111,6 +111,56 @@ func TestStatusReportsLiveRunIdentityDispatchStageAndTimings(t *testing.T) {
 	}
 }
 
+func TestStatusProjectsRecordedSweepDeferralsVerbatim(t *testing.T) {
+	cfg := statusTestConfig(t)
+	stubStatusCommands(t)
+	want := sweepDeferralDocument{
+		Kind:        sweepDeferralDocumentKind,
+		CompletedAt: "2026-08-30T14:05:06Z",
+		Deferrals: []sweepDeferral{
+			{Forge: "forgejo", Owner: "example", Repo: "Relay", PR: "96", Reason: "open dependencies: example/prerequisite#7"},
+			{Forge: "forgejo", Owner: "example", Repo: "Relay", PR: "97", Reason: `work-in-progress branch "structural/rework"`},
+			{Forge: "forgejo", Owner: "example", Repo: "Relay", PR: "98", Reason: "completed-marker"},
+		},
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeStatusFile(t, sweepDeferralsPath(cfg), string(encoded))
+
+	document := readStatusDocument(t, cfg)
+	if document.Sweep == nil {
+		t.Fatal("sweep deferrals were omitted")
+	}
+	if document.Sweep.CompletedAt != want.CompletedAt {
+		t.Fatalf("completed_at = %q, want recorded stamp %q", document.Sweep.CompletedAt, want.CompletedAt)
+	}
+	if string(document.GeneratedAt) == document.Sweep.CompletedAt {
+		t.Fatalf("generated_at = %q impersonates the sweep completion stamp", document.GeneratedAt)
+	}
+	if len(document.Sweep.Deferrals) != len(want.Deferrals) {
+		t.Fatalf("deferrals = %#v, want %#v", document.Sweep.Deferrals, want.Deferrals)
+	}
+	for index, deferral := range want.Deferrals {
+		if got := document.Sweep.Deferrals[index]; got != deferral {
+			t.Fatalf("deferral %d = %#v, want %#v", index, got, deferral)
+		}
+	}
+}
+
+func TestStatusToleratesMissingOrUnreadableSweepDeferrals(t *testing.T) {
+	cfg := statusTestConfig(t)
+	stubStatusCommands(t)
+	if document := readStatusDocument(t, cfg); document.Sweep != nil {
+		t.Fatalf("legacy tree sweep = %#v, want absent", document.Sweep)
+	}
+	writeStatusFile(t, sweepDeferralsPath(cfg), "not json")
+	if document := readStatusDocument(t, cfg); document.Sweep != nil {
+		t.Fatalf("unreadable sweep document = %#v, want absent", document.Sweep)
+	}
+}
+
 func TestStatusReportsAFailedDispatchAsFailed(t *testing.T) {
 	cfg := statusTestConfig(t)
 	runDir := writeStatusRunDirectory(t, cfg)
@@ -128,6 +178,31 @@ func TestStatusReportsAFailedDispatchAsFailed(t *testing.T) {
 	}
 	if len(run.Stages) != 1 || run.Stages[0].State != stageFailed {
 		t.Fatalf("stages = %+v, want a single failed review stage", run.Stages)
+	}
+}
+
+func TestStatusSplitsAttemptSuffixesBeforeClassifyingResidue(t *testing.T) {
+	cfg := statusTestConfig(t)
+	runDir := writeStatusRunDirectory(t, cfg)
+	writeStatusFile(t, filepath.Join(runDir, "review@2-args.json"), "{}")
+	writeStatusFile(t, filepath.Join(runDir, "review@2-result.json"), `{"verdict":"complete"}`)
+	writeStatusFile(t, filepath.Join(runDir, "review@10-args.json"), "{}")
+	writeStatusFile(t, filepath.Join(runDir, "review@10-result.json"), `{"verdict":"complete"}`)
+	writeStatusFile(t, filepath.Join(runDir, "gate-repair-r6d-args.json"), "{}")
+	stubStatusCommands(t)
+
+	run := readStatusDocument(t, cfg).Runs[0]
+	if len(run.Stages) != 2 {
+		t.Fatalf("stages = %+v, want only the valid dispatch attempts", run.Stages)
+	}
+	for _, stage := range run.Stages {
+		if stage.Name == "review" && stage.Attempt == 2 && stage.State == stagePassed {
+			continue
+		}
+		if stage.Name == "review" && stage.Attempt == 10 && stage.State == stagePassed {
+			continue
+		}
+		t.Fatalf("stage = %+v, want valid base name and attempt 2 or 10 only", stage)
 	}
 }
 

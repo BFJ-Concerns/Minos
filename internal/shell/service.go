@@ -113,9 +113,13 @@ const (
 )
 
 type ReconcileResult struct {
-	Decision     ReconcileDecision
-	BlockingUnit string
-	Detail       string
+	Decision ReconcileDecision
+	// DeferralReason is set only when reconciliation deliberately leaves an
+	// open pull request unstarted. Sweep records it for the operator-facing
+	// projection; admission never reads that record back.
+	DeferralReason string
+	BlockingUnit   string
+	Detail         string
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
@@ -147,13 +151,14 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	facts.HeadRef = snapshot.HeadBranch
 	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
 	if eligibility.workInProgress {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))}, nil
+		reason := fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch)
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason), DeferralReason: reason}, nil
 	}
 	if eligibility.completedRun {
-		return ReconcileResult{Decision: ReconcileNothing}, nil
+		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker"}, nil
 	}
 	if eligibility.dependencyDeferred {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason)}, nil
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason), DeferralReason: eligibility.dependencyReason}, nil
 	}
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)
 	if err != nil {

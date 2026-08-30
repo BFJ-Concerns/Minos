@@ -33,9 +33,14 @@ export function findingComment(finding) {
   const attribution = proposingModel && verifyingModel
     ? `\n\nProposed by: ${proposingModel}.\nVerified by: ${verifyingModel}.`
     : "";
-  return {
+  const comment = {
     path: finding.path,
     body: `**${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}.${attribution}`,
     line: finding.line,
   };
+  // A finding about a range says so, so the forge boundary can cover the
+  // lines it concerns rather than only the first of them.
+  if (Number.isInteger(finding.endLine) && finding.endLine > finding.line)
+    comment.end_line = finding.endLine;
+  return comment;
 }
