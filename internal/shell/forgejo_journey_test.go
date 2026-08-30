@@ -1468,6 +1468,9 @@ func adjudicatedFinding(id, severity, title string, line int, explanation string
 
 func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[string]any {
 	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
 	directory := t.TempDir()
 	envelopePath := filepath.Join(directory, "envelope.json")
 	recordDir := filepath.Join(directory, "record")
