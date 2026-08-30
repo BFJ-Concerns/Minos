@@ -633,7 +633,7 @@ if [ "$6" = review ]; then printf 'content %s ' "$5" >> '${callLog}'; cat "\${10
     assert.ok(calls.some((call) => call.includes(`subject 1 status ${HEAD} ${TARGET} attention`)));
     assert.ok(calls.some((call) => call.includes(`sibling 2 review ${HEAD} ${TARGET} comment`)));
     assert.equal(calls.some((call) => call.includes(`sibling 2 status ${HEAD} ${TARGET}`)), false);
-    assert.ok(calls.includes(`content 1 Confirmed code findings remain unresolved. [{"path":"${blocking.path}","body":"**${blocking.title}**\\n\\n${blocking.explanation}\\n\\nSeverity: ${blocking.severity}. Confidence: ${blocking.confidence}.","line":${blocking.line}}]`));
+    assert.ok(calls.includes(`content 1 Confirmed code findings remain unresolved. [{"path":"${blocking.path}","body":"**${blocking.title}**\\n\\n${blocking.explanation}\\n\\nSeverity: ${blocking.severity}.","line":${blocking.line}}]`));
     assert.ok(calls.includes("content 2 No blocking findings in the reviewed code. []"));
   });
 

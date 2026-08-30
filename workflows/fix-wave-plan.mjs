@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { REVIEW_BODIES, findingComment } from "./finding-presentation.mjs";
 import {
   DECISION_KIND,
   DIGEST_KIND,
@@ -16,14 +17,6 @@ const PLAN_KIND = "minos-fix-wave-plan-v1";
 const GROUPING_KIND = "minos-fix-grouping-v1";
 
 export { DECISION_KIND, DIGEST_KIND };
-
-function findingComment(finding) {
-  return {
-    path: finding.path,
-    body: `**${finding.title}**\n\n${finding.explanation}\n\nSeverity: ${finding.severity}. Confidence: ${finding.confidence}.`,
-    line: finding.line,
-  };
-}
 
 function dispatchesFor(candidates, allFindings, grouping, prefix = "") {
   const dispatch = (findingGroups, source) => ({
@@ -297,7 +290,7 @@ export function prepareFixWave(input) {
       fixReview: null,
       requestChangesReview: requestChanges.length > 0 ? {
         verdict: "request-changes",
-        body: "Confirmed code findings remain unresolved.",
+        body: REVIEW_BODIES.unresolved,
         comments: requestChanges.map((entry) => findingComment(entry.finding)),
       } : null,
       integration: { commits: [], pushCount: 0 },
@@ -343,7 +336,7 @@ export function prepareFixWave(input) {
     dispatches: grouped.dispatches,
     sweepReview: {
       verdict: "comment",
-      body: "Confirmed findings in the reviewed code.",
+      body: REVIEW_BODIES.findings,
       comments: findings.map(findingComment),
     },
     fixReview: null,
