@@ -5,6 +5,16 @@ periodic sweep starts one trusted Claude Code lead on a disposable
 single-tenant box. The lead may clone and read without an internal
 containment layer; it reviews and publishes to the forge, and nothing else.
 
+## Layout
+
+- `cmd/minos` — the service binary.
+- `internal/shell/` — the Go service: webhook receiver, sweep, and run
+  lifecycle.
+- `workflows/` — the Ensemble review workflow and its Node tests.
+- `scripts/` — provisioning and the on-box per-run driver (`run-body/`).
+- `lifecycle/lifecycle.md` — the lead's own run prompt.
+- `deploy/` — the shipped systemd units and configuration.
+
 ## Product boundary
 
 - Minos reviews; it does not repair and it does not merge. A run never
@@ -23,8 +33,7 @@ containment layer; it reviews and publishes to the forge, and nothing else.
 - The workflow's explicit engine dispatch guarantees the opposite-family
   pairing. A leg that does not complete or a finding without a complete
   verifier verdict makes the run incomplete: no review is published and no
-  clean status is set. This is a product correctness rule inside the
-  ordinary flow, not a procedure check on Minos itself.
+  clean status is set.
 - The verdict is the lead's classification judgement, informed by the
   configured severity threshold and never mechanically bound to it
   (`workflows/verdict-classification.mjs` owns the digest and the
@@ -36,18 +45,13 @@ containment layer; it reviews and publishes to the forge, and nothing else.
 - Webhooks and the sweep both reconcile current forge state. The completion
   marker is head-bound — a terminal Minos review of the current head, or a
   clean/attention status on it — and any head movement is the author's,
-  spending the marker. The sweep never writes statuses itself. The systemd
-  unit name prevents duplicate live runs of one pull request, and
-  `runs.max-concurrent` caps how many run at once inside a fixed
-  whole-box memory envelope.
-- The disposable box is the security boundary. Do not add nested
-  containment, credential scrubbing, policy gates, model admission,
-  clearance, heartbeats, incident ledgers, backoff ladders or lifecycle
-  bookkeeping.
+  spending the marker. The sweep never writes statuses itself, and
+  `runs.max-concurrent` caps how many runs are live at once.
+- The disposable box is the security boundary; run-scoped machinery inside
+  it — containment layers, policy gates, health and lifecycle bookkeeping —
+  was deliberately removed and stays out.
 
-Planning and task records live in `../Minos-Annexe`. Keep its contract
-aligned with this boundary rather than treating older procedural text as
-authority.
+Planning and task records live in `../Minos-Annexe`.
 
 ## The vendored Ensemble runtime
 
@@ -60,27 +64,14 @@ whatever is vendored here, not on whatever the skill ships.
 A refresh moves every pin with the bundle — the checksum file, the
 source-version, and the installed-digest pin in
 `internal/shell/run_body_test.go` — and preserves the file's executable
-mode, which two earlier refreshes each had to repair afterwards. The
-repository gate is the check that matters: the runtime load-checks each
+mode, which refreshes have lost before. The repository gate is the check
+that matters: the runtime load-checks each
 workflow's free identifiers against Node globals plus the hook bindings,
 and the divergence gate
 (`workflows/runtime_bundle_compatibility_test.mjs`) drives the shipped
 workflow shapes through the installed bundle's own validator surface, so a
 bundle that renamed an agent option or changed the accepted schema shapes
 turns it red.
-
-## Memory accounting on the box
-
-Judge memory by anonymous memory plus swap and by pressure, never by
-`memory.current`, journal "memory peak" lines, or `free`'s used column:
-those count page cache, which the kernel reclaims the instant anything
-needs the space. Swap likewise fills with cold pages that are rarely read
-back; a full swap is not itself harm. The honest signals are
-`memory.stat`'s `anon` plus `memory.swap.current` for footprint,
-`memory.pressure` (PSI stall time, which cache cannot inflate) for harm
-being experienced now, and `workingset_refault_anon` for genuine thrash.
-run-body's pressure watch judges on anon plus swap for this reason; keep
-any new memory judgement on the same basis.
 
 ## Commands
 
