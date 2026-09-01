@@ -38,13 +38,16 @@ func receiverRoutes(ctx context.Context, cfg ServiceConfig) *http.ServeMux {
 		}
 	})
 	if cfg.Listener.StatusTokenFile != "" {
+		// One cache for the listener's lifetime: it is what turns a polled
+		// route back into an occasional read of the archive host.
+		recentRuns := newRecentRunsCache(cfg.RecentTimingsCacheTTL())
 		mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 			if err := handleStatus(ctx, cfg, w, r); err != nil {
 				log.Printf("status failed: %v", err)
 			}
 		})
 		mux.HandleFunc("/runs/recent", func(w http.ResponseWriter, r *http.Request) {
-			if err := handleRecentRuns(ctx, cfg, w, r); err != nil {
+			if err := handleRecentRuns(ctx, cfg, recentRuns, w, r); err != nil {
 				log.Printf("recent runs failed: %v", err)
 			}
 		})

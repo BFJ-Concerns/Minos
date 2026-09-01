@@ -35,13 +35,14 @@ archive_name="${timestamp}-${safe_label}-${safe_run_name}.tar.zst"
 remote_path="${MINOS_ARCHIVE_DESTINATION%/}/${archive_name}"
 partial_path="${remote_path}.partial"
 
-archive_ssh() {
-  ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
-    -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \
-    -o IdentitiesOnly=yes -o "IdentityFile=$MINOS_ARCHIVE_IDENTITY_FILE" \
-    -o "UserKnownHostsFile=$MINOS_ARCHIVE_KNOWN_HOSTS" \
-    "$MINOS_ARCHIVE_HOST" "$1"
-}
+# shellcheck source=scripts/run-body/archive-transport.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-transport.sh"
+
+# Delivering one run costs five calls — the stream, its size check, its
+# promotion, then the sidecar's write and promotion — seconds apart. They share
+# a connection under this run's own tag, and the persistence is short because
+# nothing follows them.
+archive_transport_open "run-$$" 30
 
 # The timing record is presentation-class telemetry: assemble it from the
 # run's event log and Ensemble records before the tarball is built, so the

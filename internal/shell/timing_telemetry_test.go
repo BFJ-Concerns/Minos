@@ -1137,7 +1137,7 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 	if err := os.MkdirAll(tools, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"archive-run", "collect-timings", "memory-telemetry", "cgroup-memory.sh"} {
+	for _, name := range []string{"archive-run", "archive-transport.sh", "collect-timings", "memory-telemetry", "cgroup-memory.sh"} {
 		content, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", name))
 		if err != nil {
 			t.Fatal(err)
