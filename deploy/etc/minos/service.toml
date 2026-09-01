@@ -17,7 +17,7 @@ failure-log = "/var/lib/minos/failures.log"
 failures-repo = "/var/lib/minos/Minos-Annexe"
 failures-credential-file = "/etc/minos/forgejo.token"
 archive-command = "/opt/minos/run-body/archive-run"
-max-concurrent = 3
+max-concurrent = 6
 
 [ensemble]
 concurrency-claude = 10
