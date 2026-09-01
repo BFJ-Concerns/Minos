@@ -33,7 +33,10 @@ const (
 var archiveNamePattern = regexp.MustCompile(`^(\d{8}T\d{6}Z)-(.+)\.timings\.json$`)
 
 type recentRunsDocument struct {
-	Kind        string      `json:"kind"`
+	Kind string `json:"kind"`
+	// GeneratedAt is when the archive host was last listed for this window,
+	// which a cached reading makes older than the response carrying it. It
+	// dates the runs, so it answers the question a reader actually has.
 	GeneratedAt string      `json:"generated_at"`
 	WindowHours int         `json:"window_hours"`
 	Limit       int         `json:"limit"`
@@ -61,7 +64,7 @@ type timingIdentity struct {
 	} `json:"pull_request"`
 }
 
-func handleRecentRuns(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r *http.Request) error {
+func handleRecentRuns(ctx context.Context, cfg ServiceConfig, cache *recentRunsCache, w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return nil
@@ -85,12 +88,13 @@ func handleRecentRuns(ctx context.Context, cfg ServiceConfig, w http.ResponseWri
 		Runs:        []recentRun{},
 	}
 	if cfg.Runs.RecentTimingsCommand != "" {
-		runs, err := archivedRuns(ctx, cfg, hours, limit)
+		reading, err := cache.read(ctx, cfg, hours, limit)
 		if err != nil {
 			http.Error(w, "archived runs unavailable", http.StatusBadGateway)
 			return err
 		}
-		document.Runs = runs
+		document.GeneratedAt = reading.takenAt.UTC().Format(time.RFC3339)
+		document.Runs = reading.runs
 	}
 	body, err := json.Marshal(document)
 	if err != nil {

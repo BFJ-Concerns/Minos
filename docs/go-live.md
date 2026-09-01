@@ -7,11 +7,11 @@ so no repository toolchains are needed.
 
 1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
 2. Install `scripts/adaptations/forgejo` under
-   `/opt/minos/adaptations/forgejo`; install every executable under
-   `scripts/run-body/` under `/opt/minos/run-body` with the same basename and
-   executable mode: `run-body`, `setup-workspace`, `pre-push-guard`,
-   `flag-on-exit`, `publish-on-exit`, `time-on-exit`, `collect-timings`,
-   `memory-telemetry`, `list-recent-timings` and `archive-run`.
+   `/opt/minos/adaptations/forgejo`; install the whole of `scripts/run-body/`
+   under `/opt/minos/run-body`, each file keeping its basename and mode. Copy
+   the directory rather than a named list: the scripts source their shared
+   pieces — `cgroup-memory.sh`, `archive-transport.sh` — from beside
+   themselves, and a run-body missing one fails at the step that needed it.
    Install `scripts/provision-archive-transport` and
    `scripts/provision-failure-checkout` under `/opt/minos`, with executable
    mode. Install `lifecycle`
@@ -247,3 +247,18 @@ recent-timings-command = "/opt/minos/run-body/list-recent-timings"
 delivered within the window — the same per-step and per-agent detail a live run
 shows, for runs whose directories have already been swept. Without the key the
 route answers with no runs rather than failing.
+
+Listing the sidecars means reaching the archive host over SSH, so the route
+holds each window's answer in memory and asks again only once it has aged out.
+Two minutes is the default; `recent-timings-cache-seconds` in the same `[runs]`
+block sets it. The document's `generated_at` is when the archive host was last
+listed, not when the response was built, so a reader can see how old the answer
+is. Runs end minutes to hours apart, so an operator surface can poll this route
+as often as it likes without the archive host hearing about it.
+
+The calls that do reach the archive host share a connection where they can.
+`archive-transport.sh` puts an SSH control socket in `$XDG_RUNTIME_DIR`, or in
+`MINOS_ARCHIVE_CONTROL_DIR` when set, so a run's five delivery calls cost one
+login between them and a steady listing caller holds one session open rather
+than authenticating on each poll. Neither directory being available costs only
+the sharing: each call falls back to its own connection.

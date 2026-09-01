@@ -44,11 +44,15 @@ case "$cutoff$limit" in
   *[!0-9A-Za-z]*) fail "cutoff and limit must be alphanumeric" ;;
 esac
 
-ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
-  -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \
-  -o IdentitiesOnly=yes -o "IdentityFile=$MINOS_ARCHIVE_IDENTITY_FILE" \
-  -o "UserKnownHostsFile=$MINOS_ARCHIVE_KNOWN_HOSTS" \
-  "$MINOS_ARCHIVE_HOST" "
+# shellcheck source=scripts/run-body/archive-transport.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-transport.sh"
+
+# A listing is short and repeats: the operator surface asks again every few
+# minutes. Persistence outlasts that gap, so a steady caller holds one session
+# open instead of announcing itself to the archive host on every poll.
+archive_transport_open listing 600
+
+archive_ssh "
 cd '$MINOS_ARCHIVE_DESTINATION' || exit 1
 ls -1 2>/dev/null |
   grep -e '\.timings\.json\$' |

@@ -479,7 +479,7 @@ func readRecentRuns(t *testing.T, cfg ServiceConfig, query string) recentRunsDoc
 	request := httptest.NewRequest(http.MethodGet, target, nil)
 	request.Header.Set("Authorization", "Bearer status-token")
 	response := httptest.NewRecorder()
-	if err := handleRecentRuns(context.Background(), cfg, response, request); err != nil {
+	if err := handleRecentRuns(context.Background(), cfg, newRecentRunsCache(0), response, request); err != nil {
 		t.Fatalf("handleRecentRuns() error = %v", err)
 	}
 	if response.Code != http.StatusOK {

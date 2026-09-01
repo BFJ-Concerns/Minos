@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -50,7 +51,13 @@ type ServiceConfig struct {
 		// after its directory has been swept. Unset leaves the recent-runs
 		// route answering with no runs.
 		RecentTimingsCommand string `toml:"recent-timings-command"`
-		MaxConcurrent        int    `toml:"max-concurrent"`
+		// RecentTimingsCacheSeconds is how long a recent-runs listing stays
+		// good for. The listing costs an SSH session to the archive host and
+		// only changes when a run finishes, so this is what keeps a polling
+		// operator surface from setting the session rate. Unset takes the
+		// default below.
+		RecentTimingsCacheSeconds int `toml:"recent-timings-cache-seconds"`
+		MaxConcurrent             int `toml:"max-concurrent"`
 	} `toml:"runs"`
 	Ensemble struct {
 		ConcurrencyClaude int `toml:"concurrency-claude"`
@@ -60,6 +67,24 @@ type ServiceConfig struct {
 		// Zero leaves the runtime's own default in force.
 		AgentCeiling int `toml:"agent-ceiling"`
 	} `toml:"ensemble"`
+}
+
+// defaultRecentTimingsCacheSeconds keeps a recent-runs listing good for two
+// minutes. Runs are minutes to hours apart, so this loses no reading an
+// operator would notice while holding the archive host to one session per
+// window per two minutes however often the surface polls.
+const defaultRecentTimingsCacheSeconds = 120
+
+// RecentTimingsCacheTTL is how long a recent-runs listing is served from
+// memory before the archive host is asked again. An unset or nonsensical knob
+// means the default, so a configuration written before the knob existed still
+// gets the caching.
+func (cfg ServiceConfig) RecentTimingsCacheTTL() time.Duration {
+	seconds := cfg.Runs.RecentTimingsCacheSeconds
+	if seconds < 1 {
+		seconds = defaultRecentTimingsCacheSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // MaxConcurrentRuns is how many run units may be live at once. An unset knob
