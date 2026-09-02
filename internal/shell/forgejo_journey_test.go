@@ -1041,27 +1041,14 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 				state.setReviewWithComments(review, comments)
 			}
 
-			bodyPath := filepath.Join(t.TempDir(), "body.md")
-			commentsPath := filepath.Join(t.TempDir(), "comments.json")
-			if err := os.WriteFile(bodyPath, []byte(body+"\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			comments, err := json.Marshal([]requestedReviewComment{{
-				Path: "internal/state.go", Line: 41, Body: "The transition accepts an invalid state.",
-			}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(commentsPath, comments, 0o600); err != nil {
-				t.Fatal(err)
-			}
-
 			attempts := 2
 			if test.preseed {
 				attempts = 1
 			}
 			for attempt := 0; attempt < attempts; attempt++ {
-				if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
+				if err := postFixtureReview(t, head, target, "comment", body, []requestedReviewComment{{
+					Path: "internal/state.go", Line: 41, Body: "The transition accepts an invalid state.",
+				}}); err != nil {
 					t.Fatalf("review attempt %d: %v", attempt+1, err)
 				}
 			}
