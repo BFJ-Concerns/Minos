@@ -231,10 +231,11 @@ write, matching the target rule above.)
 
    Its completion notification arrives moments after the workflow command
    exits, whatever became of the workflow task's own notification.
-   Whichever notification arrives first, confirm the workflow process has
-   exited, then proceed to the result; the other notification and the
-   timer below are then spent — cancel the timer with `CronDelete` and
-   carry on.
+   Whichever notification arrives first, the flag's presence is the
+   confirmation that the workflow process has exited (the wrapper writes
+   it only after exit); proceed to the result, and the other notification
+   and the timer below are then spent — cancel the timer with
+   `CronDelete` and carry on.
 
    **The recurring `CronCreate` timer is hang detection only, never the
    expected wake.** Arm it before ending the turn with an interval of 1200
@@ -258,8 +259,8 @@ write, matching the target rule above.)
    a fallback at or beyond it would let a live waiting lead be stopped. If
    that configured timeout is ever low enough to conflict with the
    1200-second floor, the ceiling wins — arm the timer at roughly half the
-   timeout instead. When a completion notification arrives, cancel the
-   timer with `CronDelete`.
+   timeout instead. When a completion notification arrives,
+   cancel the timer with `CronDelete`.
 
    Do not call `ScheduleWakeup` in this lifecycle. The tool is visible in
    this session but inert: it schedules only inside a `/loop` context this
@@ -494,14 +495,24 @@ write, matching the target rule above.)
 
    The publication composer turns the validated decisions into exactly
    what is posted, in the order it is posted; you compose no payload and
-   choose no order yourself. Run it once over the main verdict and
-   decision, adding the brief verdict and decision when that stage ran:
+   choose no order yourself. Run it once. When the brief stage did not
+   run (or was settled by the gate), give it the main verdict and
+   decision alone:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/compose-review-publication.mjs" \
+     "$MINOS_RUN_DIR/publication" "$MINOS_REVIEW_THRESHOLD" \
+     "$MINOS_RUN_DIR/review-result.json" "$MINOS_RUN_DIR/verdict-decision.json"
+   ```
+
+   When the brief stage ran, add its verdict and decision as the fifth
+   and sixth arguments:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/compose-review-publication.mjs" \
      "$MINOS_RUN_DIR/publication" "$MINOS_REVIEW_THRESHOLD" \
      "$MINOS_RUN_DIR/review-result.json" "$MINOS_RUN_DIR/verdict-decision.json" \
-     [ "$MINOS_RUN_DIR/review-brief-result.json" "$MINOS_RUN_DIR/verdict-decision-brief.json" ]
+     "$MINOS_RUN_DIR/review-brief-result.json" "$MINOS_RUN_DIR/verdict-decision-brief.json"
    ```
 
    It re-validates every decision against its verdict and writes nothing
@@ -509,7 +520,9 @@ write, matching the target rule above.)
    5, never a payload to hand-assemble. Its plan,
    `$MINOS_RUN_DIR/publication/publication-plan.json`, lists the posts in
    order — each with its `verdict` argument and the body and comments
-   files it wrote. Post them in that order, each as one scripted review:
+   files it wrote. Post them in that order, one scripted review per
+   entry, substituting the entry's `verdict`, `body` and `comments`
+   values and the run's head and target:
 
    ```sh
    "$MINOS_BIN" forge review HEAD TARGET VERDICT BODY_FILE COMMENTS_FILE
@@ -522,9 +535,14 @@ write, matching the target rule above.)
    own decision gates and otherwise `comment` — never an approval, which
    the forge would read as outranking the verdict; unverified observations
    and brief misconfigurations, when any exist, come last as one `comment`
-   review. A finding both groups raised at one site is merged into the
-   main review and cross-referenced, so no defect reaches the author
-   twice. Every confirmed finding rides its review, above and below
+   review. The same defect raised by both groups at one site — same path,
+   line and title — is merged into the main review, naming the brief that
+   also raised it; distinct findings on one line cross-reference each
+   other. So no defect reaches the author twice. A brief verdict with no
+   confirmed findings produces no post at all: the plan never carries an
+   all-clear brief review, and you never post one or an "all clear"
+   comment — the 👍 carries that. Every confirmed finding rides its
+   review, above and below
    threshold alike, each comment anchored to the path and line it
    concerns; the guarded command anchors what the diff geometry allows and
    folds the rest into the review body — a confirmed finding is never
@@ -536,8 +554,6 @@ write, matching the target rule above.)
    comments already carry their proposing and verifying models — and the
    signature is payload material only, never a later read-back or
    decision input.
-   Never publish an all-clear brief review and never post an "all clear"
-   comment — the 👍 carries that.
 
    A confirmed finding that reached no durable surface is not a
    presentation problem — the review did not happen, and no 👍 or
