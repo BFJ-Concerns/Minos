@@ -477,7 +477,7 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeScript(t, filepath.Join(bin, "ssh"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nprintf '%s\\n' \"$last\" >>\"$SSH_LOG\"\nexec sh -c \"$last\"\n")
+	installArchiveReceiverSSH(t, bin, destination)
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nif [ -n \"$last\" ] && [ -f \"$last\" ]; then exec cat \"$last\"; fi\nexec cat\n")
 	identity := filepath.Join(root, "identity")
 	knownHosts := filepath.Join(root, "known-hosts")
@@ -487,7 +487,7 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 		}
 	}
 	config := filepath.Join(root, "archive.env")
-	if err := os.WriteFile(config, []byte("MINOS_ARCHIVE_HOST=fixture\nMINOS_ARCHIVE_DESTINATION=\""+destination+"\"\nMINOS_ARCHIVE_IDENTITY_FILE=\""+identity+"\"\nMINOS_ARCHIVE_KNOWN_HOSTS=\""+knownHosts+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(config, []byte("MINOS_ARCHIVE_HOST=fixture\nMINOS_ARCHIVE_IDENTITY_FILE=\""+identity+"\"\nMINOS_ARCHIVE_KNOWN_HOSTS=\""+knownHosts+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sshLog := filepath.Join(root, "ssh.log")
@@ -514,8 +514,8 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(log), "zstd -dc") || strings.Contains(string(log), ".tar.zst") {
-		t.Fatalf("recent listing fetched an archive instead of its sidecar:\n%s", log)
+	if strings.TrimSpace(string(log)) != "list 20260826T000000Z 1" {
+		t.Fatalf("recent listing asked the archive host for more than the sidecar listing:\n%s", log)
 	}
 }
 
@@ -1028,14 +1028,9 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The fixture ssh executes the remote command locally and the fixture
-	// zstd is a passthrough, so the whole transport runs inside the temp
-	// directory while archive-run's own logic stays real.
-	writeScript(t, filepath.Join(bin, "ssh"), `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`)
+	// The fixture zstd is a passthrough, so the whole transport runs inside
+	// the temp directory while archive-run's own logic stays real.
+	installArchiveReceiverSSH(t, bin, destination)
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nexec cat\n")
 
 	identity := filepath.Join(root, "identity")
@@ -1048,7 +1043,6 @@ exec sh -c "$last"
 	archiveConfig := filepath.Join(root, "archive.env")
 	config := strings.Join([]string{
 		`MINOS_ARCHIVE_HOST="fixture"`,
-		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 	}, "\n") + "\n"
@@ -1155,7 +1149,7 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeScript(t, filepath.Join(bin, "ssh"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nexec sh -c \"$last\"\n")
+	installArchiveReceiverSSH(t, bin, destination)
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nexec cat\n")
 	identity := filepath.Join(root, "identity")
 	knownHosts := filepath.Join(root, "known-hosts")
@@ -1167,7 +1161,6 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 	config := filepath.Join(root, "archive.env")
 	content := strings.Join([]string{
 		`MINOS_ARCHIVE_HOST="fixture"`,
-		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 	}, "\n") + "\n"
@@ -1235,11 +1228,7 @@ func TestArchiveRunSanitisesHostileRunNameBeforeRemoteCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeScript(t, filepath.Join(bin, "ssh"), `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`)
+	installArchiveReceiverSSH(t, bin, destination)
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nexec cat\n")
 
 	identity := filepath.Join(root, "identity")
@@ -1252,7 +1241,6 @@ exec sh -c "$last"
 	archiveConfig := filepath.Join(root, "archive.env")
 	config := strings.Join([]string{
 		`MINOS_ARCHIVE_HOST="fixture"`,
-		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 	}, "\n") + "\n"

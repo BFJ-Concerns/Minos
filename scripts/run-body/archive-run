@@ -19,29 +19,23 @@ set -a
 set +a
 
 [ -n "${MINOS_ARCHIVE_HOST:-}" ] || archive_failed
-[ -n "${MINOS_ARCHIVE_DESTINATION:-}" ] || archive_failed
 [ -r "${MINOS_ARCHIVE_IDENTITY_FILE:-}" ] || archive_failed
 [ -r "${MINOS_ARCHIVE_KNOWN_HOSTS:-}" ] || archive_failed
-case "$MINOS_ARCHIVE_DESTINATION" in
-  *"'"*|*"
-"*) archive_failed ;;
-esac
 
 safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '-')"
 run_name="$(basename "$run_dir")"
 safe_run_name="$(printf '%s' "$run_name" | tr -c 'A-Za-z0-9_.-' '-')"
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ' 2>/dev/null)" || archive_failed
 archive_name="${timestamp}-${safe_label}-${safe_run_name}.tar.zst"
-remote_path="${MINOS_ARCHIVE_DESTINATION%/}/${archive_name}"
-partial_path="${remote_path}.partial"
 
 # shellcheck source=scripts/run-body/archive-transport.sh
 . "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-transport.sh"
 
-# Delivering one run costs five calls — the stream, its size check, its
-# promotion, then the sidecar's write and promotion — seconds apart. They share
-# a connection under this run's own tag, and the persistence is short because
-# nothing follows them.
+# Delivering one run costs two calls — the archive, then its sidecar —
+# seconds apart. They share a connection under this run's own tag, and the
+# persistence is short because nothing follows them. The archive host's
+# receiver lands each artefact whole or not at all: it writes beside the
+# name and renames only a complete, non-empty transfer into place.
 archive_transport_open "run-$$" 30
 
 # The timing record is presentation-class telemetry: assemble it from the
@@ -77,19 +71,15 @@ fi
   \) -print0 2>/dev/null |
     tar --null --files-from=- -cf - 2>/dev/null |
     zstd -q -T0 -c 2>/dev/null |
-    archive_ssh "cat > '$partial_path'" >/dev/null 2>&1 || exit 1
-  archive_ssh "test -s '$partial_path'" >/dev/null 2>&1 || exit 1
-  archive_ssh "mv -- '$partial_path' '$remote_path'" >/dev/null 2>&1 || exit 1
+    archive_ssh "receive $archive_name" >/dev/null 2>&1 || exit 1
 ) || archive_failed
 
 # Deliver the timing record as a sidecar beside the tarball, readable
 # without extracting the archive. Best-effort: a failed sidecar warns and
 # never fails an archive that has already been promoted.
 if [ -r "$run_dir/timing-record.json" ]; then
-  sidecar_path="${remote_path%.tar.zst}.timings.json"
-  sidecar_partial="${sidecar_path}.partial"
-  if archive_ssh "cat > '$sidecar_partial'" <"$run_dir/timing-record.json" >/dev/null 2>&1 &&
-    archive_ssh "mv -- '$sidecar_partial' '$sidecar_path'" >/dev/null 2>&1; then
+  sidecar_name="${archive_name%.tar.zst}.timings.json"
+  if archive_ssh "receive $sidecar_name" <"$run_dir/timing-record.json" >/dev/null 2>&1; then
     :
   else
     printf 'minos: could not deliver the timing sidecar for %s\n' "$label" >&2

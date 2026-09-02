@@ -165,11 +165,7 @@ func TestArchiveRunRejectsFailedPipelineWithoutPublishingFinalName(t *testing.T)
 		{
 			name:       "zstd fails",
 			zstdScript: "#!/usr/bin/env sh\ncat >/dev/null\nexit 3\n",
-			sshScript: `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`,
+			sshScript:  "",
 		},
 		{
 			name:       "transfer fails",
@@ -179,11 +175,7 @@ exec sh -c "$last"
 		{
 			name:       "compressor produces empty output",
 			zstdScript: "#!/usr/bin/env sh\ncat >/dev/null\nexit 0\n",
-			sshScript: `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`,
+			sshScript:  "",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -197,7 +189,12 @@ exec sh -c "$last"
 				}
 			}
 			writeScript(t, filepath.Join(bin, "zstd"), test.zstdScript)
-			writeScript(t, filepath.Join(bin, "ssh"), test.sshScript)
+			// An empty ssh script means the real receiver answers the call.
+			if test.sshScript == "" {
+				installArchiveReceiverSSH(t, bin, destination)
+			} else {
+				writeScript(t, filepath.Join(bin, "ssh"), test.sshScript)
+			}
 			identity := filepath.Join(root, "identity")
 			knownHosts := filepath.Join(root, "known_hosts")
 			for _, path := range []string{identity, knownHosts} {
@@ -211,7 +208,6 @@ exec sh -c "$last"
 			config := filepath.Join(root, "archive.env")
 			contents := strings.Join([]string{
 				`MINOS_ARCHIVE_HOST="fixture"`,
-				`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 				`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 				`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 			}, "\n") + "\n"
