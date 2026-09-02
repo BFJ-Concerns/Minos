@@ -733,7 +733,7 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Minos authors no commits, so every head movement is the author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
   assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review's\s+findings, a classification digest, or a run outcome/);
-  assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post them in that order, each as one scripted review/);
+  assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post them in that order, one scripted review per\s+entry/);
   assert.match(lifecycle, /the main review lands first and carries the\s+verdict[\s\S]*never an approval, which\s+the forge would read as outranking the verdict[\s\S]*come last as one `comment`\s+review/);
   assert.match(lifecycle, /The observations post is\s+presentation-class: its failure degrades and never fails the run\.\s+Observations travel plainly marked as unverified, never as findings;\s+the pull request is the one delivery surface — Minos files nothing in\s+reviewed projects' annexes/);
 });
