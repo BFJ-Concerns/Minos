@@ -1,0 +1,95 @@
+#!/usr/bin/env sh
+set -eu
+
+# The archive host's side of the archive transport: the forced command the
+# Minos box's key is bound to in the archive account's authorized_keys. The
+# key therefore opens no shell and runs no command of the client's choosing;
+# it reaches exactly the two operations the archive needs, over exactly the
+# destination this command names, and nothing else on the host.
+#
+#   archive-receiver DESTINATION
+#
+# The client's request arrives in SSH_ORIGINAL_COMMAND as one of:
+#
+#   receive NAME       stdin is the file's content; it lands whole at
+#                      DESTINATION/NAME (written beside it as NAME.partial and
+#                      renamed once complete and non-empty) — an empty or
+#                      interrupted transfer leaves no NAME behind
+#   list CUTOFF LIMIT  print the timing sidecars named at or after CUTOFF,
+#                      newest first, at most LIMIT lines: the sidecar's
+#                      filename, a tab, its content base64-encoded on one line
+#
+# NAME is one archive artefact filename — the characters archive-run's own
+# sanitisation admits, ending in .tar.zst or .timings.json — so a request can
+# never name a path outside DESTINATION. Anything else is refused.
+
+usage() {
+  echo "usage: archive-receiver DESTINATION (request in SSH_ORIGINAL_COMMAND)" >&2
+  exit 2
+}
+
+refuse() {
+  echo "archive-receiver: refused: $1" >&2
+  exit 1
+}
+
+[ "$#" -eq 1 ] || usage
+destination="$1"
+[ -d "$destination" ] || refuse "destination is not a directory"
+
+# Split the request on single spaces only: every accepted argument is
+# alphanumeric, so a request needing any other separator is malformed.
+request="${SSH_ORIGINAL_COMMAND:-}"
+case "$request" in
+  '' | *[!A-Za-z0-9_.\ -]*) refuse "malformed request" ;;
+esac
+# shellcheck disable=SC2086
+set -- $request
+
+case "$1" in
+  receive)
+    [ "$#" -eq 2 ] || refuse "receive takes one artefact name"
+    name="$2"
+    case "$name" in
+      .* | *[!A-Za-z0-9_.-]*) refuse "artefact name is not a plain filename" ;;
+      *.tar.zst | *.timings.json) ;;
+      *) refuse "artefact name is not an archive or timing sidecar" ;;
+    esac
+    partial="$destination/$name.partial"
+    if ! cat >"$partial"; then
+      rm -f "$partial"
+      refuse "transfer did not complete"
+    fi
+    if [ ! -s "$partial" ]; then
+      rm -f "$partial"
+      refuse "transfer was empty"
+    fi
+    mv -- "$partial" "$destination/$name"
+    ;;
+  list)
+    [ "$#" -eq 3 ] || refuse "list takes a cutoff and a limit"
+    cutoff="$2"
+    limit="$3"
+    case "$cutoff$limit" in
+      *[!0-9A-Za-z]*) refuse "cutoff and limit must be alphanumeric" ;;
+    esac
+    case "$limit" in
+      '' | *[!0-9]*) refuse "limit must be a whole number" ;;
+    esac
+    cd "$destination"
+    # Archive names begin with a UTC timestamp in ISO basic form, which sorts
+    # lexically in time order, so the cutoff is a string comparison.
+    ls -1 2>/dev/null |
+      grep -e '\.timings\.json$' |
+      awk -v cutoff="$cutoff" '$0 >= cutoff' |
+      sort -r |
+      head -n "$limit" |
+      while IFS= read -r sidecar; do
+        [ -f "$sidecar" ] || continue
+        printf '%s\t' "$sidecar"
+        base64 -w0 <"$sidecar" 2>/dev/null || base64 <"$sidecar" | tr -d '\n'
+        printf '\n'
+      done
+    ;;
+  *) refuse "unknown request $1" ;;
+esac

@@ -7,9 +7,9 @@
 # pretty-printed JSON spanning many lines, and an agent's label or model is
 # free text, so no plain delimiter can be trusted not to appear inside one.
 #
-# Archive names begin with a UTC timestamp in ISO basic form, which sorts
-# lexically in time order, so the cutoff is compared as a string and no date
-# arithmetic is needed on the far side.
+# The archive host's receiver owns the listing: archive names begin with a
+# UTC timestamp in ISO basic form, which sorts lexically in time order, so
+# the cutoff travels as a string and no date arithmetic happens anywhere.
 set -eu
 
 cutoff="${1:-}"
@@ -30,16 +30,11 @@ set -a
 set +a
 
 [ -n "${MINOS_ARCHIVE_HOST:-}" ] || fail "no archive host configured"
-[ -n "${MINOS_ARCHIVE_DESTINATION:-}" ] || fail "no archive destination configured"
 [ -r "${MINOS_ARCHIVE_IDENTITY_FILE:-}" ] || fail "archive identity is unreadable"
 [ -r "${MINOS_ARCHIVE_KNOWN_HOSTS:-}" ] || fail "archive known-hosts file is unreadable"
 
-# The destination and cutoff are interpolated into a single-quoted remote
-# command, so a quote or newline in either would break out of it.
-case "$MINOS_ARCHIVE_DESTINATION$cutoff$limit" in
-  *"'"* | *'
-'*) fail "archive destination, cutoff or limit contains a quote or newline" ;;
-esac
+# The cutoff and limit travel as words of the receiver's request, which
+# admits alphanumerics only; anything else is refused here before a call.
 case "$cutoff$limit" in
   *[!0-9A-Za-z]*) fail "cutoff and limit must be alphanumeric" ;;
 esac
@@ -52,17 +47,4 @@ esac
 # open instead of announcing itself to the archive host on every poll.
 archive_transport_open listing 600
 
-archive_ssh "
-cd '$MINOS_ARCHIVE_DESTINATION' || exit 1
-ls -1 2>/dev/null |
-  grep -e '\.timings\.json\$' |
-  awk -v cutoff='$cutoff' '\$0 >= cutoff' |
-  sort -r |
-  head -n '$limit' |
-  while IFS= read -r sidecar; do
-    [ -f \"\$sidecar\" ] || continue
-    printf '%s\t' \"\$sidecar\"
-    base64 -w0 <\"\$sidecar\" 2>/dev/null || base64 <\"\$sidecar\" | tr -d '\n'
-    printf '\n'
-  done
-" || fail "the archive host could not be reached"
+archive_ssh "list $cutoff $limit" || fail "the archive host could not be reached"

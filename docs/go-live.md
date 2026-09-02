@@ -14,7 +14,15 @@ so no repository toolchains are needed.
    themselves, and a run-body missing one fails at the step that needed it.
    Install `scripts/provision-archive-transport` and
    `scripts/provision-failure-checkout` under `/opt/minos`, with executable
-   mode. Install `lifecycle`
+   mode. On the archive host, install `scripts/archive-receiver` where the
+   archive account can run it and provision the account with
+   `provision-archive-transport destination PUBLIC_KEY DESTINATION
+   AUTHORIZED_KEYS BOX_ADDRESS RECEIVER_PATH`: the box's key lands in the
+   account's `authorized_keys` as one `restrict,from=…,command=…` line, so
+   the key opens no shell and reaches exactly two operations — landing an
+   archive artefact whole under `DESTINATION`, and listing the timing
+   sidecars there — from the box's address alone. Re-running it replaces
+   an earlier line for the same key. Install `lifecycle`
    under `/opt/minos/lifecycle`, and `skills/foundry` under
    `/opt/minos/skills/foundry`. That tree holds the vendored skills one
    directory per agent tool — `codex/` and `claude-code/` — so a spawned
@@ -40,8 +48,10 @@ so no repository toolchains are needed.
      non-interactive Codex ChatGPT authentication state; and
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
    `MINOS_SKILLS_DIR`, `MINOS_ARCHIVE_RUN` and the
-   other installed paths match the deployment. Configure `archive.env` with the archive SSH host,
-   destination, identity and pinned known-hosts file.
+   other installed paths match the deployment. Configure `archive.env` with
+   the archive SSH host, identity and pinned known-hosts file; the
+   destination lives on the archive host, bound into the key's forced
+   command below, so the box never names it.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset. Run units share a fixed 22 GiB whole-box
@@ -258,7 +268,7 @@ as often as it likes without the archive host hearing about it.
 
 The calls that do reach the archive host share a connection where they can.
 `archive-transport.sh` puts an SSH control socket in `$XDG_RUNTIME_DIR`, or in
-`MINOS_ARCHIVE_CONTROL_DIR` when set, so a run's five delivery calls cost one
+`MINOS_ARCHIVE_CONTROL_DIR` when set, so a run's two delivery calls cost one
 login between them and a steady listing caller holds one session open rather
 than authenticating on each poll. Neither directory being available costs only
 the sharing: each call falls back to its own connection.
