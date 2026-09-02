@@ -33,7 +33,7 @@ import {
   observationComment,
   reviewBody,
 } from "./finding-presentation.mjs";
-import { validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
+import { findingKey, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
 if (argv.length !== 4 && argv.length !== 6) {
@@ -68,12 +68,16 @@ function loadGroup(name, verdictPath, decisionPath) {
     process.stderr.write(`${name} decision does not validate: ${validation.reason}\n`);
     process.exit(1);
   }
+  // Dispositions are keyed exactly as the digest keys findings, so a
+  // gating call can never fail to find its finding.
   const dispositions = new Map(decision.findings.map((disposition) => [disposition.key, disposition]));
+  const dispositionOf = (finding) => dispositions.get(findingKey(finding)) || null;
   return {
     name,
     verdict,
     decision,
     dispositions,
+    dispositionOf,
     findings: verdict.confirmedFindings.map((finding) => ({ ...finding })),
   };
 }
@@ -85,8 +89,14 @@ function normalisedTitle(finding) {
   return String(finding.title || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// Keys are JSON-encoded tuples: a path may contain any character, so a
+// delimiter-joined string could make two distinct sites read as one.
 function site(finding) {
-  return `${finding.path} ${finding.line}`;
+  return JSON.stringify([finding.path, finding.line]);
+}
+
+function siteAndTitle(finding) {
+  return JSON.stringify([finding.path, finding.line, normalisedTitle(finding)]);
 }
 
 const SEVERITY_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4 };
@@ -98,16 +108,14 @@ const SEVERITY_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 // one site are cross-referenced by title so the author reads them as
 // neighbours rather than as a pile-up.
 if (brief) {
-  const mainBySiteAndTitle = new Map(
-    main.findings.map((finding) => [`${site(finding)} ${normalisedTitle(finding)}`, finding]),
-  );
+  const mainBySiteAndTitle = new Map(main.findings.map((finding) => [siteAndTitle(finding), finding]));
   brief.findings = brief.findings.filter((finding) => {
-    const twin = mainBySiteAndTitle.get(`${site(finding)} ${normalisedTitle(finding)}`);
+    const twin = mainBySiteAndTitle.get(siteAndTitle(finding));
     if (!twin) return true;
     if (SEVERITY_RANK[finding.severity] > SEVERITY_RANK[twin.severity]) twin.severity = finding.severity;
     twin.alsoRaisedBy = [...(twin.alsoRaisedBy || []), finding.source];
-    if (brief.dispositions.get(finding.id)?.gating === true)
-      main.dispositions.set(twin.id, { ...main.dispositions.get(twin.id), gating: true });
+    if (brief.dispositionOf(finding)?.gating === true)
+      main.dispositions.set(findingKey(twin), { ...main.dispositionOf(twin), gating: true });
     return false;
   });
 }
@@ -130,7 +138,7 @@ for (const group of [main, brief].filter(Boolean)) {
 // review, so a brief group left with no gating finding of its own is a
 // comment review.
 function groupVerdict(group) {
-  const gates = group.findings.some((finding) => group.dispositions.get(finding.id)?.gating === true);
+  const gates = group.findings.some((finding) => group.dispositionOf(finding)?.gating === true);
   if (group.name === "main") return gates ? "request-changes" : "clean";
   return gates ? "request-changes" : "advisory";
 }
@@ -142,9 +150,7 @@ const plan = [];
 function emitReview(fileStem, group, verdictArgument, body) {
   const bodyPath = join(outputDir, `${fileStem}.md`);
   const commentsPath = join(outputDir, `${fileStem}-comments.json`);
-  const comments = group.findings.map((finding) =>
-    findingComment(finding, group.dispositions.get(finding.id) || null),
-  );
+  const comments = group.findings.map((finding) => findingComment(finding, group.dispositionOf(finding)));
   writeFileSync(bodyPath, `${body}\n`);
   writeFileSync(commentsPath, `${JSON.stringify(comments)}\n`);
   plan.push({ review: group.name, verdict: verdictArgument, body: bodyPath, comments: commentsPath });
@@ -155,7 +161,7 @@ emitReview(
   "main-review",
   main,
   mainVerdict === "request-changes" ? "request-changes" : "approve",
-  reviewBody({ verdict: mainVerdict, reviewed, findings: main.findings, dispositions: main.dispositions }),
+  reviewBody({ verdict: mainVerdict, reviewed, findings: main.findings, dispositionOf: main.dispositionOf }),
 );
 
 if (brief && brief.findings.length > 0) {
@@ -168,7 +174,7 @@ if (brief && brief.findings.length > 0) {
       verdict: briefVerdict === "request-changes" ? "request-changes" : "clean",
       reviewed,
       findings: brief.findings,
-      dispositions: brief.dispositions,
+      dispositionOf: brief.dispositionOf,
       group: "brief",
       briefsRan: (brief.verdict.ran || []).map((entry) => entry.brief),
     }),

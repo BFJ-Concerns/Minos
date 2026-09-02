@@ -4,17 +4,20 @@ set -eu
 # The archive host's side of the archive transport: the forced command the
 # Minos box's key is bound to in the archive account's authorized_keys. The
 # key therefore opens no shell and runs no command of the client's choosing;
-# it reaches exactly the two operations the archive needs, over exactly the
+# it reaches exactly the three operations the archive needs, over exactly the
 # destination this command names, and nothing else on the host.
 #
 #   archive-receiver DESTINATION
 #
 # The client's request arrives in SSH_ORIGINAL_COMMAND as one of:
 #
-#   receive NAME       stdin is the file's content; it lands whole at
-#                      DESTINATION/NAME (written beside it as NAME.partial and
-#                      renamed once complete and non-empty) — an empty or
-#                      interrupted transfer leaves no NAME behind
+#   receive NAME       stdin is the file's content; it lands beside the
+#                      final name as DESTINATION/NAME.partial, never at NAME
+#                      itself — an empty transfer leaves nothing behind
+#   commit NAME        rename DESTINATION/NAME.partial to DESTINATION/NAME —
+#                      the client's explicit act once its own pipeline has
+#                      succeeded, so a stream the client cut short is never
+#                      promoted by the server's reading of EOF
 #   list CUTOFF LIMIT  print the timing sidecars named at or after CUTOFF,
 #                      newest first, at most LIMIT lines: the sidecar's
 #                      filename, a tab, its content base64-encoded on one line
@@ -46,16 +49,19 @@ esac
 # shellcheck disable=SC2086
 set -- $request
 
+artefact_name() {
+  case "$1" in
+    .* | *[!A-Za-z0-9_.-]*) refuse "artefact name is not a plain filename" ;;
+    *.tar.zst | *.timings.json) ;;
+    *) refuse "artefact name is not an archive or timing sidecar" ;;
+  esac
+}
+
 case "$1" in
   receive)
     [ "$#" -eq 2 ] || refuse "receive takes one artefact name"
-    name="$2"
-    case "$name" in
-      .* | *[!A-Za-z0-9_.-]*) refuse "artefact name is not a plain filename" ;;
-      *.tar.zst | *.timings.json) ;;
-      *) refuse "artefact name is not an archive or timing sidecar" ;;
-    esac
-    partial="$destination/$name.partial"
+    artefact_name "$2"
+    partial="$destination/$2.partial"
     if ! cat >"$partial"; then
       rm -f "$partial"
       refuse "transfer did not complete"
@@ -64,7 +70,13 @@ case "$1" in
       rm -f "$partial"
       refuse "transfer was empty"
     fi
-    mv -- "$partial" "$destination/$name"
+    ;;
+  commit)
+    [ "$#" -eq 2 ] || refuse "commit takes one artefact name"
+    artefact_name "$2"
+    partial="$destination/$2.partial"
+    [ -s "$partial" ] || refuse "nothing received to commit"
+    mv -- "$partial" "$destination/$2"
     ;;
   list)
     [ "$#" -eq 3 ] || refuse "list takes a cutoff and a limit"

@@ -127,8 +127,9 @@ test("a blocking review body carries its warrant: verdict, counts, files, what b
     ["b", { key: "b", gating: false }],
     ["c", { key: "c", gating: false, class: "declared-out-of-scope" }],
   ]);
+  const dispositionOf = (finding) => dispositions.get(finding.id) || null;
   assert.equal(
-    reviewBody({ verdict: "request-changes", reviewed, findings, dispositions }),
+    reviewBody({ verdict: "request-changes", reviewed, findings, dispositionOf }),
     "**Minos: changes need attention.**\n" +
       "\n" +
       "Reviewed head `2c51898` against target `0981206`.\n" +
@@ -142,7 +143,7 @@ test("a blocking review body carries its warrant: verdict, counts, files, what b
 
 test("a clean review body says what was reviewed and that nothing was found, in the status vocabulary", () => {
   assert.equal(
-    reviewBody({ verdict: "clean", reviewed, findings: [], dispositions: new Map() }),
+    reviewBody({ verdict: "clean", reviewed, findings: [], dispositionOf: () => null }),
     "**Minos: changes approved.**\n" +
       "\n" +
       "Reviewed head `2c51898` against target `0981206`.\n" +
@@ -163,7 +164,7 @@ test("a brief group's body names the briefs applied and never reads as an approv
     verdict: "clean",
     reviewed,
     findings,
-    dispositions: new Map([["x", { key: "x", gating: false }]]),
+    dispositionOf: () => ({ key: "x", gating: false }),
     group: "brief",
     briefsRan: [".review/money-safety.md"],
   });
