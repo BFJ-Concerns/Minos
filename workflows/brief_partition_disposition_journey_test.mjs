@@ -307,7 +307,6 @@ for (const malformed of [
     assert.equal(verdict.status, "incomplete");
     assert.equal(verdict.complete, false);
     assert.deepEqual(verdict.confirmedFindings, []);
-    assert.equal(verdict.reviewBody, null);
     assert.match(verdict.incomplete.join("\n"), malformed.diagnostic);
   });
 }

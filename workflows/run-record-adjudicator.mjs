@@ -1,6 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { REVIEW_BODIES, findingComment } from "./finding-presentation.mjs";
 
 const LOW_COMBINED_CONFIDENCE = 70;
 
@@ -40,7 +39,6 @@ function emptyVerdict(envelope, reason) {
     infrastructureFailure: null,
     confirmedFindings: [],
     operatorAttention: [],
-    reviewBody: null,
     ran: [],
     skipped: [],
     misconfigurations: [],
@@ -377,9 +375,6 @@ export async function adjudicate({ envelope, recordDir }) {
       combinedConfidence: finding.combinedConfidence,
       threshold: LOW_COMBINED_CONFIDENCE,
     }));
-  const comments = confirmedFindings.map(findingComment);
-  const isBriefReview = Array.isArray(envelope.dispatches) &&
-    envelope.dispatches.some((dispatch) => dispatch && typeof dispatch.brief === "string");
 
   return {
     status: complete ? "complete" : "incomplete",
@@ -389,14 +384,6 @@ export async function adjudicate({ envelope, recordDir }) {
     infrastructureFailure: null,
     confirmedFindings,
     operatorAttention,
-    reviewBody: complete
-      ? {
-          body: comments.length > 0
-            ? (isBriefReview ? REVIEW_BODIES.brief : REVIEW_BODIES.findings)
-            : REVIEW_BODIES.clean,
-          comments,
-        }
-      : null,
     ran,
     skipped,
     misconfigurations,
