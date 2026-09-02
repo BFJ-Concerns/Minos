@@ -258,8 +258,8 @@ write, matching the target rule above.)
    a fallback at or beyond it would let a live waiting lead be stopped. If
    that configured timeout is ever low enough to conflict with the
    1200-second floor, the ceiling wins — arm the timer at roughly half the
-   timeout instead. When a completion notification arrives, cancel the
-   timer with `CronDelete`.
+   timeout instead. When a completion notification arrives,
+   cancel the timer with `CronDelete`.
 
    Do not call `ScheduleWakeup` in this lifecycle. The tool is visible in
    this session but inert: it schedules only inside a `/loop` context this

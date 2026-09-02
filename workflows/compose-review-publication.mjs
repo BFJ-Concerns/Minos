@@ -177,10 +177,13 @@ if (brief && brief.findings.length > 0) {
 
 const entries = [];
 for (const group of [main, brief].filter(Boolean)) {
+  // The entry kind is the channel's, set after the spread: a brief
+  // misconfiguration carries its own `kind` (the skip kind) and must not
+  // masquerade as a channel.
   for (const observation of group.verdict.outOfScopeObservations || [])
-    entries.push({ kind: "out-of-scope-observation", ...observation });
+    entries.push({ ...observation, kind: "out-of-scope-observation" });
   for (const misconfiguration of group.verdict.misconfigurations || [])
-    entries.push({ kind: "review-brief-misconfiguration", ...misconfiguration });
+    entries.push({ ...misconfiguration, kind: "review-brief-misconfiguration" });
 }
 if (entries.length > 0) {
   const bodyPath = join(outputDir, "observations.md");
