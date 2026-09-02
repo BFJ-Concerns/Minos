@@ -450,10 +450,7 @@ test("the lifecycle runs the gate first and treats it as an optimisation, never 
     /Before the first review of a run[\s\S]*review-scope-inputs\.mjs[\s\S]*review-scope-args\.json/,
   );
   assert.match(lifecycle, /`briefsEngage`[\s\S]*skip\s+the gate workflow/);
-  assert.match(
-    lifecycle,
-    /review-scope\.js[\s\S]*--json-args[\s\S]*review-scope-result\.json/,
-  );
+  assert.match(lifecycle, /dispatch-stage" review-scope review-scope\.js/);
   assert.match(
     lifecycle,
     /`scopeDecision\.status` is `nothing-engages`[\s\S]*copy that\s+verdict to `\$MINOS_RUN_DIR\/review-result\.json`[\s\S]*without invoking the review workflow/,
