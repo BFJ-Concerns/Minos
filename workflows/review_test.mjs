@@ -242,7 +242,6 @@ test("malformed exploration scope entries fail closed before specialist dispatch
       "workflow reported incomplete: exploration returned a malformed review plan",
     ]);
     assert.deepEqual(verdict.confirmedFindings, []);
-    assert.equal(verdict.reviewBody, null);
   }
 });
 
@@ -436,10 +435,6 @@ test("an empty plan completes through the adjudicator's no-findings path", async
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
   assert.deepEqual(verdict.confirmedFindings, []);
-  assert.deepEqual(verdict.reviewBody, {
-    body: "No confirmed findings in the reviewed code.",
-    comments: [],
-  });
 });
 
 test("every specialist finding reaches its opposite-family verifier batch", async () => {
@@ -726,9 +721,10 @@ test("an exploration null still emits its required leg for archive adjudication"
 });
 
 test("the lifecycle prescribes the review-only workflow discipline", () => {
-  assert.match(lifecycle, /Launch each\s+such workflow through Bash with `run_in_background` — do not append\s+shell `&`/);
-  assert.match(lifecycle, /timing wrapper\s+outermost[\s\S]*completion-flag wrapper next[\s\S]*result-publication wrapper innermost/);
-  assert.match(lifecycle, /The flag watcher is the primary wake on completion\.[\s\S]*before submitting the wrapped command/);
+  assert.match(lifecycle, /Every workflow stage is launched by one script, never by a command you\s+compose: `"\$\{MINOS_SETUP_WORKSPACE%\/\*\}\/dispatch-stage" NAME WORKFLOW`/);
+  assert.match(lifecycle, /the timing wrapper outermost[\s\S]*the completion-flag wrapper next[\s\S]*the result-publication wrapper innermost/);
+  assert.match(lifecycle, /Launch each stage through Bash with `run_in_background` — do not\s+append shell `&`/);
+  assert.match(lifecycle, /The flag watcher is the primary wake on completion\.[\s\S]*dispatch-stage" await NAME/);
   assert.match(lifecycle, /The recurring `CronCreate` timer is hang detection only, never the\s+expected wake\.[\s\S]*cancel the timer with `CronDelete`/);
   assert.match(lifecycle, /Do not call `ScheduleWakeup` in this lifecycle\.[\s\S]*`CronCreate` timer above is the working fallback/);
   assert.match(lifecycle, /memory-pressure[\s\S]*Check for it only at the\s+named boundaries below[\s\S]*do not interrupt a workflow or leave a forge write half-finished/);
@@ -737,7 +733,9 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Minos authors no commits, so every head movement is the author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
   assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review's\s+findings, a classification digest, or a run outcome/);
-  assert.match(lifecycle, /publish-observations\.mjs[\s\S]*Observations travel plainly marked\s+as unverified, never as findings[\s\S]*the pull request is the one delivery\s+surface[\s\S]*Minos files nothing in reviewed projects' annexes[\s\S]*publication is presentation-class: its failure degrades and never\s+fails the run/);
+  assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post them in that order, each as one scripted review/);
+  assert.match(lifecycle, /the main review lands first and carries the\s+verdict[\s\S]*never an approval, which\s+the forge would read as outranking the verdict[\s\S]*come last as one `comment`\s+review/);
+  assert.match(lifecycle, /The observations post is\s+presentation-class: its failure degrades and never fails the run\.\s+Observations travel plainly marked as unverified, never as findings;\s+the pull request is the one delivery surface — Minos files nothing in\s+reviewed projects' annexes/);
 });
 
 test("the lifecycle prescribes the verdict-classification seam", () => {

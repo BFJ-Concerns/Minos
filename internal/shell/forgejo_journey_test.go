@@ -1036,9 +1036,7 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 				review := mapsClone(apiShape.Review)
 				review["commit_id"] = head
 				review["body"] = expectedBody
-				comments := []map[string]any{mapsClone(apiShape.Comments[0])}
-				comments[0]["body"] = comments[0]["body"].(string) + attribution
-				state.setReviewWithComments(review, comments)
+				state.setReviewWithComments(review, []map[string]any{mapsClone(apiShape.Comments[0])})
 			}
 
 			attempts := 2
@@ -1070,8 +1068,8 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 				if comment["path"] != "internal/state.go" || comment["new_position"] != float64(41) {
 					t.Fatalf("review comment = %#v", comment)
 				}
-				if comment["body"] != "The transition accepts an invalid state.\n\nReviewed by: `"+leadModel+"`." {
-					t.Fatalf("review comment attribution = %#v", comment["body"])
+				if comment["body"] != "The transition accepts an invalid state." {
+					t.Fatalf("review comment carries lead attribution the composer already supplies per finding: %#v", comment["body"])
 				}
 			}
 		})
@@ -1154,7 +1152,7 @@ func TestForgeReviewPublishesEveryConfirmedAdjudicatedFinding(t *testing.T) {
 			adjudicatedFinding("specialist-1:1", "High", "Gating state transition", 42, "The transition accepts an invalid state."),
 			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
 		})
-		postAdjudicatedReview(t, head, target, "request-changes", verdict)
+		postComposedReview(t, head, target, verdict, "specialist-1:1")
 
 		writes, payload := state.reviewWriteFacts()
 		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != head {
@@ -1189,7 +1187,7 @@ func TestForgeReviewPublishesEveryConfirmedAdjudicatedFinding(t *testing.T) {
 		verdict := adjudicatedReviewPayload(t, []map[string]any{
 			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
 		})
-		postAdjudicatedReview(t, head, target, "approve", verdict)
+		postComposedReview(t, head, target, verdict)
 
 		writes, payload := state.reviewWriteFacts()
 		if writes != 1 || payload["event"] != "APPROVED" {
@@ -1211,7 +1209,7 @@ func TestForgeReviewPublishesEveryConfirmedAdjudicatedFinding(t *testing.T) {
 		verdict := adjudicatedReviewPayload(t, []map[string]any{
 			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 1, "The recovery path is difficult to identify."),
 		})
-		postAdjudicatedReview(t, head, target, "approve", verdict)
+		postComposedReview(t, head, target, verdict)
 
 		writes, payload := state.reviewWriteFacts()
 		if writes != 1 || payload["event"] != "APPROVED" {
@@ -1520,19 +1518,68 @@ func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[strin
 	return verdict
 }
 
-func postAdjudicatedReview(t *testing.T, head, target, event string, verdict map[string]any) {
+// postComposedReview runs the publication composer over an adjudicated
+// verdict and the lead's decision for it — the same seam the lifecycle's
+// publish step drives — and posts each planned review through the guarded
+// command in the plan's order. The decision gates exactly the finding ids
+// in gating; every other confirmed finding is advisory.
+func postComposedReview(t *testing.T, head, target string, verdict map[string]any, gating ...string) []map[string]any {
 	t.Helper()
-	reviewBody, ok := verdict["reviewBody"].(map[string]any)
-	if !ok {
-		t.Fatalf("adjudicated verdict has no review body: %#v", verdict)
-	}
-	body, ok := reviewBody["body"].(string)
-	if !ok {
-		t.Fatalf("review body text = %#v", reviewBody["body"])
-	}
-	if err := postFixtureReview(t, head, target, event, body, reviewBody["comments"]); err != nil {
+	directory := t.TempDir()
+	verdictPath := filepath.Join(directory, "verdict.json")
+	decisionPath := filepath.Join(directory, "decision.json")
+	encodedVerdict, err := json.Marshal(verdict)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(verdictPath, encodedVerdict, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var dispositions []map[string]any
+	for _, finding := range verdict["confirmedFindings"].([]any) {
+		id := finding.(map[string]any)["id"].(string)
+		dispositions = append(dispositions, map[string]any{"key": id, "gating": slices.Contains(gating, id)})
+	}
+	decisionVerdict := "clean"
+	if len(gating) > 0 {
+		decisionVerdict = "request-changes"
+	}
+	decision := map[string]any{
+		"kind": "minos-verdict-decision-v1", "verdict": decisionVerdict,
+		"basis": "fixture decision", "findings": dispositions,
+	}
+	if dispositions == nil {
+		decision["findings"] = []any{}
+	}
+	encodedDecision, err := json.Marshal(decision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(decisionPath, encodedDecision, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	composer := exec.CommandContext(t.Context(), "node", filepath.Join(root, "workflows", "compose-review-publication.mjs"),
+		filepath.Join(directory, "publication"), "High", verdictPath, decisionPath)
+	output, err := composer.CombinedOutput()
+	if err != nil {
+		t.Fatalf("compose review publication: %v\n%s", err, output)
+	}
+	var plan struct {
+		Posts []map[string]any `json:"posts"`
+	}
+	if err := json.Unmarshal(output, &plan); err != nil {
+		t.Fatalf("decode publication plan: %v\n%s", err, output)
+	}
+	for _, post := range plan.Posts {
+		if err := ForgeCommand(t.Context(), []string{"review", head, target, post["verdict"].(string), post["body"].(string), post["comments"].(string)}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("post %s review: %v", post["review"], err)
+		}
+	}
+	return plan.Posts
 }
 
 // postFixtureReview writes a fixture review payload and posts it through the

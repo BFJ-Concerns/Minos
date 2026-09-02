@@ -163,64 +163,50 @@ write, matching the target rule above.)
 2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
 3. Run every Ensemble workflow in this lifecycle from this accountable
    lead session. Never delegate its invocation to an agent or subagent;
-   responsibility for orchestration remains with the lead. Launch each
-   such workflow through Bash with `run_in_background` — do not append
-   shell `&`. The Bash task then owns the workflow process, remains alive
-   across turns and sends one completion notification when that process
-   exits. This protects a workflow that runs beyond a foreground command's
-   ten-minute limit; it does not relax any ordering or publication
-   precondition elsewhere in this lifecycle.
+   responsibility for orchestration remains with the lead.
 
-   This governs every Ensemble workflow invocation in this lifecycle — the
-   engagement gate, the main review, and the brief review. Each block
-   names its result JSON; redirect diagnostics to the same basename with
-   `.log` instead of `.json`. Wherever a block shows an Ensemble or
-   adjudication-wrapper invocation redirected to its result JSON, run it
-   instead through the run-scripts wrappers — the timing wrapper
-   outermost, appending the stage's span to the run's event log after the
-   command exits; the completion-flag wrapper next, so a flag file
-   appears, complete, only after the workflow command exits; and the
-   result-publication wrapper innermost, so the result file itself is
-   atomic. (The `*-inputs.mjs` builders and other sub-second foreground
-   commands keep their plain redirects — the wrappers exist for the
-   background waits.)
+   Every workflow stage is launched by one script, never by a command you
+   compose: `"${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" NAME WORKFLOW`.
+   It reads the input you built at `$MINOS_RUN_DIR/NAME-args.json`, runs
+   the adjudication wrapper on `WORKFLOW` (a script name under the
+   workflows directory, such as `review.js`) under the run's wrappers —
+   the timing wrapper outermost, appending the stage's span to the run's
+   event log after the command exits; the completion-flag wrapper next,
+   so `NAME-result.done` appears, complete, only after the workflow
+   command exits; and the result-publication wrapper innermost, so
+   `NAME-result.json` is atomic — with the Ensemble status snapshot in
+   `$MINOS_RUN_DIR` and the run record under
+   `$MINOS_RUN_DIR/ensemble-records/NAME`, and diagnostics in
+   `$MINOS_RUN_DIR/NAME.log`. Nothing about that launch is yours to vary:
+   a hand-written wrapper stack, environment, or redirect is the
+   repeatable mechanic C6 forbids you to re-derive.
 
-   ```sh
-   ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR" \
-     ENSEMBLE_RUN_RECORD=on \
-     ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/NAME" \
-     "${MINOS_SETUP_WORKSPACE%/*}/time-on-exit" "$MINOS_RUN_DIR/timings.ndjson" NAME \
-     "${MINOS_SETUP_WORKSPACE%/*}/flag-on-exit" "$MINOS_RUN_DIR/NAME.done" \
-     "${MINOS_SETUP_WORKSPACE%/*}/publish-on-exit" "$MINOS_RUN_DIR/NAME.json" \
-     sh -c 'node /opt/minos/runtime/ensemble.mjs ... 2> "$MINOS_RUN_DIR/NAME.log"'
-   ```
+   `NAME` is the stage's base name — `review-scope`, `review`,
+   `review-brief` — and a repeated execution of one stage keeps the base
+   name and takes the attempt suffix `@N`: the first execution is bare
+   (`review`), the second is `review@2`, counting every execution of that
+   stage across the whole run. The suffix is the one sanctioned way to
+   distinguish repeats — never an improvised form — and `@` appears in a
+   stage name nowhere else; the script announces a repeat from the base
+   input itself, so you build the input once per stage.
 
-   The shared wrapper is the sole setting for `ENSEMBLE_RUN_RECORD_DIR`:
-   substitute `NAME` with the stage name from the wrapped workflow block.
-   A repeated execution of one step keeps the step's base name and takes
-   the attempt suffix `@N`: the first execution is bare (`review`), the
-   second is `review@2`, counting every execution of that step across the
-   whole run. The suffix is the one sanctioned way to distinguish
-   repeats — never an improvised form — and `@` appears in a step name
-   nowhere else, so consumers parse the suffix rather than guess at
-   prose. Applied to `NAME`, the suffix rides into every derived path so
-   each attempt's records, logs and result files stand apart.
+   Launch each stage through Bash with `run_in_background` — do not
+   append shell `&`. The Bash task then owns the workflow process,
+   remains alive across turns and sends one completion notification when
+   that process exits. This protects a workflow that runs beyond a
+   foreground command's ten-minute limit; it does not relax any ordering
+   or publication precondition elsewhere in this lifecycle. Record the
+   task ID.
 
-   `publish-on-exit` collects the command's stdout beside the result file
-   and renames it into place only on a clean exit, so `NAME.json` is never
-   observable half-written: it holds the complete stdout of a successful
-   command, or it does not exist. A failed or killed workflow leaves no
-   result file — its partial stdout stays in `NAME.json.partial` for
+   `NAME-result.json` holds the complete stdout of a successful command,
+   or it does not exist: a failed or killed workflow leaves no result
+   file — its partial stdout stays in `NAME-result.json.partial` for
    diagnosis — which is what lets a later reader distinguish "no verdict
-   yet" from "a verdict that is empty".
-
-   Name each flag after its result file (`review-result.done` beside
-   `review-result.json`). The flag is the only completion signal a watcher
-   may arm on: the result file appears only on success, so its absence
-   says nothing about whether the workflow is still running; the flag's
-   create-after-exit rename is atomic, cannot be observed early, and
-   appears on failure as much as success. Submit the complete wrapped
-   command as one background Bash task and record its task ID.
+   yet" from "a verdict that is empty". The flag `NAME-result.done` is the
+   only completion signal a watcher may arm on: the result file appears
+   only on success, so its absence says nothing about whether the workflow
+   is still running; the flag's create-after-exit rename is atomic,
+   cannot be observed early, and appears on failure as much as success.
 
    Then wait by yielding, never by sleeping. Arm two watchers described
    below, then **end the turn with no further tool call**. The harness
@@ -235,16 +221,12 @@ write, matching the target rule above.)
    once. `sleep` has no role in waiting for a background task, whatever
    duration seems safe.
 
-   **The flag watcher is the primary wake on completion.** Remove any
-   leftover flag in the foreground with `rm -f "$MINOS_RUN_DIR/NAME.done"`
-   **before submitting the wrapped command**: the wrapper clears stale
-   flags itself, but it does so inside the background task, and a watcher
-   armed while an earlier invocation's flag still exists would fire on old
-   news. With the path clear, before ending the turn, arm one additional
-   background Bash task that exits when the flag exists:
+   **The flag watcher is the primary wake on completion.** Before ending
+   the turn, arm one additional background Bash task that exits when the
+   flag exists — the same script's await form:
 
    ```sh
-   until [ -e "$MINOS_RUN_DIR/NAME.done" ]; do sleep 1; done
+   "${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" await NAME
    ```
 
    Its completion notification arrives moments after the workflow command
@@ -261,23 +243,23 @@ write, matching the target rule above.)
    is in. With the flag watcher armed, a timer wake means something is
    wrong or slow, so it never polls blind: read the Ensemble status
    snapshot the launcher maintains at `$MINOS_RUN_DIR/ensemble.local.json`
-   (the `ENSEMBLE_STATUS_DIR` set on the wrapped command puts it there) —
-   its per-agent states and its `updatedAt` timestamp, which the launcher
-   refreshes every few seconds while alive, say whether the workflow is
-   still moving, stalled, or gone — and check the flag. A workflow still
-   progressing needs nothing more: end the turn again, and the recurring
-   timer stays armed. A flag already present means both notifications were
-   lost — proceed to the result exactly as if one had arrived, never
-   ending the turn with a finished task unread. An `updatedAt` minutes old
-   with no flag is a hung or reaped workflow: treat it as the
-   infrastructure failure it is rather than waiting out the silence. Keep
-   the interval comfortably below `MINOS_LEAD_SILENCE_TIMEOUT` (3600
-   seconds by default): the supervisor treats a lead with no observed turn
-   activity for that long as ended, so a fallback at or beyond it would
-   let a live waiting lead be stopped. If that configured timeout is ever
-   low enough to conflict with the 1200-second floor, the ceiling wins —
-   arm the timer at roughly half the timeout instead. When a completion
-   notification arrives, cancel the timer with `CronDelete`.
+   — its per-agent states and its `updatedAt` timestamp, which the
+   launcher refreshes every few seconds while alive, say whether the
+   workflow is still moving, stalled, or gone — and check the flag. A
+   workflow still progressing needs nothing more: end the turn again, and
+   the recurring timer stays armed. A flag already present means both
+   notifications were lost — proceed to the result exactly as if one had
+   arrived, never ending the turn with a finished task unread. An
+   `updatedAt` minutes old with no flag is a hung or reaped workflow: treat
+   it as the infrastructure failure it is rather than waiting out the
+   silence. Keep the interval comfortably below
+   `MINOS_LEAD_SILENCE_TIMEOUT` (3600 seconds by default): the supervisor
+   treats a lead with no observed turn activity for that long as ended, so
+   a fallback at or beyond it would let a live waiting lead be stopped. If
+   that configured timeout is ever low enough to conflict with the
+   1200-second floor, the ceiling wins — arm the timer at roughly half the
+   timeout instead. When a completion notification arrives, cancel the
+   timer with `CronDelete`.
 
    Do not call `ScheduleWakeup` in this lifecycle. The tool is visible in
    this session but inert: it schedules only inside a `/loop` context this
@@ -293,14 +275,12 @@ write, matching the target rule above.)
    process's state. Finish a process that is still running before handing
    off.
 
-   Read the result only after the background process has exited. Under the
-   publication wrapper the result file exists only when the workflow
-   command exited cleanly — a wait that ends with a flag but no result
-   file is a failed or killed workflow, an infrastructure failure to
-   diagnose from the `.log` and `.partial` files, never a verdict. Still
-   parse the result as JSON before trusting it: a result that does not
-   parse, or a background task that exits non-zero, is likewise an
-   incomplete stop, never a verdict.
+   Read the result only after the background process has exited. A wait
+   that ends with a flag but no result file is a failed or killed
+   workflow, an infrastructure failure to diagnose from the `.log` and
+   `.partial` files, never a verdict. Still parse the result as JSON
+   before trusting it: a result that does not parse, or a background task
+   that exits non-zero, is likewise an incomplete stop, never a verdict.
 
    A killed workflow stage — a flag recording a signal death, or a
    launcher gone mid-stage — may be re-dispatched once when you judge the
@@ -323,14 +303,11 @@ write, matching the target rule above.)
    Read that file's `briefsEngage` field. When it is true, a repository
    brief already gives this change work, so the full pipeline runs
    regardless: skip the gate workflow and continue below. When it is
-   false, invoke the adjudication wrapper on the gate once from
-   `$MINOS_WORKSPACE`, under this step's workflow discipline:
+   false, dispatch the gate once from `$MINOS_WORKSPACE`, under this
+   step's workflow discipline:
 
    ```sh
-   "$MINOS_REVIEW_WORKFLOW" \
-     "${MINOS_REVIEW_WORKFLOW%/*}/review-scope.js" \
-     --json-args @"$MINOS_RUN_DIR/review-scope-args.json" \
-     > "$MINOS_RUN_DIR/review-scope-result.json"
+   "${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" review-scope review-scope.js
    ```
 
    Only a gate verdict whose `status` is `complete` and whose
@@ -374,14 +351,11 @@ write, matching the target rule above.)
 
      Do not invoke the review workflow.
 
-   - **No carried result:** From `$MINOS_WORKSPACE`, invoke the
-     adjudication wrapper once and save its verdict:
+   - **No carried result:** From `$MINOS_WORKSPACE`, dispatch the main
+     review once:
 
    ```sh
-   "$MINOS_REVIEW_WORKFLOW" \
-     "${MINOS_REVIEW_WORKFLOW%/*}/review.js" \
-     --json-args @"$MINOS_RUN_DIR/review-args.json" \
-     > "$MINOS_RUN_DIR/review-result.json"
+   "${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" review review.js
    ```
 
    The workflow binds the project guidance into exploration, every
@@ -426,14 +400,11 @@ write, matching the target rule above.)
    The input contains every `.review/` Markdown brief and its content,
    changed paths, and the tracked-file inventory used for full-extent
    lossless batching. Do not read, copy, hand-author, or agent-enumerate
-   these values. Call the adjudication wrapper once, under step 3's
-   workflow discipline:
+   these values. Dispatch the stage once, under step 3's workflow
+   discipline:
 
    ```sh
-   "$MINOS_REVIEW_WORKFLOW" \
-     "${MINOS_REVIEW_WORKFLOW%/*}/review-briefs.js" \
-     --json-args @"$MINOS_RUN_DIR/review-brief-args.json" \
-     > "$MINOS_RUN_DIR/review-brief-result.json"
+   "${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" review-brief review-briefs.js
    ```
 
    The script applies extent, sweep, occasion, path-scope, and relevance
@@ -521,51 +492,62 @@ write, matching the target rule above.)
    not reached — are always carried by the `Minos` status, never by a
    review.
 
-   For the main verdict: materialise `reviewBody.body` and
-   `reviewBody.comments` from the saved verdict to files, and post one
-   scripted review carrying the validated decision's verdict —
-   `"$MINOS_BIN" forge review HEAD TARGET request-changes BODY_FILE
-   COMMENTS_FILE` when the decision gates, `approve` when it is clean.
-   The review carries every confirmed finding, above and below threshold
-   alike, each comment anchored to the path and line it concerns; the
-   guarded command anchors what the diff geometry allows and folds the
-   rest into the review body — a confirmed finding is never dropped or
-   moved to a line it does not concern, and placement degrades all the
-   way to the review body, never past it. The guarded review command
-   deduplicates an exact pre-existing review, so a retry converges.
+   The publication composer turns the validated decisions into exactly
+   what is posted, in the order it is posted; you compose no payload and
+   choose no order yourself. Run it once over the main verdict and
+   decision, adding the brief verdict and decision when that stage ran:
 
-   For a complete brief verdict with confirmed findings, post its
-   rendered `reviewBody` the same way as its own review group, carrying
-   its own validated decision's verdict. The guarded review command writes
-   `Reviewed by: $MINOS_LEAD_MODEL.` to every review body and comment
-   when that configured identity is present; it is payload material only,
-   never a later read-back or decision input. Never publish an all-clear brief
-   review and never post an "all clear" comment — the 👍 carries that.
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/compose-review-publication.mjs" \
+     "$MINOS_RUN_DIR/publication" "$MINOS_REVIEW_THRESHOLD" \
+     "$MINOS_RUN_DIR/review-result.json" "$MINOS_RUN_DIR/verdict-decision.json" \
+     [ "$MINOS_RUN_DIR/review-brief-result.json" "$MINOS_RUN_DIR/verdict-decision-brief.json" ]
+   ```
+
+   It re-validates every decision against its verdict and writes nothing
+   from one that fails; a failure here is a decision to correct at step
+   5, never a payload to hand-assemble. Its plan,
+   `$MINOS_RUN_DIR/publication/publication-plan.json`, lists the posts in
+   order — each with its `verdict` argument and the body and comments
+   files it wrote. Post them in that order, each as one scripted review:
+
+   ```sh
+   "$MINOS_BIN" forge review HEAD TARGET VERDICT BODY_FILE COMMENTS_FILE
+   ```
+
+   The order is the contract: the main review lands first and carries the
+   verdict the classification earned (`request-changes` when the decision
+   gates, `approve` when it is clean); a brief group with confirmed
+   findings follows as its own review, `request-changes` only when its
+   own decision gates and otherwise `comment` — never an approval, which
+   the forge would read as outranking the verdict; unverified observations
+   and brief misconfigurations, when any exist, come last as one `comment`
+   review. A finding both groups raised at one site is merged into the
+   main review and cross-referenced, so no defect reaches the author
+   twice. Every confirmed finding rides its review, above and below
+   threshold alike, each comment anchored to the path and line it
+   concerns; the guarded command anchors what the diff geometry allows and
+   folds the rest into the review body — a confirmed finding is never
+   dropped or moved to a line it does not concern, and placement degrades
+   all the way to the review body, never past it. The guarded review
+   command deduplicates an exact pre-existing review, so a retry
+   converges. It signs each review body with `Reviewed by:
+   $MINOS_LEAD_MODEL.` when that configured identity is present — the
+   comments already carry their proposing and verifying models — and the
+   signature is payload material only, never a later read-back or
+   decision input.
+   Never publish an all-clear brief review and never post an "all clear"
+   comment — the 👍 carries that.
 
    A confirmed finding that reached no durable surface is not a
    presentation problem — the review did not happen, and no 👍 or
    approval may follow: treat a rejected or uncertain findings-review
    write as the run's failure, set `incomplete`, remove 👀, write the
-   non-clean terminal marker, and stop.
-
-   Then publish the unverified side material, best-effort: collect the
-   complete verdicts' `outOfScopeObservations` (as
-   `kind: "out-of-scope-observation"`) and `misconfigurations` (as
-   `kind: "review-brief-misconfiguration"` with `title`, `brief` and
-   `reason` preserved) into one JSON array file and render it:
-
-   ```sh
-   node "${MINOS_REVIEW_WORKFLOW%/*}/publish-observations.mjs" ENTRIES_FILE \
-     > "$MINOS_RUN_DIR/observations-payload.json"
-   ```
-
-   Materialise the payload's `body` and `comments` to files and post them
-   as one `comment` review with `"$MINOS_BIN" forge review HEAD TARGET
-   comment BODY_FILE COMMENTS_FILE`. Observations travel plainly marked
-   as unverified, never as findings; the pull request is the one delivery
-   surface — Minos files nothing in reviewed projects' annexes. This
-   publication is presentation-class: its failure degrades and never
-   fails the run. Skip it entirely when there are no entries.
+   non-clean terminal marker, and stop. The observations post is
+   presentation-class: its failure degrades and never fails the run.
+   Observations travel plainly marked as unverified, never as findings;
+   the pull request is the one delivery surface — Minos files nothing in
+   reviewed projects' annexes.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` after publication.
 7. End at the earned terminal outcome.

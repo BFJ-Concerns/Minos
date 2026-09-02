@@ -87,13 +87,11 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 				fmt.Fprintf(os.Stderr, "forge review: %s\n", diagnostic)
 			}
 		}
-		leadModel := os.Getenv("MINOS_LEAD_MODEL")
-		if leadModel != "" {
-			attribution := "\n\nReviewed by: `" + leadModel + "`."
-			addendum += attribution
-			for index := range comments {
-				comments[index].Body += attribution
-			}
+		// The lead signs the review it authors (C42); each comment already
+		// carries its proposing and verifying models from the publication
+		// composer, so the lead's identity goes on the body alone.
+		if leadModel := os.Getenv("MINOS_LEAD_MODEL"); leadModel != "" {
+			addendum += "\n\nReviewed by: `" + leadModel + "`."
 		}
 		text := strings.TrimRight(string(body), "\r\n") + addendum + "\n\n" + record
 		return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text, comments))

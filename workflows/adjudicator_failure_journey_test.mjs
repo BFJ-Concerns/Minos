@@ -294,7 +294,6 @@ function assertWithheld(verdict) {
   assert.equal(verdict.status, "incomplete");
   assert.equal(verdict.complete, false);
   assert.deepEqual(verdict.confirmedFindings, []);
-  assert.equal(verdict.reviewBody, null);
 }
 
 function machineReadableBriefStatus(verdict, brief) {
@@ -329,9 +328,9 @@ test("the executable adjudicator carries the launch contract through to a publis
   assert.match(basename(launch.recordDir), /^minos-ensemble-record-[^/]+$/);
   assert.equal(verdict.status, "complete");
   assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
-  assert.deepEqual(verdict.reviewBody.comments.map((comment) => ({
-    path: comment.path,
-    line: comment.line,
+  assert.deepEqual(verdict.confirmedFindings.map((finding) => ({
+    path: finding.path,
+    line: finding.line,
   })), [{ path: "internal/review.go", line: 42 }]);
   assert.match(result.stderr, /\[workflow\] complete/);
 });

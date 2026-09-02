@@ -912,7 +912,7 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 		"finding-presentation.mjs",
 		"isolate-from-live-run.mjs",
 		"out-of-scope-observations.mjs",
-		"publish-observations.mjs",
+		"compose-review-publication.mjs",
 		"review-brief-inputs.mjs",
 		"review-briefs.js",
 		"review-inputs.mjs",
@@ -950,7 +950,7 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 		filepath.Join(destination, "workflows", "finding-presentation.mjs"),
 		filepath.Join(destination, "workflows", "isolate-from-live-run.mjs"),
 		filepath.Join(destination, "workflows", "out-of-scope-observations.mjs"),
-		filepath.Join(destination, "workflows", "publish-observations.mjs"),
+		filepath.Join(destination, "workflows", "compose-review-publication.mjs"),
 		filepath.Join(destination, "workflows", "review-brief-inputs.mjs"),
 		filepath.Join(destination, "workflows", "review-briefs.js"),
 		filepath.Join(destination, "workflows", "review-inputs.mjs"),
@@ -1015,11 +1015,7 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nexit 3\n")
-	writeScript(t, filepath.Join(bin, "ssh"), `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`)
+	installArchiveReceiverSSH(t, bin, t.TempDir())
 	identity := filepath.Join(fixture.root, "archive-identity")
 	knownHosts := filepath.Join(fixture.root, "archive-known-hosts")
 	for _, path := range []string{identity, knownHosts} {
@@ -1030,7 +1026,6 @@ exec sh -c "$last"
 	archiveConfig := filepath.Join(fixture.root, "archive.env")
 	config := strings.Join([]string{
 		`MINOS_ARCHIVE_HOST="fixture"`,
-		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 	}, "\n") + "\n"

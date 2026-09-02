@@ -40,6 +40,13 @@ names a real residual defect must also return that residue as an
 observation. Never smuggle an observation into a verdict or its reason
 alone, and never let one soften a refutation the evidence demands.
 
+An observation you return must name a real defect or a real gap the author
+can act on, grounded where the author can check it — the repository first,
+a quoted and file-named guidance sentence second, never a bare "the
+commission". A note concluding that nothing is wrong, or offering only a
+hypothetical hardening lead with no defect behind it, is not an
+observation: leave it out.
+
 Do not load skills, start another workflow, consult historical sessions, search the
 web, or inspect unrelated worktrees. Return one structured verdict with an
 independent confidence integer from 0 to 100.

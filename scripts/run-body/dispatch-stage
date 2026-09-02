@@ -1,0 +1,98 @@
+#!/usr/bin/env sh
+set -eu
+
+# The one way a lifecycle stage is launched. Every repeatable mechanic of a
+# workflow dispatch lives here rather than in the lead's hands (C6): the
+# stage's file naming, the wrapper nesting (timing outermost, completion flag,
+# atomic result publication innermost), the Ensemble record and status
+# directories, and the diagnostics log. The lead names the stage and the
+# workflow script; everything else is identical on every run.
+#
+#   dispatch-stage NAME WORKFLOW_SCRIPT   launch the adjudicated workflow in
+#                                         the foreground of this process
+#   dispatch-stage await NAME             exit once NAME's completion flag exists
+#
+# NAME is the stage's base name (review, review-brief, review-scope) or a
+# repeat of it with the @N attempt suffix (review@2). A launch reads the
+# lead-built input at $MINOS_RUN_DIR/<base>-args.json and, for a repeat,
+# announces the attempt by copying it to <NAME>-args.json — the status
+# projection derives stages from exactly these files. The result lands whole
+# at <NAME>-result.json only on a clean exit, the flag <NAME>-result.done
+# appears after any exit, and diagnostics go to <NAME>.log.
+
+usage() {
+  echo "usage: dispatch-stage NAME WORKFLOW_SCRIPT | dispatch-stage await NAME" >&2
+  exit 2
+}
+
+# valid_stage_name accepts the lifecycle's one spelling of a step: lower-case
+# hyphenated words, optionally followed by @N with N >= 2 and no leading zero.
+valid_stage_name() {
+  case "$1" in
+    *@*)
+      base="${1%%@*}"
+      attempt="${1#*@}"
+      case "$attempt" in
+        ''|0*|*[!0-9]*|1) return 1 ;;
+      esac
+      ;;
+    *) base="$1" ;;
+  esac
+  case "$base" in
+    ''|-*|*-|*--*|*[!a-z-]*) return 1 ;;
+  esac
+  return 0
+}
+
+[ "$#" -eq 2 ] || usage
+: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+
+if [ "$1" = "await" ]; then
+  name="$2"
+  valid_stage_name "$name" || usage
+  until [ -e "$MINOS_RUN_DIR/$name-result.done" ]; do sleep 1; done
+  exit 0
+fi
+
+name="$1"
+workflow="$2"
+valid_stage_name "$name" || usage
+: "${MINOS_REVIEW_WORKFLOW:?MINOS_REVIEW_WORKFLOW is required}"
+: "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required}"
+
+run_body_dir="${MINOS_SETUP_WORKSPACE%/*}"
+workflows_dir="${MINOS_REVIEW_WORKFLOW%/*}"
+case "$workflow" in
+  /*) ;;
+  *) workflow="$workflows_dir/$workflow" ;;
+esac
+[ -f "$workflow" ] || {
+  echo "dispatch-stage: workflow script $workflow does not exist" >&2
+  exit 1
+}
+
+base="${name%%@*}"
+base_args="$MINOS_RUN_DIR/$base-args.json"
+args="$MINOS_RUN_DIR/$name-args.json"
+[ -s "$base_args" ] || {
+  echo "dispatch-stage: stage input $base_args is missing or empty" >&2
+  exit 1
+}
+if [ "$name" != "$base" ] && [ ! -e "$args" ]; then
+  cp "$base_args" "$args"
+fi
+
+# A stale flag from an earlier attempt of the same name would wake a watcher
+# on old news; the wrapper clears it too, but only once it is running.
+rm -f "$MINOS_RUN_DIR/$name-result.done"
+
+ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR"
+ENSEMBLE_RUN_RECORD=on
+ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/$name"
+export ENSEMBLE_STATUS_DIR ENSEMBLE_RUN_RECORD ENSEMBLE_RUN_RECORD_DIR
+
+exec 2>>"$MINOS_RUN_DIR/$name.log"
+exec "$run_body_dir/time-on-exit" "$MINOS_RUN_DIR/timings.ndjson" "$name" \
+  "$run_body_dir/flag-on-exit" "$MINOS_RUN_DIR/$name-result.done" \
+  "$run_body_dir/publish-on-exit" "$MINOS_RUN_DIR/$name-result.json" \
+  "$MINOS_REVIEW_WORKFLOW" "$workflow" --json-args "@$args"

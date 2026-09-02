@@ -90,7 +90,6 @@ function assertWithheld(adapterVerdict, condition) {
       adapterVerdict.incomplete.join("\n"),
     );
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
 }
 
 function missingRecordDirectory(t) {
@@ -107,21 +106,19 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   assert.equal(adapterVerdict.status, "complete");
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
-  assert.equal(adapterVerdict.reviewBody.comments.length, 1);
-  assert.equal(
-    adapterVerdict.reviewBody.comments[0].body,
-    "**Distinct failure**\n\n" +
-      "The changed branch accepts an invalid state.\n\n" +
-      "Severity: High.\n\n" +
-      "Proposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\n" +
-      "Verified by: `claude-opus-5`.",
-  );
+  // The verdict carries the finding and its model evidence as data; what the
+  // author reads is the publication composer's rendering, never the
+  // adjudicator's.
   assert.deepEqual(
-    adapterVerdict.reviewBody.comments.map(({ path, line }) => ({ path, line })),
-    [{ path: "internal/review.go", line: 42 }],
+    adapterVerdict.confirmedFindings.map(({ path, line, proposingModel, verifyingModel }) => ({ path, line, proposingModel, verifyingModel })),
+    [{
+      path: "internal/review.go",
+      line: 42,
+      proposingModel: { pinnedModel: "gpt-5.6-sol", resolvedModel: "gpt-5.6-sol-served" },
+      verifyingModel: { pinnedModel: "claude-opus-5", resolvedModel: "claude-opus-5" },
+    }],
   );
-  assert.equal("new_position" in adapterVerdict.reviewBody.comments[0], false);
-  assert.equal(adapterVerdict.reviewBody.body, "Repository review brief findings.");
+  assert.equal("reviewBody" in adapterVerdict, false);
   assert.deepEqual(adapterVerdict.ran, [{ brief: ".review/errors.md", title: "Error handling" }]);
   assert.deepEqual(adapterVerdict.skipped, []);
   assert.deepEqual(adapterVerdict.misconfigurations, []);
@@ -190,11 +187,6 @@ test("a refuted verifier completes the run without publishing a finding", async 
   assert.equal(adapterVerdict.status, "complete");
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.deepEqual(adapterVerdict.reviewBody, {
-    body: "No confirmed findings in the reviewed code.",
-    comments: [],
-  });
-  assert.equal("verdict" in adapterVerdict.reviewBody, false);
 });
 
 test("operator attention follows the combined-confidence threshold", async (t) => {
@@ -261,21 +253,14 @@ test("every confirmed finding renders into the review payload regardless of seve
 
   assert.equal(mixedVerdict.status, "complete", mixedVerdict.incomplete.join("\n"));
   assert.deepEqual(
-    mixedVerdict.reviewBody.comments.map(({ path, line, body }) => ({ path, line, body })),
+    mixedVerdict.confirmedFindings.map(({ id, severity, path, line }) => ({ id, severity, path, line })),
     [
-      {
-        path: "internal/review.go",
-        line: 42,
-        body: "**Distinct failure**\n\nThe changed branch accepts an invalid state.\n\nSeverity: High.\n\nProposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\nVerified by: `claude-opus-5`.",
-      },
-      {
-        path: "internal/review.go",
-        line: 7,
-        body: "**Advisory wording obscures the recovery path**\n\nThe recovery path is correct but difficult to identify.\n\nSeverity: Low.\n\nProposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\nVerified by: `claude-opus-5`.",
-      },
+      { id: "specialist-1:1", severity: "High", path: "internal/review.go", line: 42 },
+      { id: "specialist-2:1", severity: "Low", path: "internal/review.go", line: 7 },
     ],
+    "every confirmed finding, below threshold included, reaches the verdict",
   );
-  assert.doesNotMatch(JSON.stringify(mixedVerdict.reviewBody), /confidence|proposingLabel|verifyLabel|rawVerifier/);
+  assert.doesNotMatch(JSON.stringify(mixedVerdict.confirmedFindings), /proposingLabel|verifyLabel|rawVerifier/);
 
   const lowOnlyFixtureArchiveDir = fixtureArchive(t, { records: recordsWithLowSeverityLegs });
   const lowOnlyVerdict = await adjudicate({
@@ -283,9 +268,7 @@ test("every confirmed finding renders into the review payload regardless of seve
     recordDir: lowOnlyFixtureArchiveDir,
   });
   assert.equal(lowOnlyVerdict.status, "complete", lowOnlyVerdict.incomplete.join("\n"));
-  assert.deepEqual(lowOnlyVerdict.reviewBody.comments.map((comment) => comment.body), [
-    "**Advisory wording obscures the recovery path**\n\nThe recovery path is correct but difficult to identify.\n\nSeverity: Low.\n\nProposed by: `gpt-5.6-sol-served` (pinned `gpt-5.6-sol`).\nVerified by: `claude-opus-5`.",
-  ]);
+  assert.deepEqual(lowOnlyVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-2:1"]);
 });
 
 test("an unexpected resolved_model family does not withhold a complete verdict", async (t) => {
@@ -477,7 +460,6 @@ test("a non-complete leg makes the run incomplete", async (t) => {
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /specialist-1 has status failed; expected complete/);
   assert.match(adapterVerdict.incomplete.join("\n"), /no complete verdict/);
 });
@@ -549,7 +531,6 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
   const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /proposed finding 1 is absent or malformed/);
 });
 
@@ -562,7 +543,7 @@ test("an envelope carrying a members record makes the run incomplete", async (t)
   assertWithheld(adapterVerdict, "envelope carries a members record; grouped runs no longer exist");
 });
 
-test("a finding about a range reaches the review payload covering it", async (t) => {
+test("a finding about a range reaches the verdict with its end line", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t);
   const rangeEnvelope = {
     ...envelope,
@@ -572,7 +553,7 @@ test("a finding about a range reaches the review payload covering it", async (t)
 
   assert.equal(adapterVerdict.status, "complete");
   assert.deepEqual(
-    adapterVerdict.reviewBody.comments.map(({ line, end_line: endLine }) => ({ line, endLine })),
+    adapterVerdict.confirmedFindings.map(({ line, endLine }) => ({ line, endLine })),
     [{ line: 42, endLine: 46 }],
   );
 });
@@ -823,7 +804,6 @@ test("a malformed misconfigurations field cannot become publishable", { timeout:
   const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /envelope misconfigurations is absent or unreadable/);
 });
 
@@ -872,7 +852,6 @@ for (const [description, misconfiguration] of [
     const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
     assert.equal(adapterVerdict.status, "incomplete");
     assert.deepEqual(adapterVerdict.confirmedFindings, []);
-    assert.equal(adapterVerdict.reviewBody, null);
     assert.match(adapterVerdict.incomplete.join("\n"), /envelope contains a malformed brief misconfiguration/);
   });
 }
