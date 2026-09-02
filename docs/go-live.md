@@ -19,9 +19,10 @@ so no repository toolchains are needed.
    `provision-archive-transport destination PUBLIC_KEY DESTINATION
    AUTHORIZED_KEYS BOX_ADDRESS RECEIVER_PATH`: the box's key lands in the
    account's `authorized_keys` as one `restrict,from=…,command=…` line, so
-   the key opens no shell and reaches exactly two operations — landing an
-   archive artefact whole under `DESTINATION`, and listing the timing
-   sidecars there — from the box's address alone. Re-running it replaces
+   the key opens no shell and reaches exactly three operations — landing
+   an archive artefact beside its final name under `DESTINATION`,
+   committing it there once the box's own pipeline has succeeded, and
+   listing the timing sidecars — from the box's address alone. Re-running it replaces
    an earlier line for the same key. Install `lifecycle`
    under `/opt/minos/lifecycle`, and `skills/foundry` under
    `/opt/minos/skills/foundry`. That tree holds the vendored skills one
@@ -268,7 +269,7 @@ as often as it likes without the archive host hearing about it.
 
 The calls that do reach the archive host share a connection where they can.
 `archive-transport.sh` puts an SSH control socket in `$XDG_RUNTIME_DIR`, or in
-`MINOS_ARCHIVE_CONTROL_DIR` when set, so a run's two delivery calls cost one
+`MINOS_ARCHIVE_CONTROL_DIR` when set, so a run's four delivery calls cost one
 login between them and a steady listing caller holds one session open rather
 than authenticating on each poll. Neither directory being available costs only
 the sharing: each call falls back to its own connection.

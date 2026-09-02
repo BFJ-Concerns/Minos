@@ -27,15 +27,29 @@ func runArchiveReceiver(t *testing.T, destination, request string, stdin []byte)
 	return stdout.Bytes(), stderr.Bytes(), err
 }
 
-func TestArchiveReceiverLandsAnArtefactWholeOrNotAtAll(t *testing.T) {
+func TestArchiveReceiverLandsAnArtefactOnlyWhenTheClientCommitsIt(t *testing.T) {
 	destination := t.TempDir()
+	name := "20260902T210000Z-owner-repo-pr1.tar.zst"
 
-	if _, stderr, err := runArchiveReceiver(t, destination, "receive 20260902T210000Z-owner-repo-pr1.tar.zst", []byte("archive bytes")); err != nil {
+	// A received stream lands beside the final name and nowhere else: the
+	// server never promotes on its own reading of end-of-file, because a
+	// client whose pipeline failed mid-stream also closes the stream.
+	if _, stderr, err := runArchiveReceiver(t, destination, "receive "+name, []byte("archive bytes")); err != nil {
 		t.Fatalf("receive: %v\n%s", err, stderr)
 	}
-	assertContainsFile(t, filepath.Join(destination, "20260902T210000Z-owner-repo-pr1.tar.zst"), "archive bytes")
-	if _, err := os.Stat(filepath.Join(destination, "20260902T210000Z-owner-repo-pr1.tar.zst.partial")); !os.IsNotExist(err) {
+	assertContainsFile(t, filepath.Join(destination, name+".partial"), "archive bytes")
+	if _, err := os.Stat(filepath.Join(destination, name)); !os.IsNotExist(err) {
+		t.Fatalf("artefact promoted before the client committed it: %v", err)
+	}
+	if _, stderr, err := runArchiveReceiver(t, destination, "commit "+name, nil); err != nil {
+		t.Fatalf("commit: %v\n%s", err, stderr)
+	}
+	assertContainsFile(t, filepath.Join(destination, name), "archive bytes")
+	if _, err := os.Stat(filepath.Join(destination, name+".partial")); !os.IsNotExist(err) {
 		t.Fatalf("partial left beside the landed artefact: %v", err)
+	}
+	if _, stderr, err := runArchiveReceiver(t, destination, "commit 20260902T210000Z-owner-repo-pr9.tar.zst", nil); err == nil || !strings.Contains(string(stderr), "nothing received to commit") {
+		t.Fatalf("commit without a receive: err = %v\n%s", err, stderr)
 	}
 
 	_, stderr, err := runArchiveReceiver(t, destination, "receive 20260902T210100Z-owner-repo-pr2.timings.json", nil)
@@ -46,8 +60,8 @@ func TestArchiveReceiverLandsAnArtefactWholeOrNotAtAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("destination after an empty transfer = %v, want only the landed artefact", entries)
+	if len(entries) != 1 || entries[0].Name() != name {
+		t.Fatalf("destination after an empty transfer = %v, want only the committed artefact", entries)
 	}
 }
 
@@ -92,6 +106,8 @@ func TestArchiveReceiverRefusesEverythingButTheTwoRequests(t *testing.T) {
 		"receive .hidden.tar.zst",
 		"receive notes.txt",
 		"receive a.tar.zst extra",
+		"commit ../escape.tar.zst",
+		"commit a.tar.zst extra",
 		"list 20260902T000000Z",
 		"list 2026-09-02 1",
 		"list 20260902T000000Z many",

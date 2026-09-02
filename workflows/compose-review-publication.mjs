@@ -85,8 +85,14 @@ function normalisedTitle(finding) {
   return String(finding.title || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// Keys are JSON-encoded tuples: a path may contain any character, so a
+// delimiter-joined string could make two distinct sites read as one.
 function site(finding) {
-  return `${finding.path} ${finding.line}`;
+  return JSON.stringify([finding.path, finding.line]);
+}
+
+function siteAndTitle(finding) {
+  return JSON.stringify([finding.path, finding.line, normalisedTitle(finding)]);
 }
 
 const SEVERITY_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4 };
@@ -98,11 +104,9 @@ const SEVERITY_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 // one site are cross-referenced by title so the author reads them as
 // neighbours rather than as a pile-up.
 if (brief) {
-  const mainBySiteAndTitle = new Map(
-    main.findings.map((finding) => [`${site(finding)} ${normalisedTitle(finding)}`, finding]),
-  );
+  const mainBySiteAndTitle = new Map(main.findings.map((finding) => [siteAndTitle(finding), finding]));
   brief.findings = brief.findings.filter((finding) => {
-    const twin = mainBySiteAndTitle.get(`${site(finding)} ${normalisedTitle(finding)}`);
+    const twin = mainBySiteAndTitle.get(siteAndTitle(finding));
     if (!twin) return true;
     if (SEVERITY_RANK[finding.severity] > SEVERITY_RANK[twin.severity]) twin.severity = finding.severity;
     twin.alsoRaisedBy = [...(twin.alsoRaisedBy || []), finding.source];
