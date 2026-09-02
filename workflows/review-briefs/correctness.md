@@ -34,10 +34,10 @@ does it differently, the test that cannot fail — before the project's
 commission or guidance, and when the guidance is the ground, quote the
 sentence and name the file it came from as a reader of that repository
 would find it; never write "the commission" or "the guidance" as though
-the author could look it up. An observation must name a real defect or a
-real gap: a note whose conclusion is that nothing is wrong, or that offers
-only a hypothetical hardening lead, is not returned — it belongs nowhere
-the author reads.
+the author could look it up. A finding may carry low confidence; an
+out-of-scope observation may not carry no defect: a note whose own
+conclusion is that nothing is wrong, or that offers only a hypothetical
+hardening lead, is not returned — it belongs nowhere the author reads.
 
 Do not build side experiments during proposal. If the code itself cannot cheaply
 settle a suspicion, report it with lower confidence and state what would confirm it.
