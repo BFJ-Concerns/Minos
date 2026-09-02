@@ -214,6 +214,19 @@ test("unverified observations and misconfigurations from both groups compose one
   assert.match(comments[1].body, /^\*\*Review brief misconfiguration: Security brief\*\*/);
 });
 
+test("an id-less verdict is gated by the digest's content key, never silently rendered advisory", (t) => {
+  const { id: omittedId, ...idless } = finding("a");
+  const contentKey = JSON.stringify(["internal/review.go", 42, "finding a"]);
+  const { result, plan, readJson } = compose(t, {
+    main: verdict([idless]),
+    mainDecision: decision("request-changes", [{ key: contentKey, gating: true }]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(plan.verdict, "request-changes");
+  assert.deepEqual(plan.posts.map((post) => post.verdict), ["request-changes"]);
+  assert.match(readJson(plan.posts[0].comments)[0].body, /^\*\*Blocking · High: Finding a\*\*/);
+});
+
 test("a decision that does not validate against its verdict composes nothing and exits 1", (t) => {
   const { result, scratch } = compose(t, {
     main: verdict([finding("a")]),

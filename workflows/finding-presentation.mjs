@@ -92,9 +92,11 @@ function short(sha) {
 // repository brief group — and `verdict` is the lead's validated decision
 // for that group. A brief group's body names the briefs it ran, since those
 // are the author's own criteria; skipped concerns stay in the run record.
-export function reviewBody({ verdict, reviewed, findings, dispositions, group = "main", briefsRan = [] }) {
-  const blocking = findings.filter((finding) => dispositions.get(finding.id)?.gating === true);
-  const advisory = findings.filter((finding) => dispositions.get(finding.id)?.gating !== true);
+// `dispositionOf` returns the lead's validated disposition for a finding
+// (null when none), keyed however the caller's decision keys them.
+export function reviewBody({ verdict, reviewed, findings, dispositionOf, group = "main", briefsRan = [] }) {
+  const blocking = findings.filter((finding) => dispositionOf(finding)?.gating === true);
+  const advisory = findings.filter((finding) => dispositionOf(finding)?.gating !== true);
   const lines = [];
   if (group === "main") {
     lines.push(VERDICT_HEADLINES[verdict]);
