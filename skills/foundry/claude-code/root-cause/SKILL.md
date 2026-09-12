@@ -63,10 +63,11 @@ as it arrives.
 
 **"It passes now."** An intermittent failure has a failure *rate*, and a green
 run is a sample, not a verdict — a test failing one time in ten passes nine
-reruns unchanged. Establish how often it fails before your change, and hold the
-after against that baseline. The claim to make is "the mechanism this change
-removes is the one that produced the failures", supported by rate and by
-mechanism, never by a lucky pass.
+reruns unchanged. Prefer a deterministic witness that exercises the failing
+mechanism before the change and passes afterwards. If reproduction remains
+probabilistic, measure the before and after rates under comparable conditions.
+The claim to make is "the mechanism this change removes is the one that
+produced the failures", never merely that a rerun passed.
 
 **"I'll just try this and see."** A guessed change is a legitimate experiment
 and an illegitimate fix. Before running it, say what each outcome would tell
@@ -150,7 +151,10 @@ repository's tree.
 
 ## Intermittent failures
 
+Do not defer tests until the host is under load or manufacture artificial
+load to reproduce or verify a failure.
+Deliberate stress testing requires an explicit user request.
+
 When the failure is intermittent or reproduction is unreliable, read
-`references/intermittent-failures.md`: it carries the classification
-instruments, base-rate priors, and rate arithmetic that intermittence demands
-and steady failures never need.
+`references/intermittent-failures.md` for deterministic isolation techniques,
+classification instruments, base-rate priors and statistical confirmation.
