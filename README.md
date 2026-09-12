@@ -39,6 +39,15 @@ pull request that gives no specialist or `.review/` brief any work skips the
 full review launch. The workflow decision logic and
 adjudication are exercised by `node --test workflows/*_test.mjs`.
 
+The pull request carries what blocks it: the review's inline comments are the
+gating findings, each anchored where it applies. Everything else the run
+learned — confirmed findings the lead judged non-gating, unverified
+out-of-scope observations, `.review/` brief misconfigurations — is filed by
+`workflows/file-triage.mjs` into the reviewed project's annexe `ISSUES.md`
+(appended once per entry, committed and pushed as Minos), and lands on the
+pull request as one comment review only when the project has no annexe or
+the filing is refused.
+
 Published review comments carry model provenance: each finding is tagged with
 `Proposed by:` and `Verified by:` lines naming the models that proposed and
 verified it, and the forge review command appends a `Reviewed by:` line naming
