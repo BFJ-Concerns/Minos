@@ -373,9 +373,9 @@ write, matching the target rule above.)
 
    Any adjudicated verdict may also contain `outOfScopeObservations`.
    These are unverified observations, not findings, and carry no verifier
-   verdict. Keep them in the saved verdict for step 6's observation
-   publication: they are triage material only and never enter a review's
-   findings, a classification digest, or a run outcome.
+   verdict. Keep them in the saved verdict for step 6's triage filing:
+   they are triage material only and never enter a review's findings, a
+   classification digest, or a run outcome.
 
    Only a verdict whose `status` is `complete` may proceed. A missing
    result, incomplete leg, or missing or invalid verifier result yields
@@ -418,8 +418,8 @@ write, matching the target rule above.)
    skipped concern is reported as skipped in the run's record, never as
    passed. A brief whose declared scope directory does not exist is a
    misconfiguration, carried in the verdict's `misconfigurations` — a
-   configuration defect distinct from an ordinary skip, published as
-   observation material in step 6.
+   configuration defect distinct from an ordinary skip, filed as triage
+   material in step 6.
 
    A `not-run` concern, missing result, incomplete leg, or missing or
    invalid verifier result makes this stage incomplete: publish no review,
@@ -455,8 +455,9 @@ write, matching the target rule above.)
    is judging a below-threshold finding's severity an undergrade that
    genuinely belongs at or above the threshold, named as such. Any gating
    finding makes the verdict `request-changes`; none makes it `clean`.
-   Below-threshold findings ride the published review either way — they
-   never gate and never take a side channel.
+   A finding judged non-gating is advisory: it leaves the review for the
+   project's issue log in step 6, so the pull request carries only what
+   blocks it.
 
    Write your decision per verdict to
    `$MINOS_RUN_DIR/verdict-decision.json` (`verdict-decision-brief.json`
@@ -494,10 +495,10 @@ write, matching the target rule above.)
    review.
 
    The publication composer turns the validated decisions into exactly
-   what is posted, in the order it is posted; you compose no payload and
-   choose no order yourself. Run it once. When the brief stage did not
-   run (or was settled by the gate), give it the main verdict and
-   decision alone:
+   what is posted, in the order it is posted, and sets aside what is
+   filed instead; you compose no payload and choose no routing yourself.
+   Run it once. When the brief stage did not run (or was settled by the
+   gate), give it the main verdict and decision alone:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/compose-review-publication.mjs" \
@@ -520,50 +521,66 @@ write, matching the target rule above.)
    5, never a payload to hand-assemble. Its plan,
    `$MINOS_RUN_DIR/publication/publication-plan.json`, lists the posts in
    order — each with its `verdict` argument and the body and comments
-   files it wrote. Post them in that order, one scripted review per
-   entry, substituting the entry's `verdict`, `body` and `comments`
-   values and the run's head and target:
+   files it wrote — and names the triage entries file under `triage`.
+   Post the reviews in that order, one scripted review per entry,
+   substituting the entry's `verdict`, `body` and `comments` values and
+   the run's head and target:
 
    ```sh
    "$MINOS_BIN" forge review HEAD TARGET VERDICT BODY_FILE COMMENTS_FILE
    ```
 
-   The order is the contract: the main review lands first and carries the
-   verdict the classification earned (`request-changes` when the decision
-   gates, `approve` when it is clean); a brief group with confirmed
-   findings follows as its own review, `request-changes` only when its
-   own decision gates and otherwise `comment` — never an approval, which
-   the forge would read as outranking the verdict; unverified observations
-   and brief misconfigurations, when any exist, come last as one `comment`
-   review. The same defect raised by both groups at one site — same path,
-   line and title — is merged into the main review, naming the brief that
-   also raised it; distinct findings on one line cross-reference each
-   other. So no defect reaches the author twice. A brief verdict with no
-   confirmed findings produces no post at all: the plan never carries an
-   all-clear brief review, and you never post one or an "all clear"
-   comment — the 👍 carries that. Every confirmed finding rides its
-   review, above and below
-   threshold alike, each comment anchored to the path and line it
-   concerns; the guarded command anchors what the diff geometry allows and
-   folds the rest into the review body — a confirmed finding is never
-   dropped or moved to a line it does not concern, and placement degrades
-   all the way to the review body, never past it. The guarded review
-   command deduplicates an exact pre-existing review, so a retry
+   The pull request carries what blocks it. The main review lands first
+   and carries the verdict the classification earned (`request-changes`
+   when the decision gates, `approve` when it is clean), with every
+   gating finding anchored to the path and line it concerns; a brief
+   group follows as its own `request-changes` review only when its own
+   decision gates — never a comment or approval review, which would say
+   nothing or outrank the verdict. The same defect raised by both groups
+   at one site — same path, line and title — is merged into the main
+   review, naming the brief that also raised it, so no defect reaches the
+   author twice. The guarded command anchors what the diff geometry
+   allows and folds the rest into the review body — a gating finding is
+   never dropped or moved to a line it does not concern, and placement
+   degrades all the way to the review body, never past it. The guarded
+   review command deduplicates an exact pre-existing review, so a retry
    converges. It signs each review body with `Reviewed by:
    $MINOS_LEAD_MODEL.` when that configured identity is present — the
    comments already carry their proposing and verifying models — and the
    signature is payload material only, never a later read-back or
    decision input.
 
-   A confirmed finding that reached no durable surface is not a
+   A gating finding that reached no durable surface is not a
    presentation problem — the review did not happen, and no 👍 or
    approval may follow: treat a rejected or uncertain findings-review
    write as the run's failure, set `incomplete`, remove 👀, write the
-   non-clean terminal marker, and stop. The observations post is
-   presentation-class: its failure degrades and never fails the run.
-   Observations travel plainly marked as unverified, never as findings;
-   the pull request is the one delivery surface — Minos files nothing in
-   reviewed projects' annexes.
+   non-clean terminal marker, and stop.
+
+   Then deliver the triage material — the advisory findings the decisions
+   judged non-gating, the verdicts' unverified observations, and any
+   brief misconfigurations, which the composer wrote to the plan's
+   `triage.entries` file — to the reviewed project. Its annexe issue log
+   is the destination: the filing appends each entry once to the annexe's
+   `ISSUES.md`, commits and pushes as Minos, and skips an entry the log
+   already carries. Run it once, after the reviews have posted:
+
+   ```sh
+   node "${MINOS_REVIEW_WORKFLOW%/*}/file-triage.mjs" \
+     "$MINOS_RUN_DIR/publication" "$MINOS_RUN_DIR/publication/triage-entries.json" \
+     "$MINOS_ORIENTATION" "$MINOS_CREDENTIAL_FILE" \
+     > "$MINOS_RUN_DIR/triage-result.json"
+   ```
+
+   Read its `destination`. `annexe` means the log took the entries and
+   nothing more is posted. `pull-request` means no log could take them —
+   the project has no annexe, or the push was refused — and the result's
+   `review` names the `comment` review to post instead, through the same
+   guarded command with its `verdict`, `body` and `comments` values;
+   advisory material travels plainly marked as advisory or unverified,
+   never as a blocking finding. `none` means there was nothing to file.
+   Filing is presentation-class: a failure of the filing or of the
+   fallback post degrades and never fails the run — note it in the run
+   report and carry on to the terminal outcome.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` after publication.
 7. End at the earned terminal outcome.

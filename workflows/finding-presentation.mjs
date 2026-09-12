@@ -1,8 +1,9 @@
-// The one authority for what Minos publishes onto a pull request about
-// its review. Every plain-Node producer of forge review payloads — the
-// publication composer above all — renders through this module, so what a
-// review body says, what a finding comment carries, and how an unverified
-// observation is marked cannot drift between producers.
+// The one authority for what Minos publishes about its review. Every
+// plain-Node producer of review material — the publication composer and
+// the issue-log filing above all — renders through this module, so what a
+// review body says, what a finding comment carries, how an issue-log entry
+// reads and how unverified material is marked cannot drift between
+// producers.
 //
 // Payload text is author-facing. Operator material — confidence values,
 // probe questions and unit concerns, worker labels — belongs in the run
@@ -39,7 +40,7 @@ function provenance(finding) {
   const proposingModel = modelAttribution(finding.proposingModel);
   const verifyingModel = modelAttribution(finding.verifyingModel);
   if (!proposingModel || !verifyingModel) return "";
-  return `\n\nProposed by ${proposingModel}; verified by ${verifyingModel}.`;
+  return `Proposed by ${proposingModel}; verified by ${verifyingModel}.`;
 }
 
 // A finding comment's first line is its structural grammar: whether it
@@ -55,11 +56,12 @@ export function findingComment(finding, disposition = null) {
   const alsoRaised = Array.isArray(finding.alsoRaisedBy) && finding.alsoRaisedBy.length > 0
     ? `\n\nAlso raised by: ${finding.alsoRaisedBy.join(", ")}.`
     : "";
+  const attribution = provenance(finding);
   const comment = {
     path: finding.path,
     body:
       `**${label} · ${finding.severity}: ${finding.title}**\n\n` +
-      `${finding.explanation}${alsoRaised}${crossReferences}${provenance(finding)}`,
+      `${finding.explanation}${alsoRaised}${crossReferences}${attribution === "" ? "" : `\n\n${attribution}`}`,
     line: finding.line,
   };
   // A finding about a range says so, so the forge boundary can cover the
@@ -86,53 +88,97 @@ function short(sha) {
   return typeof sha === "string" && sha.length >= 7 ? sha.slice(0, 7) : String(sha);
 }
 
-// The review body carries its own warrant: what was reviewed, what the
-// review found and how much of it blocks, and what the author does next.
+// Names the triage material that left the review for the issue log, in the
+// author's own terms: how many advisory findings, unverified observations
+// and brief misconfigurations. Empty when there is none.
+function triageSummary(triage) {
+  const counts = [
+    [triage.advisory, "advisory finding"],
+    [triage.observations, "unverified observation"],
+    [triage.misconfigurations, "review-brief misconfiguration"],
+  ].filter(([count]) => count > 0);
+  if (counts.length === 0) return "";
+  const parts = counts.map(([count, noun]) => plural(count, noun));
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `${list} ${counts.reduce((sum, [count]) => sum + count, 0) === 1 ? "is" : "are"} filed for triage, not on this review.`;
+}
+
+// The review body carries its own warrant: what was reviewed, what blocks
+// and what left the review for triage, and what the author does next.
 // `group` names the review this body opens — the main review, or a
 // repository brief group — and `verdict` is the lead's validated decision
-// for that group. A brief group's body names the briefs it ran, since those
-// are the author's own criteria; skipped concerns stay in the run record.
-// `dispositionOf` returns the lead's validated disposition for a finding
-// (null when none), keyed however the caller's decision keys them.
-export function reviewBody({ verdict, reviewed, findings, dispositionOf, group = "main", briefsRan = [] }) {
-  const blocking = findings.filter((finding) => dispositionOf(finding)?.gating === true);
-  const advisory = findings.filter((finding) => dispositionOf(finding)?.gating !== true);
+// for that group. Every finding on a review blocks; the triage counts name
+// the rest. A brief group's body names the briefs it ran, since those are
+// the author's own criteria; skipped concerns stay in the run record.
+export function reviewBody({ verdict, reviewed, findings, group = "main", briefsRan = [], triage = null }) {
   const lines = [];
   if (group === "main") {
     lines.push(VERDICT_HEADLINES[verdict]);
   } else {
-    lines.push(
-      verdict === "request-changes"
-        ? "**Minos repository-brief review: changes need attention.**"
-        : "**Minos repository-brief review: advisory findings.**",
-    );
+    lines.push("**Minos repository-brief review: changes need attention.**");
   }
   lines.push("");
   lines.push(`Reviewed head \`${short(reviewed.head)}\` against target \`${short(reviewed.target)}\`.`);
   if (briefsRan.length > 0)
     lines.push(`Briefs applied: ${briefsRan.map((brief) => `\`${brief}\``).join(", ")}.`);
   if (findings.length === 0) {
-    lines.push("No confirmed findings.");
+    lines.push("No blocking findings.");
   } else {
     const files = [...new Set(findings.map((finding) => finding.path))].sort();
     lines.push(
-      `${plural(findings.length, "confirmed finding")} (${severityRollUp(findings)}) ` +
-        `in ${files.map((file) => `\`${file}\``).join(", ")}, each anchored inline where the diff allows.`,
+      `${plural(findings.length, "blocking finding")} (${severityRollUp(findings)}) ` +
+        `in ${files.map((file) => `\`${file}\``).join(", ")}, each anchored inline where the diff allows; ` +
+        `${findings.length === 1 ? "it" : "they"} must be resolved before this review approves.`,
     );
-    if (blocking.length > 0)
-      lines.push(`${plural(blocking.length, "blocking finding")} must be resolved before this review approves.`);
-    if (advisory.length > 0)
-      lines.push(`${plural(advisory.length, "advisory finding")} ${advisory.length === 1 ? "is" : "are"} for your judgement and ${advisory.length === 1 ? "does" : "do"} not block.`);
   }
+  const summary = triage ? triageSummary(triage) : "";
+  if (summary !== "") lines.push(summary);
   lines.push("");
   lines.push(`This review stands for head \`${short(reviewed.head)}\` only: push a new commit and Minos reviews the new head afresh.`);
   return lines.join("\n");
 }
 
-// Unverified side material — out-of-scope observations and review-brief
-// misconfigurations — renders as one comment review, each entry plainly
-// marked unverified so it can never read as a finding.
-export function observationComment(entry) {
+// Triage material — an advisory finding, an unverified observation or a
+// review-brief misconfiguration — is one entry shape with three kinds. The
+// two renderings below agree on what each kind says; only the surface
+// differs.
+
+// Prose folded into one list item: multi-line text stays inside the item,
+// and the text ends as a sentence so what follows it reads as the next one.
+function sentence(text) {
+  const folded = String(text).trim().replace(/\n/g, "\n  ");
+  return /[.!?]$/.test(folded) ? folded : `${folded}.`;
+}
+
+// One issue-log entry: a Markdown list item the project's triage reads cold,
+// carrying the entry's kind, severity where it has one, title, site,
+// explanation, provenance where the run recorded it, and its source.
+export function issueLogEntry(entry, attribution) {
+  if (entry.kind === "advisory-finding") {
+    const attributionLine = provenance(entry);
+    return (
+      `- **Advisory · ${entry.severity}: ${entry.title}** (\`${entry.path}:${entry.line}\`) — ${sentence(entry.explanation)}` +
+      `${attributionLine === "" ? "" : ` ${attributionLine}`} ${attribution}.`
+    );
+  }
+  if (entry.kind === "out-of-scope-observation") {
+    return (
+      `- **Unverified observation: ${entry.title}** (\`${entry.path}:${entry.line}\`) — ${sentence(entry.explanation)} ` +
+      `${UNVERIFIED_NOTICE} ${attribution}.`
+    );
+  }
+  if (entry.kind === "review-brief-misconfiguration") {
+    return `- **Review brief misconfiguration: ${entry.title}** (\`${entry.brief}\`) — ${sentence(entry.reason)} ${attribution}.`;
+  }
+  throw new Error(`unknown entry kind ${String(entry.kind)}`);
+}
+
+// The same entry as one pull-request comment, for a project with no issue
+// log to file into: an advisory finding keeps the finding grammar with no
+// blocking disposition; unverified material is plainly marked so it can
+// never read as a finding.
+export function triageComment(entry) {
+  if (entry.kind === "advisory-finding") return findingComment(entry, null);
   if (entry.kind === "out-of-scope-observation") {
     return {
       path: entry.path,
@@ -150,4 +196,5 @@ export function observationComment(entry) {
   throw new Error(`unknown entry kind ${String(entry.kind)}`);
 }
 
-export const OBSERVATIONS_BODY = "Unverified observations from the review, for the author's judgement.";
+export const TRIAGE_BODY =
+  "Advisory findings and unverified observations from the review, for the author's judgement: none of these block.";
