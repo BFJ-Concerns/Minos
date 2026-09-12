@@ -1,38 +1,39 @@
 #!/usr/bin/env node
 
 // The publication composer: the one deterministic step between the run's
-// validated verdicts and the forge. It turns the adjudicated verdicts and
-// the lead's classification decisions into the exact files the guarded
-// forge review command posts, in the order they are posted, so no lead ever
-// hand-assembles a payload or re-derives the posting sequence (C6).
+// validated verdicts and what leaves the run. It turns the adjudicated
+// verdicts and the lead's classification decisions into the exact files
+// the guarded forge review command posts, in the order they are posted,
+// and the triage material the issue-log filing delivers, so no lead ever
+// hand-assembles a payload or re-derives the routing (C6).
 //
-// Publication order is part of the contract (the forge marks a reviewer's
-// latest state-bearing review as official): the main review lands first and
-// carries the verdict; a repository-brief group follows as its own review,
-// blocking only when its own decision gates and otherwise a plain comment
-// review — never an approval, which would outrank the verdict; unverified
-// observations come last as a comment review. One defect surfaces as one
-// finding: findings the two groups raise at the same site are merged into
-// the main review and cross-referenced by title, never posted twice.
+// The pull request carries what blocks it. Every finding on a review is a
+// blocking finding, anchored where it applies; everything else the run
+// learned — advisory findings the lead judged non-gating, unverified
+// observations, review-brief misconfigurations — is triage material for the
+// reviewed project's issue log, filed by file-triage.mjs after the reviews
+// have posted, and delivered onto the pull request only where no log can
+// take it. Publication order is part of the contract (the forge marks a
+// reviewer's latest state-bearing review as official): the main review
+// lands first and carries the verdict; a repository-brief group follows as
+// its own blocking review only when its own decision gates. One defect
+// surfaces once: findings the two groups raise at the same site are merged
+// into the main review's, gating if either gates, and never posted twice.
 //
 // Usage:
 //   compose-review-publication.mjs OUTPUT_DIR THRESHOLD MAIN_VERDICT MAIN_DECISION [BRIEF_VERDICT BRIEF_DECISION]
 //
 // Writes OUTPUT_DIR/publication-plan.json — an ordered list of posts, each
 // naming its body file, comments file and the verdict argument for
-// `minos forge review` — beside the files it names. A decision that does not
-// validate against its verdict stops the composer with exit 1 and nothing
-// written: nothing reaches the forge from an unvalidated decision.
+// `minos forge review`, and the triage entries file — beside the files it
+// names. A decision that does not validate against its verdict stops the
+// composer with exit 1 and nothing written: nothing leaves the run from an
+// unvalidated decision.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import {
-  OBSERVATIONS_BODY,
-  findingComment,
-  observationComment,
-  reviewBody,
-} from "./finding-presentation.mjs";
+import { findingComment, reviewBody } from "./finding-presentation.mjs";
 import { findingKey, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
@@ -53,8 +54,8 @@ function readJson(path, label) {
   }
 }
 
-// A group is one review the run publishes: its complete verdict and the
-// lead's validated decision over that verdict's confirmed findings.
+// A group is one verdict the run holds: the complete adjudicated verdict
+// and the lead's validated decision over its confirmed findings.
 function loadGroup(name, verdictPath, decisionPath) {
   const verdict = readJson(verdictPath, `${name} verdict`);
   const decision = readJson(decisionPath, `${name} decision`);
@@ -102,11 +103,9 @@ function siteAndTitle(finding) {
 const SEVERITY_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 
 // Deduplication across the two groups. The same defect raised by both is
-// one finding: same site and same title merge into the main review's
+// one finding: same site and same title merge into the main group's
 // finding, which gates if either disposition gates, carries the higher
-// severity, and names the brief that also raised it. Distinct findings on
-// one site are cross-referenced by title so the author reads them as
-// neighbours rather than as a pile-up.
+// severity, and names the brief that also raised it.
 if (brief) {
   const mainBySiteAndTitle = new Map(main.findings.map((finding) => [siteAndTitle(finding), finding]));
   brief.findings = brief.findings.filter((finding) => {
@@ -119,28 +118,24 @@ if (brief) {
     return false;
   });
 }
+
+// A group's findings part ways here: the blocking ones ride its review,
+// the rest are triage material.
 for (const group of [main, brief].filter(Boolean)) {
+  group.blocking = group.findings.filter((finding) => group.dispositionOf(finding)?.gating === true);
+  group.advisory = group.findings.filter((finding) => group.dispositionOf(finding)?.gating !== true);
+  // Distinct blocking findings on one line cross-reference each other by
+  // title so the author reads them as neighbours rather than as a pile-up.
   const bySite = new Map();
-  for (const finding of group.findings) {
+  for (const finding of group.blocking) {
     const list = bySite.get(site(finding)) || [];
     list.push(finding);
     bySite.set(site(finding), list);
   }
-  for (const finding of group.findings) {
+  for (const finding of group.blocking) {
     const neighbours = bySite.get(site(finding)).filter((other) => other !== finding);
     if (neighbours.length > 0) finding.crossReferences = neighbours.map((other) => other.title);
   }
-}
-
-// The verdict a group's review carries. The main review is the verdict the
-// classification earned. A brief group blocks only on its own gating
-// decision; a merged finding that gated has already moved to the main
-// review, so a brief group left with no gating finding of its own is a
-// comment review.
-function groupVerdict(group) {
-  const gates = group.findings.some((finding) => group.dispositionOf(finding)?.gating === true);
-  if (group.name === "main") return gates ? "request-changes" : "clean";
-  return gates ? "request-changes" : "advisory";
 }
 
 const reviewed = main.verdict.reviewed;
@@ -150,54 +145,57 @@ const plan = [];
 function emitReview(fileStem, group, verdictArgument, body) {
   const bodyPath = join(outputDir, `${fileStem}.md`);
   const commentsPath = join(outputDir, `${fileStem}-comments.json`);
-  const comments = group.findings.map((finding) => findingComment(finding, group.dispositionOf(finding)));
+  const comments = group.blocking.map((finding) => findingComment(finding, group.dispositionOf(finding)));
   writeFileSync(bodyPath, `${body}\n`);
   writeFileSync(commentsPath, `${JSON.stringify(comments)}\n`);
   plan.push({ review: group.name, verdict: verdictArgument, body: bodyPath, comments: commentsPath });
 }
 
-const mainVerdict = groupVerdict(main);
+// The triage material, in the order the log will carry it: advisory
+// findings first, then unverified observations, then brief
+// misconfigurations. The entry kind is the channel's, set after the
+// spread: a brief misconfiguration carries its own `kind` (the skip kind)
+// and must not masquerade as a channel.
+const triageEntries = [];
+for (const group of [main, brief].filter(Boolean))
+  for (const finding of group.advisory) triageEntries.push({ ...finding, kind: "advisory-finding" });
+for (const group of [main, brief].filter(Boolean))
+  for (const observation of group.verdict.outOfScopeObservations || [])
+    triageEntries.push({ ...observation, kind: "out-of-scope-observation" });
+for (const group of [main, brief].filter(Boolean))
+  for (const misconfiguration of group.verdict.misconfigurations || [])
+    triageEntries.push({ ...misconfiguration, kind: "review-brief-misconfiguration" });
+const triage = {
+  advisory: triageEntries.filter((entry) => entry.kind === "advisory-finding").length,
+  observations: triageEntries.filter((entry) => entry.kind === "out-of-scope-observation").length,
+  misconfigurations: triageEntries.filter((entry) => entry.kind === "review-brief-misconfiguration").length,
+};
+
+const mainVerdict = main.blocking.length > 0 ? "request-changes" : "clean";
 emitReview(
   "main-review",
   main,
   mainVerdict === "request-changes" ? "request-changes" : "approve",
-  reviewBody({ verdict: mainVerdict, reviewed, findings: main.findings, dispositionOf: main.dispositionOf }),
+  reviewBody({ verdict: mainVerdict, reviewed, findings: main.blocking, triage }),
 );
 
-if (brief && brief.findings.length > 0) {
-  const briefVerdict = groupVerdict(brief);
+if (brief && brief.blocking.length > 0) {
   emitReview(
     "brief-review",
     brief,
-    briefVerdict === "request-changes" ? "request-changes" : "comment",
+    "request-changes",
     reviewBody({
-      verdict: briefVerdict === "request-changes" ? "request-changes" : "clean",
+      verdict: "request-changes",
       reviewed,
-      findings: brief.findings,
-      dispositionOf: brief.dispositionOf,
+      findings: brief.blocking,
       group: "brief",
       briefsRan: (brief.verdict.ran || []).map((entry) => entry.brief),
     }),
   );
 }
 
-const entries = [];
-for (const group of [main, brief].filter(Boolean)) {
-  // The entry kind is the channel's, set after the spread: a brief
-  // misconfiguration carries its own `kind` (the skip kind) and must not
-  // masquerade as a channel.
-  for (const observation of group.verdict.outOfScopeObservations || [])
-    entries.push({ ...observation, kind: "out-of-scope-observation" });
-  for (const misconfiguration of group.verdict.misconfigurations || [])
-    entries.push({ ...misconfiguration, kind: "review-brief-misconfiguration" });
-}
-if (entries.length > 0) {
-  const bodyPath = join(outputDir, "observations.md");
-  const commentsPath = join(outputDir, "observations-comments.json");
-  writeFileSync(bodyPath, `${OBSERVATIONS_BODY}\n`);
-  writeFileSync(commentsPath, `${JSON.stringify(entries.map(observationComment))}\n`);
-  plan.push({ review: "observations", verdict: "comment", body: bodyPath, comments: commentsPath });
-}
+const triagePath = join(outputDir, "triage-entries.json");
+writeFileSync(triagePath, `${JSON.stringify(triageEntries)}\n`);
 
 // The run's overall verdict: request-changes when any published review
 // blocks, clean only when none does — the same rule the lifecycle's
@@ -208,6 +206,7 @@ const planDocument = {
   head: reviewed.head,
   target: reviewed.target,
   posts: plan,
+  triage: { entries: triagePath, ...triage },
 };
 writeFileSync(join(outputDir, "publication-plan.json"), `${JSON.stringify(planDocument, null, 2)}\n`);
 process.stdout.write(`${JSON.stringify(planDocument)}\n`);

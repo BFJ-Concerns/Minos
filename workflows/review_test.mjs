@@ -732,10 +732,12 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Whenever you stop after a clean, converged pass[\s\S]*`printf 'clean\\n' > "\$MINOS_RUN_DIR\/lead-complete"`/);
   assert.match(lifecycle, /Minos authors no commits, so every head movement is the author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
-  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review's\s+findings, a classification digest, or a run outcome/);
-  assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post them in that order, one scripted review per\s+entry/);
-  assert.match(lifecycle, /the main review lands first and carries the\s+verdict[\s\S]*never an approval, which\s+the forge would read as outranking the verdict[\s\S]*come last as one `comment`\s+review/);
-  assert.match(lifecycle, /The observations post is\s+presentation-class: its failure degrades and never fails the run\.\s+Observations travel plainly marked as unverified, never as findings;\s+the pull request is the one delivery surface — Minos files nothing in\s+reviewed projects' annexes/);
+  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review's findings, a\s+classification digest, or a run outcome/);
+  assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);
+  assert.match(lifecycle, /The pull request carries what blocks it\. The main review lands first\s+and carries the verdict[\s\S]*a brief\s+group follows as its own `request-changes` review only when its own\s+decision gates — never a comment or approval review/);
+  assert.match(lifecycle, /A finding judged non-gating is advisory: it leaves the review for the\s+project's issue log in step 6, so the pull request carries only what\s+blocks it\./);
+  assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" "\$MINOS_CREDENTIAL_FILE"/);
+  assert.match(lifecycle, /`annexe` means the log took the entries and\s+nothing more is posted\. `pull-request` means no log could take them[\s\S]*Filing is presentation-class: a failure of the filing or of the\s+fallback post degrades and never fails the run/);
 });
 
 test("the lifecycle prescribes the verdict-classification seam", () => {
