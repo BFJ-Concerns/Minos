@@ -12,7 +12,7 @@ The assigned scope and extent are your bounds. A whole-scope brief may therefore
 find a defect anywhere in its declared scope. If you notice a real defect outside
 your bounds, do not return it as a finding. Return it in
 `outOfScopeObservations` and move on. Do not investigate outside your assigned boundary.
-The observation reaches the project's issue log as an unverified observation —
+The observation stays in the internal run record, unverified —
 never as a finding. Give its title, path, line and explanation, and state
 plainly in the explanation that it was not verified. A failure to record it
 is presentation failure and must not fail the review.

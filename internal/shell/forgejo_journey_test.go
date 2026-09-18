@@ -1143,87 +1143,102 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 }
 
 func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
-	t.Run("the gating finding rides the request-changes review alone; the advisory one is filed to the annexe", func(t *testing.T) {
+	t.Run("a blocking round posts verified High and Low findings together", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7, 42)
 		configureForgeCommandFixture(t, state)
 		annexe := installAnnexeClone(t)
-
 		verdict := adjudicatedReviewPayload(t, []map[string]any{
 			adjudicatedFinding("specialist-1:1", "High", "Gating state transition", 42, "The transition accepts an invalid state."),
 			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
 		})
+		verdict["outOfScopeObservations"] = []map[string]any{{"title": "Unverified observation", "verified": false}}
 		plan := postComposedReview(t, head, target, verdict, "specialist-1:1")
-
 		writes, payload := state.reviewWriteFacts()
 		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != head {
 			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
 		}
 		posted := payload["comments"].([]any)
-		if len(posted) != 1 {
-			t.Fatalf("posted comments = %#v, want the gating finding alone", posted)
+		if len(posted) != 2 {
+			t.Fatalf("posted comments = %#v, want both verified findings", posted)
 		}
-		if entry := posted[0].(map[string]any); entry["new_position"] != float64(42) || !strings.Contains(entry["body"].(string), "Gating state transition") {
-			t.Fatalf("posted comment = %#v", entry)
-		}
-		if body := payload["body"].(string); !strings.Contains(body, "1 advisory finding is filed for triage, not on this review.") {
-			t.Fatalf("review body = %q, want the triage count", body)
-		}
-
-		outcome := fileComposedTriage(t, plan, annexe.orientation)
-		if outcome["destination"] != "annexe" || outcome["written"] != float64(1) {
-			t.Fatalf("triage outcome = %#v, want one entry filed to the annexe", outcome)
-		}
-		issues := gitOutput(t, annexe.seed, "--git-dir", annexe.origin, "show", "main:ISSUES.md")
-		for _, want := range []string{"**Advisory · Low: Advisory recovery wording** (`internal/review.go:7`)", "Filed by Minos from owner/repository#17, 2026-09-12."} {
-			if !strings.Contains(issues, want) {
-				t.Fatalf("annexe ISSUES.md = %q, missing %q", issues, want)
+		for i, want := range []string{"Blocking · High: Gating state transition", "Advisory · Low: Advisory recovery wording"} {
+			if !strings.Contains(posted[i].(map[string]any)["body"].(string), want) {
+				t.Fatalf("comment = %#v, want %q", posted[i], want)
 			}
 		}
-		if strings.Contains(issues, "Gating state transition") {
-			t.Fatalf("annexe ISSUES.md carries the gating finding: %q", issues)
-		}
-		if writes, _ := state.reviewWriteFacts(); writes != 1 {
-			t.Fatalf("review writes after filing = %d, want no further post", writes)
+		if outcome := fileComposedTriage(t, plan, annexe.orientation); outcome["destination"] != "none" {
+			t.Fatalf("blocking round files findings: %#v", outcome)
 		}
 	})
 
-	t.Run("with no annexe, a below-threshold finding follows the approving review as a comment review", func(t *testing.T) {
-		state := newForgejoFixtureState(t)
-		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7)
-		configureForgeCommandFixture(t, state)
-
-		verdict := adjudicatedReviewPayload(t, []map[string]any{
-			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
+	for _, withAnnexe := range []bool{true, false} {
+		t.Run(fmt.Sprintf("clean round has no comments, annexe=%t", withAnnexe), func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7, 42)
+			configureForgeCommandFixture(t, state)
+			annexe := installAnnexeClone(t)
+			orientation := annexe.orientation
+			if !withAnnexe {
+				orientation = map[string]any{"grounding": "repository"}
+			}
+			verdict := adjudicatedReviewPayload(t, []map[string]any{
+				adjudicatedFinding("specialist-1:1", "Medium", "Advisory state transition", 42, "The transition is difficult to identify."),
+				adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
+			})
+			verdict["outOfScopeObservations"] = []map[string]any{{"title": "Unverified observation", "verified": false}}
+			plan := postComposedReview(t, head, target, verdict)
+			outcome := fileComposedTriage(t, plan, orientation)
+			if withAnnexe {
+				if outcome["destination"] != "annexe" || outcome["written"] != float64(2) {
+					t.Fatalf("triage outcome = %#v", outcome)
+				}
+				issues := gitOutput(t, annexe.seed, "--git-dir", annexe.origin, "show", "main:ISSUES.md")
+				if !strings.Contains(issues, "Advisory state transition") || !strings.Contains(issues, "Advisory recovery wording") || strings.Contains(issues, "Unverified observation") {
+					t.Fatalf("annexe content = %q", issues)
+				}
+			} else if outcome["destination"] != "unfiled" || outcome["review"] != nil {
+				t.Fatalf("missing annexe generated a fallback: %#v", outcome)
+			}
+			for _, args := range [][]string{{"reaction", head, target, "+1"}, {"status", head, target, "clean"}} {
+				if err := ForgeCommand(t.Context(), args, &bytes.Buffer{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if writes, _ := state.reviewWriteFacts(); writes != 0 {
+				t.Fatalf("clean round posted %d reviews", writes)
+			}
+			if !slices.Contains(state.reactions, "+1") {
+				t.Fatal("clean round has no thumbs-up")
+			}
+			cfg := writeSweepFixtureConfig(t, state)
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					t.Fatal("clean or dependency-deferred head was claimed")
+				}
+				return nil, nil
+			}
+			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(state.reactions, "+1") {
+				t.Fatal("sweep removed the current head's clean reaction")
+			}
+			state.changePullRequest(func(pr map[string]any) {
+				pr["head"].(map[string]any)["sha"] = "next-head"
+			})
+			state.setStatuses(nil)
+			state.setDependencies([]map[string]any{{"number": 7, "state": "open", "repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"}}})
+			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(state.reactions, "+1") {
+				t.Fatal("head movement retained the old clean reaction")
+			}
 		})
-		plan := postComposedReview(t, head, target, verdict)
-
-		writes, payload := state.reviewWriteFacts()
-		if writes != 1 || payload["event"] != "APPROVED" {
-			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
-		}
-		if posted := payload["comments"].([]any); len(posted) != 0 {
-			t.Fatalf("approving review comments = %#v, want none", posted)
-		}
-
-		outcome := fileComposedTriage(t, plan, map[string]any{"grounding": "repository", "guidance": "/subject/AGENTS.md"})
-		if outcome["destination"] != "pull-request" {
-			t.Fatalf("triage outcome = %#v, want the pull-request fallback", outcome)
-		}
-		review := outcome["review"].(map[string]any)
-		if err := ForgeCommand(t.Context(), []string{"review", head, target, review["verdict"].(string), review["body"].(string), review["comments"].(string)}, &bytes.Buffer{}); err != nil {
-			t.Fatalf("post triage review: %v", err)
-		}
-		writes, payload = state.reviewWriteFacts()
-		if writes != 2 || payload["event"] != "COMMENT" {
-			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
-		}
-		posted := payload["comments"].([]any)
-		if len(posted) != 1 || posted[0].(map[string]any)["new_position"] != float64(7) ||
-			!strings.Contains(posted[0].(map[string]any)["body"].(string), "**Advisory · Low: Advisory recovery wording**") {
-			t.Fatalf("posted comments = %#v", posted)
-		}
-	})
+	}
 
 	t.Run("unanchorable gating finding falls back into the review body", func(t *testing.T) {
 		state := newForgejoFixtureState(t)

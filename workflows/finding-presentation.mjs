@@ -2,7 +2,7 @@
 // plain-Node producer of review material — the publication composer and
 // the issue-log filing above all — renders through this module, so what a
 // review body says, what a finding comment carries, how an issue-log entry
-// reads and how unverified material is marked cannot drift between
+// reads and which material may be published cannot drift between
 // producers.
 //
 // Payload text is author-facing. Operator material — confidence values,
@@ -11,18 +11,6 @@
 // finding is, how much it matters, and whether it blocks, not how the
 // service convinced itself of it.
 //
-// Vocabulary is the forge status's own (internal/product): a blocking review
-// says "changes need attention" and an approving one "changes approved", so
-// the review body, the status description and the comment grammar read as
-// one voice.
-
-export const VERDICT_HEADLINES = Object.freeze({
-  "request-changes": "**Minos: changes need attention.**",
-  clean: "**Minos: changes approved.**",
-});
-
-const UNVERIFIED_NOTICE = "This was noticed outside the review's scope and has not been verified.";
-
 function modelAttribution(model) {
   if (!model || typeof model !== "object") return null;
   if (typeof model.resolvedModel === "string" && model.resolvedModel !== "") {
@@ -88,35 +76,10 @@ function short(sha) {
   return typeof sha === "string" && sha.length >= 7 ? sha.slice(0, 7) : String(sha);
 }
 
-// Names the triage material that left the review for the issue log, in the
-// author's own terms: how many advisory findings, unverified observations
-// and brief misconfigurations. Empty when there is none.
-function triageSummary(triage) {
-  const counts = [
-    [triage.advisory, "advisory finding"],
-    [triage.observations, "unverified observation"],
-    [triage.misconfigurations, "review-brief misconfiguration"],
-  ].filter(([count]) => count > 0);
-  if (counts.length === 0) return "";
-  const parts = counts.map(([count, noun]) => plural(count, noun));
-  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-  return `${list} ${counts.reduce((sum, [count]) => sum + count, 0) === 1 ? "is" : "are"} filed for triage, not on this review.`;
-}
-
-// The review body carries its own warrant: what was reviewed, what blocks
-// and what left the review for triage, and what the author does next.
-// `group` names the review this body opens — the main review, or a
-// repository brief group — and `verdict` is the lead's validated decision
-// for that group. Every finding on a review blocks; the triage counts name
-// the rest. A brief group's body names the briefs it ran, since those are
-// the author's own criteria; skipped concerns stay in the run record.
-export function reviewBody({ verdict, reviewed, findings, group = "main", briefsRan = [], triage = null }) {
-  const lines = [];
-  if (group === "main") {
-    lines.push(VERDICT_HEADLINES[verdict]);
-  } else {
-    lines.push("**Minos repository-brief review: changes need attention.**");
-  }
+// The review names the blocking findings and counts the advisory findings
+// carried alongside them. Brief names preserve the repository criteria.
+export function reviewBody({ reviewed, findings, briefsRan = [], advisory = 0 }) {
+  const lines = ["**Minos: changes need attention.**"];
   lines.push("");
   lines.push(`Reviewed head \`${short(reviewed.head)}\` against target \`${short(reviewed.target)}\`.`);
   if (briefsRan.length > 0)
@@ -131,17 +94,11 @@ export function reviewBody({ verdict, reviewed, findings, group = "main", briefs
         `${findings.length === 1 ? "it" : "they"} must be resolved before this review approves.`,
     );
   }
-  const summary = triage ? triageSummary(triage) : "";
-  if (summary !== "") lines.push(summary);
+  if (advisory > 0) lines.push(`${plural(advisory, "advisory finding")} included for the same review round.`);
   lines.push("");
   lines.push(`This review stands for head \`${short(reviewed.head)}\` only: push a new commit and Minos reviews the new head afresh.`);
   return lines.join("\n");
 }
-
-// Triage material — an advisory finding, an unverified observation or a
-// review-brief misconfiguration — is one entry shape with three kinds. The
-// two renderings below agree on what each kind says; only the surface
-// differs.
 
 // Prose folded into one list item: multi-line text stays inside the item,
 // and the text ends as a sentence so what follows it reads as the next one.
@@ -161,40 +118,8 @@ export function issueLogEntry(entry, attribution) {
       `${attributionLine === "" ? "" : ` ${attributionLine}`} ${attribution}.`
     );
   }
-  if (entry.kind === "out-of-scope-observation") {
-    return (
-      `- **Unverified observation: ${entry.title}** (\`${entry.path}:${entry.line}\`) — ${sentence(entry.explanation)} ` +
-      `${UNVERIFIED_NOTICE} ${attribution}.`
-    );
-  }
   if (entry.kind === "review-brief-misconfiguration") {
     return `- **Review brief misconfiguration: ${entry.title}** (\`${entry.brief}\`) — ${sentence(entry.reason)} ${attribution}.`;
   }
   throw new Error(`unknown entry kind ${String(entry.kind)}`);
 }
-
-// The same entry as one pull-request comment, for a project with no issue
-// log to file into: an advisory finding keeps the finding grammar with no
-// blocking disposition; unverified material is plainly marked so it can
-// never read as a finding.
-export function triageComment(entry) {
-  if (entry.kind === "advisory-finding") return findingComment(entry, null);
-  if (entry.kind === "out-of-scope-observation") {
-    return {
-      path: entry.path,
-      body: `**Unverified observation: ${entry.title}**\n\n${entry.explanation}\n\n${UNVERIFIED_NOTICE}`,
-      line: entry.line,
-    };
-  }
-  if (entry.kind === "review-brief-misconfiguration") {
-    return {
-      path: entry.brief,
-      body: `**Review brief misconfiguration: ${entry.title}**\n\n${entry.reason}\n\n${UNVERIFIED_NOTICE}`,
-      line: 1,
-    };
-  }
-  throw new Error(`unknown entry kind ${String(entry.kind)}`);
-}
-
-export const TRIAGE_BODY =
-  "Advisory findings and unverified observations from the review, for the author's judgement: none of these block.";

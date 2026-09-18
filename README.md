@@ -39,14 +39,13 @@ pull request that gives no specialist or `.review/` brief any work skips the
 full review launch. The workflow decision logic and
 adjudication are exercised by `node --test workflows/*_test.mjs`.
 
-The pull request carries what blocks it: the review's inline comments are the
-gating findings, each anchored where it applies. Everything else the run
-learned — confirmed findings the lead judged non-gating, unverified
-out-of-scope observations, `.review/` brief misconfigurations — is filed by
-`workflows/file-triage.mjs` into the reviewed project's annexe `ISSUES.md`
-(appended once per entry, committed and pushed as Minos), and lands on the
-pull request as one comment review only when the project has no annexe or
-the filing is refused.
+A review that requests changes includes all confirmed findings, with Medium
+and Low findings labelled advisory so the author can address them in the same
+round. A clean result posts no review or comments: Minos adds 👍 and a clean
+status, and files the confirmed advisory findings in the project's annexe
+`ISSUES.md`. Unverified observations stay in the internal run record. If annexe
+filing is unavailable, the run report records the failure without posting a
+fallback comment. Brief configuration diagnostics also go to the annexe.
 
 Published review comments carry model provenance: each finding is tagged with
 `Proposed by:` and `Verified by:` lines naming the models that proposed and
