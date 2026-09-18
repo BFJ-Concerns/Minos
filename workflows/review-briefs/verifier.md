@@ -14,7 +14,7 @@ pattern predate it — precedent at the base commit informs severity, never
 existence. Uphold the instance when its defect is concrete in the changed
 code's delivered behaviour; when the instance is real but latent — nothing
 this change delivers actually breaks — refute it as a defect of this change
-and return it as an observation so it reaches the project's issue log rather
+and return it as an observation for the internal run record rather
 than an immediate repair. Second, scope and correctness are judged against
 the reviewed project's declared guidance and the change's own stated
 invariants, never against a general security or engineering posture the

@@ -732,12 +732,12 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Whenever you stop after a clean, converged pass[\s\S]*`printf 'clean\\n' > "\$MINOS_RUN_DIR\/lead-complete"`/);
   assert.match(lifecycle, /Minos authors no commits, so every head movement is the author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
-  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review's findings, a\s+classification digest, or a run outcome/);
+  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a\s+review, an annexe issue log, a classification digest, or a run outcome/);
   assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);
-  assert.match(lifecycle, /The pull request carries what blocks it\. The main review lands first\s+and carries the verdict[\s\S]*a brief\s+group follows as its own `request-changes` review only when its own\s+decision gates — never a comment or approval review/);
-  assert.match(lifecycle, /A finding judged non-gating is advisory: it leaves the review for the\s+project's issue log in step 6, so the pull request carries only what\s+blocks it\./);
+  assert.match(lifecycle, /A request-changes plan contains one review with all confirmed findings[\s\S]*A clean plan has no posts/);
+  assert.match(lifecycle, /A finding judged non-gating is advisory[\s\S]*file it to the annexe\s+when the run is clean/);
   assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" "\$MINOS_CREDENTIAL_FILE"/);
-  assert.match(lifecycle, /`annexe` means the log took the entries and\s+nothing more is posted\. `pull-request` means no log could take them[\s\S]*Filing is presentation-class: a failure of the filing or of the\s+fallback post degrades and never fails the run/);
+  assert.match(lifecycle, /`unfiled` means the annexe was unavailable or filing failed[\s\S]*Filing failure never generates a pull-request comment or changes the verdict/);
 });
 
 test("the lifecycle prescribes the verdict-classification seam", () => {

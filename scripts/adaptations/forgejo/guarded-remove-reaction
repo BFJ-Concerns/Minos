@@ -10,23 +10,6 @@ if [ -z "$content" ]; then
   exit 0
 fi
 
-if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
-  :
-else
-  status=$?
-  if [ "$status" -eq 1 ] && guard_merged_pull_request "$owner" "$repo" "$pr" "$head" "$login"; then
-    :
-  else
-    merged_status=$?
-    if [ "$status" -eq 1 ] && [ "$merged_status" -eq 1 ]; then
-      write_result rejected "$guard_reason"
-    else
-      write_result uncertain "forge guard could not be confirmed"
-    fi
-    exit 0
-  fi
-fi
-
 reactions_path="/api/v1/repos/${owner}/${repo}/issues/${pr}/reactions"
 reaction_present() {
   page=1
@@ -55,6 +38,23 @@ else
     write_result uncertain "reaction read-back could not be confirmed"
   fi
   exit 0
+fi
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ] && guard_merged_pull_request "$owner" "$repo" "$pr" "$head" "$login"; then
+    :
+  else
+    merged_status=$?
+    if [ "$status" -eq 1 ] && [ "$merged_status" -eq 1 ]; then
+      write_result rejected "$guard_reason"
+    else
+      write_result uncertain "forge guard could not be confirmed"
+    fi
+    exit 0
+  fi
 fi
 
 payload="$(jq -nc --arg content "$content" '{content:$content}')"

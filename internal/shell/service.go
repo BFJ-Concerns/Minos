@@ -171,25 +171,21 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	}, nil
 }
 
-// staleApproval reports whether Minos approved a head the author has since
-// replaced without subsequently approving the current head. Reviews remain
-// SHA-bound evidence; the PR-wide reaction does not, so it must be removed
-// before another reconciliation decision is made.
+// staleApproval reports whether the current head lacks a Minos clean result.
+// The PR-wide reaction has no head identity of its own; a current clean
+// status or historical-format approval review is its warrant.
 func staleApproval(snapshot forge.Snapshot, botLogin string) bool {
+	if status, found := latestOwnedStatus(snapshot, botLogin); found {
+		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal && state == product.Clean() {
+			return false
+		}
+	}
 	if review, found := currentReview(snapshot, botLogin); found {
 		if state, terminal := terminalState(review); terminal && state == product.Clean() {
 			return false
 		}
 	}
-	for _, review := range snapshot.Reviews {
-		if review.User != botLogin || review.CommitID == snapshot.HeadSHA {
-			continue
-		}
-		if state, terminal := terminalState(review); terminal && state == product.Clean() {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 // pullRequestAdmissionEligibility holds the non-writing admission chain. The

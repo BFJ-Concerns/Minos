@@ -11,8 +11,8 @@ import { appendIssueLogEntries, fileIssueLogEntries, issueLogMarker } from "./is
 
 // The filing drives real git against a bare "origin" the test owns, so
 // what these tests prove is the delivered shape: an entry lands in the
-// annexe's ISSUES.md on origin, once, under the bot identity, and every
-// way the filing can fail hands the material back for the pull request.
+// annexe's ISSUES.md on origin, once, under the bot identity, and failed
+// filing leaves the material in the run record.
 
 const fileTriageCli = fileURLToPath(new URL("./file-triage.mjs", import.meta.url));
 
@@ -75,11 +75,11 @@ const misconfiguration = {
 test("entries are appended to the annexe's ISSUES.md, committed as Minos and pushed to origin", () => {
   const fixture = annexeFixture();
   const outcome = fileIssueLogEntries({ orientation: fixture.orientation, entries: [advisory, observation, misconfiguration] });
-  assert.deepEqual(outcome, { destination: "annexe", written: 3, location: "repository-Annexe/ISSUES.md" });
+  assert.deepEqual(outcome, { destination: "annexe", written: 2, location: "repository-Annexe/ISSUES.md" });
   const issues = originIssues(fixture);
   assert.match(issues, /^# Issues\n\n- An existing entry\.\n/);
   assert.match(issues, /\n- \*\*Advisory · Medium: Lost update on concurrent write\*\* \(`internal\/store\.go:41`\)[^\n]*Filed by Minos from owner\/repository#17, 2026-09-12\. <!-- minos:[A-Za-z0-9_-]+ -->\n/);
-  assert.match(issues, /\n- \*\*Unverified observation: Unrelated nil deref\*\*/);
+  assert.doesNotMatch(issues, /Unrelated nil deref|Unverified observation/);
   assert.match(issues, /\n- \*\*Review brief misconfiguration: Security brief\*\* \(`\.review\/security\.md`\)/);
   const log = git(fixture.seed, "--git-dir", fixture.origin, "log", "-1", "--format=%an <%ae> %s", "main");
   assert.equal(log.trim(), "Minos <minos@example.invalid> issues: record review material for triage");
@@ -93,13 +93,13 @@ test("an entry already in the log is not filed twice, and a log that does not ex
     { destination: "annexe", written: 1, location: "repository-Annexe/ISSUES.md" },
   );
   assert.match(originIssues(fixture), /^# Issues\n\n- \*\*Advisory/);
-  const again = fileIssueLogEntries({ orientation: fixture.orientation, entries: [advisory, { ...observation }] });
+  const again = fileIssueLogEntries({ orientation: fixture.orientation, entries: [advisory, { ...misconfiguration }] });
   assert.deepEqual(again, { destination: "annexe", written: 1, location: "repository-Annexe/ISSUES.md" });
   const issues = originIssues(fixture);
   assert.equal(issues.split(issueLogMarker(advisory)).length - 1, 1, "the advisory finding appears once");
-  assert.equal(issues.split(issueLogMarker(observation)).length - 1, 1);
+  assert.equal(issues.split(issueLogMarker(misconfiguration)).length - 1, 1);
   assert.deepEqual(
-    fileIssueLogEntries({ orientation: fixture.orientation, entries: [advisory, observation] }),
+    fileIssueLogEntries({ orientation: fixture.orientation, entries: [advisory, misconfiguration] }),
     { destination: "annexe", written: 0, location: "repository-Annexe/ISSUES.md" },
     "nothing new means no commit",
   );
@@ -110,10 +110,10 @@ test("the filing appends to what origin holds now, not to what the run cloned", 
   writeFileSync(join(fixture.seed, "ISSUES.md"), "# Issues\n\n- An existing entry.\n- A newer entry the operator added mid-run.\n");
   git(fixture.seed, "commit", "--quiet", "-am", "operator edit");
   git(fixture.seed, "push", "--quiet", fixture.origin, "main");
-  const outcome = fileIssueLogEntries({ orientation: fixture.orientation, entries: [observation] });
+  const outcome = fileIssueLogEntries({ orientation: fixture.orientation, entries: [advisory] });
   assert.equal(outcome.destination, "annexe");
   const issues = originIssues(fixture);
-  assert.match(issues, /A newer entry the operator added mid-run\.\n\n- \*\*Unverified observation/);
+  assert.match(issues, /A newer entry the operator added mid-run\.\n\n- \*\*Advisory/);
 });
 
 test("the marker keys on kind, site and title so one defect files once across heads", () => {
@@ -126,43 +126,43 @@ test("the marker keys on kind, site and title so one defect files once across he
   assert.match(text, /^# Issues\n\n- \*\*Advisory/);
 });
 
-test("with no annexe, a missing clone, or no attribution the material goes back for the pull request", () => {
+test("with no annexe, a missing clone, or no attribution the material remains unfiled", () => {
   assert.deepEqual(
     fileIssueLogEntries({ orientation: { grounding: "repository", guidance: "/x/AGENTS.md" }, entries: [advisory] }),
-    { destination: "pull-request", reason: "the project has no annexe" },
+    { destination: "unfiled", reason: "the project has no annexe" },
   );
   const fixture = annexeFixture();
   assert.deepEqual(
     fileIssueLogEntries({ orientation: { ...fixture.orientation, annexe: join(fixture.scratch, "gone") }, entries: [advisory] }),
-    { destination: "pull-request", reason: "the annexe clone is missing from the run" },
+    { destination: "unfiled", reason: "the annexe clone is missing from the run" },
   );
   assert.deepEqual(
     fileIssueLogEntries({ orientation: { ...fixture.orientation, source: { owner: "owner" } }, entries: [advisory] }),
-    { destination: "pull-request", reason: "the orientation record carries no source attribution" },
+    { destination: "unfiled", reason: "the orientation record carries no source attribution" },
   );
   assert.deepEqual(fileIssueLogEntries({ orientation: fixture.orientation, entries: [] }), { destination: "none", written: 0 });
 });
 
-test("a push the remote refuses hands the material back and leaves no local commit behind", () => {
+test("a push the remote refuses leaves the material unfiled", () => {
   const fixture = annexeFixture();
   writeFileSync(join(fixture.origin, "hooks", "pre-receive"), "#!/bin/sh\necho 'refused by policy' >&2\nexit 1\n", { mode: 0o755 });
   const outcome = fileIssueLogEntries({ orientation: fixture.orientation, entries: [advisory] });
-  assert.equal(outcome.destination, "pull-request");
+  assert.equal(outcome.destination, "unfiled");
   assert.match(outcome.reason, /^the annexe push failed: /);
   assert.doesNotMatch(originIssues(fixture), /Lost update/);
   const credential = join(fixture.scratch, "empty.token");
   writeFileSync(credential, "\n");
   assert.deepEqual(
     fileIssueLogEntries({ orientation: fixture.orientation, entries: [advisory], credentialFile: credential }),
-    { destination: "pull-request", reason: "forge credential file is empty" },
+    { destination: "unfiled", reason: "forge credential file is empty" },
   );
 });
 
-test("the file-triage CLI files to the annexe, or writes the fallback review for the pull request", () => {
+test("the file-triage CLI files to the annexe, never writes a fallback review", () => {
   const fixture = annexeFixture();
   const entriesPath = join(fixture.scratch, "triage-entries.json");
   const orientationPath = join(fixture.scratch, "orientation.json");
-  writeFileSync(entriesPath, JSON.stringify([advisory, observation]));
+  writeFileSync(entriesPath, JSON.stringify([advisory, observation, misconfiguration]));
   writeFileSync(orientationPath, JSON.stringify(fixture.orientation));
   const outputDir = join(fixture.scratch, "publication");
 
@@ -175,21 +175,10 @@ test("the file-triage CLI files to the annexe, or writes the fallback review for
   const fallback = spawnSync(process.execPath, [fileTriageCli, outputDir, entriesPath, orientationPath], { encoding: "utf8" });
   assert.equal(fallback.status, 0, fallback.stderr);
   const outcome = JSON.parse(fallback.stdout);
-  assert.equal(outcome.destination, "pull-request");
+  assert.equal(outcome.destination, "unfiled");
   assert.equal(outcome.reason, "the project has no annexe");
-  assert.deepEqual(outcome.review, {
-    verdict: "comment",
-    body: join(outputDir, "triage-review.md"),
-    comments: join(outputDir, "triage-review-comments.json"),
-  });
-  assert.match(readFileSync(outcome.review.body, "utf8"), /^Advisory findings and unverified observations from the review/);
-  const comments = JSON.parse(readFileSync(outcome.review.comments, "utf8"));
-  assert.deepEqual(comments.map(({ path, line }) => ({ path, line })), [
-    { path: "internal/store.go", line: 41 },
-    { path: "pkg/server.go", line: 12 },
-  ]);
-  assert.match(comments[0].body, /^\*\*Advisory · Medium: /);
-  assert.match(comments[1].body, /^\*\*Unverified observation: /);
+  assert.equal(outcome.review, undefined);
+  assert.equal(existsSync(outputDir), false, "no pull-request payload is written");
 
   writeFileSync(entriesPath, "[]");
   const empty = spawnSync(process.execPath, [fileTriageCli, outputDir, entriesPath, orientationPath], { encoding: "utf8" });
@@ -198,4 +187,11 @@ test("the file-triage CLI files to the annexe, or writes the fallback review for
   const usage = spawnSync(process.execPath, [fileTriageCli, "one"], { encoding: "utf8" });
   assert.equal(usage.status, 2);
   assert.match(usage.stderr, /^usage: node workflows\/file-triage\.mjs OUTPUT_DIR ENTRIES_FILE ORIENTATION/);
+});
+
+test("an observation-only batch is never filed, even when an annexe is available", () => {
+  const fixture = annexeFixture();
+  const before = originIssues(fixture);
+  assert.deepEqual(fileIssueLogEntries({ orientation: fixture.orientation, entries: [observation] }), { destination: "none", written: 0 });
+  assert.equal(originIssues(fixture), before);
 });

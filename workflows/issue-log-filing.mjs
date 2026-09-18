@@ -1,16 +1,6 @@
-// Files the run's triage material — advisory findings, unverified
-// observations and review-brief misconfigurations — into the reviewed
-// project's annexe, as entries appended to its `ISSUES.md`, committed and
-// pushed as the service's own bot identity. The annexe is the project's
-// ingest log for finds that need judgement before they become work, which
-// is exactly what non-blocking review material is; the pull request carries
-// only what blocks it.
-//
-// Filing is presentation work. Every failure here — no annexe, a clone the
-// setup did not leave behind, a push the forge refuses — returns a
-// `pull-request` outcome so the caller can deliver the same material onto
-// the pull request instead; nothing here throws past its own boundary, and
-// nothing here changes a run's verdict.
+// Files verified advisory findings and brief configuration diagnostics to
+// the reviewed project's annexe. Unavailable filing stays in the run record
+// without changing the verdict or generating pull-request comments.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -77,15 +67,16 @@ function describe(error) {
 // `credentialFile` holds the forge token that authenticates the push; a
 // path-local remote (the tests' bare repositories) needs none.
 export function fileIssueLogEntries({ orientation, entries, credentialFile = null }) {
+  entries = entries.filter((entry) => entry.kind !== "out-of-scope-observation");
   if (entries.length === 0) return { destination: "none", written: 0 };
   if (!orientation || orientation.grounding !== "annexe")
-    return { destination: "pull-request", reason: "the project has no annexe" };
+    return { destination: "unfiled", reason: "the project has no annexe" };
   const annexe = orientation.annexe;
   const source = orientation.source || {};
   if (typeof annexe !== "string" || annexe === "" || !existsSync(join(annexe, ".git")))
-    return { destination: "pull-request", reason: "the annexe clone is missing from the run" };
+    return { destination: "unfiled", reason: "the annexe clone is missing from the run" };
   if ([source.owner, source.repo, source.pr, source.date].some((value) => typeof value !== "string" || value === ""))
-    return { destination: "pull-request", reason: "the orientation record carries no source attribution" };
+    return { destination: "unfiled", reason: "the orientation record carries no source attribution" };
   const attribution = `Filed by Minos from ${source.owner}/${source.repo}#${source.pr}, ${source.date}`;
   const location = `${basename(annexe)}/${ISSUE_LOG}`;
   const logPath = join(annexe, ISSUE_LOG);
@@ -94,7 +85,7 @@ export function fileIssueLogEntries({ orientation, entries, credentialFile = nul
   try {
     env = gitEnvironment(credentialFile);
   } catch (error) {
-    return { destination: "pull-request", reason: describe(error) };
+    return { destination: "unfiled", reason: describe(error) };
   }
 
   let lastFailure = "";
@@ -119,5 +110,5 @@ export function fileIssueLogEntries({ orientation, entries, credentialFile = nul
       lastFailure = describe(error);
     }
   }
-  return { destination: "pull-request", reason: `the annexe push failed: ${lastFailure}` };
+  return { destination: "unfiled", reason: `the annexe push failed: ${lastFailure}` };
 }
