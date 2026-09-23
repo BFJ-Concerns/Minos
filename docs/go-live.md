@@ -42,7 +42,7 @@ so no repository toolchains are needed.
    and add one repository TOML file per opted-in repository. In `run-body.env`:
 
    - set `MINOS_CLAUDE` to the installed Claude executable;
-   - keep `MINOS_LEAD_MODEL` pinned to `claude-opus-5`;
+   - keep `MINOS_LEAD_MODEL` pinned to `claude-opus-5-5`;
    - set `MINOS_CLAUDE_CONFIG_SEED` to a directory containing known-good,
      non-interactive Claude configuration;
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
@@ -134,7 +134,7 @@ so no repository toolchains are needed.
 6. Configure the forge webhook to post to `/hooks/forgejo` using the matching
    secret.
 
-Each run launches the `claude-opus-5` lead through `claude --bg`. `run-body`
+Each run launches the `claude-opus-5-5` lead through `claude --bg`. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has
 begun. A lead blocked before its first run-tree change is stopped and recorded
 as a supervision failure. The supervisor otherwise stops the session only
