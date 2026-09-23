@@ -1022,9 +1022,9 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 			t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 			t.Setenv("MINOS_REPO_NAME", "subject")
 			t.Setenv("MINOS_PR", "1")
-			t.Setenv("MINOS_LEAD_MODEL", "claude-opus-5")
+			t.Setenv("MINOS_LEAD_MODEL", "claude-opus-5-5")
 
-			leadModel := "claude-opus-5"
+			leadModel := "claude-opus-5-5"
 			body := apiShape.Request["body"].(string)
 			attribution := "\n\nReviewed by: `" + leadModel + "`."
 			record, err := product.FormatRecord(map[string]string{"head": head, "target": target})
@@ -1399,7 +1399,7 @@ func TestForgeReviewFoldsOffDiffFindingsIntoTheBody(t *testing.T) {
 	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
 	installStrictAdaptation(t, state)
 	configureForgeCommandFixture(t, state)
-	t.Setenv("MINOS_LEAD_MODEL", "claude-opus-5")
+	t.Setenv("MINOS_LEAD_MODEL", "claude-opus-5-5")
 	comments := []requestedReviewComment{
 		{Path: "src/code.txt", Line: 10, Body: "Anchored concern."},
 		{Path: "src/code.txt", Line: 1, Body: "Outside-hunk concern."},
@@ -1416,7 +1416,7 @@ func TestForgeReviewFoldsOffDiffFindingsIntoTheBody(t *testing.T) {
 	}
 	body := payload["body"].(string)
 	addendum := strings.Index(body, "Findings that could not be anchored inline:")
-	attribution := strings.Index(body, "Reviewed by: `claude-opus-5`.")
+	attribution := strings.Index(body, "Reviewed by: `claude-opus-5-5`.")
 	if addendum < 0 || attribution < 0 || attribution < addendum {
 		t.Fatalf("review body order = %q", body)
 	}
@@ -1507,8 +1507,8 @@ func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[strin
 		t.Fatal(err)
 	}
 	for index, record := range []map[string]any{
-		{"label": "specialist", "status": "complete", "resolved_model": "gpt-5.6-sol-served"},
-		{"label": "verifier", "status": "complete", "resolved_model": "claude-opus-5"},
+		{"label": "specialist", "status": "complete", "resolved_model": "gpt-6-sol-served"},
+		{"label": "verifier", "status": "complete", "resolved_model": "claude-opus-5-5"},
 	} {
 		directory := filepath.Join(archive, "agents", strconv.Itoa(index+1))
 		if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -1525,8 +1525,8 @@ func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[strin
 	envelope := map[string]any{
 		"reviewed": map[string]any{"target": "target-sha", "head": "head-sha", "occasion": nil}, "stage": "present",
 		"requiredModelEvidence": []any{
-			map[string]any{"label": "specialist", "role": "specialist", "pinnedModel": "gpt-5.6-sol"},
-			map[string]any{"label": "verifier", "role": "verifier", "pinnedModel": "claude-opus-5"},
+			map[string]any{"label": "specialist", "role": "specialist", "pinnedModel": "gpt-6-sol"},
+			map[string]any{"label": "verifier", "role": "verifier", "pinnedModel": "claude-opus-5-5"},
 		}, "proposedFindings": findings,
 		"briefs": []any{}, "misconfigurations": []any{}, "dispatches": []any{}, "reviewers": []any{},
 	}

@@ -343,7 +343,7 @@ last_activity_signature="$(
     LC_ALL=C sort -rn |
     head -n 1
 )"
-MINOS_LEAD_MODEL="${MINOS_LEAD_MODEL:-claude-opus-5}"
+MINOS_LEAD_MODEL="${MINOS_LEAD_MODEL:-claude-opus-5-5}"
 export MINOS_LEAD_MODEL
 launch_output="$("$MINOS_CLAUDE" \
   --bg \

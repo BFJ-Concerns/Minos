@@ -129,7 +129,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	} {
 		assertContainsFile(t, record+".env", value)
 	}
-	assertContainsFile(t, record+".argv", "claude-opus-5")
+	assertContainsFile(t, record+".argv", "claude-opus-5-5")
 
 	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["number"] = float64(2) })
 	secondFacts := facts
@@ -561,7 +561,7 @@ esac
 	}
 	values := map[string]string{
 		"MINOS_CLAUDE":                claude,
-		"MINOS_LEAD_MODEL":            "claude-opus-5",
+		"MINOS_LEAD_MODEL":            "claude-opus-5-5",
 		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,
 		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION": instruction,

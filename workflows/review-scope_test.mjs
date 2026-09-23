@@ -272,7 +272,7 @@ test("nothing-engages returns a complete clean review envelope", async (t) => {
   ]);
   assert.equal(result.stage, "present");
   assert.deepEqual(result.requiredModelEvidence, [
-    { label: "review-scope", role: "scope", pinnedModel: "gpt-5.6-terra" },
+    { label: "review-scope", role: "scope", pinnedModel: "gpt-6-sol" },
   ]);
   assert.deepEqual(result.scopeDecision, {
     status: "nothing-engages",
@@ -282,7 +282,7 @@ test("nothing-engages returns a complete clean review envelope", async (t) => {
   assert.ok(result.briefs.every((entry) => entry.status === "skipped"));
   assert.equal(calls.length, 1);
   assert.equal(calls[0].opts.engine, "codex");
-  assert.equal(calls[0].opts.model, "gpt-5.6-terra");
+  assert.equal(calls[0].opts.model, "gpt-6-sol");
   assert.equal(calls[0].opts.effort, "medium");
   assert.match(calls[0].prompt, /SCOPE_ROLE_BRIEF_TEAL/);
   assert.match(calls[0].prompt, /SCOPE_TEST_COMMISSION_TEAL/);
@@ -326,7 +326,7 @@ test("an engaged brief answers review-required without spending a leg", async ()
 test("a scope-leg null still emits its required leg and falls back to review-required", async () => {
   const { result } = await runScript(workflowArgs(), () => null);
   assert.deepEqual(result.requiredModelEvidence, [
-    { label: "review-scope", role: "scope", pinnedModel: "gpt-5.6-terra" },
+    { label: "review-scope", role: "scope", pinnedModel: "gpt-6-sol" },
   ]);
   assert.deepEqual(result.reviewers, [{ label: "review-scope", role: "scope", status: "no-result" }]);
   assert.deepEqual(result.scopeDecision, {

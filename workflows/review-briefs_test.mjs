@@ -162,12 +162,12 @@ test("a repository brief carries no grouped-run attribution", async (t) => {
   assert.equal("memberReviews" in verdict, false);
 });
 
-test("relevance gates full-extent briefs and remains an explicit Terra leg", async () => {
+test("relevance gates full-extent briefs and remains an explicit Sol leg", async () => {
   const candidate = brief(".review/errors.md", "---\nextent: full\nsweep: whole-tree\nrelevance: Error-path changes.\n---\nJudge errors.");
   const met = await run(args({ briefs: [candidate] }), responder({ specialist: () => specialistResult([]) }));
   assert.equal(met.result.dispatches.length, 1);
   assert.equal(met.result.briefs[0].status, "run");
-  assert.deepEqual([met.calls[0].opts.engine, met.calls[0].opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([met.calls[0].opts.engine, met.calls[0].opts.model], ["codex", "gpt-6-sol"]);
 
   const missed = await run(args({ briefs: [candidate] }), responder({
     relevance: () => ({ decisions: [{ brief: candidate.path, applicable: false, reason: "no error path changed" }] }),
@@ -175,7 +175,7 @@ test("relevance gates full-extent briefs and remains an explicit Terra leg", asy
   assert.deepEqual(missed.result.requiredModelEvidence, [{
     label: "brief-relevance",
     role: "relevance",
-    pinnedModel: "gpt-5.6-terra",
+    pinnedModel: "gpt-6-sol",
   }]);
   assert.equal(missed.result.briefs[0].skipKind, "relevance");
   assert.equal(missed.calls.length, 1);
@@ -302,7 +302,7 @@ test("per-file partitioning follows repository structure and clamps to a lossles
   assert.equal(new Set(result.dispatches.flatMap((entry) => entry.files)).size, trackedFiles.length);
   const partitionCall = calls.find((call) => call.opts.label?.startsWith("brief-partition-"));
   assert.ok(partitionCall);
-  assert.deepEqual([partitionCall.opts.engine, partitionCall.opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([partitionCall.opts.engine, partitionCall.opts.model], ["codex", "gpt-6-sol"]);
   assert.match(partitionCall.prompt, /Judge every file/);
   assert.match(partitionCall.prompt, /pkg\/api\/f0\.go/);
 });
@@ -502,14 +502,14 @@ test("specialist inapplicability is recorded and never reaches verification", as
   assert.equal(result.briefs.find((entry) => entry.skipKind === "inapplicable").reason, "the diff gives this concern nothing to judge");
 });
 
-test("all applicable findings are proposed on Terra and verified cross-family on Claude", async () => {
+test("all applicable findings are proposed on Sol and verified cross-family on Claude", async () => {
   const { result, calls } = await run(args());
   const specialists = calls.filter((call) => call.opts.label?.startsWith("repository-"));
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
   assert.ok(specialists.every((call) =>
-    call.opts.engine === "codex" && call.opts.model === "gpt-5.6-terra"));
+    call.opts.engine === "codex" && call.opts.model === "gpt-6-sol"));
   assert.ok(verifiers.every((call) =>
-    call.opts.engine === "claude" && call.opts.model === "claude-opus-5"));
+    call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialists.every((specialist) =>
     verifiers.every((verifier) => specialist.opts.engine !== verifier.opts.engine)));
   assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 92, reason: "confirmed" });
