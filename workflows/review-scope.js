@@ -6,7 +6,7 @@ export const meta = {
   ],
 };
 
-const GATE_MODEL = "gpt-5.6-terra";
+const GATE_MODEL = "gpt-6-sol";
 const SCOPE_BRIEF_PATH = "workflows/review-briefs/scope.md";
 
 const scopeSchema = {

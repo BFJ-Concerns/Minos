@@ -75,8 +75,8 @@ function envelope() {
     reviewed: { target: "target-sha", head: "head-sha", occasion: null },
     stage: "present",
     requiredModelEvidence: [
-      { label: "specialist", role: "specialist", pinnedModel: "gpt-5.6-sol" },
-      { label: "verifier", role: "verifier", pinnedModel: "claude-opus-5" },
+      { label: "specialist", role: "specialist", pinnedModel: "gpt-6-sol" },
+      { label: "verifier", role: "verifier", pinnedModel: "claude-opus-5-5" },
     ],
     proposedFindings: [{
       id: "specialist:1",
@@ -179,12 +179,12 @@ function writeArchive(recordDir) {
     JSON.stringify({
       label: "specialist",
       status: scenario === "failed-leg" ? "failed" : "complete",
-      resolved_model: "gpt-5.6-sol",
+      resolved_model: "gpt-6-sol",
     }),
   );
   writeFileSync(
     join(runDir, "agents", "000002", "agent.json"),
-    JSON.stringify({ label: "verifier", status: "complete", resolved_model: "claude-opus-5" }),
+    JSON.stringify({ label: "verifier", status: "complete", resolved_model: "claude-opus-5-5" }),
   );
   writeFileSync(
     join(runDir, "agents", "000002", "attempt-001-claude.jsonl"),

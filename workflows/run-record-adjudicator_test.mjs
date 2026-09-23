@@ -8,9 +8,9 @@ import test from "node:test";
 import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const legs = [
-  { label: "exploration", role: "exploration", pinnedModel: "gpt-5.6-terra" },
-  { label: "specialist-1", role: "specialist", pinnedModel: "gpt-5.6-sol" },
-  { label: "verify-1", role: "verifier", pinnedModel: "claude-opus-5" },
+  { label: "exploration", role: "exploration", pinnedModel: "gpt-6-sol" },
+  { label: "specialist-1", role: "specialist", pinnedModel: "gpt-6-sol" },
+  { label: "verify-1", role: "verifier", pinnedModel: "claude-opus-5-5" },
 ];
 
 const envelope = {
@@ -50,9 +50,9 @@ const zeroLegEnvelope = {
 function fixtureArchive(t, {
   manifestStatus = "complete",
   records = {
-    exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
-    "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
-    "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
+    exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "specialist-1": { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
   },
   duplicateRecords = [],
   rawAgentRecords = [],
@@ -114,8 +114,8 @@ test("complete legs and a complete verifier result produce a complete adapter ve
     [{
       path: "internal/review.go",
       line: 42,
-      proposingModel: { pinnedModel: "gpt-5.6-sol", resolvedModel: "gpt-5.6-sol-served" },
-      verifyingModel: { pinnedModel: "claude-opus-5", resolvedModel: "claude-opus-5" },
+      proposingModel: { pinnedModel: "gpt-6-sol", resolvedModel: "gpt-6-sol-served" },
+      verifyingModel: { pinnedModel: "claude-opus-5-5", resolvedModel: "claude-opus-5-5" },
     }],
   );
   assert.equal("reviewBody" in adapterVerdict, false);
@@ -125,9 +125,9 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   assert.deepEqual(
     adapterVerdict.modelEvidence.map(({ label, resolvedModel, status }) => ({ label, resolvedModel, status })),
     [
-      { label: "exploration", resolvedModel: "gpt-5.6-terra-served", status: "complete" },
-      { label: "specialist-1", resolvedModel: "gpt-5.6-sol-served", status: "complete" },
-      { label: "verify-1", resolvedModel: "claude-opus-5", status: "complete" },
+      { label: "exploration", resolvedModel: "gpt-6-sol-served", status: "complete" },
+      { label: "specialist-1", resolvedModel: "gpt-6-sol-served", status: "complete" },
+      { label: "verify-1", resolvedModel: "claude-opus-5-5", status: "complete" },
     ],
   );
 });
@@ -218,15 +218,15 @@ test("operator attention follows the combined-confidence threshold", async (t) =
 test("every confirmed finding renders into the review payload regardless of severity", async (t) => {
   const lowSeverityLegs = [
     ...legs,
-    { label: "specialist-2", role: "specialist", pinnedModel: "gpt-5.6-sol" },
-    { label: "verify-2", role: "verifier", pinnedModel: "claude-opus-5" },
+    { label: "specialist-2", role: "specialist", pinnedModel: "gpt-6-sol" },
+    { label: "verify-2", role: "verifier", pinnedModel: "claude-opus-5-5" },
   ];
   const recordsWithLowSeverityLegs = {
-    exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
-    "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
-    "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
-    "specialist-2": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
-    "verify-2": { status: "complete", resolved_model: "claude-opus-5" },
+    exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "specialist-1": { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
+    "specialist-2": { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "verify-2": { status: "complete", resolved_model: "claude-opus-5-5" },
   };
   const fixtureArchiveDir = fixtureArchive(t, { records: recordsWithLowSeverityLegs });
   const lowSeverityFinding = {
@@ -274,9 +274,9 @@ test("every confirmed finding renders into the review payload regardless of seve
 test("an unexpected resolved_model family does not withhold a complete verdict", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
-      exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
-      "specialist-1": { status: "complete", resolved_model: "claude-opus-5" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
+      exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+      "specialist-1": { status: "complete", resolved_model: "claude-opus-5-5" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
@@ -284,7 +284,7 @@ test("an unexpected resolved_model family does not withhold a complete verdict",
   assert.equal(adapterVerdict.status, "complete");
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
-  assert.equal(adapterVerdict.modelEvidence.find((entry) => entry.label === "specialist-1").resolvedModel, "claude-opus-5");
+  assert.equal(adapterVerdict.modelEvidence.find((entry) => entry.label === "specialist-1").resolvedModel, "claude-opus-5-5");
 });
 
 test("missing resolved_model does not withhold a complete verdict", async (t) => {
@@ -452,9 +452,9 @@ test("an unreadable record directory cannot become publishable", { timeout: 1000
 test("a non-complete leg makes the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
-      exploration: { status: "complete", resolved_model: "gpt-5.6-terra" },
-      "specialist-1": { status: "failed", resolved_model: "gpt-5.6-sol" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
+      exploration: { status: "complete", resolved_model: "gpt-6-sol" },
+      "specialist-1": { status: "failed", resolved_model: "gpt-6-sol" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
@@ -467,8 +467,8 @@ test("a non-complete leg makes the run incomplete", async (t) => {
 test("an absent required agent record makes the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
-      exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
+      exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
@@ -478,7 +478,7 @@ test("an absent required agent record makes the run incomplete", async (t) => {
 
 test("ambiguous agent records make the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
-    duplicateRecords: [["specialist-1", { status: "complete", resolved_model: "gpt-5.6-sol-served" }]],
+    duplicateRecords: [["specialist-1", { status: "complete", resolved_model: "gpt-6-sol-served" }]],
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");

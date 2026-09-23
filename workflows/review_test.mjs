@@ -191,10 +191,10 @@ test("the script emits an envelope with every routed leg and raw verifier output
   assert.deepEqual(
     result.requiredModelEvidence.map(({ role, pinnedModel }) => ({ role, pinnedModel })),
     [
-      { role: "exploration", pinnedModel: "gpt-5.6-terra" },
-      { role: "specialist", pinnedModel: "gpt-5.6-terra" },
-      { role: "specialist", pinnedModel: "gpt-5.6-terra" },
-      { role: "verifier", pinnedModel: "claude-opus-5" },
+      { role: "exploration", pinnedModel: "gpt-6-sol" },
+      { role: "specialist", pinnedModel: "gpt-6-sol" },
+      { role: "specialist", pinnedModel: "gpt-6-sol" },
+      { role: "verifier", pinnedModel: "claude-opus-5-5" },
     ],
   );
   assert.ok(calls.every((call) => call.opts.engine === "codex" || call.opts.engine === "claude"));
@@ -221,7 +221,7 @@ test("malformed exploration scope entries fail closed before specialist dispatch
       requiredModelEvidence: [{
         label: "exploration",
         role: "exploration",
-        pinnedModel: "gpt-5.6-terra",
+        pinnedModel: "gpt-6-sol",
       }],
       proposedFindings: [],
       outOfScopeObservations: [],
@@ -302,16 +302,16 @@ test("a specialist may omit an empty observation array", async () => {
   assert.ok(!schema.required.includes("outOfScopeObservations"));
 });
 
-test("all findings are proposed on Terra and verified cross-family on Claude", async () => {
+test("all findings are proposed on Sol and verified cross-family on Claude", async () => {
   const plan = [unit("correct", "correctness"), unit("secure", "security")];
   const { calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
   const correctness = calls.find((call) => call.opts.label === "specialist-1-correctness-gpt");
   const security = calls.find((call) => call.opts.label === "specialist-2-security-gpt");
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
-  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-5.6-terra"]);
-  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-6-sol"]);
+  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-6-sol"]);
   assert.ok(verifiers.length > 0);
-  assert.ok(verifiers.every((call) => call.opts.engine === "claude" && call.opts.model === "claude-opus-5"));
+  assert.ok(verifiers.every((call) => call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialistCalls(calls).every((call) => call.opts.engine !== "claude"));
   assert.ok(calls.filter((call) => call.opts.label?.startsWith("verify-"))
     .every((call) => call.opts.engine !== "codex"));
@@ -715,7 +715,7 @@ test("an exploration null still emits its required leg for archive adjudication"
   assert.deepEqual(result.requiredModelEvidence, [{
     label: "exploration",
     role: "exploration",
-    pinnedModel: "gpt-5.6-terra",
+    pinnedModel: "gpt-6-sol",
   }]);
   assert.equal(result.reviewers[0].status, "no-result");
 });

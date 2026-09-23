@@ -9,9 +9,9 @@ export const meta = {
   ],
 };
 
-const GPT_PLANNER_MODEL = "gpt-5.6-terra";
-const PROPOSER_MODEL = "gpt-5.6-terra";
-const VERIFIER_MODEL = "claude-opus-5";
+const GPT_PLANNER_MODEL = "gpt-6-sol";
+const PROPOSER_MODEL = "gpt-6-sol";
+const VERIFIER_MODEL = "claude-opus-5-5";
 const MAX_FINDINGS_PER_VERIFIER = 6;
 
 function slug(value) {
