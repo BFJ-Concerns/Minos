@@ -55,7 +55,7 @@ function gitEnvironment(credentialFile) {
 }
 
 function git(annexe, env, ...args) {
-  return execFileSync("git", ["-C", annexe, ...args], { env, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
+  return execFileSync("git", ["-C", annexe, ...args], { env, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", maxBuffer: Infinity });
 }
 
 function describe(error) {

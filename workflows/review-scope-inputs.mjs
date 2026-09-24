@@ -61,6 +61,7 @@ if (argumentError) {
   const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: Infinity,
   });
   const changedPaths = git("diff", "--name-only", "-z", target, head).split("\0").filter(Boolean);
   const lineCounts = new Map();

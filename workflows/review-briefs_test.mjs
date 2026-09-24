@@ -789,3 +789,30 @@ test("a brief verifier observation reaches the result alongside its verdicts", a
   assert.equal(observed.verified, false);
   assert.match(observed.observingLabel, /^verify-brief-/);
 });
+
+test("the enumerator reads a tracked-file listing larger than the default child-process buffer", () => {
+  const root = mkdtempSync(join(tmpdir(), "minos-brief-input-"));
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "config", "user.name", "Fixture"]);
+  execFileSync("git", ["-C", root, "config", "user.email", "fixture@example.test"]);
+  writeFileSync(join(root, "AGENTS.md"), "guidance\n");
+  writeFileSync(join(root, "code.txt"), "before\n");
+  execFileSync("git", ["-C", root, "add", "."]);
+  const blob = execFileSync("git", ["-C", root, "hash-object", "-w", "--stdin"], { input: "tracked\n", encoding: "utf8" }).trim();
+  const entries = Array.from({ length: 12_000 }, (_, index) =>
+    `100644 ${blob}\ttree/${String(index).padStart(6, "0")}-${"p".repeat(90)}.txt`).join("\n");
+  execFileSync("git", ["-C", root, "update-index", "--index-info"], { input: `${entries}\n` });
+  execFileSync("git", ["-C", root, "commit", "-qm", "base"]);
+  const target = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(root, "code.txt"), "after\n");
+  execFileSync("git", ["-C", root, "add", "code.txt"]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "head"]);
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const listing = execFileSync("git", ["-C", root, "ls-files", "-z"], { maxBuffer: Infinity });
+  assert.ok(listing.byteLength > 1024 * 1024);
+  const orientationPath = join(root, "orientation.json");
+  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "repository", guidance: join(root, "AGENTS.md") }));
+  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root };
+  const enumerated = JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env }));
+  assert.deepEqual(enumerated.briefs, []);
+});

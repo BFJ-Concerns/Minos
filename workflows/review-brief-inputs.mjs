@@ -47,6 +47,7 @@ if (argumentError) {
   const gitLines = (...args) => execFileSync("git", ["-C", workspace, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: Infinity,
   }).split("\0").filter(Boolean);
   const changedPaths = gitLines("diff", "--name-only", "-z", target, head);
   const trackedPaths = gitLines("ls-files", "-z");
