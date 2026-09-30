@@ -304,6 +304,7 @@ func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 		{name: "guidance source with an absolute path", toml: "[[guidance-sources]]\npath = \"/etc/passwd\"\n", want: "must be relative"},
 		{name: "guidance repository that is not owner/name", toml: "[[guidance-sources]]\nrepository = \"https://forge/x/y\"\npath = \"a.md\"\n", want: "guidance-sources[0].repository must be owner/name"},
 		{name: "unknown filing kind", toml: "[filing-destination]\nkind = \"email\"\n", want: "filing-destination.kind must be one of file, issue, pull-request-comment, none"},
+		{name: "kind-less destination with a path", toml: "[filing-destination]\npath = \"ISSUES.md\"\n", want: "filing-destination.kind is required when its repository or path is set"},
 		{name: "file kind without a path", toml: "[filing-destination]\nkind = \"file\"\n", want: "filing-destination.path is required"},
 		{name: "issue kind without a repository", toml: "[filing-destination]\nkind = \"issue\"\n", want: "filing-destination.repository must name"},
 		{name: "issue kind with a path", toml: "[filing-destination]\nkind = \"issue\"\nrepository = \"owner/plans\"\npath = \"x\"\n", want: "filing-destination.path does not apply"},
@@ -369,7 +370,7 @@ func TestLoadServiceConfigDecodesAndValidatesRouting(t *testing.T) {
 	for _, test := range []struct{ name, toml, want string }{
 		{name: "unknown engine", toml: "[routing.proposer]\nengine = \"opencode\"\n", want: "routing.proposer.engine must be one of claude, codex"},
 		{name: "model without engine", toml: "[routing.proposer]\nmodel = \"gpt-6-astra\"\n", want: "routing.proposer.model needs routing.proposer.engine"},
-		{name: "unknown effort", toml: "[routing.exploration]\neffort = \"maximal\"\n", want: "routing.exploration.effort must be one of low, medium, high, xhigh, max"},
+		{name: "unknown effort", toml: "[routing.exploration]\neffort = \"maximal\"\n", want: "routing.exploration.effort must be one of minimal, low, medium, high, xhigh"},
 		{name: "unknown role", toml: "[routing.judge]\nengine = \"claude\"\n", want: "unknown TOML keys: routing.judge"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

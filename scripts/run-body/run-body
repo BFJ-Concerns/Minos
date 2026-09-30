@@ -13,10 +13,61 @@ failure_cause="run-body exited before loading its configuration"
 session_id=""
 run_tmpdir=""
 
-stop_session() {
+# The lead engine seam: launching, observing and stopping the lead are the
+# only engine-specific mechanics. Each engine supplies these three functions;
+# the supervision loop below reads only their contract. lead_state prints one
+# of running, blocked, failed, stopped or unknown — blocked meaning the
+# session is waiting on something outside the run (a Claude session between
+# turns, say), which is terminal only before the lead has produced any work.
+lead_launch_claude() {
+  launch_output="$("$MINOS_CLAUDE" \
+    --bg \
+    --name "$session_name" \
+    --dangerously-skip-permissions \
+    --model "$MINOS_LEAD_MODEL" \
+    "$instruction" 2>&1)"
+  failure_cause="could not write Claude lead launch output"
+  printf '%s\n' "$launch_output"
+  failure_cause="could not parse Claude background session ID"
+  session_id="$(printf '%s\n' "$launch_output" | sed -nE 's/.*[Bb]ackgrounded[^[:xdigit:]]*([[:xdigit:]]{6,}).*/\1/p' | head -n 1)"
+  if [ -z "$session_id" ]; then
+    failure_cause="Claude did not report a background session ID"
+    echo "run-body: Claude did not report a background session ID" >&2
+    exit 1
+  fi
+}
+
+# Claude's roster reports its own vocabulary (running, blocked, done,
+# failed, stopped, …); only the five contract words leave this function.
+lead_state_claude() {
+  lead_raw_state=""
+  if agents="$("$MINOS_CLAUDE" agents --json --all)"; then
+    lead_raw_state="$(printf '%s' "$agents" | jq -r --arg id "$session_id" '
+      (if type == "array" then . else .agents end)[] |
+      select(.id == $id) |
+      .state // empty
+    ' 2>/dev/null)" || lead_raw_state=""
+  fi
+  case "$lead_raw_state" in
+    running|blocked|failed|stopped) printf '%s\n' "$lead_raw_state" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+lead_stop_claude() {
   if [ -n "$session_id" ]; then
     "$MINOS_CLAUDE" stop "$session_id" >/dev/null 2>&1 || true
   fi
+}
+
+lead_launch() { "lead_launch_$MINOS_LEAD_ENGINE"; }
+lead_state() { "lead_state_$MINOS_LEAD_ENGINE"; }
+# Runs from the exit trap too, so it must be safe before the engine is
+# resolved: nothing to stop until a lead was launched.
+stop_session() {
+  [ -n "${MINOS_LEAD_ENGINE:-}" ] || return 0
+  command -v "lead_stop_$MINOS_LEAD_ENGINE" >/dev/null 2>&1 || return 0
+  "lead_stop_$MINOS_LEAD_ENGINE"
 }
 
 remove_run_tmpdir() {
@@ -129,15 +180,19 @@ else
   unset_gateway_environment
 fi
 
-failure_cause="MINOS_CLAUDE is required"
-: "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
-# The lead's engine (C48). An engine is provisioned exactly when its
-# configuration seed is named: the lead's engine must be, the other may be
+# The lead's engine (C48). Each engine names its executable, its default
+# model and its configuration seed; an engine is provisioned exactly when
+# its seed is named. The lead's engine must be provisioned, the other may be
 # absent — a single-engine deployment — and the workflows route every role
 # by what is provisioned (MINOS_PROVISIONED_ENGINES).
 MINOS_LEAD_ENGINE="${MINOS_LEAD_ENGINE:-claude}"
 case "$MINOS_LEAD_ENGINE" in
-  claude) ;;
+  claude)
+    failure_cause="MINOS_CLAUDE is required"
+    : "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
+    lead_seed_variable="MINOS_CLAUDE_CONFIG_SEED"
+    lead_default_model="claude-opus-5-5"
+    ;;
   *)
     failure_cause="MINOS_LEAD_ENGINE must be claude; the $MINOS_LEAD_ENGINE lead is not available in this build"
     echo "run-body: $failure_cause" >&2
@@ -151,7 +206,7 @@ provisioned_engines=""
 case " $provisioned_engines " in
   *" $MINOS_LEAD_ENGINE "*) ;;
   *)
-    failure_cause="MINOS_CLAUDE_CONFIG_SEED is required: the lead runs on $MINOS_LEAD_ENGINE"
+    failure_cause="$lead_seed_variable is required: the lead runs on $MINOS_LEAD_ENGINE"
     echo "run-body: $failure_cause" >&2
     exit 1
     ;;
@@ -367,44 +422,22 @@ sample_memory_pressure() {
 "$(dirname "$0")/memory-telemetry" "$MINOS_RUN_DIR/memory-baseline.json" || true
 
 failure_stage="lead-launch"
-failure_cause="Claude lead launch failed"
+failure_cause="$MINOS_LEAD_ENGINE lead launch failed"
 last_activity_signature="$(
   find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" -o -path "$MINOS_RUN_DIR/memory-peak" \) -prune \
     -o -printf '%T@:%i:%s\n' 2>/dev/null |
     LC_ALL=C sort -rn |
     head -n 1
 )"
-MINOS_LEAD_MODEL="${MINOS_LEAD_MODEL:-claude-opus-5-5}"
+MINOS_LEAD_MODEL="${MINOS_LEAD_MODEL:-$lead_default_model}"
 export MINOS_LEAD_MODEL
-launch_output="$("$MINOS_CLAUDE" \
-  --bg \
-  --name "$session_name" \
-  --dangerously-skip-permissions \
-  --model "$MINOS_LEAD_MODEL" \
-  "$instruction" 2>&1)"
-failure_cause="could not write Claude lead launch output"
-printf '%s\n' "$launch_output"
-
-failure_cause="could not parse Claude background session ID"
-session_id="$(printf '%s\n' "$launch_output" | sed -nE 's/.*[Bb]ackgrounded[^[:xdigit:]]*([[:xdigit:]]{6,}).*/\1/p' | head -n 1)"
-if [ -z "$session_id" ]; then
-  failure_cause="Claude did not report a background session ID"
-  echo "run-body: Claude did not report a background session ID" >&2
-  exit 1
-fi
+lead_launch
 prelaunch=false
 lead_activity_seen=false
 last_activity_at="$(date +%s)"
 
 while :; do
-  agent_state=""
-  if agents="$("$MINOS_CLAUDE" agents --json --all)"; then
-    agent_state="$(printf '%s' "$agents" | jq -r --arg id "$session_id" '
-      (if type == "array" then . else .agents end)[] |
-      select(.id == $id) |
-      .state // empty
-    ' 2>/dev/null)" || agent_state=""
-  fi
+  agent_state="$(lead_state)"
 
   # 1. The lead has declared that all terminal obligations are complete. The
   #    result is scratch; the forge and failure log carry the durable outcome.
@@ -434,18 +467,18 @@ while :; do
     last_activity_at="$(date +%s)"
   fi
 
-  # Claude also uses blocked for resumable waits after a turn, so it is not
-  # terminal once useful work has begun. Before the lead changes the run tree,
-  # however, blocked means the first turn cannot make progress and no lifecycle
-  # code exists yet to record or recover the failure.
+  # A blocked state is a resumable wait once useful work has begun (Claude
+  # reports it between turns), so it is not terminal then. Before the lead
+  # changes the run tree, however, blocked means the first turn cannot make
+  # progress and no lifecycle code exists yet to record or recover the failure.
   if [ "$agent_state" = "blocked" ] && [ "$lead_activity_seen" = false ]; then
     supervisor_failure=true
     failure_stage="lead-supervision"
-    failure_cause="Claude lead entered blocked state before producing run activity"
+    failure_cause="$MINOS_LEAD_ENGINE lead entered blocked state before producing run activity"
     exit 1
   fi
 
-  # 3. Claude has reported an unrecoverable terminal state.
+  # 3. The lead has reported an unrecoverable terminal state.
   if [ "$agent_state" = "failed" ] || [ "$agent_state" = "stopped" ]; then
     if ! capture_cgroup_death_evidence; then
       supervisor_failure=true
@@ -460,7 +493,7 @@ while :; do
   if [ $((now - last_activity_at)) -ge "$silence_timeout" ]; then
     supervisor_failure=true
     failure_stage="lead-supervision"
-    failure_cause="Claude lead produced no run activity for ${silence_timeout} seconds (last state: ${agent_state:-unknown})"
+    failure_cause="$MINOS_LEAD_ENGINE lead produced no run activity for ${silence_timeout} seconds (last state: ${agent_state:-unknown})"
     exit 1
   fi
   sleep "${MINOS_CLAUDE_POLL_SECONDS:-3}"

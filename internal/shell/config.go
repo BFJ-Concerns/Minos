@@ -148,7 +148,11 @@ func (r Routing) Roles() map[string]RoleRouting {
 }
 
 var routingEngines = []string{"claude", "codex"}
-var routingEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// routingEfforts is the Ensemble runtime's canonical effort domain
+// (CANONICAL_EFFORT_DOMAIN in runtime/ensemble.mjs); the run-time resolver
+// in workflows/role-routing.mjs carries the same list.
+var routingEfforts = []string{"minimal", "low", "medium", "high", "xhigh"}
 
 func validateRouting(routing Routing) error {
 	for name, role := range routing.Roles() {
@@ -301,6 +305,11 @@ func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
 		if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
 			return nil, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
 		}
+		// The file's own values are validated before resolution fills a
+		// default, so an incomplete table is an error, never a silent default.
+		if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
+			return nil, err
+		}
 		repo.RepositoryKnobs = resolveRepositoryKnobs(cfg.Repositories, repo.RepositoryKnobs, metadata.IsDefined)
 		if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 			return nil, err
@@ -361,6 +370,9 @@ func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
 	destination := knobs.FilingDestination
 	switch destination.Kind {
 	case "":
+		if destination.Repository != "" || destination.Path != "" {
+			return fmt.Errorf("%s: filing-destination.kind is required when its repository or path is set", where)
+		}
 	case FilingKindFile:
 		if err := validRepositoryPath(destination.Path); err != nil {
 			return fmt.Errorf("%s: filing-destination.path %w", where, err)

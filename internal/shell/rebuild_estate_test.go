@@ -113,7 +113,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	}
 	guidance := orientation.Guidance[0]
 	if guidance.Origin != "configured" || guidance.Source.Repository != "minos-e2e-owner/subject-plans" ||
-		guidance.Location != filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "guidance", "minos-e2e-owner--subject-plans", "README.md") {
+		guidance.Location != filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "guidance", "minos-e2e-owner", "subject-plans", "README.md") {
 		t.Fatalf("orientation guidance = %+v, want the configured secondary README cloned beside the workspace", guidance)
 	}
 	assertContainsFile(t, guidance.Location, "cinnabar-orbit-719")
@@ -208,7 +208,7 @@ func TestRebuildEstateSupervisesTerminalLeadWithoutCompletionMarker(t *testing.T
 	if _, statErr := os.Stat(filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete")); !os.IsNotExist(statErr) {
 		t.Fatalf("unmarked terminal lead wrote a completion marker or stat failed: %v", statErr)
 	}
-	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=lead-supervision cause=Claude lead produced no run activity for 2 seconds (last state: done)")
+	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=lead-supervision cause=claude lead produced no run activity for 2 seconds (last state: unknown)")
 	assertContainsFile(t, record+".terminal", `"state":"done"`)
 	assertContainsFile(t, record+".calls", "stop abcdef12")
 }

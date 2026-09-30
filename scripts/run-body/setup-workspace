@@ -164,12 +164,14 @@ guidance_entries='[]'
 misconfigurations='[]'
 clone_failures='{}'
 
+# owner/name maps to guidance/<owner>/<name>: nested directories, so two
+# distinct names can never share a clone path.
 guidance_clone_path() {
-  printf '%s/%s' "$guidance_root" "$(printf '%s' "$1" | sed 's|/|--|')"
+  printf '%s/%s' "$guidance_root" "$1"
 }
 
-# A configured source that cannot be read is recorded, never passed over
-# silently: the run report and the filing destination carry the record.
+# A configured source that cannot be read is recorded in the orientation,
+# never passed over silently; the lead carries the record into the run report.
 record_guidance_misconfiguration() {
   misconfigurations="$(printf '%s' "$misconfigurations" | jq -c --argjson source "$1" --arg reason "$2" \
     '. + [{kind: "guidance-source", source: $source, reason: $reason}]')"
@@ -194,7 +196,7 @@ for guidance_repository in $(printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq -r '[.[]
     clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository metadata omitted its clone URL" '.[$name] = $reason')"
     continue
   fi
-  mkdir -p "$guidance_root"
+  mkdir -p "$(dirname "$clone_path")"
   if ! git -c "http.extraHeader=Authorization: token ${forge_token}" clone --quiet "$guidance_url" "$clone_path"; then
     rm -rf -- "$clone_path"
     clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository could not be cloned" '.[$name] = $reason')"

@@ -1694,6 +1694,8 @@ func fileComposedTriage(t *testing.T, state *forgejoFixtureState, plan map[strin
 		"MINOS_RUN_DIR="+directory,
 		"MINOS_COMMIT_AUTHOR_NAME=Minos",
 		"MINOS_COMMIT_AUTHOR_EMAIL=minos@example.invalid",
+		"MINOS_HEAD_BRANCH=feature",
+		"MINOS_SETUP_WORKSPACE="+filepath.Join(root, "scripts", "run-body", "setup-workspace"),
 	)
 	output, err := filing.CombinedOutput()
 	if err != nil {

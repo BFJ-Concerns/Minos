@@ -12,7 +12,7 @@ const head = process.argv[3];
 if (!target || !head || process.argv.length > 4) {
   process.stderr.write("usage: node workflows/review-inputs.mjs TARGET HEAD\n");
   process.exitCode = 2;
-} else {
+} else try {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const orientationPath = process.env.MINOS_ORIENTATION;
   if (!orientationPath) throw new Error("MINOS_ORIENTATION is required");
@@ -60,4 +60,9 @@ if (!target || !head || process.argv.length > 4) {
     ...(pullRequest === undefined ? {} : { pullRequest }),
     instructionBriefs,
   }) + "\n");
+} catch (error) {
+  // Every input failure is a usage error: the lifecycle reads exit 2 as
+  // "the input could not be built", never as a crash to diagnose.
+  process.stderr.write(`${error.message}\n`);
+  process.exitCode = 2;
 }

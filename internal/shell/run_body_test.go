@@ -394,7 +394,7 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 				return map[string]string{"MINOS_TEST_CLAUDE_LAUNCH_FAIL": "1"}
 			},
 			wantStage: "lead-launch",
-			wantCause: "Claude lead launch failed",
+			wantCause: "claude lead launch failed",
 		},
 		{
 			name: "missing Claude session ID",
@@ -472,7 +472,7 @@ func TestRunBodyRecordsBlockedLeadBeforeFirstRunActivity(t *testing.T) {
 		t,
 		fixture.failureLog,
 		"stage=lead-supervision",
-		"cause=Claude lead entered blocked state before producing run activity",
+		"cause=claude lead entered blocked state before producing run activity",
 	)
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 	fixture.assertProcessesStopped(t)
@@ -728,7 +728,7 @@ func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
 		t,
 		fixture.failureLog,
 		"stage=lead-supervision",
-		"cause=Claude lead produced no run activity for 0 seconds (last state: done)",
+		"cause=claude lead produced no run activity for 0 seconds (last state: unknown)",
 	)
 	fixture.assertProcessesStopped(t)
 }

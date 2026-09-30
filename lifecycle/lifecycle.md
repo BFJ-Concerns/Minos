@@ -196,13 +196,18 @@ write, matching the target rule above.)
    stage name nowhere else; the script announces a repeat from the base
    input itself, so you build the input once per stage.
 
-   Launch each stage through Bash with `run_in_background` — do not
-   append shell `&`. The Bash task then owns the workflow process,
-   remains alive across turns and sends one completion notification when
-   that process exits. This protects a workflow that runs beyond a
-   foreground command's ten-minute limit; it does not relax any ordering
-   or publication precondition elsewhere in this lifecycle. Record the
-   task ID.
+   How you wait for a stage depends on the session you are; the launch
+   command, the files it produces and everything after the wait are the
+   same for both. Read the branch for your own session and ignore the
+   other.
+
+   **A Claude Code session.** Launch each stage through Bash with
+   `run_in_background` — do not append shell `&`. The Bash task then owns
+   the workflow process, remains alive across turns and sends one
+   completion notification when that process exits. This protects a
+   workflow that runs beyond a foreground command's ten-minute limit; it
+   does not relax any ordering or publication precondition elsewhere in
+   this lifecycle. Record the task ID.
 
    `NAME-result.json` holds the complete stdout of a successful command,
    or it does not exist: a failed or killed workflow leaves no result
@@ -276,6 +281,24 @@ write, matching the target rule above.)
    The `CronCreate` timer above is the working fallback. Never respond to
    a refused or missing tool by going silent: an unwatched wait is how a
    live run reaches the silence backstop with work still in flight.
+
+   **A Codex session.** You have no background tasks, no notifications
+   and no timers, and you need none: run the launch command in the
+   foreground and wait for it to exit. Your shell tool yields a
+   long-running command back to you every few seconds while it is still
+   running; when it does, keep waiting on that same process — poll it
+   again, as many times as it takes — until it exits. Never launch the
+   stage a second time because the first yielded, never write a wait loop
+   with `sleep`, and never move on while the process is alive. If your
+   tool can no longer report on the process — its handle is gone before
+   you saw it exit — run
+   `"${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" await NAME`, which
+   waits on the stage's flag in the foreground; wait on it the same way.
+   The flag and result files carry exactly the meaning described in the
+   Claude branch: `NAME-result.done` is the one completion signal, and
+   `NAME-result.json` exists only for a successful command. Do not end
+   your turn while a stage is running: your session ends with your turn,
+   and a stage left running has no lead to read it.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` at every completion
    notification or fallback wake, after confirming the background

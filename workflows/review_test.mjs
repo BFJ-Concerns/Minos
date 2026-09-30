@@ -804,7 +804,8 @@ test("an exploration null still emits its required leg for archive adjudication"
 test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Every workflow stage is launched by one script, never by a command you\s+compose: `"\$\{MINOS_SETUP_WORKSPACE%\/\*\}\/dispatch-stage" NAME WORKFLOW`/);
   assert.match(lifecycle, /the timing wrapper outermost[\s\S]*the completion-flag wrapper next[\s\S]*the result-publication wrapper innermost/);
-  assert.match(lifecycle, /Launch each stage through Bash with `run_in_background` — do not\s+append shell `&`/);
+  assert.match(lifecycle, /\*\*A Claude Code session\.\*\* Launch each stage through Bash with\s+`run_in_background` — do not append shell `&`/);
+  assert.match(lifecycle, /\*\*A Codex session\.\*\*[\s\S]*run the launch command in the\s+foreground and wait for it to exit[\s\S]*keep waiting on that same process[\s\S]*Never launch the\s+stage a second time[\s\S]*Do not end\s+your turn while a stage is running/);
   assert.match(lifecycle, /The flag watcher is the primary wake on completion\.[\s\S]*dispatch-stage" await NAME/);
   assert.match(lifecycle, /The recurring `CronCreate` timer is hang detection only, never the\s+expected wake\.[\s\S]*cancel the timer with `CronDelete`/);
   assert.match(lifecycle, /Do not call `ScheduleWakeup` in this lifecycle\.[\s\S]*`CronCreate` timer above is the working fallback/);

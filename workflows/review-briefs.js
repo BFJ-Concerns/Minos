@@ -511,7 +511,7 @@ dispatched.forEach((unit, unitIndex) => {
     label: unit.label,
     role: "specialist",
     brief: unit.brief,
-    family: "gpt",
+    family: routing.proposer.engine,
     pinnedModel: routing.proposer.model,
     status: result ? "done" : "no-result",
   });

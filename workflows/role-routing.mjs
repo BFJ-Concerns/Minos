@@ -9,6 +9,10 @@
 
 export const ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
 export const ENGINES = ["claude", "codex"];
+// The Ensemble runtime's canonical effort domain; the Go loader validates the
+// configured value against the same list, so nothing the run receives can be
+// refused at dispatch.
+export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
 
 const DEFAULT_MODEL = { claude: "claude-opus-5-5", codex: "gpt-6-sol" };
 const DEFAULT_EFFORT = {
@@ -37,9 +41,10 @@ function validConfiguredRole(role, entry) {
     if (!["engine", "model", "effort"].includes(key)) throw new Error(`routing.${role}.${key} is not a routing field`);
   if (entry.engine !== undefined && !ENGINES.includes(entry.engine))
     throw new Error(`routing.${role}.engine must be one of ${ENGINES.join(", ")}`);
-  for (const key of ["model", "effort"])
-    if (entry[key] !== undefined && (typeof entry[key] !== "string" || entry[key] === ""))
-      throw new Error(`routing.${role}.${key} must be a non-empty string`);
+  if (entry.model !== undefined && (typeof entry.model !== "string" || entry.model === ""))
+    throw new Error(`routing.${role}.model must be a non-empty string`);
+  if (entry.effort !== undefined && !EFFORTS.includes(entry.effort))
+    throw new Error(`routing.${role}.effort must be one of ${EFFORTS.join(", ")}`);
   if (entry.model !== undefined && entry.engine === undefined)
     throw new Error(`routing.${role}.model needs routing.${role}.engine, which names the model's family`);
 }

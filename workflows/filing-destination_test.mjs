@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { appendFilingEntries, deliverFilingEntries, filingMarker, validFilingDestination } from "./filing-destination.mjs";
@@ -17,8 +17,11 @@ import { appendFilingEntries, deliverFilingEntries, filingMarker, validFilingDes
 // failed delivery leaves the material in the run record with no fallback.
 
 const fileTriageCli = fileURLToPath(new URL("./file-triage.mjs", import.meta.url));
+const pushGuard = fileURLToPath(new URL("../scripts/run-body/pre-push-guard", import.meta.url));
 const identity = { name: "Review Bot", email: "review-bot@example.invalid" };
 const source = { owner: "owner", repo: "repository", pr: "17", date: "2026-09-12" };
+const reviewedRepository = "owner/repository";
+const protection = { headBranch: "feature", pushGuard };
 
 function git(directory, ...args) {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -66,7 +69,10 @@ async function destinationFixture(t, { issues = "# Issues\n\n- An existing entry
     response.end(JSON.stringify({ clone_url: origin, default_branch: branch }));
   });
   await new Promise((resolve) => forge.listen(0, "127.0.0.1", resolve));
-  t.after(() => forge.close());
+  t.after(() => {
+    forge.close();
+    rmSync(scratch, { recursive: true, force: true });
+  });
   const runDir = join(scratch, "run");
   return {
     scratch, origin, seed, branch, lookups, runDir,
@@ -75,7 +81,7 @@ async function destinationFixture(t, { issues = "# Issues\n\n- An existing entry
     deliver: (overrides) => deliverFilingEntries({
       destination: { kind: "file", repository: "owner/plans", path: "ISSUES.md" },
       entries: [advisory],
-      source, reviewedRepository: "owner/repository", runDir, identity,
+      source, reviewedRepository, runDir, identity, protection,
       apiBase: `http://127.0.0.1:${forge.address().port}`,
       ...overrides,
     }),
@@ -118,16 +124,37 @@ test("the file kind appends to the named repository's default branch, committed 
   const log = git(fixture.seed, "--git-dir", fixture.origin, "log", "-1", "--format=%an <%ae> %s", "trunk");
   assert.equal(log.trim(), "Review Bot <review-bot@example.invalid> issues: record review material for triage");
   assert.deepEqual(fixture.lookups.map((lookup) => lookup.url), ["/api/v1/repos/owner/plans"]);
-  const clone = join(fixture.runDir, "filing", "owner--plans");
+  const clone = join(fixture.runDir, "filing", "owner", "plans");
   assert.equal(git(clone, "status", "--porcelain"), "", "the filing clone is left clean");
 });
 
-test("the file kind without a repository writes to the reviewed repository, at a nested path it creates", async (t) => {
+test("the file kind without a repository writes to the reviewed repository, at a nested path it creates, under the push guard", async (t) => {
   const fixture = await destinationFixture(t, { repositories: ["owner/repository"] });
   const outcome = await fixture.deliver({ destination: { kind: "file", path: "docs/review/ISSUES.md" } });
   assert.deepEqual(outcome, { kind: "file", outcome: "filed", written: 1, location: "owner/repository:docs/review/ISSUES.md" });
   assert.match(fixture.originFile("docs/review/ISSUES.md"), /^# Issues\n\n- \*\*Advisory/);
   assert.deepEqual(fixture.lookups.map((lookup) => lookup.url), ["/api/v1/repos/owner/repository"]);
+  const clone = join(fixture.runDir, "filing", "owner", "repository");
+  assert.equal(readFileSync(join(clone, ".git", "minos-protected-ref"), "utf8"), "refs/heads/feature\n");
+  assert.equal(readFileSync(join(clone, ".git", "hooks", "pre-push"), "utf8"), readFileSync(pushGuard, "utf8"));
+});
+
+test("filing to the reviewed repository never reaches the pull-request branch", async (t) => {
+  // The pull request's own branch is the repository's default branch — a
+  // release-style pull request — so the default-branch write is refused.
+  const fixture = await destinationFixture(t, { branch: "feature", repositories: ["owner/repository"] });
+  const outcome = await fixture.deliver({ destination: { kind: "file", path: "ISSUES.md" } });
+  assert.equal(outcome.outcome, "unfiled");
+  assert.match(outcome.reason, /default branch feature is the pull-request branch, which Minos never writes/);
+  assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
+  assert.deepEqual(
+    await fixture.deliver({ destination: { kind: "file", path: "ISSUES.md" }, protection: null }),
+    { kind: "file", outcome: "unfiled", reason: "filing to the reviewed repository needs the pull-request branch and the push guard (protection)" },
+  );
+  // A named secondary repository whose default branch happens to share the
+  // name is not the pull-request branch and files normally.
+  const other = await destinationFixture(t, { branch: "feature" });
+  assert.equal((await other.deliver()).outcome, "filed");
 });
 
 test("an entry already at the destination is not filed twice", async (t) => {
@@ -136,8 +163,8 @@ test("an entry already at the destination is not filed twice", async (t) => {
   const again = await fixture.deliver({ entries: [advisory, misconfiguration] });
   assert.deepEqual(again, { kind: "file", outcome: "filed", written: 1, location: "owner/plans:ISSUES.md" });
   const issues = fixture.originFile();
-  assert.equal(issues.split(filingMarker(advisory)).length - 1, 1, "the advisory finding appears once");
-  assert.equal(issues.split(filingMarker(misconfiguration)).length - 1, 1);
+  assert.equal(issues.split(filingMarker(advisory, reviewedRepository)).length - 1, 1, "the advisory finding appears once");
+  assert.equal(issues.split(filingMarker(misconfiguration, reviewedRepository)).length - 1, 1);
   assert.deepEqual(
     await fixture.deliver({ entries: [advisory, misconfiguration] }),
     { kind: "file", outcome: "filed", written: 0, location: "owner/plans:ISSUES.md" },
@@ -154,12 +181,14 @@ test("the filing appends to what the destination holds at delivery time", async 
   assert.match(fixture.originFile(), /A newer entry the operator added mid-run\.\n\n- \*\*Advisory/);
 });
 
-test("the marker keys on kind, site and title so one defect files once across heads", () => {
-  assert.equal(filingMarker(advisory), filingMarker({ ...advisory, id: "other:9", explanation: "reworded", title: "  Lost   update on concurrent write " }));
-  assert.notEqual(filingMarker(advisory), filingMarker({ ...advisory, kind: "out-of-scope-observation" }));
-  assert.notEqual(filingMarker(advisory), filingMarker({ ...advisory, line: 42 }));
-  assert.equal(filingMarker(misconfiguration), filingMarker({ ...misconfiguration, reason: "other reason" }));
-  const { text, written } = appendFilingEntries("", [advisory, advisory], "Filed by Minos from o/r#1, 2026-09-12");
+test("the marker keys on repository, kind, site and title so one defect files once across heads", () => {
+  const marker = (entry, repository = reviewedRepository) => filingMarker(entry, repository);
+  assert.equal(marker(advisory), marker({ ...advisory, id: "other:9", explanation: "reworded", title: "  Lost   update on concurrent write " }));
+  assert.notEqual(marker(advisory), marker({ ...advisory, kind: "out-of-scope-observation" }));
+  assert.notEqual(marker(advisory), marker({ ...advisory, line: 42 }));
+  assert.notEqual(marker(advisory), marker(advisory, "other/project"), "two projects sharing a destination file the same site separately");
+  assert.equal(marker(misconfiguration), marker({ ...misconfiguration, reason: "other reason" }));
+  const { text, written } = appendFilingEntries("", [advisory, advisory], "Filed by Minos from o/r#1, 2026-09-12", reviewedRepository);
   assert.equal(written, 1, "a duplicate within one batch files once");
   assert.match(text, /^# Issues\n\n- \*\*Advisory/);
 });
@@ -210,8 +239,12 @@ test("the destination validator admits exactly the configured shapes", () => {
     { kind: "file", path: "ISSUES.md" }, { kind: "file", repository: "o/r", path: "a/b.md" },
     { kind: "issue", repository: "o/r" }, { kind: "pull-request-comment" }, { kind: "none" },
   ]) assert.equal(validFilingDestination(valid), true, JSON.stringify(valid));
-  for (const invalid of [null, "file", { kind: "email" }, { kind: "file" }, { kind: "file", path: "" }, { kind: "issue" }, { kind: "none", path: 3 }])
-    assert.equal(validFilingDestination(invalid), false, JSON.stringify(invalid));
+  for (const invalid of [
+    null, "file", { kind: "email" }, { kind: "file" }, { kind: "file", path: "" }, { kind: "issue" }, { kind: "none", path: 3 },
+    { kind: "none", path: "ISSUES.md" }, { kind: "pull-request-comment", repository: "o/r" }, { kind: "issue", repository: "o/r", path: "x" },
+    { kind: "file", path: "../ISSUES.md" }, { kind: "file", path: "/etc/ISSUES.md" }, { kind: "file", repository: "http://x/y", path: "a" },
+    { kind: "file", path: "a", branch: "main" },
+  ]) assert.equal(validFilingDestination(invalid), false, JSON.stringify(invalid));
 });
 
 test("the file-triage CLI delivers to the destination the environment names and never writes a fallback review", async (t) => {
@@ -229,6 +262,8 @@ test("the file-triage CLI delivers to the destination the environment names and 
     MINOS_RUN_DIR: fixture.runDir,
     MINOS_COMMIT_AUTHOR_NAME: identity.name,
     MINOS_COMMIT_AUTHOR_EMAIL: identity.email,
+    MINOS_HEAD_BRANCH: "feature",
+    MINOS_SETUP_WORKSPACE: join(dirname(pushGuard), "setup-workspace"),
   };
 
   const filed = await runCli([entriesPath, orientationPath], env);
@@ -246,7 +281,7 @@ test("the file-triage CLI delivers to the destination the environment names and 
   const usage = await runCli(["one"], env);
   assert.equal(usage.status, 2);
   assert.match(usage.stderr, /^usage: node workflows\/file-triage\.mjs ENTRIES_FILE ORIENTATION/);
-  for (const [name, value] of [["MINOS_FILING_DESTINATION", "not json"], ["MINOS_FILING_DESTINATION", '{"kind":"email"}'], ["MINOS_RUN_DIR", ""], ["MINOS_COMMIT_AUTHOR_EMAIL", ""]]) {
+  for (const [name, value] of [["MINOS_FILING_DESTINATION", "not json"], ["MINOS_FILING_DESTINATION", '{"kind":"email"}'], ["MINOS_RUN_DIR", ""], ["MINOS_COMMIT_AUTHOR_EMAIL", ""], ["MINOS_HEAD_BRANCH", ""], ["MINOS_SETUP_WORKSPACE", ""]]) {
     const rejected = await runCli([entriesPath, orientationPath], { ...env, [name]: value });
     assert.equal(rejected.status, 2, `${name}=${JSON.stringify(value)} is a usage error`);
     assert.match(rejected.stderr, new RegExp(name));
