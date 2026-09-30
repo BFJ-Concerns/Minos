@@ -760,6 +760,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Service.CommitAuthorName = "Reviewer Bot"
 	cfg.Service.CommitAuthorEmail = "reviewer@example.invalid"
+	cfg.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
 	cfg.Ensemble.ConcurrencyClaude = 10
 	cfg.Ensemble.ConcurrencyCodex = 6
 	cfg.Ensemble.AgentCeiling = 12
@@ -809,6 +810,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_COMMIT_AUTHOR_EMAIL=reviewer@example.invalid",
 		`MINOS_GUIDANCE_SOURCES=[{"repository":"owner/repo-plans","path":"README.md"},{"path":"docs/intent.md"}]`,
 		`MINOS_FILING_DESTINATION={"kind":"file","repository":"owner/repo-plans","path":"ISSUES.md"}`,
+		`MINOS_ROUTING={"verifier":{"engine":"codex","model":"gpt-6-astra","effort":"low"}}`,
 		"ENSEMBLE_CONCURRENCY_CLAUDE=10",
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",
@@ -866,6 +868,7 @@ func TestSpawnRunExportsUnsetStructuredKnobsAsTheirEmptyForms(t *testing.T) {
 	}
 	assertArgument(t, systemdArgs, "MINOS_GUIDANCE_SOURCES=[]")
 	assertArgument(t, systemdArgs, `MINOS_FILING_DESTINATION={"kind":"none"}`)
+	assertArgument(t, systemdArgs, "MINOS_ROUTING={}")
 }
 
 func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {

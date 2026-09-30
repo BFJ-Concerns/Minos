@@ -6,6 +6,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
+import { routingFromEnvironment } from "./role-routing.mjs";
 
 const [target, head, ...rest] = process.argv.slice(2);
 const occasion = rest.length === 1 ? rest[0] : null;
@@ -22,6 +23,7 @@ if (argumentError) {
   if (!orientation || typeof orientation.repository !== "string" || orientation.repository === "")
     throw new Error("orientation omitted its repository path");
   const guidance = guidanceFromOrientation(orientation);
+  const routing = routingFromEnvironment();
 
   const workspace = resolve(process.env.MINOS_WORKSPACE || orientation.repository);
 
@@ -88,6 +90,7 @@ if (argumentError) {
     trackedFiles,
     briefs,
     guidance,
+    routing,
     instructionBriefs,
   };
 

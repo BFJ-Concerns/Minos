@@ -9,9 +9,6 @@ export const meta = {
   ],
 };
 
-const GPT_PLANNER_MODEL = "gpt-6-sol";
-const PROPOSER_MODEL = "gpt-6-sol";
-const VERIFIER_MODEL = "claude-opus-5-5";
 const MAX_FINDINGS_PER_VERIFIER = 6;
 
 function slug(value) {
@@ -99,6 +96,28 @@ function instructionBriefsFromInput(input) {
   return new Map((Array.isArray(input && input.instructionBriefs) ? input.instructionBriefs : [])
     .filter((entry) => entry && typeof entry.path === "string" && typeof entry.readPath === "string" && typeof entry.content === "string")
     .map((entry) => [entry.path, entry]));
+}
+
+const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
+const ROUTING_ENGINES = ["claude", "codex"];
+
+// The resolved routing the input builder attached: every role's engine,
+// model and effort, already defaulted for what the deployment provisioned.
+// Nothing here is fixed in source; a missing or malformed table fails the
+// workflow before any dispatch.
+function routingFromInput(input) {
+  const routing = input && input.routing;
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+  for (const role of ROUTING_ROLES) {
+    const entry = routing[role];
+    if (
+      !entry ||
+      !ROUTING_ENGINES.includes(entry.engine) ||
+      typeof entry.model !== "string" || entry.model === "" ||
+      typeof entry.effort !== "string" || entry.effort === ""
+    ) return null;
+  }
+  return routing;
 }
 
 function projectGuidanceFromInput(input) {
@@ -301,6 +320,8 @@ const guidance = projectGuidanceFromInput(input);
 if (!repositoryInstruction || !verifierInstruction)
   throw new Error("deterministic input omitted shipped repository or verifier brief");
 if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
+const routing = routingFromInput(input);
+if (!routing) throw new Error("deterministic input omitted the role routing");
 
 const legs = [];
 const addLeg = (label, role, pinnedModel, findingIds = null) => {
@@ -334,7 +355,7 @@ const relevanceCandidates = candidates.filter((candidate) => candidate.front.rel
 const relevanceDecisions = new Map();
 if (relevanceCandidates.length > 0) {
   phase("Relevance");
-  addLeg("brief-relevance", "relevance", GPT_PLANNER_MODEL);
+  addLeg("brief-relevance", "relevance", routing["brief-planner"].model);
   const relevanceResult = await agent(
     projectGuidanceSection(guidance) +
       `Judge which repository concerns ${input.target}...${input.head} gives work to. Inspect the actual diff when paths alone do not settle it. ` +
@@ -342,10 +363,10 @@ if (relevanceCandidates.length > 0) {
       `Changed paths: ${JSON.stringify(input.changedPaths)}\n` +
       `Concerns: ${JSON.stringify(relevanceCandidates.map(({ brief, front }) => ({ brief: brief.path, relevance: front.relevance })))}`,
     {
-      engine: "codex",
+      engine: routing["brief-planner"].engine,
       schema: relevanceSchema,
-      model: GPT_PLANNER_MODEL,
-      effort: "high",
+      model: routing["brief-planner"].model,
+      effort: routing["brief-planner"].effort,
       label: "brief-relevance",
       phase: "Relevance",
     },
@@ -386,7 +407,7 @@ function makeUnit(candidate, files, suffix, concern) {
     scope: brief.scope,
     files,
     concern,
-    label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-gpt`,
+    label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-${routing.proposer.engine}`,
   };
 }
 
@@ -401,7 +422,7 @@ const partitionRequests = runnable.map((candidate, index) => {
   return {
     candidate,
     inventory,
-    label: `brief-partition-${index + 1}-${slug(brief.path)}-gpt`,
+    label: `brief-partition-${index + 1}-${slug(brief.path)}-${routing["brief-planner"].engine}`,
   };
 }).filter(Boolean);
 
@@ -409,7 +430,7 @@ const partitions = new Map();
 if (partitionRequests.length > 0) {
   phase("Partition");
   for (const request of partitionRequests)
-    addLeg(request.label, "partition", GPT_PLANNER_MODEL);
+    addLeg(request.label, "partition", routing["brief-planner"].model);
   const partitionResults = await parallel(partitionRequests.map((request) => () => agent(
       projectGuidanceSection(guidance) +
       `<repository-brief path="${request.candidate.brief.path}">\n${request.candidate.brief.content}\n</repository-brief>\n\n` +
@@ -418,10 +439,10 @@ if (partitionRequests.length > 0) {
       `Assign every listed path to exactly one unit; include no unlisted paths. Use no skills for this planning judgement.\n` +
       `Assigned file inventory: ${JSON.stringify(request.inventory.map((entry) => entry.path))}`,
     {
-      engine: "codex",
+      engine: routing["brief-planner"].engine,
       schema: partitionSchema,
-      model: GPT_PLANNER_MODEL,
-      effort: "high",
+      model: routing["brief-planner"].model,
+      effort: routing["brief-planner"].effort,
       label: request.label,
       phase: "Partition",
     },
@@ -459,7 +480,7 @@ for (const candidate of runnable) {
 }
 
 phase("Review");
-for (const unit of dispatched) addLeg(unit.label, "specialist", PROPOSER_MODEL);
+for (const unit of dispatched) addLeg(unit.label, "specialist", routing.proposer.model);
 const specialistResults = await parallel(dispatched.map((unit) => () => {
   const scope = unit.scope ? `${unit.scope}/` : "the whole repository";
   const files = unit.files.length > 0 ? `\nAssigned files: ${unit.files.join(", ")}` : "";
@@ -471,10 +492,10 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
       `Assigned scope: ${scope}.${concern}${files}\n` +
       (unit.extent === "full" ? "Audit the assigned scope regardless of what the diff changed." : `Judge only what ${input.target}...${input.head} changed in the assigned scope.`),
   ), {
-    engine: "codex",
+    engine: routing.proposer.engine,
     schema: specialistSchema,
-    model: PROPOSER_MODEL,
-    effort: "high",
+    model: routing.proposer.model,
+    effort: routing.proposer.effort,
     label: unit.label,
     phase: "Review",
   });
@@ -491,7 +512,7 @@ dispatched.forEach((unit, unitIndex) => {
     role: "specialist",
     brief: unit.brief,
     family: "gpt",
-    pinnedModel: PROPOSER_MODEL,
+    pinnedModel: routing.proposer.model,
     status: result ? "done" : "no-result",
   });
   if (!result) {
@@ -565,12 +586,12 @@ const verifierGroups = [];
 for (let offset = 0; offset < proposed.length; offset += MAX_FINDINGS_PER_VERIFIER) {
   const items = proposed.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
   const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
-  const label = `verify-brief-${groupIndex}-claude`;
+  const label = `verify-brief-${groupIndex}-${routing.verifier.engine}`;
   const findingIds = items.map(findingId);
   const group = { items, label, findingIds };
   verifierGroups.push(group);
   items.forEach((item) => { item.verifyLabel = label; });
-  addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
+  addLeg(label, "verifier", routing.verifier.model, findingIds);
 }
 const verifierResults = await parallel(verifierGroups.map((group) => () => agent(
   groundedPrompt(
@@ -586,10 +607,10 @@ const verifierResults = await parallel(verifierGroups.map((group) => () => agent
       })))}`,
   ),
   {
-    engine: "claude",
+    engine: routing.verifier.engine,
     schema: verifierSchema,
-    model: VERIFIER_MODEL,
-    effort: "high",
+    model: routing.verifier.model,
+    effort: routing.verifier.effort,
     label: group.label,
     phase: "Verify",
   },

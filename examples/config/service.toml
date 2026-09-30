@@ -17,6 +17,12 @@ path = "AGENTS.md"
 [repositories.filing-destination]
 kind = "pull-request-comment"
 
+[routing]
+[routing.verifier]
+engine = "claude"
+model = "claude-opus-5-5"
+effort = "medium"
+
 [runs]
 dir = "/var/lib/minos/runs"
 max-concurrent = 2

@@ -239,6 +239,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	for key, value := range map[string]any{
 		"MINOS_GUIDANCE_SOURCES":   nonNilSources(repo.GuidanceSources),
 		"MINOS_FILING_DESTINATION": repo.FilingDestination,
+		"MINOS_ROUTING":            cfg.Routing.Roles(),
 	} {
 		encoded, marshalErr := json.Marshal(value)
 		if marshalErr != nil {

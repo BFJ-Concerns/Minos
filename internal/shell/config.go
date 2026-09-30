@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -68,6 +69,11 @@ type ServiceConfig struct {
 		RecentTimingsCacheSeconds int `toml:"recent-timings-cache-seconds"`
 		MaxConcurrent             int `toml:"max-concurrent"`
 	} `toml:"runs"`
+	// Routing names, per workflow role, the engine, model and effort the
+	// operator chose (C48). A role left unset defaults at run time to the
+	// cross-family pairing when both engines are provisioned and to the one
+	// provisioned engine otherwise; only set roles are exported.
+	Routing  Routing `toml:"routing"`
 	Ensemble struct {
 		ConcurrencyClaude int `toml:"concurrency-claude"`
 		ConcurrencyCodex  int `toml:"concurrency-codex"`
@@ -104,6 +110,59 @@ func (cfg ServiceConfig) MaxConcurrentRuns() int {
 		return 1
 	}
 	return cfg.Runs.MaxConcurrent
+}
+
+// RoleRouting is one role's explicit routing; every field is optional, a
+// model needing the engine that names its family.
+type RoleRouting struct {
+	Engine string `toml:"engine" json:"engine,omitempty"`
+	Model  string `toml:"model" json:"model,omitempty"`
+	Effort string `toml:"effort" json:"effort,omitempty"`
+}
+
+// Routing holds the five workflow roles by their configured names.
+type Routing struct {
+	Exploration    RoleRouting `toml:"exploration"`
+	Proposer       RoleRouting `toml:"proposer"`
+	Verifier       RoleRouting `toml:"verifier"`
+	EngagementGate RoleRouting `toml:"engagement-gate"`
+	BriefPlanner   RoleRouting `toml:"brief-planner"`
+}
+
+// Roles lists the set roles by name, in a fixed order, for export and
+// validation; an unset role is absent so the run applies its default.
+func (r Routing) Roles() map[string]RoleRouting {
+	roles := map[string]RoleRouting{}
+	for _, role := range []struct {
+		name    string
+		routing RoleRouting
+	}{
+		{"exploration", r.Exploration}, {"proposer", r.Proposer}, {"verifier", r.Verifier},
+		{"engagement-gate", r.EngagementGate}, {"brief-planner", r.BriefPlanner},
+	} {
+		if role.routing != (RoleRouting{}) {
+			roles[role.name] = role.routing
+		}
+	}
+	return roles
+}
+
+var routingEngines = []string{"claude", "codex"}
+var routingEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+func validateRouting(routing Routing) error {
+	for name, role := range routing.Roles() {
+		if role.Engine != "" && !slices.Contains(routingEngines, role.Engine) {
+			return fmt.Errorf("service.toml: routing.%s.engine must be one of %s", name, strings.Join(routingEngines, ", "))
+		}
+		if role.Model != "" && role.Engine == "" {
+			return fmt.Errorf("service.toml: routing.%s.model needs routing.%s.engine, which names the model's family", name, name)
+		}
+		if role.Effort != "" && !slices.Contains(routingEfforts, role.Effort) {
+			return fmt.Errorf("service.toml: routing.%s.effort must be one of %s", name, strings.Join(routingEfforts, ", "))
+		}
+	}
+	return nil
 }
 
 type ForgeConfig struct {
@@ -197,6 +256,9 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		cfg.Service.CommitAuthorEmail = cfg.Service.BotLogin + "@minos.invalid"
 	}
 	if err := validateRepositoryKnobs("service.toml: repositories", cfg.Repositories); err != nil {
+		return ServiceConfig{}, err
+	}
+	if err := validateRouting(cfg.Routing); err != nil {
 		return ServiceConfig{}, err
 	}
 	for name, forge := range cfg.Forges {

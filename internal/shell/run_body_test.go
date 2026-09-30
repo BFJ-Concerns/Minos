@@ -153,6 +153,23 @@ func TestRunBodyExportsSocketSafeTempDirectoryForLongRunName(t *testing.T) {
 	}
 }
 
+func TestRunBodyExportsTheProvisionedEnginesFromTheSeedsItNames(t *testing.T) {
+	both := newRunBodyFixture(t)
+	both.run(t, nil)
+	assertContainsFile(t, both.record+".worker-env", "MINOS_PROVISIONED_ENGINES=claude codex")
+	assertContainsFile(t, both.record+".worker-env", "MINOS_LEAD_ENGINE=claude")
+
+	// A deployment that seeds no Codex auth is a single-engine deployment:
+	// the run proceeds with Claude alone and says so to the workflows.
+	claudeOnly := newRunBodyFixture(t)
+	claudeOnly.appendConfig(t, map[string]string{"MINOS_CODEX_CONFIG_SEED": ""})
+	claudeOnly.run(t, nil)
+	assertContainsFile(t, claudeOnly.record+".worker-env", "MINOS_PROVISIONED_ENGINES=claude")
+	if _, err := os.Stat(filepath.Join(claudeOnly.runDir, "home", ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("an unprovisioned engine's home still received seed state: %v", err)
+	}
+}
+
 func TestRunBodyUsesOrientationHeadAsCurrentHead(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
@@ -287,11 +304,20 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 		{
 			name: "missing required variable",
 			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
-				fixture.appendConfig(t, map[string]string{"MINOS_CODEX_CONFIG_SEED": ""})
+				fixture.appendConfig(t, map[string]string{"MINOS_CLAUDE_CONFIG_SEED": ""})
 				return nil
 			},
 			wantStage: "configuration",
-			wantCause: "MINOS_CODEX_CONFIG_SEED is required",
+			wantCause: "MINOS_CLAUDE_CONFIG_SEED is required: the lead runs on claude",
+		},
+		{
+			name: "lead engine this build cannot run",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				fixture.appendConfig(t, map[string]string{"MINOS_LEAD_ENGINE": "codex"})
+				return nil
+			},
+			wantStage: "configuration",
+			wantCause: "MINOS_LEAD_ENGINE must be claude",
 		},
 		{
 			name: "Claude seed copy",
@@ -1171,7 +1197,7 @@ case "$1" in
     done
     env | sort >"$record.env"
     test -f "$CLAUDE_CONFIG_DIR/.credentials.json"
-    test -f "$CODEX_HOME/auth.json"
+    case " $MINOS_PROVISIONED_ENGINES " in *" codex "*) test -f "$CODEX_HOME/auth.json" ;; esac
     printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
     printf '%s\n' "$HOME/.claude/projects" >"$record.projects"
     cat >"$record.stdin"

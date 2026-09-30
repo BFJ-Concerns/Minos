@@ -42,11 +42,18 @@ so no repository toolchains are needed.
    and add one repository TOML file per opted-in repository. In `run-body.env`:
 
    - set `MINOS_CLAUDE` to the installed Claude executable;
-   - keep `MINOS_LEAD_MODEL` pinned to `claude-opus-5-5`;
+   - keep `MINOS_LEAD_ENGINE` at `claude` and `MINOS_LEAD_MODEL` at the
+     Claude model the lead runs on (`claude-opus-5-5` by default);
    - set `MINOS_CLAUDE_CONFIG_SEED` to a directory containing known-good,
-     non-interactive Claude configuration;
+     non-interactive Claude configuration — the lead's engine, so it is
+     required;
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
-     non-interactive Codex ChatGPT authentication state; and
+     non-interactive Codex ChatGPT authentication state, or leave it unset
+     to run without the Codex engine: an engine is provisioned exactly
+     when its seed is named, and the workflows route every role by what is
+     provisioned (`[routing]` in `service.toml` names any role the operator
+     pins; unset roles pair the families when both are provisioned and
+     run on the one engine otherwise); and
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
    `MINOS_SKILLS_DIR`, `MINOS_ARCHIVE_RUN` and the
    other installed paths match the deployment. Configure `archive.env` with

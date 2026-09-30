@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { adjudicate } from "./run-record-adjudicator.mjs";
+import { resolveRouting } from "./role-routing.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-inputs.mjs", import.meta.url));
@@ -43,6 +44,8 @@ function enumeratedArgs(
     secondaryGuidance,
     pullRequest,
     absentPullRequestRecord = false,
+    provisioned = "claude codex",
+    routing,
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
@@ -78,6 +81,8 @@ function enumeratedArgs(
       MINOS_OWNER: "minos-e2e-owner",
       MINOS_REPO_NAME: "subject",
       MINOS_PR: "1",
+      MINOS_PROVISIONED_ENGINES: provisioned,
+      ...(routing === undefined ? { MINOS_ROUTING: "" } : { MINOS_ROUTING: JSON.stringify(routing) }),
     },
     stdio: ["ignore", "pipe", "pipe"],
   }));
@@ -279,13 +284,13 @@ test("an out-of-scope observation leaves the specialist without entering finding
   assert.deepEqual(result.proposedFindings, []);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
   assert.deepEqual(result.outOfScopeObservations, [{
-    id: "specialist-1-correctness-gpt:observation:1",
+    id: "specialist-1-correctness-codex:observation:1",
     source: "correctness concern logic",
     title: "pre-existing defect",
     path: "internal/legacy.go",
     line: 9,
     explanation: "Unverified observation: the unchanged branch admits an invalid state.",
-    observingLabel: "specialist-1-correctness-gpt",
+    observingLabel: "specialist-1-correctness-codex",
     verified: false,
   }]);
   const schema = specialistCalls(calls)[0].opts.schema;
@@ -315,8 +320,8 @@ test("a specialist may omit an empty observation array", async () => {
 test("all findings are proposed on Sol and verified cross-family on Claude", async () => {
   const plan = [unit("correct", "correctness"), unit("secure", "security")];
   const { calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
-  const correctness = calls.find((call) => call.opts.label === "specialist-1-correctness-gpt");
-  const security = calls.find((call) => call.opts.label === "specialist-2-security-gpt");
+  const correctness = calls.find((call) => call.opts.label === "specialist-1-correctness-codex");
+  const security = calls.find((call) => call.opts.label === "specialist-2-security-codex");
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
   assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-6-sol"]);
   assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-6-sol"]);
@@ -362,6 +367,54 @@ test("a verifier observation survives a verdict set discarded as malformed", asy
   assert.ok(result.proposedFindings.every((finding) => finding.rawVerifier === null));
   assert.equal(result.outOfScopeObservations.length, 1);
   assert.equal(result.outOfScopeObservations[0].source, "verification");
+});
+
+test("every leg runs on the routing the input carries, and labels follow the routed engine", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", {
+    routing: { verifier: { engine: "codex", model: "gpt-6-astra", effort: "low" }, exploration: { engine: "claude" } },
+  });
+  assert.deepEqual(args.routing.verifier, { engine: "codex", model: "gpt-6-astra", effort: "low" });
+  assert.deepEqual(args.routing.exploration, { engine: "claude", model: "claude-opus-5-5", effort: "high" });
+  const { result, calls } = await runScript(args, responder());
+  const exploration = calls.find((call) => call.opts.label === "exploration");
+  assert.deepEqual([exploration.opts.engine, exploration.opts.model, exploration.opts.effort], ["claude", "claude-opus-5-5", "high"]);
+  const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
+  assert.ok(verifiers.length > 0);
+  for (const verifier of verifiers) {
+    assert.deepEqual([verifier.opts.engine, verifier.opts.model, verifier.opts.effort], ["codex", "gpt-6-astra", "low"]);
+    assert.match(verifier.opts.label, /-codex$/);
+  }
+  assert.ok(specialistCalls(calls).every((call) => call.opts.label.endsWith("-codex")));
+  assert.deepEqual(
+    result.requiredModelEvidence.filter((leg) => leg.role === "verifier").map((leg) => leg.pinnedModel),
+    verifiers.map(() => "gpt-6-astra"),
+  );
+});
+
+test("a single-engine deployment routes every role to the one provisioned engine", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", { provisioned: "claude" });
+  const { calls } = await runScript(args, responder());
+  assert.ok(calls.length >= 3);
+  assert.ok(calls.every((call) => call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
+});
+
+test("the input builder refuses routing it cannot honour, and the workflow refuses input without routing", async () => {
+  assert.throws(
+    () => enumeratedArgs("aaa111", "bbb222", { provisioned: "claude", routing: { verifier: { engine: "codex" } } }),
+    /routing\.verifier\.engine names codex, which this deployment has not provisioned/,
+  );
+  assert.throws(() => enumeratedArgs("aaa111", "bbb222", { provisioned: "" }), /MINOS_PROVISIONED_ENGINES is required/);
+  const calls = [];
+  const { routing, ...withoutRouting } = ARGS;
+  await assert.rejects(
+    runScript(withoutRouting, (label) => { calls.push(label); return null; }),
+    /omitted the role routing/,
+  );
+  await assert.rejects(
+    runScript({ ...ARGS, routing: { ...routing, proposer: { engine: "opencode", model: "x", effort: "low" } } }, (label) => { calls.push(label); return null; }),
+    /omitted the role routing/,
+  );
+  assert.deepEqual(calls, []);
 });
 
 test("exploration and specialists run at high effort while verifiers stay at medium", async () => {
@@ -503,7 +556,7 @@ test("findings distributed across several units share one verifier leg", async (
   assert.equal(verifierCalls[0].opts.label, "verify-1-claude");
   assert.equal(findingsFromVerifierPrompt(verifierCalls[0].prompt).length, 3);
   assert.deepEqual(new Set(result.proposedFindings.map((entry) => entry.proposingLabel)), new Set([
-    "specialist-1-correctness-gpt", "specialist-2-security-gpt", "specialist-3-testing-gpt",
+    "specialist-1-correctness-codex", "specialist-2-security-codex", "specialist-3-testing-codex",
   ]));
   assert.ok(result.proposedFindings.every((entry) => entry.verifyLabel === "verify-1-claude"));
 });
@@ -564,23 +617,23 @@ test("a full synthetic batched run preserves per-finding adjudication", async (t
 
   assert.deepEqual(result.proposedFindings.map(({ id, rawVerifier }) => ({ id, rawVerifier })), [
     {
-      id: "specialist-1-correctness-gpt:1",
+      id: "specialist-1-correctness-codex:1",
       rawVerifier: { verdict: "upheld", confidence: 93, reason: "path remains reachable" },
     },
     {
-      id: "specialist-1-correctness-gpt:2",
+      id: "specialist-1-correctness-codex:2",
       rawVerifier: { verdict: "refuted", confidence: 84, reason: "caller rejects the state" },
     },
     {
-      id: "specialist-1-correctness-gpt:3",
+      id: "specialist-1-correctness-codex:3",
       rawVerifier: { verdict: "upheld", confidence: 93, reason: "path remains reachable" },
     },
   ]);
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
   assert.deepEqual(verdict.confirmedFindings.map((entry) => entry.id), [
-    "specialist-1-correctness-gpt:1",
-    "specialist-1-correctness-gpt:3",
+    "specialist-1-correctness-codex:1",
+    "specialist-1-correctness-codex:3",
   ]);
   assert.deepEqual(
     verdict.modelEvidence.find((entry) => entry.role === "verifier").findingIds,

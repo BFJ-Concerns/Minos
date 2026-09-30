@@ -14,6 +14,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
+import { resolveRouting } from "./role-routing.mjs";
+
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
 const wrapperPath = join(workflowsDir, "adjudicated-review");
 const workflowSource = readFileSync(join(workflowsDir, "review-briefs.js"), "utf8");
@@ -104,6 +106,7 @@ function workflowInput(files) {
       scopeExists: true,
     }],
     guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PARTITION-DISPOSITION-GUIDANCE-0728" }],
+    routing: resolveRouting({ provisioned: ["claude", "codex"] }),
     instructionBriefs: [
       {
         path: "workflows/review-briefs/repository.md",
