@@ -8,9 +8,6 @@ export const meta = {
   ],
 };
 
-const GPT_EXPLORER_MODEL = "gpt-6-sol";
-const PROPOSER_MODEL = "gpt-6-sol";
-const VERIFIER_MODEL = "claude-opus-5-5";
 const MAX_FINDINGS_PER_VERIFIER = 6;
 const MAX_ORIENTATION_PACKET_BYTES = 32 * 1024;
 
@@ -39,6 +36,28 @@ function roleBriefsFromInput(input) {
 
 function missingRoleBriefs(roleBriefs) {
   return [...new Set(Object.values(ROLE_BRIEFS))].filter((path) => !roleBriefs.has(path));
+}
+
+const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
+const ROUTING_ENGINES = ["claude", "codex"];
+
+// The resolved routing the input builder attached: every role's engine,
+// model and effort, already defaulted for what the deployment provisioned.
+// Nothing here is fixed in source; a missing or malformed table fails the
+// workflow before any dispatch.
+function routingFromInput(input) {
+  const routing = input && input.routing;
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+  for (const role of ROUTING_ROLES) {
+    const entry = routing[role];
+    if (
+      !entry ||
+      !ROUTING_ENGINES.includes(entry.engine) ||
+      typeof entry.model !== "string" || entry.model === "" ||
+      typeof entry.effort !== "string" || entry.effort === ""
+    ) return null;
+  }
+  return routing;
 }
 
 function projectGuidanceFromInput(input) {
@@ -123,7 +142,7 @@ function normalisePlan(plan) {
       kind: "planned",
       family: "gpt",
       roleBrief: ROLE_BRIEFS[unit.specialistType],
-      label: `specialist-${index + 1}-${unit.specialistType}-gpt`,
+      label: `specialist-${index + 1}-${unit.specialistType}-${routing.proposer.engine}`,
     };
   });
 }
@@ -344,6 +363,8 @@ if (missingBriefs.length > 0)
   throw new Error(`deterministic input omitted shipped role briefs: ${missingBriefs.join(", ")}`);
 const projectGuidance = projectGuidanceFromInput(input);
 if (!projectGuidance) throw new Error("deterministic input omitted reviewed-project guidance");
+const routing = routingFromInput(input);
+if (!routing) throw new Error("deterministic input omitted the role routing");
 const pullRequestDescription = pullRequestFromInput(input);
 
 const legs = [];
@@ -370,7 +391,7 @@ function incompleteExploration(reason) {
 }
 
 phase("Explore");
-addLeg("exploration", "exploration", GPT_EXPLORER_MODEL);
+addLeg("exploration", "exploration", routing.exploration.model);
 const explorationResult = await agent(
   rolePrompt(
     roleBriefs,
@@ -380,10 +401,10 @@ const explorationResult = await agent(
     `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.`
   ),
   {
-    engine: "codex",
+    engine: routing.exploration.engine,
     schema: explorationSchema,
-    model: GPT_EXPLORER_MODEL,
-    effort: "high",
+    model: routing.exploration.model,
+    effort: routing.exploration.effort,
     label: "exploration",
     phase: "Explore",
   }
@@ -405,7 +426,7 @@ const exploration = {
 const specialistUnits = normalisePlan(exploration.plan);
 phase("Specialise");
 for (const unit of specialistUnits)
-  addLeg(unit.label, "specialist", PROPOSER_MODEL);
+  addLeg(unit.label, "specialist", routing.proposer.model);
 
 function specialistPrompt(unit) {
   const orientation = orientationPacket(target, head, exploration.files, specialistUnits);
@@ -423,10 +444,10 @@ function specialistPrompt(unit) {
 const specialistResults = await parallel(
   specialistUnits.map((unit) => () =>
     agent(specialistPrompt(unit), {
-      engine: "codex",
+      engine: routing.proposer.engine,
       schema: specialistSchema,
-      model: PROPOSER_MODEL,
-      effort: "high",
+      model: routing.proposer.model,
+      effort: routing.proposer.effort,
       label: unit.label,
       phase: "Specialise",
     })
@@ -446,7 +467,7 @@ specialistUnits.forEach((unit, unitIndex) => {
     concern: unit.concern,
     scope: unit.scope,
     family: unit.family,
-    pinnedModel: PROPOSER_MODEL,
+    pinnedModel: routing.proposer.model,
     status: result ? "done" : "no-result",
   });
   if (!result) return;
@@ -487,12 +508,12 @@ const verifierGroups = [];
 for (let offset = 0; offset < proposed.length; offset += MAX_FINDINGS_PER_VERIFIER) {
   const items = proposed.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
   const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
-  const label = `verify-${groupIndex}-claude`;
+  const label = `verify-${groupIndex}-${routing.verifier.engine}`;
   const findingIds = items.map((item) => item.id);
   const group = { items, label, findingIds };
   verifierGroups.push(group);
   items.forEach((item) => { item.verifyLabel = label; });
-  addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
+  addLeg(label, "verifier", routing.verifier.model, findingIds);
 }
 
 const verifierResults = await parallel(
@@ -509,10 +530,10 @@ const verifierResults = await parallel(
           `Findings: ${JSON.stringify(group.items.map((item) => ({ id: item.id, ...item.finding })))}`
       ),
       {
-        engine: "claude",
+        engine: routing.verifier.engine,
         schema: verifierSchema,
-        model: VERIFIER_MODEL,
-        effort: "medium",
+        model: routing.verifier.model,
+        effort: routing.verifier.effort,
         label: group.label,
         phase: "Verify",
       }

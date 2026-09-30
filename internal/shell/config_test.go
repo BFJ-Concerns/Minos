@@ -352,3 +352,34 @@ func TestLoadServiceConfigDefaultsCommitIdentityToTheBotLogin(t *testing.T) {
 		t.Fatalf("identity = %q <%q>, want the configured values", explicit.Service.CommitAuthorName, explicit.Service.CommitAuthorEmail)
 	}
 }
+
+func TestLoadServiceConfigDecodesAndValidatesRouting(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "[routing.verifier]\nengine = \"codex\"\nmodel = \"gpt-6-astra\"\neffort = \"low\"\n[routing.brief-planner]\neffort = \"medium\"\n")
+	want := map[string]RoleRouting{
+		"verifier":      {Engine: "codex", Model: "gpt-6-astra", Effort: "low"},
+		"brief-planner": {Effort: "medium"},
+	}
+	if got := cfg.Routing.Roles(); len(got) != 2 || got["verifier"] != want["verifier"] || got["brief-planner"] != want["brief-planner"] {
+		t.Fatalf("routing roles = %+v, want %+v", got, want)
+	}
+	if roles := loadServiceConfigWith(t, root, "").Routing.Roles(); len(roles) != 0 {
+		t.Fatalf("unset routing exports roles %+v, want none", roles)
+	}
+	for _, test := range []struct{ name, toml, want string }{
+		{name: "unknown engine", toml: "[routing.proposer]\nengine = \"opencode\"\n", want: "routing.proposer.engine must be one of claude, codex"},
+		{name: "model without engine", toml: "[routing.proposer]\nmodel = \"gpt-6-astra\"\n", want: "routing.proposer.model needs routing.proposer.engine"},
+		{name: "unknown effort", toml: "[routing.exploration]\neffort = \"maximal\"\n", want: "routing.exploration.effort must be one of low, medium, high, xhigh, max"},
+		{name: "unknown role", toml: "[routing.judge]\nengine = \"claude\"\n", want: "unknown TOML keys: routing.judge"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(testServiceConfig+test.toml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadServiceConfig(root)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}

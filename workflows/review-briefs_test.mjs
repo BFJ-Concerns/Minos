@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { adjudicate } from "./run-record-adjudicator.mjs";
+import { resolveRouting } from "./role-routing.mjs";
+
+const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 
 const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
@@ -64,6 +67,7 @@ function args(overrides = {}) {
     trackedFiles: [{ path: "pkg/x.go", bytes: 100 }],
     briefs: [brief(".review/pkg/errors.md", "---\nrelevance: Error-path changes.\n---\nJudge errors.")],
     guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PROJECT_GUIDANCE_TEAL" }],
+    routing: pairedRouting,
     instructionBriefs: [
       { path: "workflows/review-briefs/repository.md", readPath: "/minos/workflows/review-briefs/repository.md", content: "MINOS_REPOSITORY_BRIEF_V1" },
       { path: "workflows/review-briefs/verifier.md", readPath: "/minos/workflows/review-briefs/verifier.md", content: "MINOS_ADVERSARIAL_VERIFIER_V1" },
@@ -251,7 +255,7 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
   assert.deepEqual(result.dispatches, [{
     brief: candidate.path,
     title: "Scoped",
-    label: "repository-review-missing-scoped-md-gpt",
+    label: "repository-review-missing-scoped-md-codex",
     extent: "full",
     scope: "missing",
     files: [],
@@ -365,12 +369,12 @@ test("a mixed partition is one durable run disposition with its inapplicable uni
     title: "Full",
     inapplicableUnits: [
       {
-        label: "repository-review-full-md-2-gpt",
+        label: "repository-review-full-md-2-codex",
         concern: "UI behaviour",
         reason: "the UI partition contains no changed behaviour to judge",
       },
       {
-        label: "repository-review-full-md-3-gpt",
+        label: "repository-review-full-md-3-codex",
         concern: "Job behaviour",
         reason: "the job partition contains no changed behaviour to judge",
       },
@@ -415,12 +419,12 @@ test("an entirely inapplicable partition is one durable skipped disposition", as
     reason: "all 2 partition units were inapplicable",
     inapplicableUnits: [
       {
-        label: "repository-review-full-md-1-gpt",
+        label: "repository-review-full-md-1-codex",
         concern: "API behaviour",
         reason: "the API partition has no relevant change",
       },
       {
-        label: "repository-review-full-md-2-gpt",
+        label: "repository-review-full-md-2-codex",
         concern: "UI behaviour",
         reason: "the UI partition has no relevant change",
       },
@@ -526,13 +530,13 @@ test("a repository observation is returned separately and never reaches verifica
   assert.deepEqual(result.proposedFindings, []);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
   assert.deepEqual(result.outOfScopeObservations, [{
-    id: "repository-review-pkg-errors-md-gpt:observation:1",
+    id: "repository-review-pkg-errors-md-codex:observation:1",
     source: "Errors",
     title: "pre-existing repository defect",
     path: "pkg/legacy.go",
     line: 11,
     explanation: "Unverified observation: unchanged code violates the repository concern.",
-    observingLabel: "repository-review-pkg-errors-md-gpt",
+    observingLabel: "repository-review-pkg-errors-md-codex",
     verified: false,
   }]);
   const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
@@ -643,12 +647,12 @@ test("repository-brief verifier pools findings from separate units with their ow
     {
       title: "error finding",
       concern: "error-path behaviour",
-      proposingSpecialist: "repository-review-pkg-errors-md-1-gpt",
+      proposingSpecialist: "repository-review-pkg-errors-md-1-codex",
     },
     {
       title: "design finding",
       concern: "command design",
-      proposingSpecialist: "repository-review-cmd-design-md-1-gpt",
+      proposingSpecialist: "repository-review-cmd-design-md-1-codex",
     },
   ]);
   assert.deepEqual(result.proposedFindings.map((entry) => entry.verifyLabel), [
@@ -678,13 +682,13 @@ test("repository-brief verifier identifies unpartitioned brief units in a pooled
       title: "package finding",
       concern: null,
       unit: "Check One",
-      proposingSpecialist: "repository-review-pkg-check-one-md-gpt",
+      proposingSpecialist: "repository-review-pkg-check-one-md-codex",
     },
     {
       title: "command finding",
       concern: null,
       unit: "Check Two",
-      proposingSpecialist: "repository-review-cmd-check-two-md-gpt",
+      proposingSpecialist: "repository-review-cmd-check-two-md-codex",
     },
   ]);
 });
@@ -713,8 +717,8 @@ test("slug-colliding brief labels retain verdicts for their own findings", async
     .filter((call) => call.opts.label?.startsWith("repository-"))
     .map((call) => call.opts.label);
   assert.deepEqual(specialistLabels, [
-    "repository-review-pkg-check-one-md-gpt",
-    "repository-review-pkg-check-one-md-gpt",
+    "repository-review-pkg-check-one-md-codex",
+    "repository-review-pkg-check-one-md-codex",
   ]);
   assert.deepEqual(result.proposedFindings.map(({ id, title, rawVerifier }) => ({ id, title, rawVerifier })), [
     {
@@ -758,7 +762,7 @@ test("the enumerator emits large deterministic input directly as JSON and reject
     guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
     misconfigurations: [],
   }));
-  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root };
+  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
   const deterministicJson = execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env });
   const enumerated = JSON.parse(deterministicJson);
   assert.ok(Buffer.byteLength(deterministicJson) > 147_000);
@@ -820,7 +824,7 @@ test("the enumerator reads a tracked-file listing larger than the default child-
     guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
     misconfigurations: [],
   }));
-  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root };
+  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
   const enumerated = JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env }));
   assert.deepEqual(enumerated.briefs, []);
 });

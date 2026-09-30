@@ -9,6 +9,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { briefEngagement } from "./brief-dispositions.mjs";
+import { resolveRouting } from "./role-routing.mjs";
+
+const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 import { verdictDigest } from "./verdict-classification.mjs";
 import { adjudicate } from "./run-record-adjudicator.mjs";
 
@@ -60,6 +63,7 @@ function workflowArgs(overrides = {}) {
     head: "bbb222",
     occasion: null,
     guidance: [{ repository: null, path: "README.md", origin: "checked-in", content: "SCOPE_TEST_COMMISSION_TEAL" }],
+    routing: pairedRouting,
     instructionBriefs: [{
       path: "workflows/review-briefs/scope.md",
       readPath: join(workflowsDir, "review-briefs", "scope.md"),
@@ -145,7 +149,7 @@ function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true } = {}) 
   if (occasion !== undefined) cliArgs.push(occasion);
   const output = JSON.parse(execFileSync(process.execPath, cliArgs, {
     encoding: "utf8",
-    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: workspace },
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: workspace, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" },
     stdio: ["ignore", "pipe", "pipe"],
   }));
   rmSync(root, { recursive: true, force: true });
@@ -236,6 +240,7 @@ test("the Node dispositions match the brief workflow's own deterministic pass", 
     trackedFiles: changedPaths.map((path) => ({ path, bytes: 10 })),
     briefs,
     guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PARITY_GUIDANCE_CORAL" }],
+    routing: pairedRouting,
     instructionBriefs: [
       { path: "workflows/review-briefs/repository.md", readPath: "/x/repository.md", content: "R" },
       { path: "workflows/review-briefs/verifier.md", readPath: "/x/verifier.md", content: "V" },

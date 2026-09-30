@@ -131,10 +131,33 @@ fi
 
 failure_cause="MINOS_CLAUDE is required"
 : "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
-failure_cause="MINOS_CLAUDE_CONFIG_SEED is required"
-: "${MINOS_CLAUDE_CONFIG_SEED:?MINOS_CLAUDE_CONFIG_SEED is required}"
-failure_cause="MINOS_CODEX_CONFIG_SEED is required"
-: "${MINOS_CODEX_CONFIG_SEED:?MINOS_CODEX_CONFIG_SEED is required}"
+# The lead's engine (C48). An engine is provisioned exactly when its
+# configuration seed is named: the lead's engine must be, the other may be
+# absent — a single-engine deployment — and the workflows route every role
+# by what is provisioned (MINOS_PROVISIONED_ENGINES).
+MINOS_LEAD_ENGINE="${MINOS_LEAD_ENGINE:-claude}"
+case "$MINOS_LEAD_ENGINE" in
+  claude) ;;
+  *)
+    failure_cause="MINOS_LEAD_ENGINE must be claude; the $MINOS_LEAD_ENGINE lead is not available in this build"
+    echo "run-body: $failure_cause" >&2
+    exit 1
+    ;;
+esac
+export MINOS_LEAD_ENGINE
+provisioned_engines=""
+[ -z "${MINOS_CLAUDE_CONFIG_SEED:-}" ] || provisioned_engines="claude"
+[ -z "${MINOS_CODEX_CONFIG_SEED:-}" ] || provisioned_engines="${provisioned_engines:+$provisioned_engines }codex"
+case " $provisioned_engines " in
+  *" $MINOS_LEAD_ENGINE "*) ;;
+  *)
+    failure_cause="MINOS_CLAUDE_CONFIG_SEED is required: the lead runs on $MINOS_LEAD_ENGINE"
+    echo "run-body: $failure_cause" >&2
+    exit 1
+    ;;
+esac
+MINOS_PROVISIONED_ENGINES="$provisioned_engines"
+export MINOS_PROVISIONED_ENGINES
 failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
 : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
 instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
@@ -200,12 +223,16 @@ failure_cause="could not create isolated runtime home and state directories"
 mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME"
 failure_cause="could not secure isolated runtime home and state directories"
 chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" "$TMPDIR"
-failure_stage="claude-seed"
-failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
-cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
-failure_stage="codex-seed"
-failure_cause="could not copy Codex configuration seed from $MINOS_CODEX_CONFIG_SEED"
-cp -R "${MINOS_CODEX_CONFIG_SEED%/}/." "$CODEX_HOME/"
+if [ -n "${MINOS_CLAUDE_CONFIG_SEED:-}" ]; then
+  failure_stage="claude-seed"
+  failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
+  cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
+fi
+if [ -n "${MINOS_CODEX_CONFIG_SEED:-}" ]; then
+  failure_stage="codex-seed"
+  failure_cause="could not copy Codex configuration seed from $MINOS_CODEX_CONFIG_SEED"
+  cp -R "${MINOS_CODEX_CONFIG_SEED%/}/." "$CODEX_HOME/"
+fi
 failure_stage="runtime-home"
 failure_cause="could not secure copied Claude and Codex configuration"
 chmod -R go-rwx "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
@@ -220,10 +247,14 @@ chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
 failure_stage="vendored-skills"
 failure_cause="could not create the vendored skill directories"
 mkdir -p "$CLAUDE_CONFIG_DIR/skills" "$CODEX_HOME/skills"
-failure_cause="could not copy the vendored Claude Code skills from $MINOS_SKILLS_DIR/claude-code"
-cp -R "${MINOS_SKILLS_DIR%/}/claude-code/." "$CLAUDE_CONFIG_DIR/skills/"
-failure_cause="could not copy the vendored Codex skills from $MINOS_SKILLS_DIR/codex"
-cp -R "${MINOS_SKILLS_DIR%/}/codex/." "$CODEX_HOME/skills/"
+if [ -n "${MINOS_CLAUDE_CONFIG_SEED:-}" ]; then
+  failure_cause="could not copy the vendored Claude Code skills from $MINOS_SKILLS_DIR/claude-code"
+  cp -R "${MINOS_SKILLS_DIR%/}/claude-code/." "$CLAUDE_CONFIG_DIR/skills/"
+fi
+if [ -n "${MINOS_CODEX_CONFIG_SEED:-}" ]; then
+  failure_cause="could not copy the vendored Codex skills from $MINOS_SKILLS_DIR/codex"
+  cp -R "${MINOS_SKILLS_DIR%/}/codex/." "$CODEX_HOME/skills/"
+fi
 
 failure_stage="workspace-setup"
 failure_cause="workspace setup failed"

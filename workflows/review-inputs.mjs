@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
+import { routingFromEnvironment } from "./role-routing.mjs";
 
 const target = process.argv[2];
 const head = process.argv[3];
@@ -17,6 +18,7 @@ if (!target || !head || process.argv.length > 4) {
   if (!orientationPath) throw new Error("MINOS_ORIENTATION is required");
   const orientation = JSON.parse(readFileSync(orientationPath, "utf8"));
   const guidance = guidanceFromOrientation(orientation);
+  const routing = routingFromEnvironment();
   let pullRequest;
   if (orientation.pullRequest !== undefined) {
     if (typeof orientation.pullRequest !== "string" || orientation.pullRequest === "")
@@ -54,6 +56,7 @@ if (!target || !head || process.argv.length > 4) {
     target,
     head,
     guidance,
+    routing,
     ...(pullRequest === undefined ? {} : { pullRequest }),
     instructionBriefs,
   }) + "\n");

@@ -6,7 +6,6 @@ export const meta = {
   ],
 };
 
-const GATE_MODEL = "gpt-6-sol";
 const SCOPE_BRIEF_PATH = "workflows/review-briefs/scope.md";
 
 const scopeSchema = {
@@ -61,8 +60,32 @@ function projectGuidanceSection(guidance) {
   ).join("\n") + "\n";
 }
 
+const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
+const ROUTING_ENGINES = ["claude", "codex"];
+
+// The resolved routing the input builder attached: every role's engine,
+// model and effort, already defaulted for what the deployment provisioned.
+// Nothing here is fixed in source; a missing or malformed table fails the
+// workflow before any dispatch.
+function routingFromInput(input) {
+  const routing = input && input.routing;
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+  for (const role of ROUTING_ROLES) {
+    const entry = routing[role];
+    if (
+      !entry ||
+      !ROUTING_ENGINES.includes(entry.engine) ||
+      typeof entry.model !== "string" || entry.model === "" ||
+      typeof entry.effort !== "string" || entry.effort === ""
+    ) return null;
+  }
+  return routing;
+}
+
 const guidance = projectGuidanceFromInput(input);
 if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
+const routing = routingFromInput(input);
+if (!routing) throw new Error("deterministic input omitted the role routing");
 
 if (typeof input.briefsEngage !== "boolean")
   throw new Error("deterministic input omitted the brief engagement pre-branch");
@@ -103,7 +126,7 @@ if (input.briefsEngage) {
   });
 }
 
-const legs = [{ label: "review-scope", role: "scope", pinnedModel: GATE_MODEL }];
+const legs = [{ label: "review-scope", role: "scope", pinnedModel: routing["engagement-gate"].model }];
 
 phase("Scope");
 const result = await agent(
@@ -117,10 +140,10 @@ const result = await agent(
     `Every repository review brief has already settled deterministically as not applying to this change. ` +
     `Decide only whether the change itself gives any reviewable concern real work.`,
   {
-    engine: "codex",
+    engine: routing["engagement-gate"].engine,
     schema: scopeSchema,
-    model: GATE_MODEL,
-    effort: "medium",
+    model: routing["engagement-gate"].model,
+    effort: routing["engagement-gate"].effort,
     label: "review-scope",
     phase: "Scope",
   }
