@@ -59,11 +59,7 @@ function workflowArgs(overrides = {}) {
     target: "aaa111",
     head: "bbb222",
     occasion: null,
-    guidance: {
-      grounding: "annexe",
-      path: "/workspace/README.md",
-      content: "SCOPE_TEST_COMMISSION_TEAL",
-    },
+    guidance: [{ repository: null, path: "README.md", origin: "checked-in", content: "SCOPE_TEST_COMMISSION_TEAL" }],
     instructionBriefs: [{
       path: "workflows/review-briefs/scope.md",
       readPath: join(workflowsDir, "review-briefs", "scope.md"),
@@ -142,8 +138,8 @@ function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true } = {}) 
   const orientationPath = join(root, "orientation.json");
   writeFileSync(orientationPath, JSON.stringify({
     repository: workspace,
-    grounding: "repository",
-    guidance: join(workspace, "README.md"),
+    guidance: [{ source: { path: "README.md" }, location: join(workspace, "README.md"), origin: "checked-in" }],
+    misconfigurations: [],
   }));
   const cliArgs = [inputScriptPath, target, head];
   if (occasion !== undefined) cliArgs.push(occasion);
@@ -173,7 +169,7 @@ test("the input builder enumerates the diff and settles brief engagement determi
     engaged: true,
     via: "path-scope",
   });
-  assert.equal(input.guidance.content, "MINOS_SCOPE_COMMISSION_CORAL");
+  assert.deepEqual(input.guidance, [{ repository: null, path: "README.md", origin: "checked-in", content: "MINOS_SCOPE_COMMISSION_CORAL" }]);
   assert.equal(input.instructionBriefs[0].path, "workflows/review-briefs/scope.md");
   assert.match(input.instructionBriefs[0].content, /nothing-engages/);
 });
@@ -239,7 +235,7 @@ test("the Node dispositions match the brief workflow's own deterministic pass", 
     changedPaths,
     trackedFiles: changedPaths.map((path) => ({ path, bytes: 10 })),
     briefs,
-    guidance: { grounding: "repository", path: "/workspace/AGENTS.md", content: "PARITY_GUIDANCE_CORAL" },
+    guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PARITY_GUIDANCE_CORAL" }],
     instructionBriefs: [
       { path: "workflows/review-briefs/repository.md", readPath: "/x/repository.md", content: "R" },
       { path: "workflows/review-briefs/verifier.md", readPath: "/x/verifier.md", content: "V" },

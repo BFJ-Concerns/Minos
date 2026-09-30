@@ -160,7 +160,7 @@ set -eu
 mkdir -p "$MINOS_WORKSPACE"
 mkdir -p "$HOME/.local/bin"
 install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
-printf '%s\n' '{"head":"setup-head","grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
+printf '%s\n' '{"head":"setup-head","guidance":[],"misconfigurations":[]}' >"$MINOS_ORIENTATION"
 `)
 
 	fixture.run(t, nil)
@@ -1242,7 +1242,7 @@ set -eu
 mkdir -p "$MINOS_WORKSPACE"
 mkdir -p "$HOME/.local/bin"
 install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
-printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
+printf '%s\n' '{"guidance":[],"misconfigurations":[]}' >"$MINOS_ORIENTATION"
 printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 `)
 	t.Cleanup(func() { killRecordedProcesses(fixture.record + ".pids") })

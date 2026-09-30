@@ -35,15 +35,34 @@ const scopeBrief = (Array.isArray(input.instructionBriefs) ? input.instructionBr
 );
 if (!scopeBrief) throw new Error("deterministic input omitted the shipped scope brief");
 
-const guidance = input.guidance;
-if (
-  !guidance ||
-  typeof guidance.path !== "string" ||
-  guidance.path === "" ||
-  typeof guidance.content !== "string" ||
-  guidance.content.trim() === "" ||
-  typeof guidance.grounding !== "string"
-) throw new Error("deterministic input omitted reviewed-project guidance");
+function projectGuidanceFromInput(input) {
+  const guidance = input && input.guidance;
+  if (!Array.isArray(guidance) || guidance.length === 0) return null;
+  for (const entry of guidance) {
+    if (
+      !entry ||
+      typeof entry.path !== "string" ||
+      entry.path === "" ||
+      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
+      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
+      typeof entry.content !== "string" ||
+      entry.content.trim() === ""
+    ) return null;
+  }
+  return guidance;
+}
+
+// One block per guidance document, in the configured order: the reviewed
+// project's declared intent, as the repository owner names it.
+function projectGuidanceSection(guidance) {
+  return guidance.map((entry) =>
+    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
+    `${entry.content}\n</project-guidance>\n`
+  ).join("\n") + "\n";
+}
+
+const guidance = projectGuidanceFromInput(input);
+if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
 
 if (typeof input.briefsEngage !== "boolean")
   throw new Error("deterministic input omitted the brief engagement pre-branch");
@@ -91,10 +110,9 @@ const result = await agent(
   `Read and follow the Markdown role brief at ${scopeBrief.readPath}. ` +
     `The deterministic input enumerator supplied the same content below so this workflow can bind the dispatched prompt to the shipped brief without reading files itself.\n\n` +
     `<role-brief path="${SCOPE_BRIEF_PATH}">\n${scopeBrief.content}\n</role-brief>\n\n` +
-    `Judge the change against the reviewed project's checked-in commission or guidance below. ` +
-    `This project intent governs whether behaviour is correct.\n\n` +
-    `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n` +
-    `${guidance.content}\n</project-guidance>\n\n` +
+    `Judge the change against the reviewed project's declared intent below — every guidance document its owner configured, ` +
+    `or its own checked-in guidance where none is configured. This project intent governs whether behaviour is correct.\n\n` +
+    projectGuidanceSection(guidance) +
     `Judge ${target}...${head}. Changed files: ${JSON.stringify(changedFiles)}\n` +
     `Every repository review brief has already settled deterministically as not applying to this change. ` +
     `Decide only whether the change itself gives any reviewable concern real work.`,

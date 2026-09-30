@@ -6,6 +6,17 @@ repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 # Long-lived integration branches (structural lanes, say) park under this knob.
 # work-in-progress-branch-prefixes = ["REPLACE_WITH_BRANCH_PREFIX/"]
 
+# Every knob below is optional: an omitted knob takes the service-level value
+# from [repositories] in service.toml, and a knob written here replaces that
+# value whole.
+# [[guidance-sources]]
+# repository = "REPLACE_WITH_OWNER/REPLACE_WITH_PLANNING_REPOSITORY"
+# path = "README.md"
+# [filing-destination]
+# kind = "file"
+# repository = "REPLACE_WITH_OWNER/REPLACE_WITH_PLANNING_REPOSITORY"
+# path = "ISSUES.md"
+
 [adaptation]
 run-body = "/opt/minos/run-body/run-body"
 

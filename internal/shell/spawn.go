@@ -228,8 +228,24 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_CREDENTIAL_FILE":       forgeConfig.CredentialFile,
 		"MINOS_RUN_BODY":              repo.Adaptation.RunBody,
 		"MINOS_REVIEW_THRESHOLD":      repo.Review.Threshold,
+		"MINOS_COMMIT_AUTHOR_NAME":    cfg.Service.CommitAuthorName,
+		"MINOS_COMMIT_AUTHOR_EMAIL":   cfg.Service.CommitAuthorEmail,
 		"ENSEMBLE_CONCURRENCY_CLAUDE": strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
 		"ENSEMBLE_CONCURRENCY_CODEX":  strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
+	}
+	// Structured knobs cross into the run as one JSON value each, always
+	// present: an empty guidance list is exported as [] so the run script
+	// reads "configured empty" rather than guessing from an absent variable.
+	for key, value := range map[string]any{
+		"MINOS_GUIDANCE_SOURCES":   nonNilSources(repo.GuidanceSources),
+		"MINOS_FILING_DESTINATION": repo.FilingDestination,
+	} {
+		encoded, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			cleanupSpawnFailure()
+			return SpawnResult{}, fmt.Errorf("encode %s: %w", key, marshalErr)
+		}
+		env[key] = string(encoded)
 	}
 	if cfg.Ensemble.AgentCeiling > 0 {
 		env["ENSEMBLE_AGENT_CEILING"] = strconv.Itoa(cfg.Ensemble.AgentCeiling)
@@ -274,6 +290,13 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{Outcome: SpawnContinued}, nil
 	}
 	return SpawnResult{Outcome: SpawnStarted}, nil
+}
+
+func nonNilSources(sources []GuidanceSource) []GuidanceSource {
+	if sources == nil {
+		return []GuidanceSource{}
+	}
+	return sources
 }
 
 func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {

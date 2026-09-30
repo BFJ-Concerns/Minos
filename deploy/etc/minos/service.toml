@@ -1,5 +1,10 @@
 [service]
 bot-login = "REPLACE_WITH_FORGEJO_BOT_LOGIN"
+# The identity on every commit Minos makes (filed issue logs, the failure
+# ledger). Unset, the name is the bot login and the email is that login at
+# minos.invalid.
+# commit-author-name = "Minos"
+# commit-author-email = "minos@example.org"
 
 [listener]
 bind = ":8919"
@@ -10,6 +15,28 @@ api-base = "REPLACE_WITH_FORGEJO_BASE_URL"
 webhook-secret-file = "/etc/minos/webhook.secret"
 credential-file = "/etc/minos/forgejo.token"
 signature-header = "X-Forgejo-Signature"
+
+# Per-repository knobs, set once here for every opted-in repository; any
+# repository's own file under repos/ overrides a knob whole. Unset at both
+# levels, a repository gets: threshold High, its own checked-in guidance
+# (the first present of AGENTS.md, CLAUDE.md, README.md), a pull-request
+# comment as its filing destination, and no work-in-progress prefixes.
+[repositories]
+# work-in-progress-branch-prefixes = ["structural/"]
+# [repositories.review]
+# threshold = "High"
+# Guidance sources: the documents that carry each project's declared intent,
+# read in this order. A source names a path in the reviewed repository, or a
+# path in a named secondary repository on the same forge (cloned read-only
+# beside the workspace).
+# [[repositories.guidance-sources]]
+# path = "AGENTS.md"
+# Filing destination for a clean run's confirmed advisory material and brief
+# diagnostics: kind "file" (path required; repository optional, the reviewed
+# repository's default branch when omitted), "issue" (repository required),
+# "pull-request-comment", or "none".
+# [repositories.filing-destination]
+# kind = "pull-request-comment"
 
 [runs]
 dir = "/var/lib/minos/runs"

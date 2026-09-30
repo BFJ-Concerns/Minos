@@ -242,7 +242,7 @@ func readSweepDeferrals(cfg ServiceConfig) *sweepDeferralDocument {
 }
 
 func configuredStatusRepos(cfg ServiceConfig) []statusRepo {
-	configs, err := LoadRepoConfigs(cfg.Root)
+	configs, err := LoadRepoConfigs(cfg)
 	if err != nil {
 		return []statusRepo{}
 	}
@@ -332,7 +332,7 @@ func identityFromUnit(cfg ServiceConfig, unit string) (forge, owner, repo, pr st
 	if !found {
 		return "", "", "", ""
 	}
-	repos, err := LoadRepoConfigs(cfg.Root)
+	repos, err := LoadRepoConfigs(cfg)
 	if err != nil {
 		return "", "", "", ""
 	}
@@ -362,7 +362,7 @@ func readRunOrientation(runDir string) (orientationDocument, error) {
 // from the repository configuration that admitted the run; a single configured
 // forge answers on its own.
 func orientationForge(cfg ServiceConfig, orientation orientationDocument) string {
-	repos, err := LoadRepoConfigs(cfg.Root)
+	repos, err := LoadRepoConfigs(cfg)
 	if err == nil {
 		for _, repo := range repos {
 			if repo.Owner == orientation.Source.Owner && repo.Repo == orientation.Source.Repo {

@@ -129,7 +129,7 @@ for (const gatingGroup of ["main", "brief"]) {
   });
 }
 
-test("clean main and brief findings go to the annexe without observations", (t) => {
+test("clean main and brief findings go to the filing destination without observations", (t) => {
   const { result, plan, readJson } = compose(t, {
     main: verdict([finding("a", { severity: "Medium" })]),
     mainDecision: decision("clean", [{ key: "a", gating: false }]),

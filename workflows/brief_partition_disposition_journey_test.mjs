@@ -103,11 +103,7 @@ function workflowInput(files) {
       scope: null,
       scopeExists: true,
     }],
-    guidance: {
-      grounding: "repository",
-      path: "/workspace/AGENTS.md",
-      content: "PARTITION-DISPOSITION-GUIDANCE-0728",
-    },
+    guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PARTITION-DISPOSITION-GUIDANCE-0728" }],
     instructionBriefs: [
       {
         path: "workflows/review-briefs/repository.md",

@@ -11,6 +11,12 @@ webhook-secret-file = "/etc/minos/webhook.secret"
 credential-file = "/etc/minos/forgejo.token"
 signature-header = "X-Forgejo-Signature"
 
+[repositories]
+[[repositories.guidance-sources]]
+path = "AGENTS.md"
+[repositories.filing-destination]
+kind = "pull-request-comment"
+
 [runs]
 dir = "/var/lib/minos/runs"
 max-concurrent = 2

@@ -101,16 +101,36 @@ function instructionBriefsFromInput(input) {
     .map((entry) => [entry.path, entry]));
 }
 
-function guidanceFromInput(input) {
+function projectGuidanceFromInput(input) {
   const guidance = input && input.guidance;
-  if (!guidance || typeof guidance.path !== "string" || typeof guidance.content !== "string" || guidance.content.trim() === "") return null;
-  return { grounding: guidance.grounding || "repository", path: guidance.path, content: guidance.content };
+  if (!Array.isArray(guidance) || guidance.length === 0) return null;
+  for (const entry of guidance) {
+    if (
+      !entry ||
+      typeof entry.path !== "string" ||
+      entry.path === "" ||
+      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
+      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
+      typeof entry.content !== "string" ||
+      entry.content.trim() === ""
+    ) return null;
+  }
+  return guidance;
+}
+
+// One block per guidance document, in the configured order: the reviewed
+// project's declared intent, as the repository owner names it.
+function projectGuidanceSection(guidance) {
+  return guidance.map((entry) =>
+    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
+    `${entry.content}\n</project-guidance>\n`
+  ).join("\n") + "\n";
 }
 
 function groundedPrompt(instruction, guidance, assignment) {
   return `Read and follow the Markdown role brief at ${instruction.readPath}.\n\n` +
     `<role-brief path="${instruction.path}">\n${instruction.content}\n</role-brief>\n\n` +
-    `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
+    projectGuidanceSection(guidance) +
     assignment;
 }
 
@@ -277,7 +297,7 @@ if (!Array.isArray(input.briefs) || !Array.isArray(input.changedPaths) || !Array
 const instructions = instructionBriefsFromInput(input);
 const repositoryInstruction = instructions.get("workflows/review-briefs/repository.md");
 const verifierInstruction = instructions.get("workflows/review-briefs/verifier.md");
-const guidance = guidanceFromInput(input);
+const guidance = projectGuidanceFromInput(input);
 if (!repositoryInstruction || !verifierInstruction)
   throw new Error("deterministic input omitted shipped repository or verifier brief");
 if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
@@ -316,7 +336,7 @@ if (relevanceCandidates.length > 0) {
   phase("Relevance");
   addLeg("brief-relevance", "relevance", GPT_PLANNER_MODEL);
   const relevanceResult = await agent(
-    `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
+    projectGuidanceSection(guidance) +
       `Judge which repository concerns ${input.target}...${input.head} gives work to. Inspect the actual diff when paths alone do not settle it. ` +
       `Mark a concern inapplicable only when the diff clearly gives it nothing to judge. Return one decision for every entry and preserve each brief path.\n` +
       `Changed paths: ${JSON.stringify(input.changedPaths)}\n` +
@@ -391,7 +411,7 @@ if (partitionRequests.length > 0) {
   for (const request of partitionRequests)
     addLeg(request.label, "partition", GPT_PLANNER_MODEL);
   const partitionResults = await parallel(partitionRequests.map((request) => () => agent(
-      `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
+      projectGuidanceSection(guidance) +
       `<repository-brief path="${request.candidate.brief.path}">\n${request.candidate.brief.content}\n</repository-brief>\n\n` +
       `Create a lossless partition of the assigned file inventory into coherent review units for this brief. Group paths by module, directory, or concern, whichever reflects the repository's actual structure. ` +
       `Each dispatched unit has a real cost, so the partition is the minimal one whose units each need a genuinely distinct reading for this brief's concern — merge groups one reading covers, and never split a unit to mirror directory structure for its own sake. ` +

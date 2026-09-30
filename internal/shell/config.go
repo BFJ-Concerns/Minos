@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +21,11 @@ type ServiceConfig struct {
 	Root    string `toml:"-"`
 	Service struct {
 		BotLogin string `toml:"bot-login"`
+		// CommitAuthorName and CommitAuthorEmail sign every commit Minos
+		// makes — a filed issue log, the failure ledger. Unset, the name is
+		// the bot login and the email is that login at minos.invalid.
+		CommitAuthorName  string `toml:"commit-author-name"`
+		CommitAuthorEmail string `toml:"commit-author-email"`
 		// Operator alerts are filed as issues on this repository (one open
 		// issue per alert title, repeats as comments). All three keys unset
 		// leaves alerting off and alerts as journal lines only.
@@ -36,7 +42,10 @@ type ServiceConfig struct {
 		StatusTokenFile string `toml:"status-token-file"`
 	} `toml:"listener"`
 	Forges map[string]ForgeConfig `toml:"forges"`
-	Runs   struct {
+	// Repositories holds the service-level value of every per-repository
+	// knob; a repository's own file overrides any of them (C49).
+	Repositories RepositoryKnobs `toml:"repositories"`
+	Runs         struct {
 		Dir                    string `toml:"dir"`
 		FailureLog             string `toml:"failure-log"`
 		FailuresRepo           string `toml:"failures-repo"`
@@ -105,18 +114,68 @@ type ForgeConfig struct {
 	SignatureHeader   string `toml:"signature-header"`
 }
 
-type RepoConfig struct {
-	Path                         string   `toml:"-"`
-	Forge                        string   `toml:"forge"`
-	Owner                        string   `toml:"owner"`
-	Repo                         string   `toml:"repo"`
+// RepositoryKnobs are the per-repository knobs (C49). Each is set once at
+// service level under [repositories] and any repository overrides it in its
+// own file; the override replaces the whole value — a list never merges with
+// the service list — and a knob unset at both levels takes its shipped
+// default. Every knob is exported into the run by SpawnRun, so a run script
+// or input builder reads the resolved value and never reads configuration.
+type RepositoryKnobs struct {
 	WorkInProgressBranchPrefixes []string `toml:"work-in-progress-branch-prefixes"`
-	Adaptation                   struct {
-		RunBody string `toml:"run-body"`
-	} `toml:"adaptation"`
-	Review struct {
+	Review                       struct {
 		Threshold string `toml:"threshold"`
 	} `toml:"review"`
+	// GuidanceSources is the ordered list of documents that carry the
+	// reviewed project's declared intent (C44). Empty means the reviewed
+	// repository's own checked-in guidance.
+	GuidanceSources []GuidanceSource `toml:"guidance-sources"`
+	// FilingDestination is where a clean run's confirmed non-gating material
+	// goes (C45).
+	FilingDestination FilingDestination `toml:"filing-destination"`
+}
+
+// GuidanceSource names one guidance document: a path in the reviewed
+// repository, or a path in a named secondary repository on the same forge.
+type GuidanceSource struct {
+	Repository string `toml:"repository" json:"repository,omitempty"`
+	Path       string `toml:"path" json:"path"`
+}
+
+// FilingDestination names where confirmed non-gating material is delivered:
+// a file in a repository's default branch (the reviewed repository unless
+// one is named), an issue on a named repository, a comment on the pull
+// request, or nowhere.
+type FilingDestination struct {
+	Kind       string `toml:"kind" json:"kind"`
+	Repository string `toml:"repository" json:"repository,omitempty"`
+	Path       string `toml:"path" json:"path,omitempty"`
+}
+
+const (
+	FilingKindFile               = "file"
+	FilingKindIssue              = "issue"
+	FilingKindPullRequestComment = "pull-request-comment"
+	FilingKindNone               = "none"
+)
+
+var filingKinds = []string{FilingKindFile, FilingKindIssue, FilingKindPullRequestComment, FilingKindNone}
+
+// repositoryName is the owner/name form a secondary repository takes: one
+// slash, no whitespace, nothing that could read as a path or URL.
+var repositoryName = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+type RepoConfig struct {
+	Path       string `toml:"-"`
+	Forge      string `toml:"forge"`
+	Owner      string `toml:"owner"`
+	Repo       string `toml:"repo"`
+	Adaptation struct {
+		RunBody string `toml:"run-body"`
+	} `toml:"adaptation"`
+	// The embedded knobs hold the repository's own file values while
+	// loading and the resolved values afterwards, so consumers read
+	// repo.Review.Threshold and friends without knowing which level set them.
+	RepositoryKnobs
 }
 
 func LoadServiceConfig(root string) (ServiceConfig, error) {
@@ -124,12 +183,21 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		root = DefaultConfigRoot
 	}
 	var cfg ServiceConfig
-	if err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg); err != nil {
+	if _, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg); err != nil {
 		return ServiceConfig{}, err
 	}
 	cfg.Root = root
 	if cfg.Service.BotLogin == "" || cfg.Listener.Bind == "" || cfg.Runs.Dir == "" || len(cfg.Forges) == 0 {
 		return ServiceConfig{}, fmt.Errorf("service.toml: bot login, listener, runs directory and at least one forge are required")
+	}
+	if cfg.Service.CommitAuthorName == "" {
+		cfg.Service.CommitAuthorName = cfg.Service.BotLogin
+	}
+	if cfg.Service.CommitAuthorEmail == "" {
+		cfg.Service.CommitAuthorEmail = cfg.Service.BotLogin + "@minos.invalid"
+	}
+	if err := validateRepositoryKnobs("service.toml: repositories", cfg.Repositories); err != nil {
+		return ServiceConfig{}, err
 	}
 	for name, forge := range cfg.Forges {
 		if forge.Adaptation == "" || forge.APIBase == "" || forge.WebhookSecretFile == "" || forge.CredentialFile == "" {
@@ -152,35 +220,124 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	return cfg, nil
 }
 
-func LoadRepoConfigs(root string) ([]RepoConfig, error) {
-	paths, err := filepath.Glob(filepath.Join(root, "repos", "*.toml"))
+// LoadRepoConfigs reads every opted-in repository under the configuration
+// root and resolves its knobs against the service-level values, so a
+// returned RepoConfig carries the values a run will honour.
+func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
+	paths, err := filepath.Glob(filepath.Join(cfg.Root, "repos", "*.toml"))
 	if err != nil {
 		return nil, err
 	}
 	repos := make([]RepoConfig, 0, len(paths))
 	for _, path := range paths {
 		var repo RepoConfig
-		if err := decodeStrictTOML(path, &repo); err != nil {
+		metadata, err := decodeStrictTOML(path, &repo)
+		if err != nil {
 			return nil, err
 		}
 		repo.Path = path
-		if repo.Review.Threshold == "" {
-			repo.Review.Threshold = "High"
-		}
 		if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
 			return nil, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
 		}
-		if !validReviewThreshold(repo.Review.Threshold) {
-			return nil, fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", path)
-		}
-		for _, prefix := range repo.WorkInProgressBranchPrefixes {
-			if prefix == "" {
-				return nil, fmt.Errorf("%s: work-in-progress-branch-prefixes cannot contain an empty prefix", path)
-			}
+		repo.RepositoryKnobs = resolveRepositoryKnobs(cfg.Repositories, repo.RepositoryKnobs, metadata.IsDefined)
+		if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
+			return nil, err
 		}
 		repos = append(repos, repo)
 	}
 	return repos, nil
+}
+
+// resolveRepositoryKnobs layers a repository file's knobs over the service
+// defaults. A key the file defines wins whole, even when it is empty — a
+// repository can switch off a service-wide list by defining it empty — and
+// a knob defined at neither level takes its shipped default. A new knob
+// joins this function as one line per key, beside its struct field.
+func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...string) bool) RepositoryKnobs {
+	knobs := defaults
+	if defined("work-in-progress-branch-prefixes") {
+		knobs.WorkInProgressBranchPrefixes = own.WorkInProgressBranchPrefixes
+	}
+	if defined("review", "threshold") {
+		knobs.Review.Threshold = own.Review.Threshold
+	}
+	if defined("guidance-sources") {
+		knobs.GuidanceSources = own.GuidanceSources
+	}
+	if defined("filing-destination") {
+		knobs.FilingDestination = own.FilingDestination
+	}
+	if knobs.Review.Threshold == "" {
+		knobs.Review.Threshold = "High"
+	}
+	if knobs.FilingDestination.Kind == "" {
+		knobs.FilingDestination = FilingDestination{Kind: FilingKindPullRequestComment}
+	}
+	return knobs
+}
+
+// validateRepositoryKnobs checks one level's values. The service level may
+// leave a knob unset, so a threshold or filing kind is checked only when
+// present; the resolved repository level always carries both.
+func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
+	if knobs.Review.Threshold != "" && !validReviewThreshold(knobs.Review.Threshold) {
+		return fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", where)
+	}
+	for _, prefix := range knobs.WorkInProgressBranchPrefixes {
+		if prefix == "" {
+			return fmt.Errorf("%s: work-in-progress-branch-prefixes cannot contain an empty prefix", where)
+		}
+	}
+	for index, source := range knobs.GuidanceSources {
+		if err := validRepositoryPath(source.Path); err != nil {
+			return fmt.Errorf("%s: guidance-sources[%d].path %w", where, index, err)
+		}
+		if source.Repository != "" && !repositoryName.MatchString(source.Repository) {
+			return fmt.Errorf("%s: guidance-sources[%d].repository must be owner/name on the same forge", where, index)
+		}
+	}
+	destination := knobs.FilingDestination
+	switch destination.Kind {
+	case "":
+	case FilingKindFile:
+		if err := validRepositoryPath(destination.Path); err != nil {
+			return fmt.Errorf("%s: filing-destination.path %w", where, err)
+		}
+		if destination.Repository != "" && !repositoryName.MatchString(destination.Repository) {
+			return fmt.Errorf("%s: filing-destination.repository must be owner/name on the same forge", where)
+		}
+	case FilingKindIssue:
+		if !repositoryName.MatchString(destination.Repository) {
+			return fmt.Errorf("%s: filing-destination.repository must name the owner/name that takes the issues", where)
+		}
+		if destination.Path != "" {
+			return fmt.Errorf("%s: filing-destination.path does not apply to the issue kind", where)
+		}
+	case FilingKindPullRequestComment, FilingKindNone:
+		if destination.Repository != "" || destination.Path != "" {
+			return fmt.Errorf("%s: filing-destination.repository and .path do not apply to the %s kind", where, destination.Kind)
+		}
+	default:
+		return fmt.Errorf("%s: filing-destination.kind must be one of %s", where, strings.Join(filingKinds, ", "))
+	}
+	return nil
+}
+
+// validRepositoryPath admits a relative path inside a repository: no empty
+// value, no absolute path, no parent-directory segment.
+func validRepositoryPath(path string) error {
+	if path == "" {
+		return errors.New("is required")
+	}
+	if strings.HasPrefix(path, "/") {
+		return errors.New("must be relative to the repository root")
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return errors.New("cannot leave the repository")
+		}
+	}
+	return nil
 }
 
 func validReviewThreshold(value string) bool {
@@ -193,7 +350,7 @@ func validReviewThreshold(value string) bool {
 }
 
 func FindRepoConfig(cfg ServiceConfig, facts Facts) (RepoConfig, error) {
-	repos, err := LoadRepoConfigs(cfg.Root)
+	repos, err := LoadRepoConfigs(cfg)
 	if err != nil {
 		return RepoConfig{}, err
 	}
@@ -205,10 +362,12 @@ func FindRepoConfig(cfg ServiceConfig, facts Facts) (RepoConfig, error) {
 	return RepoConfig{}, fmt.Errorf("%w: %s/%s on %s", errRepoNotOptedIn, facts.Owner, facts.Repo, facts.Forge)
 }
 
-func decodeStrictTOML(path string, target any) error {
+// decodeStrictTOML decodes one file, refusing unknown keys, and returns the
+// metadata so a caller can tell a key the file defines from one it omits.
+func decodeStrictTOML(path string, target any) (toml.MetaData, error) {
 	metadata, err := toml.DecodeFile(path, target)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return toml.MetaData{}, fmt.Errorf("%s: %w", path, err)
 	}
 	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
 		keys := make([]string, 0, len(undecoded))
@@ -216,9 +375,9 @@ func decodeStrictTOML(path string, target any) error {
 			keys = append(keys, key.String())
 		}
 		sort.Strings(keys)
-		return fmt.Errorf("%s: unknown TOML keys: %s", path, strings.Join(keys, ", "))
+		return toml.MetaData{}, fmt.Errorf("%s: unknown TOML keys: %s", path, strings.Join(keys, ", "))
 	}
-	return nil
+	return metadata, nil
 }
 
 func ReadSecret(path string) (string, error) {

@@ -141,14 +141,20 @@ write, matching the target rule above.)
 
 1. The setup script has prepared the clone at the current pull-request head
    in `$MINOS_WORKSPACE` — either fresh or a validated preserved
-   workspace — with the project's annexe cloned alongside where one
-   exists, and refused setup if the head had moved. Setup is a clone, not
-   an environment: nothing was built, installed, or provisioned, and no
+   workspace — and refused setup if the head had moved. Setup is a clone,
+   not an environment: nothing was built, installed, or provisioned, and no
    agent ran. It recorded its orientation in `$MINOS_ORIENTATION`. Read
-   that record. When its `grounding` is `annexe`, read the commission in
-   the recorded annexe README as the driving statement of the project;
-   when it is `repository`, no sibling annexe exists, so ground the work
-   in the repository's own checked-in guidance. Then run
+   that record. Its `guidance` array lists, in configured order, every
+   document the run is grounded on: each entry's `location` is the file to
+   read; its `source` names the configured path and, for a document from a
+   secondary repository, that repository; its `origin` is `configured`
+   when the repository owner named the source and `checked-in` when no
+   source is configured and setup grounded on the reviewed repository's
+   own guidance file. Read every guidance entry it lists as the project's
+   declared intent. A secondary repository's clone beside the workspace is
+   read-only reference material, never a place to write. The record's
+   `misconfigurations` array names any configured source setup could not
+   read, with the reason; carry each one into the run report. Then run
    `"$MINOS_BIN" forge snapshot` and claim the pull request with
    `"$MINOS_BIN" forge claim` (it assigns the Minos account and adds the
    👀 reaction; it is safe to repeat). A snapshot target that differs from
@@ -332,9 +338,9 @@ write, matching the target rule above.)
    ```
 
    This deterministic file-reading seam validates `$MINOS_ORIENTATION`,
-   reads the selected annexe commission or repository-fallback guidance
-   and the pull-request description setup recorded, and supplies that
-   content with the shipped role briefs — so reviewers weigh the author's
+   reads every guidance document the orientation lists and the
+   pull-request description setup recorded, and supplies that content
+   with the shipped role briefs — so reviewers weigh the author's
    explicitly declared scope rather than rediscovering a declared gap as a
    defect. Do not ask an agent to reproduce it or hand-author its
    `guidance`, `pullRequest`, or `instructionBriefs` entries.
@@ -374,7 +380,8 @@ write, matching the target rule above.)
    Any adjudicated verdict may also contain `outOfScopeObservations`.
    These are unverified observations, not findings, and carry no verifier
    verdict. Keep them only in the saved run record. They never enter a
-   review, an annexe issue log, a classification digest, or a run outcome.
+   review, the filing destination, a classification digest, or a run
+   outcome.
 
    Only a verdict whose `status` is `complete` may proceed. A missing
    result, incomplete leg, or missing or invalid verifier result yields
@@ -455,8 +462,8 @@ write, matching the target rule above.)
    genuinely belongs at or above the threshold, named as such. Any gating
    finding makes the verdict `request-changes`; none makes it `clean`.
    A finding judged non-gating is advisory. Include it alongside the
-   blocking findings when the run requests changes; file it to the annexe
-   when the run is clean.
+   blocking findings when the run requests changes; deliver it to the
+   repository's configured filing destination when the run is clean.
 
    Write your decision per verdict to
    `$MINOS_RUN_DIR/verdict-decision.json` (`verdict-decision-brief.json`
@@ -552,23 +559,32 @@ write, matching the target rule above.)
    write as the run's failure, set `incomplete`, remove 👀, write the
    non-clean terminal marker, and stop.
 
-   Deliver the plan's `triage.entries` to the annexe. On a clean run it
-   contains the confirmed advisory findings; brief configuration diagnostics
-   may be filed on either outcome. Unverified observations are excluded.
-   The filing appends each entry once to `ISSUES.md`, commits and pushes as
-   Minos, and skips entries already present. Run it after any planned review:
+   Deliver the plan's `triage.entries` to the repository's configured
+   filing destination. On a clean run it contains the confirmed advisory
+   findings; brief configuration diagnostics may be filed on either
+   outcome. Unverified observations are excluded. The destination — a file
+   in a repository's default branch, an issue on a named repository, a
+   comment on the pull request, or nowhere — is the service's exported
+   configuration, never a choice you make; the script files each entry
+   once, skipping entries the destination already carries, and commits as
+   the configured identity. Run it after any planned review:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/file-triage.mjs" \
-     "$MINOS_RUN_DIR/publication" "$MINOS_RUN_DIR/publication/triage-entries.json" \
+     "$MINOS_RUN_DIR/publication/triage-entries.json" \
      "$MINOS_ORIENTATION" "$MINOS_CREDENTIAL_FILE" \
      > "$MINOS_RUN_DIR/triage-result.json"
    ```
 
-   `annexe` means the log took the entries; `none` means there was nothing
-   to file. `unfiled` means the annexe was unavailable or filing failed.
-   Record that reason in the run report and continue to the terminal outcome.
-   Filing failure never generates a pull-request comment or changes the verdict.
+   The result names the destination `kind` and one `outcome`: `filed`
+   means the destination took the entries (`written` counts the new ones,
+   and may be zero when every entry was already there); `nothing-to-file`
+   means the batch held nothing deliverable; `discarded` means the
+   repository files nowhere by configuration; `unfiled` means delivery
+   failed or the destination kind is unavailable, with the `reason`.
+   Record an `unfiled` reason in the run report and continue to the
+   terminal outcome. Filing failure never generates a pull-request comment,
+   never falls back to another surface, and changes no verdict.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` after publication.
 7. End at the earned terminal outcome.

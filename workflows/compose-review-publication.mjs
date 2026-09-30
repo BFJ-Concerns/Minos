@@ -9,7 +9,8 @@
 //
 // A request-changes review carries all confirmed findings, including advisory
 // ones, so the author can address them in the same round. A clean result
-// writes no reviews and files confirmed findings to the annexe instead.
+// writes no reviews and routes confirmed findings to the configured filing
+// destination instead.
 // Unverified observations stay in the run record.
 //
 // Usage:
