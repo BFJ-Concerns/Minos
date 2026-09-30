@@ -23,7 +23,7 @@ func fixtureStatusTargetURL(apiBase string, facts Facts) string {
 
 func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	codeRepository, head := createGitRepository(t, "code.txt", "estate reviewed head\n")
-	annexeRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n\nDistinctive grounding value: cinnabar-orbit-719.\n")
+	secondaryRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n\nDistinctive grounding value: cinnabar-orbit-719.\n")
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = head
@@ -31,7 +31,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		pullRequest["base"].(map[string]any)["sha"] = head
 		pullRequest["base"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
-	state.setAnnexeCloneURL(annexeRepository)
+	state.setSecondaryCloneURL(secondaryRepository)
 
 	cfg, repo, facts := state.service(t)
 	runBody, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
@@ -39,6 +39,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo.Adaptation.RunBody = runBody
+	repo.GuidanceSources = []GuidanceSource{{Repository: "minos-e2e-owner/subject-plans", Path: "README.md"}}
 	record := writeEstateRunBodyConfig(t, cfg.Root)
 	writeServiceConfig(t, cfg)
 
@@ -107,20 +108,21 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		t.Fatalf("workspace head = %q, want admitted head %q", got, head)
 	}
 	orientation := readOrientation(t, orientationPath)
-	if orientation.Repository != workspace || orientation.Head != head || orientation.Grounding != "annexe" {
-		t.Fatalf("orientation = %+v, want admitted workspace, head and annexe grounding", orientation)
+	if orientation.Repository != workspace || orientation.Head != head || len(orientation.Guidance) != 1 {
+		t.Fatalf("orientation = %+v, want admitted workspace, head and one configured guidance source", orientation)
 	}
-	if orientation.Annexe != filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "subject-Annexe") ||
-		orientation.Guidance != filepath.Join(orientation.Annexe, "README.md") {
-		t.Fatalf("orientation paths = %+v, want adjacent subject annexe README", orientation)
+	guidance := orientation.Guidance[0]
+	if guidance.Origin != "configured" || guidance.Source.Repository != "minos-e2e-owner/subject-plans" ||
+		guidance.Location != filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "guidance", "minos-e2e-owner--subject-plans", "README.md") {
+		t.Fatalf("orientation guidance = %+v, want the configured secondary README cloned beside the workspace", guidance)
 	}
-	assertContainsFile(t, orientation.Guidance, "cinnabar-orbit-719")
+	assertContainsFile(t, guidance.Location, "cinnabar-orbit-719")
 	assertContainsFile(t, record+".grounding", "cinnabar-orbit-719")
 	assertContainsFile(t, record+".acceptance", `"hasCompletedOnboarding":true`)
 	assertContainsFile(t, record+".acceptance", `"bypassPermissionsModeAccepted":true`)
 	assertContainsFile(t, record+".auth", "claude-auth-present")
 	assertContainsFile(t, record+".auth", "codex-auth-present")
-	assertContainsFile(t, record+".argv", "the recorded annexe README as the driving statement")
+	assertContainsFile(t, record+".argv", "Read every guidance entry it lists")
 	runHome := filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "home")
 	for _, value := range []string{
 		"HOME=" + runHome,
@@ -214,7 +216,7 @@ func TestRebuildEstateSupervisesTerminalLeadWithoutCompletionMarker(t *testing.T
 func startEstateRunBody(t *testing.T) (string, string, map[string]string) {
 	t.Helper()
 	codeRepository, head := createGitRepository(t, "AGENTS.md", "NON_CLEAN_TERMINAL_SENTINEL_719\n")
-	annexeRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n")
+	secondaryRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n")
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = head
@@ -222,7 +224,7 @@ func startEstateRunBody(t *testing.T) (string, string, map[string]string) {
 		pullRequest["base"].(map[string]any)["sha"] = head
 		pullRequest["base"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
-	state.setAnnexeCloneURL(annexeRepository)
+	state.setSecondaryCloneURL(secondaryRepository)
 
 	cfg, repo, facts := state.service(t)
 	runBody, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
@@ -230,6 +232,7 @@ func startEstateRunBody(t *testing.T) (string, string, map[string]string) {
 		t.Fatal(err)
 	}
 	repo.Adaptation.RunBody = runBody
+	repo.GuidanceSources = []GuidanceSource{{Repository: "minos-e2e-owner/subject-plans", Path: "README.md"}}
 	record := writeEstateRunBodyConfig(t, cfg.Root)
 	writeServiceConfig(t, cfg)
 
@@ -502,7 +505,7 @@ case "$1" in
     test -f "$CLAUDE_CONFIG_DIR/.credentials.json"
     test -f "$CODEX_HOME/auth.json"
     printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
-    guidance="$(jq -r '.guidance' "$MINOS_ORIENTATION")"
+    guidance="$(jq -r '.guidance[0].location' "$MINOS_ORIENTATION")"
     cat "$guidance" >"$record.grounding"
     if [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
       printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=review cause=verdict-incomplete\n' \

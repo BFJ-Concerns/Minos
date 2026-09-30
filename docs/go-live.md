@@ -54,6 +54,17 @@ so no repository toolchains are needed.
    destination lives on the archive host, bound into the key's forced
    command below, so the box never names it.
 
+   Per-repository knobs — the review threshold, work-in-progress branch
+   prefixes, the guidance sources a review is grounded on, and the filing
+   destination for a clean run's advisory material — are set once under
+   `[repositories]` in `service.toml` and overridden whole by any
+   repository's own file; the shipped `service.toml` documents each knob
+   and the defaults a repository gets when neither level sets it. A
+   guidance source in a secondary repository is cloned read-only beside
+   the workspace at setup; a file-kind filing destination is a separate
+   write path to that repository's default branch, committed as
+   `service.commit-author-name` and `service.commit-author-email`.
+
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset. Run units share a fixed 22 GiB whole-box
    memory envelope live, through the `minos-runs.slice` unit: the slice

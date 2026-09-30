@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { guidanceFromOrientation } from "./orientation-guidance.mjs";
 
 const target = process.argv[2];
 const head = process.argv[3];
@@ -14,21 +16,7 @@ if (!target || !head || process.argv.length > 4) {
   const orientationPath = process.env.MINOS_ORIENTATION;
   if (!orientationPath) throw new Error("MINOS_ORIENTATION is required");
   const orientation = JSON.parse(readFileSync(orientationPath, "utf8"));
-  if (!orientation || typeof orientation.guidance !== "string" || orientation.guidance === "")
-    throw new Error("orientation omitted its guidance path");
-  const guidancePath = resolve(orientation.guidance);
-  const guidanceStat = statSync(guidancePath);
-  const maximumGuidanceBytes = 262_144;
-  if (!guidanceStat.isFile()) throw new Error("guidance path is not a regular file");
-  if (guidanceStat.size > maximumGuidanceBytes)
-    throw new Error(`guidance exceeds ${maximumGuidanceBytes} bytes`);
-  const guidanceContent = readFileSync(guidancePath, "utf8");
-  if (guidanceContent.trim() === "") throw new Error("guidance document is empty");
-  const guidance = {
-    grounding: typeof orientation.grounding === "string" ? orientation.grounding : "repository",
-    path: guidancePath,
-    content: guidanceContent,
-  };
+  const guidance = guidanceFromOrientation(orientation);
   let pullRequest;
   if (orientation.pullRequest !== undefined) {
     if (typeof orientation.pullRequest !== "string" || orientation.pullRequest === "")

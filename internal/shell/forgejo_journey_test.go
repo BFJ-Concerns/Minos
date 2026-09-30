@@ -1147,7 +1147,7 @@ func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7, 42)
 		configureForgeCommandFixture(t, state)
-		annexe := installAnnexeClone(t)
+		installFilingRepository(t, state)
 		verdict := adjudicatedReviewPayload(t, []map[string]any{
 			adjudicatedFinding("specialist-1:1", "High", "Gating state transition", 42, "The transition accepts an invalid state."),
 			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
@@ -1167,20 +1167,21 @@ func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
 				t.Fatalf("comment = %#v, want %q", posted[i], want)
 			}
 		}
-		if outcome := fileComposedTriage(t, plan, annexe.orientation); outcome["destination"] != "none" {
+		filingDestination := FilingDestination{Kind: FilingKindFile, Repository: "minos-e2e-owner/subject-plans", Path: "ISSUES.md"}
+		if outcome := fileComposedTriage(t, state, plan, filingDestination); outcome["outcome"] != "nothing-to-file" {
 			t.Fatalf("blocking round files findings: %#v", outcome)
 		}
 	})
 
-	for _, withAnnexe := range []bool{true, false} {
-		t.Run(fmt.Sprintf("clean round has no comments, annexe=%t", withAnnexe), func(t *testing.T) {
+	for _, withDestination := range []bool{true, false} {
+		t.Run(fmt.Sprintf("clean round has no comments, filing destination configured=%t", withDestination), func(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7, 42)
 			configureForgeCommandFixture(t, state)
-			annexe := installAnnexeClone(t)
-			orientation := annexe.orientation
-			if !withAnnexe {
-				orientation = map[string]any{"grounding": "repository"}
+			plans := installFilingRepository(t, state)
+			destination := FilingDestination{Kind: FilingKindFile, Repository: "minos-e2e-owner/subject-plans", Path: "ISSUES.md"}
+			if !withDestination {
+				destination = FilingDestination{Kind: FilingKindNone}
 			}
 			verdict := adjudicatedReviewPayload(t, []map[string]any{
 				adjudicatedFinding("specialist-1:1", "Medium", "Advisory state transition", 42, "The transition is difficult to identify."),
@@ -1188,17 +1189,17 @@ func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
 			})
 			verdict["outOfScopeObservations"] = []map[string]any{{"title": "Unverified observation", "verified": false}}
 			plan := postComposedReview(t, head, target, verdict)
-			outcome := fileComposedTriage(t, plan, orientation)
-			if withAnnexe {
-				if outcome["destination"] != "annexe" || outcome["written"] != float64(2) {
+			outcome := fileComposedTriage(t, state, plan, destination)
+			if withDestination {
+				if outcome["outcome"] != "filed" || outcome["written"] != float64(2) || outcome["location"] != "minos-e2e-owner/subject-plans:ISSUES.md" {
 					t.Fatalf("triage outcome = %#v", outcome)
 				}
-				issues := gitOutput(t, annexe.seed, "--git-dir", annexe.origin, "show", "main:ISSUES.md")
+				issues := plans.issues(t)
 				if !strings.Contains(issues, "Advisory state transition") || !strings.Contains(issues, "Advisory recovery wording") || strings.Contains(issues, "Unverified observation") {
-					t.Fatalf("annexe content = %q", issues)
+					t.Fatalf("filed content = %q", issues)
 				}
-			} else if outcome["destination"] != "unfiled" || outcome["review"] != nil {
-				t.Fatalf("missing annexe generated a fallback: %#v", outcome)
+			} else if outcome["outcome"] != "discarded" || outcome["review"] != nil {
+				t.Fatalf("the none destination generated a fallback: %#v", outcome)
 			}
 			for _, args := range [][]string{{"reaction", head, target, "+1"}, {"status", head, target, "clean"}} {
 				if err := ForgeCommand(t.Context(), args, &bytes.Buffer{}); err != nil {
@@ -1622,14 +1623,15 @@ func postComposedReview(t *testing.T, head, target string, verdict map[string]an
 	return plan
 }
 
-// annexeClone is a reviewed project's annexe as setup-workspace leaves it:
-// a clone of a bare origin, with the orientation record that names it.
-type annexeClone struct {
-	origin, seed, clone string
-	orientation         map[string]any
+// filingRepository is a secondary repository configured as a file-kind
+// filing destination: a bare origin the fixture forge names as
+// minos-e2e-owner/subject-plans, seeded with an issue log.
+type filingRepository struct {
+	origin string
+	seed   string
 }
 
-func installAnnexeClone(t *testing.T) annexeClone {
+func installFilingRepository(t *testing.T, state *forgejoFixtureState) filingRepository {
 	t.Helper()
 	scratch := t.TempDir()
 	origin := filepath.Join(scratch, "origin.git")
@@ -1638,7 +1640,7 @@ func installAnnexeClone(t *testing.T) annexeClone {
 	runGit(t, scratch, "init", "--quiet", "--initial-branch=main", seed)
 	runGit(t, seed, "config", "user.name", "Seed")
 	runGit(t, seed, "config", "user.email", "seed@example.invalid")
-	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# Commission\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# Plans\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(seed, "ISSUES.md"), []byte("# Issues\n\n- An existing entry.\n"), 0o644); err != nil {
@@ -1647,23 +1649,26 @@ func installAnnexeClone(t *testing.T) annexeClone {
 	runGit(t, seed, "add", ".")
 	runGit(t, seed, "commit", "--quiet", "-m", "seed")
 	runGit(t, seed, "push", "--quiet", origin, "main")
-	clone := filepath.Join(scratch, "repository-Annexe")
-	runGit(t, scratch, "clone", "--quiet", origin, clone)
-	return annexeClone{
-		origin: origin, seed: seed, clone: clone,
-		orientation: map[string]any{
-			"grounding": "annexe", "annexe": clone,
-			"source": map[string]any{"owner": "owner", "repo": "repository", "pr": "17", "date": "2026-09-12"},
-		},
-	}
+	state.setSecondaryCloneURL(origin)
+	return filingRepository{origin: origin, seed: seed}
+}
+
+func (r filingRepository) issues(t *testing.T) string {
+	t.Helper()
+	return gitOutput(t, r.seed, "--git-dir", r.origin, "show", "main:ISSUES.md")
 }
 
 // fileComposedTriage delivers the plan's triage entries the way the
-// lifecycle's publish step does and returns the filing's outcome.
-func fileComposedTriage(t *testing.T, plan map[string]any, orientation map[string]any) map[string]any {
+// lifecycle's publish step does — the destination and identity in the
+// environment the service exported — and returns the filing's outcome.
+func fileComposedTriage(t *testing.T, state *forgejoFixtureState, plan map[string]any, destination FilingDestination) map[string]any {
 	t.Helper()
 	directory := t.TempDir()
 	orientationPath := filepath.Join(directory, "orientation.json")
+	orientation := map[string]any{
+		"repository": "/workspace", "guidance": []any{},
+		"source": map[string]any{"owner": "minos-e2e-owner", "repo": "subject", "pr": "17", "date": "2026-09-12"},
+	}
 	encoded, err := json.Marshal(orientation)
 	if err != nil {
 		t.Fatal(err)
@@ -1671,12 +1676,25 @@ func fileComposedTriage(t *testing.T, plan map[string]any, orientation map[strin
 	if err := os.WriteFile(orientationPath, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	destinationJSON, err := json.Marshal(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
 	entries := plan["triage"].(map[string]any)["entries"].(string)
-	filing := exec.CommandContext(t.Context(), "node", filepath.Join(root, "workflows", "file-triage.mjs"), filepath.Dir(entries), entries, orientationPath)
+	filing := exec.CommandContext(t.Context(), "node", filepath.Join(root, "workflows", "file-triage.mjs"), entries, orientationPath)
+	filing.Env = append(os.Environ(),
+		"MINOS_FILING_DESTINATION="+string(destinationJSON),
+		"MINOS_API_BASE="+state.server.URL,
+		"MINOS_OWNER=minos-e2e-owner",
+		"MINOS_REPO_NAME=subject",
+		"MINOS_RUN_DIR="+directory,
+		"MINOS_COMMIT_AUTHOR_NAME=Minos",
+		"MINOS_COMMIT_AUTHOR_EMAIL=minos@example.invalid",
+	)
 	output, err := filing.CombinedOutput()
 	if err != nil {
 		t.Fatalf("file triage: %v\n%s", err, output)
@@ -1908,7 +1926,7 @@ type forgejoFixtureState struct {
 	priorityBoundaryMutation func()
 	writeSequence            []string
 	virtualRefLookups        int
-	annexeCloneURL           string
+	secondaryCloneURL        string
 	operatorPullRequests     []operatorFixturePullRequest
 }
 
@@ -2178,10 +2196,12 @@ func (s *forgejoFixtureState) setDependenciesFailure(status int) {
 	s.dependencyCode = status
 }
 
-func (s *forgejoFixtureState) setAnnexeCloneURL(cloneURL string) {
+// setSecondaryCloneURL publishes minos-e2e-owner/subject-plans, the
+// secondary repository a configured guidance source may name.
+func (s *forgejoFixtureState) setSecondaryCloneURL(cloneURL string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.annexeCloneURL = cloneURL
+	s.secondaryCloneURL = cloneURL
 }
 
 func (s *forgejoFixtureState) statusReadFacts() []string {
@@ -2261,12 +2281,12 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, map[string]any{"login": "Minos"})
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject":
 		writeFixtureJSON(s.t, w, s.repository)
-	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject-Annexe":
-		if s.annexeCloneURL == "" {
+	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject-plans":
+		if s.secondaryCloneURL == "" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.annexeCloneURL})
+		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.secondaryCloneURL, "default_branch": "main"})
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls" && len(s.operatorPullRequests) > 0:
 		pullRequests := make([]map[string]any, 0, len(s.operatorPullRequests))
 		for _, pullRequest := range s.operatorPullRequests {

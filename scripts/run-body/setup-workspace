@@ -139,68 +139,121 @@ protected_refs_tmp=""
 # authorise one (C33). A separate clone inherits neither protection.
 install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
 
-annexe_name="${MINOS_REPO_NAME}-Annexe"
-annexe_path="$(dirname "$MINOS_WORKSPACE")/${annexe_name}"
-forge_get "/api/v1/repos/${MINOS_OWNER}/${annexe_name}"
-case "$response_status" in
-  200)
-    annexe_url="$(jq -r '.clone_url // ""' "$response_file")"
-    if [ -z "$annexe_url" ]; then
-      echo "setup-workspace: annexe metadata omitted its clone URL" >&2
-      exit 1
+# Guidance sources are the resolved per-repository knob (C44), exported by
+# the service as one JSON array: each entry names a path in the reviewed
+# repository or a path in a named secondary repository on the same forge.
+# An empty array grounds the run on the reviewed repository's own checked-in
+# guidance. Structure is validated here because the environment is the
+# contract; a malformed value is a setup failure, never a silent default.
+: "${MINOS_GUIDANCE_SOURCES:?MINOS_GUIDANCE_SOURCES is required}"
+if ! printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq -e '
+  type == "array" and all(.[];
+    type == "object"
+    and (.path | type) == "string" and .path != ""
+    and (.path | startswith("/") | not)
+    and ((.path | split("/") | index("..")) == null)
+    and (.repository == null
+      or ((.repository | type) == "string" and (.repository | test("^[^/[:space:]]+/[^/[:space:]]+$")))))
+' >/dev/null 2>&1; then
+  echo "setup-workspace: MINOS_GUIDANCE_SOURCES must be a JSON array of {repository?, path} entries with relative paths" >&2
+  exit 1
+fi
+
+guidance_root="$(dirname "$MINOS_WORKSPACE")/guidance"
+guidance_entries='[]'
+misconfigurations='[]'
+clone_failures='{}'
+
+guidance_clone_path() {
+  printf '%s/%s' "$guidance_root" "$(printf '%s' "$1" | sed 's|/|--|')"
+}
+
+# A configured source that cannot be read is recorded, never passed over
+# silently: the run report and the filing destination carry the record.
+record_guidance_misconfiguration() {
+  misconfigurations="$(printf '%s' "$misconfigurations" | jq -c --argjson source "$1" --arg reason "$2" \
+    '. + [{kind: "guidance-source", source: $source, reason: $reason}]')"
+  echo "setup-workspace: guidance source $(printf '%s' "$1" | jq -r '(.repository // "the reviewed repository") + ":" + .path') $2" >&2
+}
+
+# Each named secondary repository is cloned once, read-only: its push URL is
+# unusable, so no path exists from a run to that repository (C44).
+for guidance_repository in $(printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq -r '[.[].repository // empty] | unique | .[]'); do
+  clone_path="$(guidance_clone_path "$guidance_repository")"
+  if [ "$resume" = true ] && [ -d "$clone_path/.git" ]; then
+    continue
+  fi
+  rm -rf -- "$clone_path"
+  forge_get "/api/v1/repos/${guidance_repository}"
+  if [ "$response_status" != "200" ]; then
+    clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository lookup returned HTTP $response_status" '.[$name] = $reason')"
+    continue
+  fi
+  guidance_url="$(jq -r '.clone_url // ""' "$response_file")"
+  if [ -z "$guidance_url" ]; then
+    clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository metadata omitted its clone URL" '.[$name] = $reason')"
+    continue
+  fi
+  mkdir -p "$guidance_root"
+  if ! git -c "http.extraHeader=Authorization: token ${forge_token}" clone --quiet "$guidance_url" "$clone_path"; then
+    rm -rf -- "$clone_path"
+    clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository could not be cloned" '.[$name] = $reason')"
+    continue
+  fi
+  git -C "$clone_path" remote set-url --push origin "no-push://minos-guidance-clone"
+done
+
+source_count="$(printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq 'length')"
+source_index=0
+while [ "$source_index" -lt "$source_count" ]; do
+  guidance_source="$(printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq -c ".[$source_index]")"
+  source_index=$((source_index + 1))
+  source_repository="$(printf '%s' "$guidance_source" | jq -r '.repository // empty')"
+  source_path="$(printf '%s' "$guidance_source" | jq -r '.path')"
+  if [ -n "$source_repository" ]; then
+    clone_failure="$(printf '%s' "$clone_failures" | jq -r --arg name "$source_repository" '.[$name] // empty')"
+    if [ -n "$clone_failure" ]; then
+      record_guidance_misconfiguration "$guidance_source" "$clone_failure"
+      continue
     fi
-    if [ "$resume" = true ]; then
-      if [ ! -d "$annexe_path/.git" ]; then
-        echo "setup-workspace: preserved annexe is missing or not a Git repository: $annexe_path" >&2
-        exit 1
-      fi
-    else
-      git -c "http.extraHeader=Authorization: token ${forge_token}" clone "$annexe_url" "$annexe_path"
+    guidance_location="$(guidance_clone_path "$source_repository")/$source_path"
+  else
+    guidance_location="$MINOS_WORKSPACE/$source_path"
+  fi
+  if ! guidance_has_content "$guidance_location"; then
+    record_guidance_misconfiguration "$guidance_source" "is missing or empty"
+    continue
+  fi
+  guidance_entries="$(printf '%s' "$guidance_entries" | jq -c --argjson source "$guidance_source" --arg location "$guidance_location" \
+    '. + [{source: $source, location: $location, origin: "configured"}]')"
+done
+
+if [ "$source_count" -eq 0 ]; then
+  for candidate in AGENTS.md CLAUDE.md README.md; do
+    if guidance_has_content "$MINOS_WORKSPACE/$candidate"; then
+      guidance_entries="$(jq -nc --arg path "$candidate" --arg location "$MINOS_WORKSPACE/$candidate" \
+        '[{source: {path: $path}, location: $location, origin: "checked-in"}]')"
+      break
     fi
-    annexe_guidance="$annexe_path/README.md"
-    if ! guidance_has_content "$annexe_guidance"; then
-      echo "setup-workspace: annexe README.md guidance is missing or empty" >&2
-      exit 1
-    fi
-    jq -n \
-      --arg repository "$MINOS_WORKSPACE" \
-      --arg head "$checked_out_head" \
-      --arg annexe "$annexe_path" \
-      --arg guidance "$annexe_guidance" \
-      --arg pull_request "$pull_request_record" \
-      --arg owner "$MINOS_OWNER" \
-      --arg repo "$MINOS_REPO_NAME" \
-      --arg pr "$MINOS_PR" \
-      --arg date "$run_date" \
-      '{repository:$repository,head:$head,grounding:"annexe",annexe:$annexe,guidance:$guidance,pullRequest:$pull_request,source:{owner:$owner,repo:$repo,pr:$pr,date:$date}}' \
-      >"$MINOS_ORIENTATION"
-    ;;
-  404)
-    repository_guidance=""
-    for candidate in AGENTS.md CLAUDE.md README.md; do
-      if guidance_has_content "$MINOS_WORKSPACE/$candidate"; then
-        repository_guidance="$MINOS_WORKSPACE/$candidate"
-        break
-      fi
-    done
-    if [ -z "$repository_guidance" ]; then
-      echo "setup-workspace: repository fallback has no non-empty checked-in guidance" >&2
-      exit 1
-    fi
-    jq -n \
-      --arg repository "$MINOS_WORKSPACE" \
-      --arg head "$checked_out_head" \
-      --arg guidance "$repository_guidance" \
-      --arg pull_request "$pull_request_record" \
-      --arg owner "$MINOS_OWNER" \
-      --arg repo "$MINOS_REPO_NAME" \
-      --arg pr "$MINOS_PR" \
-      --arg date "$run_date" \
-      '{repository:$repository,head:$head,grounding:"repository",guidance:$guidance,pullRequest:$pull_request,reason:"annexe-not-found",source:{owner:$owner,repo:$repo,pr:$pr,date:$date}}' \
-      >"$MINOS_ORIENTATION"
-    ;;
-  *)
-    echo "setup-workspace: annexe lookup returned HTTP $response_status" >&2
+  done
+  if [ "$guidance_entries" = '[]' ]; then
+    echo "setup-workspace: no guidance source is configured and the repository has no non-empty checked-in guidance (AGENTS.md, CLAUDE.md or README.md)" >&2
     exit 1
-    ;;
-esac
+  fi
+elif [ "$guidance_entries" = '[]' ]; then
+  echo "setup-workspace: no configured guidance source is readable" >&2
+  exit 1
+fi
+
+jq -n \
+  --arg repository "$MINOS_WORKSPACE" \
+  --arg head "$checked_out_head" \
+  --argjson guidance "$guidance_entries" \
+  --argjson misconfigurations "$misconfigurations" \
+  --arg pull_request "$pull_request_record" \
+  --arg owner "$MINOS_OWNER" \
+  --arg repo "$MINOS_REPO_NAME" \
+  --arg pr "$MINOS_PR" \
+  --arg date "$run_date" \
+  '{repository: $repository, head: $head, guidance: $guidance, misconfigurations: $misconfigurations, pullRequest: $pull_request, source: {owner: $owner, repo: $repo, pr: $pr, date: $date}}' \
+  >"$MINOS_ORIENTATION"

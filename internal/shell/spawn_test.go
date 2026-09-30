@@ -758,6 +758,8 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 
 	cfg := ServiceConfig{Root: "/etc/minos"}
 	cfg.Runs.Dir = t.TempDir()
+	cfg.Service.CommitAuthorName = "Reviewer Bot"
+	cfg.Service.CommitAuthorEmail = "reviewer@example.invalid"
 	cfg.Ensemble.ConcurrencyClaude = 10
 	cfg.Ensemble.ConcurrencyCodex = 6
 	cfg.Ensemble.AgentCeiling = 12
@@ -767,6 +769,11 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.Review.Threshold = "Medium"
+	repo.GuidanceSources = []GuidanceSource{
+		{Repository: "owner/repo-plans", Path: "README.md"},
+		{Path: "docs/intent.md"},
+	}
+	repo.FilingDestination = FilingDestination{Kind: FilingKindFile, Repository: "owner/repo-plans", Path: "ISSUES.md"}
 	facts := Facts{
 		Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7",
 		HeadSHA: "head", BaseSHA: "target", BaseRef: "main", HeadRef: "feature",
@@ -798,6 +805,10 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_CREDENTIAL_FILE=/etc/minos/forge.token",
 		"MINOS_RUN_BODY=/opt/minos/run-body/run-body",
 		"MINOS_REVIEW_THRESHOLD=Medium",
+		"MINOS_COMMIT_AUTHOR_NAME=Reviewer Bot",
+		"MINOS_COMMIT_AUTHOR_EMAIL=reviewer@example.invalid",
+		`MINOS_GUIDANCE_SOURCES=[{"repository":"owner/repo-plans","path":"README.md"},{"path":"docs/intent.md"}]`,
+		`MINOS_FILING_DESTINATION={"kind":"file","repository":"owner/repo-plans","path":"ISSUES.md"}`,
 		"ENSEMBLE_CONCURRENCY_CLAUDE=10",
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",
@@ -829,6 +840,32 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	}) {
 		t.Fatalf("systemd-run arguments omit MINOS_ORIENTATION: %v", systemdArgs)
 	}
+}
+
+func TestSpawnRunExportsUnsetStructuredKnobsAsTheirEmptyForms(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Ensemble.ConcurrencyClaude = 1
+	cfg.Ensemble.ConcurrencyCodex = 1
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+	repo := RepoConfig{}
+	repo.FilingDestination = FilingDestination{Kind: FilingKindNone}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head", BaseSHA: "target"}
+
+	if _, err := SpawnRun(t.Context(), cfg, repo, facts); err != nil {
+		t.Fatal(err)
+	}
+	assertArgument(t, systemdArgs, "MINOS_GUIDANCE_SOURCES=[]")
+	assertArgument(t, systemdArgs, `MINOS_FILING_DESTINATION={"kind":"none"}`)
 }
 
 func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {

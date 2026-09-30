@@ -34,7 +34,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	repos, err := LoadRepoConfigs(cfg.Root)
+	repos, err := LoadRepoConfigs(cfg)
 	if err != nil {
 		return err
 	}

@@ -38,9 +38,9 @@ function enumeratedArgs(
   target = "aaa111",
   head = "bbb222",
   {
-    grounding = "annexe",
     guidanceName = "README.md",
     guidanceContent = "MINOS_TEST_COMMISSION_INDIGO",
+    secondaryGuidance,
     pullRequest,
     absentPullRequestRecord = false,
   } = {},
@@ -50,7 +50,17 @@ function enumeratedArgs(
   mkdirSync(workspace);
   const guidancePath = join(workspace, guidanceName);
   writeFileSync(guidancePath, guidanceContent);
-  const orientation = { repository: workspace, grounding, guidance: guidancePath };
+  // The orientation setup-workspace writes: one entry per guidance document,
+  // a configured secondary repository's document first when the test names one.
+  const guidance = [];
+  if (secondaryGuidance !== undefined) {
+    const secondaryPath = join(root, "guidance", "owner--plans", "README.md");
+    mkdirSync(join(root, "guidance", "owner--plans"), { recursive: true });
+    writeFileSync(secondaryPath, secondaryGuidance);
+    guidance.push({ source: { repository: "owner/plans", path: "README.md" }, location: secondaryPath, origin: "configured" });
+  }
+  guidance.push({ source: { path: guidanceName }, location: guidancePath, origin: secondaryGuidance === undefined ? "checked-in" : "configured" });
+  const orientation = { repository: workspace, guidance, misconfigurations: [] };
   if (pullRequest !== undefined || absentPullRequestRecord) {
     const pullRequestPath = join(root, "pull-request.json");
     if (!absentPullRequestRecord)
@@ -696,9 +706,27 @@ test("an oversized pull-request description is truncated rather than fatal", () 
   assert.match(args.pullRequest.body, /\[pull-request description truncated\]$/);
 });
 
+test("every configured guidance document is bound in order, naming its repository and origin", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", {
+    guidanceName: "AGENTS.md",
+    guidanceContent: "MINOS_REVIEWED_GUIDANCE_OCHRE_719",
+    secondaryGuidance: "MINOS_SECONDARY_COMMISSION_OCHRE_719",
+  });
+  assert.deepEqual(args.guidance.map(({ repository, path, origin }) => ({ repository, path, origin })), [
+    { repository: "owner/plans", path: "README.md", origin: "configured" },
+    { repository: null, path: "AGENTS.md", origin: "configured" },
+  ]);
+  const { calls } = await runScript(args, responder());
+  const prompt = calls.find((call) => call.opts.label === "exploration").prompt;
+  const secondaryAt = prompt.indexOf('<project-guidance origin="configured" repository="owner/plans" path="README.md">\nMINOS_SECONDARY_COMMISSION_OCHRE_719\n</project-guidance>');
+  const reviewedAt = prompt.indexOf('<project-guidance origin="configured" path="AGENTS.md">\nMINOS_REVIEWED_GUIDANCE_OCHRE_719\n</project-guidance>');
+  assert.ok(secondaryAt !== -1 && reviewedAt !== -1 && secondaryAt < reviewedAt, "both documents are bound, in configured order");
+  assert.doesNotMatch(prompt, /grounding=/, "the retired single-document attribute is gone");
+});
+
 test("the deterministic review input rejects empty guidance", () => {
   for (const guidanceContent of ["", " \n\t"])
-    assert.throws(() => enumeratedArgs("aaa111", "bbb222", { guidanceContent }), /guidance document is empty/);
+    assert.throws(() => enumeratedArgs("aaa111", "bbb222", { guidanceContent }), /guidance .* is empty/);
 });
 
 test("invalid direct input throws before any agent dispatch", async () => {
@@ -732,12 +760,12 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Whenever you stop after a clean, converged pass[\s\S]*`printf 'clean\\n' > "\$MINOS_RUN_DIR\/lead-complete"`/);
   assert.match(lifecycle, /Minos authors no commits, so every head movement is the author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
-  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a\s+review, an annexe issue log, a classification digest, or a run outcome/);
+  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a\s+review, the filing destination, a classification digest, or a run\s+outcome/);
   assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);
   assert.match(lifecycle, /A request-changes plan contains one review with all confirmed findings[\s\S]*A clean plan has no posts/);
-  assert.match(lifecycle, /A finding judged non-gating is advisory[\s\S]*file it to the annexe\s+when the run is clean/);
-  assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" "\$MINOS_CREDENTIAL_FILE"/);
-  assert.match(lifecycle, /`unfiled` means the annexe was unavailable or filing failed[\s\S]*Filing failure never generates a pull-request comment or changes the verdict/);
+  assert.match(lifecycle, /A finding judged non-gating is advisory[\s\S]*deliver it to the\s+repository's configured filing destination when the run is clean/);
+  assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" "\$MINOS_CREDENTIAL_FILE"/);
+  assert.match(lifecycle, /`unfiled` means delivery\s+failed or the destination kind is unavailable[\s\S]*Filing failure never generates a pull-request comment,\s+never falls back to another surface, and changes no verdict/);
 });
 
 test("the lifecycle prescribes the verdict-classification seam", () => {

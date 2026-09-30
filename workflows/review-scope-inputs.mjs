@@ -5,6 +5,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { guidanceFromOrientation } from "./orientation-guidance.mjs";
+
 import { briefEngagement } from "./brief-dispositions.mjs";
 
 const [target, head, ...rest] = process.argv.slice(2);
@@ -21,16 +23,9 @@ if (argumentError) {
   const orientation = JSON.parse(readFileSync(orientationPath, "utf8"));
   if (!orientation || typeof orientation.repository !== "string" || orientation.repository === "")
     throw new Error("orientation omitted its repository path");
-  if (typeof orientation.guidance !== "string" || orientation.guidance === "")
-    throw new Error("orientation omitted its guidance path");
+  const guidance = guidanceFromOrientation(orientation);
 
   const workspace = resolve(process.env.MINOS_WORKSPACE || orientation.repository);
-  const guidancePath = resolve(orientation.guidance);
-  const guidanceStat = statSync(guidancePath);
-  if (!guidanceStat.isFile() || guidanceStat.size > 262_144)
-    throw new Error("guidance must be one regular README-sized document");
-  const guidanceContent = readFileSync(guidancePath, "utf8");
-  if (guidanceContent.trim() === "") throw new Error("guidance document is empty");
 
   const reviewDirectory = resolve(workspace, ".review");
   const hasReviewDirectory = existsSync(reviewDirectory) && statSync(reviewDirectory).isDirectory();
@@ -86,11 +81,7 @@ if (argumentError) {
     target,
     head,
     occasion,
-    guidance: {
-      grounding: typeof orientation.grounding === "string" ? orientation.grounding : "repository",
-      path: guidancePath,
-      content: guidanceContent,
-    },
+    guidance,
     instructionBriefs: [{
       path: scopeBriefPath,
       readPath: resolve(workflowRoot, scopeBriefPath),

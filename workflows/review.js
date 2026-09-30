@@ -43,15 +43,28 @@ function missingRoleBriefs(roleBriefs) {
 
 function projectGuidanceFromInput(input) {
   const guidance = input && input.guidance;
-  if (
-    !guidance ||
-    typeof guidance.path !== "string" ||
-    guidance.path === "" ||
-    typeof guidance.content !== "string" ||
-    guidance.content.trim() === "" ||
-    typeof guidance.grounding !== "string"
-  ) return null;
+  if (!Array.isArray(guidance) || guidance.length === 0) return null;
+  for (const entry of guidance) {
+    if (
+      !entry ||
+      typeof entry.path !== "string" ||
+      entry.path === "" ||
+      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
+      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
+      typeof entry.content !== "string" ||
+      entry.content.trim() === ""
+    ) return null;
+  }
   return guidance;
+}
+
+// One block per guidance document, in the configured order: the reviewed
+// project's declared intent, as the repository owner names it.
+function projectGuidanceSection(guidance) {
+  return guidance.map((entry) =>
+    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
+    `${entry.content}\n</project-guidance>\n`
+  ).join("\n") + "\n";
 }
 
 function pullRequestFromInput(input) {
@@ -95,10 +108,9 @@ function rolePrompt(roleBriefs, guidance, pullRequest, path, assignment) {
     `Read and follow the Markdown role brief at ${brief.readPath}. ` +
     `The deterministic input enumerator supplied the same content below so this workflow can bind the dispatched prompt to the shipped brief without reading files itself.\n\n` +
     `<role-brief path="${path}">\n${brief.content}\n</role-brief>\n\n` +
-    `Judge the change against the reviewed project's checked-in commission or guidance below. ` +
-    `This project intent governs whether behaviour is correct.\n\n` +
-    `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n` +
-    `${guidance.content}\n</project-guidance>\n\n` +
+    `Judge the change against the reviewed project's declared intent below — every guidance document its owner configured, ` +
+    `or its own checked-in guidance where none is configured. This project intent governs whether behaviour is correct.\n\n` +
+    projectGuidanceSection(guidance) +
     pullRequestSection(pullRequest) +
     assignment
   );

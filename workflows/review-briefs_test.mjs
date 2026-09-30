@@ -63,7 +63,7 @@ function args(overrides = {}) {
     changedPaths: ["pkg/x.go"],
     trackedFiles: [{ path: "pkg/x.go", bytes: 100 }],
     briefs: [brief(".review/pkg/errors.md", "---\nrelevance: Error-path changes.\n---\nJudge errors.")],
-    guidance: { grounding: "repository", path: "/workspace/AGENTS.md", content: "PROJECT_GUIDANCE_TEAL" },
+    guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PROJECT_GUIDANCE_TEAL" }],
     instructionBriefs: [
       { path: "workflows/review-briefs/repository.md", readPath: "/minos/workflows/review-briefs/repository.md", content: "MINOS_REPOSITORY_BRIEF_V1" },
       { path: "workflows/review-briefs/verifier.md", readPath: "/minos/workflows/review-briefs/verifier.md", content: "MINOS_ADVERSARIAL_VERIFIER_V1" },
@@ -753,7 +753,11 @@ test("the enumerator emits large deterministic input directly as JSON and reject
   execFileSync("git", ["-C", root, "commit", "-qm", "head"]);
   const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const orientationPath = join(root, "orientation.json");
-  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "repository", guidance: join(root, "AGENTS.md") }));
+  writeFileSync(orientationPath, JSON.stringify({
+    repository: root,
+    guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
+    misconfigurations: [],
+  }));
   const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root };
   const deterministicJson = execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env });
   const enumerated = JSON.parse(deterministicJson);
@@ -811,7 +815,11 @@ test("the enumerator reads a tracked-file listing larger than the default child-
   const listing = execFileSync("git", ["-C", root, "ls-files", "-z"], { maxBuffer: Infinity });
   assert.ok(listing.byteLength > 1024 * 1024);
   const orientationPath = join(root, "orientation.json");
-  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "repository", guidance: join(root, "AGENTS.md") }));
+  writeFileSync(orientationPath, JSON.stringify({
+    repository: root,
+    guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
+    misconfigurations: [],
+  }));
   const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root };
   const enumerated = JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env }));
   assert.deepEqual(enumerated.briefs, []);

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -15,13 +16,13 @@ import (
 
 func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testing.T) {
 	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
-	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
-	server := newSetupForge(t, head, repository, annexe)
+	secondary := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
+	server := newSetupForge(t, head, repository, secondary)
 
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspace(t, server.URL, runDir, workspace, orientation, head)
+	runSetupWorkspaceWithGuidance(t, server.URL, runDir, workspace, orientation, head, secondaryGuidance)
 
 	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("workspace head = %q, want %q", got, head)
@@ -34,12 +35,20 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 	if got := strings.TrimSpace(string(protectedRef)); got != "refs/heads/feature" {
 		t.Fatalf("protected ref = %q, want pull-request branch", got)
 	}
-	annexePath := filepath.Join(runDir, "repository-Annexe")
-	assertContainsFile(t, filepath.Join(annexePath, "README.md"), "# Commission")
+	clonePath := filepath.Join(runDir, "guidance", "owner--repository-plans")
+	assertContainsFile(t, filepath.Join(clonePath, "README.md"), "# Commission")
+	// The secondary clone is read-only: no push from a run can reach it.
+	if output, err := exec.Command("git", "-C", clonePath, "push", "origin", "HEAD:refs/heads/from-a-run").CombinedOutput(); err == nil {
+		t.Fatalf("guidance clone accepted a push: %s", output)
+	}
 
 	state := readOrientation(t, orientation)
-	if state.Grounding != "annexe" || state.Guidance != filepath.Join(annexePath, "README.md") {
-		t.Fatalf("orientation = %+v, want annexe README grounding", state)
+	want := []orientationGuidance{{
+		Source:   guidanceSourceRecord{Repository: "owner/repository-plans", Path: "README.md"},
+		Location: filepath.Join(clonePath, "README.md"), Origin: "configured",
+	}}
+	if !reflect.DeepEqual(state.Guidance, want) || len(state.Misconfigurations) != 0 {
+		t.Fatalf("orientation guidance = %+v, misconfigurations = %+v; want the configured secondary source alone", state.Guidance, state.Misconfigurations)
 	}
 	pullRequestRecord := filepath.Join(runDir, "pull-request.json")
 	if state.PullRequest != pullRequestRecord {
@@ -58,12 +67,16 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 
 func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
-	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
-	server := newSetupForge(t, head, repository, annexe)
+	secondary := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
+	server := newSetupForge(t, head, repository, secondary)
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspace(t, server.URL, runDir, workspace, orientation, head)
+	runSetupWorkspaceWithGuidance(t, server.URL, runDir, workspace, orientation, head, secondaryGuidance)
+	clonePath := filepath.Join(runDir, "guidance", "owner--repository-plans")
+	if err := os.WriteFile(filepath.Join(clonePath, "resumed-marker"), []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := os.WriteFile(filepath.Join(workspace, "code.txt"), []byte("unfinished tracked change\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -77,7 +90,7 @@ func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 	}
 
 	cmd := setupWorkspaceCommand(t, server.URL, runDir, workspace, orientation, head)
-	cmd.Env = append(cmd.Env, "MINOS_RESUME=true")
+	cmd.Env = append(cmd.Env, "MINOS_RESUME=true", "MINOS_GUIDANCE_SOURCES="+secondaryGuidance)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("warm setup-workspace failed: %v\n%s", err, output)
 	}
@@ -87,9 +100,10 @@ func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 		t.Fatalf("resumed workspace head = %q, want %q", got, head)
 	}
 	state := readOrientation(t, orientation)
-	if state.Head != head || state.Grounding != "annexe" {
+	if state.Head != head || len(state.Guidance) != 1 || state.Guidance[0].Location != filepath.Join(clonePath, "README.md") {
 		t.Fatalf("rewritten orientation = %+v", state)
 	}
+	assertContainsFile(t, filepath.Join(clonePath, "resumed-marker"), "kept")
 	protectedRefs, err := os.ReadFile(filepath.Join(commonDir, "minos-protected-ref"))
 	if err != nil {
 		t.Fatal(err)
@@ -101,9 +115,8 @@ func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 }
 
 func TestSetupWorkspaceResumeReclonesInvalidGitWorkspaceAndReestablishesSafetyState(t *testing.T) {
-	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
-	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
-	server := newSetupForge(t, head, repository, annexe)
+	repository, head := createGitRepository(t, "AGENTS.md", "reviewed code guidance\n")
+	server := newSetupForge(t, head, repository, "")
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
@@ -139,7 +152,7 @@ func TestSetupWorkspaceResumeReclonesInvalidGitWorkspaceAndReestablishesSafetySt
 		t.Fatalf("protected ref = %q, want pull-request branch", got)
 	}
 	assertContainsFile(t, filepath.Join(commonDir, "hooks", "pre-push"), "minos-protected-ref")
-	if state := readOrientation(t, orientation); state.Head != head || state.Grounding != "annexe" {
+	if state := readOrientation(t, orientation); state.Head != head || len(state.Guidance) != 1 || state.Guidance[0].Origin != "checked-in" {
 		t.Fatalf("orientation after fresh clone = %+v", state)
 	}
 }
@@ -152,8 +165,7 @@ func TestSetupWorkspaceRefusesMovedHead(t *testing.T) {
 	runGit(t, repository, "add", "code.txt")
 	runGit(t, repository, "commit", "-m", "move head")
 	observed := gitOutput(t, repository, "rev-parse", "HEAD")
-	annexe := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
-	server := newSetupForge(t, observed, repository, annexe)
+	server := newSetupForge(t, observed, repository, "")
 	runDir := t.TempDir()
 	cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), admitted)
 	output, err := cmd.CombinedOutput()
@@ -162,7 +174,7 @@ func TestSetupWorkspaceRefusesMovedHead(t *testing.T) {
 	}
 }
 
-func TestSetupWorkspaceRecordsRepositoryGuidanceFallbackWithoutAnnexe(t *testing.T) {
+func TestSetupWorkspaceGroundsOnCheckedInGuidanceWhenNoSourceIsConfigured(t *testing.T) {
 	repository, head := createGitRepository(t, "AGENTS.md", "MINOS_REPOSITORY_GUIDANCE_OCHRE_719\n")
 	server := newSetupForge(t, head, repository, "")
 
@@ -171,15 +183,95 @@ func TestSetupWorkspaceRecordsRepositoryGuidanceFallbackWithoutAnnexe(t *testing
 	runSetupWorkspace(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head)
 
 	state := readOrientation(t, orientation)
-	if state.Grounding != "repository" || state.Reason != "annexe-not-found" {
-		t.Fatalf("orientation = %+v, want explicit no-annexe fallback", state)
+	want := []orientationGuidance{{
+		Source: guidanceSourceRecord{Path: "AGENTS.md"}, Location: filepath.Join(runDir, "workspace", "AGENTS.md"), Origin: "checked-in",
+	}}
+	if !reflect.DeepEqual(state.Guidance, want) {
+		t.Fatalf("orientation guidance = %+v, want the repository's own AGENTS.md as checked-in guidance", state.Guidance)
 	}
-	if state.Guidance != filepath.Join(runDir, "workspace", "AGENTS.md") {
-		t.Fatalf("orientation guidance = %q, want repository AGENTS.md", state.Guidance)
+	assertContainsFile(t, state.Guidance[0].Location, "MINOS_REPOSITORY_GUIDANCE_OCHRE_719")
+	if _, err := os.Stat(filepath.Join(runDir, "guidance")); !os.IsNotExist(err) {
+		t.Fatalf("guidance clone directory exists or stat failed unexpectedly: %v", err)
 	}
-	assertContainsFile(t, state.Guidance, "MINOS_REPOSITORY_GUIDANCE_OCHRE_719")
-	if _, err := os.Stat(filepath.Join(runDir, "repository-Annexe")); !os.IsNotExist(err) {
-		t.Fatalf("annexe path exists or stat failed unexpectedly: %v", err)
+}
+
+func TestSetupWorkspaceReadsConfiguredSourcesInOrderFromBothRepositories(t *testing.T) {
+	repository, head := createGitRepository(t, "docs/intent.md", "MINOS_REPOSITORY_INTENT_UMBER_719\n")
+	secondary := createGitRepositoryAtHead(t, "README.md", "MINOS_SECONDARY_COMMISSION_UMBER_719\n")
+	server := newSetupForge(t, head, repository, secondary)
+
+	runDir := t.TempDir()
+	orientation := filepath.Join(runDir, "orientation.json")
+	runSetupWorkspaceWithGuidance(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head,
+		`[{"path":"docs/intent.md"},{"repository":"owner/repository-plans","path":"README.md"}]`)
+
+	state := readOrientation(t, orientation)
+	if len(state.Guidance) != 2 ||
+		state.Guidance[0].Source != (guidanceSourceRecord{Path: "docs/intent.md"}) ||
+		state.Guidance[1].Source != (guidanceSourceRecord{Repository: "owner/repository-plans", Path: "README.md"}) {
+		t.Fatalf("orientation guidance = %+v, want the two configured sources in configured order", state.Guidance)
+	}
+	assertContainsFile(t, state.Guidance[0].Location, "MINOS_REPOSITORY_INTENT_UMBER_719")
+	assertContainsFile(t, state.Guidance[1].Location, "MINOS_SECONDARY_COMMISSION_UMBER_719")
+}
+
+func TestSetupWorkspaceRecordsAnUnreadableConfiguredSourceAsMisconfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		secondary func(t *testing.T) string
+		reason    string
+	}{
+		{name: "secondary repository not on the forge", secondary: func(*testing.T) string { return "" }, reason: "repository lookup returned HTTP 404"},
+		{name: "named file missing", secondary: func(t *testing.T) string { return createGitRepositoryAtHead(t, "NOTES.md", "# Notes\n") }, reason: "is missing or empty"},
+		{name: "named file blank", secondary: func(t *testing.T) string { return createGitRepositoryAtHead(t, "README.md", " \n\t") }, reason: "is missing or empty"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, head := createGitRepository(t, "AGENTS.md", "MINOS_REPOSITORY_GUIDANCE_SLATE_719\n")
+			server := newSetupForge(t, head, repository, test.secondary(t))
+			runDir := t.TempDir()
+			orientation := filepath.Join(runDir, "orientation.json")
+			runSetupWorkspaceWithGuidance(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head,
+				`[{"repository":"owner/repository-plans","path":"README.md"},{"path":"AGENTS.md"}]`)
+
+			state := readOrientation(t, orientation)
+			if len(state.Guidance) != 1 || state.Guidance[0].Source != (guidanceSourceRecord{Path: "AGENTS.md"}) {
+				t.Fatalf("orientation guidance = %+v, want the readable source alone", state.Guidance)
+			}
+			want := []orientationMisconfiguration{{
+				Kind: "guidance-source", Source: guidanceSourceRecord{Repository: "owner/repository-plans", Path: "README.md"}, Reason: test.reason,
+			}}
+			if !reflect.DeepEqual(state.Misconfigurations, want) {
+				t.Fatalf("orientation misconfigurations = %+v, want %+v", state.Misconfigurations, want)
+			}
+		})
+	}
+}
+
+func TestSetupWorkspaceRefusesWhenNoConfiguredSourceIsReadable(t *testing.T) {
+	repository, head := createGitRepository(t, "AGENTS.md", "unconfigured guidance\n")
+	server := newSetupForge(t, head, repository, "")
+	runDir := t.TempDir()
+	cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
+	cmd.Env = append(cmd.Env, `MINOS_GUIDANCE_SOURCES=[{"path":"docs/absent.md"}]`)
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "no configured guidance source is readable") {
+		t.Fatalf("setup-workspace error = %v, output = %q", err, output)
+	}
+}
+
+func TestSetupWorkspaceRejectsMalformedGuidanceSources(t *testing.T) {
+	repository, head := createGitRepository(t, "AGENTS.md", "guidance\n")
+	server := newSetupForge(t, head, repository, "")
+	for _, sources := range []string{`not json`, `{"path":"x"}`, `[{"path":""}]`, `[{"path":"/etc/x"}]`, `[{"path":"../x"}]`, `[{"repository":"http://x/y","path":"a"}]`} {
+		t.Run(sources, func(t *testing.T) {
+			runDir := t.TempDir()
+			cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
+			cmd.Env = append(cmd.Env, "MINOS_GUIDANCE_SOURCES="+sources)
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "MINOS_GUIDANCE_SOURCES must be a JSON array") {
+				t.Fatalf("setup-workspace error = %v, output = %q", err, output)
+			}
+		})
 	}
 }
 
@@ -198,35 +290,10 @@ func TestSetupWorkspaceSkipsBlankRepositoryGuidanceFallback(t *testing.T) {
 	runSetupWorkspace(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head)
 
 	state := readOrientation(t, orientation)
-	if state.Guidance != filepath.Join(runDir, "workspace", "CLAUDE.md") {
-		t.Fatalf("orientation guidance = %q, want non-empty repository CLAUDE.md", state.Guidance)
+	if len(state.Guidance) != 1 || state.Guidance[0].Location != filepath.Join(runDir, "workspace", "CLAUDE.md") {
+		t.Fatalf("orientation guidance = %+v, want non-empty repository CLAUDE.md", state.Guidance)
 	}
-	assertContainsFile(t, state.Guidance, "MINOS_REPOSITORY_GUIDANCE_SIENNA_719")
-}
-
-func TestSetupWorkspaceRejectsAnnexeWithoutSubstantiveReadmeGuidance(t *testing.T) {
-	tests := []struct {
-		name     string
-		file     string
-		contents string
-	}{
-		{name: "missing", file: "NOTES.md", contents: "# Notes\n"},
-		{name: "empty", file: "README.md", contents: ""},
-		{name: "whitespace only", file: "README.md", contents: " \n\t"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
-			annexe := createGitRepositoryAtHead(t, test.file, test.contents)
-			server := newSetupForge(t, head, repository, annexe)
-			runDir := t.TempDir()
-			cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
-			output, err := cmd.CombinedOutput()
-			if err == nil || !strings.Contains(string(output), "annexe README.md guidance is missing or empty") {
-				t.Fatalf("setup-workspace error = %v, output = %q", err, output)
-			}
-		})
-	}
+	assertContainsFile(t, state.Guidance[0].Location, "MINOS_REPOSITORY_GUIDANCE_SIENNA_719")
 }
 
 func TestSetupWorkspaceRejectsEmptyRepositoryGuidanceFallback(t *testing.T) {
@@ -235,7 +302,7 @@ func TestSetupWorkspaceRejectsEmptyRepositoryGuidanceFallback(t *testing.T) {
 	runDir := t.TempDir()
 	cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
 	output, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "repository fallback has no non-empty checked-in guidance") {
+	if err == nil || !strings.Contains(string(output), "no guidance source is configured and the repository has no non-empty checked-in guidance") {
 		t.Fatalf("setup-workspace error = %v, output = %q", err, output)
 	}
 }
@@ -313,15 +380,30 @@ func TestSetupWorkspaceFetchesForkTargetObjectWithoutChangingWorkspaceState(t *t
 	}
 }
 
+type guidanceSourceRecord struct {
+	Repository string `json:"repository"`
+	Path       string `json:"path"`
+}
+
+type orientationGuidance struct {
+	Source   guidanceSourceRecord `json:"source"`
+	Location string               `json:"location"`
+	Origin   string               `json:"origin"`
+}
+
+type orientationMisconfiguration struct {
+	Kind   string               `json:"kind"`
+	Source guidanceSourceRecord `json:"source"`
+	Reason string               `json:"reason"`
+}
+
 type orientationState struct {
-	Repository  string `json:"repository"`
-	Head        string `json:"head"`
-	Grounding   string `json:"grounding"`
-	Annexe      string `json:"annexe"`
-	Guidance    string `json:"guidance"`
-	PullRequest string `json:"pullRequest"`
-	Reason      string `json:"reason"`
-	Source      struct {
+	Repository        string                        `json:"repository"`
+	Head              string                        `json:"head"`
+	Guidance          []orientationGuidance         `json:"guidance"`
+	Misconfigurations []orientationMisconfiguration `json:"misconfigurations"`
+	PullRequest       string                        `json:"pullRequest"`
+	Source            struct {
 		Owner string `json:"owner"`
 		Repo  string `json:"repo"`
 		PR    string `json:"pr"`
@@ -342,12 +424,15 @@ func readOrientation(t *testing.T, path string) orientationState {
 	return state
 }
 
-func newSetupForge(t *testing.T, head, repository, annexe string) *httptest.Server {
+// newSetupForge serves the fixture pull request and, when secondary is a
+// clone URL, the secondary repository owner/repository-plans that configured
+// guidance sources may name.
+func newSetupForge(t *testing.T, head, repository, secondary string) *httptest.Server {
 	t.Helper()
-	return newSetupForgeForTarget(t, head, repository, head, repository, annexe)
+	return newSetupForgeForTarget(t, head, repository, head, repository, secondary)
 }
 
-func newSetupForgeForTarget(t *testing.T, head, repository, target, targetRepository, annexe string) *httptest.Server {
+func newSetupForgeForTarget(t *testing.T, head, repository, target, targetRepository, secondary string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "token forge-token" {
@@ -364,13 +449,13 @@ func newSetupForgeForTarget(t *testing.T, head, repository, target, targetReposi
 				"head":{"sha":%q,"ref":"feature","repo":{"clone_url":%q,"full_name":"owner/repository"}},
 				"base":{"sha":%q,"ref":"main","repo":{"clone_url":%q,"full_name":"owner/repository"}}
 			}`, head, repository, target, targetRepository)
-		case "/api/v1/repos/owner/repository-Annexe":
-			if annexe == "" {
+		case "/api/v1/repos/owner/repository-plans":
+			if secondary == "" {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"clone_url":%q}`, annexe)
+			_, _ = fmt.Fprintf(w, `{"clone_url":%q}`, secondary)
 		default:
 			http.NotFound(w, r)
 		}
@@ -382,6 +467,19 @@ func newSetupForgeForTarget(t *testing.T, head, repository, target, targetReposi
 func runSetupWorkspace(t *testing.T, apiBase, runDir, workspace, orientation, head string) {
 	t.Helper()
 	runSetupWorkspaceWithTarget(t, apiBase, runDir, workspace, orientation, head, head)
+}
+
+// secondaryGuidance is the configured source most tests use: README.md in
+// the secondary repository the fixture forge serves.
+const secondaryGuidance = `[{"repository":"owner/repository-plans","path":"README.md"}]`
+
+func runSetupWorkspaceWithGuidance(t *testing.T, apiBase, runDir, workspace, orientation, head, sources string) {
+	t.Helper()
+	cmd := setupWorkspaceCommand(t, apiBase, runDir, workspace, orientation, head)
+	cmd.Env = append(cmd.Env, "MINOS_GUIDANCE_SOURCES="+sources)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("setup-workspace failed: %v\n%s", err, output)
+	}
 }
 
 func runSetupWorkspaceWithTarget(t *testing.T, apiBase, runDir, workspace, orientation, head, target string) {
@@ -417,6 +515,7 @@ func setupWorkspaceCommandWithTarget(t *testing.T, apiBase, runDir, workspace, o
 		"MINOS_RUN_DIR="+runDir,
 		"MINOS_WORKSPACE="+workspace,
 		"MINOS_ORIENTATION="+orientation,
+		"MINOS_GUIDANCE_SOURCES=[]",
 	)
 	return cmd
 }
@@ -436,6 +535,9 @@ func createGitRepository(t *testing.T, name, contents string) (string, string) {
 	runGit(t, repository, "init", "-b", "main")
 	runGit(t, repository, "config", "user.name", "Fixture")
 	runGit(t, repository, "config", "user.email", "fixture@example.invalid")
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(repository, name)), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(repository, name), []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}

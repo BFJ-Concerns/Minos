@@ -3,6 +3,7 @@ package shell
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -117,7 +118,7 @@ func TestLoadRepoConfigDecodesWorkInProgressBranchPrefixes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	repos, err := LoadRepoConfigs(root)
+	repos, err := LoadRepoConfigs(ServiceConfig{Root: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +136,7 @@ func TestLoadRepoConfigRejectsEmptyWorkInProgressBranchPrefix(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := LoadRepoConfigs(root)
+	_, err := LoadRepoConfigs(ServiceConfig{Root: root})
 	if err == nil || !strings.Contains(err.Error(), "work-in-progress-branch-prefixes") {
 		t.Fatalf("error = %v, want empty prefix validation", err)
 	}
@@ -163,7 +164,7 @@ func TestLoadRepoConfigDefaultsReviewThreshold(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			repos, err := LoadRepoConfigs(root)
+			repos, err := LoadRepoConfigs(ServiceConfig{Root: root})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -194,10 +195,160 @@ func TestLoadRepoConfigValidatesReviewThreshold(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "repos", "repo.toml"), []byte(contents), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			_, err := LoadRepoConfigs(root)
+			_, err := LoadRepoConfigs(ServiceConfig{Root: root})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+const testRepositoryDefaults = `[repositories]
+work-in-progress-branch-prefixes = ["structural/"]
+[repositories.review]
+threshold = "Medium"
+[[repositories.guidance-sources]]
+path = "docs/intent.md"
+[repositories.filing-destination]
+kind = "file"
+path = "ISSUES.md"
+`
+
+func writeRepoConfig(t *testing.T, root, name, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "repos", name), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// repoConfig composes a repository file: the identity keys, the test's own
+// knob text (top-level keys before any table), then the adaptation table.
+func repoConfig(knobs string) string {
+	return "forge = \"local\"\nowner = \"owner\"\nrepo = \"repo\"\n" + knobs + "\n[adaptation]\nrun-body = \"/tmp/run-body\"\n"
+}
+
+func loadServiceConfigWith(t *testing.T, root, extra string) ServiceConfig {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(testServiceConfig+extra), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServiceConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, testRepositoryDefaults)
+	writeRepoConfig(t, root, "inherits.toml", repoConfig(""))
+	writeRepoConfig(t, root, "overrides.toml", repoConfig(
+		"work-in-progress-branch-prefixes = []\n"+
+			"[review]\nthreshold = \"Low\"\n"+
+			"[[guidance-sources]]\nrepository = \"owner/repo-plans\"\npath = \"README.md\"\n"+
+			"[[guidance-sources]]\npath = \"AGENTS.md\"\n"+
+			"[filing-destination]\nkind = \"none\"\n"))
+	repos, err := LoadRepoConfigs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]RepoConfig{}
+	for _, repo := range repos {
+		byPath[filepath.Base(repo.Path)] = repo
+	}
+
+	inherits := byPath["inherits.toml"]
+	if inherits.Review.Threshold != "Medium" ||
+		!slices.Equal(inherits.WorkInProgressBranchPrefixes, []string{"structural/"}) ||
+		!slices.Equal(inherits.GuidanceSources, []GuidanceSource{{Path: "docs/intent.md"}}) ||
+		inherits.FilingDestination != (FilingDestination{Kind: FilingKindFile, Path: "ISSUES.md"}) {
+		t.Fatalf("repository without its own values = %+v, want the service defaults", inherits.RepositoryKnobs)
+	}
+
+	overrides := byPath["overrides.toml"]
+	if overrides.Review.Threshold != "Low" ||
+		len(overrides.WorkInProgressBranchPrefixes) != 0 ||
+		!slices.Equal(overrides.GuidanceSources, []GuidanceSource{{Repository: "owner/repo-plans", Path: "README.md"}, {Path: "AGENTS.md"}}) ||
+		overrides.FilingDestination != (FilingDestination{Kind: FilingKindNone}) {
+		t.Fatalf("repository with its own values = %+v, want each override to replace the service value whole", overrides.RepositoryKnobs)
+	}
+}
+
+func TestRepositoryKnobsUnsetAtBothLevelsTakeTheShippedDefaults(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "")
+	writeRepoConfig(t, root, "bare.toml", repoConfig(""))
+	repos, err := LoadRepoConfigs(cfg)
+	if err != nil || len(repos) != 1 {
+		t.Fatalf("repos = %+v, error = %v", repos, err)
+	}
+	knobs := repos[0].RepositoryKnobs
+	if knobs.Review.Threshold != "High" || len(knobs.GuidanceSources) != 0 || len(knobs.WorkInProgressBranchPrefixes) != 0 ||
+		knobs.FilingDestination != (FilingDestination{Kind: FilingKindPullRequestComment}) {
+		t.Fatalf("knobs = %+v, want High threshold, checked-in guidance, no prefixes and pull-request-comment filing", knobs)
+	}
+}
+
+func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		toml string
+		want string
+	}{
+		{name: "guidance source without a path", toml: "[[guidance-sources]]\nrepository = \"owner/plans\"\n", want: "guidance-sources[0].path is required"},
+		{name: "guidance source leaving the repository", toml: "[[guidance-sources]]\npath = \"../secrets.md\"\n", want: "cannot leave the repository"},
+		{name: "guidance source with an absolute path", toml: "[[guidance-sources]]\npath = \"/etc/passwd\"\n", want: "must be relative"},
+		{name: "guidance repository that is not owner/name", toml: "[[guidance-sources]]\nrepository = \"https://forge/x/y\"\npath = \"a.md\"\n", want: "guidance-sources[0].repository must be owner/name"},
+		{name: "unknown filing kind", toml: "[filing-destination]\nkind = \"email\"\n", want: "filing-destination.kind must be one of file, issue, pull-request-comment, none"},
+		{name: "file kind without a path", toml: "[filing-destination]\nkind = \"file\"\n", want: "filing-destination.path is required"},
+		{name: "issue kind without a repository", toml: "[filing-destination]\nkind = \"issue\"\n", want: "filing-destination.repository must name"},
+		{name: "issue kind with a path", toml: "[filing-destination]\nkind = \"issue\"\nrepository = \"owner/plans\"\npath = \"x\"\n", want: "filing-destination.path does not apply"},
+		{name: "none kind with a repository", toml: "[filing-destination]\nkind = \"none\"\nrepository = \"owner/plans\"\n", want: "do not apply to the none kind"},
+		{name: "comment kind with a path", toml: "[filing-destination]\nkind = \"pull-request-comment\"\npath = \"x\"\n", want: "do not apply to the pull-request-comment kind"},
+	} {
+		t.Run("repository: "+test.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := loadServiceConfigWith(t, root, "")
+			writeRepoConfig(t, root, "repo.toml", repoConfig(test.toml))
+			_, err := LoadRepoConfigs(cfg)
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "repo.toml") {
+				t.Fatalf("error = %v, want %q naming the repository file", err, test.want)
+			}
+		})
+		t.Run("service: "+test.name, func(t *testing.T) {
+			root := t.TempDir()
+			serviceLevel := strings.ReplaceAll(test.toml, "[[guidance-sources]]", "[[repositories.guidance-sources]]")
+			serviceLevel = strings.ReplaceAll(serviceLevel, "[filing-destination]", "[repositories.filing-destination]")
+			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(testServiceConfig+serviceLevel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadServiceConfig(root)
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "service.toml: repositories") {
+				t.Fatalf("error = %v, want %q naming the service level", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadServiceConfigDefaultsCommitIdentityToTheBotLogin(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "")
+	if cfg.Service.CommitAuthorName != "Minos" || cfg.Service.CommitAuthorEmail != "Minos@minos.invalid" {
+		t.Fatalf("identity = %q <%q>, want the bot login and a reserved-domain address", cfg.Service.CommitAuthorName, cfg.Service.CommitAuthorEmail)
+	}
+	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(strings.Replace(testServiceConfig,
+		"bot-login = \"Minos\"\n", "bot-login = \"Minos\"\ncommit-author-name = \"Review Bot\"\ncommit-author-email = \"bot@example.org\"\n", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := LoadServiceConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Service.CommitAuthorName != "Review Bot" || explicit.Service.CommitAuthorEmail != "bot@example.org" {
+		t.Fatalf("identity = %q <%q>, want the configured values", explicit.Service.CommitAuthorName, explicit.Service.CommitAuthorEmail)
 	}
 }
