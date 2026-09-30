@@ -728,7 +728,7 @@ func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
 		t,
 		fixture.failureLog,
 		"stage=lead-supervision",
-		"cause=claude lead produced no run activity for 0 seconds (last state: done)",
+		"cause=claude lead produced no run activity for 0 seconds (last state: unknown)",
 	)
 	fixture.assertProcessesStopped(t)
 }

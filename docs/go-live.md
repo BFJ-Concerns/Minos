@@ -119,7 +119,7 @@ so no repository toolchains are needed.
      `ANTHROPIC_AUTH_TOKEN`; a missing base URL or missing, unreadable or empty
      credential file stops the run before Claude launches.
 
-   Provision both seed directories when the disposable box is launched. Each
+   Provision the seed directory of every engine the deployment runs when the disposable box is launched — the lead's engine at least. Each
    run copies their contents into its private `HOME`: Claude state goes to
    `$HOME/.claude` and Codex state to `$HOME/.codex`. `run-body` then copies
    the vendored skill tree named by `MINOS_SKILLS_DIR` into both homes —

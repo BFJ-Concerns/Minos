@@ -289,8 +289,10 @@ write, matching the target rule above.)
    running; when it does, keep waiting on that same process — poll it
    again, as many times as it takes — until it exits. Never launch the
    stage a second time because the first yielded, never write a wait loop
-   with `sleep`, and never move on while the process is alive. If you lose
-   the process, `"${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" await NAME`
+   with `sleep`, and never move on while the process is alive. If your
+   tool can no longer report on the process — its handle is gone before
+   you saw it exit — run
+   `"${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" await NAME`, which
    waits on the stage's flag in the foreground; wait on it the same way.
    The flag and result files carry exactly the meaning described in the
    Claude branch: `NAME-result.done` is the one completion signal, and

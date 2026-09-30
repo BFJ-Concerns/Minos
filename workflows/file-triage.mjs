@@ -7,6 +7,8 @@
 // never creates a pull-request review or changes the verdict.
 
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import { deliverFilingEntries, validFilingDestination } from "./filing-destination.mjs";
 
 const argv = process.argv.slice(2);
@@ -56,5 +58,11 @@ const outcome = await deliverFilingEntries({
   credentialFile,
   runDir: requiredEnvironment("MINOS_RUN_DIR"),
   identity: { name: requiredEnvironment("MINOS_COMMIT_AUTHOR_NAME"), email: requiredEnvironment("MINOS_COMMIT_AUTHOR_EMAIL") },
+  // The reviewed repository's own clone carries the workspace's push guard:
+  // the pull-request branch is protected wherever Minos holds a clone.
+  protection: {
+    headBranch: requiredEnvironment("MINOS_HEAD_BRANCH"),
+    pushGuard: join(dirname(requiredEnvironment("MINOS_SETUP_WORKSPACE")), "pre-push-guard"),
+  },
 });
 process.stdout.write(`${JSON.stringify(outcome)}\n`);

@@ -35,7 +35,7 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 	if got := strings.TrimSpace(string(protectedRef)); got != "refs/heads/feature" {
 		t.Fatalf("protected ref = %q, want pull-request branch", got)
 	}
-	clonePath := filepath.Join(runDir, "guidance", "owner--repository-plans")
+	clonePath := filepath.Join(runDir, "guidance", "owner", "repository-plans")
 	assertContainsFile(t, filepath.Join(clonePath, "README.md"), "# Commission")
 	// The secondary clone is read-only: no push from a run can reach it.
 	if output, err := exec.Command("git", "-C", clonePath, "push", "origin", "HEAD:refs/heads/from-a-run").CombinedOutput(); err == nil {
@@ -73,7 +73,7 @@ func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
 	runSetupWorkspaceWithGuidance(t, server.URL, runDir, workspace, orientation, head, secondaryGuidance)
-	clonePath := filepath.Join(runDir, "guidance", "owner--repository-plans")
+	clonePath := filepath.Join(runDir, "guidance", "owner", "repository-plans")
 	if err := os.WriteFile(filepath.Join(clonePath, "resumed-marker"), []byte("kept\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

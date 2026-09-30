@@ -140,7 +140,7 @@ function normalisePlan(plan) {
     return {
       ...unit,
       kind: "planned",
-      family: "gpt",
+      family: routing.proposer.engine,
       roleBrief: ROLE_BRIEFS[unit.specialistType],
       label: `specialist-${index + 1}-${unit.specialistType}-${routing.proposer.engine}`,
     };

@@ -44,6 +44,7 @@ test("routing that cannot be honoured is refused before any dispatch could read 
     [{ provisioned: both, configured: { verifier: "claude" } }, /routing\.verifier must be an object/],
     [{ provisioned: both, configured: { verifier: { engine: "opencode" } } }, /routing\.verifier\.engine must be one of claude, codex/],
     [{ provisioned: both, configured: { verifier: { model: "" } } }, /routing\.verifier\.model must be a non-empty string/],
+    [{ provisioned: both, configured: { verifier: { effort: "max" } } }, /routing\.verifier\.effort must be one of minimal, low, medium, high, xhigh/],
     [{ provisioned: both, configured: { verifier: { model: "gpt-6-astra" } } }, /routing\.verifier\.model needs routing\.verifier\.engine/],
     [{ provisioned: both, configured: { verifier: { temperature: 1 } } }, /routing\.verifier\.temperature is not a routing field/],
     [{ provisioned: ["claude"], configured: { verifier: { engine: "codex" } } }, /names codex, which this deployment has not provisioned/],

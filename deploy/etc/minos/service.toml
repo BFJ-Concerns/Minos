@@ -55,7 +55,7 @@ signature-header = "X-Forgejo-Signature"
 [runs]
 dir = "/var/lib/minos/runs"
 failure-log = "/var/lib/minos/failures.log"
-failures-repo = "/var/lib/minos/Minos-Annexe"
+failures-repo = "/var/lib/minos/failure-ledger"
 failures-credential-file = "/etc/minos/forgejo.token"
 archive-command = "/opt/minos/run-body/archive-run"
 max-concurrent = 6

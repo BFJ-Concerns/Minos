@@ -17,7 +17,7 @@ const argumentError = !target || !head || rest.length > 1;
 if (argumentError) {
   process.stderr.write("usage: node workflows/review-scope-inputs.mjs TARGET HEAD [OCCASION]\n");
   process.exitCode = 2;
-} else {
+} else try {
   const workflowRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const orientationPath = process.env.MINOS_ORIENTATION;
   if (!orientationPath) throw new Error("MINOS_ORIENTATION is required");
@@ -98,4 +98,9 @@ if (argumentError) {
   };
 
   process.stdout.write(JSON.stringify(workflowInput) + "\n");
+} catch (error) {
+  // Every input failure is a usage error: the lifecycle reads exit 2 as
+  // "the input could not be built", never as a crash to diagnose.
+  process.stderr.write(`${error.message}\n`);
+  process.exitCode = 2;
 }

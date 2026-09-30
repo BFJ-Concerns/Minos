@@ -6,7 +6,7 @@
 // delivery stays in the run record and never falls back to another surface.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
@@ -19,23 +19,25 @@ export const FILING_KINDS = ["file", "issue", "pull-request-comment", "none"];
 
 // One entry is filed once: a repeat run over a later head that raises the
 // same defect at the same site finds its marker already at the destination
-// and skips it, so a destination never fills with one defect per push.
-export function filingMarker(entry) {
+// and skips it, so a destination never fills with one defect per push. The
+// reviewed repository is part of the identity because one destination may
+// serve several repositories (C49), whose sites are only relative paths.
+export function filingMarker(entry, reviewedRepository) {
   const title = String(entry.title || "").trim().toLowerCase().replace(/\s+/g, " ");
   const identity = entry.kind === "review-brief-misconfiguration"
-    ? [entry.kind, entry.brief, title]
-    : [entry.kind, entry.path, entry.line, title];
+    ? [entry.kind, reviewedRepository, entry.brief, title]
+    : [entry.kind, reviewedRepository, entry.path, entry.line, title];
   return `<!-- minos:${Buffer.from(JSON.stringify(identity)).toString("base64url")} -->`;
 }
 
 // Appends the entries missing from a file's text; returns the new text and
 // how many were added.
-export function appendFilingEntries(contents, entries, attribution) {
+export function appendFilingEntries(contents, entries, attribution, reviewedRepository) {
   let text = contents.length === 0 ? "# Issues\n" : contents;
   if (!text.endsWith("\n")) text += "\n";
   let written = 0;
   for (const entry of entries) {
-    const marker = filingMarker(entry);
+    const marker = filingMarker(entry, reviewedRepository);
     if (text.includes(marker)) continue;
     text += `\n${issueLogEntry(entry, attribution)} ${marker}\n`;
     written += 1;
@@ -43,13 +45,24 @@ export function appendFilingEntries(contents, entries, attribution) {
   return { text, written };
 }
 
+// Mirrors the loader's per-kind rules (internal/shell/config.go): the
+// environment is the contract, so a value the loader would refuse is refused
+// here too rather than normalised.
 export function validFilingDestination(destination) {
   if (!destination || typeof destination !== "object" || !FILING_KINDS.includes(destination.kind)) return false;
+  for (const key of Object.keys(destination))
+    if (!["kind", "repository", "path"].includes(key)) return false;
   for (const key of ["repository", "path"])
     if (destination[key] !== undefined && (typeof destination[key] !== "string" || destination[key] === "")) return false;
-  if (destination.kind === "file" && !destination.path) return false;
-  if (destination.kind === "issue" && !destination.repository) return false;
-  return true;
+  const repositoryNamed = destination.repository !== undefined;
+  if (repositoryNamed && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(destination.repository)) return false;
+  const pathNamed = destination.path !== undefined;
+  if (pathNamed && (destination.path.startsWith("/") || destination.path.split("/").includes(".."))) return false;
+  switch (destination.kind) {
+    case "file": return pathNamed;
+    case "issue": return repositoryNamed && !pathNamed;
+    default: return !repositoryNamed && !pathNamed;
+  }
 }
 
 function readToken(credentialFile) {
@@ -118,17 +131,26 @@ function lookupRepository(apiBase, repository, token) {
 }
 
 // A fresh single-branch clone of the destination's default branch under the
-// run directory: a separate write path, never a guidance clone.
-function cloneForFiling(runDir, repository, target, env) {
-  const directory = join(runDir, "filing", repository.replace("/", "--"));
+// run directory (guidance/<owner>/<name>: nested, so names never collide): a
+// separate write path, never a guidance clone. When the destination is the
+// reviewed repository the clone carries the same pre-push guard as the
+// workspace, so a push can never reach the pull-request branch (C33).
+function cloneForFiling(runDir, repository, target, env, protection) {
+  const directory = join(runDir, "filing", ...repository.split("/"));
   rmSync(directory, { recursive: true, force: true });
-  mkdirSync(join(runDir, "filing"), { recursive: true });
+  mkdirSync(join(directory, ".."), { recursive: true });
   execFileSync("git", ["clone", "--quiet", "--single-branch", "--branch", target.branch, target.cloneURL, directory],
     { env, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
+  if (protection) {
+    const commonDir = git(directory, env, "rev-parse", "--path-format=absolute", "--git-common-dir").trim();
+    writeFileSync(join(commonDir, "minos-protected-ref"), `refs/heads/${protection.headBranch}\n`, { mode: 0o600 });
+    mkdirSync(join(commonDir, "hooks"), { recursive: true });
+    copyFileSync(protection.pushGuard, join(commonDir, "hooks", "pre-push"));
+  }
   return directory;
 }
 
-async function deliverToFile({ destination, entries, attribution, reviewedRepository, apiBase, token, runDir, identity }) {
+async function deliverToFile({ destination, entries, attribution, reviewedRepository, apiBase, token, runDir, identity, protection }) {
   const repository = destination.repository || reviewedRepository;
   const location = `${repository}:${destination.path}`;
   let lastFailure = "";
@@ -136,10 +158,13 @@ async function deliverToFile({ destination, entries, attribution, reviewedReposi
     try {
       const env = gitEnvironment(token);
       const target = await lookupRepository(apiBase, repository, token);
-      const clone = cloneForFiling(runDir, repository, target, env);
+      const reviewed = repository === reviewedRepository;
+      if (reviewed && protection && target.branch === protection.headBranch)
+        return { kind: "file", outcome: "unfiled", reason: `filing to ${location} refused: the repository's default branch ${target.branch} is the pull-request branch, which Minos never writes` };
+      const clone = cloneForFiling(runDir, repository, target, env, reviewed ? protection : null);
       const filePath = join(clone, destination.path);
       const contents = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
-      const { text, written } = appendFilingEntries(contents, entries, attribution);
+      const { text, written } = appendFilingEntries(contents, entries, attribution, reviewedRepository);
       if (written === 0) return { kind: "file", outcome: "filed", written: 0, location };
       mkdirSync(join(filePath, ".."), { recursive: true });
       writeFileSync(filePath, text);
@@ -157,11 +182,13 @@ async function deliverToFile({ destination, entries, attribution, reviewedReposi
 
 // Delivers `entries` to `destination`. `source` attributes the material to
 // the run's pull request; `reviewedRepository` is the owner/name the file
-// kind writes to when no repository is named; `identity` signs the commit.
-// Every outcome carries the kind and one of: filed, nothing-to-file,
-// discarded (the none kind), unfiled (with the reason).
+// kind writes to when no repository is named; `identity` signs the commit;
+// `protection` names the pull-request branch and the pre-push guard script
+// that a clone of the reviewed repository must carry. Every outcome carries
+// the kind and one of: filed, nothing-to-file, discarded (the none kind),
+// unfiled (with the reason).
 export async function deliverFilingEntries({
-  destination, entries, source, reviewedRepository, apiBase, credentialFile = null, runDir, identity,
+  destination, entries, source, reviewedRepository, apiBase, credentialFile = null, runDir, identity, protection = null,
 }) {
   if (!validFilingDestination(destination)) throw new Error("filing destination is malformed");
   entries = entries.filter((entry) => entry.kind !== "out-of-scope-observation");
@@ -180,7 +207,10 @@ export async function deliverFilingEntries({
       return { kind, outcome: "unfiled", reason: describe(error) };
     }
   }
-  if (kind === "file")
-    return deliverToFile({ destination, entries, attribution, reviewedRepository, apiBase, token, runDir, identity });
+  if (kind === "file") {
+    if ((!destination.repository || destination.repository === reviewedRepository) && !protection)
+      return { kind, outcome: "unfiled", reason: "filing to the reviewed repository needs the pull-request branch and the push guard (protection)" };
+    return deliverToFile({ destination, entries, attribution, reviewedRepository, apiBase, token, runDir, identity, protection });
+  }
   return { kind, outcome: "unfiled", reason: `the ${kind} filing kind is not implemented in this build; the entries stay in the run record` };
 }
