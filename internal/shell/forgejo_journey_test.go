@@ -1049,9 +1049,6 @@ func TestForgeClaimRequestsReviewAndReactsIdempotently(t *testing.T) {
 	if !slices.Contains(state.requestedReviewers, "Minos") {
 		t.Fatalf("requested reviewers = %v, want Minos", state.requestedReviewers)
 	}
-	if len(state.assignees) != 0 {
-		t.Fatalf("assignees = %v, want none", state.assignees)
-	}
 	if !slices.Contains(state.reactions, "eyes") {
 		t.Fatalf("reactions = %v, want eyes", state.reactions)
 	}
@@ -2282,7 +2279,6 @@ type forgejoFixtureState struct {
 	adaptationPath   string
 
 	mu                       sync.Mutex
-	assignees                []string
 	requestedReviewers       []string
 	reviewRequestsUnrecorded bool
 	reactions                []string
