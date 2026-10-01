@@ -459,7 +459,7 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	environment["MINOS_TEST_PENDING_STATE"] = "done"
 	environment["MINOS_TEST_WAIT_POLLS"] = "2"
 	environment["MINOS_TEST_TERMINAL_STATE"] = "failed"
-	environment["MINOS_CLAUDE_POLL_SECONDS"] = "0"
+	environment["MINOS_LEAD_POLL_SECONDS"] = "0"
 	fixture.run(t, environment)
 
 	attempts, err := os.ReadFile(fixture.record + ".attempts")

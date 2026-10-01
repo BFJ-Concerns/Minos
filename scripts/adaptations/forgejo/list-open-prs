@@ -24,11 +24,7 @@ while :; do
       ("REPO=" + "'"$repo"'"),
       ("PR=" + ((.number // .index) | tostring)),
       ("HEAD_SHA=" + .head.sha),
-      ("BASE_REF=" + .base.ref),
-      ("AUTHOR=" + (.user.login // .user.username // "")),
-      "ACTOR=",
-      ("DRAFT=" + ((.draft // false) | tostring)),
-      ("LABELS=" + ([.labels[]?.name] | join(",")))
+      ("BASE_REF=" + .base.ref)
     ] | .[], ""'
   page=$((page + 1))
 done

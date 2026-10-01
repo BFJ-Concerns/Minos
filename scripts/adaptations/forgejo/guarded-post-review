@@ -36,7 +36,7 @@ review_presence() {
   page=1
   while :; do
     current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=50&page=${page}" 2>/dev/null)" || return 2
-    [ "$current" != "$previous" ] || break
+    ! repeats_previous_page "$current" "$previous" || break
     [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
     reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')"
     previous="$current"

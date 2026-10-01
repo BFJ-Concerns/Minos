@@ -36,7 +36,7 @@ while :; do
     dependency_error='forge returned an invalid dependencies response'
     break
   fi
-  [ "$current" != "$previous" ] || break
+  ! repeats_previous_page "$current" "$previous" || break
   [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
   dependencies="$(jq -cn --argjson all "$dependencies" --argjson page "$current" '$all + $page')"
   previous="$current"
@@ -51,7 +51,7 @@ previous=''
 page=1
 while :; do
   current="$(api GET "/api/v1/repos/${owner}/${repo}/commits/$(printf '%s' "$pr_json" | jq -r '.head.sha')/statuses?limit=50&page=${page}")"
-  [ "$current" != "$previous" ] || break
+  ! repeats_previous_page "$current" "$previous" || break
   [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
   statuses="$(jq -cn --argjson all "$statuses" --argjson page "$current" '$all + $page')"
   previous="$current"
@@ -63,7 +63,7 @@ previous=''
 page=1
 while :; do
   current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=50&page=${page}")"
-  [ "$current" != "$previous" ] || break
+  ! repeats_previous_page "$current" "$previous" || break
   [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
   reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')"
   previous="$current"
@@ -108,16 +108,14 @@ jq -nc \
     mergeable: ($pr.mergeable // false),
     head_sha: $pr.head.sha,
     head_branch: $head_branch,
-    head_repository: ($pr.head.repo.full_name // ""),
     target_sha: ($base.commit.id // $base.commit.sha // ""),
     target_branch: $pr.base.ref,
     target_repository: $pr.base.repo.full_name,
-    default_branch: $repository.default_branch,
     source_protected: $source_protected,
     can_merge: ($base.user_can_merge // false),
     statuses: [$statuses[] |
       if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
-        {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // ""), protection_satisfied:false}
+        {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // "")}
       end] | sort_by(.id) | reverse,
     labels: [($pr.labels // [])[] | .name] | sort,
     reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // "")}],

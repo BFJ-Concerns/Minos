@@ -11,11 +11,11 @@ previous=''
 page=1
 while :; do
   current="$(api GET "/api/v1/repos/${owner}/${repo}/commits/${sha}/statuses?limit=50&page=${page}")"
-  [ "$current" != "$previous" ] || break
+  ! repeats_previous_page "$current" "$previous" || break
   [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
   statuses="$(jq -cn --argjson all "$statuses" --argjson page "$current" '$all + $page')"
   previous="$current"
   page=$((page + 1))
 done
 
-printf '%s' "$statuses" | jq --arg provider forgejo '[.[] | {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // ""), protection_satisfied:false}] | sort_by(.id) | reverse'
+printf '%s' "$statuses" | jq --arg provider forgejo '[.[] | {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // "")}] | sort_by(.id) | reverse'

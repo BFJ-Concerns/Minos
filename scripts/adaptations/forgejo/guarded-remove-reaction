@@ -10,25 +10,8 @@ if [ -z "$content" ]; then
   exit 0
 fi
 
-reactions_path="/api/v1/repos/${owner}/${repo}/issues/${pr}/reactions"
-reaction_present() {
-  page=1
-  previous=''
-  while :; do
-    current="$(api GET "${reactions_path}?limit=50&page=${page}" 2>/dev/null)" || return 2
-    [ "$current" != "$previous" ] || return 1
-    if printf '%s' "$current" | jq -e --arg content "$content" --arg login "$login" '
-      any(.[]?; .content == $content and (.user.login // .user.username // "") == $login)
-    ' >/dev/null; then
-      return 0
-    fi
-    [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || return 1
-    previous="$current"
-    page=$((page + 1))
-  done
-}
 
-if reaction_present; then
+if reaction_present "$owner" "$repo" "$pr" "$content" "$login"; then
   :
 else
   presence=$?
@@ -57,10 +40,11 @@ else
   fi
 fi
 
+reactions_path="/api/v1/repos/${owner}/${repo}/issues/${pr}/reactions"
 payload="$(jq -nc --arg content "$content" '{content:$content}')"
 api DELETE "$reactions_path" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
 
-if reaction_present; then
+if reaction_present "$owner" "$repo" "$pr" "$content" "$login"; then
   write_result uncertain "reaction removal could not be discovered"
 else
   presence=$?

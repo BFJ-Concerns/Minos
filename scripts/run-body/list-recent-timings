@@ -22,16 +22,9 @@ fail() {
 }
 
 [ -n "$cutoff" ] || fail "no cutoff given"
-[ -r "$config" ] || fail "archive configuration is unreadable"
-
-set -a
-# shellcheck source=/dev/null
-. "$config" 2>/dev/null || fail "archive configuration could not be read"
-set +a
-
-[ -n "${MINOS_ARCHIVE_HOST:-}" ] || fail "no archive host configured"
-[ -r "${MINOS_ARCHIVE_IDENTITY_FILE:-}" ] || fail "archive identity is unreadable"
-[ -r "${MINOS_ARCHIVE_KNOWN_HOSTS:-}" ] || fail "archive known-hosts file is unreadable"
+# shellcheck source=scripts/run-body/archive-transport.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-transport.sh"
+archive_configuration_load "$config" || fail "$archive_configuration_problem"
 
 # The cutoff and limit travel as words of the receiver's request, which
 # admits alphanumerics only; anything else is refused here before a call.
@@ -39,8 +32,6 @@ case "$cutoff$limit" in
   *[!0-9A-Za-z]*) fail "cutoff and limit must be alphanumeric" ;;
 esac
 
-# shellcheck source=scripts/run-body/archive-transport.sh
-. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-transport.sh"
 
 # A listing is short and repeats: the operator surface asks again every few
 # minutes. Persistence outlasts that gap, so a steady caller holds one session

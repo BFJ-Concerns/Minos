@@ -61,6 +61,27 @@ write_result() {
     '{outcome:$outcome} + (if $reason == "" then {} else {reason:$reason} end)'
 }
 
+# Whether the login's reaction with this content is on the pull request:
+# returns 0 present, 1 absent, 2 when the reactions could not be read. Pages
+# until an empty page, or until the forge repeats the previous page.
+reaction_present() {
+  reaction_path="/api/v1/repos/$1/$2/issues/$3/reactions"
+  reaction_page=1
+  reaction_previous=''
+  while :; do
+    reaction_current="$(api GET "${reaction_path}?limit=50&page=${reaction_page}" 2>/dev/null)" || return 2
+    ! repeats_previous_page "$reaction_current" "$reaction_previous" || return 1
+    if printf '%s' "$reaction_current" | jq -e --arg content "$4" --arg login "$5" '
+      any(.[]?; .content == $content and (.user.login // .user.username // "") == $login)
+    ' >/dev/null; then
+      return 0
+    fi
+    [ "$(printf '%s' "$reaction_current" | jq 'length')" -gt 0 ] || return 1
+    reaction_previous="$reaction_current"
+    reaction_page=$((reaction_page + 1))
+  done
+}
+
 urlencode() {
   jq -rn --arg value "$1" '$value | @uri'
 }
