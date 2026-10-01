@@ -1162,7 +1162,7 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nexit 3\n")
-	installArchiveReceiverSSH(t, bin, t.TempDir())
+	installArchiveReceiverSSH(t, bin, destination)
 	identity := filepath.Join(fixture.root, "archive-identity")
 	knownHosts := filepath.Join(fixture.root, "archive-known-hosts")
 	for _, path := range []string{identity, knownHosts} {

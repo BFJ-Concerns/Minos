@@ -2954,9 +2954,16 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 // both the pull request and the issue labels endpoint return. The caller
 // holds the fixture lock.
 func (s *forgejoFixtureState) pullRequestLabels() []map[string]any {
-	raw, _ := json.Marshal(s.pullRequest["labels"])
+	raw, err := json.Marshal(s.pullRequest["labels"])
+	if err != nil {
+		s.t.Errorf("encode fixture labels: %v", err)
+		return nil
+	}
 	var labels []map[string]any
-	_ = json.Unmarshal(raw, &labels)
+	if err := json.Unmarshal(raw, &labels); err != nil {
+		s.t.Errorf("decode fixture labels: %v", err)
+		return nil
+	}
 	if labels == nil {
 		labels = []map[string]any{}
 	}

@@ -39,7 +39,9 @@ func TestSweepRunResidueRemovesDeadReadOnlyTreeAndKeepsLiveUnit(t *testing.T) {
 		}
 	}
 
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(dead); !os.IsNotExist(err) {
 		t.Fatalf("dead run still exists: %v", err)
 	}
@@ -64,7 +66,9 @@ func TestSweepRunResidueProtectsOnlyDirectoryNamedByValidHandoff(t *testing.T) {
 	}
 	writeTestHandoff(t, cfg, facts, preserved, facts.HeadSHA)
 
-	_ = sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts})
+	if err := sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(preserved); err != nil {
 		t.Fatalf("valid handoff directory was removed: %v", err)
 	}
@@ -86,7 +90,9 @@ func TestSweepRunResidueDoesNotProtectInvalidHandoff(t *testing.T) {
 	}
 	writeTestHandoff(t, cfg, facts, runDir, "stale-head")
 
-	_ = sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts})
+	if err := sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
 		t.Fatalf("invalid handoff protected residue: %v", err)
 	}
@@ -387,7 +393,9 @@ func TestSweepRunResidueRechecksLivenessBeforeDeletion(t *testing.T) {
 	cfg := scratchTestConfig(t)
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr13-new")
 	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); err != nil {
 		t.Fatalf("run that became live was removed: %v", err)
 	}
@@ -401,7 +409,9 @@ func TestSweepRunResiduePreservesOwnedMidSpawnDirectory(t *testing.T) {
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr14-starting")
 	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
 	writeTestFile(t, filepath.Join(runDir, runOwnerMarker), "")
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); err != nil {
 		t.Fatalf("owned mid-spawn directory was removed: %v", err)
 	}
@@ -456,7 +466,9 @@ func TestSweepRunResidueDoesNotAppendEmptyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	after, err := os.ReadFile(failuresPath)
 	if err != nil {
 		t.Fatal(err)

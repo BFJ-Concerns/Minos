@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -675,17 +676,29 @@ func captureStderr(t *testing.T, action func()) string {
 		t.Fatal(err)
 	}
 	original := os.Stderr
+	writerClosed := false
 	os.Stderr = writer
+	defer func() {
+		os.Stderr = original
+		if !writerClosed {
+			if err := writer.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	action()
 	os.Stderr = original
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	writerClosed = true
 	output, err := io.ReadAll(reader)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reader.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return string(output)
@@ -1155,5 +1168,28 @@ func TestSpawnRunUsesConfiguredRunCeilings(t *testing.T) {
 		"MINOS_PRESSURE_THRESHOLD_PERCENT=60",
 	} {
 		t.Run(argument, func(t *testing.T) { assertArgument(t, systemdArgs, argument) })
+	}
+}
+
+// Fatal test actions use Goexit, which must still restore the shared stderr.
+func TestCaptureStderrRestoresAfterGoexit(t *testing.T) {
+	original := os.Stderr
+	var captured *os.File
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		captureStderr(t, func() {
+			captured = os.Stderr
+			runtime.Goexit()
+		})
+	}()
+	<-done
+	// Restore even if the assertion fails, so this regression cannot poison peers.
+	t.Cleanup(func() { os.Stderr = original })
+	if os.Stderr != original {
+		t.Fatal("stderr was not restored after Goexit")
+	}
+	if _, err := captured.WriteString("after exit"); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("capture writer after Goexit = %v, want closed pipe", err)
 	}
 }
