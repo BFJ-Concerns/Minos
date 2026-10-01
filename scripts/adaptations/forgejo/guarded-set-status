@@ -6,8 +6,10 @@ set -eu
 owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
 context="$7"; state="$8"; description="$9"
 
-if [ "$context" != "Minos" ]; then
-  write_result rejected "owned status context must be exactly Minos"
+# The caller exports the service's configured context; with none exported
+# the script owns no context and refuses every write.
+if [ -z "${MINOS_STATUS_CONTEXT:-}" ] || [ "$context" != "$MINOS_STATUS_CONTEXT" ]; then
+  write_result rejected "status context is not the service's configured context"
   exit 0
 fi
 case "$state" in

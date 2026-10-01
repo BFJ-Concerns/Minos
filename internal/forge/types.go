@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	ForgejoProvider    = "forgejo"
-	OwnedStatusContext = "Minos"
+	ForgejoProvider = "forgejo"
 )
 
 type Repository struct {

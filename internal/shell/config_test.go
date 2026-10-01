@@ -354,6 +354,39 @@ func TestLoadServiceConfigDefaultsCommitIdentityToTheBotLogin(t *testing.T) {
 	}
 }
 
+func TestLoadServiceConfigStatusContextDefaultsToMinosAndHonoursAnExplicitValue(t *testing.T) {
+	root := t.TempDir()
+	if cfg := loadServiceConfigWith(t, root, ""); cfg.Service.StatusContext != "Minos" {
+		t.Fatalf("status context = %q, want the default Minos", cfg.Service.StatusContext)
+	}
+	writeServiceStatusContext(t, root, `"Review Bot"`)
+	explicit, err := LoadServiceConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Service.StatusContext != "Review Bot" {
+		t.Fatalf("status context = %q, want the configured Review Bot", explicit.Service.StatusContext)
+	}
+}
+
+func TestLoadServiceConfigRejectsMalformedStatusContext(t *testing.T) {
+	for _, value := range []string{`""`, `" Review Bot"`, `"Review\nBot"`, `"   "`} {
+		root := t.TempDir()
+		writeServiceStatusContext(t, root, value)
+		if _, err := LoadServiceConfig(root); err == nil || !strings.Contains(err.Error(), "status-context") {
+			t.Fatalf("status-context = %s: error = %v, want a status-context rejection", value, err)
+		}
+	}
+}
+
+func writeServiceStatusContext(t *testing.T, root, value string) {
+	t.Helper()
+	body := strings.Replace(testServiceConfig, "bot-login = \"Minos\"\n", "bot-login = \"Minos\"\nstatus-context = "+value+"\n", 1)
+	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadServiceConfigDecodesAndValidatesRouting(t *testing.T) {
 	root := t.TempDir()
 	cfg := loadServiceConfigWith(t, root, "[routing.verifier]\nengine = \"codex\"\nmodel = \"gpt-6-astra\"\neffort = \"low\"\n[routing.brief-planner]\neffort = \"medium\"\n")

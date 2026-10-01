@@ -23,7 +23,7 @@ func TestSnapshotNormalisesEmptyDependenciesForEncoding(t *testing.T) {
 		"target_branch":"main",
 		"dependencies_available":true
 	}`)}, errors: []error{nil}}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestSnapshotNormalisesEmptyDependenciesForEncoding(t *testing.T) {
 
 func TestSetProductStatusRejectsInvalidState(t *testing.T) {
 	runner := &recordingRunner{}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestIncompleteStatusUsesGuardedPullRequestAndTargetIdentity(t *testing.T) {
 		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
 		errors:  []error{nil},
 	}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestIncompleteStatusUsesGuardedPullRequestAndTargetIdentity(t *testing.T) {
 	}
 	want := []string{
 		"owner", "repo", "17", "head-sha", "target-sha", "Minos",
-		OwnedStatusContext, "error", "Review incomplete",
+		"Minos", "error", "Review incomplete",
 	}
 	if !slices.Equal(request.Arguments, want) {
 		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
@@ -95,7 +95,7 @@ func TestClaimUsesServiceIdentity(t *testing.T) {
 		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
 		errors:  []error{nil},
 	}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
 		errors:  []error{nil},
 	}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestRemoveReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 		HeadSHA: "head-sha", TargetSHA: "target-sha",
 	}
 	runner := &recordingRunner{outputs: [][]byte{[]byte(`{"outcome":"applied"}`)}, errors: []error{nil}}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}

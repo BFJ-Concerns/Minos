@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	"bfj/minos/internal/forge"
 	"bfj/minos/internal/product"
 )
 
@@ -952,6 +953,114 @@ func TestForgeReactionRemoveUsesForgejo14ShapeAndReadBackIdempotency(t *testing.
 	defer state.mu.Unlock()
 	if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
 		t.Fatalf("reactions = %v, delete writes = %d", state.reactions, state.reactionDeleteWrites)
+	}
+}
+
+func TestForgeStatusWritesCarryTheConfiguredContext(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	cfg.Service.StatusContext = "Review Bot"
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
+
+	var stdout strings.Builder
+	if err := ForgeCommand(t.Context(), []string{"status", state.headSHA(), state.targetSHA(), "working"}, &stdout); err != nil {
+		t.Fatalf("status write: %v\n%s", err, stdout.String())
+	}
+	posts := state.statusPostFacts()
+	if len(posts) != 1 {
+		t.Fatalf("forge received %d status posts, want 1: %#v", len(posts), posts)
+	}
+	if context := posts[0].Payload["context"]; context != "Review Bot" {
+		t.Fatalf("status context = %v, want the configured Review Bot", context)
+	}
+	if !strings.Contains(stdout.String(), "applied") {
+		t.Fatalf("status write was not confirmed by read-back: %s", stdout.String())
+	}
+}
+
+func TestGuardedSetStatusAcceptsOnlyTheExportedContext(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		exported map[string]string
+		context  string
+		want     forge.WriteOutcome
+	}{
+		{name: "the exported context is written", exported: map[string]string{"MINOS_STATUS_CONTEXT": "Review Bot"}, context: "Review Bot", want: forge.WriteApplied},
+		{name: "a context other than the exported one is rejected", exported: map[string]string{"MINOS_STATUS_CONTEXT": "Review Bot"}, context: "Minos", want: forge.WriteRejected},
+		{name: "no exported context rejects every write", context: "Minos", want: forge.WriteRejected},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, _, facts := state.service(t)
+			credential, err := ReadSecret(cfg.Forges[facts.Forge].CredentialFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := forge.ScriptRunner{Directory: state.adaptationPath, APIBase: state.server.URL, Credential: credential}
+			out, err := runner.Run(t.Context(), forge.RunRequest{
+				Operation: "guarded-set-status",
+				Arguments: []string{facts.Owner, facts.Repo, facts.PR, state.headSHA(), state.targetSHA(), "Minos",
+					test.context, "pending", product.Working().Description()},
+				Env: test.exported,
+			})
+			if err != nil {
+				t.Fatalf("guarded-set-status: %v\n%s", err, out)
+			}
+			var result forge.WriteResult
+			if err := json.Unmarshal(out, &result); err != nil {
+				t.Fatalf("decode %s: %v", out, err)
+			}
+			if result.Outcome != test.want {
+				t.Fatalf("outcome = %q (%s), want %q", result.Outcome, result.Reason, test.want)
+			}
+			wantPosts := 0
+			if test.want == forge.WriteApplied {
+				wantPosts = 1
+			}
+			if posts := len(state.statusPostFacts()); posts != wantPosts {
+				t.Fatalf("forge received %d status posts for outcome %q, want %d", posts, result.Outcome, wantPosts)
+			}
+		})
+	}
+}
+
+func TestForgeCompletionMarkerReadsOnlyTheConfiguredContext(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		context      string
+		wantDecision ReconcileDecision
+	}{
+		{name: "clean status under the configured context suppresses a new run", context: "Review Bot", wantDecision: "nothing"},
+		{name: "clean status under the old Minos context is ignored", context: "Minos", wantDecision: "started"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			state.setStatuses([]map[string]any{{
+				"id": 7, "context": test.context, "status": "success", "description": product.Clean().Description(),
+				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+				"creator":    map[string]any{"login": "Minos"},
+			}})
+			cfg, repo, facts := state.service(t)
+			cfg.Service.StatusContext = "Review Bot"
+
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				return nil, nil
+			}
+			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != test.wantDecision {
+				t.Fatalf("decision = %q, want %q", result.Decision, test.wantDecision)
+			}
+		})
 	}
 }
 
@@ -2020,6 +2129,7 @@ func (s *forgejoFixtureState) service(t *testing.T) (ServiceConfig, RepoConfig, 
 	s.mu.Unlock()
 	cfg := ServiceConfig{Root: t.TempDir()}
 	cfg.Service.BotLogin = "Minos"
+	cfg.Service.StatusContext = "Minos"
 	cfg.Listener.Bind = ":0"
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Forges = map[string]ForgeConfig{
@@ -2780,6 +2890,9 @@ credential-file = %q
 dir = %q
 `, cfg.Service.BotLogin, cfg.Forges["forgejo"].Adaptation, cfg.Forges["forgejo"].APIBase,
 		cfg.Forges["forgejo"].WebhookSecretFile, cfg.Forges["forgejo"].CredentialFile, cfg.Runs.Dir)
+	if cfg.Service.StatusContext != "" {
+		body = strings.Replace(body, "[listener]\n", fmt.Sprintf("status-context = %q\n[listener]\n", cfg.Service.StatusContext), 1)
+	}
 	if err := os.WriteFile(filepath.Join(cfg.Root, "service.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

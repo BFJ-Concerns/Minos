@@ -760,6 +760,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Service.CommitAuthorName = "Reviewer Bot"
 	cfg.Service.CommitAuthorEmail = "reviewer@example.invalid"
+	cfg.Service.StatusContext = "Review Bot"
 	cfg.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
 	cfg.Ensemble.ConcurrencyClaude = 10
 	cfg.Ensemble.ConcurrencyCodex = 6
@@ -808,6 +809,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_REVIEW_THRESHOLD=Medium",
 		"MINOS_COMMIT_AUTHOR_NAME=Reviewer Bot",
 		"MINOS_COMMIT_AUTHOR_EMAIL=reviewer@example.invalid",
+		"MINOS_STATUS_CONTEXT=Review Bot",
 		`MINOS_GUIDANCE_SOURCES=[{"repository":"owner/repo-plans","path":"README.md"},{"path":"docs/intent.md"}]`,
 		`MINOS_FILING_DESTINATION={"kind":"file","repository":"owner/repo-plans","path":"ISSUES.md"}`,
 		`MINOS_ROUTING={"verifier":{"engine":"codex","model":"gpt-6-astra","effort":"low"}}`,
@@ -815,8 +817,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",
 	} {
-		assertArgument(t, systemdArgs, "--setenv")
-		assertArgument(t, systemdArgs, value)
+		assertEnvironment(t, systemdArgs, value)
 	}
 	var runDir string
 	for _, arg := range systemdArgs {
@@ -948,6 +949,18 @@ func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
 			}
 		})
 	}
+}
+
+// assertEnvironment requires value to arrive as a --setenv option's own
+// argument, not merely somewhere in the argument list.
+func assertEnvironment(t *testing.T, arguments []string, value string) {
+	t.Helper()
+	for i := 1; i < len(arguments); i++ {
+		if arguments[i] == value && arguments[i-1] == "--setenv" {
+			return
+		}
+	}
+	t.Fatalf("arguments omit --setenv %q: %v", value, arguments)
 }
 
 func assertArgument(t *testing.T, arguments []string, want string) {

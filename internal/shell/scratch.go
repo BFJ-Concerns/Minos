@@ -480,6 +480,10 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=http.extraHeader",
 		"GIT_CONFIG_VALUE_0=Authorization: token "+token,
+		"GIT_AUTHOR_NAME="+cfg.Service.CommitAuthorName,
+		"GIT_AUTHOR_EMAIL="+cfg.Service.CommitAuthorEmail,
+		"GIT_COMMITTER_NAME="+cfg.Service.CommitAuthorName,
+		"GIT_COMMITTER_EMAIL="+cfg.Service.CommitAuthorEmail,
 	)
 	commands := [][]string{
 		{"add", "--", "FAILURES.md"},

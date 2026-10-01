@@ -70,7 +70,10 @@ so no repository toolchains are needed.
    guidance source in a secondary repository is cloned read-only beside
    the workspace at setup; a file-kind filing destination is a separate
    write path to that repository's default branch, committed as
-   `service.commit-author-name` and `service.commit-author-email`.
+   `service.commit-author-name` and `service.commit-author-email`, as are
+   the failure ledger's commits. Every commit status Minos writes carries
+   `service.status-context` (default `Minos`), and the sweep's completion
+   marker is read under that context only.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset. Run units share a fixed 22 GiB whole-box

@@ -54,7 +54,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "incomplete current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: forge.ForgejoProvider, Context: "Minos",
 				Creator: "Minos", Description: product.Incomplete().Description(),
 			}},
 			want: 0,
@@ -62,7 +62,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "working current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: forge.ForgejoProvider, Context: "Minos",
 				Creator: "Minos", Description: product.Working().Description(),
 			}},
 			want: 0,
@@ -70,7 +70,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "continued current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: forge.ForgejoProvider, Context: "Minos",
 				Creator: "Minos", Description: product.Continuation().Description(),
 			}},
 			want: 0,
@@ -78,7 +78,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "other account does not claim continuation",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: forge.ForgejoProvider, Context: "Minos",
 				Creator: "SomeBot", Description: product.Incomplete().Description(),
 			}},
 			want: 1,
@@ -86,7 +86,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "clean terminal status is not unfinished",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: forge.ForgejoProvider, Context: "Minos",
 				Creator: "Minos", Description: product.Clean().Description(),
 			}},
 			want: 1,
@@ -96,7 +96,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{Statuses: test.statuses}
-			if got := continuationPriority(snapshot, "Minos"); got != test.want {
+			if got := continuationPriority(snapshot, "Minos", "Minos"); got != test.want {
 				t.Fatalf("continuationPriority() = %d, want %d", got, test.want)
 			}
 		})
@@ -106,7 +106,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 func TestCompletedRunStatusMarksCleanAndAttentionHeads(t *testing.T) {
 	ownedStatus := func(id int64, state forge.StatusState, description string) forge.Status {
 		return forge.Status{
-			ID: id, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+			ID: id, Provider: forge.ForgejoProvider, Context: "Minos",
 			Creator: "Minos", State: state, Description: description,
 		}
 	}
@@ -132,7 +132,7 @@ func TestCompletedRunStatusMarksCleanAndAttentionHeads(t *testing.T) {
 		{
 			name: "another account's clean status is not a marker",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: forge.ForgejoProvider, Context: "Minos",
 				Creator: "SomeBot", State: forge.StatusSuccess, Description: product.Clean().Description(),
 			}},
 		},
@@ -142,7 +142,7 @@ func TestCompletedRunStatusMarksCleanAndAttentionHeads(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{Statuses: test.statuses}
-			if got := completedRunStatus(snapshot, "Minos"); got != test.want {
+			if got := completedRunStatus(snapshot, "Minos", "Minos"); got != test.want {
 				t.Fatalf("completedRunStatus() = %t, want %t", got, test.want)
 			}
 		})

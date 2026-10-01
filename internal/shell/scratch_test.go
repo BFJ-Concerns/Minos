@@ -327,6 +327,8 @@ exec %q "$@"
 	var cfg ServiceConfig
 	cfg.Runs.FailuresRepo = checkout
 	cfg.Runs.FailuresCredentialFile = credential
+	cfg.Service.CommitAuthorName = "Minos"
+	cfg.Service.CommitAuthorEmail = "Minos@minos.invalid"
 
 	started := time.Now()
 	if err := publishFailureDigest(t.Context(), cfg); err == nil {
@@ -522,10 +524,20 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 	var cfg ServiceConfig
 	cfg.Runs.FailuresRepo = checkout
 	cfg.Runs.FailuresCredentialFile = credential
+	cfg.Service.CommitAuthorName = "Review Bot"
+	cfg.Service.CommitAuthorEmail = "bot@example.org"
 	if err := publishFailureDigest(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	runScratchGit(t, root, "clone", remote, verification)
+	identity := exec.Command("git", "-C", verification, "log", "-1", "--format=%an <%ae> / %cn <%ce>", "--", "FAILURES.md")
+	out, err := identity.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "Review Bot <bot@example.org> / Review Bot <bot@example.org>"; got != want {
+		t.Fatalf("failure ledger commit identity = %q, want %q", got, want)
+	}
 	for path, want := range map[string]string{
 		"FAILURES.md": "salvaged run",
 		"operator.md": "operator change",

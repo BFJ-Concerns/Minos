@@ -28,6 +28,4 @@ GIT_CONFIG_VALUE_0="Authorization: token $forge_token"
 GIT_TERMINAL_PROMPT=0
 export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT
 git clone "$clone_url" "$destination"
-git -C "$destination" config user.name Minos
-git -C "$destination" config user.email minos@example.invalid
 git -C "$destination" push --dry-run origin HEAD:main

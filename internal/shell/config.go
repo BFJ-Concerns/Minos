@@ -16,6 +16,10 @@ import (
 
 const DefaultConfigRoot = "/etc/minos"
 
+// defaultStatusContext is the status context a deployment that names none
+// writes and reads.
+const defaultStatusContext = "Minos"
+
 var errRepoNotOptedIn = errors.New("repository is not opted in")
 
 type ServiceConfig struct {
@@ -27,6 +31,9 @@ type ServiceConfig struct {
 		// the bot login and the email is that login at minos.invalid.
 		CommitAuthorName  string `toml:"commit-author-name"`
 		CommitAuthorEmail string `toml:"commit-author-email"`
+		// StatusContext names every commit status Minos writes and the only
+		// one the sweep reads as its completion marker. Unset, it is Minos.
+		StatusContext string `toml:"status-context"`
 		// Operator alerts are filed as issues on this repository (one open
 		// issue per alert title, repeats as comments). All three keys unset
 		// leaves alerting off and alerts as journal lines only.
@@ -246,7 +253,8 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		root = DefaultConfigRoot
 	}
 	var cfg ServiceConfig
-	if _, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg); err != nil {
+	metadata, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg)
+	if err != nil {
 		return ServiceConfig{}, err
 	}
 	cfg.Root = root
@@ -258,6 +266,12 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	}
 	if cfg.Service.CommitAuthorEmail == "" {
 		cfg.Service.CommitAuthorEmail = cfg.Service.BotLogin + "@minos.invalid"
+	}
+	if !metadata.IsDefined("service", "status-context") {
+		cfg.Service.StatusContext = defaultStatusContext
+	}
+	if cfg.Service.StatusContext == "" || strings.TrimSpace(cfg.Service.StatusContext) != cfg.Service.StatusContext || strings.ContainsAny(cfg.Service.StatusContext, "\x00\n\r") {
+		return ServiceConfig{}, fmt.Errorf("service.toml: service status-context %q must be a non-empty single line without surrounding whitespace", cfg.Service.StatusContext)
 	}
 	if err := validateRepositoryKnobs("service.toml: repositories", cfg.Repositories); err != nil {
 		return ServiceConfig{}, err
