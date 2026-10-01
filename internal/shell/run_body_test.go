@@ -1351,29 +1351,30 @@ func (f runBodyFixture) execute(extraEnv map[string]string) ([]byte, error) {
 
 func (f runBodyFixture) executeContext(ctx context.Context, extraEnv map[string]string) ([]byte, error) {
 	runEnv := map[string]string{
-		"MINOS_RUN_DIR":                 f.runDir,
-		"MINOS_CONFIG":                  f.configRoot,
-		"MINOS_FORGE":                   "forgejo",
-		"MINOS_WORKSPACE":               filepath.Join(f.runDir, "workspace"),
-		"MINOS_ORIENTATION":             filepath.Join(f.runDir, "orientation.json"),
-		"MINOS_OWNER":                   "owner",
-		"MINOS_REPO_NAME":               "repository",
-		"MINOS_PR":                      "17",
-		"MINOS_HEAD_SHA":                "head-sha",
-		"MINOS_TARGET_SHA":              "target-sha",
-		"MINOS_BASE_REF":                "main",
-		"MINOS_HEAD_BRANCH":             "feature",
-		"MINOS_API_BASE":                "http://forge.test",
-		"MINOS_CREDENTIAL_FILE":         "/etc/minos/forge.token",
-		"MINOS_RUN_BODY":                "/opt/minos/run-body/run-body",
-		"MINOS_TEST_RECORD":             f.record,
-		"MINOS_CLAUDE_POLL_SECONDS":     "0",
-		"HOME":                          f.ambientHome,
-		"CLAUDE_CONFIG_DIR":             filepath.Join(f.ambientHome, ".claude"),
-		"CODEX_HOME":                    filepath.Join(f.ambientHome, ".codex"),
-		"ANTHROPIC_AUTH_TOKEN":          "obsolete-proxy-token-must-not-reach-lead",
-		"ANTHROPIC_BASE_URL":            "http://obsolete-proxy.invalid",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL": "obsolete-haiku-alias",
+		"MINOS_PRESSURE_THRESHOLD_PERCENT": "85",
+		"MINOS_RUN_DIR":                    f.runDir,
+		"MINOS_CONFIG":                     f.configRoot,
+		"MINOS_FORGE":                      "forgejo",
+		"MINOS_WORKSPACE":                  filepath.Join(f.runDir, "workspace"),
+		"MINOS_ORIENTATION":                filepath.Join(f.runDir, "orientation.json"),
+		"MINOS_OWNER":                      "owner",
+		"MINOS_REPO_NAME":                  "repository",
+		"MINOS_PR":                         "17",
+		"MINOS_HEAD_SHA":                   "head-sha",
+		"MINOS_TARGET_SHA":                 "target-sha",
+		"MINOS_BASE_REF":                   "main",
+		"MINOS_HEAD_BRANCH":                "feature",
+		"MINOS_API_BASE":                   "http://forge.test",
+		"MINOS_CREDENTIAL_FILE":            "/etc/minos/forge.token",
+		"MINOS_RUN_BODY":                   "/opt/minos/run-body/run-body",
+		"MINOS_TEST_RECORD":                f.record,
+		"MINOS_CLAUDE_POLL_SECONDS":        "0",
+		"HOME":                             f.ambientHome,
+		"CLAUDE_CONFIG_DIR":                filepath.Join(f.ambientHome, ".claude"),
+		"CODEX_HOME":                       filepath.Join(f.ambientHome, ".codex"),
+		"ANTHROPIC_AUTH_TOKEN":             "obsolete-proxy-token-must-not-reach-lead",
+		"ANTHROPIC_BASE_URL":               "http://obsolete-proxy.invalid",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":    "obsolete-haiku-alias",
 		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":             "265000",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "265000",
@@ -1746,6 +1747,36 @@ func TestRunBodyCodexRequiresExecutableAndSeed(t *testing.T) {
 			if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
 				t.Fatalf("Codex launched despite missing configuration: %v", err)
 			}
+		})
+	}
+}
+
+func TestRunBodyHonoursConfiguredPressureThreshold(t *testing.T) {
+	for _, test := range []struct {
+		name, threshold string
+		anon            int64
+		signal          bool
+	}{
+		{"lower threshold signals", "60", 700_000_000, true},
+		{"higher threshold waits", "95", 900_000_000, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, test.anon, 0)
+			fixture.run(t, map[string]string{
+				"MINOS_PRESSURE_THRESHOLD_PERCENT": test.threshold,
+				"MINOS_CGROUP_DIR":                 cgroup,
+				"MINOS_TEST_PENDING_STATE":         "done",
+				"MINOS_TEST_WAIT_POLLS":            "2",
+				"MINOS_TEST_TERMINAL_STATE":        "failed",
+			})
+			signal := filepath.Join(fixture.runDir, "memory-pressure")
+			if test.signal {
+				assertContainsFile(t, signal, "anonymous memory plus swap")
+			} else if _, err := os.Stat(signal); !os.IsNotExist(err) {
+				t.Fatalf("footprint below configured threshold produced a pressure signal: %v", err)
+			}
+			fixture.assertProcessesStopped(t)
 		})
 	}
 }

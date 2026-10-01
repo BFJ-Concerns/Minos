@@ -417,3 +417,49 @@ func TestLoadServiceConfigDecodesAndValidatesRouting(t *testing.T) {
 		})
 	}
 }
+
+func TestRunCeilingConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name, settings, wantError string
+		envelope, threshold       int
+		duration                  string
+	}{
+		{name: "defaults", envelope: 22, threshold: 85, duration: "43200.000000000s"},
+		{name: "configured", settings: "memory-envelope-gib = 8\nduration-ceiling = \"90m\"\npressure-threshold-percent = 60\n", envelope: 8, threshold: 60, duration: "5400.000000000s"},
+		{name: "minimum bounds", settings: "memory-envelope-gib = 2\npressure-threshold-percent = 1\n", envelope: 2, threshold: 1, duration: "43200.000000000s"},
+		{name: "maximum percent", settings: "pressure-threshold-percent = 100\n", envelope: 22, threshold: 100, duration: "43200.000000000s"},
+		{name: "zero envelope", settings: "memory-envelope-gib = 0\n", wantError: "runs.memory-envelope-gib"},
+		{name: "negative envelope", settings: "memory-envelope-gib = -1\n", wantError: "runs.memory-envelope-gib"},
+		{name: "overflowing byte ceiling", settings: "memory-envelope-gib = 8589934592\n", wantError: "runs.memory-envelope-gib"},
+		{name: "concurrency exceeds envelope", settings: "memory-envelope-gib = 1\n", wantError: "max-concurrent"},
+		{name: "malformed duration", settings: "duration-ceiling = \"tomorrow\"\n", wantError: "runs.duration-ceiling"},
+		{name: "empty duration", settings: "duration-ceiling = \"\"\n", wantError: "runs.duration-ceiling"},
+		{name: "zero duration", settings: "duration-ceiling = \"0s\"\n", wantError: "runs.duration-ceiling"},
+		{name: "sub-microsecond duration", settings: "duration-ceiling = \"1ns\"\n", wantError: "runs.duration-ceiling"},
+		{name: "negative duration", settings: "duration-ceiling = \"-1h\"\n", wantError: "runs.duration-ceiling"},
+		{name: "zero percent", settings: "pressure-threshold-percent = 0\n", wantError: "runs.pressure-threshold-percent"},
+		{name: "negative percent", settings: "pressure-threshold-percent = -1\n", wantError: "runs.pressure-threshold-percent"},
+		{name: "percent above 100", settings: "pressure-threshold-percent = 101\n", wantError: "runs.pressure-threshold-percent"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			contents := strings.Replace(testServiceConfig, "[runs]\n", "[runs]\n"+test.settings, 1)
+			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadServiceConfig(root)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), "service.toml") || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("error = %v, want service.toml and %s", err, test.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Runs.MemoryEnvelopeGiB != test.envelope || cfg.Runs.DurationCeiling != test.duration || cfg.Runs.PressureThresholdPercent != test.threshold {
+				t.Fatalf("run ceilings = %d / %s / %d, want %d / %s / %d", cfg.Runs.MemoryEnvelopeGiB, cfg.Runs.DurationCeiling, cfg.Runs.PressureThresholdPercent, test.envelope, test.duration, test.threshold)
+			}
+		})
+	}
+}

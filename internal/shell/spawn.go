@@ -49,23 +49,9 @@ func preserveStaleReviewResult(path, stalePath string) error {
 	return nil
 }
 
-// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Runs
-// share it live inside runsSliceName rather than by static division: the
-// slice unit (deploy/systemd/user/minos-runs.slice) holds MemoryHigh just
-// under the envelope and MemoryMax at it, so no run feels any pressure until
-// the runs *together* approach the envelope, reclaim then pushes them back,
-// and only combined demand the envelope cannot hold kills — the kernel picks
-// the biggest consumer, which is the ballooning run's compiler or worker.
-// Each run also carries its own MemoryMax at the whole envelope as the
-// backstop for a box where the slice unit is not installed, keeping the
-// receiver and sweep (outside the slice) safe either way.
-const runMemoryEnvelopeGiB = 22
-
+// Runs share the configured envelope live through this slice; each run's
+// MemoryMax is also the backstop on a box without the slice installed.
 const runsSliceName = "minos-runs.slice"
-
-func runMemoryMax() string {
-	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB)
-}
 
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
 	unit := UnitName(facts)
@@ -211,28 +197,29 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
 	env := map[string]string{
-		"MINOS_RUN_DIR":               runDir,
-		"MINOS_CONFIG":                cfg.Root,
-		"MINOS_FORGE":                 facts.Forge,
-		"MINOS_WORKSPACE":             filepath.Join(runDir, "workspace"),
-		"MINOS_ORIENTATION":           filepath.Join(runDir, "orientation.json"),
-		"MINOS_HANDOFF":               handoffFile,
-		"MINOS_OWNER":                 facts.Owner,
-		"MINOS_REPO_NAME":             facts.Repo,
-		"MINOS_PR":                    facts.PR,
-		"MINOS_HEAD_SHA":              facts.HeadSHA,
-		"MINOS_TARGET_SHA":            facts.BaseSHA,
-		"MINOS_BASE_REF":              facts.BaseRef,
-		"MINOS_HEAD_BRANCH":           facts.HeadRef,
-		"MINOS_API_BASE":              forgeConfig.APIBase,
-		"MINOS_CREDENTIAL_FILE":       forgeConfig.CredentialFile,
-		"MINOS_RUN_BODY":              repo.Adaptation.RunBody,
-		"MINOS_REVIEW_THRESHOLD":      repo.Review.Threshold,
-		"MINOS_COMMIT_AUTHOR_NAME":    cfg.Service.CommitAuthorName,
-		"MINOS_COMMIT_AUTHOR_EMAIL":   cfg.Service.CommitAuthorEmail,
-		"MINOS_STATUS_CONTEXT":        cfg.Service.StatusContext,
-		"ENSEMBLE_CONCURRENCY_CLAUDE": strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
-		"ENSEMBLE_CONCURRENCY_CODEX":  strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
+		"MINOS_PRESSURE_THRESHOLD_PERCENT": strconv.Itoa(cfg.runPressureThresholdPercent()),
+		"MINOS_RUN_DIR":                    runDir,
+		"MINOS_CONFIG":                     cfg.Root,
+		"MINOS_FORGE":                      facts.Forge,
+		"MINOS_WORKSPACE":                  filepath.Join(runDir, "workspace"),
+		"MINOS_ORIENTATION":                filepath.Join(runDir, "orientation.json"),
+		"MINOS_HANDOFF":                    handoffFile,
+		"MINOS_OWNER":                      facts.Owner,
+		"MINOS_REPO_NAME":                  facts.Repo,
+		"MINOS_PR":                         facts.PR,
+		"MINOS_HEAD_SHA":                   facts.HeadSHA,
+		"MINOS_TARGET_SHA":                 facts.BaseSHA,
+		"MINOS_BASE_REF":                   facts.BaseRef,
+		"MINOS_HEAD_BRANCH":                facts.HeadRef,
+		"MINOS_API_BASE":                   forgeConfig.APIBase,
+		"MINOS_CREDENTIAL_FILE":            forgeConfig.CredentialFile,
+		"MINOS_RUN_BODY":                   repo.Adaptation.RunBody,
+		"MINOS_REVIEW_THRESHOLD":           repo.Review.Threshold,
+		"MINOS_COMMIT_AUTHOR_NAME":         cfg.Service.CommitAuthorName,
+		"MINOS_COMMIT_AUTHOR_EMAIL":        cfg.Service.CommitAuthorEmail,
+		"MINOS_STATUS_CONTEXT":             cfg.Service.StatusContext,
+		"ENSEMBLE_CONCURRENCY_CLAUDE":      strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
+		"ENSEMBLE_CONCURRENCY_CODEX":       strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
 	}
 	// Structured knobs cross into the run as one JSON value each, always
 	// present: an empty guidance list is exported as [] so the run script
@@ -272,9 +259,9 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--user", "--collect", "--unit", unit,
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
-		"--property=RuntimeMaxSec=12h",
+		"--property=RuntimeMaxSec=" + cfg.runDurationCeiling(),
 		"--slice=" + runsSliceName,
-		"--property=MemoryMax=" + runMemoryMax(),
+		"--property=MemoryMax=" + fmt.Sprintf("%dG", cfg.runMemoryEnvelopeGiB()),
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)
