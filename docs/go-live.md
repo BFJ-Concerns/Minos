@@ -42,8 +42,10 @@ so no repository toolchains are needed.
    and add one repository TOML file per opted-in repository. In `run-body.env`:
 
    - set `MINOS_CLAUDE` to the installed Claude executable;
-   - keep `MINOS_LEAD_ENGINE` at `claude` and `MINOS_LEAD_MODEL` at the
-     Claude model the lead runs on (`claude-opus-5-5` by default);
+   - set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
+     and `MINOS_LEAD_MODEL` to the model the lead runs on — `claude-opus-5-5`
+     by default for Claude, `gpt-6-sol` for Codex; a Codex lead needs
+     `MINOS_CODEX` set to the installed Codex executable;
    - set `MINOS_CLAUDE_CONFIG_SEED` to a directory containing known-good,
      non-interactive Claude configuration — the lead's engine, so it is
      required;
@@ -63,7 +65,7 @@ so no repository toolchains are needed.
 
    Per-repository knobs — the review threshold, work-in-progress branch
    prefixes, the guidance sources a review is grounded on, the filing
-   destination for a clean run's advisory material and brief diagnostics,
+   destination for a clean run's advisory material and configuration diagnostics,
    and the markers Minos writes on a pull request — are set once under
    `[repositories]` in `service.toml` and overridden whole by any
    repository's own file; the shipped `service.toml` documents each knob
@@ -72,7 +74,8 @@ so no repository toolchains are needed.
    the workspace at setup.
 
    The filing destination controls where confirmed advisory findings and
-   brief configuration diagnostics are delivered: `kind` is one of `file`
+   configuration diagnostics — brief misconfigurations and unreadable guidance
+   sources — are delivered: `kind` is one of `file`
    (path required; repository optional, defaulting to the reviewed
    repository's default branch), `issue` (repository required — the
    owner/name that takes the issues; no path), `pull-request-comment`, or
@@ -181,7 +184,7 @@ so no repository toolchains are needed.
 6. Configure the forge webhook to post to `/hooks/forgejo` using the matching
    secret.
 
-Each run launches the `claude-opus-5-5` lead through `claude --bg`. `run-body`
+Each run launches the lead on the configured engine and model. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has
 begun. A lead blocked before its first run-tree change is stopped and recorded
 as a supervision failure. The supervisor otherwise stops the session only

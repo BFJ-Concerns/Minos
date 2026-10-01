@@ -1,9 +1,10 @@
 # Minos
 
-Minos reviews pull requests. A webhook or periodic sweep starts one Claude Code
-lead on `claude-opus-5-5` on a disposable box. The lead claims the pull request — requesting a
-review from the bot account and adding the configured in-flight marker —
-clones the repository, and invokes the shipped review workflows through the
+Minos reviews pull requests. A webhook or periodic sweep starts one lead
+session on a disposable box — Claude Code on `claude-opus-5-5` by default, or
+Codex on `gpt-6-sol`. The lead claims the pull request — requesting a review
+from the bot account and adding the configured in-flight marker — clones the
+repository, and invokes the shipped review workflows through the
 installed Ensemble CLI and adjudication wrapper. Independent reviewers cover the
 whole diff, with breadth scaled to the diff and the repository's `.review/`
 briefs honoured; the opposite model family verifies every proposed finding.
@@ -49,7 +50,8 @@ configured filing destination — a file in a repository's default branch, an
 issue filed on a named repository, a comment on the pull request, or nowhere.
 Unverified observations stay in the internal run record. If delivery is
 unavailable, the run report records the failure without posting a fallback
-comment. Brief configuration diagnostics take the same destination.
+comment. Configuration diagnostics — brief misconfigurations and unreadable
+guidance sources — take the same destination.
 
 Published review comments carry model provenance: each finding is tagged with
 `Proposed by:` and `Verified by:` lines naming the models that proposed and
