@@ -171,20 +171,6 @@ func TestRunBodyExportsTheProvisionedEnginesFromTheSeedsItNames(t *testing.T) {
 	}
 }
 
-func TestRunBodyUsesOrientationHeadAsCurrentHead(t *testing.T) {
-	fixture := newRunBodyFixture(t)
-	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
-set -eu
-mkdir -p "$MINOS_WORKSPACE"
-mkdir -p "$HOME/.local/bin"
-install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
-printf '%s\n' '{"head":"setup-head","guidance":[],"misconfigurations":[]}' >"$MINOS_ORIENTATION"
-`)
-
-	fixture.run(t, nil)
-	assertContainsFile(t, fixture.record+".worker-env", "MINOS_HEAD_SHA=setup-head")
-}
-
 func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	credentialFile := filepath.Join(fixture.root, "gateway.token")
@@ -578,7 +564,7 @@ func TestRunBodyKeepsWaitingLeadsAlive(t *testing.T) {
 				"MINOS_TEST_PENDING_STATE":   state,
 				"MINOS_TEST_WAIT_POLLS":      "3",
 				"MINOS_LEAD_SILENCE_TIMEOUT": "5",
-				"MINOS_CLAUDE_POLL_SECONDS":  "0",
+				"MINOS_LEAD_POLL_SECONDS":    "0",
 			})
 			assertContainsFile(t, fixture.record+".terminal", `"status":null`)
 			assertContainsFile(t, fixture.record+".waiting-states", state)
@@ -618,7 +604,7 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 				"MINOS_TEST_TERMINAL_STATE":    "done",
 				"MINOS_TEST_COMPLETION_MARKER": outcome,
 				"MINOS_LEAD_SILENCE_TIMEOUT":   "1",
-				"MINOS_CLAUDE_POLL_SECONDS":    "0",
+				"MINOS_LEAD_POLL_SECONDS":      "0",
 			})
 
 			assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), outcome)
@@ -774,7 +760,7 @@ func TestRunBodyIgnoresUnrecognisedCompletionMarker(t *testing.T) {
 		"MINOS_TEST_PENDING_STATE":     "done",
 		"MINOS_TEST_WAIT_POLLS":        "3",
 		"MINOS_LEAD_SILENCE_TIMEOUT":   "5",
-		"MINOS_CLAUDE_POLL_SECONDS":    "0",
+		"MINOS_LEAD_POLL_SECONDS":      "0",
 	})
 
 	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "unclean")
@@ -847,7 +833,7 @@ func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
 	output, err := fixture.execute(map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":  "done",
 		"MINOS_LEAD_SILENCE_TIMEOUT": "0",
-		"MINOS_CLAUDE_POLL_SECONDS":  "0",
+		"MINOS_LEAD_POLL_SECONDS":    "0",
 	})
 	if err == nil {
 		t.Fatalf("run-body succeeded after the silence backstop stopped the lead\n%s", output)
@@ -910,7 +896,7 @@ func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 		"MINOS_TEST_TERMINAL_STATE":   "done",
 		"MINOS_TEST_POLL_WORK_WRITES": "12",
 		"MINOS_LEAD_SILENCE_TIMEOUT":  "2",
-		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
+		"MINOS_LEAD_POLL_SECONDS":     "0.25",
 	})
 	if ctx.Err() == context.DeadlineExceeded {
 		t.Fatalf("run-body did not finish within 10s\n%s", output)
@@ -940,7 +926,7 @@ func TestRunBodyDoesNotTreatSupervisorPollingAsLeadActivity(t *testing.T) {
 		"MINOS_TEST_TERMINAL_STATE":   "done",
 		"MINOS_TEST_POLL_HOME_WRITES": "1",
 		"MINOS_LEAD_SILENCE_TIMEOUT":  "1",
-		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
+		"MINOS_LEAD_POLL_SECONDS":     "0.25",
 	})
 	if ctx.Err() == context.DeadlineExceeded {
 		t.Fatalf("run-body did not finish within 4s\n%s", output)
@@ -1489,7 +1475,7 @@ func (f runBodyFixture) command(ctx context.Context, extraEnv map[string]string)
 		"MINOS_CREDENTIAL_FILE":            "/etc/minos/forge.token",
 		"MINOS_RUN_BODY":                   "/opt/minos/run-body/run-body",
 		"MINOS_TEST_RECORD":                f.record,
-		"MINOS_CLAUDE_POLL_SECONDS":        "0",
+		"MINOS_LEAD_POLL_SECONDS":          "0",
 		"HOME":                             f.ambientHome,
 		"CLAUDE_CONFIG_DIR":                filepath.Join(f.ambientHome, ".claude"),
 		"CODEX_HOME":                       filepath.Join(f.ambientHome, ".codex"),
@@ -1844,7 +1830,7 @@ func TestRunBodyCodexSilence(t *testing.T) {
 	fixture := newCodexRunBodyFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	output, err := fixture.executeContext(ctx, map[string]string{"MINOS_TEST_CODEX_HANG": "1", "MINOS_LEAD_SILENCE_TIMEOUT": "1", "MINOS_CLAUDE_POLL_SECONDS": "0.05"})
+	output, err := fixture.executeContext(ctx, map[string]string{"MINOS_TEST_CODEX_HANG": "1", "MINOS_LEAD_SILENCE_TIMEOUT": "1", "MINOS_LEAD_POLL_SECONDS": "0.05"})
 	if ctx.Err() != nil {
 		t.Fatalf("supervisor failed to stop silent Codex: %v\n%s", ctx.Err(), output)
 	}

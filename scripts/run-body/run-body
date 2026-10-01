@@ -407,11 +407,6 @@ if [ "$setup_status" -ne 0 ]; then
   fi
   exit "$setup_status"
 fi
-setup_head="$(jq -r '.head // empty' "$MINOS_ORIENTATION" 2>/dev/null || true)"
-if [ -n "$setup_head" ]; then
-  MINOS_HEAD_SHA="$setup_head"
-  export MINOS_HEAD_SHA
-fi
 
 trap 'exit 129' 1
 trap 'exit 130' 2
@@ -517,12 +512,15 @@ sample_memory_pressure() {
 
 failure_stage="lead-launch"
 failure_cause="$MINOS_LEAD_ENGINE lead launch failed"
-last_activity_signature="$(
+# The newest change anywhere in the run tree outside the private home, the
+# pressure signal and the memory peak: its mtime, inode and size.
+run_activity_signature() {
   find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" -o -path "$MINOS_RUN_DIR/memory-peak" \) -prune \
     -o -printf '%T@:%i:%s\n' 2>/dev/null |
     LC_ALL=C sort -rn |
     head -n 1
-)"
+}
+last_activity_signature="$(run_activity_signature)"
 MINOS_LEAD_MODEL="${MINOS_LEAD_MODEL:-$lead_default_model}"
 export MINOS_LEAD_MODEL
 lead_launch
@@ -549,12 +547,7 @@ while :; do
   #    isolated home. Exclude home because both this supervisor's roster poll
   #    and Claude's daemon can update config, job state, caches and updater
   #    downloads there without useful lead work.
-  activity_signature="$(
-    find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" -o -path "$MINOS_RUN_DIR/memory-peak" \) -prune \
-      -o -printf '%T@:%i:%s\n' 2>/dev/null |
-      LC_ALL=C sort -rn |
-      head -n 1
-  )"
+  activity_signature="$(run_activity_signature)"
   if [ "$activity_signature" != "$last_activity_signature" ]; then
     last_activity_signature="$activity_signature"
     lead_activity_seen=true
@@ -590,7 +583,7 @@ while :; do
     failure_cause="$MINOS_LEAD_ENGINE lead produced no run activity for ${silence_timeout} seconds (last state: ${agent_state:-unknown})"
     exit 1
   fi
-  sleep "${MINOS_CLAUDE_POLL_SECONDS:-3}"
+  sleep "${MINOS_LEAD_POLL_SECONDS:-3}"
 done
 
 stop_session

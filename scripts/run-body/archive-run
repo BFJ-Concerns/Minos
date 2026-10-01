@@ -11,16 +11,10 @@ archive_failed() {
 }
 
 [ -d "$run_dir" ] || archive_failed
-[ -r "$config" ] || archive_failed
 
-set -a
-# shellcheck source=/dev/null
-. "$config" 2>/dev/null || archive_failed
-set +a
-
-[ -n "${MINOS_ARCHIVE_HOST:-}" ] || archive_failed
-[ -r "${MINOS_ARCHIVE_IDENTITY_FILE:-}" ] || archive_failed
-[ -r "${MINOS_ARCHIVE_KNOWN_HOSTS:-}" ] || archive_failed
+# shellcheck source=scripts/run-body/archive-transport.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-transport.sh"
+archive_configuration_load "$config" || archive_failed
 
 safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '-')"
 run_name="$(basename "$run_dir")"
@@ -28,8 +22,6 @@ safe_run_name="$(printf '%s' "$run_name" | tr -c 'A-Za-z0-9_.-' '-')"
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ' 2>/dev/null)" || archive_failed
 archive_name="${timestamp}-${safe_label}-${safe_run_name}.tar.zst"
 
-# shellcheck source=scripts/run-body/archive-transport.sh
-. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-transport.sh"
 
 # Delivering one run costs four calls — the archive stream and its commit,
 # then the sidecar's — seconds apart. They share a connection under this

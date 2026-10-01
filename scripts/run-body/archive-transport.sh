@@ -48,3 +48,31 @@ archive_ssh() {
   fi
   ssh "$@" "$MINOS_ARCHIVE_HOST" "$archive_remote_command"
 }
+
+# archive_configuration_load CONFIG sources the archive configuration and
+# checks the host, identity and known-hosts file it names. On failure it
+# returns non-zero with archive_configuration_problem saying what is wrong,
+# so each caller reports in its own voice.
+archive_configuration_load() {
+  archive_configuration_problem=""
+  if [ ! -r "$1" ]; then
+    archive_configuration_problem="archive configuration is unreadable"
+    return 1
+  fi
+  set -a
+  # shellcheck source=/dev/null
+  if ! . "$1" 2>/dev/null; then
+    set +a
+    archive_configuration_problem="archive configuration could not be read"
+    return 1
+  fi
+  set +a
+  if [ -z "${MINOS_ARCHIVE_HOST:-}" ]; then
+    archive_configuration_problem="no archive host configured"
+  elif [ ! -r "${MINOS_ARCHIVE_IDENTITY_FILE:-}" ]; then
+    archive_configuration_problem="archive identity is unreadable"
+  elif [ ! -r "${MINOS_ARCHIVE_KNOWN_HOSTS:-}" ]; then
+    archive_configuration_problem="archive known-hosts file is unreadable"
+  fi
+  [ -z "$archive_configuration_problem" ]
+}

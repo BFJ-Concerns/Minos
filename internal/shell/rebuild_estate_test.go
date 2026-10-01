@@ -192,7 +192,7 @@ func TestRebuildEstateSupervisesTerminalLeadWithoutCompletionMarker(t *testing.T
 	runBody, record, environment := startEstateRunBody(t)
 	environment["MINOS_TEST_UNMARKED_FINISH"] = "1"
 	environment["MINOS_LEAD_SILENCE_TIMEOUT"] = "2"
-	environment["MINOS_CLAUDE_POLL_SECONDS"] = "0.1"
+	environment["MINOS_LEAD_POLL_SECONDS"] = "0.1"
 	environment["MINOS_FAILURE_LOG"] = filepath.Join(environment["MINOS_RUN_DIR"], "failures.log")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -574,7 +574,7 @@ esac
 		"MINOS_SKILLS_DIR":            skills,
 		"MINOS_SETUP_WORKSPACE":       setup,
 		"MINOS_BIN":                   "/usr/local/bin/minos",
-		"MINOS_CLAUDE_POLL_SECONDS":   "0",
+		"MINOS_LEAD_POLL_SECONDS":     "0",
 		"MINOS_TEST_RECORD":           record,
 	}
 	var config strings.Builder
