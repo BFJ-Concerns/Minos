@@ -78,13 +78,28 @@ function loadGroup(name, verdictPath, decisionPath) {
   };
 }
 
-const orientation = readJson(orientationPath, "orientation");
-const guidanceMisconfigurations = orientation.misconfigurations ?? [];
-if (!Array.isArray(guidanceMisconfigurations) || guidanceMisconfigurations.some((entry) =>
-  entry?.kind === "guidance-source" && (typeof entry.source?.path !== "string" || typeof entry.reason !== "string"))) {
-  process.stderr.write(`orientation misconfigurations are malformed: ${orientationPath}\n`);
-  process.exit(1);
+// Setup's orientation names the workspace path under `repository`; the
+// reviewed repository's forge identity is its `source` owner and name.
+function readOrientation(path) {
+  let orientation;
+  try {
+    orientation = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    process.stderr.write(`orientation is missing or not valid JSON: ${path} (${error.message})\n`);
+    process.exit(1);
+  }
+  const misconfigurations = orientation?.misconfigurations ?? [];
+  const malformed = !Array.isArray(misconfigurations) || misconfigurations.some((entry) =>
+    entry?.kind === "guidance-source" && (typeof entry.source?.path !== "string" || typeof entry.reason !== "string"));
+  const { owner, repo } = orientation?.source ?? {};
+  if (malformed || (misconfigurations.length > 0 && (typeof owner !== "string" || typeof repo !== "string"))) {
+    process.stderr.write(`orientation misconfigurations are malformed: ${path}\n`);
+    process.exit(1);
+  }
+  return { repository: `${owner}/${repo}`, misconfigurations };
 }
+const orientation = readOrientation(orientationPath);
+const guidanceMisconfigurations = orientation.misconfigurations;
 
 const main = loadGroup("main", mainVerdictPath, mainDecisionPath);
 const brief = briefVerdictPath ? loadGroup("brief", briefVerdictPath, briefDecisionPath) : null;

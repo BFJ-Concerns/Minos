@@ -58,7 +58,7 @@ function decision(verdictName, findings) {
   };
 }
 
-function compose(t, { main, mainDecision, brief, briefDecision, threshold = "High", orientation = { repository: "owner/repo", misconfigurations: [] } }) {
+function compose(t, { main, mainDecision, brief, briefDecision, threshold = "High", orientation = { repository: "/run/minos/review-17/workspace", source: { owner: "owner", repo: "repo" }, misconfigurations: [] } }) {
   const scratch = mkdtempSync(join(tmpdir(), "compose-review-publication-"));
   const write = (name, value) => {
     const path = join(scratch, name);
@@ -146,8 +146,11 @@ test("clean main and brief findings go to the filing destination without observa
   assert.deepEqual(readJson(plan.triage.entries).map((entry) => entry.kind), ["advisory-finding", "advisory-finding", "review-brief-misconfiguration"]);
 });
 
+// Shaped as setup-workspace writes it: `repository` is the workspace path,
+// the forge identity lives under `source`.
 const unreadableGuidance = {
-  repository: "owner/repo",
+  repository: "/run/minos/review-17/workspace",
+  source: { owner: "owner", repo: "repo", pr: 4, date: "2026-10-01" },
   misconfigurations: [{ kind: "guidance-source", source: { repository: "owner/guidance", path: "docs/INTENT.md" }, reason: "is missing or empty" }],
 };
 
@@ -180,11 +183,40 @@ test("a malformed orientation misconfiguration stops the composer with nothing w
   const { result, scratch } = compose(t, {
     main: verdict([]),
     mainDecision: decision("clean", []),
-    orientation: { repository: "owner/repo", misconfigurations: [{ kind: "guidance-source", reason: "no source" }] },
+    orientation: { ...unreadableGuidance, misconfigurations: [{ kind: "guidance-source", reason: "no source" }] },
   });
   assert.equal(result.status, 1);
   assert.equal(existsSync(join(scratch, "out")), false);
 });
+
+test("a local guidance source's diagnostic names the reviewed repository, never the workspace path", (t) => {
+  const { result, plan, readJson } = compose(t, {
+    main: verdict([]),
+    mainDecision: decision("clean", []),
+    orientation: { ...unreadableGuidance, misconfigurations: [{ kind: "guidance-source", source: { path: "docs/INTENT.md" }, reason: "is missing or empty" }] },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const [entry] = readJson(plan.triage.entries);
+  assert.equal(entry.repository, "owner/repo");
+  assert.match(issueLogEntry(entry, "(PR #4)"), /^- \*\*Guidance source misconfiguration: owner\/repo:docs\/INTENT\.md\*\* — configured guidance for owner\/repo /);
+  assert.doesNotMatch(issueLogEntry(entry, "(PR #4)"), /\/run\/minos/);
+});
+
+for (const [label, contents] of [["unreadable", null], ["invalid JSON", "{nope"]]) {
+  test(`an ${label} orientation stops the composer with exit 1 and nothing written`, (t) => {
+    const scratch = mkdtempSync(join(tmpdir(), "compose-review-publication-"));
+    const orientationPath = join(scratch, "orientation.json");
+    if (contents !== null) writeFileSync(orientationPath, contents);
+    const main = join(scratch, "main.json");
+    const mainDecision = join(scratch, "main-decision.json");
+    writeFileSync(main, JSON.stringify(verdict([])));
+    writeFileSync(mainDecision, JSON.stringify(decision("clean", [])));
+    const result = spawnSync(process.execPath, [cliPath, join(scratch, "out"), orientationPath, "High", main, mainDecision], { encoding: "utf8" });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /orientation is missing or not valid JSON/);
+    assert.equal(existsSync(join(scratch, "out")), false);
+  });
+}
 
 test("duplicate findings merge once with the higher severity and either group's gating decision", (t) => {
   const { result, plan, readJson } = compose(t, {
