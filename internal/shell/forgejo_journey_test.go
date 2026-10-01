@@ -842,6 +842,7 @@ func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
 	t.Setenv("MINOS_PR", "1")
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		var stdout bytes.Buffer
@@ -889,13 +890,14 @@ func TestForgeReactionUsesForgejo14ShapeAndReadBackIdempotency(t *testing.T) {
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
 	t.Setenv("MINOS_PR", "1")
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 
 	content := apiShape.Request["content"].(string)
 	if apiShape.Response["content"] != content || apiShape.Response["user"].(map[string]any)["login"] != "Minos" {
 		t.Fatalf("reaction fixture does not preserve the Forgejo response shape: %#v", apiShape)
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
-		if err := ForgeCommand(t.Context(), []string{"reaction", state.headSHA(), state.targetSHA(), content}, &bytes.Buffer{}); err != nil {
+		if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "clean", "add"}, &bytes.Buffer{}); err != nil {
 			t.Fatalf("reaction attempt %d: %v", attempt, err)
 		}
 	}
@@ -916,7 +918,7 @@ func TestForgeReactionRemoveUsesForgejo14ShapeAndReadBackIdempotency(t *testing.
 	configureForgeCommandFixture(t, state)
 
 	for attempt := 0; attempt < 2; attempt++ {
-		if err := ForgeCommand(t.Context(), []string{"reaction-remove", state.headSHA(), state.targetSHA(), "eyes"}, &bytes.Buffer{}); err != nil {
+		if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "in-flight", "remove"}, &bytes.Buffer{}); err != nil {
 			t.Fatalf("reaction removal attempt %d: %v", attempt+1, err)
 		}
 	}
@@ -1201,7 +1203,7 @@ func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
 			} else if outcome["outcome"] != "discarded" || outcome["review"] != nil {
 				t.Fatalf("the none destination generated a fallback: %#v", outcome)
 			}
-			for _, args := range [][]string{{"reaction", head, target, "+1"}, {"status", head, target, "clean"}} {
+			for _, args := range [][]string{{"marker", head, target, "clean", "add"}, {"status", head, target, "clean"}} {
 				if err := ForgeCommand(t.Context(), args, &bytes.Buffer{}); err != nil {
 					t.Fatal(err)
 				}
@@ -1481,7 +1483,12 @@ func configureForgeCommandFixture(t *testing.T, state *forgejoFixtureState) {
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
 	t.Setenv("MINOS_PR", "1")
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 }
+
+// defaultMarkersJSON is MINOS_MARKERS as SpawnRun exports the shipped
+// defaults.
+const defaultMarkersJSON = `{"in-flight":{"reaction":"eyes"},"clean":{"reaction":"+1"}}`
 
 func adjudicatedFinding(id, severity, title string, line int, explanation string) map[string]any {
 	return map[string]any{
@@ -1908,6 +1915,8 @@ type forgejoFixtureState struct {
 	reactionWrites           int
 	reactionDeleteWrites     int
 	labelDeleteWrites        int
+	labelWrites              int
+	repositoryLabels         []map[string]any
 	mergeWrites              int
 	branchDeleteWrites       int
 	sourceBranchExists       bool
@@ -1997,6 +2006,7 @@ func (s *forgejoFixtureState) service(t *testing.T) (ServiceConfig, RepoConfig, 
 	}
 	repo := RepoConfig{Forge: "forgejo", Owner: "minos-e2e-owner", Repo: "subject"}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+	repo.RepositoryKnobs = resolveRepositoryKnobs(RepositoryKnobs{}, RepositoryKnobs{}, func(...string) bool { return false })
 	facts := Facts{
 		Forge: "forgejo", Owner: repo.Owner, Repo: repo.Repo,
 		PR: pullRequestNumber, Occasion: "pr-opened",
@@ -2679,24 +2689,100 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		s.reactionDeleteWrites++
 		s.writeSequence = append(s.writeSequence, "reaction-remove:"+payload.Content)
 		writeFixtureJSON(s.t, w, map[string]any{})
+	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/labels":
+		// Forgejo pages repository labels; the fixture serves them all on
+		// the first page and an empty page after.
+		if page := r.URL.Query().Get("page"); page != "" && page != "1" {
+			writeFixtureJSON(s.t, w, []map[string]any{})
+			return
+		}
+		writeFixtureJSON(s.t, w, s.repositoryLabels)
+	case r.Method == http.MethodGet && path == "/api/v1/orgs/minos-e2e-owner/labels":
+		// The fixture owner is a user, which Forgejo answers as no organisation.
+		http.Error(w, `{"message":"GetOrgByName"}`, http.StatusNotFound)
 	case r.Method == http.MethodGet && path == issuePath+"/labels":
-		writeFixtureJSON(s.t, w, s.pullRequest["labels"])
-	case r.Method == http.MethodDelete && strings.HasPrefix(path, issuePath+"/labels/"):
-		name := strings.TrimPrefix(path, issuePath+"/labels/")
-		labels, _ := s.pullRequest["labels"].([]any)
-		kept := make([]any, 0, len(labels))
-		for _, raw := range labels {
-			label := raw.(map[string]any)
-			if label["name"] != name {
-				kept = append(kept, raw)
+		writeFixtureJSON(s.t, w, s.pullRequestLabels())
+	case r.Method == http.MethodPost && path == issuePath+"/labels":
+		var payload struct {
+			Labels []int64 `json:"labels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		labels := s.pullRequestLabels()
+		for _, id := range payload.Labels {
+			for _, defined := range s.repositoryLabels {
+				if fixtureLabelID(defined) == id && !slices.ContainsFunc(labels, func(label map[string]any) bool { return fixtureLabelID(label) == id }) {
+					labels = append(labels, defined)
+					s.writeSequence = append(s.writeSequence, "label-add:"+fmt.Sprint(defined["name"]))
+				}
 			}
 		}
-		s.pullRequest["labels"] = kept
+		s.setPullRequestLabels(labels)
+		s.labelWrites++
+		writeFixtureJSON(s.t, w, labels)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, issuePath+"/labels/"):
+		id, err := strconv.ParseInt(strings.TrimPrefix(path, issuePath+"/labels/"), 10, 64)
+		if err != nil {
+			http.Error(w, "label id must be numeric", http.StatusUnprocessableEntity)
+			return
+		}
+		kept := make([]map[string]any, 0)
+		for _, label := range s.pullRequestLabels() {
+			if fixtureLabelID(label) == id {
+				s.writeSequence = append(s.writeSequence, "label-remove:"+fmt.Sprint(label["name"]))
+				continue
+			}
+			kept = append(kept, label)
+		}
+		s.setPullRequestLabels(kept)
 		s.labelDeleteWrites++
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, fmt.Sprintf("unexpected fixture request %s %s", r.Method, path), http.StatusNotFound)
 	}
+}
+
+// pullRequestLabels reads the labels the pull request carries, in the shape
+// both the pull request and the issue labels endpoint return. The caller
+// holds the fixture lock.
+func (s *forgejoFixtureState) pullRequestLabels() []map[string]any {
+	raw, _ := json.Marshal(s.pullRequest["labels"])
+	var labels []map[string]any
+	_ = json.Unmarshal(raw, &labels)
+	if labels == nil {
+		labels = []map[string]any{}
+	}
+	return labels
+}
+
+func (s *forgejoFixtureState) setPullRequestLabels(labels []map[string]any) {
+	stored := make([]any, 0, len(labels))
+	for _, label := range labels {
+		stored = append(stored, label)
+	}
+	s.pullRequest["labels"] = stored
+}
+
+// pullRequestLabelNames lists the carried labels by name for assertions.
+func (s *forgejoFixtureState) pullRequestLabelNames() []string {
+	names := []string{}
+	for _, label := range s.pullRequestLabels() {
+		names = append(names, fmt.Sprint(label["name"]))
+	}
+	return names
+}
+
+func fixtureLabelID(label map[string]any) int64 {
+	switch id := label["id"].(type) {
+	case float64:
+		return int64(id)
+	case int64:
+		return id
+	case int:
+		return int64(id)
+	}
+	return -1
 }
 
 func writeFixtureJSON(t *testing.T, w http.ResponseWriter, value any) {

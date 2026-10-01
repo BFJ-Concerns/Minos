@@ -128,7 +128,7 @@ func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 		HeadSHA:     "head-sha",
 		TargetSHA:   "target-sha",
 	}
-	result := adapter.AddReaction(t.Context(), guard, "+1")
+	result := adapter.AddMarker(t.Context(), guard, Marker{Reaction: "+1"})
 	if result.Outcome != WriteApplied {
 		t.Fatalf("result = %#v", result)
 	}
@@ -142,7 +142,7 @@ func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 	}
 }
 
-func TestRemoveReactionUsesGuardedPullRequestIdentity(t *testing.T) {
+func TestRemoveReactionMarkerUsesGuardedPullRequestIdentity(t *testing.T) {
 	guard := Guard{
 		Repository: Repository{Owner: "owner", Name: "repo"}, PullRequest: 17,
 		HeadSHA: "head-sha", TargetSHA: "target-sha",
@@ -152,7 +152,7 @@ func TestRemoveReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := adapter.RemoveReaction(t.Context(), guard, "eyes"); result.Outcome != WriteApplied {
+	if result := adapter.RemoveMarker(t.Context(), guard, Marker{Reaction: "eyes"}); result.Outcome != WriteApplied {
 		t.Fatalf("result = %#v", result)
 	}
 	request := runner.requests[0]
@@ -162,6 +162,51 @@ func TestRemoveReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 	want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos", "eyes"}
 	if !slices.Equal(request.Arguments, want) {
 		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
+	}
+}
+
+func TestLabelMarkersUseTheGuardedLabelOperations(t *testing.T) {
+	guard := Guard{
+		Repository: Repository{Owner: "owner", Name: "repo"}, PullRequest: 17,
+		HeadSHA: "head-sha", TargetSHA: "target-sha",
+	}
+	runner := &recordingRunner{
+		outputs: [][]byte{[]byte(`{"outcome":"applied"}`), []byte(`{"outcome":"applied"}`)},
+		errors:  []error{nil, nil},
+	}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := Marker{Label: "minos/reviewing"}
+	if result := adapter.AddMarker(t.Context(), guard, marker); result.Outcome != WriteApplied {
+		t.Fatalf("add result = %#v", result)
+	}
+	if result := adapter.RemoveMarker(t.Context(), guard, marker); result.Outcome != WriteApplied {
+		t.Fatalf("remove result = %#v", result)
+	}
+	want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos", "minos/reviewing"}
+	for index, operation := range []string{"guarded-add-label", "guarded-remove-label"} {
+		request := runner.requests[index]
+		if request.Operation != operation || !slices.Equal(request.Arguments, want) {
+			t.Fatalf("request %d = %s %v, want %s %v", index, request.Operation, request.Arguments, operation, want)
+		}
+	}
+}
+
+func TestMarkerWithoutExactlyOneFormIsRejectedBeforeAnyWrite(t *testing.T) {
+	runner := &recordingRunner{}
+	adapter, err := NewAdapter(runner, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []Marker{{}, {Reaction: "eyes", Label: "minos/reviewing"}, {Reaction: "two words"}} {
+		if result := adapter.AddMarker(t.Context(), Guard{}, marker); result.Outcome != WriteRejected {
+			t.Fatalf("marker %#v result = %#v, want rejected", marker, result)
+		}
+	}
+	if len(runner.requests) != 0 {
+		t.Fatalf("requests = %#v, want none", runner.requests)
 	}
 }
 
