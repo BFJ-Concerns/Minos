@@ -314,8 +314,15 @@ fi
 failure_stage="workspace-setup"
 failure_cause="workspace setup failed"
 setup_status=0
-"$MINOS_SETUP_WORKSPACE" 2>"$MINOS_RUN_DIR/setup.stderr" || setup_status=$?
-cat "$MINOS_RUN_DIR/setup.stderr" >&2
+# Keep setup's stderr live while retaining it for the failure cause. A FIFO
+# lets setup run directly, preserving its exit status independently of tee.
+setup_stderr_pipe="$run_tmpdir/setup.stderr.pipe"
+mkfifo "$setup_stderr_pipe"
+tee "$MINOS_RUN_DIR/setup.stderr" <"$setup_stderr_pipe" >&2 &
+setup_tee_pid=$!
+"$MINOS_SETUP_WORKSPACE" 2>"$setup_stderr_pipe" || setup_status=$?
+wait "$setup_tee_pid" || echo "run-body: could not capture setup stderr" >&2
+rm -f "$setup_stderr_pipe"
 if [ "$setup_status" -ne 0 ]; then
   # Only the target-refusal diagnostic replaces the generic setup cause.
   # This is operator-facing failure text, never input to a recovery decision.

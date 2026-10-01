@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -454,6 +455,61 @@ func TestRunBodyRecordsProtocolV2TargetRefusal(t *testing.T) {
 			t.Fatalf("lead record %s exists or stat failed after protocol v2 refusal: %v", suffix, err)
 		}
 	}
+}
+
+func TestRunBodyStreamsSetupStderrBeforeSetupExits(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	release := filepath.Join(fixture.root, "release-setup")
+	const progress = "MINOS_SETUP_PROGRESS_BEFORE_EXIT"
+	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
+set -eu
+printf '%s\n' 'MINOS_SETUP_PROGRESS_BEFORE_EXIT' >&2
+while [ ! -f "$MINOS_TEST_RELEASE_SETUP" ]; do sleep 0.01; done
+exit 19
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := fixture.command(ctx, map[string]string{"MINOS_TEST_RELEASE_SETUP": release})
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = os.WriteFile(release, nil, 0o600)
+			_ = cmd.Wait()
+		}
+	}()
+	observed := make(chan struct{}, 1)
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			if scanner.Text() == progress {
+				observed <- struct{}{}
+			}
+		}
+	}()
+	select {
+	case <-observed:
+		// Setup cannot exit until this test releases it, so receipt proves
+		// forwarding during setup rather than replay after its exit.
+	case <-time.After(2 * time.Second):
+		t.Fatal("setup stderr was not forwarded while setup was waiting for release")
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Wait()
+	waited = true
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 19 {
+		t.Fatalf("run-body exit = %v, want setup exit 19", err)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "setup.stderr"), progress)
+	assertFailureLine(t, fixture.failureLog, "stage=workspace-setup", "cause=workspace setup failed")
 }
 
 func TestRunBodyKeepsGenericCauseForTargetTransportFailure(t *testing.T) {
@@ -1425,6 +1481,10 @@ func (f runBodyFixture) execute(extraEnv map[string]string) ([]byte, error) {
 }
 
 func (f runBodyFixture) executeContext(ctx context.Context, extraEnv map[string]string) ([]byte, error) {
+	return f.command(ctx, extraEnv).CombinedOutput()
+}
+
+func (f runBodyFixture) command(ctx context.Context, extraEnv map[string]string) *exec.Cmd {
 	runEnv := map[string]string{
 		"MINOS_RUN_DIR":                 f.runDir,
 		"MINOS_CONFIG":                  f.configRoot,
@@ -1460,7 +1520,7 @@ func (f runBodyFixture) executeContext(ctx context.Context, extraEnv map[string]
 	script := filepath.Join("..", "..", "scripts", "run-body", "run-body")
 	cmd := exec.CommandContext(ctx, script)
 	cmd.Env = environmentWithOverrides(runEnv)
-	return cmd.CombinedOutput()
+	return cmd
 }
 
 func assertRegularFile(t *testing.T, path string) {
