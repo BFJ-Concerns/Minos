@@ -1,10 +1,10 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-
+import { fixtureArchive as archiveFixture } from "./archive-fixture.mjs";
 import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const legs = [
@@ -47,36 +47,15 @@ const zeroLegEnvelope = {
   reviewers: [],
 };
 
-function fixtureArchive(t, {
-  manifestStatus = "complete",
-  records = {
-    exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
-    "specialist-1": { status: "complete", resolved_model: "gpt-6-sol-served" },
-    "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
-  },
-  duplicateRecords = [],
-  rawAgentRecords = [],
-  manifests = 1,
-  agentsDirectory = true,
-} = {}) {
-  const recordDir = mkdtempSync(join(tmpdir(), "minos-adjudicator-fixture-"));
-  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
-  for (let run = 0; run < manifests; run += 1) {
-    const archive = join(recordDir, "runs", "cwd", `namespace-${run}`, `run-${run}`);
-    mkdirSync(agentsDirectory ? join(archive, "agents") : archive, { recursive: true });
-    writeFileSync(join(archive, "manifest.json"), JSON.stringify({ kind: "run_manifest", status: manifestStatus }));
-    const agentRecords = [
-      ...[...Object.entries(records), ...duplicateRecords]
-        .map(([label, record]) => JSON.stringify({ label, ...record })),
-      ...rawAgentRecords,
-    ];
-    agentRecords.forEach((record, index) => {
-      const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
-      mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, "agent.json"), record);
-    });
-  }
-  return recordDir;
+function fixtureArchive(t, options = {}) {
+  return archiveFixture(t, {
+    records: {
+      exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+      "specialist-1": { status: "complete", resolved_model: "gpt-6-sol-served" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
+    },
+    ...options,
+  });
 }
 
 function assertWithheld(adapterVerdict, condition) {
@@ -215,7 +194,7 @@ test("operator attention follows the combined-confidence threshold", async (t) =
   assert.deepEqual(highVerdict.operatorAttention, []);
 });
 
-test("every confirmed finding renders into the review payload regardless of severity", async (t) => {
+test("adjudication retains every confirmed finding regardless of severity", async (t) => {
   const lowSeverityLegs = [
     ...legs,
     { label: "specialist-2", role: "specialist", pinnedModel: "gpt-6-sol" },

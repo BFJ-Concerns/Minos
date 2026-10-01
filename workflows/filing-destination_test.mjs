@@ -77,7 +77,7 @@ async function destinationFixture(t, { issues = "# Issues\n\n- An existing entry
   });
   const runDir = join(scratch, "run");
   return {
-    scratch, origin, seed, branch, lookups, runDir,
+    scratch, origin, seed, lookups, runDir,
     apiBase: `http://127.0.0.1:${forge.address().port}`,
     originFile: (path = "ISSUES.md") => git(seed, "--git-dir", origin, "show", `${branch}:${path}`),
     deliver: (overrides) => deliverFilingEntries({

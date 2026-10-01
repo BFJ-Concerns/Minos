@@ -2,7 +2,7 @@ import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,7 @@ function decision(verdictName, findings) {
 
 function compose(t, { main, mainDecision, brief, briefDecision, threshold = "High", orientation = { repository: "/run/minos/review-17/workspace", source: { owner: "owner", repo: "repo" }, misconfigurations: [] } }) {
   const scratch = mkdtempSync(join(tmpdir(), "compose-review-publication-"));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
   const write = (name, value) => {
     const path = join(scratch, name);
     writeFileSync(path, JSON.stringify(value));
@@ -205,6 +206,7 @@ test("a local guidance source's diagnostic names the reviewed repository, never 
 for (const [label, contents] of [["unreadable", null], ["invalid JSON", "{nope"]]) {
   test(`an ${label} orientation stops the composer with exit 1 and nothing written`, (t) => {
     const scratch = mkdtempSync(join(tmpdir(), "compose-review-publication-"));
+    t.after(() => rmSync(scratch, { recursive: true, force: true }));
     const orientationPath = join(scratch, "orientation.json");
     if (contents !== null) writeFileSync(orientationPath, contents);
     const main = join(scratch, "main.json");

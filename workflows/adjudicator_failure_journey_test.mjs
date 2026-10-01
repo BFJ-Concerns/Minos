@@ -297,14 +297,8 @@ function assertWithheld(verdict) {
 }
 
 function machineReadableBriefStatus(verdict, brief) {
-  const disposition = Array.isArray(verdict.briefs)
-    ? verdict.briefs.find((entry) => entry && entry.brief === brief)
-    : null;
-  if (disposition && ["run", "skipped"].includes(disposition.status)) return disposition.status;
-  if (Array.isArray(verdict.ran) && verdict.ran.some((entry) =>
-    entry === brief || (entry && entry.brief === brief))) return "run";
-  if (Array.isArray(verdict.skipped) && verdict.skipped.some((entry) =>
-    entry === brief || (entry && entry.brief === brief))) return "skipped";
+  if (verdict.ran.some((entry) => entry.brief === brief)) return "run";
+  if (verdict.skipped.some((entry) => entry.brief === brief)) return "skipped";
   return null;
 }
 

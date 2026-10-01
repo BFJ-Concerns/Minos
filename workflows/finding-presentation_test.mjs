@@ -63,7 +63,7 @@ test("a finding with no gating disposition renders as advisory, and no model evi
   assert.match(declassified.body, /^\*\*Advisory · High: /);
 });
 
-test("merged and neighbouring findings are named on the comment, never posted twice", () => {
+test("a comment renders duplicate-source attribution and neighbouring-finding references", () => {
   const comment = findingComment(
     {
       ...confirmed,

@@ -1,24 +1,26 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
-
 import { briefEngagement } from "./brief-dispositions.mjs";
+import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixture.mjs";
 import { resolveRouting } from "./role-routing.mjs";
+import { verdictDigest } from "./verdict-classification.mjs";
+import { adjudicateEnvelope } from "./archive-fixture.mjs";
 
 const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
-import { verdictDigest } from "./verdict-classification.mjs";
-import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
 const scriptPath = join(workflowsDir, "review-scope.js");
 const inputScriptPath = join(workflowsDir, "review-scope-inputs.mjs");
-const wrapperPath = join(workflowsDir, "adjudicated-review");
+function executableVerdict(t, envelope) {
+  return wrapperVerdict(t, envelope, { namespace: "scope", workflow: "review-scope.js" });
+}
 const source = await readFile(scriptPath, "utf8");
 const briefWorkflowSource = await readFile(join(workflowsDir, "review-briefs.js"), "utf8");
 const lifecycle = await readFile(join(workflowsDir, "..", "lifecycle", "lifecycle.md"), "utf8");
@@ -82,78 +84,63 @@ function scopeResult(decision = "nothing-engages", reason = "documentation wordi
   return { decision, reason };
 }
 
-async function adjudicateEnvelope(t, envelope) {
-  const recordDir = mkdtempSync(join(tmpdir(), "minos-scope-record-"));
-  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
-  const archiveDir = join(recordDir, "runs", "cwd", "synthetic", "run");
-  mkdirSync(join(archiveDir, "agents"), { recursive: true });
-  writeFileSync(join(archiveDir, "manifest.json"), JSON.stringify({ status: "complete" }));
-  envelope.requiredModelEvidence.forEach((leg, index) => {
-    const agentDir = join(archiveDir, "agents", String(index + 1).padStart(6, "0"));
-    mkdirSync(agentDir);
-    writeFileSync(join(agentDir, "agent.json"), JSON.stringify({
-      label: leg.label,
-      status: "complete",
-      resolved_model: leg.pinnedModel,
-    }));
-  });
-  return adjudicate({ envelope, recordDir });
-}
-
 // --- input builder ---
 
 function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "minos-scope-inputs-"));
-  const workspace = join(root, "workspace");
-  mkdirSync(workspace);
-  const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: "Scope Fixture",
-      GIT_AUTHOR_EMAIL: "scope@example.invalid",
-      GIT_COMMITTER_NAME: "Scope Fixture",
-      GIT_COMMITTER_EMAIL: "scope@example.invalid",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  git("init", "--quiet", "--initial-branch=main");
-  mkdirSync(join(workspace, "pkg"));
-  writeFileSync(join(workspace, "pkg", "a.go"), "package a\n");
-  mkdirSync(join(workspace, "deploy"));
-  writeFileSync(join(workspace, "deploy", "notes.txt"), "untouched\n");
-  writeFileSync(join(workspace, "README.md"), "MINOS_SCOPE_COMMISSION_CORAL");
-  git("add", "--all");
-  git("commit", "--quiet", "-m", "base");
-  const target = git("rev-parse", "HEAD").trim();
-  writeFileSync(join(workspace, "pkg", "a.go"), "package a\n\nfunc A() {}\n");
-  git("add", "--all");
-  git("commit", "--quiet", "-m", "change");
-  const head = git("rev-parse", "HEAD").trim();
+  try {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Scope Fixture",
+        GIT_AUTHOR_EMAIL: "scope@example.invalid",
+        GIT_COMMITTER_NAME: "Scope Fixture",
+        GIT_COMMITTER_EMAIL: "scope@example.invalid",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    git("init", "--quiet", "--initial-branch=main");
+    mkdirSync(join(workspace, "pkg"));
+    writeFileSync(join(workspace, "pkg", "a.go"), "package a\n");
+    mkdirSync(join(workspace, "deploy"));
+    writeFileSync(join(workspace, "deploy", "notes.txt"), "untouched\n");
+    writeFileSync(join(workspace, "README.md"), "MINOS_SCOPE_COMMISSION_CORAL");
+    git("add", "--all");
+    git("commit", "--quiet", "-m", "base");
+    const target = git("rev-parse", "HEAD").trim();
+    writeFileSync(join(workspace, "pkg", "a.go"), "package a\n\nfunc A() {}\n");
+    git("add", "--all");
+    git("commit", "--quiet", "-m", "change");
+    const head = git("rev-parse", "HEAD").trim();
 
-  if (reviewDirectory) {
-    mkdirSync(join(workspace, ".review"), { recursive: true });
-    for (const brief of briefs) {
-      const absolute = join(workspace, brief.path);
-      mkdirSync(dirname(absolute), { recursive: true });
-      writeFileSync(absolute, brief.content);
+    if (reviewDirectory) {
+      mkdirSync(join(workspace, ".review"), { recursive: true });
+      for (const brief of briefs) {
+        const absolute = join(workspace, brief.path);
+        mkdirSync(dirname(absolute), { recursive: true });
+        writeFileSync(absolute, brief.content);
+      }
     }
+    const orientationPath = join(root, "orientation.json");
+    writeFileSync(orientationPath, JSON.stringify({
+      repository: workspace,
+      guidance: [{ source: { path: "README.md" }, location: join(workspace, "README.md"), origin: "checked-in" }],
+      misconfigurations: [],
+    }));
+    const cliArgs = [inputScriptPath, target, head];
+    if (occasion !== undefined) cliArgs.push(occasion);
+    const output = JSON.parse(execFileSync(process.execPath, cliArgs, {
+      encoding: "utf8",
+      env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: workspace, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    }));
+    return output;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
-  const orientationPath = join(root, "orientation.json");
-  writeFileSync(orientationPath, JSON.stringify({
-    repository: workspace,
-    guidance: [{ source: { path: "README.md" }, location: join(workspace, "README.md"), origin: "checked-in" }],
-    misconfigurations: [],
-  }));
-  const cliArgs = [inputScriptPath, target, head];
-  if (occasion !== undefined) cliArgs.push(occasion);
-  const output = JSON.parse(execFileSync(process.execPath, cliArgs, {
-    encoding: "utf8",
-    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: workspace, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" },
-    stdio: ["ignore", "pipe", "pipe"],
-  }));
-  rmSync(root, { recursive: true, force: true });
-  return output;
 }
 
 test("the input builder enumerates the diff and settles brief engagement deterministically", () => {
@@ -337,79 +324,6 @@ test("a scope-leg null still emits its required leg and falls back to review-req
 });
 
 // --- the executable wrapper journey ---
-
-const preloadSource = String.raw`
-import childProcess from "node:child_process";
-import { EventEmitter } from "node:events";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
-import { PassThrough } from "node:stream";
-
-childProcess.spawn = function recordedSpawn(_command, _arguments, options) {
-  const envelope = JSON.parse(readFileSync(process.env.MINOS_SCOPE_ENVELOPE, "utf8"));
-  const recordDir = options.env.ENSEMBLE_RUN_RECORD_DIR;
-  writeFileSync(process.env.MINOS_SCOPE_RECORD, recordDir);
-  const archive = join(recordDir, "runs", "cwd", "scope", "run");
-  mkdirSync(join(archive, "agents"), { recursive: true });
-  writeFileSync(
-    join(archive, "manifest.json"),
-    JSON.stringify({ kind: "run_manifest", status: "complete" }),
-  );
-  envelope.requiredModelEvidence.forEach((leg, index) => {
-    const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(
-      join(directory, "agent.json"),
-      JSON.stringify({ label: leg.label, status: "complete" }),
-    );
-  });
-
-  const child = new EventEmitter();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  setImmediate(() => {
-    child.stdout.end(JSON.stringify(envelope) + "\n");
-    child.stderr.end();
-    child.emit("close", 0, null);
-  });
-  return child;
-};
-syncBuiltinESMExports();
-`;
-
-function executableVerdict(t, envelope) {
-  const root = mkdtempSync(join(tmpdir(), "minos-scope-wrapper-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const envelopePath = join(root, "envelope.json");
-  const preloadPath = join(root, "record-ensemble.mjs");
-  const recordPath = join(root, "record-dir.txt");
-  const argsPath = join(root, "args.json");
-  const workflowPath = join(root, "review-scope.js");
-  writeFileSync(envelopePath, JSON.stringify(envelope));
-  writeFileSync(preloadPath, preloadSource);
-  writeFileSync(argsPath, "{}");
-  writeFileSync(workflowPath, "return {};\n");
-
-  const result = spawnSync(
-    wrapperPath,
-    [workflowPath, "--json-args", `@${argsPath}`],
-    {
-      cwd: workflowsDir,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
-        MINOS_SCOPE_ENVELOPE: envelopePath,
-        MINOS_SCOPE_RECORD: recordPath,
-      },
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  const recordDir = readFileSync(recordPath, "utf8");
-  assert.equal(existsSync(recordDir), false, "the wrapper removes the consumed archive");
-  return JSON.parse(result.stdout);
-}
 
 test("the wrapper attaches a valid scope decision to the adjudicated verdict", async (t) => {
   const { result } = await runScript(workflowArgs(), () => scopeResult());
