@@ -323,6 +323,17 @@ if (!guidance) throw new Error("deterministic input omitted reviewed-project gui
 const routing = routingFromInput(input);
 if (!routing) throw new Error("deterministic input omitted the role routing");
 
+const incomplete = [];
+function legOutput(result, label) {
+  if (!result || result.failure !== null) {
+    incomplete.push(`agent ${result?.label || label} failed: ${result?.failure?.message || "no failure account returned"}`);
+    return null;
+  }
+  if (result.output === null)
+    incomplete.push(`agent ${result.label || label} answered without usable output`);
+  return result.output;
+}
+
 const legs = [];
 const addLeg = (label, role, pinnedModel, findingIds = null) => {
   const leg = { label, role, pinnedModel };
@@ -367,6 +378,7 @@ if (relevanceCandidates.length > 0) {
       schema: relevanceSchema,
       model: routing["brief-planner"].model,
       effort: routing["brief-planner"].effort,
+      strip: ["skills", "agents"],
       label: "brief-relevance",
       phase: "Relevance",
     },
@@ -443,12 +455,14 @@ if (partitionRequests.length > 0) {
       schema: partitionSchema,
       model: routing["brief-planner"].model,
       effort: routing["brief-planner"].effort,
+      strip: ["skills", "agents"],
+      identity: true,
       label: request.label,
       phase: "Partition",
     },
   )));
   partitionRequests.forEach((request, index) => {
-    const result = partitionResults[index];
+    const result = legOutput(partitionResults[index], request.label);
     if (!result || !Array.isArray(result.units)) {
       reports.set(request.candidate.brief.path, {
         ...request.candidate.base,
@@ -496,6 +510,8 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
     schema: specialistSchema,
     model: routing.proposer.model,
     effort: routing.proposer.effort,
+    strip: ["skills", "agents"],
+    identity: true,
     label: unit.label,
     phase: "Review",
   });
@@ -506,14 +522,15 @@ const proposed = [];
 const outOfScopeObservations = [];
 const inapplicableByBrief = new Map();
 dispatched.forEach((unit, unitIndex) => {
-  const result = specialistResults[unitIndex];
+  const settlement = specialistResults[unitIndex];
+  const result = legOutput(settlement, unit.label);
   reviewerStates.push({
     label: unit.label,
     role: "specialist",
     brief: unit.brief,
     family: routing.proposer.engine,
     pinnedModel: routing.proposer.model,
-    status: result ? "done" : "no-result",
+    status: settlement && settlement.failure === null ? "done" : "no-result",
   });
   if (!result) {
     reports.set(unit.brief, {
@@ -611,17 +628,22 @@ const verifierResults = await parallel(verifierGroups.map((group) => () => agent
     schema: verifierSchema,
     model: routing.verifier.model,
     effort: routing.verifier.effort,
+    strip: ["skills", "agents"],
+    identity: true,
     label: group.label,
     phase: "Verify",
   },
 )));
+
+const verifierOutputs = verifierResults.map((result, index) =>
+  legOutput(result, verifierGroups[index].label));
 
 const verifierByFinding = new Map(proposed.map((item) => [findingId(item), null]));
 // The observation channel is independent of verdict validity: what a
 // verifier established while checking survives even when its verdict set
 // is discarded as malformed.
 verifierGroups.forEach((group, groupIndex) => {
-  const response = verifierResults[groupIndex];
+  const response = verifierOutputs[groupIndex];
   const observations = response && Array.isArray(response.outOfScopeObservations)
     ? response.outOfScopeObservations
     : [];
@@ -636,7 +658,7 @@ verifierGroups.forEach((group, groupIndex) => {
   });
 });
 verifierGroups.forEach((group, groupIndex) => {
-  const response = verifierResults[groupIndex];
+  const response = verifierOutputs[groupIndex];
   if (!response || !Array.isArray(response.verdicts)) return;
   const expected = new Set(group.findingIds);
   if (response.verdicts.some((verdict) => !expected.has(verdict && verdict.findingId))) return;
@@ -666,6 +688,7 @@ const proposedFindings = proposed.map((item) => ({
 return {
   reviewed: { target: input.target, head: input.head, occasion: input.occasion || null },
   stage: "present",
+  ...(incomplete.length > 0 ? { incomplete } : {}),
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,

@@ -109,7 +109,10 @@ async function run(input, respond = responder()) {
   const calls = [];
   const agent = async (prompt, opts = {}) => {
     calls.push({ prompt, opts });
-    return respond(opts.label || "", prompt, opts);
+    const output = await respond(opts.label || "", prompt, opts);
+    if (!opts.identity) return output;
+    if (output && output.identityEnvelope) return output.identityEnvelope;
+    return { label: opts.label, phase: opts.phase, output, failure: output === null ? { message: "worker exhausted" } : null };
   };
   const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
   const result = await script(agent, parallel, async () => [], () => {}, () => {}, input);
@@ -827,4 +830,100 @@ test("the enumerator reads a tracked-file listing larger than the default child-
   const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
   const enumerated = JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env }));
   assert.deepEqual(enumerated.briefs, []);
+});
+
+const workerInput = args({
+  briefs: [brief(".review/errors.md", "---\nrelevance: Error-path changes.\nextent: full\nsweep: per-file\n---\nJudge errors.")],
+});
+test("worker dispatch options strip capabilities and identify fan-out settlements", async (t) => {
+  const respond = responder();
+  const { result, calls } = await run(workerInput, respond);
+  assert.equal(calls.length, 4);
+  for (const { opts } of calls) {
+    assert.deepEqual(opts.strip, ["skills", "agents"], `${opts.label} strips worker capabilities`);
+    if (!["Relevance"].includes(opts.phase))
+      assert.equal(opts.identity, true, `${opts.label} identifies its settlement`);
+  }
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, true, verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 1);
+});
+
+test("identified partition failure reaches the verdict by label", async (t) => {
+  const normal = responder();
+  let failedLabel;
+  const respond = (label, prompt, opts) => {
+    if (label.startsWith("brief-partition-")) {
+      failedLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: { message: "worker transport lost" } } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await run(workerInput, respond);
+  const reason = `agent ${failedLabel} failed: worker transport lost`;
+  assert.ok(result.incomplete?.includes(reason), JSON.stringify(result.incomplete));
+
+  // Complete archive records isolate the producer's incompleteness channel.
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, false);
+  assert.ok(verdict.incomplete.includes(`workflow reported incomplete: ${reason}`));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("identified specialist failure reaches the verdict by label", async (t) => {
+  const normal = responder();
+  let failedLabel;
+  const respond = (label, prompt, opts) => {
+    if (opts.phase === "Review") {
+      failedLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: { message: "worker transport lost" } } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await run(workerInput, respond);
+  const reason = `agent ${failedLabel} failed: worker transport lost`;
+  assert.ok(result.incomplete?.includes(reason), JSON.stringify(result.incomplete));
+  assert.equal(result.reviewers.find((entry) => entry.label === failedLabel).status, "no-result");
+  // Complete archive records isolate the producer's incompleteness channel.
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, false);
+  assert.ok(verdict.incomplete.includes(`workflow reported incomplete: ${reason}`));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("identified verifier failure reaches the verdict by label", async (t) => {
+  const normal = responder();
+  let failedLabel;
+  const respond = (label, prompt, opts) => {
+    if (label.startsWith("verify-")) {
+      failedLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: { message: "worker transport lost" } } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await run(workerInput, respond);
+  const reason = `agent ${failedLabel} failed: worker transport lost`;
+  assert.ok(result.incomplete?.includes(reason), JSON.stringify(result.incomplete));
+
+  // Complete archive records isolate the producer's incompleteness channel.
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, false);
+  assert.ok(verdict.incomplete.includes(`workflow reported incomplete: ${reason}`));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("identified null answer keeps reviewer settlement truthful", async () => {
+  const normal = responder();
+  let answeredLabel;
+  const respond = (label, prompt, opts) => {
+    if (opts.phase === "Review") {
+      answeredLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: null } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await run(workerInput, respond);
+  assert.equal(result.reviewers.find((entry) => entry.label === answeredLabel).status, "done");
+  assert.ok(result.incomplete.includes(`agent ${answeredLabel} answered without usable output`));
+  assert.ok(!result.incomplete.some((reason) => reason.includes("failed:")));
 });

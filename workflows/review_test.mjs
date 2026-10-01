@@ -23,7 +23,10 @@ async function runScript(args, respond) {
   const calls = [];
   const agent = async (prompt, opts = {}) => {
     calls.push({ prompt, opts });
-    return respond(opts.label || "", prompt, opts);
+    const output = await respond(opts.label || "", prompt, opts);
+    if (!opts.identity) return output;
+    if (output && output.identityEnvelope) return output.identityEnvelope;
+    return { label: opts.label, phase: opts.phase, output, failure: output === null ? { message: "worker exhausted" } : null };
   };
   const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
   const pipeline = async (items, ...stages) => Promise.all(items.map(async (item, index) => {
@@ -834,4 +837,76 @@ test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);
   assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition — is corrected and re-validated rather than worked around;\s+nothing has touched the forge yet/);
   assert.match(lifecycle, /The run's overall verdict is\s+`request-changes` when either validated decision is; `clean` only when\s+every validated decision is clean/);
+});
+
+test("worker dispatch options strip capabilities and identify fan-out settlements", async (t) => {
+  const respond = responder();
+  const { result, calls } = await runScript(ARGS, respond);
+  assert.equal(calls.length, 3);
+  for (const { opts } of calls) {
+    assert.deepEqual(opts.strip, ["skills", "agents"], `${opts.label} strips worker capabilities`);
+    if (!["Explore"].includes(opts.phase))
+      assert.equal(opts.identity, true, `${opts.label} identifies its settlement`);
+  }
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, true, verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 1);
+});
+
+test("identified specialist failure reaches the verdict by label", async (t) => {
+  const normal = responder();
+  let failedLabel;
+  const respond = (label, prompt, opts) => {
+    if (opts.phase === "Specialise") {
+      failedLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: { message: "worker transport lost" } } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await runScript(ARGS, respond);
+  const reason = `agent ${failedLabel} failed: worker transport lost`;
+  assert.ok(result.incomplete?.includes(reason), JSON.stringify(result.incomplete));
+  assert.equal(result.reviewers.find((entry) => entry.label === failedLabel).status, "no-result");
+  // Complete archive records isolate the producer's incompleteness channel.
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, false);
+  assert.ok(verdict.incomplete.includes(`workflow reported incomplete: ${reason}`));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("identified verifier failure reaches the verdict by label", async (t) => {
+  const normal = responder();
+  let failedLabel;
+  const respond = (label, prompt, opts) => {
+    if (label.startsWith("verify-")) {
+      failedLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: { message: "worker transport lost" } } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await runScript(ARGS, respond);
+  const reason = `agent ${failedLabel} failed: worker transport lost`;
+  assert.ok(result.incomplete?.includes(reason), JSON.stringify(result.incomplete));
+
+  // Complete archive records isolate the producer's incompleteness channel.
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, false);
+  assert.ok(verdict.incomplete.includes(`workflow reported incomplete: ${reason}`));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("identified null answer keeps reviewer settlement truthful", async () => {
+  const normal = responder();
+  let answeredLabel;
+  const respond = (label, prompt, opts) => {
+    if (opts.phase === "Specialise") {
+      answeredLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: null } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await runScript(ARGS, respond);
+  assert.equal(result.reviewers.find((entry) => entry.label === answeredLabel).status, "done");
+  assert.ok(result.incomplete.includes(`agent ${answeredLabel} answered without usable output`));
+  assert.ok(!result.incomplete.some((reason) => reason.includes("failed:")));
 });

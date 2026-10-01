@@ -367,6 +367,17 @@ const routing = routingFromInput(input);
 if (!routing) throw new Error("deterministic input omitted the role routing");
 const pullRequestDescription = pullRequestFromInput(input);
 
+const incomplete = [];
+function legOutput(result, label) {
+  if (!result || result.failure !== null) {
+    incomplete.push(`agent ${result?.label || label} failed: ${result?.failure?.message || "no failure account returned"}`);
+    return null;
+  }
+  if (result.output === null)
+    incomplete.push(`agent ${result.label || label} answered without usable output`);
+  return result.output;
+}
+
 const legs = [];
 function addLeg(label, role, pinnedModel, findingIds = null) {
   const leg = { label, role, pinnedModel };
@@ -405,6 +416,7 @@ const explorationResult = await agent(
     schema: explorationSchema,
     model: routing.exploration.model,
     effort: routing.exploration.effort,
+    strip: ["skills", "agents"],
     label: "exploration",
     phase: "Explore",
   }
@@ -448,6 +460,8 @@ const specialistResults = await parallel(
       schema: specialistSchema,
       model: routing.proposer.model,
       effort: routing.proposer.effort,
+      strip: ["skills", "agents"],
+      identity: true,
       label: unit.label,
       phase: "Specialise",
     })
@@ -459,7 +473,8 @@ const proposed = [];
 const outOfScopeObservations = [];
 const briefs = [];
 specialistUnits.forEach((unit, unitIndex) => {
-  const result = specialistResults[unitIndex];
+  const settlement = specialistResults[unitIndex];
+  const result = legOutput(settlement, unit.label);
   reviewerStates.push({
     label: unit.label,
     role: "specialist",
@@ -468,7 +483,7 @@ specialistUnits.forEach((unit, unitIndex) => {
     scope: unit.scope,
     family: unit.family,
     pinnedModel: routing.proposer.model,
-    status: result ? "done" : "no-result",
+    status: settlement && settlement.failure === null ? "done" : "no-result",
   });
   if (!result) return;
   const observations = Array.isArray(result.outOfScopeObservations)
@@ -534,6 +549,8 @@ const verifierResults = await parallel(
         schema: verifierSchema,
         model: routing.verifier.model,
         effort: routing.verifier.effort,
+        strip: ["skills", "agents"],
+        identity: true,
         label: group.label,
         phase: "Verify",
       }
@@ -541,12 +558,15 @@ const verifierResults = await parallel(
   )
 );
 
+const verifierOutputs = verifierResults.map((result, index) =>
+  legOutput(result, verifierGroups[index].label));
+
 const verifierByFinding = new Map(proposed.map((item) => [item.id, null]));
 // The observation channel is independent of verdict validity: what a
 // verifier established while checking survives even when its verdict set
 // is discarded as malformed.
 verifierGroups.forEach((group, groupIndex) => {
-  const response = verifierResults[groupIndex];
+  const response = verifierOutputs[groupIndex];
   const observations = response && Array.isArray(response.outOfScopeObservations)
     ? response.outOfScopeObservations
     : [];
@@ -561,7 +581,7 @@ verifierGroups.forEach((group, groupIndex) => {
   });
 });
 verifierGroups.forEach((group, groupIndex) => {
-  const response = verifierResults[groupIndex];
+  const response = verifierOutputs[groupIndex];
   if (!response || !Array.isArray(response.verdicts)) return;
   const expected = new Set(group.findingIds);
   if (response.verdicts.some((verdict) => !expected.has(verdict && verdict.findingId))) return;
@@ -592,6 +612,7 @@ return {
   reviewed: { target, head, occasion },
   stage: "present",
   exploration,
+  ...(incomplete.length > 0 ? { incomplete } : {}),
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,
