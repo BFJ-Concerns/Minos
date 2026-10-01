@@ -7,15 +7,22 @@ from the bot account and adding the configured in-flight marker — clones the
 repository, and invokes the shipped review workflows through the
 installed Ensemble CLI and adjudication wrapper. Independent reviewers cover the
 whole diff, with breadth scaled to the diff and the repository's `.review/`
-briefs honoured; the opposite model family verifies every proposed finding.
-Explicit Ensemble engine dispatch guarantees that pairing. The adapter checks
-that every leg completed and every finding has a complete verifier verdict before
-returning a result to the lead. An incomplete run publishes no review and sets no
-clean status. The lead classifies the verdict, publishes the result to the forge,
+briefs honoured; by default, the opposite model family verifies every proposed
+finding — proposing and planning roles run on Codex (`gpt-6-sol`) while the
+verifier runs on Claude (`claude-opus-5-5`), so a finding is checked by the
+family that did not propose it. `[routing]` in `service.toml` overrides any
+role's engine, model or effort; a single-engine deployment routes every role
+to the one provisioned engine. Review workers are dispatched with skills and
+agent capabilities stripped, so they cannot spawn sub-agents or reach installed
+skills; each worker carries an identity label, and a failed leg names its label
+and failure cause in the incomplete result. The adapter checks that every leg
+completed and every finding has a complete verifier verdict before returning a
+result to the lead. An incomplete run publishes no review and sets no clean
+status. The lead classifies the verdict, publishes the result to the forge,
 and stops. Minos never builds, tests, fixes, or merges the reviewed change.
 
 The implementation deliberately has no lifecycle database, stage machine,
-heartbeat, incident system, preflight framework, model-admission gate, coverage
+incident system, preflight framework, model-admission gate, coverage
 ledger, review bar or review-of-review loop. The forge is the durable record and
 the systemd unit for a pull request is the only live-run coordination. How many
 leads may run at once is `runs.max-concurrent` in `service.toml`; run units share a

@@ -81,9 +81,11 @@ so no repository toolchains are needed.
    owner/name that takes the issues; no path), `pull-request-comment`, or
    `none`. Unset at both levels, it defaults to `pull-request-comment`. A
    file-kind destination is a separate write path committed as
-   `service.commit-author-name` and `service.commit-author-email`, as are
-   the failure ledger's commits. If delivery is unavailable, the run
-   report records the failure without posting a fallback comment.
+   `service.commit-author-name` (default: the bot login) and
+   `service.commit-author-email` (default: the bot login at
+   `minos.invalid`), as are the failure ledger's commits. If delivery is
+   unavailable, the run report records the failure without posting a
+   fallback comment.
 
    Markers define the form of each marker Minos writes on a pull request:
    `in-flight` while a run is active, `clean` on a clean outcome, and
@@ -118,8 +120,22 @@ so no repository toolchains are needed.
    two consecutive samples of anonymous memory plus swap at that threshold.
    A healthy run's unreclaimable footprint is around 1.2 GiB,
    but each run also paces `ensemble.concurrency-claude` and
-   `concurrency-codex` workers of its own, and `ensemble.agent-ceiling`
-   optionally caps a workflow's agents across both engines together.
+   `concurrency-codex` workers of its own (the loader defaults both to 2
+   when neither is set; the shipped example sets 10 and 6).
+   `ensemble.agent-ceiling` optionally caps a workflow's agents across
+   both engines together; unset, the runtime applies no combined cap (the
+   shipped example sets 12).
+
+   `[routing]` maps each workflow role — `exploration`, `proposer`,
+   `verifier`, `engagement-gate`, `brief-planner` — to an engine, model
+   and effort. A role left unset defaults at run time: with both engines
+   provisioned, proposing and planning roles (`exploration`, `proposer`,
+   `engagement-gate`, `brief-planner`) run on Codex (`gpt-6-sol`) and the
+   `verifier` on Claude (`claude-opus-5-5`); with one engine provisioned,
+   every role runs on it with that engine's default model. Default effort
+   is `high` for `exploration`, `proposer` and `brief-planner`, and
+   `medium` for `verifier` and `engagement-gate`. A configured role
+   overrides only the fields it sets.
 
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
@@ -200,9 +216,14 @@ background session and stops it at one of those terminal conditions. The
 transient systemd unit bounds a wedged run at `runs.duration-ceiling`.
 
 A run that fails before the lead launches — workspace setup, configuration
-loading, lifecycle instruction — writes an incomplete status to the forge
-naming the stage that failed (`minos forge status … incomplete --setup-failure
-STAGE`), appends the failure to `runs.failure-log`, and exits. When workspace
+loading, lifecycle instruction — attempts to write an incomplete status to the
+forge naming the stage that failed (`minos forge status … incomplete
+--setup-failure STAGE`). The write is best-effort: when bootstrap prerequisites
+(configuration, binary, forge identity, PR coordinates) are missing the status
+write is skipped, and the failure log carries a `status_write=skipped-prerequisites`
+marker. The forge command itself tolerates writer failures.
+The failure is always appended to `runs.failure-log` regardless of whether the
+status write succeeded, and the run exits. When workspace
 setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
@@ -318,10 +339,14 @@ request and serves it as `sweep`; a deployment with no completed pass yet
 returns no `sweep` field.
 
 The projection's `receiver` field carries a heartbeat the receiver publishes
-on each webhook delivery and at startup (`listening`). It names the activity
-(`delivery` or `listening`), the forge that sent the event, and the bind
-address. It grants no lease and is never read by admission — it exists so an
-operator surface can tell whether the receiver is alive and processing events.
+on each webhook delivery and at startup. Each document carries `recorded_at`
+(the timestamp of the event) and `activity` (`delivery` or `listening`).
+A delivery heartbeat includes `forge` (the forge that sent the event); a
+startup heartbeat includes `bind` (the listener address). Publication
+replaces the whole document, so only the most recent event's fields are
+present. The heartbeat grants no lease and is never read by admission — it
+exists so an operator surface can tell whether the receiver is alive and how
+recently it processed an event.
 
 To include finished runs, point the same `[runs]` block at the archive listing
 script and install it beside the others:
