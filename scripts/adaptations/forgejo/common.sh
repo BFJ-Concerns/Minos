@@ -121,7 +121,7 @@ guard_open_pull_request() {
   guard_reason=""
 
   guard_user_json="$(api GET "/api/v1/user")" || return 2
-  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
+  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -er 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
   if [ "$guard_actual_login" != "$guard_expected_login" ]; then
     guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
     return 1
@@ -168,7 +168,7 @@ guard_merged_pull_request() {
   guard_reason=""
 
   guard_user_json="$(api GET "/api/v1/user")" || return 2
-  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
+  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -er 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
   if [ "$guard_actual_login" != "$guard_expected_login" ]; then
     guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
     return 1

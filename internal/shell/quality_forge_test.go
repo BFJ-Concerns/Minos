@@ -18,7 +18,7 @@ import (
 // These journeys execute the shipped adaptations. The server supplies faulty
 // reads, and records only requests the adaptation actually makes.
 func TestQualityForgeMalformedReadsWithholdWrites(t *testing.T) {
-	for _, bad := range []string{"{", "{}", "null", "[null]"} {
+	for _, bad := range []string{"", "{", "{}", "null", "[null]"} {
 		for _, verb := range []string{"guarded-add-reaction", "guarded-remove-reaction", "claim", "guarded-set-status", "guarded-post-review"} {
 			t.Run(verb+"/"+bad, func(t *testing.T) {
 				endpoint := "/reactions"
@@ -47,7 +47,7 @@ func TestQualityForgeMalformedReadsWithholdWrites(t *testing.T) {
 
 func TestQualityForgeMalformedGuardIsUncertain(t *testing.T) {
 	for _, endpoint := range []string{"user", "pull"} {
-		for _, bad := range []string{"{", "[]", "null"} {
+		for _, bad := range []string{"", "{", "[]", "null"} {
 			t.Run(endpoint+"/"+bad, func(t *testing.T) {
 				result, writes := runQualityAdaptation(t, "guarded-add-reaction", func(r *http.Request) (string, bool) {
 					match := r.URL.Path == "/api/v1/user"
@@ -68,7 +68,7 @@ func TestQualityForgeMalformedGuardIsUncertain(t *testing.T) {
 }
 
 func TestQualityForgeMalformedReviewCommentsAreUnreadable(t *testing.T) {
-	for _, bad := range []string{"{", "{}", "null", "[null]"} {
+	for _, bad := range []string{"", "{", "{}", "null", "[null]"} {
 		t.Run(bad, func(t *testing.T) {
 			result, writes := runQualityAdaptation(t, "guarded-post-review", func(r *http.Request) (string, bool) {
 				if strings.HasSuffix(r.URL.Path, "/reviews") {
@@ -156,7 +156,7 @@ func runQualityAdaptation(t *testing.T, verb string, read func(*http.Request) (s
 
 func TestQualityForgeMergedCleanupGuardIsUncertain(t *testing.T) {
 	for _, endpoint := range []string{"user", "pull"} {
-		for _, bad := range []string{"{", "[]", "null"} {
+		for _, bad := range []string{"", "{", "[]", "null"} {
 			t.Run(endpoint+"/"+bad, func(t *testing.T) {
 				userReads, pullReads := 0, 0
 				result, writes := runQualityAdaptation(t, "guarded-remove-reaction", func(r *http.Request) (string, bool) {

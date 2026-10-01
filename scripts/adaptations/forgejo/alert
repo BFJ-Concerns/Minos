@@ -24,7 +24,7 @@ while :; do
     write_result uncertain "open issues could not be read"
     exit 0
   }
-  count="$(printf '%s' "$current" | jq 'if type == "array" and all(.[]; type == "object") then length else error("expected issues array") end')" || {
+  count="$(printf '%s' "$current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected issues array") end')" || {
     write_result uncertain "open issues could not be decoded"
     exit 0
   }
