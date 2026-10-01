@@ -43,27 +43,18 @@ type repoSkipRecord struct {
 	LastError string `json:"last_error"`
 }
 
-type serviceStateWriteError struct {
-	stage string
-	err   error
-}
-
-func (err *serviceStateWriteError) Error() string { return err.err.Error() }
-
-func (err *serviceStateWriteError) Unwrap() error { return err.err }
-
 // writeServiceStateAtomically writes complete service-local state to a
 // temporary file before replacing its destination with the supplied rename.
 func writeServiceStateAtomically(temporary *os.File, temporaryPath, destination string, content []byte, rename func(string, string) error) error {
 	if _, err := temporary.Write(content); err != nil {
 		_ = temporary.Close()
-		return &serviceStateWriteError{stage: "write", err: err}
+		return fmt.Errorf("write service state: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
-		return &serviceStateWriteError{stage: "close", err: err}
+		return fmt.Errorf("close service state: %w", err)
 	}
 	if err := rename(temporaryPath, destination); err != nil {
-		return &serviceStateWriteError{stage: "rename", err: err}
+		return fmt.Errorf("rename service state: %w", err)
 	}
 	return nil
 }
