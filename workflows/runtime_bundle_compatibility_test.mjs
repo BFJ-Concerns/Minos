@@ -24,7 +24,7 @@ const installerPath = join(repositoryRoot, "scripts", "install-review-runtime");
 const pinnedRuntimePath = join(repositoryRoot, "runtime", "ensemble.mjs");
 
 const optionBlockPattern =
-  /\{\s*\n\s*engine:\s*[^,\n]+,\s*\n\s*schema:\s*[^,\n]+,\s*\n\s*model:\s*[^,\n]+,\s*\n\s*effort:\s*[^,\n]+,\s*\n(?:\s*isolation:\s*[^,\n]+,\s*\n)?\s*label:\s*[^,\n]+,\s*\n\s*phase:\s*[^,\n]+,\s*\n\s*\}/g;
+  /\{\s*\n\s*engine:\s*[^,\n]+,\s*\n\s*schema:\s*[^,\n]+,\s*\n\s*model:\s*[^,\n]+,\s*\n\s*effort:\s*[^,\n]+,\s*\n(?:\s*strip:\s*\[[^\n]+\],\s*\n)?(?:\s*identity:\s*true,\s*\n)?(?:\s*isolation:\s*[^,\n]+,\s*\n)?\s*label:\s*[^,\n]+,\s*\n\s*phase:\s*[^,\n]+,\s*\n\s*\}/g;
 
 const expectedCallSites = new Map([
   ["review.js", 3],
@@ -68,6 +68,8 @@ function valuesFor(keys) {
     model: "gpt-6-sol",
     effort: "high",
     isolation: "worktree",
+    strip: ["skills", "agents"],
+    identity: true,
     label: "minos-runtime-compatibility",
     phase: "Compatibility",
   };
@@ -161,7 +163,7 @@ test("the installed runtime recognises every agent option key used by shipped wo
 
   assert.deepEqual(
     [...new Set(callSites.flatMap(({ keys }) => keys))].sort(),
-    ["effort", "engine", "label", "model", "phase", "schema"],
+    ["effort", "engine", "identity", "label", "model", "phase", "schema", "strip"],
   );
   for (const { filename, keys } of callSites) {
     assert.doesNotThrow(
