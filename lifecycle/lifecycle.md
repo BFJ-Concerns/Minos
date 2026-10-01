@@ -531,16 +531,16 @@ write, matching the target rule above.)
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/compose-review-publication.mjs" \
-     "$MINOS_RUN_DIR/publication" "$MINOS_REVIEW_THRESHOLD" \
+     "$MINOS_RUN_DIR/publication" "$MINOS_ORIENTATION" "$MINOS_REVIEW_THRESHOLD" \
      "$MINOS_RUN_DIR/review-result.json" "$MINOS_RUN_DIR/verdict-decision.json"
    ```
 
-   When the brief stage ran, add its verdict and decision as the fifth
-   and sixth arguments:
+   When the brief stage ran, add its verdict and decision as the sixth
+   and seventh arguments:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/compose-review-publication.mjs" \
-     "$MINOS_RUN_DIR/publication" "$MINOS_REVIEW_THRESHOLD" \
+     "$MINOS_RUN_DIR/publication" "$MINOS_ORIENTATION" "$MINOS_REVIEW_THRESHOLD" \
      "$MINOS_RUN_DIR/review-result.json" "$MINOS_RUN_DIR/verdict-decision.json" \
      "$MINOS_RUN_DIR/review-brief-result.json" "$MINOS_RUN_DIR/verdict-decision-brief.json"
    ```
@@ -584,8 +584,8 @@ write, matching the target rule above.)
 
    Deliver the plan's `triage.entries` to the repository's configured
    filing destination. On a clean run it contains the confirmed advisory
-   findings; brief configuration diagnostics may be filed on either
-   outcome. Unverified observations are excluded. The destination — a file
+   findings; brief configuration diagnostics and the guidance sources
+   setup could not read may be filed on either outcome. Unverified observations are excluded. The destination — a file
    in a repository's default branch, an issue on a named repository, a
    comment on the pull request, or nowhere — is the service's exported
    configuration, never a choice you make; the script files each entry
