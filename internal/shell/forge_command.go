@@ -140,7 +140,9 @@ func markersFromEnvironment() (Markers, error) {
 	if err := decoder.Decode(&markers); err != nil {
 		return Markers{}, fmt.Errorf("MINOS_MARKERS: %w", err)
 	}
-	if decoder.More() {
+	// Anything after the object — another value, a stray bracket, text —
+	// is malformed: only end of input passes.
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return Markers{}, fmt.Errorf("MINOS_MARKERS: trailing data after the markers object")
 	}
 	if markers.InFlight == nil || markers.Clean == nil {

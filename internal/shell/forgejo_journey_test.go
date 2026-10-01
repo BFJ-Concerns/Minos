@@ -950,11 +950,12 @@ func TestForgeMarkerRefusesMarkersWithTrailingData(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	defineMarkerLabels(state)
 	configureForgeCommandFixture(t, state)
-	t.Setenv("MINOS_MARKERS", labelMarkersJSON+" trailing-garbage")
-
-	for _, args := range [][]string{{"claim"}, {"marker", state.headSHA(), state.targetSHA(), "clean", "add"}} {
-		if err := ForgeCommand(t.Context(), args, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "MINOS_MARKERS") {
-			t.Fatalf("%v: error = %v, want MINOS_MARKERS refused", args, err)
+	for _, suffix := range []string{" trailing-garbage", "}", "]"} {
+		t.Setenv("MINOS_MARKERS", labelMarkersJSON+suffix)
+		for _, args := range [][]string{{"claim"}, {"marker", state.headSHA(), state.targetSHA(), "clean", "add"}} {
+			if err := ForgeCommand(t.Context(), args, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "MINOS_MARKERS") {
+				t.Fatalf("suffix %q %v: error = %v, want MINOS_MARKERS refused", suffix, args, err)
+			}
 		}
 	}
 	state.mu.Lock()
