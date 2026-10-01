@@ -26,7 +26,9 @@ export function filingMarker(entry, reviewedRepository) {
   const title = String(entry.title || "").trim().toLowerCase().replace(/\s+/g, " ");
   const identity = entry.kind === "review-brief-misconfiguration"
     ? [entry.kind, reviewedRepository, entry.brief, title]
-    : [entry.kind, reviewedRepository, entry.path, entry.line, title];
+    : entry.kind === "guidance-source-misconfiguration"
+      ? [entry.kind, reviewedRepository, entry.sourceRepository || null, entry.path, entry.reason]
+      : [entry.kind, reviewedRepository, entry.path, entry.line, title];
   return `<!-- minos:${Buffer.from(JSON.stringify(identity)).toString("base64url")} -->`;
 }
 

@@ -172,6 +172,26 @@ test("an entry already at the destination is not filed twice", async (t) => {
   );
 });
 
+test("an unreadable guidance source files once, as a configuration diagnostic keyed by repository and source", async (t) => {
+  const guidance = {
+    kind: "guidance-source-misconfiguration", repository: reviewedRepository,
+    sourceRepository: "owner/guidance", path: "docs/INTENT.md", reason: "is missing or empty",
+  };
+  const fixture = await destinationFixture(t, { issues: null });
+  assert.equal((await fixture.deliver({ entries: [guidance] })).written, 1);
+  assert.deepEqual(
+    await fixture.deliver({ entries: [{ ...guidance }] }),
+    { kind: "file", outcome: "filed", written: 0, location: "owner/plans:ISSUES.md" },
+    "a second delivery files nothing",
+  );
+  const issues = fixture.originFile();
+  assert.match(issues, /\n- \*\*Guidance source misconfiguration: owner\/guidance:docs\/INTENT\.md\*\* — configured guidance for /);
+  assert.equal(issues.split(filingMarker(guidance, reviewedRepository)).length - 1, 1);
+  assert.notEqual(filingMarker(guidance, reviewedRepository), filingMarker(guidance, "other/project"));
+  assert.notEqual(filingMarker(guidance, reviewedRepository), filingMarker({ ...guidance, path: "docs/OTHER.md" }, reviewedRepository));
+  assert.notEqual(filingMarker(guidance, reviewedRepository), filingMarker({ ...guidance, sourceRepository: null }, reviewedRepository));
+});
+
 test("the filing appends to what the destination holds at delivery time", async (t) => {
   const fixture = await destinationFixture(t);
   writeFileSync(join(fixture.seed, "ISSUES.md"), "# Issues\n\n- An existing entry.\n- A newer entry the operator added mid-run.\n");

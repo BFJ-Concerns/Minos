@@ -1632,8 +1632,12 @@ func postComposedReview(t *testing.T, head, target string, verdict map[string]an
 	if err != nil {
 		t.Fatal(err)
 	}
+	orientationPath := filepath.Join(directory, "orientation.json")
+	if err := os.WriteFile(orientationPath, []byte(`{"misconfigurations":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	composer := exec.CommandContext(t.Context(), "node", filepath.Join(root, "workflows", "compose-review-publication.mjs"),
-		filepath.Join(directory, "publication"), "High", verdictPath, decisionPath)
+		filepath.Join(directory, "publication"), orientationPath, "High", verdictPath, decisionPath)
 	output, err := composer.CombinedOutput()
 	if err != nil {
 		t.Fatalf("compose review publication: %v\n%s", err, output)
