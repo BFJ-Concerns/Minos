@@ -34,20 +34,18 @@ if ! printf '%s' "$pr_json" | jq -e \
   exit 0
 fi
 
-issue_path="/api/v1/repos/${owner}/${repo}/issues/${pr}"
-issue_json="$(api GET "$issue_path")" || {
-  write_result uncertain "pull request issue state could not be read"
-  exit 0
-}
-if ! printf '%s' "$issue_json" | jq -e --arg login "$login" '
-  [.assignees[]? | .login // .username // ""] | index($login) != null
+pull_path="/api/v1/repos/${owner}/${repo}/pulls/${pr}"
+if ! printf '%s' "$pr_json" | jq -e --arg login "$login" '
+  [.requested_reviewers[]? | .login // .username // ""] | index($login) != null
 ' >/dev/null; then
-  payload="$(jq -nc --arg login "$login" '{assignees:[$login]}')"
-  api PATCH "$issue_path" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
-    write_result uncertain "pull request assignment could not be written"
+  payload="$(jq -nc --arg login "$login" '{reviewers:[$login]}')"
+  api POST "${pull_path}/requested_reviewers" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+    write_result uncertain "pull request review request could not be written"
     exit 0
   }
 fi
+
+issue_path="/api/v1/repos/${owner}/${repo}/issues/${pr}"
 
 reactions_path="${issue_path}/reactions"
 reactions_json="$(api GET "$reactions_path")" || {
@@ -63,18 +61,18 @@ if ! printf '%s' "$reactions_json" | jq -e --arg login "$login" '
   }
 fi
 
-issue_json="$(api GET "$issue_path")" || {
-  write_result uncertain "pull request assignment could not be confirmed"
+pr_json="$(api GET "$pull_path")" || {
+  write_result uncertain "pull request review request could not be confirmed"
   exit 0
 }
 reactions_json="$(api GET "$reactions_path")" || {
   write_result uncertain "eyes reaction could not be confirmed"
   exit 0
 }
-if ! printf '%s' "$issue_json" | jq -e --arg login "$login" '
-  [.assignees[]? | .login // .username // ""] | index($login) != null
+if ! printf '%s' "$pr_json" | jq -e --arg login "$login" '
+  [.requested_reviewers[]? | .login // .username // ""] | index($login) != null
 ' >/dev/null; then
-  write_result uncertain "pull request assignment was not confirmed"
+  write_result uncertain "pull request review request was not confirmed"
   exit 0
 fi
 if ! printf '%s' "$reactions_json" | jq -e --arg login "$login" '

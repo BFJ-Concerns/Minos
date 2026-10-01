@@ -834,7 +834,7 @@ run-body = "/opt/minos/run-body/run-body"
 	return cfg
 }
 
-func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
+func TestForgeClaimRequestsReviewAndReactsIdempotently(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, _ := state.service(t)
 	writeServiceConfig(t, cfg)
