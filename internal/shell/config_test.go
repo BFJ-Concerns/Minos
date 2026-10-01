@@ -402,6 +402,7 @@ func TestRunCeilingConfiguration(t *testing.T) {
 		{name: "malformed duration", settings: "duration-ceiling = \"tomorrow\"\n", wantError: "runs.duration-ceiling"},
 		{name: "empty duration", settings: "duration-ceiling = \"\"\n", wantError: "runs.duration-ceiling"},
 		{name: "zero duration", settings: "duration-ceiling = \"0s\"\n", wantError: "runs.duration-ceiling"},
+		{name: "sub-microsecond duration", settings: "duration-ceiling = \"1ns\"\n", wantError: "runs.duration-ceiling"},
 		{name: "negative duration", settings: "duration-ceiling = \"-1h\"\n", wantError: "runs.duration-ceiling"},
 		{name: "zero percent", settings: "pressure-threshold-percent = 0\n", wantError: "runs.pressure-threshold-percent"},
 		{name: "negative percent", settings: "pressure-threshold-percent = -1\n", wantError: "runs.pressure-threshold-percent"},

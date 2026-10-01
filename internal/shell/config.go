@@ -124,8 +124,8 @@ func (cfg ServiceConfig) runDurationCeiling() (string, error) {
 	}
 	// systemd accepts seconds; normalise Go's duration syntax at this seam.
 	duration, err := time.ParseDuration(cfg.Runs.DurationCeiling)
-	if err != nil || duration <= 0 {
-		return "", fmt.Errorf("runs.duration-ceiling must be a positive Go duration")
+	if err != nil || duration < time.Microsecond {
+		return "", fmt.Errorf("runs.duration-ceiling must be a Go duration of at least 1us")
 	}
 	return fmt.Sprintf("%d.%09ds", duration/time.Second, duration%time.Second), nil
 }
@@ -318,8 +318,8 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	if cfg.Runs.MemoryEnvelopeGiB < 1 || int64(cfg.Runs.MemoryEnvelopeGiB) > (1<<63-1)/(1<<30) {
 		return ServiceConfig{}, fmt.Errorf("service.toml: runs.memory-envelope-gib must be positive and fit a signed 64-bit byte ceiling")
 	}
-	if duration, err := time.ParseDuration(cfg.Runs.DurationCeiling); err != nil || duration <= 0 {
-		return ServiceConfig{}, fmt.Errorf("service.toml: runs.duration-ceiling must be a positive Go duration (for example 12h or 90m)")
+	if duration, err := time.ParseDuration(cfg.Runs.DurationCeiling); err != nil || duration < time.Microsecond {
+		return ServiceConfig{}, fmt.Errorf("service.toml: runs.duration-ceiling must be a Go duration of at least 1us (for example 12h or 90m)")
 	}
 	if cfg.Runs.PressureThresholdPercent < 1 || cfg.Runs.PressureThresholdPercent > 100 {
 		return ServiceConfig{}, fmt.Errorf("service.toml: runs.pressure-threshold-percent must be between 1 and 100")

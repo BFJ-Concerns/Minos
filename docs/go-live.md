@@ -75,8 +75,8 @@ so no repository toolchains are needed.
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
    That service-only knob defaults to 22 GiB. Run units share the configured
-   whole-box memory envelope live, through the `minos-runs.slice` unit: the shipped slice
-   holds `MemoryHigh=20G` and `MemoryMax=22G`, so no run feels any pressure
+   whole-box memory envelope live, through the `minos-runs.slice` unit.
+   The shipped slice holds `MemoryHigh=20G` and `MemoryMax=22G`, so no run feels any pressure
    until the runs *together* approach the envelope — a lone run may use all
    of it — reclaim then pushes them back, and only combined demand the
    envelope cannot hold kills, taking the biggest consumer. Each unit also
@@ -85,7 +85,7 @@ so no repository toolchains are needed.
    and cores. When changing the envelope, manually set the installed slice's
    `MemoryMax` to the same value and `MemoryHigh` below it; the installer
    does not update the slice. `runs.duration-ceiling` sets each run's hard
-   duration limit (a positive Go duration, default `12h`).
+   duration limit (a Go duration of at least `1us`, default `12h`).
    `runs.pressure-threshold-percent` sets the continuation threshold as a
    percentage of the run ceiling (1–100, default 85); the watch signals after
    two consecutive samples of anonymous memory plus swap at that threshold.

@@ -63,7 +63,7 @@ max-concurrent = 6
 # cap must not exceed the envelope in GiB. Keep the installed runs slice's
 # MemoryMax at this envelope and MemoryHigh below it.
 # memory-envelope-gib = 22
-# Positive Go duration (for example "12h" or "90m").
+# Go duration of at least 1us (for example "12h" or "90m").
 # duration-ceiling = "12h"
 # Percentage of the run ceiling in anonymous memory plus swap (1–100).
 # pressure-threshold-percent = 85
