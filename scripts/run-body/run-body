@@ -354,6 +354,7 @@ elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
   exit 1
 fi
 
+: "${MINOS_PRESSURE_THRESHOLD_PERCENT:?MINOS_PRESSURE_THRESHOLD_PERCENT is required}"
 pressure_enabled=true
 pressure_latched=false
 pressure_samples=0
