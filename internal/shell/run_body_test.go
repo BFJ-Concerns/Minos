@@ -1161,7 +1161,7 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 	if err := os.MkdirAll(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nexit 3\n")
+	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nprintf 'partial compressed archive\\n'\nexit 3\n")
 	installArchiveReceiverSSH(t, bin, destination)
 	identity := filepath.Join(fixture.root, "archive-identity")
 	knownHosts := filepath.Join(fixture.root, "archive-known-hosts")
