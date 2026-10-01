@@ -62,18 +62,39 @@ so no repository toolchains are needed.
    command below, so the box never names it.
 
    Per-repository knobs — the review threshold, work-in-progress branch
-   prefixes, the guidance sources a review is grounded on, and the filing
-   destination for a clean run's advisory material — are set once under
+   prefixes, the guidance sources a review is grounded on, the filing
+   destination for a clean run's advisory material and brief diagnostics,
+   and the markers Minos writes on a pull request — are set once under
    `[repositories]` in `service.toml` and overridden whole by any
    repository's own file; the shipped `service.toml` documents each knob
    and the defaults a repository gets when neither level sets it. A
    guidance source in a secondary repository is cloned read-only beside
-   the workspace at setup; a file-kind filing destination is a separate
-   write path to that repository's default branch, committed as
+   the workspace at setup.
+
+   The filing destination controls where confirmed advisory findings and
+   brief configuration diagnostics are delivered: `kind` is one of `file`
+   (path required; repository optional, defaulting to the reviewed
+   repository's default branch), `issue` (repository required — the
+   owner/name that takes the issues; no path), `pull-request-comment`, or
+   `none`. Unset at both levels, it defaults to `pull-request-comment`. A
+   file-kind destination is a separate write path committed as
    `service.commit-author-name` and `service.commit-author-email`, as are
-   the failure ledger's commits. Every commit status Minos writes carries
-   `service.status-context` (default `Minos`), and the sweep's completion
-   marker is read under that context only.
+   the failure ledger's commits. If delivery is unavailable, the run
+   report records the failure without posting a fallback comment.
+
+   Markers define the form of each marker Minos writes on a pull request:
+   `in-flight` while a run is active, `clean` on a clean outcome, and
+   `attention` on a request-changes outcome. Each is a reaction or a
+   label. Unset, `in-flight` defaults to the eyes reaction and `clean` to
+   the +1 reaction; no attention marker is written unless configured. A
+   label must already be defined on the repository or its organisation;
+   Minos never creates labels, and refuses the marker write when the
+   label is missing. A repository's own `[markers]` table replaces the
+   service-level one whole.
+
+   Every commit status Minos writes carries `service.status-context`
+   (default `Minos`), and the sweep's completion marker is read under
+   that context only.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
@@ -175,6 +196,14 @@ finding carries a verdict. The foreground run body waits for the exact
 background session and stops it at one of those terminal conditions. The
 transient systemd unit bounds a wedged run at 12 hours.
 
+A run that fails before the lead launches — workspace setup, configuration
+loading, lifecycle instruction — writes an incomplete status to the forge
+naming the stage that failed (`minos forge status … incomplete --setup-failure
+STAGE`), appends the failure to `runs.failure-log`, and exits. When workspace
+setup cannot fetch the admitted target SHA because the forge no longer
+advertises it (typically because the base branch moved), the failure cause
+carries that refusal; the next sweep pass re-derives from current forge state.
+
 After the lead has finished its forge writes, `run-body` streams its report,
 Claude transcripts, Codex rollout JSONLs and Ensemble run records as a zstd tar
 archive to the configured destination. Before building the tarball it runs
@@ -265,15 +294,31 @@ The token is the whole gate, and the projection names repositories, branches
 and heads — keep it to the LAN and treat it as a credential.
 
 The projection's `sweep` field carries the sweep-deferral document. At the
-end of each completed pass the sweep attempts to write
-`.sweep-deferrals.json` atomically into the runs directory, recording every
-pull request that was deliberately deferred and its reason — work-in-progress
-branch prefix, completed review marker, or unresolved dependency — with a
-`completed_at` timestamp. Publication is best-effort: a failed write logs
-the error and leaves the previous whole document (or none, if no earlier pass
-succeeded) in place, so the served record can lag the latest pass. The status
-endpoint reads this file on each request and serves it as `sweep`. A
-deployment with no completed pass yet returns no `sweep` field.
+end of each completed pass the sweep writes `.sweep-deferrals.json` atomically
+into the runs directory with a `completed_at` timestamp. The document records:
+
+- **`deferrals`** — pull requests the pass deliberately left unstarted, each
+  with a `reason` (the precedence-selected one) and `reasons` (every
+  applicable reason from that snapshot): work-in-progress branch prefix,
+  completed review marker, or unresolved dependency.
+- **`suppressed`** — pull requests eligible for a run but blocked by the
+  concurrency cap or their own active unit, with the blocking unit and detail.
+- **`terminal`** — pull requests whose current head already carries a terminal
+  outcome (`clean` or `attention`).
+- **`readied`** — pull requests a run was started or continued for this pass.
+- **`partial`** — true when one or more repositories could not be listed;
+  `skipped_repositories` names each and its reason.
+
+Publication is best-effort: a failed write logs the error and leaves the
+previous whole document in place. The status endpoint reads the file on each
+request and serves it as `sweep`; a deployment with no completed pass yet
+returns no `sweep` field.
+
+The projection's `receiver` field carries a heartbeat the receiver publishes
+on each webhook delivery and at startup (`listening`). It names the activity
+(`delivery` or `listening`), the forge that sent the event, and the bind
+address. It grants no lease and is never read by admission — it exists so an
+operator surface can tell whether the receiver is alive and processing events.
 
 To include finished runs, point the same `[runs]` block at the archive listing
 script and install it beside the others:
