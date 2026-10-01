@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -184,5 +186,20 @@ func TestQualityForgeMergedCleanupGuardIsUncertain(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestQualityForgeMergedCleanupRemovesMarker(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.reactions = []string{"eyes"}
+	state.changePullRequest(func(pr map[string]any) { pr["state"] = "closed"; pr["merged"] = true })
+	configureForgeCommandFixture(t, state)
+	if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "in-flight", "remove"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("merged marker cleanup failed: %v", err)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
+		t.Fatalf("merged cleanup reactions = %v, deletes = %d, want removed marker and one delete", state.reactions, state.reactionDeleteWrites)
 	}
 }
