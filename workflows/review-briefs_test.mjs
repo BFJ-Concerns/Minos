@@ -8,7 +8,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { adjudicate } from "./run-record-adjudicator.mjs";
+import { findingsFromVerifierPrompt } from "./verifier-prompt-fixture.mjs";
+import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { adjudicateEnvelope } from "./archive-fixture.mjs";
 import { resolveRouting } from "./role-routing.mjs";
 
 const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
@@ -90,7 +92,7 @@ function responder({ relevance, partition, specialist, verify } = {}) {
     }
     if (label.startsWith("verify-")) {
       if (verify) return verify(label, prompt, opts);
-      const findings = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      const findings = findingsFromVerifierPrompt(prompt);
       return {
         verdicts: findings.map((entry) => ({
           findingId: entry.id,
@@ -105,39 +107,8 @@ function responder({ relevance, partition, specialist, verify } = {}) {
   };
 }
 
-async function run(input, respond = responder()) {
-  const calls = [];
-  const agent = async (prompt, opts = {}) => {
-    calls.push({ prompt, opts });
-    const output = await respond(opts.label || "", prompt, opts);
-    if (!opts.identity) return output;
-    if (output && output.identityEnvelope) return output.identityEnvelope;
-    return { label: opts.label, phase: opts.phase, output, failure: output === null ? { message: "worker exhausted" } : null };
-  };
-  const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
-  const result = await script(agent, parallel, async () => [], () => {}, () => {}, input);
-  return { result, calls };
-}
-
-async function adjudicateEnvelope(t, envelope) {
-  const recordDir = mkdtempSync(join(tmpdir(), "minos-brief-partition-adjudication-"));
-  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
-  const archive = join(recordDir, "runs", "cwd", "namespace", "run");
-  mkdirSync(join(archive, "agents"), { recursive: true });
-  writeFileSync(join(archive, "manifest.json"), JSON.stringify({
-    kind: "run_manifest",
-    status: "complete",
-  }));
-  envelope.requiredModelEvidence.forEach((leg, index) => {
-    const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "agent.json"), JSON.stringify({
-      label: leg.label,
-      status: "complete",
-      resolved_model: leg.pinnedModel,
-    }));
-  });
-  return adjudicate({ envelope, recordDir });
+function run(input, respond = responder()) {
+  return invokeWorkflow(script, input, respond);
 }
 
 test("an absent .review directory emits a complete-stage envelope with no legs", async () => {
@@ -479,7 +450,7 @@ test("a missing partition result leaves the brief not-run", async () => {
   assert.ok(result.requiredModelEvidence.some((leg) => leg.role === "partition"));
 });
 
-test("all repository specialists dispatch beyond the former twenty-four limit", async () => {
+test("every requested repository specialist dispatches", async () => {
   const briefs = Array.from({ length: 25 }, (_, index) =>
     brief(`.review/pkg/concern-${index + 1}.md`, `# Concern ${index + 1}\nJudge it.`));
   const { result, calls } = await run(args({ briefs }), responder({ specialist: () => specialistResult([]) }));
@@ -643,7 +614,7 @@ test("repository-brief verifier pools findings from separate units with their ow
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
   assert.equal(verifierCalls.length, 1);
   assert.equal(verifierCalls[0].opts.label, "verify-brief-1-claude");
-  const findings = JSON.parse(verifierCalls[0].prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+  const findings = findingsFromVerifierPrompt(verifierCalls[0].prompt);
   assert.deepEqual(findings.map(({ title, concern, proposingSpecialist }) => ({
     title, concern, proposingSpecialist,
   })), [
@@ -677,7 +648,7 @@ test("repository-brief verifier identifies unpartitioned brief units in a pooled
 
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
   assert.equal(verifierCalls.length, 1);
-  const findings = JSON.parse(verifierCalls[0].prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+  const findings = findingsFromVerifierPrompt(verifierCalls[0].prompt);
   assert.deepEqual(findings.map(({ title, concern, unit, proposingSpecialist }) => ({
     title, concern, unit, proposingSpecialist,
   })), [
@@ -704,7 +675,7 @@ test("slug-colliding brief labels retain verdicts for their own findings", async
       finding({ title: prompt.includes(first.path) ? "first finding" : "second finding" }),
     ]),
     verify: (_label, prompt) => {
-      const entries = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      const entries = findingsFromVerifierPrompt(prompt);
       return {
         verdicts: entries.map((entry) => ({
           findingId: entry.id,
@@ -743,8 +714,9 @@ test("a missing specialist result is a not-run disposition with a required archi
   assert.ok(result.requiredModelEvidence.some((leg) => leg.role === "specialist"));
 });
 
-test("the enumerator emits large deterministic input directly as JSON and rejects generated-script mode", () => {
+test("the enumerator emits large deterministic input directly as JSON and rejects generated-script mode", (t) => {
   const root = mkdtempSync(join(tmpdir(), "minos-brief-input-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", root]);
   execFileSync("git", ["-C", root, "config", "user.name", "Fixture"]);
   execFileSync("git", ["-C", root, "config", "user.email", "fixture@example.test"]);
@@ -781,7 +753,7 @@ test("the enumerator emits large deterministic input directly as JSON and reject
 test("a brief verifier observation reaches the result alongside its verdicts", async () => {
   const { result } = await run(args(), responder({
     verify: (label, prompt) => {
-      const findings = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      const findings = findingsFromVerifierPrompt(prompt);
       return {
         verdicts: findings.map((entry) => ({
           findingId: entry.id,
@@ -801,8 +773,9 @@ test("a brief verifier observation reaches the result alongside its verdicts", a
   assert.match(observed.observingLabel, /^verify-brief-/);
 });
 
-test("the enumerator reads a tracked-file listing larger than the default child-process buffer", () => {
+test("the enumerator reads a tracked-file listing larger than the default child-process buffer", (t) => {
   const root = mkdtempSync(join(tmpdir(), "minos-brief-input-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", root]);
   execFileSync("git", ["-C", root, "config", "user.name", "Fixture"]);
   execFileSync("git", ["-C", root, "config", "user.email", "fixture@example.test"]);
