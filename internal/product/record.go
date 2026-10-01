@@ -10,26 +10,12 @@ import (
 // RecordTargetKey names the target field of the review-binding record.
 const RecordTargetKey = "target"
 
-// Record binds a review to the head and target it covered.
+// recordLine is the review-binding record's grammar: the head and target a
+// review covered, as an HTML comment the review body carries.
 var recordLine = regexp.MustCompile(`^<!-- Minos:( [a-z][a-z0-9-]*=[A-Za-z0-9._/@-]+)+ -->$`)
 
-func ParseRecord(line string) (map[string]string, error) {
-	if !recordLine.MatchString(line) {
-		return nil, fmt.Errorf("invalid Minos product record")
-	}
-	content := strings.TrimSuffix(strings.TrimPrefix(line, "<!-- Minos:"), " -->")
-	fields := strings.Fields(content)
-	values := make(map[string]string, len(fields))
-	for _, field := range fields {
-		key, value, _ := strings.Cut(field, "=")
-		if _, duplicate := values[key]; duplicate {
-			return nil, fmt.Errorf("duplicate product record key %q", key)
-		}
-		values[key] = value
-	}
-	return values, nil
-}
-
+// FormatRecord renders the review-binding record, refusing a token the grammar
+// cannot carry.
 func FormatRecord(values map[string]string) (string, error) {
 	keys := make([]string, 0, len(values))
 	for key, value := range values {
@@ -53,13 +39,4 @@ func FormatRecord(values map[string]string) (string, error) {
 		return "", fmt.Errorf("formatted product record did not match grammar")
 	}
 	return line, nil
-}
-
-func TrailingRecord(body string) (map[string]string, bool) {
-	lines := strings.Split(strings.TrimRight(body, "\r\n"), "\n")
-	if len(lines) == 0 {
-		return nil, false
-	}
-	values, err := ParseRecord(strings.TrimSuffix(lines[len(lines)-1], "\r"))
-	return values, err == nil
 }

@@ -2,7 +2,7 @@ package product
 
 import "testing"
 
-func TestHeadAndTargetRoundTripInTrailingRecord(t *testing.T) {
+func TestFormatRecordBindsHeadAndTarget(t *testing.T) {
 	record, err := FormatRecord(map[string]string{
 		"head":          "head-sha",
 		RecordTargetKey: "target-sha",
@@ -14,8 +14,10 @@ func TestHeadAndTargetRoundTripInTrailingRecord(t *testing.T) {
 		t.Fatalf("record = %q", record)
 	}
 
-	values, ok := TrailingRecord("Confirmed findings remain.\n\n" + record + "\n")
-	if !ok || values["head"] != "head-sha" || values[RecordTargetKey] != "target-sha" {
-		t.Fatalf("trailing record = %#v, valid = %t", values, ok)
+}
+
+func TestFormatRecordRefusesATokenTheGrammarCannotCarry(t *testing.T) {
+	if _, err := FormatRecord(map[string]string{"head": "head sha"}); err == nil {
+		t.Fatal("a value carrying a space was formatted")
 	}
 }

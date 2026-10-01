@@ -61,9 +61,8 @@ repeats_previous_page() {
 write_result() {
   outcome="$1"
   reason="${2:-}"
-  sha="${3:-}"
-  jq -nc --arg outcome "$outcome" --arg reason "$reason" --arg sha "$sha" \
-    '{outcome:$outcome} + (if $reason == "" then {} else {reason:$reason} end) + (if $sha == "" then {} else {sha:$sha} end)'
+  jq -nc --arg outcome "$outcome" --arg reason "$reason" \
+    '{outcome:$outcome} + (if $reason == "" then {} else {reason:$reason} end)'
 }
 
 urlencode() {
