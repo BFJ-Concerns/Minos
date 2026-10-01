@@ -51,6 +51,7 @@ func TestSpawnRunRemovesReadOnlyTreeWhenStartFails(t *testing.T) {
 	}
 
 	cfg := ServiceConfig{Root: "/etc/minos"}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	repo := RepoConfig{}
@@ -75,6 +76,7 @@ func TestSpawnRunReportsSuppressedForActiveUnit(t *testing.T) {
 	}
 
 	cfg := ServiceConfig{}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	outcome, err := SpawnRun(t.Context(), cfg, RepoConfig{}, Facts{Owner: "owner", Repo: "repo", PR: "1"})
 	if err != nil {
@@ -115,6 +117,7 @@ func TestSpawnRunAdmitsUpToTheConfiguredConcurrency(t *testing.T) {
 	}
 
 	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Runs.MaxConcurrent = 2
 	repo := RepoConfig{}
@@ -155,6 +158,7 @@ func TestSpawnRunSuppressesOwnLiveUnitWithoutConsumingItsHandoff(t *testing.T) {
 	}
 
 	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Runs.MaxConcurrent = 2
 	repo := RepoConfig{}
@@ -194,6 +198,7 @@ func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
 			}
 
 			cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+			setTestRunCeilings(&cfg)
 			cfg.Runs.Dir = t.TempDir()
 			cfg.Runs.MaxConcurrent = maxConcurrent
 			repo := RepoConfig{}
@@ -218,6 +223,7 @@ func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
 	}
 
 	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
@@ -251,6 +257,7 @@ func TestSpawnRunRefusesContinuationDirectorySymlinkEscapingRunsDirectory(t *tes
 	}
 
 	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
 	escaped := filepath.Join(t.TempDir(), UnitName(facts)+"-preserved")
@@ -648,6 +655,7 @@ func reviewContinuationFixture(t *testing.T) (ServiceConfig, Facts, string, *[]s
 		return nil, nil
 	}
 	cfg := ServiceConfig{Root: "/etc/minos"}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
@@ -691,6 +699,7 @@ func TestSpawnRunRejectsMalformedHandoffAndStartsFresh(t *testing.T) {
 		return nil, nil
 	}
 	cfg := ServiceConfig{Root: "/etc/minos"}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
@@ -719,6 +728,7 @@ func TestSpawnRunDoesNotDeleteAdoptedDirectoryWhenSystemdStartFails(t *testing.T
 		return []byte("start failed"), errors.New("exit 1")
 	}
 	cfg := ServiceConfig{Root: "/etc/minos"}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head"}
@@ -756,7 +766,8 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		}
 	}
 
-	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg := loadServiceConfigWith(t, t.TempDir(), "")
+	cfg.Root = "/etc/minos"
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Service.CommitAuthorName = "Reviewer Bot"
 	cfg.Service.CommitAuthorEmail = "reviewer@example.invalid"
@@ -789,7 +800,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	}
 	assertArgument(t, systemdArgs, "--property=ExitType=main")
 	assertArgument(t, systemdArgs, "--property=KillMode=control-group")
-	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=12h")
+	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=43200.000000000s")
 	assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
 	assertArgument(t, systemdArgs, "--property=MemoryMax=22G")
 	for _, value := range []string{
@@ -855,6 +866,7 @@ func TestSpawnRunExportsUnsetStructuredKnobsAsTheirEmptyForms(t *testing.T) {
 		return nil, nil
 	}
 	cfg := ServiceConfig{Root: "/etc/minos"}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Ensemble.ConcurrencyClaude = 1
 	cfg.Ensemble.ConcurrencyCodex = 1
@@ -908,6 +920,7 @@ func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
 			}
 
 			cfg := ServiceConfig{Root: "/etc/minos"}
+			setTestRunCeilings(&cfg)
 			cfg.Runs.Dir = t.TempDir()
 			cfg.Runs.MaxConcurrent = test.maxConcurrent
 			cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
@@ -1090,14 +1103,20 @@ func TestSpawnRunUsesConfiguredRunCeilings(t *testing.T) {
 		}
 	}
 
-	cfg := ServiceConfig{Root: "/etc/minos"}
-	cfg.Runs.MemoryEnvelopeGiB = 8
-	cfg.Runs.DurationCeiling = "90m"
-	cfg.Runs.PressureThresholdPercent = 60
+	root := t.TempDir()
+	contents := strings.Replace(testServiceConfig, "[runs]\n", "[runs]\nmemory-envelope-gib = 8\nduration-ceiling = \"90m\"\npressure-threshold-percent = 60\n", 1)
+	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServiceConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Forges = map[string]ForgeConfig{
 		"forgejo": {APIBase: "http://forge.local", CredentialFile: "/etc/minos/forge.token"},
 	}
+
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	facts := Facts{

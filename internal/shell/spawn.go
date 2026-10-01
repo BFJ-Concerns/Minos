@@ -54,10 +54,6 @@ func preserveStaleReviewResult(path, stalePath string) error {
 const runsSliceName = "minos-runs.slice"
 
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
-	durationCeiling, err := cfg.runDurationCeiling()
-	if err != nil {
-		return SpawnResult{}, err
-	}
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
 	if err != nil {
@@ -262,7 +258,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--user", "--collect", "--unit", unit,
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
-		"--property=RuntimeMaxSec=" + durationCeiling,
+		"--property=RuntimeMaxSec=" + cfg.runDurationCeiling(),
 		"--slice=" + runsSliceName,
 		"--property=MemoryMax=" + fmt.Sprintf("%dG", cfg.runMemoryEnvelopeGiB()),
 	}

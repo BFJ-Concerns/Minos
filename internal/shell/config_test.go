@@ -391,10 +391,10 @@ func TestRunCeilingConfiguration(t *testing.T) {
 		envelope, threshold       int
 		duration                  string
 	}{
-		{name: "defaults", envelope: 22, threshold: 85, duration: "12h"},
-		{name: "configured", settings: "memory-envelope-gib = 8\nduration-ceiling = \"90m\"\npressure-threshold-percent = 60\n", envelope: 8, threshold: 60, duration: "90m"},
-		{name: "minimum bounds", settings: "memory-envelope-gib = 2\npressure-threshold-percent = 1\n", envelope: 2, threshold: 1, duration: "12h"},
-		{name: "maximum percent", settings: "pressure-threshold-percent = 100\n", envelope: 22, threshold: 100, duration: "12h"},
+		{name: "defaults", envelope: 22, threshold: 85, duration: "43200.000000000s"},
+		{name: "configured", settings: "memory-envelope-gib = 8\nduration-ceiling = \"90m\"\npressure-threshold-percent = 60\n", envelope: 8, threshold: 60, duration: "5400.000000000s"},
+		{name: "minimum bounds", settings: "memory-envelope-gib = 2\npressure-threshold-percent = 1\n", envelope: 2, threshold: 1, duration: "43200.000000000s"},
+		{name: "maximum percent", settings: "pressure-threshold-percent = 100\n", envelope: 22, threshold: 100, duration: "43200.000000000s"},
 		{name: "zero envelope", settings: "memory-envelope-gib = 0\n", wantError: "runs.memory-envelope-gib"},
 		{name: "negative envelope", settings: "memory-envelope-gib = -1\n", wantError: "runs.memory-envelope-gib"},
 		{name: "overflowing byte ceiling", settings: "memory-envelope-gib = 8589934592\n", wantError: "runs.memory-envelope-gib"},

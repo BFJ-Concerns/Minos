@@ -1986,6 +1986,7 @@ func (s *forgejoFixtureState) service(t *testing.T) (ServiceConfig, RepoConfig, 
 	pullRequestNumber := fmt.Sprint(s.pullRequest["number"])
 	s.mu.Unlock()
 	cfg := ServiceConfig{Root: t.TempDir()}
+	setTestRunCeilings(&cfg)
 	cfg.Service.BotLogin = "Minos"
 	cfg.Listener.Bind = ":0"
 	cfg.Runs.Dir = t.TempDir()
