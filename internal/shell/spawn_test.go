@@ -811,6 +811,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=43200.000000000s")
 	assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
 	assertArgument(t, systemdArgs, "--property=MemoryMax=22G")
+	environment := systemdEnvironment(t, systemdArgs)
 	for _, value := range []string{
 		"MINOS_CONFIG=/etc/minos",
 		"MINOS_FORGE=forgejo",
@@ -835,12 +836,15 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",
 	} {
-		assertEnvironment(t, systemdArgs, value)
+		name, want, _ := strings.Cut(value, "=")
+		if got, present := environment[name]; !present || got != want {
+			t.Fatalf("run environment %s = %q, present = %t; want %q", name, got, present, want)
+		}
 	}
 	// The markers knob is asserted through the --setenv pairs themselves,
 	// so a value that reached the arguments without becoming run
 	// environment fails here.
-	if markers := systemdEnvironment(t, systemdArgs)["MINOS_MARKERS"]; markers != `{"in-flight":{"label":"minos/reviewing"},"clean":{"reaction":"+1"},"attention":{"label":"minos/attention"}}` {
+	if markers := environment["MINOS_MARKERS"]; markers != `{"in-flight":{"label":"minos/reviewing"},"clean":{"reaction":"+1"},"attention":{"label":"minos/attention"}}` {
 		t.Fatalf("run environment MINOS_MARKERS = %q", markers)
 	}
 	var runDir string
@@ -975,18 +979,6 @@ func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
 			}
 		})
 	}
-}
-
-// assertEnvironment requires value to arrive as a --setenv option's own
-// argument, not merely somewhere in the argument list.
-func assertEnvironment(t *testing.T, arguments []string, value string) {
-	t.Helper()
-	for i := 1; i < len(arguments); i++ {
-		if arguments[i] == value && arguments[i-1] == "--setenv" {
-			return
-		}
-	}
-	t.Fatalf("arguments omit --setenv %q: %v", value, arguments)
 }
 
 func assertArgument(t *testing.T, arguments []string, want string) {

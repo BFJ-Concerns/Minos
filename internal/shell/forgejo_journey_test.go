@@ -266,7 +266,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setReviews([]map[string]any{{
 			"id": 41, "state": "COMMENT", "commit_id": state.headSHA(),
-			"body": "Implemented repairs for confirmed findings.",
+			"body": "Review incomplete: confirmed findings still require verification.",
 			"user": map[string]any{"login": "Minos"},
 		}})
 		state.setStatuses([]map[string]any{{
@@ -1680,8 +1680,7 @@ func TestForgeReviewAnchorsOutOfHunkFindingsTheAdaptationDeclares(t *testing.T) 
 }
 
 // A finding about code the change removed anchors on the deletion side: the
-// guarded review consumer accepts old_position naming the line, where it once
-// required it to be zero.
+// guarded review consumer accepts old_position naming the removed line.
 func TestForgeReviewAnchorsDeletionSideFindings(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	head, target := installDeletingWorkspace(t, state, "src/code.txt", 10, 22)
@@ -2319,7 +2318,7 @@ type statusPostRequest struct {
 	Payload map[string]any
 }
 
-// Widget#28 exposed this blame-origin coordinate on an unanchored comment.
+// Unanchored comments carry a coordinate outside the fixture diff intervals.
 const widgetUnanchoredPosition int64 = 3691
 
 func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
