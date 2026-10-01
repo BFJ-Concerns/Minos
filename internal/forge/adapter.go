@@ -122,6 +122,24 @@ func (a *Adapter) AddReaction(ctx context.Context, guard Guard, content string) 
 	return decodeWriteResult(out, err)
 }
 
+// FileIssue delivers one marked entry to its configured repository. Its
+// identity survives reviewed-head movement and closed destination issues.
+func (a *Adapter) FileIssue(ctx context.Context, repository Repository, title, body string) WriteResult {
+	payload, err := json.Marshal(struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}{title, body})
+	if err != nil {
+		return WriteResult{Outcome: WriteRejected, Reason: "encode filed issue: " + err.Error()}
+	}
+	out, runErr := a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-file-issue",
+		Arguments: []string{repository.Owner, repository.Name, a.serviceLogin},
+		Stdin:     bytes.NewReader(payload),
+	})
+	return decodeWriteResult(out, runErr)
+}
+
 func (a *Adapter) RemoveReaction(ctx context.Context, guard Guard, content string) WriteResult {
 	if strings.TrimSpace(content) == "" {
 		return WriteResult{Outcome: WriteRejected, Reason: "reaction content is required"}
