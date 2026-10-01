@@ -34,14 +34,13 @@ const (
 )
 
 type Status struct {
-	ID                  int64       `json:"id"`
-	Provider            string      `json:"provider"`
-	Context             string      `json:"context"`
-	State               StatusState `json:"state"`
-	Creator             string      `json:"creator"`
-	Description         string      `json:"description"`
-	TargetURL           string      `json:"target_url"`
-	ProtectionSatisfied bool        `json:"protection_satisfied"`
+	ID          int64       `json:"id"`
+	Provider    string      `json:"provider"`
+	Context     string      `json:"context"`
+	State       StatusState `json:"state"`
+	Creator     string      `json:"creator"`
+	Description string      `json:"description"`
+	TargetURL   string      `json:"target_url"`
 }
 
 type Review struct {
@@ -68,11 +67,9 @@ type Snapshot struct {
 	Mergeable             bool         `json:"mergeable"`
 	HeadSHA               string       `json:"head_sha"`
 	HeadBranch            string       `json:"head_branch"`
-	HeadRepository        string       `json:"head_repository"`
 	TargetSHA             string       `json:"target_sha"`
 	TargetBranch          string       `json:"target_branch"`
 	TargetRepository      string       `json:"target_repository"`
-	DefaultBranch         string       `json:"default_branch"`
 	SourceProtected       bool         `json:"source_protected"`
 	CanMerge              bool         `json:"can_merge"`
 	Statuses              []Status     `json:"statuses"`
