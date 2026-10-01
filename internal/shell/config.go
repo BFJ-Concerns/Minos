@@ -253,7 +253,8 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		root = DefaultConfigRoot
 	}
 	var cfg ServiceConfig
-	if _, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg); err != nil {
+	metadata, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg)
+	if err != nil {
 		return ServiceConfig{}, err
 	}
 	cfg.Root = root
@@ -266,11 +267,11 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	if cfg.Service.CommitAuthorEmail == "" {
 		cfg.Service.CommitAuthorEmail = cfg.Service.BotLogin + "@minos.invalid"
 	}
-	if cfg.Service.StatusContext == "" {
+	if !metadata.IsDefined("service", "status-context") {
 		cfg.Service.StatusContext = defaultStatusContext
 	}
-	if strings.TrimSpace(cfg.Service.StatusContext) != cfg.Service.StatusContext || strings.ContainsAny(cfg.Service.StatusContext, "\x00\n\r") {
-		return ServiceConfig{}, fmt.Errorf("service.toml: service status-context %q must be a single line without surrounding whitespace", cfg.Service.StatusContext)
+	if cfg.Service.StatusContext == "" || strings.TrimSpace(cfg.Service.StatusContext) != cfg.Service.StatusContext || strings.ContainsAny(cfg.Service.StatusContext, "\x00\n\r") {
+		return ServiceConfig{}, fmt.Errorf("service.toml: service status-context %q must be a non-empty single line without surrounding whitespace", cfg.Service.StatusContext)
 	}
 	if err := validateRepositoryKnobs("service.toml: repositories", cfg.Repositories); err != nil {
 		return ServiceConfig{}, err

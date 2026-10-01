@@ -370,7 +370,7 @@ func TestLoadServiceConfigStatusContextDefaultsToMinosAndHonoursAnExplicitValue(
 }
 
 func TestLoadServiceConfigRejectsMalformedStatusContext(t *testing.T) {
-	for _, value := range []string{`" Review Bot"`, `"Review\nBot"`, `"   "`} {
+	for _, value := range []string{`""`, `" Review Bot"`, `"Review\nBot"`, `"   "`} {
 		root := t.TempDir()
 		writeServiceStatusContext(t, root, value)
 		if _, err := LoadServiceConfig(root); err == nil || !strings.Contains(err.Error(), "status-context") {

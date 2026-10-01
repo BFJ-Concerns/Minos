@@ -12,6 +12,8 @@ repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 # [[guidance-sources]]
 # repository = "REPLACE_WITH_OWNER/REPLACE_WITH_PLANNING_REPOSITORY"
 # path = "README.md"
+# The service's identity (bot login, commit author, status-context) is
+# service-level only: set it in service.toml, never here.
 # [filing-destination]
 # kind = "file"
 # repository = "REPLACE_WITH_OWNER/REPLACE_WITH_PLANNING_REPOSITORY"

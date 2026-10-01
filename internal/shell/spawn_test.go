@@ -817,8 +817,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",
 	} {
-		assertArgument(t, systemdArgs, "--setenv")
-		assertArgument(t, systemdArgs, value)
+		assertEnvironment(t, systemdArgs, value)
 	}
 	var runDir string
 	for _, arg := range systemdArgs {
@@ -950,6 +949,18 @@ func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
 			}
 		})
 	}
+}
+
+// assertEnvironment requires value to arrive as a --setenv option's own
+// argument, not merely somewhere in the argument list.
+func assertEnvironment(t *testing.T, arguments []string, value string) {
+	t.Helper()
+	for i := 1; i < len(arguments); i++ {
+		if arguments[i] == value && arguments[i-1] == "--setenv" {
+			return
+		}
+	}
+	t.Fatalf("arguments omit --setenv %q: %v", value, arguments)
 }
 
 func assertArgument(t *testing.T, arguments []string, want string) {

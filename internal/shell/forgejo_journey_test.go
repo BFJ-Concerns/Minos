@@ -990,8 +990,12 @@ func TestGuardedSetStatusAcceptsOnlyTheExportedContext(t *testing.T) {
 			if result.Outcome != test.want {
 				t.Fatalf("outcome = %q (%s), want %q", result.Outcome, result.Reason, test.want)
 			}
-			if posts := len(state.statusPostFacts()); (test.want == forge.WriteApplied) != (posts == 1) {
-				t.Fatalf("forge received %d status posts for outcome %q", posts, result.Outcome)
+			wantPosts := 0
+			if test.want == forge.WriteApplied {
+				wantPosts = 1
+			}
+			if posts := len(state.statusPostFacts()); posts != wantPosts {
+				t.Fatalf("forge received %d status posts for outcome %q, want %d", posts, result.Outcome, wantPosts)
 			}
 		})
 	}
