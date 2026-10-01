@@ -816,6 +816,7 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
   assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a\s+review, the filing destination, a classification digest, or a run\s+outcome/);
   assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);
+  assert.match(lifecycle, /compose-review-publication\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_ORIENTATION" "\$MINOS_REVIEW_THRESHOLD"/);
   assert.match(lifecycle, /A request-changes plan contains one review with all confirmed findings[\s\S]*A clean plan has no posts/);
   assert.match(lifecycle, /A finding judged non-gating is advisory[\s\S]*deliver it to the\s+repository's configured filing destination when the run is clean/);
   assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" "\$MINOS_CREDENTIAL_FILE"/);

@@ -121,5 +121,9 @@ export function issueLogEntry(entry, attribution) {
   if (entry.kind === "review-brief-misconfiguration") {
     return `- **Review brief misconfiguration: ${entry.title}** (\`${entry.brief}\`) — ${sentence(entry.reason)} ${attribution}.`;
   }
+  if (entry.kind === "guidance-source-misconfiguration") {
+    const source = `${entry.sourceRepository || entry.repository}:${entry.path}`;
+    return `- **Guidance source misconfiguration: ${source}** — configured guidance for ${entry.repository} could not be read: ${sentence(entry.reason)} ${attribution}.`;
+  }
   throw new Error(`unknown entry kind ${String(entry.kind)}`);
 }

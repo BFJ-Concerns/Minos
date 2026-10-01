@@ -14,12 +14,14 @@
 // Unverified observations stay in the run record.
 //
 // Usage:
-//   compose-review-publication.mjs OUTPUT_DIR THRESHOLD MAIN_VERDICT MAIN_DECISION [BRIEF_VERDICT BRIEF_DECISION]
+//   compose-review-publication.mjs OUTPUT_DIR ORIENTATION THRESHOLD MAIN_VERDICT MAIN_DECISION [BRIEF_VERDICT BRIEF_DECISION]
 //
 // Writes OUTPUT_DIR/publication-plan.json — an ordered list of posts, each
 // naming its body file, comments file and the verdict argument for
 // `minos forge review`, and the triage entries file — beside the files it
-// names. A decision that does not validate against its verdict stops the
+// names. ORIENTATION is setup's workspace record: each configured guidance
+// source it could not read becomes a configuration diagnostic for the filing
+// destination on any published outcome, never a finding. A decision that does not validate against its verdict stops the
 // composer with exit 1 and nothing written: nothing leaves the run from an
 // unvalidated decision.
 
@@ -30,13 +32,13 @@ import { findingComment, reviewBody } from "./finding-presentation.mjs";
 import { findingKey, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
-if (argv.length !== 4 && argv.length !== 6) {
+if (argv.length !== 5 && argv.length !== 7) {
   process.stderr.write(
-    "usage: node workflows/compose-review-publication.mjs OUTPUT_DIR THRESHOLD MAIN_VERDICT MAIN_DECISION [BRIEF_VERDICT BRIEF_DECISION]\n",
+    "usage: node workflows/compose-review-publication.mjs OUTPUT_DIR ORIENTATION THRESHOLD MAIN_VERDICT MAIN_DECISION [BRIEF_VERDICT BRIEF_DECISION]\n",
   );
   process.exit(2);
 }
-const [outputDir, threshold, mainVerdictPath, mainDecisionPath, briefVerdictPath, briefDecisionPath] = argv;
+const [outputDir, orientationPath, threshold, mainVerdictPath, mainDecisionPath, briefVerdictPath, briefDecisionPath] = argv;
 
 function readJson(path, label) {
   try {
@@ -75,6 +77,29 @@ function loadGroup(name, verdictPath, decisionPath) {
     findings: verdict.confirmedFindings.map((finding) => ({ ...finding })),
   };
 }
+
+// Setup's orientation names the workspace path under `repository`; the
+// reviewed repository's forge identity is its `source` owner and name.
+function readOrientation(path) {
+  let orientation;
+  try {
+    orientation = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    process.stderr.write(`orientation is missing or not valid JSON: ${path} (${error.message})\n`);
+    process.exit(1);
+  }
+  const misconfigurations = orientation?.misconfigurations ?? [];
+  const malformed = !Array.isArray(misconfigurations) || misconfigurations.some((entry) =>
+    entry?.kind === "guidance-source" && (typeof entry.source?.path !== "string" || typeof entry.reason !== "string"));
+  const { owner, repo } = orientation?.source ?? {};
+  if (malformed || (misconfigurations.length > 0 && (typeof owner !== "string" || typeof repo !== "string"))) {
+    process.stderr.write(`orientation misconfigurations are malformed: ${path}\n`);
+    process.exit(1);
+  }
+  return { repository: `${owner}/${repo}`, misconfigurations };
+}
+const orientation = readOrientation(orientationPath);
+const guidanceMisconfigurations = orientation.misconfigurations;
 
 const main = loadGroup("main", mainVerdictPath, mainDecisionPath);
 const brief = briefVerdictPath ? loadGroup("brief", briefVerdictPath, briefDecisionPath) : null;
@@ -151,6 +176,15 @@ const triageEntries = verdict === "clean"
 for (const group of groups)
   for (const misconfiguration of group.verdict.misconfigurations || [])
     triageEntries.push({ ...misconfiguration, kind: "review-brief-misconfiguration" });
+for (const misconfiguration of guidanceMisconfigurations)
+  if (misconfiguration.kind === "guidance-source")
+    triageEntries.push({
+      kind: "guidance-source-misconfiguration",
+      repository: orientation.repository,
+      sourceRepository: misconfiguration.source.repository || null,
+      path: misconfiguration.source.path,
+      reason: misconfiguration.reason,
+    });
 const triagePath = join(outputDir, "triage-entries.json");
 writeFileSync(triagePath, `${JSON.stringify(triageEntries)}\n`);
 const planDocument = {
@@ -163,6 +197,7 @@ const planDocument = {
     entries: triagePath,
     advisory: triageEntries.filter((entry) => entry.kind === "advisory-finding").length,
     misconfigurations: triageEntries.filter((entry) => entry.kind === "review-brief-misconfiguration").length,
+    guidanceMisconfigurations: triageEntries.filter((entry) => entry.kind === "guidance-source-misconfiguration").length,
   },
 };
 writeFileSync(join(outputDir, "publication-plan.json"), `${JSON.stringify(planDocument, null, 2)}\n`);
