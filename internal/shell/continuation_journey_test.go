@@ -9,9 +9,52 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"bfj/minos/internal/forge"
 )
 
 func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
+	t.Run("stalled stop removes the configured in-flight label", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		defineMarkerLabels(state)
+		state.mu.Lock()
+		state.setPullRequestLabels(state.repositoryLabels[1:2])
+		state.mu.Unlock()
+		state.reactions = []string{"eyes"}
+		cfg, repo, facts := state.service(t)
+		repo.Markers.InFlight = &forge.Marker{Label: "minos/reviewing"}
+		facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+		progress := handoffProgress{Stage: "review", Head: facts.HeadSHA, LatestReview: 7}
+		writeProgressHandoff(t, cfg, facts, progress, &progress)
+		cfg.Runs.FailureLog = filepath.Join(t.TempDir(), "failures.log")
+
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemctl" {
+				return nil, nil
+			}
+			t.Fatalf("stalled continuation invoked %s", name)
+			return nil, nil
+		}
+
+		outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.Outcome != SpawnAttention {
+			t.Fatalf("outcome = %q, want %q", outcome, SpawnAttention)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if !slices.Equal(state.writeSequence, []string{"status:Changes need attention", "label-remove:minos/reviewing"}) {
+			t.Fatalf("guarded writes = %v, want the in-flight label removed and no reaction touched", state.writeSequence)
+		}
+		if labels := state.pullRequestLabelNames(); len(labels) != 0 || !slices.Equal(state.reactions, []string{"eyes"}) {
+			t.Fatalf("labels = %v, reactions = %v", labels, state.reactions)
+		}
+	})
+
 	t.Run("same stage and publication ends as attention", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		cfg, repo, facts := state.service(t)
