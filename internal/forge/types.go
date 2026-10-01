@@ -127,6 +127,7 @@ type WriteResult struct {
 	Outcome WriteOutcome `json:"outcome"`
 	Reason  string       `json:"reason,omitempty"`
 	SHA     string       `json:"sha,omitempty"`
+	Written *int         `json:"written,omitempty"`
 }
 
 type RunRequest struct {

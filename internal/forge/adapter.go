@@ -103,19 +103,7 @@ func (a *Adapter) PostReview(ctx context.Context, guard Guard, verdict ReviewVer
 // Alert files an operator alert as a repository issue: one open issue per
 // title, with repeat alerts arriving as comments on it.
 func (a *Adapter) Alert(ctx context.Context, repository Repository, title, body string) WriteResult {
-	payload, err := json.Marshal(struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
-	}{Title: title, Body: body})
-	if err != nil {
-		return WriteResult{Outcome: WriteRejected, Reason: "encode alert: " + err.Error()}
-	}
-	out, runErr := a.runner.Run(ctx, RunRequest{
-		Operation: "alert",
-		Arguments: []string{repository.Owner, repository.Name},
-		Stdin:     bytes.NewReader(payload),
-	})
-	return decodeWriteResult(out, runErr)
+	return a.writeIssue(ctx, "alert", []string{repository.Owner, repository.Name}, title, body)
 }
 
 func (a *Adapter) AddReaction(ctx context.Context, guard Guard, content string) WriteResult {
@@ -127,6 +115,30 @@ func (a *Adapter) AddReaction(ctx context.Context, guard Guard, content string) 
 		Arguments: append(a.guardArguments(guard), content),
 	})
 	return decodeWriteResult(out, err)
+}
+
+// FileIssue delivers one marked entry to its configured repository. Its
+// identity survives reviewed-head movement and closed destination issues.
+func (a *Adapter) FileIssue(ctx context.Context, repository Repository, title, body string) WriteResult {
+	return a.writeIssue(ctx, "guarded-file-issue", []string{repository.Owner, repository.Name, a.serviceLogin}, title, body)
+}
+
+// writeIssue carries the shared title/body payload across issue operations;
+// each adaptation owns its own identity and deduplication contract.
+func (a *Adapter) writeIssue(ctx context.Context, operation string, arguments []string, title, body string) WriteResult {
+	payload, err := json.Marshal(struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}{Title: title, Body: body})
+	if err != nil {
+		return WriteResult{Outcome: WriteRejected, Reason: "encode " + operation + ": " + err.Error()}
+	}
+	out, runErr := a.runner.Run(ctx, RunRequest{
+		Operation: operation,
+		Arguments: arguments,
+		Stdin:     bytes.NewReader(payload),
+	})
+	return decodeWriteResult(out, runErr)
 }
 
 func (a *Adapter) RemoveReaction(ctx context.Context, guard Guard, content string) WriteResult {

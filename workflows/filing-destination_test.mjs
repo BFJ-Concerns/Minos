@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { issueLogEntry } from "./finding-presentation.mjs";
+
 import { appendFilingEntries, deliverFilingEntries, filingMarker, validFilingDestination } from "./filing-destination.mjs";
 
 // The filing drives real git against a bare "origin" the test owns and a
@@ -213,12 +215,12 @@ test("the marker keys on repository, kind, site and title so one defect files on
   assert.match(text, /^# Issues\n\n- \*\*Advisory/);
 });
 
-test("the none kind discards, an observation-only batch files nothing, and the unimplemented kinds stay unfiled with the reason", async (t) => {
+test("the none kind discards, an observation-only batch files nothing, and the unavailable comment kind stays unfiled with the reason", async (t) => {
   const fixture = await destinationFixture(t);
   assert.deepEqual(await fixture.deliver({ destination: { kind: "none" } }), { kind: "none", outcome: "discarded", written: 0 });
   assert.deepEqual(await fixture.deliver({ entries: [observation] }), { kind: "file", outcome: "nothing-to-file", written: 0 });
   assert.deepEqual(await fixture.deliver({ entries: [] }), { kind: "file", outcome: "nothing-to-file", written: 0 });
-  for (const destination of [{ kind: "issue", repository: "owner/plans" }, { kind: "pull-request-comment" }]) {
+  for (const destination of [{ kind: "pull-request-comment" }]) {
     const outcome = await fixture.deliver({ destination });
     assert.equal(outcome.kind, destination.kind);
     assert.equal(outcome.outcome, "unfiled");
@@ -306,4 +308,147 @@ test("the file-triage CLI delivers to the destination the environment names and 
     assert.equal(rejected.status, 2, `${name}=${JSON.stringify(value)} is a usage error`);
     assert.match(rejected.stderr, new RegExp(name));
   }
+});
+
+// Real CLI -> compiled minos -> real Forgejo adaptation -> HTTP fixture.
+// The fixture stores only payloads the adaptation POSTs; assertions read
+// those writes and the delivery result rather than inventing filed entries.
+test("issue destination delivers marked entries through the forge command", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "issue-filing-cli-"));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const binary = join(scratch, "minos");
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  execFileSync("go", ["build", "-o", binary, "./cmd/minos"], { cwd: root });
+
+  async function fixture(t, { existing = [], refusal = false, hideWrites = false, wrongLogin = false, malformed = false, corruptWrite = false, lostResponse = false, refuseAfter = Infinity, repeatPages = false, wrongReadBackAuthor = false } = {}) {
+    const directory = mkdtempSync(join(scratch, "case-"));
+    const token = join(directory, "token");
+    writeFileSync(token, "fixture-token\n");
+    const accounts = new Map([["fixture-token", { login: wrongLogin ? "other" : identity.name }]]);
+    const posted = [];
+    const reads = [];
+    const issues = [...existing];
+    const forge = createServer(async (request, response) => {
+      const url = new URL(request.url, "http://fixture");
+      response.setHeader("Content-Type", "application/json");
+      const account = accounts.get((request.headers.authorization || "").replace(/^token /, ""));
+      if (!account) {
+        response.writeHead(401); response.end("{}"); return;
+      }
+      if (url.pathname === "/api/v1/user") {
+        response.end(JSON.stringify(account)); return;
+      }
+      if (url.pathname === "/api/v1/repos/owner/plans/issues") {
+        if (request.method === "GET") {
+          reads.push(Object.fromEntries(url.searchParams));
+          if (malformed) { response.end('{"message":"not an issue list"}'); return; }
+          const state = url.searchParams.get("state") || "open";
+          const visible = (hideWrites ? existing : issues)
+            .filter((issue) => state === "all" || (issue.state || "open") === state)
+            .map((issue) => wrongReadBackAuthor ? { ...issue, user: { login: "another-account" } } : issue);
+          // The server caps pages below the requested limit, as a forge may.
+          const page = Number(url.searchParams.get("page"));
+          response.end(JSON.stringify(repeatPages ? visible.slice(0, 2) : visible.slice((page - 1) * 2, page * 2))); return;
+        }
+        if (request.method === "POST") {
+          let body = "";
+          for await (const chunk of request) body += chunk;
+          const payload = JSON.parse(body);
+          posted.push(payload);
+          if (refusal || posted.length > refuseAfter) { response.writeHead(403); response.end('{"message":"forbidden"}'); return; }
+          const issue = { ...payload, number: issues.length + 1, state: "open", user: { ...account } };
+          if (corruptWrite) issue.body += "Wrong stored content";
+          issues.push(issue);
+          if (lostResponse) { response.writeHead(500); response.end('{"message":"response lost"}'); return; }
+          response.writeHead(201); response.end(JSON.stringify(issue)); return;
+        }
+      }
+      response.writeHead(404); response.end("{}");
+    });
+    await new Promise((resolve) => forge.listen(0, "127.0.0.1", resolve));
+    t.after(() => forge.close());
+    const apiBase = `http://127.0.0.1:${forge.address().port}`;
+    writeFileSync(join(directory, "service.toml"), `
+[service]
+bot-login = "Review Bot"
+[listener]
+bind = "127.0.0.1:0"
+[runs]
+dir = "${directory}"
+[forges.forgejo]
+adaptation = "${join(root, "scripts", "adaptations", "forgejo")}"
+api-base = "${apiBase}"
+credential-file = "${token}"
+webhook-secret-file = "${token}"
+`);
+    const entriesPath = join(directory, "entries.json");
+    const orientationPath = join(directory, "orientation.json");
+    writeFileSync(orientationPath, JSON.stringify({ source }));
+    const env = {
+      ...process.env, MINOS_BIN: binary, MINOS_CONFIG: directory, MINOS_FORGE: "forgejo", MINOS_PR: "17",
+      MINOS_FILING_DESTINATION: JSON.stringify({ kind: "issue", repository: "owner/plans" }),
+      MINOS_API_BASE: apiBase, MINOS_OWNER: "owner", MINOS_REPO_NAME: "repository", MINOS_RUN_DIR: directory,
+      MINOS_COMMIT_AUTHOR_NAME: identity.name, MINOS_COMMIT_AUTHOR_EMAIL: identity.email,
+      MINOS_HEAD_BRANCH: "feature", MINOS_SETUP_WORKSPACE: join(dirname(pushGuard), "setup-workspace"),
+    };
+    return { posted, reads, issues, directory, async deliver(entries, head = "first-head") {
+      writeFileSync(entriesPath, JSON.stringify(entries));
+      const result = await runCli([entriesPath, orientationPath], { ...env, MINOS_HEAD_SHA: head });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    } };
+  }
+
+  await t.test("new entries create separate issues once across heads", async (t) => {
+    const f = await fixture(t);
+    assert.deepEqual(await f.deliver([advisory, observation, misconfiguration, advisory]),
+      { kind: "issue", outcome: "filed", written: 2, location: "owner/plans" });
+    assert.deepEqual(f.posted.map((issue) => issue.title), [advisory.title, misconfiguration.title]);
+    for (const [index, entry] of [advisory, misconfiguration].entries()) {
+      assert.equal(f.posted[index].body, `${issueLogEntry(entry, `Filed by ${identity.name} from owner/repository#17, 2026-09-12`)} ${filingMarker(entry, reviewedRepository)}\n`);
+    }
+    assert.deepEqual(await f.deliver([advisory, misconfiguration], "later-head"),
+      { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
+    assert.equal(f.posted.length, 2);
+    assert.equal(existsSync(join(f.directory, "publication")), false);
+  });
+  for (const state of ["open", "closed"]) await t.test(`${state} marker on a later capped page suppresses creation`, async (t) => {
+    const f = await fixture(t, { existing: [
+      { number: 1, body: "unrelated", state: "open" }, { number: 2, body: null, state: "open" },
+      { number: 3, body: filingMarker(advisory, reviewedRepository), state },
+    ] });
+    assert.deepEqual(await f.deliver([advisory]), { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
+    assert.equal(f.posted.length, 0);
+    assert.ok(f.reads.some((read) => read.page === "2" && read.state === "all" && read.type === "issues"));
+  });
+  await t.test("a failed POST response is reconciled by marker read-back", async (t) => {
+    const f = await fixture(t, { lostResponse: true });
+    assert.deepEqual(await f.deliver([advisory]), { kind: "issue", outcome: "filed", written: 1, location: "owner/plans" });
+    assert.equal(f.posted.length, 1);
+  });
+  await t.test("a partial batch records confirmed writes and stops at the failure", async (t) => {
+    const f = await fixture(t, { refuseAfter: 1 });
+    const outcome = await f.deliver([advisory, misconfiguration, { ...advisory, title: "Another defect" }]);
+    assert.equal(outcome.outcome, "unfiled");
+    assert.equal(outcome.written, 1);
+    assert.match(outcome.reason, /issue creation returned HTTP 403/);
+    assert.equal(f.posted.length, 2);
+    assert.equal(f.issues.length, 1);
+  });
+  for (const [name, options, reason, writes] of [
+    ["refused creation", { refusal: true }, /issue creation returned HTTP 403/, 1],
+    ["successful POST missing from read-back", { hideWrites: true }, /issue write could not be discovered/, 1],
+    ["wrong service identity", { wrongLogin: true }, /identity does not match/, 0],
+    ["malformed marker list", { malformed: true }, /issue markers could not be read/, 0],
+    ["stored content mismatch", { corruptWrite: true }, /read-back does not match/, 1],
+    ["read-back author differs from authenticated account", { wrongReadBackAuthor: true }, /read-back does not match/, 1],
+    ["repeated non-empty page", { repeatPages: true, existing: [{ body: "unrelated" }] }, /issue markers could not be read/, 0],
+  ]) await t.test(name, async (t) => {
+    const f = await fixture(t, options);
+    const outcome = await f.deliver([advisory]);
+    assert.equal(outcome.outcome, "unfiled");
+    assert.match(outcome.reason, reason);
+    assert.equal(f.posted.length, writes);
+    assert.equal(existsSync(join(f.directory, "publication")), false);
+  });
 });

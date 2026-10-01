@@ -1,0 +1,84 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+# Marker identity is independent of the reviewed head. Existing open or
+# closed issues suppress creation; a new write must belong to the service.
+owner="$1"; repo="$2"; login="$3"
+payload="$(cat)"
+if ! printf '%s' "$payload" | jq -e '
+  (.title | type) == "string" and (.title | length) > 0 and
+  (.body | type) == "string" and
+  ([.body | match("<!-- minos:[A-Za-z0-9_-]+ -->"; "g")] | length) == 1
+' >/dev/null; then
+  write_result rejected "filed issue needs a title, body and one filing marker"
+  exit 0
+fi
+marker="$(printf '%s' "$payload" | jq -r '.body | match("<!-- minos:[A-Za-z0-9_-]+ -->").string')"
+user="$(api GET /api/v1/user 2>/dev/null)" || {
+  write_result uncertain "authenticated forge identity could not be read"
+  exit 0
+}
+if [ "$(printf '%s' "$user" | jq -r '.login // .username // ""')" != "$login" ]; then
+  write_result rejected "authenticated forge identity does not match the configured service login"
+  exit 0
+fi
+
+issues_path="/api/v1/repos/${owner}/${repo}/issues"
+issue_presence() {
+  page=1
+  previous=''
+  found=''
+  while :; do
+    current="$(api GET "${issues_path}?state=all&type=issues&sort=oldest&limit=50&page=${page}" 2>/dev/null)" || return 2
+    if ! printf '%s' "$current" | jq -e '
+      type == "array" and all(.[]; (.body == null or (.body | type) == "string"))
+    ' >/dev/null; then return 2; fi
+    found="$(printf '%s' "$current" | jq -c --arg marker "$marker" '[.[] | select((.body // "") | contains($marker))][0] // empty')"
+    [ -z "$found" ] || return 0
+    [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || return 1
+    # A repeated non-empty page does not establish absence of the marker.
+    [ "$current" != "$previous" ] || return 2
+    previous="$current"
+    page=$((page + 1))
+  done
+}
+
+file_result() {
+  jq -nc --argjson written "$1" '{outcome:"applied",written:$written}'
+}
+
+if issue_presence; then
+  file_result 0
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "issue markers could not be read"
+    exit 0
+  fi
+fi
+
+# Even a lost POST response can represent an applied write. Discover it
+# before deciding whether another run may attempt delivery.
+post_status=''
+if api_with_status POST "$issues_path" -H "Content-Type: application/json" --data "$payload"; then
+  post_status="$api_status_code"
+fi
+if issue_presence; then
+  if printf '%s' "$found" | jq -e --argjson requested "$payload" --arg login "$login" '
+    .title == $requested.title and .body == $requested.body and
+    (.user.login // .user.username // "") == $login
+  ' >/dev/null; then
+    file_result 1
+  else
+    write_result uncertain "filed issue read-back does not match the requested content and identity"
+  fi
+else
+  presence=$?
+  case "$post_status:$presence" in
+    4??:1) write_result rejected "issue creation returned HTTP ${post_status}" ;;
+    *) write_result uncertain "issue write could not be discovered" ;;
+  esac
+fi
