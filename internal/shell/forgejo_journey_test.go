@@ -1654,7 +1654,7 @@ func TestForgeReviewAnchorsOutOfHunkFindingsTheAdaptationDeclares(t *testing.T) 
 	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10)
 	configureForgeCommandFixture(t, state)
 
-	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+	runReviewAttempts(t, head, target, "Review findings.", []requestedReviewComment{
 		{Path: "src/code.txt", Line: 1, Body: "Outside-hunk concern."},
 		{Path: "untouched.txt", Line: 1, Body: "Untouched-file concern."},
 	}, 2)
@@ -1687,7 +1687,7 @@ func TestForgeReviewAnchorsDeletionSideFindings(t *testing.T) {
 	head, target := installDeletingWorkspace(t, state, "src/code.txt", 10, 22)
 	configureForgeCommandFixture(t, state)
 
-	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+	runReviewAttempts(t, head, target, "Review findings.", []requestedReviewComment{
 		{Path: "src/code.txt", Line: 20, Body: "The removed guard was the only bounds check."},
 	}, 2)
 	writes, payload := state.reviewWriteFacts()
@@ -1710,7 +1710,7 @@ func TestForgeReviewAnchorsMultiLineFindings(t *testing.T) {
 	head, target := installAnchoredWorkspace(t, state, "src/code.txt", 10, 12)
 	configureForgeCommandFixture(t, state)
 
-	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{
+	runReviewAttempts(t, head, target, "Review findings.", []requestedReviewComment{
 		{Path: "src/code.txt", Line: 10, EndLine: 12, Body: "The three branches repeat one decision."},
 	}, 2)
 	writes, payload := state.reviewWriteFacts()
@@ -1734,7 +1734,7 @@ func TestForgeReviewFoldsOffDiffFindingsIntoTheBody(t *testing.T) {
 		{Path: "src/code.txt", Line: 1, Body: "Outside-hunk concern."},
 	}
 
-	runReviewAttempts(t, state, head, target, "Review findings.", comments, 2)
+	runReviewAttempts(t, head, target, "Review findings.", comments, 2)
 	writes, payload := state.reviewWriteFacts()
 	if writes != 1 {
 		t.Fatalf("review writes = %d, want one", writes)
@@ -1766,7 +1766,7 @@ func TestForgeReviewConvergesWhenTheForgeRewritesStoredPositions(t *testing.T) {
 	state.setPositionRewrite("src/code.txt", 10, 3)
 	configureForgeCommandFixture(t, state)
 
-	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{{
+	runReviewAttempts(t, head, target, "Review findings.", []requestedReviewComment{{
 		Path: "src/code.txt", Line: 10, Body: "Blame-rewritten concern.",
 	}}, 2)
 	if writes, _ := state.reviewWriteFacts(); writes != 1 {
@@ -1786,7 +1786,7 @@ func TestForgeReviewConvergesWhenTheForgeStoresACommentUnanchored(t *testing.T) 
 	state.setDiffNewSide(nil)
 	configureForgeCommandFixture(t, state)
 
-	runReviewAttempts(t, state, head, target, "Review findings.", []requestedReviewComment{{
+	runReviewAttempts(t, head, target, "Review findings.", []requestedReviewComment{{
 		Path: "src/code.txt", Line: 10, Body: "Durable concern.",
 	}}, 2)
 	if writes, _ := state.reviewWriteFacts(); writes != 1 {
@@ -2122,7 +2122,6 @@ func postFixtureReview(t *testing.T, head, target, event, body string, comments 
 
 func runReviewAttempts(
 	t *testing.T,
-	state *forgejoFixtureState,
 	head, target, body string,
 	comments []requestedReviewComment,
 	attempts int,
@@ -2275,14 +2274,10 @@ type forgejoFixtureState struct {
 	reviews          []map[string]any
 	statuses         []map[string]any
 	statusesByCommit map[string][]map[string]any
-	commits          []map[string]any
 	issueComments    []map[string]any
 	dependencies     []map[string]any
 	dependencyPages  [][]map[string]any
 	dependencyCode   int
-	actionRuns       []map[string]any
-	actionJobs       map[int64][]map[string]any
-	actionLogs       map[int64]string
 	server           *httptest.Server
 	tokenPath        string
 	adaptationPath   string
@@ -2292,23 +2287,14 @@ type forgejoFixtureState struct {
 	requestedReviewers       []string
 	reviewRequestsUnrecorded bool
 	reactions                []string
-	reactionWritePaths       []string
 	reviewRequestWrites      int
 	obsoleteAssignmentWrites int
 	reactionWrites           int
 	reactionDeleteWrites     int
-	labelDeleteWrites        int
 	labelWrites              int
 	repositoryLabels         []map[string]any
 	organisationLabelPages   [][]map[string]any
-	mergeWrites              int
-	branchDeleteWrites       int
-	sourceBranchExists       bool
 	stackedChildren          []map[string]any
-	childRetargetWrites      int
-	childRetargetAfterDelete bool
-	childRetargetCode        int
-	branchDeletedByMerge     bool
 	statusWrites             int
 	statusPostRequests       []statusPostRequest
 	reviewWrites             int
@@ -2326,14 +2312,6 @@ type forgejoFixtureState struct {
 	filedIssues              []map[string]any
 	issueCreateRequests      []map[string]any
 	secondaryCloneURL        string
-	operatorPullRequests     []operatorFixturePullRequest
-}
-
-type operatorFixturePullRequest struct {
-	pullRequest map[string]any
-	statuses    []map[string]any
-	reviews     []map[string]any
-	comments    []map[string]any
 }
 
 type statusPostRequest struct {
@@ -2362,13 +2340,11 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 		t: t, pullRequest: event.PullRequest, repository: event.Repository,
 		adaptationPath: adaptationPath, reviewComments: make(map[int64][]map[string]any),
 		diffNewSide: make(map[string][][2]int64), positionRewrites: make(map[string]map[int64]int64),
-		actionJobs: make(map[int64][]map[string]any), actionLogs: make(map[int64]string),
 		pullRequestReads: make(map[string]int),
 		forgeAccounts:    map[string]map[string]any{"fixture-token": {"login": "Minos"}},
-		dependencies:     []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
+		dependencies:     []map[string]any{}, dependencyCode: http.StatusOK,
 		statusesByCommit: make(map[string][]map[string]any),
 	}
-	state.commits = []map[string]any{{"sha": state.pullRequest["head"].(map[string]any)["sha"], "author": map[string]any{"login": "fixture-author"}}}
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
 	state.tokenPath = filepath.Join(t.TempDir(), "forge.token")
@@ -2413,52 +2389,6 @@ func (s *forgejoFixtureState) setStackedChildren(children []map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stackedChildren = children
-}
-
-func (s *forgejoFixtureState) operatorPullRequest(number int, head string) map[string]any {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	data, err := json.Marshal(s.pullRequest)
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	var pullRequest map[string]any
-	if err := json.Unmarshal(data, &pullRequest); err != nil {
-		s.t.Fatal(err)
-	}
-	pullRequest["number"] = float64(number)
-	pullRequest["head"].(map[string]any)["sha"] = head
-	return pullRequest
-}
-
-func (s *forgejoFixtureState) setOperatorPullRequests(pullRequests []operatorFixturePullRequest) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.operatorPullRequests = pullRequests
-}
-
-// operatorPullRequestForPath resolves a request made by the operator-listing
-// journey. The caller holds the fixture mutex.
-func (s *forgejoFixtureState) operatorPullRequestForPath(path string) *operatorFixturePullRequest {
-	for index := range s.operatorPullRequests {
-		pullRequest := &s.operatorPullRequests[index]
-		prefix := fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/pulls/%v", pullRequest.pullRequest["number"])
-		if path == prefix || strings.HasPrefix(path, prefix+"/") {
-			return pullRequest
-		}
-	}
-	return nil
-}
-
-func (s *forgejoFixtureState) operatorPullRequestForIssuePath(path string) *operatorFixturePullRequest {
-	for index := range s.operatorPullRequests {
-		pullRequest := &s.operatorPullRequests[index]
-		prefix := fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/issues/%v", pullRequest.pullRequest["number"])
-		if path == prefix || strings.HasPrefix(path, prefix+"/") {
-			return pullRequest
-		}
-	}
-	return nil
 }
 
 // stackedChild resolves a request path to a fixture child pull request. The
@@ -2562,26 +2492,6 @@ func (s *forgejoFixtureState) setStatuses(statuses []map[string]any) {
 	s.statusesByCommit[head] = statuses
 }
 
-// setCommitStatuses puts statuses on a commit that is not the pull-request
-// head — the target commit a broken-target marker lands on.
-func (s *forgejoFixtureState) setCommitStatuses(sha string, statuses []map[string]any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.statusesByCommit[sha] = statuses
-}
-
-func (s *forgejoFixtureState) setIssueComments(comments []map[string]any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.issueComments = comments
-}
-
-func (s *forgejoFixtureState) setCommits(commits []map[string]any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.commits = commits
-}
-
 func (s *forgejoFixtureState) setDependencies(dependencies []map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2660,16 +2570,6 @@ func (s *forgejoFixtureState) statusPostFacts() []statusPostRequest {
 	return posts
 }
 
-func (s *forgejoFixtureState) issueCommentFacts() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	comments := make([]string, 0, len(s.issueComments))
-	for _, comment := range s.issueComments {
-		comments = append(comments, fmt.Sprint(comment["body"]))
-	}
-	return comments
-}
-
 func (s *forgejoFixtureState) virtualBranchReads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2742,24 +2642,8 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.secondaryCloneURL, "default_branch": "main"})
-	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls" && len(s.operatorPullRequests) > 0:
-		pullRequests := make([]map[string]any, 0, len(s.operatorPullRequests))
-		for _, pullRequest := range s.operatorPullRequests {
-			pullRequests = append(pullRequests, pullRequest.pullRequest)
-		}
-		writeFixtureJSON(s.t, w, pullRequests)
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls":
 		writeFixtureJSON(s.t, w, append([]map[string]any{s.pullRequest}, s.stackedChildren...))
-	case r.Method == http.MethodGet && s.operatorPullRequestForPath(path) != nil && !strings.Contains(strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/pulls/"), "/"):
-		writeFixtureJSON(s.t, w, s.operatorPullRequestForPath(path).pullRequest)
-	case r.Method == http.MethodGet && s.operatorPullRequestForPath(path) != nil && strings.HasSuffix(path, "/dependencies"):
-		writeFixtureJSON(s.t, w, []map[string]any{})
-	case r.Method == http.MethodGet && s.operatorPullRequestForPath(path) != nil && strings.HasSuffix(path, "/reviews"):
-		writeFixtureJSON(s.t, w, s.operatorPullRequestForPath(path).reviews)
-	case r.Method == http.MethodGet && s.operatorPullRequestForIssuePath(path) != nil && strings.HasSuffix(path, "/dependencies"):
-		writeFixtureJSON(s.t, w, []map[string]any{})
-	case r.Method == http.MethodGet && s.operatorPullRequestForIssuePath(path) != nil && strings.HasSuffix(path, "/comments"):
-		writeFixtureJSON(s.t, w, s.operatorPullRequestForIssuePath(path).comments)
 	case r.Method == http.MethodGet && path == pullPath:
 		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		pullRequest := maps.Clone(s.pullRequest)
@@ -2809,58 +2693,6 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			reviews = []map[string]any{}
 		}
 		writeFixtureJSON(s.t, w, reviews)
-	case r.Method == http.MethodPost && strings.HasSuffix(path, "/reviews") && s.stackedChildForPath(path) != nil:
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			s.t.Error(err)
-		}
-		child := s.stackedChildForPath(path)
-		reviews, _ := child["reviews"].([]map[string]any)
-		review := map[string]any{
-			"id": int64(len(reviews) + 1), "state": payload["event"], "commit_id": payload["commit_id"],
-			"body": payload["body"], "user": map[string]any{"login": "Minos"},
-		}
-		child["reviews"] = append(reviews, review)
-		writeFixtureJSON(s.t, w, review)
-	case r.Method == http.MethodGet && strings.Contains(path, "/reviews/") && strings.HasSuffix(path, "/comments") && s.stackedChildForPath(path) != nil:
-		writeFixtureJSON(s.t, w, []map[string]any{})
-	case r.Method == http.MethodGet && strings.Contains(path, "/issues/") && strings.HasSuffix(path, "/comments") && s.stackedChildForPath(path) != nil:
-		child := s.stackedChildForPath(path)
-		comments, _ := child["comments"].([]map[string]any)
-		if comments == nil {
-			comments = []map[string]any{}
-		}
-		writeFixtureJSON(s.t, w, comments)
-	case r.Method == http.MethodPost && strings.Contains(path, "/issues/") && strings.HasSuffix(path, "/comments") && s.stackedChildForPath(path) != nil:
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			s.t.Error(err)
-		}
-		child := s.stackedChildForPath(path)
-		comments, _ := child["comments"].([]map[string]any)
-		comment := map[string]any{
-			"id": float64(len(comments) + 1), "body": payload["body"], "user": map[string]any{"login": "Minos"},
-		}
-		child["comments"] = append(comments, comment)
-		writeFixtureJSON(s.t, w, comment)
-	case r.Method == http.MethodPatch && s.stackedChild(path) != nil:
-		if s.childRetargetCode != 0 {
-			http.Error(w, "retarget fixture failure", s.childRetargetCode)
-			return
-		}
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			s.t.Error(err)
-		}
-		child := s.stackedChild(path)
-		if base, ok := payload["base"].(string); ok {
-			child["base"].(map[string]any)["ref"] = base
-		}
-		s.childRetargetWrites++
-		if !s.sourceBranchExists {
-			s.childRetargetAfterDelete = true
-		}
-		writeFixtureJSON(s.t, w, child)
 	case r.Method == http.MethodGet && path == issuePath+"/dependencies":
 		if s.dependencyCode != http.StatusOK {
 			http.Error(w, "dependency fixture failure", s.dependencyCode)
@@ -2892,86 +2724,21 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		s.issueComments = append(s.issueComments, comment)
 		writeFixtureJSON(s.t, w, comment)
-	case r.Method == http.MethodGet && path == pullPath+"/commits":
-		writeFixtureJSON(s.t, w, s.commits)
-	case r.Method == http.MethodGet && strings.Contains(path, "/pulls/") && strings.HasSuffix(path, "/commits"):
-		child := s.stackedChildForPath(path)
-		commits, _ := child["commits"].([]map[string]any)
-		if commits == nil {
-			commits = []map[string]any{{"sha": child["head"].(map[string]any)["sha"], "author": map[string]any{"login": "fixture-author"}}}
-		}
-		writeFixtureJSON(s.t, w, commits)
 	case r.Method == http.MethodGet && strings.Contains(path, "/branches/") && s.branchHead(path) != "":
 		writeFixtureJSON(s.t, w, map[string]any{
 			"commit": map[string]any{"id": s.branchHead(path)}, "protected": false,
 			"user_can_merge": true, "status_check_contexts": []string{},
 		})
-	case r.Method == http.MethodDelete && strings.Contains(path, "/branches/"):
-		if !s.sourceBranchExists {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		s.sourceBranchExists = false
-		s.branchDeleteWrites++
-		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodGet && strings.Contains(path, "/branches/"):
 		if strings.Contains(path, "refs/pull/") {
 			s.virtualRefLookups++
-		}
-		if !s.sourceBranchExists {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"protected": false})
 		if s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])] > 0 {
 			s.runPriorityBoundaryMutation()
 		}
-	case r.Method == http.MethodPost && path == pullPath+"/merge":
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			s.t.Error(err)
-		}
-		if payload["head_commit_id"] != s.pullRequest["head"].(map[string]any)["sha"] {
-			http.Error(w, "head mismatch", http.StatusConflict)
-			return
-		}
-		s.pullRequest["merged"] = true
-		s.pullRequest["state"] = "closed"
-		s.mergeWrites++
-		if s.sourceBranchExists && payload["delete_branch_after_merge"] == true {
-			s.sourceBranchExists = false
-			s.branchDeletedByMerge = true
-			headRef := s.pullRequest["head"].(map[string]any)["ref"]
-			baseRef := s.pullRequest["base"].(map[string]any)["ref"]
-			for _, child := range s.stackedChildren {
-				base := child["base"].(map[string]any)
-				if child["state"] == "open" && base["ref"] == headRef {
-					base["ref"] = baseRef
-				}
-			}
-		}
-		writeFixtureJSON(s.t, w, map[string]any{})
-	case r.Method == http.MethodPost && strings.HasSuffix(path, "/merge") && s.stackedChildForPath(path) != nil:
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			s.t.Error(err)
-		}
-		child := s.stackedChildForPath(path)
-		if payload["head_commit_id"] != child["head"].(map[string]any)["sha"] {
-			http.Error(w, "head mismatch", http.StatusConflict)
-			return
-		}
-		child["merged"] = true
-		child["state"] = "closed"
-		writeFixtureJSON(s.t, w, map[string]any{})
 	case r.Method == http.MethodGet && strings.Contains(path, "/commits/") && strings.HasSuffix(path, "/statuses"):
 		commit := strings.TrimSuffix(strings.SplitN(path, "/commits/", 2)[1], "/statuses")
-		for _, pullRequest := range s.operatorPullRequests {
-			if pullRequest.pullRequest["head"].(map[string]any)["sha"] == commit {
-				writeFixtureJSON(s.t, w, pullRequest.statuses)
-				return
-			}
-		}
 		s.statusReadCommits = append(s.statusReadCommits, commit)
 		statuses := s.statusesByCommit[commit]
 		childStatuses := false
@@ -2992,25 +2759,6 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		if s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])] == 0 {
 			s.runPriorityBoundaryMutation()
 		}
-	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/actions/runs":
-		writeFixtureJSON(s.t, w, map[string]any{"workflow_runs": s.actionRuns})
-	case r.Method == http.MethodGet && strings.Contains(path, "/actions/runs/") && strings.HasSuffix(path, "/jobs"):
-		idText := strings.TrimSuffix(strings.SplitN(path, "/actions/runs/", 2)[1], "/jobs")
-		id, err := strconv.ParseInt(idText, 10, 64)
-		if err != nil {
-			http.Error(w, "bad run id", http.StatusBadRequest)
-			return
-		}
-		writeFixtureJSON(s.t, w, s.actionJobs[id])
-	case r.Method == http.MethodGet && strings.Contains(path, "/actions/jobs/") && strings.HasSuffix(path, "/logs"):
-		idText := strings.TrimSuffix(strings.SplitN(path, "/actions/jobs/", 2)[1], "/logs")
-		id, err := strconv.ParseInt(idText, 10, 64)
-		if err != nil {
-			http.Error(w, "bad job id", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte(s.actionLogs[id]))
 	case r.Method == http.MethodPost && strings.Contains(path, "/statuses/"):
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -3096,29 +2844,12 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeFixtureJSON(s.t, w, s.reviewComments[id])
-	case r.Method == http.MethodGet && (path == issuePath || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/issues/"+fmt.Sprint(s.stackedChildForPath(path)["number"]))):
-		assignees := make([]map[string]any, 0, len(s.assignees))
-		for _, login := range s.assignees {
-			assignees = append(assignees, map[string]any{"login": login})
-		}
-		writeFixtureJSON(s.t, w, map[string]any{"assignees": assignees})
 	case r.Method == http.MethodPost && (path == issuePath+"/assignees" || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/assignees")):
 		s.obsoleteAssignmentWrites++
 		http.Error(w, "route not found", http.StatusNotFound)
 	case r.Method == http.MethodPatch && (path == issuePath || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/issues/"+fmt.Sprint(s.stackedChildForPath(path)["number"]))):
-		var payload struct {
-			Assignees []string `json:"assignees"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			s.t.Error(err)
-		}
-		for _, login := range payload.Assignees {
-			if !slices.Contains(s.assignees, login) {
-				s.assignees = append(s.assignees, login)
-			}
-		}
 		s.obsoleteAssignmentWrites++
-		writeFixtureJSON(s.t, w, map[string]any{})
+		http.Error(w, "route not found", http.StatusNotFound)
 	case r.Method == http.MethodGet && (path == issuePath+"/reactions" || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/reactions")):
 		reactions := make([]map[string]any, 0, len(s.reactions))
 		for _, content := range s.reactions {
@@ -3136,7 +2867,6 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			s.reactions = append(s.reactions, payload.Content)
 		}
 		s.reactionWrites++
-		s.reactionWritePaths = append(s.reactionWritePaths, path)
 		writeFixtureJSON(s.t, w, map[string]any{
 			"content":    payload.Content,
 			"created_at": "2026-07-19T12:00:00Z",
@@ -3215,7 +2945,6 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			kept = append(kept, label)
 		}
 		s.setPullRequestLabels(kept)
-		s.labelDeleteWrites++
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, fmt.Sprintf("unexpected fixture request %s %s", r.Method, path), http.StatusNotFound)
