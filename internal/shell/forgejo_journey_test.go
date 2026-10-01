@@ -873,6 +873,30 @@ func TestForgeClaimRequestsReviewAndReactsIdempotently(t *testing.T) {
 	}
 }
 
+func TestForgeClaimRefusesReviewRequestMissingFromReadBack(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.reviewRequestsUnrecorded = true
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	var stdout bytes.Buffer
+	_ = ForgeCommand(t.Context(), []string{"claim"}, &stdout)
+	if strings.Contains(stdout.String(), `"outcome":"applied"`) ||
+		!strings.Contains(stdout.String(), "review request was not confirmed") {
+		t.Fatalf("claim output = %q, want unconfirmed review request", stdout.String())
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.reviewRequestWrites != 1 {
+		t.Fatalf("review request writes = %d, want 1", state.reviewRequestWrites)
+	}
+}
+
 func TestForgeReactionUsesForgejo14ShapeAndReadBackIdempotency(t *testing.T) {
 	var apiShape struct {
 		Request  map[string]any `json:"request"`
@@ -1905,6 +1929,7 @@ type forgejoFixtureState struct {
 	mu                       sync.Mutex
 	assignees                []string
 	requestedReviewers       []string
+	reviewRequestsUnrecorded bool
 	reactions                []string
 	reactionWritePaths       []string
 	reviewRequestWrites      int
@@ -2330,7 +2355,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		reviews := make([]map[string]any, 0, len(payload.Reviewers))
 		for _, login := range payload.Reviewers {
-			if !slices.Contains(s.requestedReviewers, login) {
+			if !s.reviewRequestsUnrecorded && !slices.Contains(s.requestedReviewers, login) {
 				s.requestedReviewers = append(s.requestedReviewers, login)
 			}
 			reviews = append(reviews, map[string]any{"state": "REQUEST_REVIEW", "user": map[string]any{"login": login}})
