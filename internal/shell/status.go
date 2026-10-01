@@ -114,12 +114,11 @@ type statusRun struct {
 }
 
 type statusStage struct {
-	Name       string `json:"name"`
-	Attempt    int    `json:"attempt"`
-	State      string `json:"state"`
-	StartedAt  string `json:"started_at,omitempty"`
-	EndedAt    string `json:"ended_at,omitempty"`
-	ExitStatus *int   `json:"exit_status,omitempty"`
+	Name      string `json:"name"`
+	Attempt   int    `json:"attempt"`
+	State     string `json:"state"`
+	StartedAt string `json:"started_at,omitempty"`
+	EndedAt   string `json:"ended_at,omitempty"`
 }
 
 // stepName is the lifecycle's one spelling for a run step. A first execution

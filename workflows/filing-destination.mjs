@@ -1,6 +1,6 @@
 // Delivers a clean run's confirmed non-gating material — verified advisory
 // findings and brief configuration diagnostics — to the repository's
-// configured filing destination (C45): a file in a repository's default
+// configured filing destination: a file in a repository's default
 // branch, an issue on a named repository, a comment on the pull request, or
 // nowhere. One entry files once, deduplicated by a marker. A failed
 // delivery stays in the run record and never falls back to another surface.
@@ -21,7 +21,7 @@ export const FILING_KINDS = ["file", "issue", "pull-request-comment", "none"];
 // same defect at the same site finds its marker already at the destination
 // and skips it, so a destination never fills with one defect per push. The
 // reviewed repository is part of the identity because one destination may
-// serve several repositories (C49), whose sites are only relative paths.
+// serve several repositories, whose sites are only relative paths.
 export function filingMarker(entry, reviewedRepository) {
   const title = String(entry.title || "").trim().toLowerCase().replace(/\s+/g, " ");
   const identity = entry.kind === "review-brief-misconfiguration"
@@ -136,7 +136,7 @@ function lookupRepository(apiBase, repository, token) {
 // run directory (guidance/<owner>/<name>: nested, so names never collide): a
 // separate write path, never a guidance clone. When the destination is the
 // reviewed repository the clone carries the same pre-push guard as the
-// workspace, so a push can never reach the pull-request branch (C33).
+// workspace, so a push can never reach the pull-request branch.
 function cloneForFiling(runDir, repository, target, env, protection) {
   const directory = join(runDir, "filing", ...repository.split("/"));
   rmSync(directory, { recursive: true, force: true });

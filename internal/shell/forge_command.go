@@ -19,7 +19,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|marker|file-issue")
 	}
-	adapter, guard, _, err := leadForge()
+	adapter, guard, adaptationDirectory, err := leadForge()
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, "target": guard.TargetSHA})
+		record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, product.RecordTargetKey: guard.TargetSHA})
 		if err != nil {
 			return err
 		}
@@ -111,13 +111,13 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 				guard.TargetSHA,
 				guard.HeadSHA,
 				requested,
-				readAnchoringCapabilities(leadAdaptationDirectory()),
+				readAnchoringCapabilities(adaptationDirectory),
 			)
 			if diagnostic != "" {
 				fmt.Fprintf(os.Stderr, "forge review: %s\n", diagnostic)
 			}
 		}
-		// The lead signs the review it authors (C42); each comment already
+		// The lead signs the review it authors; each comment already
 		// carries its proposing and verifying models from the publication
 		// composer, so the lead's identity goes on the body alone.
 		if leadModel := os.Getenv("MINOS_LEAD_MODEL"); leadModel != "" {
@@ -178,6 +178,9 @@ func markersFromEnvironment() (Markers, error) {
 	return markers, nil
 }
 
+// leadForge builds the adapter and guard for the pull request this run serves,
+// and returns the adaptation directory so the review boundary can read what
+// that forge declares it can anchor.
 func leadForge() (*forge.Adapter, forge.Guard, string, error) {
 	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
 	if err != nil {
@@ -199,19 +202,7 @@ func leadForge() (*forge.Adapter, forge.Guard, string, error) {
 	if guard.Repository.Owner == "" || guard.Repository.Name == "" {
 		return nil, forge.Guard{}, "", fmt.Errorf("pull-request environment is incomplete")
 	}
-	return adapter, guard, cfg.Service.BotLogin, nil
-}
-
-// leadAdaptationDirectory locates the adaptation serving this run, so the
-// review boundary can read what its forge declares it can anchor. A
-// configuration this command could not read leaves the strict geometry in
-// place rather than failing the publication.
-func leadAdaptationDirectory() string {
-	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
-	if err != nil {
-		return ""
-	}
-	return cfg.Forges[os.Getenv("MINOS_FORGE")].Adaptation
+	return adapter, guard, cfg.Forges[forgeName].Adaptation, nil
 }
 
 func namedProductState(name string) (product.State, bool) {

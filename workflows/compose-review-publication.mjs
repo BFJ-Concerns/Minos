@@ -5,7 +5,7 @@
 // verdicts and the lead's classification decisions into the exact files
 // the guarded forge review command posts, in the order they are posted,
 // and the triage material the issue-log filing delivers, so no lead ever
-// hand-assembles a payload or re-derives the routing (C6).
+// hand-assembles a payload or re-derives the routing.
 //
 // A request-changes review carries all confirmed findings, including advisory
 // ones, so the author can address them in the same round. A clean result

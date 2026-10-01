@@ -249,7 +249,7 @@ else
   unset_gateway_environment
 fi
 
-# The lead's engine (C48). Each engine names its executable, its default
+# The lead's engine. Each engine names its executable, its default
 # model and its configuration seed; an engine is provisioned exactly when
 # its seed is named. The lead's engine must be provisioned, the other may be
 # absent — a single-engine deployment — and the workflows route every role
@@ -301,8 +301,8 @@ failure_cause="MINOS_ORIENTATION is required"
 FORCE_COLOR=0
 export FORCE_COLOR
 # The harness reaps background shells under memory pressure, which on a run
-# unit reads as pressure whenever the workspace's build output fills the page
-# cache — a long setup or review stage is then killed mid-flight and reported
+# unit reads as pressure whenever clones and transcripts fill the page cache —
+# a long setup or review stage is then killed mid-flight and reported
 # as an interrupted dispatch rather than a verdict. The run unit's own
 # MemoryMax ceiling and the continuation path are the backstop this removes.
 CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1

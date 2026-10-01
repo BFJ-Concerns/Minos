@@ -1,5 +1,5 @@
 // The verdict classification's one deterministic home. The lead's judgement
-// decides what verdict a completed review earned (C18); this module owns
+// decides what verdict a completed review earned; this module owns
 // everything about that decision that is genuinely black and white: the
 // mechanical digest of the adjudicated verdict the judgement is informed by,
 // and the fail-closed validation of the recorded decision. Publication
@@ -16,7 +16,8 @@ export const DEFAULT_THRESHOLD = "High";
 
 // The two classes the commission lets judge an at-or-above-threshold
 // confirmed finding out of gating. There is no third: any other basis for
-// declassification is the mechanical-binding failure C18 exists to prevent.
+// declassification is the mechanical binding the lead's judgement exists to
+// prevent.
 export const NEVER_GATING_CLASSES = ["declared-out-of-scope", "speculative-hardening"];
 
 export function atOrAboveThreshold(finding, threshold) {

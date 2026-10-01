@@ -11,8 +11,6 @@
 .DS_Store
 Thumbs.db
 
-# Rust build artefacts
-target/
 
 # Go build artefacts
 /minos

@@ -53,7 +53,7 @@ type ServiceConfig struct {
 	} `toml:"listener"`
 	Forges map[string]ForgeConfig `toml:"forges"`
 	// Repositories holds the service-level value of every per-repository
-	// knob; a repository's own file overrides any of them (C49).
+	// knob; a repository's own file overrides any of them.
 	Repositories RepositoryKnobs `toml:"repositories"`
 	Runs         struct {
 		Dir                    string `toml:"dir"`
@@ -83,7 +83,7 @@ type ServiceConfig struct {
 		PressureThresholdPercent int    `toml:"pressure-threshold-percent"`
 	} `toml:"runs"`
 	// Routing names, per workflow role, the engine, model and effort the
-	// operator chose (C48). A role left unset defaults at run time to the
+	// operator chose. A role left unset defaults at run time to the
 	// cross-family pairing when both engines are provisioned and to the one
 	// provisioned engine otherwise; only set roles are exported.
 	Routing  Routing `toml:"routing"`
@@ -105,8 +105,7 @@ const defaultRecentTimingsCacheSeconds = 120
 
 // RecentTimingsCacheTTL is how long a recent-runs listing is served from
 // memory before the archive host is asked again. An unset or nonsensical knob
-// means the default, so a configuration written before the knob existed still
-// gets the caching.
+// means the default.
 func (cfg ServiceConfig) RecentTimingsCacheTTL() time.Duration {
 	seconds := cfg.Runs.RecentTimingsCacheSeconds
 	if seconds < 1 {
@@ -134,8 +133,7 @@ func (cfg ServiceConfig) runPressureThresholdPercent() int {
 }
 
 // MaxConcurrentRuns is how many run units may be live at once. An unset knob
-// means one, so a configuration written before the knob existed keeps the
-// serialised behaviour it was written for.
+// means one: runs are serialised.
 func (cfg ServiceConfig) MaxConcurrentRuns() int {
 	if cfg.Runs.MaxConcurrent < 1 {
 		return 1
@@ -160,8 +158,8 @@ type Routing struct {
 	BriefPlanner   RoleRouting `toml:"brief-planner"`
 }
 
-// Roles lists the set roles by name, in a fixed order, for export and
-// validation; an unset role is absent so the run applies its default.
+// Roles lists the set roles by name for export and validation; an unset role
+// is absent so the run applies its default.
 func (r Routing) Roles() map[string]RoleRouting {
 	roles := map[string]RoleRouting{}
 	for _, role := range []struct {
@@ -208,7 +206,7 @@ type ForgeConfig struct {
 	SignatureHeader   string `toml:"signature-header"`
 }
 
-// RepositoryKnobs are the per-repository knobs (C49). Each is set once at
+// RepositoryKnobs are the per-repository knobs. Each is set once at
 // service level under [repositories] and any repository overrides it in its
 // own file; the override replaces the whole value — a list never merges with
 // the service list — and a knob unset at both levels takes its shipped
@@ -220,15 +218,15 @@ type RepositoryKnobs struct {
 		Threshold string `toml:"threshold"`
 	} `toml:"review"`
 	// GuidanceSources is the ordered list of documents that carry the
-	// reviewed project's declared intent (C44). Empty means the reviewed
+	// reviewed project's declared intent. Empty means the reviewed
 	// repository's own checked-in guidance.
 	GuidanceSources []GuidanceSource `toml:"guidance-sources"`
 	// FilingDestination is where a clean run's confirmed non-gating material
-	// goes (C45).
+	// goes.
 	FilingDestination FilingDestination `toml:"filing-destination"`
-	// Markers is the form of each marker Minos writes on a pull request
-	// (C46): a reaction or a label each. Resolved, in-flight and clean are
-	// always set; an unset attention marker is never written.
+	// Markers is the form of each marker Minos writes on a pull request: a
+	// reaction or a label each. In-flight and clean are always set; an unset
+	// attention marker is never written.
 	Markers Markers `toml:"markers"`
 }
 

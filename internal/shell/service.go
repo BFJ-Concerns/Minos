@@ -40,11 +40,6 @@ func currentContinuationPriority(ctx context.Context, cfg ServiceConfig, facts F
 	return continuationPriority(forge.Snapshot{Statuses: statuses}, cfg.Service.BotLogin, cfg.Service.StatusContext), nil
 }
 
-func alreadyReviewed(snapshot forge.Snapshot, botLogin string) bool {
-	_, found := currentReview(snapshot, botLogin)
-	return found
-}
-
 // currentReview finds the bot's latest review of the current head. Minos
 // authors no commits, so any head movement is the author's and simply leaves
 // old reviews behind: a review marks a completed run only while its commit is

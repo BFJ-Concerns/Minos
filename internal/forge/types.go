@@ -27,16 +27,10 @@ type Guard struct {
 type StatusState string
 
 const (
-	StatusAbsent    StatusState = "absent"
-	StatusQueued    StatusState = "queued"
-	StatusPending   StatusState = "pending"
-	StatusSuccess   StatusState = "success"
-	StatusFailure   StatusState = "failure"
-	StatusError     StatusState = "error"
-	StatusCancelled StatusState = "cancelled"
-	StatusTimeout   StatusState = "timeout"
-	StatusNeutral   StatusState = "neutral"
-	StatusSkipped   StatusState = "skipped"
+	StatusPending StatusState = "pending"
+	StatusSuccess StatusState = "success"
+	StatusFailure StatusState = "failure"
+	StatusError   StatusState = "error"
 )
 
 type Status struct {
@@ -126,7 +120,6 @@ const (
 type WriteResult struct {
 	Outcome WriteOutcome `json:"outcome"`
 	Reason  string       `json:"reason,omitempty"`
-	SHA     string       `json:"sha,omitempty"`
 	Written *int         `json:"written,omitempty"`
 }
 

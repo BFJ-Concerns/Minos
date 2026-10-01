@@ -1,4 +1,4 @@
-// Resolves which engine, model and effort each workflow role runs on (C48).
+// Resolves which engine, model and effort each workflow role runs on.
 // The service exports the operator's explicit choices as MINOS_ROUTING and
 // the run body exports the engines whose auth it seeded as
 // MINOS_PROVISIONED_ENGINES; an unset role defaults to the cross-family

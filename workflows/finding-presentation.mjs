@@ -22,7 +22,7 @@ function modelAttribution(model) {
   return null;
 }
 
-// One quiet provenance line (C42): both families on one line, or nothing
+// One quiet provenance line: both families on one line, or nothing
 // when the run record carries no model evidence for either.
 function provenance(finding) {
   const proposingModel = modelAttribution(finding.proposingModel);

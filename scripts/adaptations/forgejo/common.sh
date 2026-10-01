@@ -46,10 +46,6 @@ api_with_status() {
   return 1
 }
 
-json_string_array() {
-  jq -r '[.[]] | @json'
-}
-
 # Some Forgejo collection endpoints accept a page parameter but return the
 # complete collection for every value. Stop when the forge repeats the prior
 # non-empty response so those endpoints terminate without duplicating records,
@@ -61,9 +57,8 @@ repeats_previous_page() {
 write_result() {
   outcome="$1"
   reason="${2:-}"
-  sha="${3:-}"
-  jq -nc --arg outcome "$outcome" --arg reason "$reason" --arg sha "$sha" \
-    '{outcome:$outcome} + (if $reason == "" then {} else {reason:$reason} end) + (if $sha == "" then {} else {sha:$sha} end)'
+  jq -nc --arg outcome "$outcome" --arg reason "$reason" \
+    '{outcome:$outcome} + (if $reason == "" then {} else {reason:$reason} end)'
 }
 
 urlencode() {
@@ -74,19 +69,16 @@ urlencode() {
 # verb. A caller's earlier snapshot is evidence for reasoning, not permission
 # for a later mutation.
 #
-# The guard binds the head, never the target: every guarded write except the
-# merge is a statement about the change under review, which the target
-# advancing does not invalidate — target movement is reconciled at finishing,
-# not treated as staleness here. The merge is the one write whose meaning
-# changes with the target, so guarded-merge alone compares the pinned target
-# against guard_actual_target, which this guard leaves populated for it.
+# The guard binds the head, never the target: every guarded write is a
+# statement about the change under review, which the target advancing does
+# not invalidate.
 guard_open_pull_request() {
   guard_owner="$1"
   guard_repo="$2"
   guard_pr="$3"
   guard_expected_head="$4"
-  # $5 is the caller's pinned target, accepted for a stable calling
-  # convention; only guarded-merge consumes it, via guard_actual_target.
+  # $5 is the caller's pinned target, accepted so every guarded script
+  # passes the same coordinates; the guard does not compare it.
   guard_expected_login="$6"
   guard_reason=""
 
@@ -98,9 +90,6 @@ guard_open_pull_request() {
   fi
 
   guard_pr_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
-  guard_base_ref="$(printf '%s' "$guard_pr_json" | jq -r '.base.ref // ""')"
-  guard_base_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/branches/$(urlencode "$guard_base_ref")")" || return 2
-  guard_actual_target="$(printf '%s' "$guard_base_json" | jq -r '.commit.id // .commit.sha // ""')"
 
   if ! printf '%s' "$guard_pr_json" | jq -e \
     --arg repository "${guard_owner}/${guard_repo}" \

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
@@ -204,18 +204,6 @@ try {
     } catch (error) {
       process.stderr.write(`adjudicated-review: could not remove run-record directory: ${error.message}\n`);
       verdict = incomplete(`run-record directory cleanup failed: ${error.message}`, envelope);
-    }
-  }
-  // The verdict is settled and the run record retained; the workflow's
-  // worktrees are spent, and their build directories are the run's largest
-  // transient disk cost. Reap is best-effort: it never touches the verdict.
-  if (process.env.MINOS_REAP_WORKTREES) {
-    const reap = spawnSync(process.env.MINOS_REAP_WORKTREES, [process.cwd()], {
-      stdio: ["ignore", "ignore", "inherit"],
-    });
-    if (reap.error || reap.status !== 0) {
-      const cause = reap.error ? reap.error.message : `exit ${reap.status}`;
-      process.stderr.write(`adjudicated-review: could not reap worktree build directories: ${cause}\n`);
     }
   }
 }

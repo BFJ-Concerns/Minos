@@ -125,8 +125,7 @@ fi
 # Memory telemetry rides as snapshots: run-body writes the baseline at start
 # and archive-run the final before assembling this record. The delta names
 # what the run genuinely experienced — PSI stall time and workingset
-# refaults — which page-cache-inflated footprint numbers cannot (AGENTS.md,
-# memory accounting).
+# refaults — which page-cache-inflated footprint numbers cannot.
 memory_snapshot() {
   if jq -e 'type == "object" and .kind == "minos-memory-snapshot-v1"' "$1" >/dev/null 2>&1; then
     cat "$1"
