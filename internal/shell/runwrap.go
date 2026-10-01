@@ -2,9 +2,11 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,10 +27,17 @@ func RunCommand(ctx context.Context, args []string) error {
 		return fmt.Errorf("refuse nested Minos run: this invocation does not own run directory %q: %w", runDir, err)
 	}
 	defer func() {
-		if preservesContinuation(runDir, os.Getenv("MINOS_HANDOFF")) {
+		preserve, err := preservesContinuation(runDir, os.Getenv("MINOS_HANDOFF"))
+		if err != nil {
+			log.Printf("preserve run directory %s: continuation state unreadable: %v", runDir, err)
 			return
 		}
-		_ = removeRunDir(runDir)
+		if preserve {
+			return
+		}
+		if err := removeRunDir(runDir); err != nil {
+			log.Printf("remove run directory %s: %v", runDir, err)
+		}
 	}()
 	cmd := exec.CommandContext(ctx, runBodyPath())
 	cmd.Dir = runDir
@@ -38,19 +47,31 @@ func RunCommand(ctx context.Context, args []string) error {
 	return cmd.Run()
 }
 
-func preservesContinuation(runDir, handoff string) bool {
+func preservesContinuation(runDir, handoff string) (bool, error) {
 	if handoff == "" {
-		return false
+		return false, nil
 	}
 	marker, err := os.Open(filepath.Join(runDir, "lead-complete"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	data, readErr := io.ReadAll(io.LimitReader(marker, 65))
 	closeErr := marker.Close()
-	if readErr != nil || closeErr != nil || len(data) > 64 || strings.TrimSpace(string(data)) != "continuation" {
-		return false
+	if err := errors.Join(readErr, closeErr); err != nil {
+		return false, err
+	}
+	if len(data) > 64 || strings.TrimSpace(string(data)) != "continuation" {
+		return false, nil
 	}
 	info, err := os.Stat(handoff)
-	return err == nil && info.Mode().IsRegular()
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular(), nil
 }

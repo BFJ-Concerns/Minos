@@ -244,6 +244,7 @@ func expireInactiveRunHandoffs(ctx context.Context, cfg ServiceConfig, repos []R
 		}
 		handoff, err := readRunHandoffStructure(path)
 		if err != nil {
+			expiryErrors = append(expiryErrors, fmt.Errorf("validate continuation handoff %s: %w", path, err))
 			continue
 		}
 		facts := Facts{Owner: handoff.PullRequest.Owner, Repo: handoff.PullRequest.Repo, PR: handoff.PullRequest.Number, HeadSHA: handoff.Head}

@@ -177,6 +177,7 @@ func validHandoffRunDirs(cfg ServiceConfig, factsByUnit map[string]Facts) map[st
 		unit := strings.TrimSuffix(filepath.Base(path), ".json")
 		handoff, err := readRunHandoffStructure(path)
 		if err != nil {
+			log.Printf("reject preservation handoff %s: %v", path, err)
 			continue
 		}
 		embeddedFacts := Facts{
@@ -192,6 +193,7 @@ func validHandoffRunDirs(cfg ServiceConfig, factsByUnit map[string]Facts) map[st
 		if found {
 			validated, err := readRunHandoff(path, facts)
 			if err != nil {
+				log.Printf("reject preservation handoff %s: %v", path, err)
 				continue
 			}
 			handoff = validated
