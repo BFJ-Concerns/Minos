@@ -214,6 +214,13 @@ test("CLI --digest and --validate run the same policy; argument errors exit 2", 
   assert.equal(explicitDigest.threshold, "Critical");
   assert.equal(explicitDigest.thresholdIndication, "clean");
 
+  const defaultDecisionPath = join(scratch, "default-decision.json");
+  writeFileSync(defaultDecisionPath, JSON.stringify(decision(digest)));
+  const validatedAtDefault = JSON.parse(execFileSync(
+    process.execPath, [cliPath, "--validate", verdictPath, defaultDecisionPath], { encoding: "utf8" },
+  ));
+  assert.deepEqual(validatedAtDefault, { ok: true });
+
   const decisionPath = join(scratch, "decision.json");
   writeFileSync(decisionPath, JSON.stringify(decision(explicitDigest)));
   const validated = JSON.parse(execFileSync(
