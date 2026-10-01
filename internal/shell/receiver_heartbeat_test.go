@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,8 +14,11 @@ import (
 func TestProjectionReceiverListening(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg := writeSweepFixtureConfig(t, state)
-	cfg.Listener.Bind = "127.0.0.1:0"
-	writeServiceConfig(t, cfg)
+	content, err := os.ReadFile(filepath.Join(cfg.Root, "service.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(cfg.Root, "service.toml"), strings.ReplaceAll(string(content), `bind = ":0"`, `bind = "127.0.0.1:0"`))
 	original := serveReceiver
 	t.Cleanup(func() { serveReceiver = original })
 	stopped := errors.New("test listener stopped")

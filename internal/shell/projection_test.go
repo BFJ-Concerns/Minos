@@ -40,7 +40,7 @@ func projectionRow(t *testing.T, doc map[string]any, field string) map[string]an
 }
 
 func TestProjectionSweepFacts(t *testing.T) {
-	for _, scenario := range []string{"cap", "unit", "multiple reasons", "partial", "clean", "attention", "readied"} {
+	for _, scenario := range []string{"cap", "unit", "multiple reasons", "three reasons", "partial", "clean", "attention", "review marker", "readied"} {
 		t.Run(scenario, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			cfg := writeSweepFixtureConfig(t, state)
@@ -52,16 +52,23 @@ func TestProjectionSweepFacts(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				content = []byte(strings.ReplaceAll(string(content), "max-concurrent = 2", "max-concurrent = 1"))
+				content = []byte(string(content) + "\nmax-concurrent = 1\n")
 				writeTestFile(t, filepath.Join(cfg.Root, "service.toml"), string(content))
 			case "unit":
 				active = "minos-run-minos-e2e-owner-subject-pr1.service"
-			case "multiple reasons":
+			case "multiple reasons", "three reasons":
 				setSweepFixtureWorkInProgressPrefix(t, cfg, "structural/")
 				state.changePullRequest(func(pr map[string]any) { pr["head"].(map[string]any)["ref"] = "structural/work" })
 				state.setDependencies([]map[string]any{{"number": 7, "state": "open", "repository": map[string]any{"full_name": "owner/prerequisite"}}})
+				if scenario == "three reasons" {
+					state.setStatuses([]map[string]any{{"id": 7, "context": "Minos", "status": "failure", "description": product.Attention().Description(), "creator": map[string]any{"login": "Minos"}}})
+				}
 			case "partial":
 				writeTestFile(t, filepath.Join(cfg.Root, "repos", "aaa-vanished.toml"), "forge = \"forgejo\"\nowner = \"minos-e2e-owner\"\nrepo = \"vanished\"\n[adaptation]\nrun-body = \"/opt/minos/run-body/run-body\"\n")
+			case "readied":
+				writeTestFile(t, sweepDeferralsPath(cfg), `{"kind":"minos-sweep-deferrals-v1","deferrals":[{"pr":"1","reason":"unobserved old deferral"}]}`)
+			case "review marker":
+				state.setReviews([]map[string]any{{"id": 41, "state": "APPROVED", "commit_id": state.headSHA(), "user": map[string]any{"login": "Minos"}}})
 			case "clean", "attention":
 				terminal := product.Clean()
 				if scenario == "attention" {
@@ -90,20 +97,28 @@ func TestProjectionSweepFacts(t *testing.T) {
 				if scenario == "cap" && !strings.Contains(fmt.Sprint(row["detail"]), "slots") {
 					t.Fatalf("cap cause missing: %#v", row)
 				}
-			case "multiple reasons":
+			case "multiple reasons", "three reasons":
 				row := projectionRow(t, doc, "deferrals")
 				reasons, _ := row["reasons"].([]any)
-				if len(reasons) != 2 || reasons[0] != `work-in-progress branch "structural/work"` || reasons[1] != "open dependencies: owner/prerequisite#7" {
-					t.Fatalf("all deferral reasons = %#v, want WIP and dependency", row["reasons"])
+				want := []any{`work-in-progress branch "structural/work"`, "open dependencies: owner/prerequisite#7"}
+				if scenario == "three reasons" {
+					want = []any{want[0], "completed-marker", want[1]}
+				}
+				if !reflect.DeepEqual(reasons, want) || row["reason"] != want[0] {
+					t.Fatalf("all deferral reasons = %#v, selected = %#v, want %#v with WIP precedence", row["reasons"], row["reason"], want)
 				}
 			case "partial":
 				skipped, _ := doc["skipped_repositories"].(map[string]any)
 				if doc["partial"] != true || skipped["minos-e2e-owner/vanished"] == nil {
 					t.Fatalf("partial pass coverage missing: %#v", doc)
 				}
-			case "clean", "attention":
+			case "clean", "attention", "review marker":
 				row := projectionRow(t, doc, "terminal")
-				if row["outcome"] != scenario {
+				want := scenario
+				if scenario == "review marker" {
+					want = "clean"
+				}
+				if row["outcome"] != want {
 					t.Fatalf("terminal outcome = %#v, want %s", row, scenario)
 				}
 			case "readied":
@@ -141,9 +156,14 @@ func TestProjectionStatusFields(t *testing.T) {
 	}
 	// A malformed heartbeat must cost only the heartbeat, not the sweep.
 	writeStatusFile(t, filepath.Join(cfg.Runs.Dir, ".receiver-heartbeat.json"), "{")
-	doc := readStatusDocument(t, cfg)
-	if doc.Sweep == nil {
-		t.Fatal("unreadable heartbeat hid the sweep")
+	response = httptest.NewRecorder()
+	receiverRoutes(t.Context(), cfg).ServeHTTP(response, request)
+	var tolerant map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &tolerant); err != nil {
+		t.Fatal(err)
+	}
+	if tolerant["sweep"] == nil || tolerant["receiver"] != nil {
+		t.Fatalf("unreadable heartbeat must cost only itself: %s", response.Body.Bytes())
 	}
 }
 
