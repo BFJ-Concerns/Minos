@@ -41,6 +41,17 @@ signature-header = "X-Forgejo-Signature"
 # "pull-request-comment", or "none".
 # [repositories.filing-destination]
 # kind = "pull-request-comment"
+# Markers Minos writes on a pull request, each a reaction or a label: in-flight
+# while a run reviews it, clean on a clean outcome, and attention on a
+# request-changes outcome. Unset, in-flight is the eyes reaction, clean the +1
+# reaction, and no attention marker is written. A label must already be
+# defined on the repository or its organisation; Minos never creates labels,
+# and refuses the marker write when the label is missing. A repository's own
+# markers table replaces this one whole.
+# [repositories.markers]
+# in-flight = {reaction = "eyes"}
+# clean = {reaction = "+1"}
+# attention = {label = "REPLACE_WITH_ATTENTION_LABEL"}
 
 # Workflow role routing: which engine, model and effort each role runs on.
 # Roles: exploration, proposer, verifier, engagement-gate, brief-planner.

@@ -18,6 +18,9 @@ repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 # kind = "file"
 # repository = "REPLACE_WITH_OWNER/REPLACE_WITH_PLANNING_REPOSITORY"
 # path = "ISSUES.md"
+# [markers]
+# in-flight = {label = "REPLACE_WITH_IN_FLIGHT_LABEL"}
+# clean = {reaction = "+1"}
 
 [adaptation]
 run-body = "/opt/minos/run-body/run-body"

@@ -17,7 +17,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|reaction|reaction-remove|file-issue")
+		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|marker|file-issue")
 	}
 	adapter, guard, _, err := leadForge()
 	if err != nil {
@@ -53,6 +53,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	case "claim":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: minos forge claim")
+		}
+		// The claim adaptation reads the in-flight form from MINOS_MARKERS
+		// itself; reading it here first refuses a malformed value before
+		// any forge write.
+		if _, err := markersFromEnvironment(); err != nil {
+			return err
 		}
 		return emitForgeResult(stdout, "claim", adapter.Claim(ctx, guard.Repository, guard.PullRequest))
 	case "status":
@@ -112,21 +118,57 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		text := strings.TrimRight(string(body), "\r\n") + addendum + "\n\n" + record
 		return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text, comments))
-	case "reaction":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge reaction HEAD TARGET CONTENT")
+	case "marker":
+		if len(args) != 5 || (args[4] != "add" && args[4] != "remove") {
+			return fmt.Errorf("usage: minos forge marker HEAD TARGET in-flight|clean|attention add|remove")
+		}
+		markers, err := markersFromEnvironment()
+		if err != nil {
+			return err
+		}
+		marker, known := markers.Roles()[args[3]]
+		if !known {
+			return fmt.Errorf("unknown marker role %q", args[3])
+		}
+		if marker == nil {
+			return emitForgeResult(stdout, "marker", forge.WriteResult{Outcome: forge.WriteApplied, Reason: args[3] + " marker is not configured"})
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		return emitForgeResult(stdout, "reaction", adapter.AddReaction(ctx, guard, args[3]))
-	case "reaction-remove":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge reaction-remove HEAD TARGET CONTENT")
+		if args[4] == "add" {
+			return emitForgeResult(stdout, "marker", adapter.AddMarker(ctx, guard, *marker))
 		}
-		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		return emitForgeResult(stdout, "reaction-remove", adapter.RemoveReaction(ctx, guard, args[3]))
+		return emitForgeResult(stdout, "marker", adapter.RemoveMarker(ctx, guard, *marker))
 	default:
 		return fmt.Errorf("unknown forge action %q", args[0])
 	}
+}
+
+// markersFromEnvironment reads the run's resolved markers from
+// MINOS_MARKERS. The loader filled every default, so an absent, malformed or
+// incomplete value is an error, never a reason to assume a form.
+func markersFromEnvironment() (Markers, error) {
+	raw, present := os.LookupEnv("MINOS_MARKERS")
+	if !present {
+		return Markers{}, fmt.Errorf("MINOS_MARKERS is required")
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var markers Markers
+	if err := decoder.Decode(&markers); err != nil {
+		return Markers{}, fmt.Errorf("MINOS_MARKERS: %w", err)
+	}
+	// Anything after the object — another value, a stray bracket, text —
+	// is malformed: only end of input passes.
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return Markers{}, fmt.Errorf("MINOS_MARKERS: trailing data after the markers object")
+	}
+	if markers.InFlight == nil || markers.Clean == nil {
+		return Markers{}, fmt.Errorf("MINOS_MARKERS: in-flight and clean markers are required")
+	}
+	if err := validateRepositoryKnobs("MINOS_MARKERS", RepositoryKnobs{Markers: markers}); err != nil {
+		return Markers{}, err
+	}
+	return markers, nil
 }
 
 func leadForge() (*forge.Adapter, forge.Guard, string, error) {

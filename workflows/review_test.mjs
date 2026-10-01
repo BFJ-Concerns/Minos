@@ -804,6 +804,14 @@ test("an exploration null still emits its required leg for archive adjudication"
   assert.equal(result.reviewers[0].status, "no-result");
 });
 
+test("the lifecycle writes every marker by role in its configured form", () => {
+  assert.match(lifecycle, /`"\$MINOS_BIN" forge marker HEAD TARGET clean add`/);
+  assert.match(lifecycle, /`"\$MINOS_BIN" forge marker HEAD TARGET attention add`/);
+  assert.match(lifecycle, /`"\$MINOS_BIN" forge marker FRESH_HEAD FRESH_TARGET in-flight remove`/);
+  assert.match(lifecycle, /`"\$MINOS_BIN" forge marker HEAD TARGET in-flight remove`/);
+  assert.doesNotMatch(lifecycle, /forge reaction/);
+});
+
 test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Every workflow stage is launched by one script, never by a command you\s+compose: `"\$\{MINOS_SETUP_WORKSPACE%\/\*\}\/dispatch-stage" NAME WORKFLOW`/);
   assert.match(lifecycle, /the timing wrapper outermost[\s\S]*the completion-flag wrapper next[\s\S]*the result-publication wrapper innermost/);

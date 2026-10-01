@@ -48,6 +48,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	t.Setenv("MINOS_OWNER", facts.Owner)
 	t.Setenv("MINOS_REPO_NAME", facts.Repo)
 	t.Setenv("MINOS_PR", facts.PR)
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 	for attempt := 1; attempt <= 2; attempt++ {
 		if err := ForgeCommand(t.Context(), []string{"claim"}, &strings.Builder{}); err != nil {
 			t.Fatalf("claim attempt %d: %v", attempt, err)
@@ -475,9 +476,10 @@ func TestRebuildEstateCleanReviewAddsCompletionReaction(t *testing.T) {
 	t.Setenv("MINOS_OWNER", facts.Owner)
 	t.Setenv("MINOS_REPO_NAME", facts.Repo)
 	t.Setenv("MINOS_PR", facts.PR)
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		if err := ForgeCommand(t.Context(), []string{"reaction", state.headSHA(), state.targetSHA(), "+1"}, &bytes.Buffer{}); err != nil {
+		if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "clean", "add"}, &bytes.Buffer{}); err != nil {
 			t.Fatalf("reaction attempt %d: %v", attempt, err)
 		}
 	}

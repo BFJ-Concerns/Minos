@@ -142,7 +142,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		reviewResultPath = containedPredecessorReviewResult(cfg, unit, facts.HeadSHA)
 	}
 	if progressDecision == continuationProgressStalled {
-		return stopStalledContinuation(ctx, cfg, unit, facts, handoffFile, handoff)
+		return stopStalledContinuation(ctx, cfg, repo, unit, facts, handoffFile, handoff)
 	}
 	if !adopted {
 		progressDecision = continuationProgressUnknown
@@ -228,6 +228,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_GUIDANCE_SOURCES":   nonNilSources(repo.GuidanceSources),
 		"MINOS_FILING_DESTINATION": repo.FilingDestination,
 		"MINOS_ROUTING":            cfg.Routing.Roles(),
+		"MINOS_MARKERS":            repo.Markers,
 	} {
 		encoded, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
@@ -288,7 +289,7 @@ func nonNilSources(sources []GuidanceSource) []GuidanceSource {
 	return sources
 }
 
-func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {
+func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, repo RepoConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {
 	cause := fmt.Sprintf("successor made no progress beyond stage %q and published no new head or review", handoff.Progress.Stage)
 	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
 		time.Now().UTC().Format(time.RFC3339), facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
@@ -309,8 +310,10 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string
 	if result := adapter.SetProductStatus(ctx, guard, product.Attention()); result.Outcome != forge.WriteApplied {
 		return SpawnResult{}, fmt.Errorf("set stalled continuation attention: %s: %s", result.Outcome, result.Reason)
 	}
-	if result := adapter.RemoveReaction(ctx, guard, "eyes"); result.Outcome != forge.WriteApplied {
-		return SpawnResult{}, fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
+	if inFlight := repo.Markers.InFlight; inFlight != nil {
+		if result := adapter.RemoveMarker(ctx, guard, *inFlight); result.Outcome != forge.WriteApplied {
+			return SpawnResult{}, fmt.Errorf("remove stalled continuation in-flight marker: %s: %s", result.Outcome, result.Reason)
+		}
 	}
 	if runDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir); contained {
 		if err := os.WriteFile(filepath.Join(runDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
