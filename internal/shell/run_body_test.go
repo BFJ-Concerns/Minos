@@ -1650,12 +1650,13 @@ func TestRunBodySetupDeathStatus(t *testing.T) {
 			wantExit := 19
 			wantCause := "workspace setup failed"
 			if test.postlaunch {
-				extra["MINOS_TEST_CLAUDE_STATE"] = "failed"
+				extra["MINOS_TEST_TERMINAL_STATE"] = "blocked"
+				extra["MINOS_TEST_NO_WORKER_PROBE"] = "1"
 				wantExit = 1
-				wantCause = "failed"
+				wantCause = "blocked state before producing run activity"
 			} else if test.stage == "configuration" {
 				fixture.appendConfig(t, map[string]string{"MINOS_CLAUDE_CONFIG_SEED": ""})
-				wantExit = 2
+				wantExit = 1
 				wantCause = "MINOS_CLAUDE_CONFIG_SEED is required"
 			} else {
 				setup := filepath.Join(fixture.root, "failing-setup")
@@ -1672,7 +1673,9 @@ func TestRunBodySetupDeathStatus(t *testing.T) {
 					wantCause = "MINOS_CONFIG is required"
 				}
 			}
-			output, err := fixture.execute(extra)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			output, err := fixture.executeContext(ctx, extra)
 			exit, ok := err.(*exec.ExitError)
 			if !ok || exit.ExitCode() != wantExit {
 				t.Fatalf("exit = %v, want %d\n%s", err, wantExit, output)
