@@ -436,6 +436,26 @@ func TestRunBodyRecordsRealSetupTargetRefusal(t *testing.T) {
 	}
 }
 
+func TestRunBodyRecordsProtocolV2TargetRefusal(t *testing.T) {
+	server, head, target, environment := missingTargetForge(t)
+	fixture := realSetupRunBodyFixture(t, server.URL, head, target, environment)
+	output, err := fixture.execute(environment)
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 128 {
+		t.Fatalf("run-body exit = %v, want protocol v2 refusal exit 128; output = %s", err, output)
+	}
+	if !strings.Contains(string(output), "upload-pack: not our ref "+target) {
+		t.Fatalf("real upload-pack refusal missing from stderr: %s", output)
+	}
+	for _, want := range []string{"stage=workspace-setup", "head=" + head, "cause=target fetch refused: the forge would not serve target sha " + target, "likely because the base branch moved", "the next sweep re-derives"} {
+		assertContainsFile(t, fixture.failureLog, want)
+	}
+	for _, suffix := range []string{".argv", ".terminal"} {
+		if _, err := os.Stat(fixture.record + suffix); !os.IsNotExist(err) {
+			t.Fatalf("lead record %s exists or stat failed after protocol v2 refusal: %v", suffix, err)
+		}
+	}
+}
+
 func TestRunBodyKeepsGenericCauseForTargetTransportFailure(t *testing.T) {
 	server, head, target, environment := refusedTargetForge(t)
 	// A missing server repository fails the actual Git transport, without

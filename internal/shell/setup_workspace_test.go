@@ -398,6 +398,39 @@ func TestSetupWorkspaceExplainsRefusedTargetFetch(t *testing.T) {
 	}
 }
 
+func TestSetupWorkspaceExplainsProtocolV2TargetRefusal(t *testing.T) {
+	server, head, target, transportEnv := missingTargetForge(t)
+	runDir := t.TempDir()
+	cmd := setupWorkspaceCommandWithTarget(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head, target)
+	for key, value := range transportEnv {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	output, err := cmd.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 128 {
+		t.Fatalf("protocol v2 refusal exit = %v, want 128; output = %s", err, output)
+	}
+	for _, want := range []string{"upload-pack: not our ref " + target, "target fetch refused: the forge would not serve target sha " + target, "likely because the base branch moved", "the next sweep re-derives"} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("protocol v2 refusal output lacks %q: %s", want, output)
+		}
+	}
+}
+
+// Real protocol v2 upload-pack rejects a SHA absent from its object store.
+// The unserved repository supplies only the requested SHA, never error text.
+func missingTargetForge(t *testing.T) (*httptest.Server, string, string, map[string]string) {
+	t.Helper()
+	targetRepository, _ := createGitRepository(t, "AGENTS.md", "served target guidance\n")
+	_, target := createGitRepository(t, "AGENTS.md", "unserved target guidance\n")
+	headRepository, head := createGitRepository(t, "AGENTS.md", "head guidance\n")
+	ssh := filepath.Join(t.TempDir(), "ssh")
+	writeScript(t, ssh, "#!/usr/bin/env sh\nexec git upload-pack '"+targetRepository+"'\n")
+	return newSetupForgeForTarget(t, head, headRepository, target, "ssh://fixture/target", ""), head, target, map[string]string{
+		"GIT_SSH_COMMAND": ssh, "GIT_SSH_VARIANT": "ssh",
+		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.version", "GIT_CONFIG_VALUE_0": "2",
+	}
+}
+
 // The SSH stand-in replaces only sshd: both client and upload-pack are real
 // Git. Protocol v0 exposes the server's refusal to accept unadvertised wants;
 // the admitted target remains in the server's object store after main moves.
