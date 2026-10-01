@@ -221,9 +221,11 @@ forge naming the stage that failed (`minos forge status … incomplete
 --setup-failure STAGE`). The write is best-effort: when bootstrap prerequisites
 (configuration, binary, forge identity, PR coordinates) are missing the status
 write is skipped, and the failure log carries a `status_write=skipped-prerequisites`
-marker. The forge command itself tolerates writer failures.
-The failure is always appended to `runs.failure-log` regardless of whether the
-status write succeeded, and the run exits. When workspace
+marker. The run body tolerates a refused or uncertain status write (the forge
+command itself errors on a non-applied outcome).
+The run body then attempts to append the failure to `runs.failure-log`; when
+the log path is unset or unwritable, stderr carries the evidence instead. The
+run exits after both attempts. When workspace
 setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
@@ -266,17 +268,24 @@ mtimes go stale, no lead processes are doing visible work, and the journal
 prints nothing — exactly the picture a dead run would show. Do not judge
 liveness from scratch mtime, process activity, or journal silence.
 
-The reliable discriminator is the lead session's own job state plus the unit:
-in the run's private home, the job directory's `state.json`
-(`$MINOS_RUN_DIR/home/.claude/jobs/<job>/state.json`) shows whether a wake is
-armed — a lead waiting on `session_cron` with `selfWake: true` is armed and
-healthy, and `inFlight` names any background task still owned — and the
-per-pull-request systemd unit must be `active`. An armed waiting lead with an
-active unit is a live run, however stale its scratch looks; a unit that has
-exited, or a job state with nothing in flight and no armed wake and no
-terminal marker, is the dead case. The run supervisor's own silence backstop
-(`MINOS_LEAD_SILENCE_TIMEOUT`) already bounds a genuinely wedged lead — do
-not kill a waiting run ahead of it on the strength of quiet files.
+For a **Claude lead**, the reliable discriminator is the lead session's own
+job state plus the unit: in the run's private home, the job directory's
+`state.json` (`$MINOS_RUN_DIR/home/.claude/jobs/<job>/state.json`) shows
+whether a wake is armed — a lead waiting on `session_cron` with
+`selfWake: true` is armed and healthy, and `inFlight` names any background
+task still owned — and the per-pull-request systemd unit must be `active`. An
+armed waiting lead with an active unit is a live run, however stale its
+scratch looks; a unit that has exited, or a job state with nothing in flight
+and no armed wake and no terminal marker, is the dead case.
+
+For a **Codex lead**, the run body observes process liveness (`kill -0`) and
+exit status: a Codex lead that is still running is live; one that has exited
+with status 0 is stopped (success), and any other exit is failed. There is no
+job-file state to inspect.
+
+The run supervisor's own silence backstop (`MINOS_LEAD_SILENCE_TIMEOUT`)
+already bounds a genuinely wedged lead on either engine — do not kill a
+waiting run ahead of it on the strength of quiet files.
 
 ## Serving run status to an operator surface
 
