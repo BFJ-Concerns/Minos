@@ -66,8 +66,11 @@ type ServiceConfig struct {
 		// only changes when a run finishes, so this is what keeps a polling
 		// operator surface from setting the session rate. Unset takes the
 		// default below.
-		RecentTimingsCacheSeconds int `toml:"recent-timings-cache-seconds"`
-		MaxConcurrent             int `toml:"max-concurrent"`
+		RecentTimingsCacheSeconds int    `toml:"recent-timings-cache-seconds"`
+		MaxConcurrent             int    `toml:"max-concurrent"`
+		MemoryEnvelopeGiB         int    `toml:"memory-envelope-gib"`
+		DurationCeiling           string `toml:"duration-ceiling"`
+		PressureThresholdPercent  int    `toml:"pressure-threshold-percent"`
 	} `toml:"runs"`
 	// Routing names, per workflow role, the engine, model and effort the
 	// operator chose (C48). A role left unset defaults at run time to the
@@ -100,6 +103,38 @@ func (cfg ServiceConfig) RecentTimingsCacheTTL() time.Duration {
 		seconds = defaultRecentTimingsCacheSeconds
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+const (
+	defaultRunMemoryEnvelopeGiB        = 22
+	defaultRunDurationCeiling          = "12h"
+	defaultRunPressureThresholdPercent = 85
+)
+
+func (cfg ServiceConfig) runMemoryEnvelopeGiB() int {
+	if cfg.Runs.MemoryEnvelopeGiB == 0 {
+		return defaultRunMemoryEnvelopeGiB
+	}
+	return cfg.Runs.MemoryEnvelopeGiB
+}
+
+func (cfg ServiceConfig) runDurationCeiling() (string, error) {
+	if cfg.Runs.DurationCeiling == "" {
+		return defaultRunDurationCeiling, nil
+	}
+	// systemd accepts seconds; normalise Go's duration syntax at this seam.
+	duration, err := time.ParseDuration(cfg.Runs.DurationCeiling)
+	if err != nil || duration <= 0 {
+		return "", fmt.Errorf("runs.duration-ceiling must be a positive Go duration")
+	}
+	return fmt.Sprintf("%d.%09ds", duration/time.Second, duration%time.Second), nil
+}
+
+func (cfg ServiceConfig) runPressureThresholdPercent() int {
+	if cfg.Runs.PressureThresholdPercent == 0 {
+		return defaultRunPressureThresholdPercent
+	}
+	return cfg.Runs.PressureThresholdPercent
 }
 
 // MaxConcurrentRuns is how many run units may be live at once. An unset knob
@@ -246,7 +281,8 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		root = DefaultConfigRoot
 	}
 	var cfg ServiceConfig
-	if _, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg); err != nil {
+	metadata, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg)
+	if err != nil {
 		return ServiceConfig{}, err
 	}
 	cfg.Root = root
@@ -270,8 +306,26 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 			return ServiceConfig{}, fmt.Errorf("service.toml: forge %s is incomplete", name)
 		}
 	}
-	if cfg.Runs.MaxConcurrent < 0 || cfg.Runs.MaxConcurrent > runMemoryEnvelopeGiB {
-		return ServiceConfig{}, fmt.Errorf("service.toml: runs max-concurrent must be between 1 and %d — beyond that the shared %dG run memory envelope cannot give each run a useful share", runMemoryEnvelopeGiB, runMemoryEnvelopeGiB)
+	if !metadata.IsDefined("runs", "memory-envelope-gib") {
+		cfg.Runs.MemoryEnvelopeGiB = defaultRunMemoryEnvelopeGiB
+	}
+	if !metadata.IsDefined("runs", "duration-ceiling") {
+		cfg.Runs.DurationCeiling = defaultRunDurationCeiling
+	}
+	if !metadata.IsDefined("runs", "pressure-threshold-percent") {
+		cfg.Runs.PressureThresholdPercent = defaultRunPressureThresholdPercent
+	}
+	if cfg.Runs.MemoryEnvelopeGiB < 1 || int64(cfg.Runs.MemoryEnvelopeGiB) > (1<<63-1)/(1<<30) {
+		return ServiceConfig{}, fmt.Errorf("service.toml: runs.memory-envelope-gib must be positive and fit a signed 64-bit byte ceiling")
+	}
+	if duration, err := time.ParseDuration(cfg.Runs.DurationCeiling); err != nil || duration <= 0 {
+		return ServiceConfig{}, fmt.Errorf("service.toml: runs.duration-ceiling must be a positive Go duration (for example 12h or 90m)")
+	}
+	if cfg.Runs.PressureThresholdPercent < 1 || cfg.Runs.PressureThresholdPercent > 100 {
+		return ServiceConfig{}, fmt.Errorf("service.toml: runs.pressure-threshold-percent must be between 1 and 100")
+	}
+	if cfg.Runs.MaxConcurrent < 0 || cfg.MaxConcurrentRuns() > cfg.Runs.MemoryEnvelopeGiB {
+		return ServiceConfig{}, fmt.Errorf("service.toml: runs max-concurrent must be between 1 and %d — beyond that the shared %dG run memory envelope cannot give each run a useful share", cfg.Runs.MemoryEnvelopeGiB, cfg.Runs.MemoryEnvelopeGiB)
 	}
 	if cfg.Ensemble.ConcurrencyClaude == 0 && cfg.Ensemble.ConcurrencyCodex == 0 {
 		cfg.Ensemble.ConcurrencyClaude = 2

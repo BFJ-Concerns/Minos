@@ -2,7 +2,8 @@
 # --slice systemd-run flag in SpawnRun; nothing throttles any run until the
 # runs together approach the envelope, reclaim then pushes them back, and
 # only combined demand the envelope cannot hold kills. Keep the ceilings in
-# step with runMemoryEnvelopeGiB in internal/shell/spawn.go.
+# step with runs.memory-envelope-gib in service.toml (MemoryMax at the
+# envelope, MemoryHigh below it).
 [Unit]
 Description=Minos run memory envelope
 

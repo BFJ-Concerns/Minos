@@ -396,7 +396,7 @@ sample_memory_pressure() {
     printf '%s\n' "$peak_anon_swap" >"$MINOS_RUN_DIR/memory-peak" || true
   fi
   [ "$pressure_latched" = false ] || return 0
-  pressure_threshold=$((memory_max / 100 * 85))
+  pressure_threshold=$((memory_max / 100 * MINOS_PRESSURE_THRESHOLD_PERCENT))
   if [ "$memory_pressure" -ge "$pressure_threshold" ]; then
     pressure_samples=$((pressure_samples + 1))
   else

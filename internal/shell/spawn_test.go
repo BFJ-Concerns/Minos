@@ -1071,3 +1071,52 @@ func assertRejectedHandoff(t *testing.T, content, want string) {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
 }
+
+func TestSpawnRunUsesConfiguredRunCeilings(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "systemctl":
+			return nil, nil
+		case "systemd-run":
+			systemdArgs = append([]string(nil), args...)
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command %q", name)
+			return nil, nil
+		}
+	}
+
+	cfg := ServiceConfig{Root: "/etc/minos"}
+	cfg.Runs.MemoryEnvelopeGiB = 8
+	cfg.Runs.DurationCeiling = "90m"
+	cfg.Runs.PressureThresholdPercent = 60
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{
+		"forgejo": {APIBase: "http://forge.local", CredentialFile: "/etc/minos/forge.token"},
+	}
+	repo := RepoConfig{}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+	facts := Facts{
+		Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7",
+		HeadSHA: "head", BaseSHA: "target", BaseRef: "main", HeadRef: "feature",
+	}
+
+	outcome, err := SpawnRun(t.Context(), cfg, repo, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Outcome != SpawnStarted {
+		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
+	}
+	for _, argument := range []string{
+		"--property=MemoryMax=8G",
+		"--property=RuntimeMaxSec=5400.000000000s",
+		"MINOS_PRESSURE_THRESHOLD_PERCENT=60",
+	} {
+		t.Run(argument, func(t *testing.T) { assertArgument(t, systemdArgs, argument) })
+	}
+}
