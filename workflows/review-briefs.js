@@ -9,7 +9,7 @@ export const meta = {
   ],
 };
 
-const MAX_FINDINGS_PER_VERIFIER = 6;
+const VERIFIER_BATCH_SIZE = 6;
 
 function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
@@ -583,9 +583,9 @@ for (const [brief, inapplicable] of inapplicableByBrief) {
 
 phase("Verify");
 const verifierGroups = [];
-for (let offset = 0; offset < proposed.length; offset += MAX_FINDINGS_PER_VERIFIER) {
-  const items = proposed.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
-  const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
+for (let offset = 0; offset < proposed.length; offset += VERIFIER_BATCH_SIZE) {
+  const items = proposed.slice(offset, offset + VERIFIER_BATCH_SIZE);
+  const groupIndex = Math.floor(offset / VERIFIER_BATCH_SIZE) + 1;
   const label = `verify-brief-${groupIndex}-${routing.verifier.engine}`;
   const findingIds = items.map(findingId);
   const group = { items, label, findingIds };

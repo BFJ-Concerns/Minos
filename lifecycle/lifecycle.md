@@ -570,8 +570,8 @@ write, matching the target rule above.)
    never dropped or moved to a line it does not concern, and placement
    degrades all the way to the review body, never past it. The guarded
    review command deduplicates an exact pre-existing review, so a retry
-   converges. It signs each review body with `Reviewed by:
-   $MINOS_LEAD_MODEL.` when that configured identity is present — the
+   converges. It signs each review body with ``Reviewed by:
+   `$MINOS_LEAD_MODEL`.`` when that configured identity is present — the
    comments already carry their proposing and verifying models — and the
    signature is payload material only, never a later read-back or
    decision input.

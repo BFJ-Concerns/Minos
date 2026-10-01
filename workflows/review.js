@@ -8,7 +8,7 @@ export const meta = {
   ],
 };
 
-const MAX_FINDINGS_PER_VERIFIER = 6;
+const VERIFIER_BATCH_SIZE = 6;
 const MAX_ORIENTATION_PACKET_BYTES = 32 * 1024;
 
 const ROLE_BRIEFS = {
@@ -505,9 +505,9 @@ specialistUnits.forEach((unit, unitIndex) => {
 
 phase("Verify");
 const verifierGroups = [];
-for (let offset = 0; offset < proposed.length; offset += MAX_FINDINGS_PER_VERIFIER) {
-  const items = proposed.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
-  const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
+for (let offset = 0; offset < proposed.length; offset += VERIFIER_BATCH_SIZE) {
+  const items = proposed.slice(offset, offset + VERIFIER_BATCH_SIZE);
+  const groupIndex = Math.floor(offset / VERIFIER_BATCH_SIZE) + 1;
   const label = `verify-${groupIndex}-${routing.verifier.engine}`;
   const findingIds = items.map((item) => item.id);
   const group = { items, label, findingIds };
