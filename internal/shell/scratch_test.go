@@ -39,7 +39,9 @@ func TestSweepRunResidueRemovesDeadReadOnlyTreeAndKeepsLiveUnit(t *testing.T) {
 		}
 	}
 
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(dead); !os.IsNotExist(err) {
 		t.Fatalf("dead run still exists: %v", err)
 	}
@@ -64,7 +66,9 @@ func TestSweepRunResidueProtectsOnlyDirectoryNamedByValidHandoff(t *testing.T) {
 	}
 	writeTestHandoff(t, cfg, facts, preserved, facts.HeadSHA)
 
-	_ = sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts})
+	if err := sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(preserved); err != nil {
 		t.Fatalf("valid handoff directory was removed: %v", err)
 	}
@@ -86,7 +90,9 @@ func TestSweepRunResidueDoesNotProtectInvalidHandoff(t *testing.T) {
 	}
 	writeTestHandoff(t, cfg, facts, runDir, "stale-head")
 
-	_ = sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts})
+	if err := sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
 		t.Fatalf("invalid handoff protected residue: %v", err)
 	}
@@ -290,11 +296,11 @@ func TestPublishFailureDigestTimesOutAndRetainsLocalCommit(t *testing.T) {
 
 	root := t.TempDir()
 	checkout := filepath.Join(root, "Minos-Annexe")
-	runScratchGit(t, root, "init", "-b", "main", checkout)
+	runGit(t, root, "init", "-b", "main", checkout)
 	configureTestGit(t, checkout)
 	writeTestFile(t, filepath.Join(checkout, "FAILURES.md"), "# Failures\n")
-	runScratchGit(t, checkout, "add", "FAILURES.md")
-	runScratchGit(t, checkout, "commit", "-m", "seed failures")
+	runGit(t, checkout, "add", "FAILURES.md")
+	runGit(t, checkout, "commit", "-m", "seed failures")
 	file, err := os.OpenFile(filepath.Join(checkout, "FAILURES.md"), os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -387,7 +393,9 @@ func TestSweepRunResidueRechecksLivenessBeforeDeletion(t *testing.T) {
 	cfg := scratchTestConfig(t)
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr13-new")
 	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); err != nil {
 		t.Fatalf("run that became live was removed: %v", err)
 	}
@@ -401,7 +409,9 @@ func TestSweepRunResiduePreservesOwnedMidSpawnDirectory(t *testing.T) {
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr14-starting")
 	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
 	writeTestFile(t, filepath.Join(runDir, runOwnerMarker), "")
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); err != nil {
 		t.Fatalf("owned mid-spawn directory was removed: %v", err)
 	}
@@ -456,7 +466,9 @@ func TestSweepRunResidueDoesNotAppendEmptyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	after, err := os.ReadFile(failuresPath)
 	if err != nil {
 		t.Fatal(err)
@@ -491,23 +503,23 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 	checkout := filepath.Join(root, "Minos-Annexe")
 	operator := filepath.Join(root, "operator")
 	verification := filepath.Join(root, "verification")
-	runScratchGit(t, root, "init", "--bare", remote)
-	runScratchGit(t, root, "init", "-b", "main", seed)
+	runGit(t, root, "init", "--bare", remote)
+	runGit(t, root, "init", "-b", "main", seed)
 	configureTestGit(t, seed)
 	writeTestFile(t, filepath.Join(seed, "FAILURES.md"), "# Failures\n")
-	runScratchGit(t, seed, "add", "FAILURES.md")
-	runScratchGit(t, seed, "commit", "-m", "seed failures")
-	runScratchGit(t, seed, "remote", "add", "origin", remote)
-	runScratchGit(t, seed, "push", "-u", "origin", "main")
-	runScratchGit(t, root, "--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main")
-	runScratchGit(t, root, "clone", remote, checkout)
+	runGit(t, seed, "add", "FAILURES.md")
+	runGit(t, seed, "commit", "-m", "seed failures")
+	runGit(t, seed, "remote", "add", "origin", remote)
+	runGit(t, seed, "push", "-u", "origin", "main")
+	runGit(t, root, "--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGit(t, root, "clone", remote, checkout)
 	configureTestGit(t, checkout)
-	runScratchGit(t, root, "clone", remote, operator)
+	runGit(t, root, "clone", remote, operator)
 	configureTestGit(t, operator)
 	writeTestFile(t, filepath.Join(operator, "operator.md"), "operator change\n")
-	runScratchGit(t, operator, "add", "operator.md")
-	runScratchGit(t, operator, "commit", "-m", "operator change")
-	runScratchGit(t, operator, "push", "origin", "main")
+	runGit(t, operator, "add", "operator.md")
+	runGit(t, operator, "commit", "-m", "operator change")
+	runGit(t, operator, "push", "origin", "main")
 
 	file, err := os.OpenFile(filepath.Join(checkout, "FAILURES.md"), os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
@@ -529,7 +541,7 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 	if err := publishFailureDigest(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	runScratchGit(t, root, "clone", remote, verification)
+	runGit(t, root, "clone", remote, verification)
 	identity := exec.Command("git", "-C", verification, "log", "-1", "--format=%an <%ae> / %cn <%ce>", "--", "FAILURES.md")
 	out, err := identity.Output()
 	if err != nil {
@@ -552,11 +564,6 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 	}
 }
 
-func runScratchGit(t *testing.T, directory string, arguments ...string) {
-	t.Helper()
-	_ = runScratchGitOutput(t, directory, arguments...)
-}
-
 func runScratchGitOutput(t *testing.T, directory string, arguments ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", arguments...)
@@ -570,8 +577,8 @@ func runScratchGitOutput(t *testing.T, directory string, arguments ...string) st
 
 func configureTestGit(t *testing.T, directory string) {
 	t.Helper()
-	runScratchGit(t, directory, "config", "user.name", "Minos Test")
-	runScratchGit(t, directory, "config", "user.email", "minos-test@example.invalid")
+	runGit(t, directory, "config", "user.name", "Minos Test")
+	runGit(t, directory, "config", "user.email", "minos-test@example.invalid")
 }
 
 func writeTestFile(t *testing.T, path, contents string) {

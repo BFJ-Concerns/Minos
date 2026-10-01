@@ -331,7 +331,7 @@ func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {
 		predecessor *handoffProgress
 		current     handoffProgress
 	}{
-		{name: "different stage", predecessor: &handoffProgress{Stage: "review", Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "fix", Head: "head", LatestReview: 7}},
+		{name: "different stage", predecessor: &handoffProgress{Stage: "review", Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "briefs", Head: "head", LatestReview: 7}},
 		{name: "published head", predecessor: &handoffProgress{Stage: "review", Head: "old-head", LatestReview: 7}, current: handoffProgress{Stage: "review", Head: "head", LatestReview: 7}},
 		{name: "published review", predecessor: &handoffProgress{Stage: "review", Head: "head", LatestReview: 7}, current: handoffProgress{Stage: "review", Head: "head", LatestReview: 8}},
 		{name: "legacy progress is unknown", current: handoffProgress{Stage: "review", Head: "head", LatestReview: 7}},

@@ -40,10 +40,7 @@ func TestVendoredEnsembleDiscoversClaudeTranscriptFromExplicitSeed(t *testing.T)
 		}
 	}
 	copySeedDirectory(t, seed, claudeConfig)
-	state := []byte("{\"hasCompletedOnboarding\":true,\"bypassPermissionsModeAccepted\":true}\n")
-	if err := os.WriteFile(filepath.Join(claudeConfig, ".claude.json"), state, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	seedTranscriptProbeState(t, claudeConfig, root)
 
 	workflow := filepath.Join(root, "transcript-probe.js")
 	source := `export const meta = {
@@ -73,7 +70,7 @@ return { answer };
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("vendored Ensemble transcript probe failed: %v\n%s", err, stderr.String())
+		t.Fatalf("vendored Ensemble transcript probe failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 	var result struct {
 		Answer string `json:"answer"`
@@ -197,5 +194,56 @@ func copySeedDirectory(t *testing.T, source, destination string) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// seedTranscriptProbeState trusts only the workspace owned by this probe.
+func seedTranscriptProbeState(t *testing.T, claudeConfig, root string) {
+	t.Helper()
+	state, err := json.Marshal(map[string]any{
+		"hasCompletedOnboarding":        true,
+		"bypassPermissionsModeAccepted": true,
+		"projects": map[string]any{
+			resolvedPath(root): map[string]bool{"hasTrustDialogAccepted": true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeConfig, ".claude.json"), state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTranscriptProbeTrustsOnlyItsWorkspace(t *testing.T) {
+	root := t.TempDir()
+	config := t.TempDir()
+	foreign := t.TempDir()
+	path := filepath.Join(config, ".claude.json")
+	inherited, err := json.Marshal(map[string]any{
+		"projects": map[string]any{foreign: map[string]bool{"hasTrustDialogAccepted": true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, inherited, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedTranscriptProbeState(t, config, root)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Projects map[string]struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	project, found := state.Projects[resolvedPath(root)]
+	if len(state.Projects) != 1 || !found || !project.HasTrustDialogAccepted {
+		t.Fatalf("probe workspace trust = %+v, want only trusted %q", state.Projects, resolvedPath(root))
 	}
 }

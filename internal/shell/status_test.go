@@ -473,22 +473,5 @@ func archiveListingScript(t *testing.T, sidecars map[string]string) string {
 
 func readRecentRuns(t *testing.T, cfg ServiceConfig, query string) recentRunsDocument {
 	t.Helper()
-	target := "/runs/recent"
-	if query != "" {
-		target += "?" + query
-	}
-	request := httptest.NewRequest(http.MethodGet, target, nil)
-	request.Header.Set("Authorization", "Bearer status-token")
-	response := httptest.NewRecorder()
-	if err := handleRecentRuns(context.Background(), cfg, newRecentRunsCache(0), response, request); err != nil {
-		t.Fatalf("handleRecentRuns() error = %v", err)
-	}
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
-	}
-	var document recentRunsDocument
-	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
-		t.Fatalf("decode recent runs: %v; body = %q", err, response.Body.String())
-	}
-	return document
+	return readCachedRecentRuns(t, cfg, newRecentRunsCache(0), query)
 }

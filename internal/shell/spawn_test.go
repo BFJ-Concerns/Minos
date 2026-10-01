@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -675,17 +676,29 @@ func captureStderr(t *testing.T, action func()) string {
 		t.Fatal(err)
 	}
 	original := os.Stderr
+	writerClosed := false
 	os.Stderr = writer
+	defer func() {
+		os.Stderr = original
+		if !writerClosed {
+			if err := writer.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	action()
 	os.Stderr = original
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	writerClosed = true
 	output, err := io.ReadAll(reader)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reader.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return string(output)
@@ -811,6 +824,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=43200.000000000s")
 	assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
 	assertArgument(t, systemdArgs, "--property=MemoryMax=22G")
+	environment := systemdEnvironment(t, systemdArgs)
 	for _, value := range []string{
 		"MINOS_CONFIG=/etc/minos",
 		"MINOS_FORGE=forgejo",
@@ -835,12 +849,15 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",
 	} {
-		assertEnvironment(t, systemdArgs, value)
+		name, want, _ := strings.Cut(value, "=")
+		if got, present := environment[name]; !present || got != want {
+			t.Fatalf("run environment %s = %q, present = %t; want %q", name, got, present, want)
+		}
 	}
 	// The markers knob is asserted through the --setenv pairs themselves,
 	// so a value that reached the arguments without becoming run
 	// environment fails here.
-	if markers := systemdEnvironment(t, systemdArgs)["MINOS_MARKERS"]; markers != `{"in-flight":{"label":"minos/reviewing"},"clean":{"reaction":"+1"},"attention":{"label":"minos/attention"}}` {
+	if markers := environment["MINOS_MARKERS"]; markers != `{"in-flight":{"label":"minos/reviewing"},"clean":{"reaction":"+1"},"attention":{"label":"minos/attention"}}` {
 		t.Fatalf("run environment MINOS_MARKERS = %q", markers)
 	}
 	var runDir string
@@ -975,18 +992,6 @@ func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
 			}
 		})
 	}
-}
-
-// assertEnvironment requires value to arrive as a --setenv option's own
-// argument, not merely somewhere in the argument list.
-func assertEnvironment(t *testing.T, arguments []string, value string) {
-	t.Helper()
-	for i := 1; i < len(arguments); i++ {
-		if arguments[i] == value && arguments[i-1] == "--setenv" {
-			return
-		}
-	}
-	t.Fatalf("arguments omit --setenv %q: %v", value, arguments)
 }
 
 func assertArgument(t *testing.T, arguments []string, want string) {
@@ -1163,5 +1168,55 @@ func TestSpawnRunUsesConfiguredRunCeilings(t *testing.T) {
 		"MINOS_PRESSURE_THRESHOLD_PERCENT=60",
 	} {
 		t.Run(argument, func(t *testing.T) { assertArgument(t, systemdArgs, argument) })
+	}
+}
+
+// Fatal test actions use Goexit, which must still restore the shared stderr.
+func TestCaptureStderrRestoresAfterGoexit(t *testing.T) {
+	original := os.Stderr
+	var captured *os.File
+	var pipe string
+	var inspectErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		captureStderr(t, func() {
+			captured = os.Stderr
+			if runtime.GOOS == "linux" {
+				pipe, inspectErr = os.Readlink(fmt.Sprintf("/proc/self/fd/%d", captured.Fd()))
+			}
+			runtime.Goexit()
+		})
+	}()
+	<-done
+	// Restore even if the assertion fails, so this regression cannot poison peers.
+	t.Cleanup(func() { os.Stderr = original })
+	if os.Stderr != original {
+		t.Fatal("stderr was not restored after Goexit")
+	}
+	if _, err := captured.WriteString("after exit"); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("capture writer after Goexit = %v, want closed pipe", err)
+	}
+	if runtime.GOOS != "linux" {
+		return // Stderr and writer closure remain covered on every platform.
+	}
+	if inspectErr != nil {
+		t.Fatal(inspectErr)
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if os.IsNotExist(err) { // ReadDir's own descriptor may already be closed.
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target == pipe {
+			t.Fatalf("capture pipe %s remains open at descriptor %s after Goexit", pipe, entry.Name())
+		}
 	}
 }
