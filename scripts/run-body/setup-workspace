@@ -149,10 +149,10 @@ mv "$protected_refs_tmp" "$protected_refs"
 protected_refs_tmp=""
 # This hook binds every checkout sharing the common Git directory and refuses
 # every update to the pull-request branch: no publisher exists that could
-# authorise one (C33). A separate clone inherits neither protection.
+# authorise one. A separate clone inherits neither protection.
 install -m 0755 "$script_dir/pre-push-guard" "$common_dir/hooks/pre-push"
 
-# Guidance sources are the resolved per-repository knob (C44), exported by
+# Guidance sources are the resolved per-repository knob, exported by
 # the service as one JSON array: each entry names a path in the reviewed
 # repository or a path in a named secondary repository on the same forge.
 # An empty array grounds the run on the reviewed repository's own checked-in
@@ -192,7 +192,7 @@ record_guidance_misconfiguration() {
 }
 
 # Each named secondary repository is cloned once, read-only: its push URL is
-# unusable, so no path exists from a run to that repository (C44).
+# unusable, so no path exists from a run to that repository.
 for guidance_repository in $(printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq -r '[.[].repository // empty] | unique | .[]'); do
   clone_path="$(guidance_clone_path "$guidance_repository")"
   if [ "$resume" = true ] && [ -d "$clone_path/.git" ]; then

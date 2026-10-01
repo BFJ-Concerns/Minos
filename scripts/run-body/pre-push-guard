@@ -4,7 +4,7 @@ set -eu
 # Installed by setup-workspace as the run clone's pre-push hook. Minos is
 # review-only: no publisher exists that may update the pull-request branch,
 # so every update to a protected ref is refused outright — there is no
-# permit, environment variable, or override that lifts the refusal (C33).
+# permit, environment variable, or override that lifts the refusal.
 # The record fails closed: a missing, unreadable or malformed protected-ref
 # record refuses the whole push rather than guessing what it protected.
 

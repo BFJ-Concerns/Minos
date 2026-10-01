@@ -249,7 +249,7 @@ else
   unset_gateway_environment
 fi
 
-# The lead's engine (C48). Each engine names its executable, its default
+# The lead's engine. Each engine names its executable, its default
 # model and its configuration seed; an engine is provisioned exactly when
 # its seed is named. The lead's engine must be provisioned, the other may be
 # absent — a single-engine deployment — and the workflows route every role

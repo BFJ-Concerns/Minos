@@ -2,7 +2,7 @@
 set -eu
 
 # The one way a lifecycle stage is launched. Every repeatable mechanic of a
-# workflow dispatch lives here rather than in the lead's hands (C6): the
+# workflow dispatch lives here rather than in the lead's hands: the
 # stage's file naming, the wrapper nesting (timing outermost, completion flag,
 # atomic result publication innermost), the Ensemble record and status
 # directories, and the diagnostics log. The lead names the stage and the
