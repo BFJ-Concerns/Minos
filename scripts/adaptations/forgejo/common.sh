@@ -168,24 +168,29 @@ guard_merged_pull_request() {
   guard_reason=""
 
   guard_user_json="$(api GET "/api/v1/user")" || return 2
-  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r '.login // .username // ""')"
+  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
   if [ "$guard_actual_login" != "$guard_expected_login" ]; then
     guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
     return 1
   fi
 
   guard_pr_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
-  if ! printf '%s' "$guard_pr_json" | jq -e \
+  if printf '%s' "$guard_pr_json" | json_match \
     --arg repository "${guard_owner}/${guard_repo}" \
     --arg head "$guard_expected_head" \
     --argjson pr "$guard_pr" '
+      if type != "object" then error("expected pull request object") else
       .number == $pr and
       .base.repo.full_name == $repository and
       .head.sha == $head and
-      (.merged // false)
+      (.merged // false) end
     ' >/dev/null; then
-  # Callers report this shared rejection reason after the sourced helper returns.
-  # shellcheck disable=SC2034
+    :
+  else
+    guard_status=$?
+    [ "$guard_status" -eq 1 ] || return 2
+    # Callers report this shared rejection reason after the sourced helper returns.
+    # shellcheck disable=SC2034
     guard_reason="merged pull request identity no longer matches"
     return 1
   fi

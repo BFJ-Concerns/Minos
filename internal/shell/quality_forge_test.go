@@ -151,3 +151,38 @@ func runQualityAdaptation(t *testing.T, verb string, read func(*http.Request) (s
 	defer mu.Unlock()
 	return result, append([]string(nil), writes...)
 }
+
+func TestQualityForgeMergedCleanupGuardIsUncertain(t *testing.T) {
+	for _, endpoint := range []string{"user", "pull"} {
+		for _, bad := range []string{"{", "[]", "null"} {
+			t.Run(endpoint+"/"+bad, func(t *testing.T) {
+				userReads, pullReads := 0, 0
+				result, writes := runQualityAdaptation(t, "guarded-remove-reaction", func(r *http.Request) (string, bool) {
+					if strings.HasSuffix(r.URL.Path, "/reactions") {
+						return `[{"content":"+1","user":{"login":"Minos"}}]`, true
+					}
+					if r.URL.Path == "/api/v1/user" {
+						userReads++
+						if endpoint == "user" && userReads == 2 {
+							return bad, true
+						}
+					}
+					if strings.HasSuffix(r.URL.Path, "/pulls/17") {
+						pullReads++
+						if endpoint == "pull" && pullReads == 2 {
+							return bad, true
+						}
+						return `{"number":17,"base":{"repo":{"full_name":"owner/repo"}},"state":"closed","merged":true,"head":{"sha":"head"}}`, true
+					}
+					return "", false
+				})
+				if result["outcome"] != "uncertain" {
+					t.Fatalf("merged cleanup result = %v, want uncertain", result)
+				}
+				if len(writes) != 0 {
+					t.Fatalf("unreadable merged guard triggered writes: %v", writes)
+				}
+			})
+		}
+	}
+}
