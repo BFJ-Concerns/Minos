@@ -8,8 +8,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { adjudicate } from "./run-record-adjudicator.mjs";
-import { resolveRouting } from "./role-routing.mjs";
+import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { adjudicateEnvelope } from "./archive-fixture.mjs";
+import { findingsFromVerifierPrompt } from "./verifier-prompt-fixture.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-inputs.mjs", import.meta.url));
@@ -19,23 +20,8 @@ const body = source.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
 
-async function runScript(args, respond) {
-  const calls = [];
-  const agent = async (prompt, opts = {}) => {
-    calls.push({ prompt, opts });
-    const output = await respond(opts.label || "", prompt, opts);
-    if (!opts.identity) return output;
-    if (output && output.identityEnvelope) return output.identityEnvelope;
-    return { label: opts.label, phase: opts.phase, output, failure: output === null ? { message: "worker exhausted" } : null };
-  };
-  const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
-  const pipeline = async (items, ...stages) => Promise.all(items.map(async (item, index) => {
-    let value = item;
-    for (const stage of stages) value = await stage(value, item, index);
-    return value;
-  }));
-  const result = await script(agent, parallel, pipeline, () => {}, () => {}, args);
-  return { result, calls };
+function runScript(args, respond) {
+  return invokeWorkflow(script, args, respond);
 }
 
 function enumeratedArgs(
@@ -52,43 +38,47 @@ function enumeratedArgs(
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
-  const workspace = join(root, "workspace");
-  mkdirSync(workspace);
-  const guidancePath = join(workspace, guidanceName);
-  writeFileSync(guidancePath, guidanceContent);
-  // The orientation setup-workspace writes: one entry per guidance document,
-  // a configured secondary repository's document first when the test names one.
-  const guidance = [];
-  if (secondaryGuidance !== undefined) {
-    const secondaryPath = join(root, "guidance", "owner--plans", "README.md");
-    mkdirSync(join(root, "guidance", "owner--plans"), { recursive: true });
-    writeFileSync(secondaryPath, secondaryGuidance);
-    guidance.push({ source: { repository: "owner/plans", path: "README.md" }, location: secondaryPath, origin: "configured" });
+  try {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const guidancePath = join(workspace, guidanceName);
+    writeFileSync(guidancePath, guidanceContent);
+    // The orientation setup-workspace writes: one entry per guidance document,
+    // a configured secondary repository's document first when the test names one.
+    const guidance = [];
+    if (secondaryGuidance !== undefined) {
+      const secondaryPath = join(root, "guidance", "owner--plans", "README.md");
+      mkdirSync(join(root, "guidance", "owner--plans"), { recursive: true });
+      writeFileSync(secondaryPath, secondaryGuidance);
+      guidance.push({ source: { repository: "owner/plans", path: "README.md" }, location: secondaryPath, origin: "configured" });
+    }
+    guidance.push({ source: { path: guidanceName }, location: guidancePath, origin: secondaryGuidance === undefined ? "checked-in" : "configured" });
+    const orientation = { repository: workspace, guidance, misconfigurations: [] };
+    if (pullRequest !== undefined || absentPullRequestRecord) {
+      const pullRequestPath = join(root, "pull-request.json");
+      if (!absentPullRequestRecord)
+        writeFileSync(pullRequestPath, typeof pullRequest === "string" ? pullRequest : JSON.stringify(pullRequest));
+      orientation.pullRequest = pullRequestPath;
+    }
+    const orientationPath = join(root, "orientation.json");
+    writeFileSync(orientationPath, JSON.stringify(orientation));
+    const cliArgs = [inputScriptPath, target, head];
+    return JSON.parse(execFileSync(process.execPath, cliArgs, {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MINOS_ORIENTATION: orientationPath,
+        MINOS_OWNER: "minos-e2e-owner",
+        MINOS_REPO_NAME: "subject",
+        MINOS_PR: "1",
+        MINOS_PROVISIONED_ENGINES: provisioned,
+        ...(routing === undefined ? { MINOS_ROUTING: "" } : { MINOS_ROUTING: JSON.stringify(routing) }),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    }));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
-  guidance.push({ source: { path: guidanceName }, location: guidancePath, origin: secondaryGuidance === undefined ? "checked-in" : "configured" });
-  const orientation = { repository: workspace, guidance, misconfigurations: [] };
-  if (pullRequest !== undefined || absentPullRequestRecord) {
-    const pullRequestPath = join(root, "pull-request.json");
-    if (!absentPullRequestRecord)
-      writeFileSync(pullRequestPath, typeof pullRequest === "string" ? pullRequest : JSON.stringify(pullRequest));
-    orientation.pullRequest = pullRequestPath;
-  }
-  const orientationPath = join(root, "orientation.json");
-  writeFileSync(orientationPath, JSON.stringify(orientation));
-  const cliArgs = [inputScriptPath, target, head];
-  return JSON.parse(execFileSync(process.execPath, cliArgs, {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      MINOS_ORIENTATION: orientationPath,
-      MINOS_OWNER: "minos-e2e-owner",
-      MINOS_REPO_NAME: "subject",
-      MINOS_PR: "1",
-      MINOS_PROVISIONED_ENGINES: provisioned,
-      ...(routing === undefined ? { MINOS_ROUTING: "" } : { MINOS_ROUTING: JSON.stringify(routing) }),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  }));
 }
 
 const ARGS = enumeratedArgs();
@@ -140,13 +130,6 @@ function specialistResult(
   return { applicability, findings, outOfScopeObservations };
 }
 
-function findingsFromVerifierPrompt(prompt) {
-  const marker = "Findings: ";
-  const offset = prompt.lastIndexOf(marker);
-  assert.notEqual(offset, -1, "verifier prompt carries a findings array");
-  return JSON.parse(prompt.slice(offset + marker.length));
-}
-
 function verifierResult(prompt, verdictFor = () => ({ verdict: "upheld", confidence: 91, reason: "reproduced" })) {
   return {
     verdicts: findingsFromVerifierPrompt(prompt).map((entry) => ({
@@ -174,24 +157,6 @@ function orientationPacketFromPrompt(prompt) {
   const match = prompt.match(/Orientation packet: ([^\n]+)\n/);
   assert.ok(match, "specialist prompt carries a serialised orientation packet");
   return match[1];
-}
-
-async function adjudicateEnvelope(t, envelope) {
-  const recordDir = mkdtempSync(join(tmpdir(), "minos-review-batch-record-"));
-  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
-  const archiveDir = join(recordDir, "runs", "cwd", "synthetic", "run");
-  mkdirSync(join(archiveDir, "agents"), { recursive: true });
-  writeFileSync(join(archiveDir, "manifest.json"), JSON.stringify({ status: "complete" }));
-  envelope.requiredModelEvidence.forEach((leg, index) => {
-    const agentDir = join(archiveDir, "agents", String(index + 1).padStart(6, "0"));
-    mkdirSync(agentDir);
-    writeFileSync(join(agentDir, "agent.json"), JSON.stringify({
-      label: leg.label,
-      status: "complete",
-      resolved_model: leg.pinnedModel,
-    }));
-  });
-  return adjudicate({ envelope, recordDir });
 }
 
 test("the script emits an envelope with every routed leg and raw verifier output", async () => {
@@ -777,7 +742,7 @@ test("every configured guidance document is bound in order, naming its repositor
   const secondaryAt = prompt.indexOf('<project-guidance origin="configured" repository="owner/plans" path="README.md">\nMINOS_SECONDARY_COMMISSION_OCHRE_719\n</project-guidance>');
   const reviewedAt = prompt.indexOf('<project-guidance origin="configured" path="AGENTS.md">\nMINOS_REVIEWED_GUIDANCE_OCHRE_719\n</project-guidance>');
   assert.ok(secondaryAt !== -1 && reviewedAt !== -1 && secondaryAt < reviewedAt, "both documents are bound, in configured order");
-  assert.doesNotMatch(prompt, /grounding=/, "the retired single-document attribute is gone");
+  assert.doesNotMatch(prompt, /grounding=/, "guidance blocks omit grounding attributes");
 });
 
 test("the deterministic review input rejects empty guidance", () => {

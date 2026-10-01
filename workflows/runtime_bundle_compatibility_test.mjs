@@ -2,41 +2,28 @@ import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import test from "node:test";
+import { operationRoot } from "./temporary-directory-fixture.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = dirname(workflowsDir);
 const installerPath = join(repositoryRoot, "scripts", "install-review-runtime");
 const pinnedRuntimePath = join(repositoryRoot, "runtime", "ensemble.mjs");
 
+const installerBundle = "DISTINCT-INSTALLER-BUNDLE-0728\n";
+
 const optionBlockPattern =
-  /\{\s*\n\s*engine:\s*[^,\n]+,\s*\n\s*schema:\s*[^,\n]+,\s*\n\s*model:\s*[^,\n]+,\s*\n\s*effort:\s*[^,\n]+,\s*\n(?:\s*strip:\s*\[[^\n]+\],\s*\n)?(?:\s*identity:\s*true,\s*\n)?(?:\s*isolation:\s*[^,\n]+,\s*\n)?\s*label:\s*[^,\n]+,\s*\n\s*phase:\s*[^,\n]+,\s*\n\s*\}/g;
+  /\{\s*\n\s*engine:\s*[^,\n]+,\s*\n\s*schema:\s*[^,\n]+,\s*\n\s*model:\s*[^,\n]+,\s*\n\s*effort:\s*[^,\n]+,\s*\n(?:\s*strip:\s*\[[^\n]+\],\s*\n)?(?:\s*identity:\s*true,\s*\n)?\s*label:\s*[^,\n]+,\s*\n\s*phase:\s*[^,\n]+,\s*\n\s*\}/g;
 
 const expectedCallSites = new Map([
   ["review.js", 3],
   ["review-briefs.js", 4],
   ["review-scope.js", 1],
 ]);
-
-function operationRoot(t, prefix) {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return root;
-}
 
 function optionKeySetsFromShippedWorkflows() {
   const callSites = [];
@@ -67,7 +54,6 @@ function valuesFor(keys) {
     },
     model: "gpt-6-sol",
     effort: "high",
-    isolation: "worktree",
     strip: ["skills", "agents"],
     identity: true,
     label: "minos-runtime-compatibility",
@@ -203,7 +189,6 @@ test("the installed runtime accepts the free identifiers in every shipped workfl
   }
 });
 
-
 function writeInstallerFixture(t, checksumLine) {
   const sourceRoot = operationRoot(t, "minos-installer-source-");
   mkdirSync(join(sourceRoot, "scripts"), { recursive: true });
@@ -215,8 +200,7 @@ function writeInstallerFixture(t, checksumLine) {
   // reading the machine the tests happen to run on.
   writeFileSync(join(sourceRoot, "scripts", "expected-tool-versions"), "# fixture declared tool set\n");
 
-  const bundle = "DISTINCT-INSTALLER-BUNDLE-0728\n";
-  writeFileSync(join(sourceRoot, "runtime", "ensemble.mjs"), bundle);
+  writeFileSync(join(sourceRoot, "runtime", "ensemble.mjs"), installerBundle);
   writeFileSync(join(sourceRoot, "runtime", "ensemble.mjs.sha256"), checksumLine);
   writeFileSync(
     join(sourceRoot, "runtime", "ensemble.source-version"),
@@ -226,7 +210,7 @@ function writeInstallerFixture(t, checksumLine) {
 
   return {
     sourceRoot,
-    bundle,
+    bundle: installerBundle,
     installer: join(sourceRoot, "scripts", "install-review-runtime"),
   };
 }
@@ -257,8 +241,7 @@ function runRejectedInstallation(t, checksumLine) {
 }
 
 test("the installer rejects a checksum that records a path instead of the destination filename", (t) => {
-  const bundle = "DISTINCT-INSTALLER-BUNDLE-0728\n";
-  const digest = createHash("sha256").update(bundle).digest("hex");
+  const digest = createHash("sha256").update(installerBundle).digest("hex");
   const result = runRejectedInstallation(t, `${digest}  runtime/ensemble.mjs\n`);
 
   assert.match(result.stderr, /runtime\/ensemble\.mjs: No such file or directory/);
