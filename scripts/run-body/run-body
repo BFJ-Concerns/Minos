@@ -109,7 +109,7 @@ publish_setup_failure() {
   [ "$MINOS_PR" -gt 0 ] 2>/dev/null || return 0
   failure_status_write=""
   "$MINOS_BIN" forge status "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA" incomplete \
-    "Review incomplete: setup failed at $failure_stage" >/dev/null 2>&1 || true
+    --setup-failure "$failure_stage" >/dev/null 2>&1 || true
 }
 
 append_failure() {

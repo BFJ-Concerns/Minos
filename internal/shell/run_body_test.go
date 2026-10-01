@@ -1694,7 +1694,7 @@ func TestRunBodySetupDeathStatus(t *testing.T) {
 			if readErr != nil {
 				t.Fatalf("setup death recorded no status call: %v", readErr)
 			}
-			want := "forge\nstatus\nhead-sha\ntarget-sha\nincomplete\nReview incomplete: setup failed at " + test.stage + "\n"
+			want := "forge\nstatus\nhead-sha\ntarget-sha\nincomplete\n--setup-failure\n" + test.stage + "\n"
 			if string(recorded) != want {
 				t.Fatalf("status calls = %q, want %q", recorded, want)
 			}

@@ -214,6 +214,13 @@ func TestContinuationSuccessorSetupDeathKeepsSweepPriority(t *testing.T) {
 	if !found || latest.State != forge.StatusError {
 		t.Fatalf("setup death status = %#v, found=%t", latest, found)
 	}
+	if latest.Description != "Review incomplete: setup failed at workspace-setup" {
+		t.Errorf("setup death description = %q, want stage-bearing incomplete status", latest.Description)
+	}
+	classified, recognised := product.StateForDescription(latest.Description)
+	if !recognised || classified != product.Incomplete() {
+		t.Errorf("setup death classification = %q, recognised=%t, want incomplete", classified.Name(), recognised)
+	}
 	priority, err := currentContinuationPriority(t.Context(), cfg, facts)
 	if err != nil {
 		t.Fatal(err)
