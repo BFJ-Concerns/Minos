@@ -1,8 +1,8 @@
 # Shared cgroup memory access for the run-body scripts. Sourced, never
 # executed: one resolution of this run's cgroup and one read of its memory
 # counters, so the pressure watch, the terminal death evidence and the
-# telemetry snapshot cannot drift apart. Collected values are residue —
-# nothing here reads them back to steer a run.
+# telemetry snapshot cannot drift apart. The pressure watch compares the
+# counters against its threshold; telemetry records them as residue.
 
 # Sets cgroup_dir to this run's cgroup: the MINOS_CGROUP_DIR override when
 # set, otherwise the path this process reports under the unified hierarchy.

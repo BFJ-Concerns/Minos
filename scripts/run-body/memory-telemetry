@@ -12,8 +12,8 @@ output="$1"
 
 # One honest memory snapshot of the calling process's own cgroup: anonymous
 # footprint and swap, PSI stall totals, and workingset refaults. memory.current
-# is deliberately absent — it counts page cache, which builds inflate to any
-# ceiling and the kernel reclaims on demand (see AGENTS.md, memory accounting).
+# is deliberately absent — it counts page cache, which fills to any ceiling
+# and the kernel reclaims on demand.
 # Written at run start and again before the timing record is assembled, so the
 # record can carry the run's stall and thrash deltas. Best-effort residue: an
 # unreadable cgroup writes nothing and exits clean.
