@@ -102,8 +102,21 @@ fi
 # The review computes the target-to-head diff locally. Fetching the admitted
 # target SHA by object name makes that operand available without recording a
 # remote, refspec, FETCH_HEAD, or workspace state transition.
-git -C "$MINOS_WORKSPACE" -c "http.extraHeader=Authorization: token ${forge_token}" \
-  fetch --no-write-fetch-head --no-tags "$target_repository_url" "$MINOS_TARGET_SHA"
+target_fetch_status=0
+# Match Git's refusal text in a stable locale; other failures stay unchanged.
+target_fetch_output="$(LC_ALL=C git -C "$MINOS_WORKSPACE" -c "http.extraHeader=Authorization: token ${forge_token}" \
+  fetch --no-write-fetch-head --no-tags "$target_repository_url" "$MINOS_TARGET_SHA" 2>&1)" || target_fetch_status=$?
+if [ -n "$target_fetch_output" ]; then
+  printf '%s\n' "$target_fetch_output" >&2
+fi
+if [ "$target_fetch_status" -ne 0 ]; then
+  case "$target_fetch_output" in
+    *"not our ref $MINOS_TARGET_SHA"*|*"unadvertised object $MINOS_TARGET_SHA"*)
+      echo "setup-workspace: target fetch refused: the forge would not serve target sha $MINOS_TARGET_SHA; it is no longer advertised, likely because the base branch moved; the next sweep re-derives from current forge state" >&2
+      ;;
+  esac
+  exit "$target_fetch_status"
+fi
 git -C "$MINOS_WORKSPACE" cat-file -e "${MINOS_TARGET_SHA}^{commit}"
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 run_date="$(date -u '+%Y-%m-%d')"
