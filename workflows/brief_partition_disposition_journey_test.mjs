@@ -151,7 +151,7 @@ async function producerEnvelope(scenario) {
   const partition = partitionFor(scenario);
   const files = partition.flatMap((unit) => unit.files);
   let specialistIndex = 0;
-  const agent = async (_prompt, options = {}) => {
+  const respond = async (_prompt, options = {}) => {
     if (options.label?.startsWith("brief-partition-")) {
       return { units: partition };
     }
@@ -163,6 +163,12 @@ async function producerEnvelope(scenario) {
     if (scenario === "all-ran") return specialistResult(true);
     const reasons = scenario === "mixed" ? mixedReasons : allInapplicableReasons;
     return specialistResult(false, reasons[scenario === "mixed" ? index - 1 : index]);
+  };
+  const agent = async (prompt, options = {}) => {
+    const output = await respond(prompt, options);
+    return options.identity
+      ? { label: options.label, phase: null, output, failure: null }
+      : output;
   };
   const parallel = async (thunks) => Promise.all(
     thunks.map((thunk) => thunk().catch(() => null)),
