@@ -317,7 +317,7 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 				return nil
 			},
 			wantStage: "configuration",
-			wantCause: "the unsupported lead is not available in this build",
+			wantCause: "MINOS_LEAD_ENGINE must be claude or codex; the unsupported lead is not available in this build",
 		},
 		{
 			name: "Claude seed copy",
