@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -833,7 +834,7 @@ run-body = "/opt/minos/run-body/run-body"
 	return cfg
 }
 
-func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
+func TestForgeClaimRequestsReviewAndReactsIdempotently(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, _ := state.service(t)
 	writeServiceConfig(t, cfg)
@@ -855,17 +856,44 @@ func TestForgeClaimAssignsAndReactsIdempotently(t *testing.T) {
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if !slices.Contains(state.assignees, "Minos") {
-		t.Fatalf("assignees = %v, want Minos", state.assignees)
+	if !slices.Contains(state.requestedReviewers, "Minos") {
+		t.Fatalf("requested reviewers = %v, want Minos", state.requestedReviewers)
+	}
+	if len(state.assignees) != 0 {
+		t.Fatalf("assignees = %v, want none", state.assignees)
 	}
 	if !slices.Contains(state.reactions, "eyes") {
 		t.Fatalf("reactions = %v, want eyes", state.reactions)
 	}
-	if state.assignmentWrites != 1 || state.reactionWrites != 1 {
-		t.Fatalf("writes = assignment:%d reaction:%d, want one each", state.assignmentWrites, state.reactionWrites)
+	if state.reviewRequestWrites != 1 || state.reactionWrites != 1 {
+		t.Fatalf("writes = review request:%d reaction:%d, want one each", state.reviewRequestWrites, state.reactionWrites)
 	}
 	if state.obsoleteAssignmentWrites != 0 {
-		t.Fatalf("obsolete assignment route received %d writes, want none", state.obsoleteAssignmentWrites)
+		t.Fatalf("assignee routes received %d writes, want none", state.obsoleteAssignmentWrites)
+	}
+}
+
+func TestForgeClaimRefusesReviewRequestMissingFromReadBack(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.reviewRequestsUnrecorded = true
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", "forgejo")
+	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
+	t.Setenv("MINOS_REPO_NAME", "subject")
+	t.Setenv("MINOS_PR", "1")
+
+	var stdout bytes.Buffer
+	_ = ForgeCommand(t.Context(), []string{"claim"}, &stdout)
+	if strings.Contains(stdout.String(), `"outcome":"applied"`) ||
+		!strings.Contains(stdout.String(), "review request was not confirmed") {
+		t.Fatalf("claim output = %q, want unconfirmed review request", stdout.String())
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.reviewRequestWrites != 1 {
+		t.Fatalf("review request writes = %d, want 1", state.reviewRequestWrites)
 	}
 }
 
@@ -1900,10 +1928,11 @@ type forgejoFixtureState struct {
 
 	mu                       sync.Mutex
 	assignees                []string
+	requestedReviewers       []string
+	reviewRequestsUnrecorded bool
 	reactions                []string
-	assignmentWritePaths     []string
 	reactionWritePaths       []string
-	assignmentWrites         int
+	reviewRequestWrites      int
 	obsoleteAssignmentWrites int
 	reactionWrites           int
 	reactionDeleteWrites     int
@@ -2309,7 +2338,34 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, s.operatorPullRequestForIssuePath(path).comments)
 	case r.Method == http.MethodGet && path == pullPath:
 		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
-		writeFixtureJSON(s.t, w, s.pullRequest)
+		pullRequest := maps.Clone(s.pullRequest)
+		requestedReviewers := make([]map[string]any, 0, len(s.requestedReviewers))
+		for _, login := range s.requestedReviewers {
+			requestedReviewers = append(requestedReviewers, map[string]any{"login": login})
+		}
+		pullRequest["requested_reviewers"] = requestedReviewers
+		writeFixtureJSON(s.t, w, pullRequest)
+	case r.Method == http.MethodPost && path == pullPath+"/requested_reviewers":
+		var payload struct {
+			Reviewers     []string `json:"reviewers"`
+			TeamReviewers []string `json:"team_reviewers"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		reviews := make([]map[string]any, 0, len(payload.Reviewers))
+		for _, login := range payload.Reviewers {
+			if !s.reviewRequestsUnrecorded && !slices.Contains(s.requestedReviewers, login) {
+				s.requestedReviewers = append(s.requestedReviewers, login)
+			}
+			reviews = append(reviews, map[string]any{"state": "REQUEST_REVIEW", "user": map[string]any{"login": login}})
+		}
+		s.reviewRequestWrites++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(reviews); err != nil {
+			s.t.Error(err)
+		}
 	case r.Method == http.MethodGet && s.stackedChild(path) != nil:
 		s.pullRequestReads[fmt.Sprint(s.stackedChild(path)["number"])]++
 		writeFixtureJSON(s.t, w, s.stackedChild(path))
@@ -2637,8 +2693,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 				s.assignees = append(s.assignees, login)
 			}
 		}
-		s.assignmentWrites++
-		s.assignmentWritePaths = append(s.assignmentWritePaths, path)
+		s.obsoleteAssignmentWrites++
 		writeFixtureJSON(s.t, w, map[string]any{})
 	case r.Method == http.MethodGet && (path == issuePath+"/reactions" || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/reactions")):
 		reactions := make([]map[string]any, 0, len(s.reactions))

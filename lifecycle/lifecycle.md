@@ -156,7 +156,7 @@ write, matching the target rule above.)
    `misconfigurations` array names any configured source setup could not
    read, with the reason; carry each one into the run report. Then run
    `"$MINOS_BIN" forge snapshot` and claim the pull request with
-   `"$MINOS_BIN" forge claim` (it assigns the Minos account and adds the
+   `"$MINOS_BIN" forge claim` (it requests review from the Minos account and adds the
    👀 reaction; it is safe to repeat). A snapshot target that differs from
    the one setup pinned is target movement: carry on. A snapshot head that
    differs from `$MINOS_HEAD_SHA` takes the run-wide head-movement ending,

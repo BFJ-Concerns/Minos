@@ -54,16 +54,17 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		}
 	}
 	state.mu.Lock()
-	assignmentWrites := state.assignmentWrites
+	reviewRequestWrites := state.reviewRequestWrites
 	obsoleteAssignmentWrites := state.obsoleteAssignmentWrites
 	reactionWrites := state.reactionWrites
+	requestedReviewers := append([]string(nil), state.requestedReviewers...)
 	assignees := append([]string(nil), state.assignees...)
 	reactions := append([]string(nil), state.reactions...)
 	state.mu.Unlock()
-	if assignmentWrites != 1 || obsoleteAssignmentWrites != 0 || reactionWrites != 1 ||
-		!slices.Contains(assignees, "Minos") || !slices.Contains(reactions, "eyes") {
-		t.Fatalf("claim facts = assignment:%d obsolete:%d reaction:%d assignees:%v reactions:%v",
-			assignmentWrites, obsoleteAssignmentWrites, reactionWrites, assignees, reactions)
+	if reviewRequestWrites != 1 || obsoleteAssignmentWrites != 0 || reactionWrites != 1 ||
+		!slices.Equal(requestedReviewers, []string{"Minos"}) || len(assignees) != 0 || !slices.Contains(reactions, "eyes") {
+		t.Fatalf("claim facts = review request:%d assignee:%d reaction:%d requested:%v assignees:%v reactions:%v",
+			reviewRequestWrites, obsoleteAssignmentWrites, reactionWrites, requestedReviewers, assignees, reactions)
 	}
 
 	original := commandCombinedOutput
