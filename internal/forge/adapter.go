@@ -12,18 +12,24 @@ import (
 )
 
 type Adapter struct {
-	runner       Runner
-	serviceLogin string
+	runner        Runner
+	serviceLogin  string
+	statusContext string
 }
 
-func NewAdapter(runner Runner, serviceLogin string) (*Adapter, error) {
+// NewAdapter binds the adapter to the service's identity: the login its
+// guarded writes are checked against and the context its statuses carry.
+func NewAdapter(runner Runner, serviceLogin, statusContext string) (*Adapter, error) {
 	if runner == nil {
 		return nil, fmt.Errorf("forge runner is required")
 	}
 	if strings.TrimSpace(serviceLogin) == "" {
 		return nil, fmt.Errorf("service login is required")
 	}
-	return &Adapter{runner: runner, serviceLogin: serviceLogin}, nil
+	if strings.TrimSpace(statusContext) == "" {
+		return nil, fmt.Errorf("status context is required")
+	}
+	return &Adapter{runner: runner, serviceLogin: serviceLogin, statusContext: statusContext}, nil
 }
 
 func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullRequest int64) (Snapshot, error) {
@@ -75,7 +81,8 @@ func (a *Adapter) SetProductStatus(ctx context.Context, guard Guard, state produ
 	}
 	out, err := a.runner.Run(ctx, RunRequest{
 		Operation: "guarded-set-status",
-		Arguments: append(a.guardArguments(guard), OwnedStatusContext, state.ForgeState(), state.Description()),
+		Arguments: append(a.guardArguments(guard), a.statusContext, state.ForgeState(), state.Description()),
+		Env:       map[string]string{"MINOS_STATUS_CONTEXT": a.statusContext},
 	})
 	return decodeWriteResult(out, err)
 }

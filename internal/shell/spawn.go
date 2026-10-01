@@ -230,6 +230,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_REVIEW_THRESHOLD":      repo.Review.Threshold,
 		"MINOS_COMMIT_AUTHOR_NAME":    cfg.Service.CommitAuthorName,
 		"MINOS_COMMIT_AUTHOR_EMAIL":   cfg.Service.CommitAuthorEmail,
+		"MINOS_STATUS_CONTEXT":        cfg.Service.StatusContext,
 		"ENSEMBLE_CONCURRENCY_CLAUDE": strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
 		"ENSEMBLE_CONCURRENCY_CODEX":  strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
 	}
