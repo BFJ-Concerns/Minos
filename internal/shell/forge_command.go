@@ -62,15 +62,22 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		return emitForgeResult(stdout, "claim", adapter.Claim(ctx, guard.Repository, guard.PullRequest))
 	case "status":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|incomplete|clean|continuation")
+		if len(args) != 4 && len(args) != 6 {
+			return fmt.Errorf("usage: minos forge status HEAD TARGET working|attention|incomplete|clean|continuation [--setup-failure STAGE]")
 		}
 		state, ok := namedProductState(args[3])
 		if !ok {
 			return fmt.Errorf("unknown product state %q", args[3])
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		return emitForgeResult(stdout, "status", adapter.SetProductStatus(ctx, guard, state))
+		description := state.Description()
+		if len(args) == 6 {
+			if state != product.Incomplete() || args[4] != "--setup-failure" || strings.TrimSpace(args[5]) == "" {
+				return fmt.Errorf("--setup-failure requires the incomplete state and a non-empty stage")
+			}
+			description = product.SetupFailureDescription(args[5])
+		}
+		return emitForgeResult(stdout, "status", adapter.SetProductStatusWithDescription(ctx, guard, state, description))
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
 			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|comment BODY_FILE [COMMENTS_FILE]")

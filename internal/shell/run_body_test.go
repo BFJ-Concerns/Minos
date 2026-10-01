@@ -522,7 +522,7 @@ func TestRunBodyKeepsGenericCauseForTargetTransportFailure(t *testing.T) {
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 128 {
 		t.Fatalf("run-body exit = %v, want transport failure exit 128; output = %s", err, output)
 	}
-	assertContainsFile(t, fixture.failureLog, "stage=workspace-setup cause=workspace setup failed\n")
+	assertContainsFile(t, fixture.failureLog, "stage=workspace-setup cause=workspace setup failed status_write=skipped-prerequisites\n")
 	if strings.Contains(string(output), "target fetch refused:") {
 		t.Fatalf("unrelated transport failure reported as target refusal: %s", output)
 	}
@@ -1913,6 +1913,92 @@ func TestRunBodyHonoursConfiguredPressureThreshold(t *testing.T) {
 				t.Fatalf("footprint below configured threshold produced a pressure signal: %v", err)
 			}
 			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+// The recorder observes the real exit trap, not a fixture-generated status.
+func TestRunBodySetupDeathStatus(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		stage      string
+		writerExit int
+		missing    string
+		postlaunch bool
+	}{
+		{name: "configuration", stage: "configuration"},
+		{name: "setup", stage: "workspace-setup"},
+		{name: "writer failure", stage: "workspace-setup", writerExit: 47},
+		{name: "missing service configuration", stage: "workspace-setup", missing: "service.toml"},
+		{name: "missing coordinates", stage: "workspace-setup", missing: "MINOS_TARGET_SHA"},
+		{name: "missing bootstrap configuration", stage: "configuration", missing: "MINOS_CONFIG"},
+		{name: "postlaunch failure", postlaunch: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			calls := filepath.Join(fixture.root, "status-calls")
+			writer := filepath.Join(fixture.root, "minos-recorder")
+			writeScript(t, writer, fmt.Sprintf("#!/usr/bin/env sh\nfor argument do printf '%%s\\n' \"$argument\"; done >>%s\nexit %d\n", strconv.Quote(calls), test.writerExit))
+			fixture.appendConfig(t, map[string]string{"MINOS_BIN": writer})
+			// Only readability is relevant to this script-level test; parsing and
+			// the actual guarded write are exercised by the fixture-forge journey.
+			serviceConfig := filepath.Join(fixture.configRoot, "service.toml")
+			if err := os.WriteFile(serviceConfig, []byte("# readable service configuration\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			extra := map[string]string{"MINOS_BIN": writer, "MINOS_FAILURE_LOG": fixture.failureLog}
+			wantExit := 19
+			wantCause := "workspace setup failed"
+			if test.postlaunch {
+				extra["MINOS_TEST_TERMINAL_STATE"] = "blocked"
+				extra["MINOS_TEST_NO_WORKER_PROBE"] = "1"
+				wantExit = 1
+				wantCause = "blocked state before producing run activity"
+			} else if test.stage == "configuration" {
+				fixture.appendConfig(t, map[string]string{"MINOS_CLAUDE_CONFIG_SEED": ""})
+				wantExit = 1
+				wantCause = "MINOS_CLAUDE_CONFIG_SEED is required"
+			} else {
+				setup := filepath.Join(fixture.root, "failing-setup")
+				writeScript(t, setup, "#!/usr/bin/env sh\nexit 19\n")
+				fixture.appendConfig(t, map[string]string{"MINOS_SETUP_WORKSPACE": setup})
+			}
+			if test.missing == "service.toml" {
+				if err := os.Remove(serviceConfig); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.missing != "" {
+				extra[test.missing] = ""
+				if test.missing == "MINOS_CONFIG" {
+					wantCause = "MINOS_CONFIG is required"
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			output, err := fixture.executeContext(ctx, extra)
+			exit, ok := err.(*exec.ExitError)
+			if !ok || exit.ExitCode() != wantExit {
+				t.Fatalf("exit = %v, want %d\n%s", err, wantExit, output)
+			}
+			assertFailureLine(t, fixture.failureLog, "cause=", wantCause)
+			recorded, readErr := os.ReadFile(calls)
+			if test.postlaunch || test.missing != "" {
+				if !os.IsNotExist(readErr) {
+					t.Fatalf("unexpected status call: %q (%v)", recorded, readErr)
+				}
+				if !test.postlaunch {
+					assertFailureLine(t, fixture.failureLog, "status_write=skipped-prerequisites")
+				}
+				return
+			}
+			if readErr != nil {
+				t.Fatalf("setup death recorded no status call: %v", readErr)
+			}
+			want := "forge\nstatus\nhead-sha\ntarget-sha\nincomplete\n--setup-failure\n" + test.stage + "\n"
+			if string(recorded) != want {
+				t.Fatalf("status calls = %q, want %q", recorded, want)
+			}
+			assertFailureLine(t, fixture.failureLog, "stage="+test.stage)
 		})
 	}
 }

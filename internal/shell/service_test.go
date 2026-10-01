@@ -1,6 +1,12 @@
 package shell
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"bfj/minos/internal/forge"
@@ -150,5 +156,85 @@ func TestAdmissionCompletionStatuses(t *testing.T) {
 				t.Fatalf("admission completedRun = %t, want %t", got.completedRun, test.want)
 			}
 		})
+	}
+}
+
+func TestContinuationSuccessorSetupDeathKeepsSweepPriority(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
+	facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+	var stdout strings.Builder
+	if err := ForgeCommand(t.Context(), []string{"status", facts.HeadSHA, facts.BaseSHA, "continuation"}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	if priority, err := currentContinuationPriority(t.Context(), cfg, facts); err != nil || priority != 0 {
+		t.Fatalf("predecessor continuation priority = %d, err=%v", priority, err)
+	}
+
+	// Drive the real setup failure. The stand-in transports the command's
+	// arguments; only ForgeCommand and the real adaptation write forge state.
+	fixture := newRunBodyFixture(t)
+	calls := filepath.Join(fixture.root, "setup-status-command")
+	writer := filepath.Join(fixture.root, "record-forge-command")
+	writeScript(t, writer, fmt.Sprintf("#!/usr/bin/env sh\nfor argument do printf '%%s\\n' \"$argument\"; done >%s\n", strconv.Quote(calls)))
+	setup := filepath.Join(fixture.root, "failing-setup")
+	writeScript(t, setup, "#!/usr/bin/env sh\nexit 19\n")
+	fixture.appendConfig(t, map[string]string{"MINOS_BIN": writer, "MINOS_SETUP_WORKSPACE": setup})
+	copyFixtureFile(t, filepath.Join(cfg.Root, "service.toml"), filepath.Join(fixture.configRoot, "service.toml"), 0o600)
+	output, err := fixture.execute(map[string]string{
+		"MINOS_FORGE": facts.Forge, "MINOS_OWNER": facts.Owner,
+		"MINOS_REPO_NAME": facts.Repo, "MINOS_PR": facts.PR,
+		"MINOS_HEAD_SHA": facts.HeadSHA, "MINOS_TARGET_SHA": facts.BaseSHA,
+	})
+	exit, ok := err.(*exec.ExitError)
+	if !ok || exit.ExitCode() != 19 {
+		t.Fatalf("setup successor exit = %v, want 19\n%s", err, output)
+	}
+	recorded, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
+	if len(args) < 2 || args[0] != "forge" {
+		t.Fatalf("setup death forge command = %q", recorded)
+	}
+	if err := ForgeCommand(t.Context(), args[1:], &stdout); err != nil {
+		t.Fatalf("publish setup successor death: %v\n%s", err, stdout.String())
+	}
+	if posts := state.statusPostFacts(); len(posts) != 2 {
+		t.Fatalf("status posts = %#v, want continuation then setup death", posts)
+	}
+	snapshot, err := currentSnapshot(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, found := latestOwnedStatus(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext)
+	if !found || latest.State != forge.StatusError {
+		t.Fatalf("setup death status = %#v, found=%t", latest, found)
+	}
+	if latest.Description != "Review incomplete: setup failed at workspace-setup" {
+		t.Errorf("setup death description = %q, want stage-bearing incomplete status", latest.Description)
+	}
+	classified, recognised := product.StateForDescription(latest.Description)
+	if !recognised || classified != product.Incomplete() {
+		t.Errorf("setup death classification = %q, recognised=%t, want incomplete", classified.Name(), recognised)
+	}
+	priority, err := currentContinuationPriority(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priority != 0 {
+		t.Errorf("setup-dead continuation successor priority = %d, want 0", priority)
+	}
+	fresh := Facts{Owner: facts.Owner, Repo: "fresh", PR: facts.PR}
+	ordered := orderSweepCandidates([]sweepCandidate{{facts: fresh, priority: 1}, {facts: facts, priority: priority}}, nil)
+	if ordered[0].facts != facts {
+		t.Errorf("front of sweep queue = %s, want setup-dead successor %s", ordered[0].facts.RepoSlug(), facts.RepoSlug())
 	}
 }
