@@ -47,26 +47,63 @@ fi
 
 issue_path="/api/v1/repos/${owner}/${repo}/issues/${pr}"
 
-reactions_path="${issue_path}/reactions"
-reactions_json="$(api GET "$reactions_path")" || {
-  write_result uncertain "pull request reactions could not be read"
+# The in-flight marker takes the form the run's configuration exported:
+# a reaction this account adds, or a label the repository defines.
+in_flight_reaction="$(printf '%s' "${MINOS_MARKERS:-}" | jq -r '.["in-flight"].reaction // ""' 2>/dev/null)" || in_flight_reaction=""
+in_flight_label="$(printf '%s' "${MINOS_MARKERS:-}" | jq -r '.["in-flight"].label // ""' 2>/dev/null)" || in_flight_label=""
+if [ -z "$in_flight_reaction" ] && [ -z "$in_flight_label" ]; then
+  write_result rejected "MINOS_MARKERS names no in-flight marker"
   exit 0
+fi
+
+reactions_path="${issue_path}/reactions"
+in_flight_present() {
+  if [ -n "$in_flight_label" ]; then
+    issue_label_id "$owner" "$repo" "$pr" "$in_flight_label" >/dev/null
+    return
+  fi
+  in_flight_json="$(api GET "$reactions_path")" || return 2
+  printf '%s' "$in_flight_json" | jq -e --arg content "$in_flight_reaction" --arg login "$login" '
+    any(.[]?; (.content == $content) and ((.user.login // .user.username // "") == $login))
+  ' >/dev/null || return 1
 }
-if ! printf '%s' "$reactions_json" | jq -e --arg login "$login" '
-  any(.[]?; (.content == "eyes") and ((.user.login // .user.username // "") == $login))
-' >/dev/null; then
-  api POST "$reactions_path" -H "Content-Type: application/json" --data '{"content":"eyes"}' >/dev/null || {
-    write_result uncertain "eyes reaction could not be written"
+
+if in_flight_present; then
+  :
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "in-flight marker could not be read"
     exit 0
-  }
+  fi
+  if [ -n "$in_flight_label" ]; then
+    if label_id="$(defined_label_id "$owner" "$repo" "$in_flight_label")"; then
+      :
+    else
+      definition=$?
+      if [ "$definition" -eq 1 ]; then
+        write_result rejected "$(missing_label_reason "$owner" "$repo" "$in_flight_label")"
+      else
+        write_result uncertain "in-flight label definition could not be read"
+      fi
+      exit 0
+    fi
+    payload="$(jq -nc --argjson id "$label_id" '{labels:[$id]}')"
+    api POST "${issue_path}/labels" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+      write_result uncertain "in-flight label could not be written"
+      exit 0
+    }
+  else
+    payload="$(jq -nc --arg content "$in_flight_reaction" '{content:$content}')"
+    api POST "$reactions_path" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+      write_result uncertain "in-flight reaction could not be written"
+      exit 0
+    }
+  fi
 fi
 
 pr_json="$(api GET "$pull_path")" || {
   write_result uncertain "pull request review request could not be confirmed"
-  exit 0
-}
-reactions_json="$(api GET "$reactions_path")" || {
-  write_result uncertain "eyes reaction could not be confirmed"
   exit 0
 }
 if ! printf '%s' "$pr_json" | jq -e --arg login "$login" '
@@ -75,10 +112,8 @@ if ! printf '%s' "$pr_json" | jq -e --arg login "$login" '
   write_result uncertain "pull request review request was not confirmed"
   exit 0
 fi
-if ! printf '%s' "$reactions_json" | jq -e --arg login "$login" '
-  any(.[]?; (.content == "eyes") and ((.user.login // .user.username // "") == $login))
-' >/dev/null; then
-  write_result uncertain "eyes reaction was not confirmed"
+if ! in_flight_present; then
+  write_result uncertain "in-flight marker was not confirmed"
   exit 0
 fi
 

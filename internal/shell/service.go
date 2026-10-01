@@ -134,15 +134,25 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
-	if staleApproval(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext) {
-		guard := forge.Guard{
-			Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
-			PullRequest: snapshot.PullRequest,
-			HeadSHA:     snapshot.HeadSHA,
-			TargetSHA:   snapshot.TargetSHA,
+	guard := forge.Guard{
+		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+		PullRequest: snapshot.PullRequest,
+		HeadSHA:     snapshot.HeadSHA,
+		TargetSHA:   snapshot.TargetSHA,
+	}
+	for _, terminal := range []struct {
+		role   string
+		marker *forge.Marker
+		state  product.State
+	}{
+		{"clean", repo.Markers.Clean, product.Clean()},
+		{"attention", repo.Markers.Attention, product.Attention()},
+	} {
+		if terminal.marker == nil || !staleTerminalMarker(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext, terminal.state) {
+			continue
 		}
-		if result := adapter.RemoveReaction(ctx, guard, "+1"); result.Outcome != forge.WriteApplied {
-			return ReconcileResult{}, fmt.Errorf("remove stale approval reaction: %s: %s", result.Outcome, result.Reason)
+		if result := adapter.RemoveMarker(ctx, guard, *terminal.marker); result.Outcome != forge.WriteApplied {
+			return ReconcileResult{}, fmt.Errorf("remove stale %s marker: %s: %s", terminal.role, result.Outcome, result.Reason)
 		}
 	}
 	facts.HeadSHA = snapshot.HeadSHA
@@ -171,17 +181,18 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	}, nil
 }
 
-// staleApproval reports whether the current head lacks a Minos clean result.
-// The PR-wide reaction has no head identity of its own; a current clean
-// status or historical-format approval review is its warrant.
-func staleApproval(snapshot forge.Snapshot, botLogin, statusContext string) bool {
+// staleTerminalMarker reports whether the current head lacks the Minos
+// result a terminal marker stands for. A PR-wide marker — reaction or label
+// — has no head identity of its own; a current status or terminal review in
+// that state is its warrant, and the marker itself is never read.
+func staleTerminalMarker(snapshot forge.Snapshot, botLogin, statusContext string, want product.State) bool {
 	if status, found := latestOwnedStatus(snapshot, botLogin, statusContext); found {
-		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal && state == product.Clean() {
+		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal && state == want {
 			return false
 		}
 	}
 	if review, found := currentReview(snapshot, botLogin); found {
-		if state, terminal := terminalState(review); terminal && state == product.Clean() {
+		if state, terminal := terminalState(review); terminal && state == want {
 			return false
 		}
 	}

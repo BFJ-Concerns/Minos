@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"bfj/minos/internal/forge"
 )
 
 func TestSpawnRunRemovesReadOnlyTreeWhenStartFails(t *testing.T) {
@@ -787,6 +789,11 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		{Path: "docs/intent.md"},
 	}
 	repo.FilingDestination = FilingDestination{Kind: FilingKindFile, Repository: "owner/repo-plans", Path: "ISSUES.md"}
+	repo.Markers = Markers{
+		InFlight:  &forge.Marker{Label: "minos/reviewing"},
+		Clean:     &forge.Marker{Reaction: "+1"},
+		Attention: &forge.Marker{Label: "minos/attention"},
+	}
 	facts := Facts{
 		Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7",
 		HeadSHA: "head", BaseSHA: "target", BaseRef: "main", HeadRef: "feature",
@@ -829,6 +836,12 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"ENSEMBLE_AGENT_CEILING=12",
 	} {
 		assertEnvironment(t, systemdArgs, value)
+	}
+	// The markers knob is asserted through the --setenv pairs themselves,
+	// so a value that reached the arguments without becoming run
+	// environment fails here.
+	if markers := systemdEnvironment(t, systemdArgs)["MINOS_MARKERS"]; markers != `{"in-flight":{"label":"minos/reviewing"},"clean":{"reaction":"+1"},"attention":{"label":"minos/attention"}}` {
+		t.Fatalf("run environment MINOS_MARKERS = %q", markers)
 	}
 	var runDir string
 	for _, arg := range systemdArgs {

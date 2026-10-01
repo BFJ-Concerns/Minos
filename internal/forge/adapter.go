@@ -106,15 +106,9 @@ func (a *Adapter) Alert(ctx context.Context, repository Repository, title, body 
 	return a.writeIssue(ctx, "alert", []string{repository.Owner, repository.Name}, title, body)
 }
 
-func (a *Adapter) AddReaction(ctx context.Context, guard Guard, content string) WriteResult {
-	if strings.TrimSpace(content) == "" {
-		return WriteResult{Outcome: WriteRejected, Reason: "reaction content is required"}
-	}
-	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-add-reaction",
-		Arguments: append(a.guardArguments(guard), content),
-	})
-	return decodeWriteResult(out, err)
+// AddMarker writes one marker in its configured form under the guard.
+func (a *Adapter) AddMarker(ctx context.Context, guard Guard, marker Marker) WriteResult {
+	return a.markerWrite(ctx, guard, marker, "guarded-add-reaction", "guarded-add-label")
 }
 
 // FileIssue delivers one marked entry to its configured repository. Its
@@ -141,13 +135,22 @@ func (a *Adapter) writeIssue(ctx context.Context, operation string, arguments []
 	return decodeWriteResult(out, runErr)
 }
 
-func (a *Adapter) RemoveReaction(ctx context.Context, guard Guard, content string) WriteResult {
-	if strings.TrimSpace(content) == "" {
-		return WriteResult{Outcome: WriteRejected, Reason: "reaction content is required"}
+// RemoveMarker removes one marker in its configured form under the guard.
+func (a *Adapter) RemoveMarker(ctx context.Context, guard Guard, marker Marker) WriteResult {
+	return a.markerWrite(ctx, guard, marker, "guarded-remove-reaction", "guarded-remove-label")
+}
+
+func (a *Adapter) markerWrite(ctx context.Context, guard Guard, marker Marker, reactionOperation, labelOperation string) WriteResult {
+	operation, value := reactionOperation, marker.Reaction
+	if marker.Label != "" {
+		operation, value = labelOperation, marker.Label
+	}
+	if err := marker.Validate(); err != nil {
+		return WriteResult{Outcome: WriteRejected, Reason: err.Error()}
 	}
 	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-remove-reaction",
-		Arguments: append(a.guardArguments(guard), content),
+		Operation: operation,
+		Arguments: append(a.guardArguments(guard), value),
 	})
 	return decodeWriteResult(out, err)
 }

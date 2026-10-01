@@ -1,0 +1,51 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; name="$7"
+
+if [ -z "$name" ]; then
+  write_result rejected "label name is required"
+  exit 0
+fi
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+if issue_label_id "$owner" "$repo" "$pr" "$name" >/dev/null; then
+  write_result applied "label already present"
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "label read-back could not be confirmed"
+    exit 0
+  fi
+fi
+
+if label_id="$(defined_label_id "$owner" "$repo" "$name")"; then
+  :
+else
+  definition=$?
+  if [ "$definition" -eq 1 ]; then
+    write_result rejected "$(missing_label_reason "$owner" "$repo" "$name")"
+  else
+    write_result uncertain "label definition could not be read"
+  fi
+  exit 0
+fi
+
+payload="$(jq -nc --argjson id "$label_id" '{labels:[$id]}')"
+api POST "/api/v1/repos/${owner}/${repo}/issues/${pr}/labels" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+
+if issue_label_id "$owner" "$repo" "$pr" "$name" >/dev/null; then
+  write_result applied
+else
+  write_result uncertain "label write could not be discovered"
+fi

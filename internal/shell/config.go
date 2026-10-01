@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"bfj/minos/internal/forge"
 )
 
 const DefaultConfigRoot = "/etc/minos"
@@ -224,6 +226,22 @@ type RepositoryKnobs struct {
 	// FilingDestination is where a clean run's confirmed non-gating material
 	// goes (C45).
 	FilingDestination FilingDestination `toml:"filing-destination"`
+	// Markers is the form of each marker Minos writes on a pull request
+	// (C46): a reaction or a label each. Resolved, in-flight and clean are
+	// always set; an unset attention marker is never written.
+	Markers Markers `toml:"markers"`
+}
+
+// Markers names the in-flight, clean and attention markers' forms.
+type Markers struct {
+	InFlight  *forge.Marker `toml:"in-flight" json:"in-flight,omitempty"`
+	Clean     *forge.Marker `toml:"clean" json:"clean,omitempty"`
+	Attention *forge.Marker `toml:"attention" json:"attention,omitempty"`
+}
+
+// Roles lists the markers by their configured names, set or not.
+func (m Markers) Roles() map[string]*forge.Marker {
+	return map[string]*forge.Marker{"in-flight": m.InFlight, "clean": m.Clean, "attention": m.Attention}
 }
 
 // GuidanceSource names one guidance document: a path in the reviewed
@@ -395,11 +413,20 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	if defined("filing-destination") {
 		knobs.FilingDestination = own.FilingDestination
 	}
+	if defined("markers") {
+		knobs.Markers = own.Markers
+	}
 	if knobs.Review.Threshold == "" {
 		knobs.Review.Threshold = "High"
 	}
 	if knobs.FilingDestination.Kind == "" {
 		knobs.FilingDestination = FilingDestination{Kind: FilingKindPullRequestComment}
+	}
+	if knobs.Markers.InFlight == nil {
+		knobs.Markers.InFlight = &forge.Marker{Reaction: "eyes"}
+	}
+	if knobs.Markers.Clean == nil {
+		knobs.Markers.Clean = &forge.Marker{Reaction: "+1"}
 	}
 	return knobs
 }
@@ -422,6 +449,13 @@ func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
 		}
 		if source.Repository != "" && !repositoryName.MatchString(source.Repository) {
 			return fmt.Errorf("%s: guidance-sources[%d].repository must be owner/name on the same forge", where, index)
+		}
+	}
+	for _, role := range []string{"in-flight", "clean", "attention"} {
+		if marker := knobs.Markers.Roles()[role]; marker != nil {
+			if err := marker.Validate(); err != nil {
+				return fmt.Errorf("%s: markers.%s %w", where, role, err)
+			}
 		}
 	}
 	destination := knobs.FilingDestination

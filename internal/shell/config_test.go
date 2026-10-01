@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"bfj/minos/internal/forge"
 )
 
 const testServiceConfig = `[service]
@@ -212,6 +214,9 @@ path = "docs/intent.md"
 [repositories.filing-destination]
 kind = "file"
 path = "ISSUES.md"
+[repositories.markers]
+in-flight = {label = "minos/reviewing"}
+attention = {reaction = "confused"}
 `
 
 func writeRepoConfig(t *testing.T, root, name, contents string) {
@@ -251,7 +256,8 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 			"[review]\nthreshold = \"Low\"\n"+
 			"[[guidance-sources]]\nrepository = \"owner/repo-plans\"\npath = \"README.md\"\n"+
 			"[[guidance-sources]]\npath = \"AGENTS.md\"\n"+
-			"[filing-destination]\nkind = \"none\"\n"))
+			"[filing-destination]\nkind = \"none\"\n"+
+			"[markers]\nclean = {label = \"minos/approved\"}\n"))
 	repos, err := LoadRepoConfigs(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +271,10 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	if inherits.Review.Threshold != "Medium" ||
 		!slices.Equal(inherits.WorkInProgressBranchPrefixes, []string{"structural/"}) ||
 		!slices.Equal(inherits.GuidanceSources, []GuidanceSource{{Path: "docs/intent.md"}}) ||
-		inherits.FilingDestination != (FilingDestination{Kind: FilingKindFile, Path: "ISSUES.md"}) {
+		inherits.FilingDestination != (FilingDestination{Kind: FilingKindFile, Path: "ISSUES.md"}) ||
+		*inherits.Markers.InFlight != (forge.Marker{Label: "minos/reviewing"}) ||
+		*inherits.Markers.Clean != (forge.Marker{Reaction: "+1"}) ||
+		inherits.Markers.Attention == nil || *inherits.Markers.Attention != (forge.Marker{Reaction: "confused"}) {
 		t.Fatalf("repository without its own values = %+v, want the service defaults", inherits.RepositoryKnobs)
 	}
 
@@ -273,7 +282,12 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	if overrides.Review.Threshold != "Low" ||
 		len(overrides.WorkInProgressBranchPrefixes) != 0 ||
 		!slices.Equal(overrides.GuidanceSources, []GuidanceSource{{Repository: "owner/repo-plans", Path: "README.md"}, {Path: "AGENTS.md"}}) ||
-		overrides.FilingDestination != (FilingDestination{Kind: FilingKindNone}) {
+		overrides.FilingDestination != (FilingDestination{Kind: FilingKindNone}) ||
+		// The markers table replaces the service's whole: its in-flight
+		// label and attention reaction do not carry through.
+		*overrides.Markers.InFlight != (forge.Marker{Reaction: "eyes"}) ||
+		*overrides.Markers.Clean != (forge.Marker{Label: "minos/approved"}) ||
+		overrides.Markers.Attention != nil {
 		t.Fatalf("repository with its own values = %+v, want each override to replace the service value whole", overrides.RepositoryKnobs)
 	}
 }
@@ -288,8 +302,11 @@ func TestRepositoryKnobsUnsetAtBothLevelsTakeTheShippedDefaults(t *testing.T) {
 	}
 	knobs := repos[0].RepositoryKnobs
 	if knobs.Review.Threshold != "High" || len(knobs.GuidanceSources) != 0 || len(knobs.WorkInProgressBranchPrefixes) != 0 ||
-		knobs.FilingDestination != (FilingDestination{Kind: FilingKindPullRequestComment}) {
-		t.Fatalf("knobs = %+v, want High threshold, checked-in guidance, no prefixes and pull-request-comment filing", knobs)
+		knobs.FilingDestination != (FilingDestination{Kind: FilingKindPullRequestComment}) ||
+		knobs.Markers.InFlight == nil || *knobs.Markers.InFlight != (forge.Marker{Reaction: "eyes"}) ||
+		knobs.Markers.Clean == nil || *knobs.Markers.Clean != (forge.Marker{Reaction: "+1"}) ||
+		knobs.Markers.Attention != nil {
+		t.Fatalf("knobs = %+v, want High threshold, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
 	}
 }
 
@@ -309,6 +326,10 @@ func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 		{name: "issue kind without a repository", toml: "[filing-destination]\nkind = \"issue\"\n", want: "filing-destination.repository must name"},
 		{name: "issue kind with a path", toml: "[filing-destination]\nkind = \"issue\"\nrepository = \"owner/plans\"\npath = \"x\"\n", want: "filing-destination.path does not apply"},
 		{name: "none kind with a repository", toml: "[filing-destination]\nkind = \"none\"\nrepository = \"owner/plans\"\n", want: "do not apply to the none kind"},
+		{name: "marker with both forms", toml: "[markers]\nclean = {reaction = \"+1\", label = \"minos/approved\"}\n", want: "markers.clean must set exactly one of reaction or label"},
+		{name: "marker with neither form", toml: "[markers]\nattention = {}\n", want: "markers.attention must set exactly one of reaction or label"},
+		{name: "marker reaction that is not a name", toml: "[markers]\nin-flight = {reaction = \"thumbs up\"}\n", want: "markers.in-flight reaction must be a reaction name"},
+		{name: "marker label with surrounding space", toml: "[markers]\nin-flight = {label = \" minos\"}\n", want: "markers.in-flight label must be a label name"},
 		{name: "comment kind with a path", toml: "[filing-destination]\nkind = \"pull-request-comment\"\npath = \"x\"\n", want: "do not apply to the pull-request-comment kind"},
 	} {
 		t.Run("repository: "+test.name, func(t *testing.T) {
@@ -324,6 +345,7 @@ func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 			root := t.TempDir()
 			serviceLevel := strings.ReplaceAll(test.toml, "[[guidance-sources]]", "[[repositories.guidance-sources]]")
 			serviceLevel = strings.ReplaceAll(serviceLevel, "[filing-destination]", "[repositories.filing-destination]")
+			serviceLevel = strings.ReplaceAll(serviceLevel, "[markers]", "[repositories.markers]")
 			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(testServiceConfig+serviceLevel), 0o644); err != nil {
 				t.Fatal(err)
 			}

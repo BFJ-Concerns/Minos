@@ -199,10 +199,13 @@ pushing with the configured Forgejo token header.
 
 The receiver handles new events immediately. The sweep periodically starts any
 open, non-draft pull request whose current head carries no completion marker.
-Before reconciling a pull request, the sweep strips any stale Minos approval
-reaction (👍) left on a head the author has since replaced: reviews are
-SHA-bound evidence, but the PR-wide reaction is not, so it is removed before
-another reconciliation decision is made.
+Before reconciling a pull request, the sweep strips any stale Minos clean or
+attention marker — a reaction or a label, in the repository's configured
+form — left on a head the author has since replaced: reviews and statuses are
+SHA-bound evidence, but the PR-wide marker is not, so it is removed before
+another reconciliation decision is made. A label marker must already be
+defined on the repository or its organisation; a missing one refuses the
+marker write with a reason naming the label and repository.
 
 ## Reading run liveness
 

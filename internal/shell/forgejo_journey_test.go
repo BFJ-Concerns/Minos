@@ -818,6 +818,13 @@ func sweepAfterPriorityMutation(t *testing.T, mutate func(*forgejoFixtureState))
 
 func writeSweepFixtureConfig(t *testing.T, state *forgejoFixtureState) ServiceConfig {
 	t.Helper()
+	return writeSweepFixtureConfigWithKnobs(t, state, "")
+}
+
+// writeSweepFixtureConfigWithKnobs writes the sweep fixture's configuration
+// with the given tables appended to the repository's own file.
+func writeSweepFixtureConfigWithKnobs(t *testing.T, state *forgejoFixtureState, knobs string) ServiceConfig {
+	t.Helper()
 	cfg, _, _ := state.service(t)
 	writeServiceConfig(t, cfg)
 	if err := os.MkdirAll(filepath.Join(cfg.Root, "repos"), 0o755); err != nil {
@@ -828,11 +835,192 @@ owner = "minos-e2e-owner"
 repo = "subject"
 [adaptation]
 run-body = "/opt/minos/run-body/run-body"
-`
+` + knobs
 	if err := os.WriteFile(filepath.Join(cfg.Root, "repos", "subject.toml"), []byte(repoConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+// labelMarkerKnobs configures every marker as a label.
+const labelMarkerKnobs = `[markers]
+in-flight = {label = "minos/reviewing"}
+clean = {label = "minos/approved"}
+attention = {label = "minos/attention"}
+`
+
+const labelMarkersJSON = `{"in-flight":{"label":"minos/reviewing"},"clean":{"label":"minos/approved"},"attention":{"label":"minos/attention"}}`
+
+// defineMarkerLabels gives the fixture repository the marker labels beside
+// an unrelated one.
+func defineMarkerLabels(state *forgejoFixtureState) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.repositoryLabels = []map[string]any{
+		{"id": float64(7), "name": "Ready", "color": "336699"},
+		{"id": float64(21), "name": "minos/reviewing", "color": "fbca04"},
+		{"id": float64(22), "name": "minos/approved", "color": "0e8a16"},
+		{"id": float64(23), "name": "minos/attention", "color": "d93f0b"},
+	}
+}
+
+func TestForgeMarkersWriteTheConfiguredLabelForm(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	defineMarkerLabels(state)
+	configureForgeCommandFixture(t, state)
+	t.Setenv("MINOS_MARKERS", labelMarkersJSON)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"claim"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("claim attempt %d: %v", attempt, err)
+		}
+	}
+	state.mu.Lock()
+	if labels := state.pullRequestLabelNames(); !slices.Contains(labels, "minos/reviewing") || state.labelWrites != 1 {
+		t.Fatalf("claim labels = %v, label writes = %d, want minos/reviewing written once", labels, state.labelWrites)
+	}
+	if len(state.reactions) != 0 || state.reactionWrites != 0 {
+		t.Fatalf("claim reactions = %v, writes = %d, want no reaction in the label form", state.reactions, state.reactionWrites)
+	}
+	state.mu.Unlock()
+
+	head, target := state.headSHA(), state.targetSHA()
+	for attempt := 1; attempt <= 2; attempt++ {
+		for _, args := range [][]string{{"marker", head, target, "clean", "add"}, {"marker", head, target, "in-flight", "remove"}} {
+			if err := ForgeCommand(t.Context(), args, &bytes.Buffer{}); err != nil {
+				t.Fatalf("clean outcome attempt %d %v: %v", attempt, args, err)
+			}
+		}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if labels := state.pullRequestLabelNames(); !slices.Equal(labels, []string{"minos/approved"}) {
+		t.Fatalf("clean outcome labels = %v, want the in-flight label swapped for the clean one", labels)
+	}
+	if !slices.Equal(state.writeSequence, []string{"label-add:minos/reviewing", "label-add:minos/approved", "label-remove:minos/reviewing"}) {
+		t.Fatalf("label writes = %v", state.writeSequence)
+	}
+	if len(state.reactions) != 0 || state.reactionWrites != 0 || state.reactionDeleteWrites != 0 {
+		t.Fatalf("reactions = %v, writes = %d/%d, want none in the label form", state.reactions, state.reactionWrites, state.reactionDeleteWrites)
+	}
+}
+
+func TestForgeMarkerRefusesALabelTheRepositoryDoesNotDefine(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	configureForgeCommandFixture(t, state)
+	t.Setenv("MINOS_MARKERS", labelMarkersJSON)
+
+	for _, args := range [][]string{{"claim"}, {"marker", state.headSHA(), state.targetSHA(), "clean", "add"}} {
+		var stdout bytes.Buffer
+		err := ForgeCommand(t.Context(), args, &stdout)
+		if err == nil || !strings.Contains(stdout.String(), `"outcome":"rejected"`) ||
+			!strings.Contains(stdout.String(), "is not defined on minos-e2e-owner/subject or its organisation") {
+			t.Fatalf("%v: error = %v, output = %q, want a rejection naming the label and repository", args, err, stdout.String())
+		}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.labelWrites != 0 || len(state.repositoryLabels) != 0 {
+		t.Fatalf("label writes = %d, repository labels = %v, want nothing written or created", state.labelWrites, state.repositoryLabels)
+	}
+}
+
+func TestForgeMarkerFindsAnOrganisationLabelOnALaterPage(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	unrelated := make([]map[string]any, 0, 50)
+	for index := range 50 {
+		unrelated = append(unrelated, map[string]any{"id": float64(100 + index), "name": fmt.Sprintf("area/%d", index)})
+	}
+	state.mu.Lock()
+	state.organisationLabelPages = [][]map[string]any{unrelated, {{"id": float64(51), "name": "minos/approved"}}}
+	state.mu.Unlock()
+	configureForgeCommandFixture(t, state)
+	t.Setenv("MINOS_MARKERS", labelMarkersJSON)
+
+	var stdout bytes.Buffer
+	if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "clean", "add"}, &stdout); err != nil {
+		t.Fatalf("organisation label on page 2: %v (%s)", err, stdout.String())
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if labels := state.pullRequestLabelNames(); !slices.Equal(labels, []string{"minos/approved"}) {
+		t.Fatalf("labels = %v, want the organisation's minos/approved", labels)
+	}
+}
+
+func TestForgeMarkerRefusesMarkersWithTrailingData(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	defineMarkerLabels(state)
+	configureForgeCommandFixture(t, state)
+	for _, suffix := range []string{" trailing-garbage", "}", "]"} {
+		t.Setenv("MINOS_MARKERS", labelMarkersJSON+suffix)
+		for _, args := range [][]string{{"claim"}, {"marker", state.headSHA(), state.targetSHA(), "clean", "add"}} {
+			if err := ForgeCommand(t.Context(), args, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "MINOS_MARKERS") {
+				t.Fatalf("suffix %q %v: error = %v, want MINOS_MARKERS refused", suffix, args, err)
+			}
+		}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.writeSequence) != 0 || state.labelWrites != 0 || state.reviewRequestWrites != 0 {
+		t.Fatalf("writes = %v, want none from a malformed MINOS_MARKERS", state.writeSequence)
+	}
+}
+
+func TestForgeMarkerSkipsAnUnconfiguredAttentionMarker(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	configureForgeCommandFixture(t, state)
+
+	var stdout bytes.Buffer
+	if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "attention", "add"}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "attention marker is not configured") {
+		t.Fatalf("output = %q", stdout.String())
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.writeSequence) != 0 || state.reactionWrites != 0 || state.labelWrites != 0 {
+		t.Fatalf("writes = %v, want none for an unconfigured marker", state.writeSequence)
+	}
+}
+
+func TestForgejoReconciliationStripsStaleLabelMarkersOnHeadMovement(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	defineMarkerLabels(state)
+	state.mu.Lock()
+	state.setPullRequestLabels(state.repositoryLabels[2:])
+	state.mu.Unlock()
+	// The labels were earned by an earlier head; the author has pushed
+	// since, so the current head carries no Minos result.
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["head"].(map[string]any)["sha"] = "head-after-the-push"
+	})
+	state.setDependencies([]map[string]any{{
+		"number": 7, "state": "open",
+		"repository": map[string]any{"full_name": "minos-e2e-owner/prerequisite"},
+	}})
+	cfg := writeSweepFixtureConfigWithKnobs(t, state, labelMarkerKnobs)
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			t.Fatal("stale-marker sweep claimed a deferred pull request")
+		}
+		return nil, nil
+	}
+	if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if labels := state.pullRequestLabelNames(); len(labels) != 0 {
+		t.Fatalf("labels = %v, want the stale clean and attention labels stripped", labels)
+	}
+	if !slices.Equal(state.writeSequence, []string{"label-remove:minos/approved", "label-remove:minos/attention"}) {
+		t.Fatalf("forge writes = %v, want only the stale label removals", state.writeSequence)
+	}
 }
 
 func TestForgeClaimRequestsReviewAndReactsIdempotently(t *testing.T) {
@@ -844,6 +1032,7 @@ func TestForgeClaimRequestsReviewAndReactsIdempotently(t *testing.T) {
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
 	t.Setenv("MINOS_PR", "1")
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		var stdout bytes.Buffer
@@ -884,6 +1073,7 @@ func TestForgeClaimRefusesReviewRequestMissingFromReadBack(t *testing.T) {
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
 	t.Setenv("MINOS_PR", "1")
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 
 	var stdout bytes.Buffer
 	_ = ForgeCommand(t.Context(), []string{"claim"}, &stdout)
@@ -918,13 +1108,14 @@ func TestForgeReactionUsesForgejo14ShapeAndReadBackIdempotency(t *testing.T) {
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
 	t.Setenv("MINOS_PR", "1")
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 
 	content := apiShape.Request["content"].(string)
 	if apiShape.Response["content"] != content || apiShape.Response["user"].(map[string]any)["login"] != "Minos" {
 		t.Fatalf("reaction fixture does not preserve the Forgejo response shape: %#v", apiShape)
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
-		if err := ForgeCommand(t.Context(), []string{"reaction", state.headSHA(), state.targetSHA(), content}, &bytes.Buffer{}); err != nil {
+		if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "clean", "add"}, &bytes.Buffer{}); err != nil {
 			t.Fatalf("reaction attempt %d: %v", attempt, err)
 		}
 	}
@@ -945,7 +1136,7 @@ func TestForgeReactionRemoveUsesForgejo14ShapeAndReadBackIdempotency(t *testing.
 	configureForgeCommandFixture(t, state)
 
 	for attempt := 0; attempt < 2; attempt++ {
-		if err := ForgeCommand(t.Context(), []string{"reaction-remove", state.headSHA(), state.targetSHA(), "eyes"}, &bytes.Buffer{}); err != nil {
+		if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "in-flight", "remove"}, &bytes.Buffer{}); err != nil {
 			t.Fatalf("reaction removal attempt %d: %v", attempt+1, err)
 		}
 	}
@@ -1338,7 +1529,7 @@ func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
 			} else if outcome["outcome"] != "discarded" || outcome["review"] != nil {
 				t.Fatalf("the none destination generated a fallback: %#v", outcome)
 			}
-			for _, args := range [][]string{{"reaction", head, target, "+1"}, {"status", head, target, "clean"}} {
+			for _, args := range [][]string{{"marker", head, target, "clean", "add"}, {"status", head, target, "clean"}} {
 				if err := ForgeCommand(t.Context(), args, &bytes.Buffer{}); err != nil {
 					t.Fatal(err)
 				}
@@ -1670,7 +1861,12 @@ func configureForgeCommandFixture(t *testing.T, state *forgejoFixtureState) {
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
 	t.Setenv("MINOS_PR", "1")
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 }
+
+// defaultMarkersJSON is MINOS_MARKERS as SpawnRun exports the shipped
+// defaults.
+const defaultMarkersJSON = `{"in-flight":{"reaction":"eyes"},"clean":{"reaction":"+1"}}`
 
 func adjudicatedFinding(id, severity, title string, line int, explanation string) map[string]any {
 	return map[string]any{
@@ -2102,6 +2298,9 @@ type forgejoFixtureState struct {
 	reactionWrites           int
 	reactionDeleteWrites     int
 	labelDeleteWrites        int
+	labelWrites              int
+	repositoryLabels         []map[string]any
+	organisationLabelPages   [][]map[string]any
 	mergeWrites              int
 	branchDeleteWrites       int
 	sourceBranchExists       bool
@@ -2202,6 +2401,7 @@ func (s *forgejoFixtureState) service(t *testing.T) (ServiceConfig, RepoConfig, 
 	}
 	repo := RepoConfig{Forge: "forgejo", Owner: "minos-e2e-owner", Repo: "subject"}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+	repo.RepositoryKnobs = resolveRepositoryKnobs(RepositoryKnobs{}, RepositoryKnobs{}, func(...string) bool { return false })
 	facts := Facts{
 		Forge: "forgejo", Owner: repo.Owner, Repo: repo.Repo,
 		PR: pullRequestNumber, Occasion: "pr-opened",
@@ -2958,24 +3158,110 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		s.reactionDeleteWrites++
 		s.writeSequence = append(s.writeSequence, "reaction-remove:"+payload.Content)
 		writeFixtureJSON(s.t, w, map[string]any{})
+	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/labels":
+		// Forgejo pages repository labels; the fixture serves them all on
+		// the first page and an empty page after.
+		if page := r.URL.Query().Get("page"); page != "" && page != "1" {
+			writeFixtureJSON(s.t, w, []map[string]any{})
+			return
+		}
+		writeFixtureJSON(s.t, w, s.repositoryLabels)
+	case r.Method == http.MethodGet && path == "/api/v1/orgs/minos-e2e-owner/labels":
+		// Unless a test makes it an organisation, the fixture owner is a
+		// user, which Forgejo answers as no organisation.
+		if s.organisationLabelPages == nil {
+			http.Error(w, `{"message":"GetOrgByName"}`, http.StatusNotFound)
+			return
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page < 1 || page > len(s.organisationLabelPages) {
+			writeFixtureJSON(s.t, w, []map[string]any{})
+			return
+		}
+		writeFixtureJSON(s.t, w, s.organisationLabelPages[page-1])
 	case r.Method == http.MethodGet && path == issuePath+"/labels":
-		writeFixtureJSON(s.t, w, s.pullRequest["labels"])
-	case r.Method == http.MethodDelete && strings.HasPrefix(path, issuePath+"/labels/"):
-		name := strings.TrimPrefix(path, issuePath+"/labels/")
-		labels, _ := s.pullRequest["labels"].([]any)
-		kept := make([]any, 0, len(labels))
-		for _, raw := range labels {
-			label := raw.(map[string]any)
-			if label["name"] != name {
-				kept = append(kept, raw)
+		writeFixtureJSON(s.t, w, s.pullRequestLabels())
+	case r.Method == http.MethodPost && path == issuePath+"/labels":
+		var payload struct {
+			Labels []int64 `json:"labels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		labels := s.pullRequestLabels()
+		for _, id := range payload.Labels {
+			for _, defined := range slices.Concat(append([][]map[string]any{s.repositoryLabels}, s.organisationLabelPages...)...) {
+				if fixtureLabelID(defined) == id && !slices.ContainsFunc(labels, func(label map[string]any) bool { return fixtureLabelID(label) == id }) {
+					labels = append(labels, defined)
+					s.writeSequence = append(s.writeSequence, "label-add:"+fmt.Sprint(defined["name"]))
+				}
 			}
 		}
-		s.pullRequest["labels"] = kept
+		s.setPullRequestLabels(labels)
+		s.labelWrites++
+		writeFixtureJSON(s.t, w, labels)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, issuePath+"/labels/"):
+		id, err := strconv.ParseInt(strings.TrimPrefix(path, issuePath+"/labels/"), 10, 64)
+		if err != nil {
+			http.Error(w, "label id must be numeric", http.StatusUnprocessableEntity)
+			return
+		}
+		kept := make([]map[string]any, 0)
+		for _, label := range s.pullRequestLabels() {
+			if fixtureLabelID(label) == id {
+				s.writeSequence = append(s.writeSequence, "label-remove:"+fmt.Sprint(label["name"]))
+				continue
+			}
+			kept = append(kept, label)
+		}
+		s.setPullRequestLabels(kept)
 		s.labelDeleteWrites++
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, fmt.Sprintf("unexpected fixture request %s %s", r.Method, path), http.StatusNotFound)
 	}
+}
+
+// pullRequestLabels reads the labels the pull request carries, in the shape
+// both the pull request and the issue labels endpoint return. The caller
+// holds the fixture lock.
+func (s *forgejoFixtureState) pullRequestLabels() []map[string]any {
+	raw, _ := json.Marshal(s.pullRequest["labels"])
+	var labels []map[string]any
+	_ = json.Unmarshal(raw, &labels)
+	if labels == nil {
+		labels = []map[string]any{}
+	}
+	return labels
+}
+
+func (s *forgejoFixtureState) setPullRequestLabels(labels []map[string]any) {
+	stored := make([]any, 0, len(labels))
+	for _, label := range labels {
+		stored = append(stored, label)
+	}
+	s.pullRequest["labels"] = stored
+}
+
+// pullRequestLabelNames lists the carried labels by name for assertions.
+func (s *forgejoFixtureState) pullRequestLabelNames() []string {
+	names := []string{}
+	for _, label := range s.pullRequestLabels() {
+		names = append(names, fmt.Sprint(label["name"]))
+	}
+	return names
+}
+
+func fixtureLabelID(label map[string]any) int64 {
+	switch id := label["id"].(type) {
+	case float64:
+		return int64(id)
+	case int64:
+		return id
+	case int:
+		return int64(id)
+	}
+	return -1
 }
 
 func writeFixtureJSON(t *testing.T, w http.ResponseWriter, value any) {

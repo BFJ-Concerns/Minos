@@ -20,7 +20,7 @@ own tree.
 
 Whenever you stop at a terminal outcome that is neither a clean, converged
 pass nor a planned continuation, append one line to `$MINOS_FAILURE_LOG`
-before you stop — and before any cleanup or reaction removal. This covers
+before you stop — and before any cleanup or marker removal. This covers
 **every failed** non-clean exit you make, not only the ones that set a
 status: a stop that sets `incomplete` or `attention`, and equally a head
 move that ends the run, an unparseable workflow result, or any other
@@ -69,8 +69,8 @@ At a pressure boundary, take a fresh `"$MINOS_BIN" forge snapshot`; use its
 `head_sha` and `target_sha` for every remaining action. If the fresh head
 differs from the head this run was reviewing, the run is superseded — take
 the head-movement ending below instead of handing off. Otherwise run
-`"$MINOS_BIN" forge status FRESH_HEAD FRESH_TARGET continuation`. Keep 👀
-in place: the successor claims idempotently, and the reaction remains true
+`"$MINOS_BIN" forge status FRESH_HEAD FRESH_TARGET continuation`. Keep the
+in-flight marker in place: the successor claims idempotently, and the marker remains true
 across the handoff. There is no numerical continuation ceiling.
 
 Record one progress observation from durable facts only. `stage` is the
@@ -84,7 +84,7 @@ files or process state. Copy `$MINOS_PREDECESSOR_PROGRESS` as
 legacy progress therefore means the successor cannot compare and is allowed
 to start. The successor admission compares this predecessor/current pair:
 the same stage with the same head and latest review ends the chain as
-`attention`, records the cause, removes 👀 and does not spawn; a changed
+`attention`, records the cause, removes the in-flight marker and does not spawn; a changed
 publication or a different stage may continue.
 
 The handoff is `$MINOS_HANDOFF`. It must be written before the terminal
@@ -124,8 +124,8 @@ Minos authors no commits, so every head movement is the author's: the head
 this run claimed no longer exists as the thing to review, and runs are
 cheap enough to restart. Whenever a snapshot shows a head other than the
 one this run is reviewing, end the run for a fresh successor at the new
-head: append the observation to `$MINOS_FAILURE_LOG`, remove 👀 with
-`"$MINOS_BIN" forge reaction-remove FRESH_HEAD FRESH_TARGET eyes`, write
+head: append the observation to `$MINOS_FAILURE_LOG`, remove the in-flight marker with
+`"$MINOS_BIN" forge marker FRESH_HEAD FRESH_TARGET in-flight remove`, write
 the non-clean terminal marker, and stop without publishing a review or
 setting a status — the pull request stays eligible, and the sweep claims
 the moved head fresh. Movement of the *target* is different: carry on
@@ -157,7 +157,11 @@ write, matching the target rule above.)
    read, with the reason; carry each one into the run report. Then run
    `"$MINOS_BIN" forge snapshot` and claim the pull request with
    `"$MINOS_BIN" forge claim` (it requests review from the Minos account and adds the
-   👀 reaction; it is safe to repeat). A snapshot target that differs from
+   in-flight marker; it is safe to repeat). Markers — in-flight, clean
+   and attention — take the form the repository configured, a reaction or
+   a label; you name a marker by its role and `forge marker` writes the
+   configured form, answering an unconfigured attention marker as applied
+   with nothing written. A snapshot target that differs from
    the one setup pinned is target movement: carry on. A snapshot head that
    differs from `$MINOS_HEAD_SHA` takes the run-wide head-movement ending,
    with nothing yet invested.
@@ -350,7 +354,7 @@ write, matching the target rule above.)
    unparseable result — continues below exactly as though the gate had not
    run. The gate is an optimisation, never a blocker: falling through to
    the full review is a planned continuation, not a failed exit, so it
-   sets no status, removes no reaction, and writes no failure-log line.
+   sets no status, removes no marker, and writes no failure-log line.
 
    Build the main review input from disk and write it to a file:
 
@@ -410,7 +414,7 @@ write, matching the target rule above.)
    result, incomplete leg, or missing or invalid verifier result yields
    `incomplete` or `infrastructure-failure`. In either case, publish no
    review, set `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove
-   the 👀 with `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`,
+   the in-flight marker with `"$MINOS_BIN" forge marker HEAD TARGET in-flight remove`,
    write the non-clean terminal marker, and stop.
 4. Once the main review's verdict is complete, run the repository-brief
    stage. When `review-result.json` is the engagement gate's
@@ -452,8 +456,8 @@ write, matching the target rule above.)
 
    A `not-run` concern, missing result, incomplete leg, or missing or
    invalid verifier result makes this stage incomplete: publish no review,
-   set `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the 👀
-   with `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the
+   set `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the in-flight
+   marker with `"$MINOS_BIN" forge marker HEAD TARGET in-flight remove`, write the
    non-clean terminal marker, and stop.
 5. Classify the completed review. For each complete verdict the run
    holds — the main review's, and the brief stage's where it ran — read
@@ -564,7 +568,7 @@ write, matching the target rule above.)
    Blocking and advisory comments are labelled separately. The same defect
    raised by both stages at one site is merged once, naming the brief that
    also raised it. A clean plan has no posts: publish no approval review,
-   summary comment, or finding comment; step 7 supplies the 👍 and status.
+   summary comment, or finding comment; step 7 supplies the clean marker and status.
    The guarded command anchors what the diff geometry allows and folds
    the rest into the review body — a confirmed finding is
    never dropped or moved to a line it does not concern, and placement
@@ -577,9 +581,9 @@ write, matching the target rule above.)
    decision input.
 
    A gating finding that reached no durable surface is not a
-   presentation problem — the review did not happen, and no 👍 or
+   presentation problem — the review did not happen, and no clean marker or
    approval may follow: treat a rejected or uncertain findings-review
-   write as the run's failure, set `incomplete`, remove 👀, write the
+   write as the run's failure, set `incomplete`, remove the in-flight marker, write the
    non-clean terminal marker, and stop.
 
    Deliver the plan's `triage.entries` to the repository's configured
@@ -613,18 +617,21 @@ write, matching the target rule above.)
 7. End at the earned terminal outcome.
 
    **Clean:** no review is posted; set
-   `"$MINOS_BIN" forge status HEAD TARGET clean`, then add the 👍 with
-   `"$MINOS_BIN" forge reaction HEAD TARGET +1`, and remove 👀 with
-   `"$MINOS_BIN" forge reaction-remove HEAD TARGET eyes`, write the clean
+   `"$MINOS_BIN" forge status HEAD TARGET clean`, then add the clean marker with
+   `"$MINOS_BIN" forge marker HEAD TARGET clean add`, and remove the
+   in-flight marker with
+   `"$MINOS_BIN" forge marker HEAD TARGET in-flight remove`, write the clean
    terminal marker, and stop.
 
    **Request-changes:** the blocking review is posted; set
-   `"$MINOS_BIN" forge status HEAD TARGET attention`, remove 👀, write
+   `"$MINOS_BIN" forge status HEAD TARGET attention`, add the attention
+   marker with `"$MINOS_BIN" forge marker HEAD TARGET attention add`,
+   remove the in-flight marker, write
    the non-clean terminal marker, and stop.
 
    What happens next belongs to the author: they fix, re-push, and the
    moved head is simply a new eligible state the sweep claims fresh. Every
-   terminal outcome the run itself reaches ends 👀-absent; a crash alone
+   terminal outcome the run itself reaches ends with the in-flight marker absent; a crash alone
    leaves it for the next idempotent claim.
 
 Use your judgement. Retry an ordinary transient failure when that is
