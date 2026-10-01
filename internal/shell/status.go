@@ -44,12 +44,13 @@ const (
 )
 
 type statusDocument struct {
-	Kind          string                 `json:"kind"`
-	GeneratedAt   string                 `json:"generated_at"`
-	MaxConcurrent int                    `json:"max_concurrent"`
-	Repos         []statusRepo           `json:"repos"`
-	Runs          []statusRun            `json:"runs"`
-	Sweep         *sweepDeferralDocument `json:"sweep,omitempty"`
+	Kind          string                     `json:"kind"`
+	GeneratedAt   string                     `json:"generated_at"`
+	MaxConcurrent int                        `json:"max_concurrent"`
+	Repos         []statusRepo               `json:"repos"`
+	Runs          []statusRun                `json:"runs"`
+	Sweep         *sweepDeferralDocument     `json:"sweep,omitempty"`
+	Receiver      *receiverHeartbeatDocument `json:"receiver,omitempty"`
 }
 
 const sweepDeferralDocumentKind = "minos-sweep-deferrals-v1"
@@ -58,17 +59,36 @@ const sweepDeferralDocumentKind = "minos-sweep-deferrals-v1"
 // CompletedAt is deliberately written by the sweep, rather than inferred by
 // the request that happens to read it.
 type sweepDeferralDocument struct {
-	Kind        string          `json:"kind"`
-	CompletedAt string          `json:"completed_at"`
-	Deferrals   []sweepDeferral `json:"deferrals"`
+	Kind                string             `json:"kind"`
+	CompletedAt         string             `json:"completed_at"`
+	Deferrals           []sweepDeferral    `json:"deferrals"`
+	Partial             bool               `json:"partial"`
+	SkippedRepositories map[string]string  `json:"skipped_repositories,omitempty"`
+	Suppressed          []sweepDecisionRow `json:"suppressed,omitempty"`
+	Terminal            []sweepDecisionRow `json:"terminal,omitempty"`
+	Readied             []sweepDecisionRow `json:"readied,omitempty"`
 }
 
 type sweepDeferral struct {
-	Forge  string `json:"forge"`
-	Owner  string `json:"owner"`
-	Repo   string `json:"repo"`
-	PR     string `json:"pr"`
-	Reason string `json:"reason"`
+	Forge   string   `json:"forge"`
+	Owner   string   `json:"owner"`
+	Repo    string   `json:"repo"`
+	PR      string   `json:"pr"`
+	Reason  string   `json:"reason"`
+	Reasons []string `json:"reasons,omitempty"`
+}
+
+// sweepDecisionRow carries the reconcile result, never a decision made by the reader.
+type sweepDecisionRow struct {
+	Forge        string            `json:"forge"`
+	Owner        string            `json:"owner"`
+	Repo         string            `json:"repo"`
+	PR           string            `json:"pr"`
+	Decision     ReconcileDecision `json:"decision,omitempty"`
+	BlockingUnit string            `json:"blocking_unit,omitempty"`
+	Detail       string            `json:"detail,omitempty"`
+	Outcome      string            `json:"outcome,omitempty"`
+	Cause        string            `json:"cause,omitempty"`
 }
 
 type statusRepo struct {
@@ -216,6 +236,7 @@ func statusSnapshot(ctx context.Context, cfg ServiceConfig) (statusDocument, err
 		Repos:         configuredStatusRepos(cfg),
 		Runs:          make([]statusRun, 0, len(units)),
 		Sweep:         readSweepDeferrals(cfg),
+		Receiver:      readReceiverHeartbeat(cfg),
 	}
 	for _, unitName := range units {
 		document.Runs = append(document.Runs, describeRun(ctx, cfg, unitName))

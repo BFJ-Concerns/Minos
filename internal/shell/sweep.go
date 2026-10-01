@@ -90,7 +90,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 		log.Printf("inspect active runs for candidate ordering: %v", err)
 	}
 	candidates = orderSweepCandidates(candidates, activeUnits)
-	deferrals := []sweepDeferral{}
+	document := sweepDeferralDocument{Deferrals: []sweepDeferral{}, Partial: len(skipped) > 0, SkippedRepositories: skipped}
 	for _, candidate := range candidates {
 		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
 		if err != nil {
@@ -98,10 +98,24 @@ func SweepCommand(ctx context.Context, args []string) error {
 			continue
 		}
 		if result.DeferralReason != "" {
-			deferrals = append(deferrals, sweepDeferral{
+			document.Deferrals = append(document.Deferrals, sweepDeferral{
 				Forge: candidate.facts.Forge, Owner: candidate.facts.Owner, Repo: candidate.facts.Repo,
-				PR: candidate.facts.PR, Reason: result.DeferralReason,
+				PR: candidate.facts.PR, Reason: result.DeferralReason, Reasons: result.DeferralReasons,
 			})
+		}
+		row := sweepDecisionRow{Forge: candidate.facts.Forge, Owner: candidate.facts.Owner, Repo: candidate.facts.Repo, PR: candidate.facts.PR, Decision: result.Decision}
+		if result.TerminalOutcome != "" {
+			row.Outcome = result.TerminalOutcome
+			document.Terminal = append(document.Terminal, row)
+		}
+		switch result.Decision {
+		case SpawnSuppressed:
+			row.BlockingUnit, row.Detail = result.BlockingUnit, result.Detail
+			document.Suppressed = append(document.Suppressed, row)
+		case SpawnStarted, SpawnContinued:
+			// Current forge eligibility is observable; an earlier deferral is not.
+			row.Cause = "current forge head is eligible"
+			document.Readied = append(document.Readied, row)
 		}
 		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
 			log.Print(message)
@@ -114,7 +128,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if attempted > 0 && unreadable == attempted {
 		return fmt.Errorf("every configured repo (%d) was unreadable this pass", attempted)
 	}
-	if err := publishSweepDeferrals(cfg, deferrals); err != nil {
+	if err := publishSweepDocument(cfg, document); err != nil {
 		log.Printf("publish sweep deferrals: %v", err)
 	}
 	return nil
@@ -122,15 +136,11 @@ func SweepCommand(ctx context.Context, args []string) error {
 
 var renameSweepDeferrals = os.Rename
 
-// publishSweepDeferrals replaces the previous completed pass as one document.
-// A failed publication leaves the previous whole record in place; it does not
-// change the completed sweep's outcome.
-func publishSweepDeferrals(cfg ServiceConfig, deferrals []sweepDeferral) error {
-	document := sweepDeferralDocument{
-		Kind:        sweepDeferralDocumentKind,
-		CompletedAt: time.Now().UTC().Format(time.RFC3339),
-		Deferrals:   deferrals,
-	}
+// publishSweepDocument replaces the previous pass as one complete document.
+// A failed publication preserves the previous record and never changes admission.
+func publishSweepDocument(cfg ServiceConfig, document sweepDeferralDocument) error {
+	document.Kind = sweepDeferralDocumentKind
+	document.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	content, err := json.Marshal(document)
 	if err != nil {
 		return fmt.Errorf("encode sweep deferrals: %w", err)
