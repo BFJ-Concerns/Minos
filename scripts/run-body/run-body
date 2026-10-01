@@ -60,6 +60,51 @@ lead_stop_claude() {
   fi
 }
 
+# Codex exec owns one turn. Its output goes straight to files, so a held
+# stdout pipe cannot stall supervision. The launch wrapper records the real
+# exit status because lead_state runs in a command-substitution subshell,
+# which cannot wait on the parent's child.
+lead_launch_codex() {
+  codex_exit_file="$MINOS_RUN_DIR/codex-lead.exit"
+  rm -f "$codex_exit_file" "$codex_exit_file.tmp"
+  (
+    codex_child=""
+    trap 'if [ -n "$codex_child" ]; then kill "$codex_child" 2>/dev/null || true; wait "$codex_child" 2>/dev/null || true; fi; exit 143' TERM INT
+    "$MINOS_CODEX" exec \
+      --model "$MINOS_LEAD_MODEL" \
+      --dangerously-bypass-approvals-and-sandbox \
+      --cd "$MINOS_RUN_DIR" \
+      --json \
+      "$instruction" >"$MINOS_RUN_DIR/codex-lead.jsonl" 2>"$MINOS_RUN_DIR/codex-lead.stderr" &
+    codex_child=$!
+    if wait "$codex_child"; then codex_status=0; else codex_status=$?; fi
+    printf '%s\n' "$codex_status" >"$codex_exit_file.tmp"
+    mv "$codex_exit_file.tmp" "$codex_exit_file"
+  ) </dev/null >/dev/null 2>&1 &
+  session_id=$!
+}
+
+lead_state_codex() {
+  if [ -f "$codex_exit_file" ]; then
+    codex_status="$(cat "$codex_exit_file")"
+    case "$codex_status" in
+      0) printf 'stopped\n' ;;
+      *) printf 'failed\n' ;;
+    esac
+  elif kill -0 "$session_id" 2>/dev/null; then
+    printf 'running\n'
+  else
+    printf 'failed\n'
+  fi
+}
+
+lead_stop_codex() {
+  if [ -n "$session_id" ]; then
+    kill "$session_id" 2>/dev/null || true
+    wait "$session_id" 2>/dev/null || true
+  fi
+}
+
 lead_launch() { "lead_launch_$MINOS_LEAD_ENGINE"; }
 lead_state() { "lead_state_$MINOS_LEAD_ENGINE"; }
 # Runs from the exit trap too, so it must be safe before the engine is
@@ -193,8 +238,14 @@ case "$MINOS_LEAD_ENGINE" in
     lead_seed_variable="MINOS_CLAUDE_CONFIG_SEED"
     lead_default_model="claude-opus-5-5"
     ;;
+  codex)
+    failure_cause="MINOS_CODEX is required"
+    : "${MINOS_CODEX:?MINOS_CODEX is required}"
+    lead_seed_variable="MINOS_CODEX_CONFIG_SEED"
+    lead_default_model="gpt-6-sol"
+    ;;
   *)
-    failure_cause="MINOS_LEAD_ENGINE must be claude; the $MINOS_LEAD_ENGINE lead is not available in this build"
+    failure_cause="MINOS_LEAD_ENGINE must be claude or codex; the $MINOS_LEAD_ENGINE lead is not available in this build"
     echo "run-body: $failure_cause" >&2
     exit 1
     ;;
