@@ -380,6 +380,43 @@ func TestSetupWorkspaceFetchesForkTargetObjectWithoutChangingWorkspaceState(t *t
 	}
 }
 
+func TestSetupWorkspaceExplainsRefusedTargetFetch(t *testing.T) {
+	server, head, target, transportEnv := refusedTargetForge(t)
+	runDir := t.TempDir()
+	cmd := setupWorkspaceCommandWithTarget(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head, target)
+	for key, value := range transportEnv {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	output, err := cmd.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+		t.Fatalf("refused fetch exit = %v, want 1; output = %s", err, output)
+	}
+	for _, want := range []string{"unadvertised object " + target, "target fetch refused: the forge would not serve target sha " + target, "likely because the base branch moved", "the next sweep re-derives"} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("refused target fetch output lacks %q: %s", want, output)
+		}
+	}
+}
+
+// The SSH stand-in replaces only sshd: both client and upload-pack are real
+// Git. Protocol v0 exposes the server's refusal to accept unadvertised wants;
+// the admitted target remains in the server's object store after main moves.
+func refusedTargetForge(t *testing.T) (*httptest.Server, string, string, map[string]string) {
+	t.Helper()
+	targetRepository, target := createGitRepository(t, "AGENTS.md", "target guidance\n")
+	if err := os.WriteFile(filepath.Join(targetRepository, "AGENTS.md"), []byte("moved guidance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, targetRepository, "commit", "-am", "move target")
+	headRepository, head := createGitRepository(t, "AGENTS.md", "head guidance\n")
+	ssh := filepath.Join(t.TempDir(), "ssh")
+	writeScript(t, ssh, "#!/usr/bin/env sh\nexec git -c uploadpack.allowAnySHA1InWant=false -c uploadpack.allowReachableSHA1InWant=false -c uploadpack.allowTipSHA1InWant=false upload-pack '"+targetRepository+"'\n")
+	return newSetupForgeForTarget(t, head, headRepository, target, "ssh://fixture/target", ""), head, target, map[string]string{
+		"GIT_SSH_COMMAND": ssh, "GIT_SSH_VARIANT": "ssh",
+		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.version", "GIT_CONFIG_VALUE_0": "0",
+	}
+}
+
 type guidanceSourceRecord struct {
 	Repository string `json:"repository"`
 	Path       string `json:"path"`
