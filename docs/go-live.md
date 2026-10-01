@@ -47,8 +47,8 @@ so no repository toolchains are needed.
      by default for Claude, `gpt-6-sol` for Codex; a Codex lead needs
      `MINOS_CODEX` set to the installed Codex executable;
    - set `MINOS_CLAUDE_CONFIG_SEED` to a directory containing known-good,
-     non-interactive Claude configuration — the lead's engine, so it is
-     required;
+     non-interactive Claude configuration — required when the lead engine is
+     `claude`;
    - set `MINOS_CODEX_CONFIG_SEED` to a directory containing known-good,
      non-interactive Codex ChatGPT authentication state, or leave it unset
      to run without the Codex engine: an engine is provisioned exactly
@@ -188,7 +188,7 @@ Each run launches the lead on the configured engine and model. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has
 begun. A lead blocked before its first run-tree change is stopped and recorded
 as a supervision failure. The supervisor otherwise stops the session only
-after Claude reports `failed` or `stopped`, the lead writes a terminal marker
+after the lead reports `failed` or `stopped`, the lead writes a terminal marker
 (`clean`, `non-clean`, or `continuation`), or the run tree outside its private
 home has not changed for the silence timeout. The silence backstop records a supervision failure instead of
 treating that stop as success. The lead invokes review and repository-brief
@@ -197,7 +197,7 @@ the selected script with `/opt/minos/runtime/ensemble.mjs` and asks the sibling
 run-record adapter to confirm every required leg ran to completion and every
 finding carries a verdict. The foreground run body waits for the exact
 background session and stops it at one of those terminal conditions. The
-transient systemd unit bounds a wedged run at 12 hours.
+transient systemd unit bounds a wedged run at `runs.duration-ceiling`.
 
 A run that fails before the lead launches — workspace setup, configuration
 loading, lifecycle instruction — writes an incomplete status to the forge

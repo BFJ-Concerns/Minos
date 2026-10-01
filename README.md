@@ -44,8 +44,9 @@ adjudication are exercised by `node --test workflows/*_test.mjs`.
 
 A review that requests changes includes all confirmed findings, with Medium
 and Low findings labelled advisory so the author can address them in the same
-round. A clean result posts no review or comments: Minos adds 👍 and a clean
-status, and delivers the confirmed advisory findings to the repository's
+round. A clean result posts no review or comments: Minos adds the configured
+clean marker and a clean status, and delivers the confirmed advisory findings
+to the repository's
 configured filing destination — a file in a repository's default branch, an
 issue filed on a named repository, a comment on the pull request, or nowhere.
 Unverified observations stay in the internal run record. If delivery is
