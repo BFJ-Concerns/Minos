@@ -39,10 +39,9 @@ function workflowInput(files) {
     target: "target-partition-0728",
     head: "head-partition-0728",
     occasion: "release",
-    workspace: "/workspace",
     hasReviewDirectory: true,
     changedPaths: files,
-    trackedFiles: files.map((path) => ({ path, bytes: 100 })),
+    trackedFiles: files.map((path) => ({ path })),
     briefs: [{
       path: briefPath,
       readPath: `/workspace/${briefPath}`,

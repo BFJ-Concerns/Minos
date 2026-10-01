@@ -122,7 +122,7 @@ function reviewedChangeSection(target, head, pullRequest) {
 }
 
 function rolePrompt(roleBriefs, guidance, pullRequest, path, assignment) {
-  const brief = roleBriefs.get(path) || { readPath: path, content: "" };
+  const brief = roleBriefs.get(path);
   return (
     `Read and follow the Markdown role brief at ${brief.readPath}. ` +
     `The deterministic input enumerator supplied the same content below so this workflow can bind the dispatched prompt to the shipped brief without reading files itself.\n\n` +
@@ -383,7 +383,6 @@ function addLeg(label, role, pinnedModel, findingIds = null) {
   const leg = { label, role, pinnedModel };
   if (findingIds) leg.findingIds = findingIds;
   legs.push(leg);
-  return leg;
 }
 
 function incompleteExploration(reason) {
@@ -513,7 +512,6 @@ specialistUnits.forEach((unit, unitIndex) => {
       id: `${unit.label}:${findingIndex + 1}`,
       unit,
       finding,
-      findingIndex,
     });
   });
 });
