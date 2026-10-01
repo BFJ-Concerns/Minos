@@ -760,6 +760,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Service.CommitAuthorName = "Reviewer Bot"
 	cfg.Service.CommitAuthorEmail = "reviewer@example.invalid"
+	cfg.Service.StatusContext = "Review Bot"
 	cfg.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
 	cfg.Ensemble.ConcurrencyClaude = 10
 	cfg.Ensemble.ConcurrencyCodex = 6
@@ -808,6 +809,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_REVIEW_THRESHOLD=Medium",
 		"MINOS_COMMIT_AUTHOR_NAME=Reviewer Bot",
 		"MINOS_COMMIT_AUTHOR_EMAIL=reviewer@example.invalid",
+		"MINOS_STATUS_CONTEXT=Review Bot",
 		`MINOS_GUIDANCE_SOURCES=[{"repository":"owner/repo-plans","path":"README.md"},{"path":"docs/intent.md"}]`,
 		`MINOS_FILING_DESTINATION={"kind":"file","repository":"owner/repo-plans","path":"ISSUES.md"}`,
 		`MINOS_ROUTING={"verifier":{"engine":"codex","model":"gpt-6-astra","effort":"low"}}`,

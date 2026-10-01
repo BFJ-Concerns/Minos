@@ -37,7 +37,7 @@ func currentContinuationPriority(ctx context.Context, cfg ServiceConfig, facts F
 	if err != nil {
 		return 0, err
 	}
-	return continuationPriority(forge.Snapshot{Statuses: statuses}, cfg.Service.BotLogin), nil
+	return continuationPriority(forge.Snapshot{Statuses: statuses}, cfg.Service.BotLogin, cfg.Service.StatusContext), nil
 }
 
 func alreadyReviewed(snapshot forge.Snapshot, botLogin string) bool {
@@ -61,12 +61,12 @@ func currentReview(snapshot forge.Snapshot, botLogin string) (forge.Review, bool
 	return latest, found
 }
 
-func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, bool) {
+func latestOwnedStatus(snapshot forge.Snapshot, botLogin, statusContext string) (forge.Status, bool) {
 	var latest forge.Status
 	found := false
 	for _, status := range snapshot.Statuses {
 		if status.Provider == forge.ForgejoProvider &&
-			status.Context == forge.OwnedStatusContext &&
+			status.Context == statusContext &&
 			status.Creator == botLogin &&
 			(!found || status.ID > latest.ID) {
 			latest = status
@@ -76,8 +76,8 @@ func latestOwnedStatus(snapshot forge.Snapshot, botLogin string) (forge.Status, 
 	return latest, found
 }
 
-func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
-	latest, found := latestOwnedStatus(snapshot, botLogin)
+func continuationPriority(snapshot forge.Snapshot, botLogin, statusContext string) int {
+	latest, found := latestOwnedStatus(snapshot, botLogin, statusContext)
 	if found && (latest.Description == product.Incomplete().Description() ||
 		latest.Description == product.Working().Description() ||
 		latest.Description == product.Continuation().Description()) {
@@ -92,8 +92,8 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 // path. Head movement leaves the status on the old commit, spending the
 // marker; an incomplete status deliberately leaves the pull request eligible
 // for a fresh attempt.
-func completedRunStatus(snapshot forge.Snapshot, botLogin string) bool {
-	latest, found := latestOwnedStatus(snapshot, botLogin)
+func completedRunStatus(snapshot forge.Snapshot, botLogin, statusContext string) bool {
+	latest, found := latestOwnedStatus(snapshot, botLogin, statusContext)
 	if !found {
 		return false
 	}
@@ -134,7 +134,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
-	if staleApproval(snapshot, cfg.Service.BotLogin) {
+	if staleApproval(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext) {
 		guard := forge.Guard{
 			Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
 			PullRequest: snapshot.PullRequest,
@@ -174,8 +174,8 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 // staleApproval reports whether the current head lacks a Minos clean result.
 // The PR-wide reaction has no head identity of its own; a current clean
 // status or historical-format approval review is its warrant.
-func staleApproval(snapshot forge.Snapshot, botLogin string) bool {
-	if status, found := latestOwnedStatus(snapshot, botLogin); found {
+func staleApproval(snapshot forge.Snapshot, botLogin, statusContext string) bool {
+	if status, found := latestOwnedStatus(snapshot, botLogin, statusContext); found {
 		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal && state == product.Clean() {
 			return false
 		}
@@ -209,7 +209,7 @@ func assessPullRequestAdmission(cfg ServiceConfig, repo RepoConfig, snapshot for
 			return pullRequestAdmissionEligibility{completedRun: true}
 		}
 	}
-	if completedRunStatus(snapshot, cfg.Service.BotLogin) {
+	if completedRunStatus(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext) {
 		return pullRequestAdmissionEligibility{completedRun: true}
 	}
 	if reason, deferred := dependencyDeferral(snapshot); deferred {

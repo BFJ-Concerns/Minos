@@ -5,6 +5,10 @@ bot-login = "REPLACE_WITH_FORGEJO_BOT_LOGIN"
 # minos.invalid.
 # commit-author-name = "Minos"
 # commit-author-email = "minos@example.org"
+# The context of every commit status Minos writes, and the only context the
+# sweep reads as its completion marker; a status under any other context is
+# not Minos's. Unset, it is Minos.
+# status-context = "Minos"
 
 [listener]
 bind = ":8919"
