@@ -882,11 +882,8 @@ func TestRunBodyRejectsInvalidSilenceTimeout(t *testing.T) {
 	)
 }
 
-// A digit string too large for shell integer arithmetic used to pass
-// validation and then make the backstop comparison error on every poll, which
-// removed the backstop entirely rather than lengthening it — a fat-fingered
-// value in run-body.env would leave a hung run to the systemd limit with no
-// other signal.
+// Silence timeouts must fit shell integer arithmetic and the seven-day bound,
+// so every poll can enforce the silence backstop.
 func TestRunBodyRejectsOutOfRangeSilenceTimeout(t *testing.T) {
 	for _, value := range []string{"99999999999999999999", "604801"} {
 		t.Run(value, func(t *testing.T) {
@@ -907,10 +904,8 @@ func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// Interleaved A/B runs under 12 parallel builds made this interval
-	// load-bearing: the 1s calibration failed 2/8, 5/10, and 2/10 runs at the
-	// write-count assertion, while the otherwise identical 2s calibration
-	// failed 0/8 and 0/10. Keep the measured margin rather than shortening it.
+	// The two-second silence margin allows work writes to remain observable
+	// under parallel build load without triggering the backstop prematurely.
 	output, err := fixture.executeContext(ctx, map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":   "done",
 		"MINOS_TEST_POLL_WORK_WRITES": "12",
@@ -1053,24 +1048,14 @@ func TestVendoredEnsembleResolvesConfiguredConcurrencyFromRunEnvironment(t *test
 }
 
 func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *testing.T) {
-	sourceRoot := t.TempDir()
-	for _, directory := range []string{"scripts", "runtime", "workflows"} {
-		if err := os.MkdirAll(filepath.Join(sourceRoot, directory), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	copyFixtureFile(t, filepath.Join("..", "..", "scripts", "install-review-runtime"), filepath.Join(sourceRoot, "scripts", "install-review-runtime"), 0o755)
-	for _, name := range []string{"ensemble.mjs", "ensemble.mjs.sha256", "ensemble.source-version"} {
-		copyFixtureFile(t, filepath.Join("..", "..", "runtime", name), filepath.Join(sourceRoot, "runtime", name), 0o644)
-	}
-	declareExpectedTools(t, sourceRoot)
+	sourceRoot := installerSourceRoot(t)
 	for _, name := range []string{
 		"adjudicated-review",
 		"brief-dispositions.mjs",
 		"file-triage.mjs",
 		"finding-presentation.mjs",
 		"isolate-from-live-run.mjs",
-		"issue-log-filing.mjs",
+		"filing-destination.mjs",
 		"out-of-scope-observations.mjs",
 		"compose-review-publication.mjs",
 		"review-brief-inputs.mjs",
@@ -1110,7 +1095,7 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 		filepath.Join(destination, "workflows", "file-triage.mjs"),
 		filepath.Join(destination, "workflows", "finding-presentation.mjs"),
 		filepath.Join(destination, "workflows", "isolate-from-live-run.mjs"),
-		filepath.Join(destination, "workflows", "issue-log-filing.mjs"),
+		filepath.Join(destination, "workflows", "filing-destination.mjs"),
 		filepath.Join(destination, "workflows", "out-of-scope-observations.mjs"),
 		filepath.Join(destination, "workflows", "compose-review-publication.mjs"),
 		filepath.Join(destination, "workflows", "review-brief-inputs.mjs"),
@@ -1176,8 +1161,8 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 	if err := os.MkdirAll(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nexit 3\n")
-	installArchiveReceiverSSH(t, bin, t.TempDir())
+	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nprintf 'partial compressed archive\\n'\nexit 3\n")
+	installArchiveReceiverSSH(t, bin, destination)
 	identity := filepath.Join(fixture.root, "archive-identity")
 	knownHosts := filepath.Join(fixture.root, "archive-known-hosts")
 	for _, path := range []string{identity, knownHosts} {

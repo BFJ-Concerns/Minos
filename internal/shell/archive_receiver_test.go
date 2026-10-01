@@ -96,7 +96,7 @@ func TestArchiveReceiverListsSidecarsNewestFirstFromTheCutoff(t *testing.T) {
 	}
 }
 
-func TestArchiveReceiverRefusesEverythingButTheTwoRequests(t *testing.T) {
+func TestArchiveReceiverRefusesUnsupportedRequests(t *testing.T) {
 	destination := t.TempDir()
 	for _, request := range []string{
 		"",

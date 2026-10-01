@@ -139,7 +139,7 @@ func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
 			wantReason: "completed-marker",
 		},
 		{
-			name: "terminal Minos review while restoring its status",
+			name: "terminal Minos review without a status",
 			configure: func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
 				state.setReviews([]map[string]any{{
 					"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
@@ -292,7 +292,7 @@ func TestTerminalPullRequestExpiresHandoffBeforeFollowingResidueSweep(t *testing
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "21", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeSweepTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -324,7 +324,7 @@ func TestOpenPullRequestMissingFromListingKeepsHandoff(t *testing.T) {
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "22", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeSweepTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := expireInactiveRunHandoffs(t.Context(), cfg, []RepoConfig{{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo}}); err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func TestUnconfiguredRepositoryExpiresHandoff(t *testing.T) {
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "removed-repository", PR: "23", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeSweepTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := expireInactiveRunHandoffs(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -347,24 +347,6 @@ func TestUnconfiguredRepositoryExpiresHandoff(t *testing.T) {
 	if _, err := os.Stat(handoff); !os.IsNotExist(err) {
 		t.Fatalf("unconfigured repository handoff still exists: %v", err)
 	}
-}
-
-func writeSweepTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head string) string {
-	t.Helper()
-	path := handoffPath(cfg.Runs.Dir, UnitName(facts))
-	data, err := json.Marshal(runHandoff{
-		Kind:        runHandoffKind,
-		PullRequest: handoffPull{Owner: facts.Owner, Repo: facts.Repo, Number: facts.PR},
-		Head:        head,
-		RunDir:      runDir,
-		StoppedAt:   "test boundary",
-		WrittenAt:   "2026-08-30T21:00:00Z",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeTestFile(t, path, string(data))
-	return path
 }
 
 func TestOrderSweepCandidatesInterleavesReposWithinEachPriorityClass(t *testing.T) {

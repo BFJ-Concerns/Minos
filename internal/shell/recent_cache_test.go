@@ -146,7 +146,7 @@ func readCachedRecentRuns(t *testing.T, cfg ServiceConfig, cache *recentRunsCach
 	}
 	var document recentRunsDocument
 	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
-		t.Fatalf("decode recent runs: %v", err)
+		t.Fatalf("decode recent runs: %v; body = %q", err, response.Body.String())
 	}
 	return document
 }

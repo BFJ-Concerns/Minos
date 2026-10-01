@@ -8,12 +8,9 @@ import (
 	"testing"
 )
 
-// The installer's preflight checks the box's tool versions against the
-// declared set before anything lands: the `?.` jq defect shipped green
-// because the gate ran jq 1.8.2 while the box ran 1.7. A drifted version
-// now stops the install loudly, naming each drifted tool with both
-// versions, with nothing installed past the stop. The declared set is
-// data the installer reads, so the check generalises past any one tool.
+// The installer checks tool versions against the declared set before installing.
+// A mismatch reports each affected tool and both versions, preserving the
+// previous installation.
 
 // stubTool shadows a real tool on PATH with a script that reports the
 // given version line, so the preflight is exercised against controlled

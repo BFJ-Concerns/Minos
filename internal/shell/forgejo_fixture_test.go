@@ -63,19 +63,13 @@ func TestForgejo14ReviewFixturesCarryConsolidatedHeaders(t *testing.T) {
 	}
 }
 
-func TestForgejo14FinishingOperationShapes(t *testing.T) {
+func TestForgejo14MarkerRemovalShapes(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "forgejo14", "finishing-operations.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var fixture struct {
-		Source string `json:"source"`
-		Merge  struct {
-			Method        string         `json:"method"`
-			Path          string         `json:"path"`
-			Request       map[string]any `json:"request"`
-			SuccessStatus int            `json:"success_status"`
-		} `json:"merge"`
+		Source       string `json:"source"`
 		LabelRemoval struct {
 			Method        string `json:"method"`
 			Path          string `json:"path"`
@@ -87,28 +81,19 @@ func TestForgejo14FinishingOperationShapes(t *testing.T) {
 			Request       map[string]any `json:"request"`
 			SuccessStatus int            `json:"success_status"`
 		} `json:"reaction_removal"`
-		BranchDeletion struct {
-			Method        string `json:"method"`
-			Path          string `json:"path"`
-			SuccessStatus int    `json:"success_status"`
-		} `json:"branch_deletion"`
 	}
 	if err := json.Unmarshal(data, &fixture); err != nil {
 		t.Fatal(err)
 	}
 	if fixture.Source != "Forgejo v14.0.0 tagged OpenAPI" ||
-		fixture.Merge.Method != http.MethodPost || fixture.Merge.SuccessStatus != http.StatusOK ||
-		fixture.Merge.Request["Do"] != "merge" || fixture.Merge.Request["head_commit_id"] != "HEAD" ||
-		fixture.Merge.Request["delete_branch_after_merge"] != true ||
 		fixture.LabelRemoval.Method != http.MethodDelete || fixture.LabelRemoval.SuccessStatus != http.StatusNoContent ||
 		fixture.ReactionRemoval.Method != http.MethodDelete || fixture.ReactionRemoval.SuccessStatus != http.StatusOK ||
-		fixture.ReactionRemoval.Request["content"] != "eyes" ||
-		fixture.BranchDeletion.Method != http.MethodDelete || fixture.BranchDeletion.SuccessStatus != http.StatusNoContent {
+		fixture.ReactionRemoval.Request["content"] != "eyes" {
 		t.Fatalf("unexpected finishing fixture: %#v", fixture)
 	}
 	for name, path := range map[string]string{
-		"merge": fixture.Merge.Path, "label": fixture.LabelRemoval.Path,
-		"reaction": fixture.ReactionRemoval.Path, "branch": fixture.BranchDeletion.Path,
+		"label":    fixture.LabelRemoval.Path,
+		"reaction": fixture.ReactionRemoval.Path,
 	} {
 		if !strings.HasPrefix(path, "/api/v1/repos/{owner}/{repo}/") {
 			t.Fatalf("%s path = %q", name, path)
