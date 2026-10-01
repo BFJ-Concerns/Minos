@@ -1638,7 +1638,7 @@ func TestRunBodySetupDeathStatus(t *testing.T) {
 			fixture := newRunBodyFixture(t)
 			calls := filepath.Join(fixture.root, "status-calls")
 			writer := filepath.Join(fixture.root, "minos-recorder")
-			writeScript(t, writer, fmt.Sprintf("#!/usr/bin/env sh\nprintf '%%s\\n' \"$*\" >>%s\nexit %d\n", strconv.Quote(calls), test.writerExit))
+			writeScript(t, writer, fmt.Sprintf("#!/usr/bin/env sh\nfor argument do printf '%%s\\n' \"$argument\"; done >>%s\nexit %d\n", strconv.Quote(calls), test.writerExit))
 			fixture.appendConfig(t, map[string]string{"MINOS_BIN": writer})
 			// Only readability is relevant to this script-level test; parsing and
 			// the actual guarded write are exercised by the fixture-forge journey.
@@ -1694,7 +1694,7 @@ func TestRunBodySetupDeathStatus(t *testing.T) {
 			if readErr != nil {
 				t.Fatalf("setup death recorded no status call: %v", readErr)
 			}
-			want := "forge status head-sha target-sha incomplete Review incomplete: setup failed at " + test.stage + "\n"
+			want := "forge\nstatus\nhead-sha\ntarget-sha\nincomplete\nReview incomplete: setup failed at " + test.stage + "\n"
 			if string(recorded) != want {
 				t.Fatalf("status calls = %q, want %q", recorded, want)
 			}
