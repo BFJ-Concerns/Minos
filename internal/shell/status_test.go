@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -143,7 +144,7 @@ func TestStatusProjectsRecordedSweepDeferralsVerbatim(t *testing.T) {
 		t.Fatalf("deferrals = %#v, want %#v", document.Sweep.Deferrals, want.Deferrals)
 	}
 	for index, deferral := range want.Deferrals {
-		if got := document.Sweep.Deferrals[index]; got != deferral {
+		if got := document.Sweep.Deferrals[index]; !reflect.DeepEqual(got, deferral) {
 			t.Fatalf("deferral %d = %#v, want %#v", index, got, deferral)
 		}
 	}

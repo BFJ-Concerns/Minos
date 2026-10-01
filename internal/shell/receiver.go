@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 )
 
 const maxWebhookBodyBytes int64 = 1 << 20
+
+var serveReceiver = http.Serve
 
 func ReceiveCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("receive", flag.ContinueOnError)
@@ -23,8 +26,16 @@ func ReceiveCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("minos receiver listening on %s", cfg.Listener.Bind)
-	return http.ListenAndServe(cfg.Listener.Bind, receiverRoutes(ctx, cfg))
+	listener, err := net.Listen("tcp", cfg.Listener.Bind)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = listener.Close() }()
+	if err := publishReceiverHeartbeat(cfg, "listening", "", listener.Addr().String()); err != nil {
+		log.Printf("publish receiver heartbeat: %v", err)
+	}
+	log.Printf("minos receiver listening on %s", listener.Addr())
+	return serveReceiver(listener, receiverRoutes(ctx, cfg))
 }
 
 // receiverRoutes mounts the listener's surface. The status projection is
@@ -65,6 +76,10 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 	if !ok {
 		http.Error(w, "unknown forge", http.StatusNotFound)
 		return nil
+	}
+	// Receipt proves receiver activity even when the delivery is subsequently rejected.
+	if err := publishReceiverHeartbeat(cfg, "delivery", forgeName, ""); err != nil {
+		log.Printf("publish receiver heartbeat: %v", err)
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes))
 	if err != nil {
