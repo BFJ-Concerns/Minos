@@ -86,21 +86,6 @@ func continuationPriority(snapshot forge.Snapshot, botLogin string) int {
 	return 1
 }
 
-// A clean or attention Minos status on the current head marks a completed run
-// even when no terminal review exists: some deliberate stops publish no
-// review, so the status is the head's only durable completion marker on that
-// path. Head movement leaves the status on the old commit, spending the
-// marker; an incomplete status deliberately leaves the pull request eligible
-// for a fresh attempt.
-func completedRunStatus(snapshot forge.Snapshot, botLogin string) bool {
-	latest, found := latestOwnedStatus(snapshot, botLogin)
-	if !found {
-		return false
-	}
-	_, completed := product.CompletionMarker(string(latest.State), latest.Description)
-	return completed
-}
-
 type ReconcileDecision string
 
 const (
