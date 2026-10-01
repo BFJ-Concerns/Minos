@@ -39,7 +39,7 @@ issue_presence() {
     [ -z "$found" ] || return 0
     [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || return 1
     # A repeated non-empty page does not establish absence of the marker.
-    [ "$current" != "$previous" ] || return 2
+    ! repeats_previous_page "$current" "$previous" || return 2
     previous="$current"
     page=$((page + 1))
   done
