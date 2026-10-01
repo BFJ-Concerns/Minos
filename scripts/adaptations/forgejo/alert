@@ -16,11 +16,31 @@ if [ -z "$title" ] || [ -z "$body" ]; then
   exit 0
 fi
 
-issues="$(api GET "/api/v1/repos/${owner}/${repo}/issues?state=open&type=issues&limit=50" 2>/dev/null)" || {
-  write_result uncertain "open issues could not be read"
+issues='[]'
+previous=''
+page=1
+while :; do
+  current="$(api GET "/api/v1/repos/${owner}/${repo}/issues?state=open&type=issues&limit=50&page=${page}" 2>/dev/null)" || {
+    write_result uncertain "open issues could not be read"
+    exit 0
+  }
+  count="$(printf '%s' "$current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected issues array") end')" || {
+    write_result uncertain "open issues could not be decoded"
+    exit 0
+  }
+  [ "$count" -gt 0 ] || break
+  ! repeats_previous_page "$current" "$previous" || break
+  issues="$(jq -cn --argjson all "$issues" --argjson page "$current" '$all + $page')" || {
+    write_result uncertain "open issues could not be accumulated"
+    exit 0
+  }
+  previous="$current"
+  page=$((page + 1))
+done
+existing="$(printf '%s' "$issues" | jq -r --arg title "$title" '[.[] | select(.title == $title)] | max_by(.number) | .number // ""')" || {
+  write_result uncertain "open issue titles could not be decoded"
   exit 0
 }
-existing="$(printf '%s' "$issues" | jq -r --arg title "$title" '[.[] | select(.title == $title)] | max_by(.number) | .number // ""')"
 
 if [ -n "$existing" ]; then
   comment_payload="$(jq -nc --arg body "$body" '{body:$body}')"

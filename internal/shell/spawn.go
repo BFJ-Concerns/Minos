@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,17 +163,30 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	}
 	reviewResultCarried := false
 	cleanupSpawnFailure := func() {
+		report := func(action, path string, err error) {
+			if err != nil && !os.IsNotExist(err) {
+				log.Printf("spawn rollback: %s %s: %v", action, path, err)
+			}
+		}
+		restore := func(destination string) {
+			source := filepath.Join(runDir, "carried-review-result.json")
+			// A missing carried verdict is also a failed restoration.
+			if err := os.Rename(source, destination); err != nil {
+				log.Printf("spawn rollback: restore %s to %s: %v", source, destination, err)
+			}
+		}
 		if adopted {
 			if reviewResultCarried && !reviewResultAlreadyCarried {
-				_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), filepath.Join(runDir, "review-result.json"))
+				restore(filepath.Join(runDir, "review-result.json"))
 			}
-			_ = os.Remove(filepath.Join(runDir, runOwnerMarker))
+			path := filepath.Join(runDir, runOwnerMarker)
+			report("remove ownership marker", path, os.Remove(path))
 			return
 		}
 		if reviewResultCarried {
-			_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), reviewResultPath)
+			restore(reviewResultPath)
 		}
-		_ = removeRunDir(runDir)
+		report("remove run directory", runDir, removeRunDir(runDir))
 	}
 	if reviewResultPath != "" {
 		carriedResult := filepath.Join(runDir, "carried-review-result.json")

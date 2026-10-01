@@ -2282,6 +2282,7 @@ type forgejoFixtureState struct {
 	requestedReviewers       []string
 	reviewRequestsUnrecorded bool
 	reactions                []string
+	reactionPageSize         int
 	reviewRequestWrites      int
 	obsoleteAssignmentWrites int
 	reactionWrites           int
@@ -2603,7 +2604,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 				issues = append(issues, issue)
 			}
 		}
-		writeFixtureJSON(s.t, w, issues)
+		writeFixtureArray(s.t, w, issues)
 	case path == "/api/v1/repos/minos-e2e-owner/subject-plans/issues" && r.Method == http.MethodPost:
 		if account == nil {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -2678,7 +2679,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		if dependencies == nil {
 			dependencies = []map[string]any{}
 		}
-		writeFixtureJSON(s.t, w, dependencies)
+		writeFixtureArray(s.t, w, dependencies)
 	case r.Method == http.MethodGet && path != issuePath+"/dependencies" && strings.Contains(path, "/issues/") && strings.HasSuffix(path, "/dependencies"):
 		writeFixtureJSON(s.t, w, []map[string]any{})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/reviews") && s.stackedChildForPath(path) != nil:
@@ -2687,7 +2688,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		if reviews == nil {
 			reviews = []map[string]any{}
 		}
-		writeFixtureJSON(s.t, w, reviews)
+		writeFixtureArray(s.t, w, reviews)
 	case r.Method == http.MethodGet && path == issuePath+"/dependencies":
 		if s.dependencyCode != http.StatusOK {
 			http.Error(w, "dependency fixture failure", s.dependencyCode)
@@ -2702,12 +2703,12 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 				writeFixtureJSON(s.t, w, []map[string]any{})
 				return
 			}
-			writeFixtureJSON(s.t, w, s.dependencyPages[page-1])
+			writeFixtureArray(s.t, w, s.dependencyPages[page-1])
 			return
 		}
-		writeFixtureJSON(s.t, w, s.dependencies)
+		writeFixtureArray(s.t, w, s.dependencies)
 	case r.Method == http.MethodGet && path == issuePath+"/comments":
-		writeFixtureJSON(s.t, w, s.issueComments)
+		writeFixtureArray(s.t, w, s.issueComments)
 	case r.Method == http.MethodPost && path == issuePath+"/comments":
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -2750,7 +2751,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		if !childStatuses && len(s.statusesByCommit) == 0 {
 			statuses = s.statuses
 		}
-		writeFixtureJSON(s.t, w, statuses)
+		writeFixtureArray(s.t, w, statuses)
 		if s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])] == 0 {
 			s.runPriorityBoundaryMutation()
 		}
@@ -2789,7 +2790,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		s.statusPostRequests = append(s.statusPostRequests, statusPostRequest{Head: head, Payload: mapsClone(payload)})
 		writeFixtureJSON(s.t, w, payload)
 	case r.Method == http.MethodGet && path == pullPath+"/reviews":
-		writeFixtureJSON(s.t, w, s.reviews)
+		writeFixtureArray(s.t, w, s.reviews)
 	case r.Method == http.MethodPost && path == pullPath+"/reviews":
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -2838,7 +2839,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid review id", http.StatusBadRequest)
 			return
 		}
-		writeFixtureJSON(s.t, w, s.reviewComments[id])
+		writeFixtureArray(s.t, w, s.reviewComments[id])
 	case r.Method == http.MethodPost && (path == issuePath+"/assignees" || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/assignees")):
 		s.obsoleteAssignmentWrites++
 		http.Error(w, "route not found", http.StatusNotFound)
@@ -2846,9 +2847,21 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		s.obsoleteAssignmentWrites++
 		http.Error(w, "route not found", http.StatusNotFound)
 	case r.Method == http.MethodGet && (path == issuePath+"/reactions" || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/reactions")):
-		reactions := make([]map[string]any, 0, len(s.reactions))
+		var reactions []map[string]any
 		for _, content := range s.reactions {
 			reactions = append(reactions, map[string]any{"content": content, "user": map[string]any{"login": "Minos"}})
+		}
+		if s.reactionPageSize > 0 {
+			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+			if page < 1 {
+				page = 1
+			}
+			start := min((page-1)*s.reactionPageSize, len(reactions))
+			end := min(start+s.reactionPageSize, len(reactions))
+			reactions = reactions[start:end]
+			if len(reactions) == 0 {
+				reactions = nil
+			}
 		}
 		writeFixtureJSON(s.t, w, reactions)
 	case r.Method == http.MethodPost && (path == issuePath+"/reactions" || s.stackedChildForPath(path) != nil && strings.HasSuffix(path, "/reactions")):
@@ -2890,7 +2903,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			writeFixtureJSON(s.t, w, []map[string]any{})
 			return
 		}
-		writeFixtureJSON(s.t, w, s.repositoryLabels)
+		writeFixtureArray(s.t, w, s.repositoryLabels)
 	case r.Method == http.MethodGet && path == "/api/v1/orgs/minos-e2e-owner/labels":
 		// Unless a test makes it an organisation, the fixture owner is a
 		// user, which Forgejo answers as no organisation.
@@ -2903,9 +2916,9 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			writeFixtureJSON(s.t, w, []map[string]any{})
 			return
 		}
-		writeFixtureJSON(s.t, w, s.organisationLabelPages[page-1])
+		writeFixtureArray(s.t, w, s.organisationLabelPages[page-1])
 	case r.Method == http.MethodGet && path == issuePath+"/labels":
-		writeFixtureJSON(s.t, w, s.pullRequestLabels())
+		writeFixtureArray(s.t, w, s.pullRequestLabels())
 	case r.Method == http.MethodPost && path == issuePath+"/labels":
 		var payload struct {
 			Labels []int64 `json:"labels"`
@@ -2924,7 +2937,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		s.setPullRequestLabels(labels)
 		s.labelWrites++
-		writeFixtureJSON(s.t, w, labels)
+		writeFixtureArray(s.t, w, labels)
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, issuePath+"/labels/"):
 		id, err := strconv.ParseInt(strings.TrimPrefix(path, issuePath+"/labels/"), 10, 64)
 		if err != nil {
@@ -3025,6 +3038,16 @@ func writeFixtureJSON(t *testing.T, w http.ResponseWriter, value any) {
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Error(err)
 	}
+}
+
+// Non-reaction collection endpoints return []; reactions use the plain JSON
+// writer so their empty inventory and terminal page retain Forgejo's null.
+func writeFixtureArray(t *testing.T, w http.ResponseWriter, values []map[string]any) {
+	t.Helper()
+	if values == nil {
+		values = []map[string]any{}
+	}
+	writeFixtureJSON(t, w, values)
 }
 
 func writeServiceConfig(t *testing.T, cfg ServiceConfig) {

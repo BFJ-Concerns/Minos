@@ -47,6 +47,7 @@ type statusDocument struct {
 	Kind          string                     `json:"kind"`
 	GeneratedAt   string                     `json:"generated_at"`
 	MaxConcurrent int                        `json:"max_concurrent"`
+	Error         string                     `json:"error,omitempty"`
 	Repos         []statusRepo               `json:"repos"`
 	Runs          []statusRun                `json:"runs"`
 	Sweep         *sweepDeferralDocument     `json:"sweep,omitempty"`
@@ -229,17 +230,21 @@ func statusSnapshot(ctx context.Context, cfg ServiceConfig) (statusDocument, err
 	if err != nil {
 		return statusDocument{}, err
 	}
+	repos, configErr := LoadRepoConfigs(cfg)
 	document := statusDocument{
 		Kind:          statusDocumentKind,
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		MaxConcurrent: cfg.MaxConcurrentRuns(),
-		Repos:         configuredStatusRepos(cfg),
+		Repos:         configuredStatusRepos(repos),
 		Runs:          make([]statusRun, 0, len(units)),
 		Sweep:         readSweepDeferrals(cfg),
 		Receiver:      readReceiverHeartbeat(cfg),
 	}
+	if configErr != nil {
+		document.Error = fmt.Sprintf("load repository configuration: %v", configErr)
+	}
 	for _, unitName := range units {
-		document.Runs = append(document.Runs, describeRun(ctx, cfg, unitName))
+		document.Runs = append(document.Runs, describeRun(ctx, cfg, repos, configErr, unitName))
 	}
 	return document, nil
 }
@@ -254,11 +259,7 @@ func readSweepDeferrals(cfg ServiceConfig) *sweepDeferralDocument {
 	return readProjectionDocument[sweepDeferralDocument](sweepDeferralsPath(cfg), sweepDeferralDocumentKind)
 }
 
-func configuredStatusRepos(cfg ServiceConfig) []statusRepo {
-	configs, err := LoadRepoConfigs(cfg)
-	if err != nil {
-		return []statusRepo{}
-	}
+func configuredStatusRepos(configs []RepoConfig) []statusRepo {
 	repos := make([]statusRepo, 0, len(configs))
 	for _, repo := range configs {
 		repos = append(repos, statusRepo{Forge: repo.Forge, Owner: repo.Owner, Repo: repo.Repo})
@@ -273,7 +274,7 @@ func configuredStatusRepos(cfg ServiceConfig) []statusRepo {
 // absence is a fault, so both report the run as starting rather than as
 // unreadable: identity comes from the unit name in the meantime, which is
 // enough to say which pull request is under way.
-func describeRun(ctx context.Context, cfg ServiceConfig, unitName string) statusRun {
+func describeRun(ctx context.Context, cfg ServiceConfig, repos []RepoConfig, configErr error, unitName string) statusRun {
 	unit := strings.TrimSuffix(unitName, ".service")
 	run := statusRun{
 		Unit:      unitName,
@@ -281,11 +282,12 @@ func describeRun(ctx context.Context, cfg ServiceConfig, unitName string) status
 		Stage:     stageStarting,
 		Stages:    []statusStage{},
 	}
-	run.Forge, run.Owner, run.Repo, run.PR = identityFromUnit(cfg, unit)
+	appendStatusError(&run, configErr)
+	run.Forge, run.Owner, run.Repo, run.PR = identityFromUnit(repos, unit)
 	runDir, err := runDirectoryForUnit(cfg, unit)
 	if err != nil {
 		if !errors.Is(err, errRunDirectoryAbsent) {
-			run.Error = err.Error()
+			appendStatusError(&run, err)
 		}
 		return run
 	}
@@ -293,19 +295,22 @@ func describeRun(ctx context.Context, cfg ServiceConfig, unitName string) status
 	orientation, err := readRunOrientation(runDir)
 	switch {
 	case err == nil:
-		run.Forge = orientationForge(cfg, orientation)
+		if configErr == nil {
+			run.Forge = orientationForge(cfg, repos, orientation)
+		}
 		run.Owner = orientation.Source.Owner
 		run.Repo = orientation.Source.Repo
 		run.PR = orientation.Source.PR
 		run.Head = orientation.Head
 	case !errors.Is(err, os.ErrNotExist):
-		run.Error = err.Error()
+		appendStatusError(&run, err)
 	}
 	run.Stages = runStages(runDir)
 	if stage := currentStage(run.Stages); stage != stageUnknown {
 		run.Stage = stage
 	}
-	run.Timings = runTimings(ctx, cfg, runDir, run)
+	run.Timings, err = runTimings(ctx, cfg, runDir, run)
+	appendStatusError(&run, err)
 	return run
 }
 
@@ -340,13 +345,9 @@ func runDirectoryForUnit(cfg ServiceConfig, unit string) (string, error) {
 // request by UnitName, which rewrites characters an owner or repository may
 // contain — so rather than split the name back apart, each configured
 // repository's own unit name is recomputed and compared.
-func identityFromUnit(cfg ServiceConfig, unit string) (forge, owner, repo, pr string) {
+func identityFromUnit(repos []RepoConfig, unit string) (forge, owner, repo, pr string) {
 	number, found := strings.CutPrefix(unit[strings.LastIndex(unit, "-pr")+1:], "pr")
 	if !found {
-		return "", "", "", ""
-	}
-	repos, err := LoadRepoConfigs(cfg)
-	if err != nil {
 		return "", "", "", ""
 	}
 	for _, configured := range repos {
@@ -374,13 +375,10 @@ func readRunOrientation(runDir string) (orientationDocument, error) {
 // to. Orientation records the pull request, not the forge, so the answer comes
 // from the repository configuration that admitted the run; a single configured
 // forge answers on its own.
-func orientationForge(cfg ServiceConfig, orientation orientationDocument) string {
-	repos, err := LoadRepoConfigs(cfg)
-	if err == nil {
-		for _, repo := range repos {
-			if repo.Owner == orientation.Source.Owner && repo.Repo == orientation.Source.Repo {
-				return repo.Forge
-			}
+func orientationForge(cfg ServiceConfig, repos []RepoConfig, orientation orientationDocument) string {
+	for _, repo := range repos {
+		if repo.Owner == orientation.Source.Owner && repo.Repo == orientation.Source.Repo {
+			return repo.Forge
 		}
 	}
 	if len(cfg.Forges) == 1 {
@@ -453,35 +451,45 @@ func currentStage(stages []statusStage) string {
 	return current
 }
 
-// runTimings hands back the timing record collect-timings assembles from the
-// run's event log and the Ensemble run records already on disk — command spans
-// and per-worker engine, model and status. It is presentation residue: a run
-// whose record cannot be assembled reports a null timing block rather than
-// failing the request.
-func runTimings(ctx context.Context, cfg ServiceConfig, runDir string, run statusRun) json.RawMessage {
-	if cfg.Runs.TimingsCommand == "" {
-		return nil
+func appendStatusError(run *statusRun, err error) {
+	if err == nil {
+		return
 	}
-	// collect-timings publishes through a temporary file and a rename, so it
-	// needs a real path to write to, and it names the pull request from the
-	// run environment a run body would have given it.
+	if run.Error != "" {
+		run.Error += "; "
+	}
+	run.Error += err.Error()
+}
+
+// runTimings reports collection failures alongside partial status residue;
+// timing collection never changes a run's outcome or fails the request.
+func runTimings(ctx context.Context, cfg ServiceConfig, runDir string, run statusRun) (json.RawMessage, error) {
+	if cfg.Runs.TimingsCommand == "" {
+		return nil, nil
+	}
 	destination, err := os.CreateTemp("", "minos-timings-*.json")
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("create timing destination: %w", err)
 	}
 	path := destination.Name()
-	_ = destination.Close()
 	defer func() { _ = os.Remove(path) }()
-	if _, err := commandCombinedOutput(ctx, "env",
+	if err := destination.Close(); err != nil {
+		return nil, fmt.Errorf("close timing destination %s: %w", path, err)
+	}
+	output, err := commandCombinedOutput(ctx, "env",
 		"MINOS_OWNER="+run.Owner, "MINOS_REPO_NAME="+run.Repo, "MINOS_PR="+run.PR,
-		cfg.Runs.TimingsCommand, runDir, path); err != nil {
-		return nil
+		cfg.Runs.TimingsCommand, runDir, path)
+	if err != nil {
+		return nil, fmt.Errorf("collect timings for %s: %w: %s", runDir, err, strings.TrimSpace(string(output)))
 	}
 	content, err := os.ReadFile(path)
-	if err != nil || !json.Valid(content) {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("read timing result %s: %w", path, err)
 	}
-	return json.RawMessage(content)
+	if !json.Valid(content) {
+		return nil, fmt.Errorf("invalid timing JSON from %s", cfg.Runs.TimingsCommand)
+	}
+	return json.RawMessage(content), nil
 }
 
 func unitActiveEnterTime(ctx context.Context, unitName string) string {

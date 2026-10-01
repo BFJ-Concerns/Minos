@@ -62,10 +62,7 @@ in_flight_present() {
     issue_label_id "$owner" "$repo" "$pr" "$in_flight_label" >/dev/null
     return
   fi
-  in_flight_json="$(api GET "$reactions_path")" || return 2
-  printf '%s' "$in_flight_json" | jq -e --arg content "$in_flight_reaction" --arg login "$login" '
-    any(.[]?; (.content == $content) and ((.user.login // .user.username // "") == $login))
-  ' >/dev/null || return 1
+  reaction_present "$owner" "$repo" "$pr" "$in_flight_reaction" "$login"
 }
 
 if in_flight_present; then

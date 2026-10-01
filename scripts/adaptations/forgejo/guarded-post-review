@@ -36,23 +36,28 @@ review_presence() {
   page=1
   while :; do
     current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=50&page=${page}" 2>/dev/null)" || return 2
+    count="$(printf '%s' "$current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected reviews array") end')" || return 2
     ! repeats_previous_page "$current" "$previous" || break
-    [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
-    reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')"
+    [ "$count" -gt 0 ] || break
+    reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')" || return 2
     previous="$current"
     page=$((page + 1))
   done
   ids="$(printf '%s' "$reviews" | jq -r --arg head "$head" --arg state "$forge_state" --arg body "$body" --arg login "$login" '
-    .[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login) | .id')"
+    .[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login) | .id')" || return 2
   [ -n "$ids" ] || return 1
   for id in $ids; do
     comments="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${id}/comments" 2>/dev/null)" || return 2
     # Forgejo may rewrite an anchored comment's stored blame position. Path
     # and body are the durable content Minos owns; geometry is forge-owned.
-    if jq -ne --argjson requested "$input" --argjson actual "$comments" '
+    if printf '%s' "$comments" | json_match --argjson requested "$input" '
+      if type != "array" or any(.[]; type != "object") then error("expected review comments array") else
       (($requested.comments // []) | map({path, body}) | sort_by(.path, .body)) ==
-      (($actual // []) | map({path, body}) | sort_by(.path, .body))' >/dev/null; then
+      (. | map({path, body}) | sort_by(.path, .body)) end' >/dev/null; then
       return 0
+    else
+      comparison=$?
+      [ "$comparison" -eq 1 ] || return 2
     fi
   done
   return 3
