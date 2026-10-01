@@ -16,9 +16,9 @@ The implementation deliberately has no lifecycle database, stage machine,
 heartbeat, incident system, preflight framework, model-admission gate, coverage
 ledger, review bar or review-of-review loop. The forge is the durable record and
 the systemd unit for a pull request is the only live-run coordination. How many
-leads may run at once is `runs.max-concurrent` in `service.toml`; the run unit's
-memory ceiling is one share of a fixed whole-box envelope, so concurrent runs
-can never together promise more memory than the box has.
+leads may run at once is `runs.max-concurrent` in `service.toml`; run units share a
+whole-box memory envelope live through a systemd slice, so a lone run may use
+all of it and concurrent runs can never together exceed the envelope.
 
 ## Commands
 
@@ -52,7 +52,7 @@ comment. Brief configuration diagnostics take the same destination.
 Published review comments carry model provenance: each finding is tagged with
 `Proposed by:` and `Verified by:` lines naming the models that proposed and
 verified it, and the forge review command appends a `Reviewed by:` line naming
-the lead model (`MINOS_LEAD_MODEL`) to every review body and inline comment.
+the lead model (`MINOS_LEAD_MODEL`) to the review body.
 
 At the end of each completed pass the sweep attempts to write
 `.sweep-deferrals.json` atomically into the runs directory, recording the pull

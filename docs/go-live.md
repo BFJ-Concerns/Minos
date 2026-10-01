@@ -101,12 +101,9 @@ so no repository toolchains are needed.
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
    memory peak**. The journal's figure includes reclaimable page cache and
    pegs at `MemoryMax`, so it overstates the real footprint by an order of
-   magnitude. Raising the cap on the journal's cache-inflated figure has
-   already thrashed the box into mass continuations once (2026-08-16,
-   reverted the same day). Measure anonymous demand from the unit cgroup's
+   magnitude. Measure anonymous demand from the unit cgroup's
    `memory.stat` (`anon`) plus `memory.swap.current` at peak — the same
-   metric the run's pressure watch reads. Review-only runs build nothing,
-   so real demand sits far below the old build peaks.
+   metric the run's pressure watch reads.
 
    `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
    3600-second no-output backstop. Keep the lifecycle's fallback wake shorter
@@ -167,9 +164,9 @@ Each run launches the `claude-opus-5-5` lead through `claude --bg`. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has
 begun. A lead blocked before its first run-tree change is stopped and recorded
 as a supervision failure. The supervisor otherwise stops the session only
-after Claude reports `failed` or `stopped`, the lead writes its clean terminal
-marker, or the run tree outside its private home has not changed for the
-silence timeout. The silence backstop records a supervision failure instead of
+after Claude reports `failed` or `stopped`, the lead writes a terminal marker
+(`clean`, `non-clean`, or `continuation`), or the run tree outside its private
+home has not changed for the silence timeout. The silence backstop records a supervision failure instead of
 treating that stop as success. The lead invokes review and repository-brief
 workflows through `/opt/minos/workflows/adjudicated-review`; the wrapper runs
 the selected script with `/opt/minos/runtime/ensemble.mjs` and asks the sibling
