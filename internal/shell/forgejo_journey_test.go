@@ -3022,6 +3022,10 @@ func fixtureLabelID(label map[string]any) int64 {
 
 func writeFixtureJSON(t *testing.T, w http.ResponseWriter, value any) {
 	t.Helper()
+	// Forge collection endpoints return an empty array, never a null list.
+	if collection, ok := value.([]map[string]any); ok && collection == nil {
+		value = []map[string]any{}
+	}
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Error(err)
 	}

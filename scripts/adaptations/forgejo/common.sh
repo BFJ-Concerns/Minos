@@ -71,15 +71,32 @@ reaction_present() {
   while :; do
     reaction_current="$(api GET "${reaction_path}?limit=50&page=${reaction_page}" 2>/dev/null)" || return 2
     ! repeats_previous_page "$reaction_current" "$reaction_previous" || return 1
-    if printf '%s' "$reaction_current" | jq -e --arg content "$4" --arg login "$5" '
-      any(.[]?; .content == $content and (.user.login // .user.username // "") == $login)
+    if printf '%s' "$reaction_current" | json_match --arg content "$4" --arg login "$5" '
+      if type != "array" or any(.[]; type != "object") then error("expected reactions array") else
+        any(.[]; .content == $content and (.user.login // .user.username // "") == $login)
+      end
     ' >/dev/null; then
       return 0
+    else
+      reaction_status=$?
+      [ "$reaction_status" -eq 1 ] || return 2
     fi
     [ "$(printf '%s' "$reaction_current" | jq 'length')" -gt 0 ] || return 1
     reaction_previous="$reaction_current"
     reaction_page=$((reaction_page + 1))
   done
+}
+
+# jq's false result is confirmed absence; any decoding, shape or evaluation
+# failure leaves the forge state unknown. Callers preserve this distinction.
+json_match() {
+  if jq -e "$@" >/dev/null; then
+    return 0
+  else
+    json_match_status=$?
+    [ "$json_match_status" -ne 1 ] || return 1
+    return 2
+  fi
 }
 
 urlencode() {
@@ -104,7 +121,7 @@ guard_open_pull_request() {
   guard_reason=""
 
   guard_user_json="$(api GET "/api/v1/user")" || return 2
-  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r '.login // .username // ""')"
+  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
   if [ "$guard_actual_login" != "$guard_expected_login" ]; then
     guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
     return 1
@@ -112,18 +129,25 @@ guard_open_pull_request() {
 
   guard_pr_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
 
-  if ! printf '%s' "$guard_pr_json" | jq -e \
+  if printf '%s' "$guard_pr_json" | json_match \
     --arg repository "${guard_owner}/${guard_repo}" \
     --argjson pr "$guard_pr" \
-    '.number == $pr and .base.repo.full_name == $repository' >/dev/null; then
+    'if type != "object" then error("expected pull request object") else .number == $pr and .base.repo.full_name == $repository end' >/dev/null; then
+    :
+  else
+    guard_status=$?
+    [ "$guard_status" -eq 1 ] || return 2
     guard_reason="pull request identity no longer matches"
     return 1
   fi
-  if [ "$(printf '%s' "$guard_pr_json" | jq -r '.state')" != "open" ] || [ "$(printf '%s' "$guard_pr_json" | jq -r '.merged // false')" = "true" ]; then
+  guard_state="$(printf '%s' "$guard_pr_json" | jq -r '.state')" || return 2
+  guard_merged="$(printf '%s' "$guard_pr_json" | jq -r '.merged // false')" || return 2
+  if [ "$guard_state" != "open" ] || [ "$guard_merged" = "true" ]; then
     guard_reason="pull request is no longer open"
     return 1
   fi
-  if [ "$(printf '%s' "$guard_pr_json" | jq -r '.head.sha // ""')" != "$guard_expected_head" ]; then
+  guard_head="$(printf '%s' "$guard_pr_json" | jq -r '.head.sha // ""')" || return 2
+  if [ "$guard_head" != "$guard_expected_head" ]; then
     # The guarded caller reports this shared rejection reason.
     # shellcheck disable=SC2034
     guard_reason="head moved"
