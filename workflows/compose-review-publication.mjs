@@ -29,7 +29,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findingComment, reviewBody } from "./finding-presentation.mjs";
-import { findingKey, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
+import { SEVERITY, findingKey, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
 if (argv.length !== 5 && argv.length !== 7) {
@@ -40,12 +40,12 @@ if (argv.length !== 5 && argv.length !== 7) {
 }
 const [outputDir, orientationPath, threshold, mainVerdictPath, mainDecisionPath, briefVerdictPath, briefDecisionPath] = argv;
 
-function readJson(path, label) {
+function readJson(path, label, failureExit = 2) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
     process.stderr.write(`${label} is missing or not valid JSON: ${path} (${error.message})\n`);
-    process.exit(2);
+    process.exit(failureExit);
   }
 }
 
@@ -69,9 +69,7 @@ function loadGroup(name, verdictPath, decisionPath) {
   const dispositions = new Map(decision.findings.map((disposition) => [disposition.key, disposition]));
   const dispositionOf = (finding) => dispositions.get(findingKey(finding)) || null;
   return {
-    name,
     verdict,
-    decision,
     dispositions,
     dispositionOf,
     findings: verdict.confirmedFindings.map((finding) => ({ ...finding })),
@@ -81,13 +79,7 @@ function loadGroup(name, verdictPath, decisionPath) {
 // Setup's orientation names the workspace path under `repository`; the
 // reviewed repository's forge identity is its `source` owner and name.
 function readOrientation(path) {
-  let orientation;
-  try {
-    orientation = JSON.parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    process.stderr.write(`orientation is missing or not valid JSON: ${path} (${error.message})\n`);
-    process.exit(1);
-  }
+  const orientation = readJson(path, "orientation", 1);
   const misconfigurations = orientation?.misconfigurations ?? [];
   const malformed = !Array.isArray(misconfigurations) || misconfigurations.some((entry) =>
     entry?.kind === "guidance-source" && (typeof entry.source?.path !== "string" || typeof entry.reason !== "string"));
@@ -118,8 +110,6 @@ function siteAndTitle(finding) {
   return JSON.stringify([finding.path, finding.line, normalisedTitle(finding)]);
 }
 
-const SEVERITY_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4 };
-
 // Deduplication across the two groups. The same defect raised by both is
 // one finding: same site and same title merge into the main group's
 // finding, which gates if either disposition gates, carries the higher
@@ -129,7 +119,7 @@ if (brief) {
   brief.findings = brief.findings.filter((finding) => {
     const twin = mainBySiteAndTitle.get(siteAndTitle(finding));
     if (!twin) return true;
-    if (SEVERITY_RANK[finding.severity] > SEVERITY_RANK[twin.severity]) twin.severity = finding.severity;
+    if (SEVERITY[finding.severity] > SEVERITY[twin.severity]) twin.severity = finding.severity;
     twin.alsoRaisedBy = [...(twin.alsoRaisedBy || []), finding.source];
     if (brief.dispositionOf(finding)?.gating === true)
       main.dispositions.set(findingKey(twin), { ...main.dispositionOf(twin), gating: true });
