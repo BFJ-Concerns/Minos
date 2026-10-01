@@ -7,15 +7,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-
 import { briefEngagement } from "./brief-dispositions.mjs";
 import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixture.mjs";
-
 import { resolveRouting } from "./role-routing.mjs";
-
-const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 import { verdictDigest } from "./verdict-classification.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
+
+const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
 const scriptPath = join(workflowsDir, "review-scope.js");

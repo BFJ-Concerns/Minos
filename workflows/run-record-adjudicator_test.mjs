@@ -4,9 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-
 import { fixtureArchive as archiveFixture } from "./archive-fixture.mjs";
-
 import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const legs = [
@@ -204,8 +202,8 @@ test("adjudication retains every confirmed finding regardless of severity", asyn
   ];
   const recordsWithLowSeverityLegs = {
     exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
-      "specialist-1": { status: "complete", resolved_model: "gpt-6-sol-served" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
+    "specialist-1": { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
     "specialist-2": { status: "complete", resolved_model: "gpt-6-sol-served" },
     "verify-2": { status: "complete", resolved_model: "claude-opus-5-5" },
   };
