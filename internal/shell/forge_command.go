@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -29,7 +28,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if len(args) != 4 {
 			return fmt.Errorf("usage: minos forge file-issue REPOSITORY TITLE_FILE BODY_FILE")
 		}
-		if !regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(args[1]) {
+		if !repositoryName.MatchString(args[1]) {
 			return fmt.Errorf("filing repository must be owner/name")
 		}
 		owner, name, _ := strings.Cut(args[1], "/")
