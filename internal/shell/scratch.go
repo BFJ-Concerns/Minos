@@ -25,8 +25,8 @@ const (
 	salvageMetadataBytes   = 4 * 1024
 	salvageFailureLogBytes = 32 * 1024
 	salvageEnsembleBytes   = 64 * 1024
-	salvageRunReportBytes  = 32 * 1024
-	salvageTranscriptBytes = salvageDigestBytes - salvageMetadataBytes - salvageFailureLogBytes - salvageEnsembleBytes - salvageRunReportBytes
+	salvageReportBytes     = 32 * 1024
+	salvageTranscriptBytes = salvageDigestBytes - salvageMetadataBytes - salvageFailureLogBytes - salvageEnsembleBytes - salvageReportBytes
 	archiveRunTimeout      = 30 * time.Minute
 )
 
@@ -273,7 +273,7 @@ func buildFailureDigest(runDir string) ([]byte, bool, error) {
 	sources := []*sourceDigest{
 		{name: "failure-log", budget: salvageFailureLogBytes},
 		{name: "ensemble", budget: salvageEnsembleBytes},
-		{name: "run-report", budget: salvageRunReportBytes},
+		{name: "report", budget: salvageReportBytes},
 		{name: "transcript", budget: salvageTranscriptBytes},
 	}
 	sourceByName := make(map[string]*sourceDigest, len(sources))
@@ -318,8 +318,8 @@ func evidenceSource(rel string) string {
 		return "failure-log"
 	case strings.HasPrefix(rel, "ensemble-records/"):
 		return "ensemble"
-	case rel == "run-report.md" || rel == "report.md":
-		return "run-report"
+	case rel == "report.md":
+		return "report"
 	default:
 		return "transcript"
 	}
@@ -345,7 +345,7 @@ func appendBudgetedDigestText(digest *bytes.Buffer, text string, budget int, sou
 func salvageEvidencePaths(runDir string) ([]string, []string, error) {
 	var paths []string
 	var skipped []string
-	for _, name := range []string{"failure.log", "failures.log", "run-report.md", "report.md"} {
+	for _, name := range []string{"failure.log", "failures.log", "report.md"} {
 		path := filepath.Join(runDir, name)
 		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {

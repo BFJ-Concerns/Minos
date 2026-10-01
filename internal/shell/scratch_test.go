@@ -202,7 +202,7 @@ func TestArchiveRunRejectsFailedPipelineWithoutPublishingFinalName(t *testing.T)
 					t.Fatal(err)
 				}
 			}
-			if err := os.WriteFile(filepath.Join(runDir, "run-report.md"), []byte("evidence\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(runDir, "report.md"), []byte("evidence\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			config := filepath.Join(root, "archive.env")
@@ -246,7 +246,7 @@ func TestFailureDigestUsesExplicitBoundedEvidenceSources(t *testing.T) {
 	for name, contents := range unrelated {
 		writeTestFile(t, filepath.Join(runDir, name), strings.Repeat(contents, 100))
 	}
-	writeTestFile(t, filepath.Join(runDir, "run-report.md"), "run-local report\n")
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "run-local report\n")
 	for index := 0; index < 40; index++ {
 		writeTestFile(t,
 			filepath.Join(runDir, "home", ".claude", "projects", "repo", fmt.Sprintf("session-%02d.jsonl", index)),
@@ -386,7 +386,7 @@ func TestSweepRunResidueRechecksLivenessBeforeDeletion(t *testing.T) {
 	}
 	cfg := scratchTestConfig(t)
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr13-new")
-	writeTestFile(t, filepath.Join(runDir, "run-report.md"), "evidence\n")
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
 	_ = sweepRunResidue(t.Context(), cfg, nil)
 	if _, err := os.Stat(runDir); err != nil {
 		t.Fatalf("run that became live was removed: %v", err)
@@ -399,7 +399,7 @@ func TestSweepRunResiduePreservesOwnedMidSpawnDirectory(t *testing.T) {
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	cfg := scratchTestConfig(t)
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr14-starting")
-	writeTestFile(t, filepath.Join(runDir, "run-report.md"), "evidence\n")
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
 	writeTestFile(t, filepath.Join(runDir, runOwnerMarker), "")
 	_ = sweepRunResidue(t.Context(), cfg, nil)
 	if _, err := os.Stat(runDir); err != nil {
@@ -433,7 +433,7 @@ func TestSweepRunResidueRequiresProvisionedArchiveCommand(t *testing.T) {
 	cfg := scratchTestConfig(t)
 	cfg.Runs.ArchiveCommand = ""
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr16-dead")
-	writeTestFile(t, filepath.Join(runDir, "run-report.md"), "evidence\n")
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
 	if err := sweepRunResidue(t.Context(), cfg, nil); err == nil {
 		t.Fatal("sweep accepted an unprovisioned archive command")
 	}
