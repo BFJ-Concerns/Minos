@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
@@ -70,7 +71,7 @@ func TestPublishSweepDeferralsReplacesThePreviousDocumentAtomically(t *testing.T
 		return originalRename(temporary, destination)
 	}
 
-	if err := publishSweepDeferrals(cfg, want); err != nil {
+	if err := publishSweepDocument(cfg, sweepDeferralDocument{Deferrals: want}); err != nil {
 		t.Fatal(err)
 	}
 	if !renamed {
@@ -91,7 +92,7 @@ func TestPublishSweepDeferralsReplacesThePreviousDocumentAtomically(t *testing.T
 		t.Fatalf("replacement deferrals = %#v, want %#v", got.Deferrals, want)
 	}
 	for index, deferral := range want {
-		if got.Deferrals[index] != deferral {
+		if !reflect.DeepEqual(got.Deferrals[index], deferral) {
 			t.Fatalf("replacement deferral %d = %#v, want %#v", index, got.Deferrals[index], deferral)
 		}
 	}

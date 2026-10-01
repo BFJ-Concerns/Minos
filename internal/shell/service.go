@@ -86,21 +86,6 @@ func continuationPriority(snapshot forge.Snapshot, botLogin, statusContext strin
 	return 1
 }
 
-// A clean or attention Minos status on the current head marks a completed run
-// even when no terminal review exists: some deliberate stops publish no
-// review, so the status is the head's only durable completion marker on that
-// path. Head movement leaves the status on the old commit, spending the
-// marker; an incomplete status deliberately leaves the pull request eligible
-// for a fresh attempt.
-func completedRunStatus(snapshot forge.Snapshot, botLogin, statusContext string) bool {
-	latest, found := latestOwnedStatus(snapshot, botLogin, statusContext)
-	if !found {
-		return false
-	}
-	_, completed := product.CompletionMarker(string(latest.State), latest.Description)
-	return completed
-}
-
 type ReconcileDecision string
 
 const (
@@ -114,12 +99,14 @@ const (
 
 type ReconcileResult struct {
 	Decision ReconcileDecision
-	// DeferralReason is set only when reconciliation deliberately leaves an
-	// open pull request unstarted. Sweep records it for the operator-facing
-	// projection; admission never reads that record back.
-	DeferralReason string
-	BlockingUnit   string
-	Detail         string
+	// DeferralReason is the precedence-selected reason for leaving an open
+	// pull request unstarted. DeferralReasons carries every applicable reason
+	// from that snapshot. Admission never reads the projection back.
+	DeferralReason  string
+	DeferralReasons []string
+	TerminalOutcome string
+	BlockingUnit    string
+	Detail          string
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
@@ -162,13 +149,13 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
 	if eligibility.workInProgress {
 		reason := fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch)
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason), DeferralReason: reason}, nil
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason), DeferralReason: reason, DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
 	}
 	if eligibility.completedRun {
-		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker"}, nil
+		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
 	}
 	if eligibility.dependencyDeferred {
-		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason), DeferralReason: eligibility.dependencyReason}, nil
+		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason), DeferralReason: eligibility.dependencyReason, DeferralReasons: eligibility.reasons}, nil
 	}
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)
 	if err != nil {
@@ -209,24 +196,38 @@ type pullRequestAdmissionEligibility struct {
 	completedRun       bool
 	dependencyDeferred bool
 	dependencyReason   string
+	reasons            []string
+	terminalOutcome    string
 }
 
 func assessPullRequestAdmission(cfg ServiceConfig, repo RepoConfig, snapshot forge.Snapshot) pullRequestAdmissionEligibility {
+	eligibility := pullRequestAdmissionEligibility{}
 	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
-		return pullRequestAdmissionEligibility{workInProgress: true}
+		eligibility.workInProgress = true
+		eligibility.reasons = append(eligibility.reasons, fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))
 	}
 	if review, reviewed := currentReview(snapshot, cfg.Service.BotLogin); reviewed {
-		if _, terminal := terminalState(review); terminal {
-			return pullRequestAdmissionEligibility{completedRun: true}
+		if state, terminal := terminalState(review); terminal {
+			eligibility.terminalOutcome = state.Name()
 		}
 	}
-	if completedRunStatus(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext) {
-		return pullRequestAdmissionEligibility{completedRun: true}
+	if eligibility.terminalOutcome == "" {
+		if status, found := latestOwnedStatus(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext); found {
+			if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
+				eligibility.terminalOutcome = state.Name()
+			}
+		}
+	}
+	eligibility.completedRun = eligibility.terminalOutcome != ""
+	if eligibility.completedRun {
+		eligibility.reasons = append(eligibility.reasons, "completed-marker")
 	}
 	if reason, deferred := dependencyDeferral(snapshot); deferred {
-		return pullRequestAdmissionEligibility{dependencyDeferred: true, dependencyReason: reason}
+		eligibility.dependencyDeferred = true
+		eligibility.dependencyReason = reason
+		eligibility.reasons = append(eligibility.reasons, reason)
 	}
-	return pullRequestAdmissionEligibility{}
+	return eligibility
 }
 
 func workInProgressBranch(branch string, prefixes []string) bool {

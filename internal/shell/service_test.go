@@ -103,7 +103,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 	}
 }
 
-func TestCompletedRunStatusMarksCleanAndAttentionHeads(t *testing.T) {
+func TestAdmissionCompletionStatuses(t *testing.T) {
 	ownedStatus := func(id int64, state forge.StatusState, description string) forge.Status {
 		return forge.Status{
 			ID: id, Provider: forge.ForgejoProvider, Context: "Minos",
@@ -141,9 +141,13 @@ func TestCompletedRunStatusMarksCleanAndAttentionHeads(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			snapshot := forge.Snapshot{Statuses: test.statuses}
-			if got := completedRunStatus(snapshot, "Minos", "Minos"); got != test.want {
-				t.Fatalf("completedRunStatus() = %t, want %t", got, test.want)
+			snapshot := forge.Snapshot{Statuses: test.statuses, DependenciesAvailable: true}
+			cfg := ServiceConfig{}
+			cfg.Service.BotLogin = "Minos"
+			cfg.Service.StatusContext = "Minos"
+			got := assessPullRequestAdmission(cfg, RepoConfig{}, snapshot)
+			if got.completedRun != test.want {
+				t.Fatalf("admission completedRun = %t, want %t", got.completedRun, test.want)
 			}
 		})
 	}
