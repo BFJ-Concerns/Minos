@@ -45,3 +45,11 @@ for argument in "$@"; do last="$argument"; done
 SSH_ORIGINAL_COMMAND="$last" exec %q %q
 `, receiver, destination))
 }
+
+// setTestRunCeilings supplies explicit resolved inputs to tests that bypass
+// LoadServiceConfig. Loader/default behaviour is exercised by config tests.
+func setTestRunCeilings(cfg *ServiceConfig) {
+	cfg.Runs.MemoryEnvelopeGiB = 22
+	cfg.Runs.DurationCeiling = "43200.000000000s"
+	cfg.Runs.PressureThresholdPercent = 85
+}

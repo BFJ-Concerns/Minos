@@ -358,6 +358,7 @@ func writeProgressHandoff(t *testing.T, cfg ServiceConfig, facts Facts, progress
 func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	cfg := ServiceConfig{Root: fixture.configRoot}
+	setTestRunCeilings(&cfg)
 	cfg.Runs.Dir = filepath.Join(fixture.root, "runs")
 	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	if err := os.MkdirAll(cfg.Runs.Dir, 0o700); err != nil {
