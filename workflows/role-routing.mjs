@@ -33,7 +33,7 @@ const PAIRED_ENGINE = {
   "brief-planner": "codex",
 };
 
-function validConfiguredRole(role, entry) {
+function assertConfiguredRole(role, entry) {
   if (entry === undefined) return;
   if (!entry || typeof entry !== "object" || Array.isArray(entry))
     throw new Error(`routing.${role} must be an object`);
@@ -60,7 +60,7 @@ export function resolveRouting({ configured = {}, provisioned }) {
   const routing = {};
   for (const role of ROLES) {
     const entry = configured[role];
-    validConfiguredRole(role, entry);
+    assertConfiguredRole(role, entry);
     const engine = entry && entry.engine !== undefined
       ? entry.engine
       : (bothProvisioned ? PAIRED_ENGINE[role] : provisioned[0]);

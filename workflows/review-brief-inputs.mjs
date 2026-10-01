@@ -52,8 +52,7 @@ if (argumentError) {
   for (const path of trackedPaths) {
     const absolute = resolve(workspace, path);
     if (!absolute.startsWith(workspace + sep) || !existsSync(absolute) || !lstatSync(absolute).isFile()) continue;
-    const content = readFileSync(absolute);
-    trackedFiles.push({ path, bytes: content.includes(0) ? 0 : content.byteLength });
+    trackedFiles.push({ path });
   }
 
   const briefs = markdownPaths.map((absolute) => {
@@ -63,7 +62,6 @@ if (argumentError) {
     const scopePath = scope ? resolve(workspace, scope) : null;
     return {
       path,
-      readPath: absolute,
       content: readFileSync(absolute, "utf8"),
       scope,
       scopeExists: !scopePath || (existsSync(scopePath) && statSync(scopePath).isDirectory()),
@@ -84,7 +82,6 @@ if (argumentError) {
     target,
     head,
     occasion,
-    workspace,
     hasReviewDirectory,
     changedPaths,
     trackedFiles,

@@ -63,10 +63,9 @@ function args(overrides = {}) {
     target: "target111",
     head: "head222",
     occasion: null,
-    workspace: "/workspace",
     hasReviewDirectory: true,
     changedPaths: ["pkg/x.go"],
-    trackedFiles: [{ path: "pkg/x.go", bytes: 100 }],
+    trackedFiles: [{ path: "pkg/x.go" }],
     briefs: [brief(".review/pkg/errors.md", "---\nrelevance: Error-path changes.\n---\nJudge errors.")],
     guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PROJECT_GUIDANCE_TEAL" }],
     routing: pairedRouting,
@@ -250,9 +249,9 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
 
 test("per-file partitioning follows repository structure and clamps to a lossless plan", async () => {
   const trackedFiles = [
-    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/api/f${index}.go`, bytes: 10 })),
-    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/ui/f${index}.go`, bytes: 10 })),
-    ...Array.from({ length: 30 }, (_, index) => ({ path: `cmd/tool/f${index}.go`, bytes: 10 })),
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/api/f${index}.go` })),
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/ui/f${index}.go` })),
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `cmd/tool/f${index}.go` })),
   ];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every file.");
   const apiFiles = trackedFiles.filter((entry) => entry.path.startsWith("pkg/api/")).map((entry) => entry.path);
@@ -286,7 +285,7 @@ test("per-file partitioning follows repository structure and clamps to a lossles
 });
 
 test("adaptive partitioning dispatches every coherent unit without a breadth cap", async () => {
-  const trackedFiles = Array.from({ length: 25 }, (_, index) => ({ path: `module-${index}/file.go`, bytes: 10 }));
+  const trackedFiles = Array.from({ length: 25 }, (_, index) => ({ path: `module-${index}/file.go` }));
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every module.");
   const { result, calls } = await run(
     args({ briefs: [candidate], trackedFiles, occasion: "release" }),
@@ -307,9 +306,9 @@ test("adaptive partitioning dispatches every coherent unit without a breadth cap
 
 test("a mixed partition is one durable run disposition with its inapplicable unit detail", async (t) => {
   const trackedFiles = [
-    { path: "pkg/api.go", bytes: 10 },
-    { path: "pkg/ui.go", bytes: 10 },
-    { path: "pkg/jobs.go", bytes: 10 },
+    { path: "pkg/api.go" },
+    { path: "pkg/ui.go" },
+    { path: "pkg/jobs.go" },
   ];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
   const { result } = await run(
@@ -359,8 +358,8 @@ test("a mixed partition is one durable run disposition with its inapplicable uni
 
 test("an entirely inapplicable partition is one durable skipped disposition", async (t) => {
   const trackedFiles = [
-    { path: "pkg/api.go", bytes: 10 },
-    { path: "pkg/ui.go", bytes: 10 },
+    { path: "pkg/api.go" },
+    { path: "pkg/ui.go" },
   ];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
   const { result } = await run(
@@ -408,8 +407,8 @@ test("an entirely inapplicable partition is one durable skipped disposition", as
 
 test("an entirely applicable partition remains one unchanged durable run disposition", async (t) => {
   const trackedFiles = [
-    { path: "pkg/api.go", bytes: 10 },
-    { path: "pkg/ui.go", bytes: 10 },
+    { path: "pkg/api.go" },
+    { path: "pkg/ui.go" },
   ];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
   const { result } = await run(
@@ -437,7 +436,7 @@ test("an entirely applicable partition remains one unchanged durable run disposi
 });
 
 test("a missing partition result leaves the brief not-run", async () => {
-  const trackedFiles = [{ path: "pkg/a.go", bytes: 10 }, { path: "pkg/b.go", bytes: 10 }];
+  const trackedFiles = [{ path: "pkg/a.go" }, { path: "pkg/b.go" }];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every file.");
   const { result, calls } = await run(
     args({ briefs: [candidate], trackedFiles, occasion: "release" }),
@@ -460,7 +459,7 @@ test("every requested repository specialist dispatches", async () => {
 });
 
 test("a large whole-tree brief dispatches instead of becoming not-run", async () => {
-  const trackedFiles = Array.from({ length: 400 }, (_, index) => ({ path: `pkg/f${index}.go`, bytes: 4_000 }));
+  const trackedFiles = Array.from({ length: 400 }, (_, index) => ({ path: `pkg/f${index}.go` }));
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: whole-tree\noccasion: release\n---\nJudge repository.");
   const { result } = await run(args({ briefs: [candidate], trackedFiles, occasion: "release" }), responder({ specialist: () => specialistResult([]) }));
   assert.equal(result.dispatches.length, 1);
@@ -594,7 +593,7 @@ test("repository-brief verifier pools findings from separate units with their ow
   const { result, calls } = await run(args({
     briefs: [first, second],
     changedPaths: ["pkg/x.go", "cmd/main.go"],
-    trackedFiles: [{ path: "pkg/x.go", bytes: 100 }, { path: "cmd/main.go", bytes: 100 }],
+    trackedFiles: [{ path: "pkg/x.go" }, { path: "cmd/main.go" }],
   }), responder({
     partition: (_label, prompt) => {
       const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);

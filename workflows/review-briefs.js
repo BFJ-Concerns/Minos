@@ -1,6 +1,6 @@
 export const meta = {
   name: "minos-repository-review-briefs",
-  description: "Run applicable repository review briefs after the main review loop",
+  description: "Run applicable repository review briefs after the main pull-request review",
   phases: [
     { title: "Relevance", detail: "select the briefs this change gives work to" },
     { title: "Partition", detail: "divide broad brief scopes into coherent review units" },
@@ -308,7 +308,7 @@ function normalisePartition(plan, inventory) {
 
 const input = args && typeof args === "object" && !Array.isArray(args) ? args : null;
 if (!input || typeof input.target !== "string" || typeof input.head !== "string")
-  throw new Error("brief workflow needs args {target, head, workspace, briefs, changedPaths, trackedFiles, guidance, instructionBriefs}");
+  throw new Error("brief workflow needs args {target, head, briefs, changedPaths, trackedFiles, guidance, instructionBriefs}");
 if (input.hasReviewDirectory === false) return emptyEnvelope(input);
 if (!Array.isArray(input.briefs) || !Array.isArray(input.changedPaths) || !Array.isArray(input.trackedFiles))
   throw new Error("deterministic brief enumeration is incomplete");
@@ -339,7 +339,6 @@ const addLeg = (label, role, pinnedModel, findingIds = null) => {
   const leg = { label, role, pinnedModel };
   if (findingIds) leg.findingIds = findingIds;
   legs.push(leg);
-  return leg;
 };
 const reports = new Map();
 const misconfigurations = [];
