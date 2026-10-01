@@ -2950,20 +2950,45 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 // both the pull request and the issue labels endpoint return. The caller
 // holds the fixture lock.
 func (s *forgejoFixtureState) pullRequestLabels() []map[string]any {
-	raw, err := json.Marshal(s.pullRequest["labels"])
+	labels, err := decodeFixtureLabels(s.pullRequest["labels"])
 	if err != nil {
-		s.t.Errorf("encode fixture labels: %v", err)
+		s.t.Error(err)
 		return nil
+	}
+	return labels
+}
+
+func decodeFixtureLabels(value any) ([]map[string]any, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode fixture labels: %w", err)
 	}
 	var labels []map[string]any
 	if err := json.Unmarshal(raw, &labels); err != nil {
-		s.t.Errorf("decode fixture labels: %v", err)
-		return nil
+		return nil, fmt.Errorf("decode fixture labels: %w", err)
 	}
 	if labels == nil {
 		labels = []map[string]any{}
 	}
-	return labels
+	return labels, nil
+}
+
+func TestFixtureLabelsRejectsConversionErrors(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{name: "encoding", value: make(chan int), want: "encode fixture labels:"},
+		{name: "decoding", value: "not-a-list", want: "decode fixture labels:"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			labels, err := decodeFixtureLabels(test.value)
+			if err == nil || !strings.Contains(err.Error(), test.want) || labels != nil {
+				t.Fatalf("fixture labels = %v, error = %v; want nil labels and %q error", labels, err, test.want)
+			}
+		})
+	}
 }
 
 func (s *forgejoFixtureState) setPullRequestLabels(labels []map[string]any) {
