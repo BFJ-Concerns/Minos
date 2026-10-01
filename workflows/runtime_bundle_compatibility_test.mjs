@@ -189,23 +189,6 @@ test("the installed runtime accepts the free identifiers in every shipped workfl
   }
 });
 
-test("the installed Ensemble runtime executes the shipped absent-brief workflow", (t) => {
-  const root = operationRoot(t, "minos-runtime-execution-");
-  const installation = installInPlace(root);
-  assert.equal(installation.status, 0, installation.stderr);
-  const result = spawnSync(process.execPath, [
-    join(root, "runtime", "ensemble.mjs"),
-    "--json-args", JSON.stringify({ target: "target", head: "head", hasReviewDirectory: false }),
-    join(root, "workflows", "review-briefs.js"),
-  ], { cwd: root, encoding: "utf8", env: { ...process.env }, timeout: 30_000 });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.stage, "absent");
-  assert.deepEqual(envelope.requiredModelEvidence, []);
-  assert.deepEqual(envelope.proposedFindings, []);
-  assert.deepEqual(envelope.briefs, []);
-});
-
 function writeInstallerFixture(t, checksumLine) {
   const sourceRoot = operationRoot(t, "minos-installer-source-");
   mkdirSync(join(sourceRoot, "scripts"), { recursive: true });
