@@ -63,7 +63,7 @@ write_result() {
 
 # Whether the login's reaction with this content is on the pull request:
 # returns 0 present, 1 absent, 2 when the reactions could not be read. Pages
-# until an empty page, or until the forge repeats the previous page.
+# until an empty page (array or null), or until the forge repeats the previous page.
 reaction_present() {
   reaction_path="/api/v1/repos/$1/$2/issues/$3/reactions"
   reaction_page=1
@@ -71,6 +71,7 @@ reaction_present() {
   while :; do
     reaction_current="$(api GET "${reaction_path}?limit=50&page=${reaction_page}" 2>/dev/null)" || return 2
     if printf '%s' "$reaction_current" | json_match --arg content "$4" --arg login "$5" '
+      (if . == null then [] else . end) |
       if type != "array" or any(.[]; type != "object") then error("expected reactions array") else
         any(.[]; .content == $content and (.user.login // .user.username // "") == $login)
       end

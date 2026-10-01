@@ -20,6 +20,11 @@ import (
 func TestQualityForgeMalformedReadsWithholdWrites(t *testing.T) {
 	for _, bad := range []string{"", "{", "{}", "null", "[null]"} {
 		for _, verb := range []string{"guarded-add-reaction", "guarded-remove-reaction", "claim", "guarded-set-status", "guarded-post-review"} {
+			// Null is confirmed emptiness only on the reaction endpoint.
+			// The positive reaction journeys below cover that contract.
+			if bad == "null" && (verb == "guarded-add-reaction" || verb == "guarded-remove-reaction" || verb == "claim") {
+				continue
+			}
 			t.Run(verb+"/"+bad, func(t *testing.T) {
 				endpoint := "/reactions"
 				if verb == "guarded-set-status" {
@@ -201,5 +206,43 @@ func TestQualityForgeMergedCleanupRemovesMarker(t *testing.T) {
 	defer state.mu.Unlock()
 	if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
 		t.Fatalf("merged cleanup reactions = %v, deletes = %d, want removed marker and one delete", state.reactions, state.reactionDeleteWrites)
+	}
+}
+
+func TestQualityForgeNullReactionPagesAllowConfirmedWrites(t *testing.T) {
+	for _, action := range []string{"add", "claim", "remove", "already absent", "add after null tail", "claim after null tail"} {
+		t.Run(action, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			if action == "remove" {
+				state.reactions = []string{"eyes"}
+			}
+			if strings.HasSuffix(action, "null tail") {
+				state.reactions = []string{"unrelated"}
+				state.reactionPageSize = 1
+			}
+			configureForgeCommandFixture(t, state)
+			args := []string{"marker", state.headSHA(), state.targetSHA(), "in-flight", "add"}
+			if strings.HasPrefix(action, "claim") {
+				args = []string{"claim"}
+			} else if action == "remove" || action == "already absent" {
+				args[len(args)-1] = "remove"
+			}
+			var output bytes.Buffer
+			if err := ForgeCommand(t.Context(), args, &output); err != nil {
+				t.Fatalf("null reaction %s failed: %v; output = %s", action, err, output.Bytes())
+			}
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			wantPresent, wantAdds, wantDeletes := true, 1, 0
+			if action == "remove" {
+				wantPresent, wantAdds, wantDeletes = false, 0, 1
+			}
+			if action == "already absent" {
+				wantPresent, wantAdds = false, 0
+			}
+			if slices.Contains(state.reactions, "eyes") != wantPresent || state.reactionWrites != wantAdds || state.reactionDeleteWrites != wantDeletes {
+				t.Fatalf("null reaction %s: reactions = %v, adds = %d, deletes = %d; want present = %t, adds = %d, deletes = %d", action, state.reactions, state.reactionWrites, state.reactionDeleteWrites, wantPresent, wantAdds, wantDeletes)
+			}
+		})
 	}
 }
