@@ -2,7 +2,7 @@ import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -197,8 +197,9 @@ test("the verdict must match the gating outcome in both directions", () => {
   assert.match(refusedClean.reason, /verdict is clean/);
 });
 
-test("CLI --digest and --validate run the same policy; argument errors exit 2", () => {
+test("CLI --digest and --validate run the same policy; argument errors exit 2", (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "verdict-classification-"));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
   const verdictPath = join(scratch, "verdict.json");
   writeFileSync(verdictPath, JSON.stringify(verdict([finding()])));
   const digest = JSON.parse(execFileSync(
