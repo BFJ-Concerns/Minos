@@ -251,15 +251,7 @@ func sweepDeferralsPath(cfg ServiceConfig) string {
 // A failed read is intentionally absent from the projection. A stale, whole
 // record remains useful; a malformed one must not make the status request fail.
 func readSweepDeferrals(cfg ServiceConfig) *sweepDeferralDocument {
-	content, err := os.ReadFile(sweepDeferralsPath(cfg))
-	if err != nil {
-		return nil
-	}
-	var document sweepDeferralDocument
-	if json.Unmarshal(content, &document) != nil || document.Kind != sweepDeferralDocumentKind {
-		return nil
-	}
-	return &document
+	return readProjectionDocument[sweepDeferralDocument](sweepDeferralsPath(cfg), sweepDeferralDocumentKind)
 }
 
 func configuredStatusRepos(cfg ServiceConfig) []statusRepo {

@@ -3,7 +3,6 @@ package shell
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -141,33 +140,7 @@ var renameSweepDeferrals = os.Rename
 func publishSweepDocument(cfg ServiceConfig, document sweepDeferralDocument) error {
 	document.Kind = sweepDeferralDocumentKind
 	document.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-	content, err := json.Marshal(document)
-	if err != nil {
-		return fmt.Errorf("encode sweep deferrals: %w", err)
-	}
-	if err := os.MkdirAll(cfg.Runs.Dir, 0o755); err != nil {
-		return fmt.Errorf("create sweep state directory: %w", err)
-	}
-	path := sweepDeferralsPath(cfg)
-	temporary, err := os.CreateTemp(cfg.Runs.Dir, ".sweep-deferrals-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create sweep deferrals temporary file: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := writeServiceStateAtomically(temporary, temporaryPath, path, content, renameSweepDeferrals); err != nil {
-		var writeError *serviceStateWriteError
-		if errors.As(err, &writeError) {
-			switch writeError.stage {
-			case "write":
-				return fmt.Errorf("write sweep deferrals: %w", err)
-			case "close":
-				return fmt.Errorf("close sweep deferrals: %w", err)
-			}
-		}
-		return fmt.Errorf("publish sweep deferrals: %w", err)
-	}
-	return nil
+	return publishProjectionDocument(sweepDeferralsPath(cfg), document, renameSweepDeferrals)
 }
 
 // orderSweepCandidates keeps continuation priority absolute, then within each
