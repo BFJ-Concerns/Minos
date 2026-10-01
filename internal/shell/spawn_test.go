@@ -818,13 +818,18 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		`MINOS_GUIDANCE_SOURCES=[{"repository":"owner/repo-plans","path":"README.md"},{"path":"docs/intent.md"}]`,
 		`MINOS_FILING_DESTINATION={"kind":"file","repository":"owner/repo-plans","path":"ISSUES.md"}`,
 		`MINOS_ROUTING={"verifier":{"engine":"codex","model":"gpt-6-astra","effort":"low"}}`,
-		`MINOS_MARKERS={"in-flight":{"label":"minos/reviewing"},"clean":{"reaction":"+1"},"attention":{"label":"minos/attention"}}`,
 		"ENSEMBLE_CONCURRENCY_CLAUDE=10",
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",
 	} {
 		assertArgument(t, systemdArgs, "--setenv")
 		assertArgument(t, systemdArgs, value)
+	}
+	// The markers knob is asserted through the --setenv pairs themselves,
+	// so a value that reached the arguments without becoming run
+	// environment fails here.
+	if markers := systemdEnvironment(t, systemdArgs)["MINOS_MARKERS"]; markers != `{"in-flight":{"label":"minos/reviewing"},"clean":{"reaction":"+1"},"attention":{"label":"minos/attention"}}` {
+		t.Fatalf("run environment MINOS_MARKERS = %q", markers)
 	}
 	var runDir string
 	for _, arg := range systemdArgs {

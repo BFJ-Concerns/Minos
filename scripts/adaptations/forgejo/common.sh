@@ -190,15 +190,27 @@ defined_label_id() {
     label_previous="$label_current"
     label_page=$((label_page + 1))
   done
-  api_with_status GET "/api/v1/orgs/${1}/labels?limit=50" || return 2
-  case "$api_status_code" in
-    404) return 1 ;;
-    2??) ;;
-    *) return 2 ;;
-  esac
-  label_found="$(printf '%s' "$api_status_body" | jq -r --arg name "$3" 'first(.[]? | select(.name == $name) | .id) // ""')" || return 2
-  [ -n "$label_found" ] || return 1
-  printf '%s\n' "$label_found"
+  label_page=1
+  label_previous=''
+  while :; do
+    api_with_status GET "/api/v1/orgs/${1}/labels?limit=50&page=${label_page}" || return 2
+    case "$api_status_code" in
+      404) return 1 ;;
+      2??) ;;
+      *) return 2 ;;
+    esac
+    if repeats_previous_page "$api_status_body" "$label_previous"; then
+      return 1
+    fi
+    label_found="$(printf '%s' "$api_status_body" | jq -r --arg name "$3" 'first(.[]? | select(.name == $name) | .id) // ""')" || return 2
+    if [ -n "$label_found" ]; then
+      printf '%s\n' "$label_found"
+      return 0
+    fi
+    [ "$(printf '%s' "$api_status_body" | jq 'length')" -gt 0 ] || return 1
+    label_previous="$api_status_body"
+    label_page=$((label_page + 1))
+  done
 }
 
 # missing_label_reason is the refusal an operator acts on: create the label,

@@ -140,6 +140,9 @@ func markersFromEnvironment() (Markers, error) {
 	if err := decoder.Decode(&markers); err != nil {
 		return Markers{}, fmt.Errorf("MINOS_MARKERS: %w", err)
 	}
+	if decoder.More() {
+		return Markers{}, fmt.Errorf("MINOS_MARKERS: trailing data after the markers object")
+	}
 	if markers.InFlight == nil || markers.Clean == nil {
 		return Markers{}, fmt.Errorf("MINOS_MARKERS: in-flight and clean markers are required")
 	}
