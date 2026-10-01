@@ -2046,10 +2046,14 @@ func (s *forgejoFixtureState) service(t *testing.T) (ServiceConfig, RepoConfig, 
 	cfg.Service.BotLogin = "Minos"
 	cfg.Listener.Bind = ":0"
 	cfg.Runs.Dir = t.TempDir()
+	webhookSecret := filepath.Join(t.TempDir(), "webhook.secret")
+	if err := os.WriteFile(webhookSecret, []byte("fixture-webhook-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg.Forges = map[string]ForgeConfig{
 		"forgejo": {
 			Adaptation: s.adaptationPath, APIBase: s.server.URL,
-			WebhookSecretFile: s.tokenPath, CredentialFile: s.tokenPath,
+			WebhookSecretFile: webhookSecret, CredentialFile: s.tokenPath,
 		},
 	}
 	repo := RepoConfig{Forge: "forgejo", Owner: "minos-e2e-owner", Repo: "subject"}
