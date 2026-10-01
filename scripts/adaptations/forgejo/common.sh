@@ -70,7 +70,6 @@ reaction_present() {
   reaction_previous=''
   while :; do
     reaction_current="$(api GET "${reaction_path}?limit=50&page=${reaction_page}" 2>/dev/null)" || return 2
-    ! repeats_previous_page "$reaction_current" "$reaction_previous" || return 1
     if printf '%s' "$reaction_current" | json_match --arg content "$4" --arg login "$5" '
       if type != "array" or any(.[]; type != "object") then error("expected reactions array") else
         any(.[]; .content == $content and (.user.login // .user.username // "") == $login)
@@ -81,6 +80,7 @@ reaction_present() {
       reaction_status=$?
       [ "$reaction_status" -eq 1 ] || return 2
     fi
+    ! repeats_previous_page "$reaction_current" "$reaction_previous" || return 1
     [ "$(printf '%s' "$reaction_current" | jq 'length')" -gt 0 ] || return 1
     reaction_previous="$reaction_current"
     reaction_page=$((reaction_page + 1))

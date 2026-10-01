@@ -36,8 +36,8 @@ review_presence() {
   page=1
   while :; do
     current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=50&page=${page}" 2>/dev/null)" || return 2
-    ! repeats_previous_page "$current" "$previous" || break
     count="$(printf '%s' "$current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected reviews array") end')" || return 2
+    ! repeats_previous_page "$current" "$previous" || break
     [ "$count" -gt 0 ] || break
     reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')" || return 2
     previous="$current"
