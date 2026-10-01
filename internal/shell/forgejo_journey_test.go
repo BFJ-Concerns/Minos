@@ -1475,44 +1475,52 @@ func TestForgeReviewConvergesWhenTheForgeStoresACommentUnanchored(t *testing.T) 
 // Exercise the Go command and shipped adaptation, then replay the same
 // marked payload. The recorded POST is the state under assertion.
 func TestForgejoJourneyFileIssue(t *testing.T) {
-	state := newForgejoFixtureState(t)
-	configureForgeCommandFixture(t, state)
-	directory := t.TempDir()
-	titlePath := filepath.Join(directory, "title")
-	bodyPath := filepath.Join(directory, "body")
-	title := "Advisory concurrency failure"
-	body := "The later writer overwrites the earlier update.\n<!-- minos:am91cm5leQ -->\n"
-	if err := os.WriteFile(titlePath, []byte(title), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(bodyPath, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, wantWritten := range []float64{1, 0} {
-		var stdout bytes.Buffer
-		err := ForgeCommand(t.Context(), []string{"file-issue", "minos-e2e-owner/subject-plans", titlePath, bodyPath}, &stdout)
-		if err != nil {
-			t.Fatalf("file-issue delivery failed: %v; result=%s", err, stdout.String())
-		}
-		var result map[string]any
-		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-			t.Fatal(err)
-		}
-		if result["outcome"] != "applied" || result["written"] != wantWritten {
-			t.Fatalf("file-issue result = %v, want applied with written=%v", result, wantWritten)
-		}
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if len(state.issueCreateRequests) != 1 || len(state.filedIssues) != 1 {
-		t.Fatalf("issue requests=%v, stored issues=%v", state.issueCreateRequests, state.filedIssues)
-	}
-	payload := state.issueCreateRequests[0]
-	if payload["title"] != title || payload["body"] != body || len(payload) != 2 {
-		t.Fatalf("issue payload = %v", payload)
-	}
-	if state.filedIssues[0]["user"].(map[string]any)["login"] != "Minos" {
-		t.Fatalf("filed issue = %v", state.filedIssues[0])
+	for _, test := range []struct{ name, readBackLogin string }{
+		{name: "confirmed service author"},
+		{name: "read-back author differs", readBackLogin: "another-account"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			state.filedIssueReadBackLogin = test.readBackLogin
+			configureForgeCommandFixture(t, state)
+			directory := t.TempDir()
+			titlePath := filepath.Join(directory, "title")
+			bodyPath := filepath.Join(directory, "body")
+			title := "Advisory concurrency failure"
+			body := "The later writer overwrites the earlier update.\n<!-- minos:am91cm5leQ -->\n"
+			if err := os.WriteFile(titlePath, []byte(title), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(bodyPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, wantWritten := range []float64{1, 0} {
+				var stdout bytes.Buffer
+				err := ForgeCommand(t.Context(), []string{"file-issue", "minos-e2e-owner/subject-plans", titlePath, bodyPath}, &stdout)
+				var result map[string]any
+				if decodeErr := json.Unmarshal(stdout.Bytes(), &result); decodeErr != nil {
+					t.Fatalf("file-issue result is unreadable: %v; delivery error=%v", decodeErr, err)
+				}
+				if test.readBackLogin != "" {
+					if err == nil || result["outcome"] != "uncertain" || !strings.Contains(fmt.Sprint(result["reason"]), "read-back does not match") {
+						t.Fatalf("author mismatch must refuse confirmation: error=%v result=%v", err, result)
+					}
+					break
+				}
+				if err != nil || result["outcome"] != "applied" || result["written"] != wantWritten {
+					t.Fatalf("file-issue result = %v, error=%v, want applied with written=%v", result, err, wantWritten)
+				}
+			}
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if len(state.issueCreateRequests) != 1 || len(state.filedIssues) != 1 {
+				t.Fatalf("issue requests=%v, stored issues=%v", state.issueCreateRequests, state.filedIssues)
+			}
+			payload := state.issueCreateRequests[0]
+			if payload["title"] != title || payload["body"] != body || len(payload) != 2 {
+				t.Fatalf("issue payload = %v", payload)
+			}
+		})
 	}
 }
 
@@ -1972,6 +1980,8 @@ type forgejoFixtureState struct {
 	priorityBoundaryMutation func()
 	writeSequence            []string
 	virtualRefLookups        int
+	forgeAccounts            map[string]map[string]any
+	filedIssueReadBackLogin  string
 	filedIssues              []map[string]any
 	issueCreateRequests      []map[string]any
 	secondaryCloneURL        string
@@ -2013,6 +2023,7 @@ func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 		diffNewSide: make(map[string][][2]int64), positionRewrites: make(map[string]map[int64]int64),
 		actionJobs: make(map[int64][]map[string]any), actionLogs: make(map[int64]string),
 		pullRequestReads: make(map[string]int),
+		forgeAccounts:    map[string]map[string]any{"fixture-token": {"login": "Minos"}},
 		dependencies:     []map[string]any{}, sourceBranchExists: true, dependencyCode: http.StatusOK,
 		statusesByCommit: make(map[string][]map[string]any),
 	}
@@ -2322,18 +2333,39 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	path := r.URL.Path
+	account := s.forgeAccounts[strings.TrimPrefix(r.Header.Get("Authorization"), "token ")]
 	pullPath := fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/pulls/%v", s.pullRequest["number"])
 	issuePath := fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/issues/%v", s.pullRequest["number"])
 	switch {
 	case path == "/api/v1/repos/minos-e2e-owner/subject-plans/issues" && r.Method == http.MethodGet:
-		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-		if page != 1 {
-			writeFixtureJSON(s.t, w, []map[string]any{})
-		} else {
-			issues := append([]map[string]any{}, s.filedIssues...)
-			writeFixtureJSON(s.t, w, issues)
+		if account == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
 		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		issues := []map[string]any{}
+		if page == 1 {
+			filter := r.URL.Query().Get("state")
+			if filter == "" {
+				filter = "open"
+			}
+			for _, stored := range s.filedIssues {
+				if filter != "all" && stored["state"] != filter {
+					continue
+				}
+				issue := mapsClone(stored)
+				if s.filedIssueReadBackLogin != "" {
+					issue["user"] = map[string]any{"login": s.filedIssueReadBackLogin}
+				}
+				issues = append(issues, issue)
+			}
+		}
+		writeFixtureJSON(s.t, w, issues)
 	case path == "/api/v1/repos/minos-e2e-owner/subject-plans/issues" && r.Method == http.MethodPost:
+		if account == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			s.t.Error(err)
@@ -2344,12 +2376,16 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		issue := mapsClone(payload)
 		issue["number"] = len(s.filedIssues) + 1
 		issue["state"] = "open"
-		issue["user"] = map[string]any{"login": "Minos"}
+		issue["user"] = mapsClone(account)
 		s.filedIssues = append(s.filedIssues, issue)
 		w.WriteHeader(http.StatusCreated)
 		writeFixtureJSON(s.t, w, issue)
 	case r.Method == http.MethodGet && path == "/api/v1/user":
-		writeFixtureJSON(s.t, w, map[string]any{"login": "Minos"})
+		if account == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeFixtureJSON(s.t, w, account)
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject":
 		writeFixtureJSON(s.t, w, s.repository)
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject-plans":

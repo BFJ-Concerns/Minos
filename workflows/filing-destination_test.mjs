@@ -300,27 +300,32 @@ test("issue destination delivers marked entries through the forge command", asyn
   const root = fileURLToPath(new URL("../", import.meta.url));
   execFileSync("go", ["build", "-o", binary, "./cmd/minos"], { cwd: root });
 
-  async function fixture(t, { existing = [], refusal = false, hideWrites = false, wrongLogin = false, malformed = false, corruptWrite = false, lostResponse = false, refuseAfter = Infinity, repeatPages = false } = {}) {
+  async function fixture(t, { existing = [], refusal = false, hideWrites = false, wrongLogin = false, malformed = false, corruptWrite = false, lostResponse = false, refuseAfter = Infinity, repeatPages = false, wrongReadBackAuthor = false } = {}) {
     const directory = mkdtempSync(join(scratch, "case-"));
     const token = join(directory, "token");
     writeFileSync(token, "fixture-token\n");
+    const accounts = new Map([["fixture-token", { login: wrongLogin ? "other" : identity.name }]]);
     const posted = [];
     const reads = [];
     const issues = [...existing];
     const forge = createServer(async (request, response) => {
       const url = new URL(request.url, "http://fixture");
       response.setHeader("Content-Type", "application/json");
-      if (request.headers.authorization !== "token fixture-token") {
+      const account = accounts.get((request.headers.authorization || "").replace(/^token /, ""));
+      if (!account) {
         response.writeHead(401); response.end("{}"); return;
       }
       if (url.pathname === "/api/v1/user") {
-        response.end(JSON.stringify({ login: wrongLogin ? "other" : "Review Bot" })); return;
+        response.end(JSON.stringify(account)); return;
       }
       if (url.pathname === "/api/v1/repos/owner/plans/issues") {
         if (request.method === "GET") {
           reads.push(Object.fromEntries(url.searchParams));
           if (malformed) { response.end('{"message":"not an issue list"}'); return; }
-          const visible = hideWrites ? existing : issues;
+          const state = url.searchParams.get("state") || "open";
+          const visible = (hideWrites ? existing : issues)
+            .filter((issue) => state === "all" || (issue.state || "open") === state)
+            .map((issue) => wrongReadBackAuthor ? { ...issue, user: { login: "another-account" } } : issue);
           // The server caps pages below the requested limit, as a forge may.
           const page = Number(url.searchParams.get("page"));
           response.end(JSON.stringify(repeatPages ? visible.slice(0, 2) : visible.slice((page - 1) * 2, page * 2))); return;
@@ -331,7 +336,7 @@ test("issue destination delivers marked entries through the forge command", asyn
           const payload = JSON.parse(body);
           posted.push(payload);
           if (refusal || posted.length > refuseAfter) { response.writeHead(403); response.end('{"message":"forbidden"}'); return; }
-          const issue = { ...payload, number: issues.length + 1, state: "open", user: { login: "Review Bot" } };
+          const issue = { ...payload, number: issues.length + 1, state: "open", user: { ...account } };
           if (corruptWrite) issue.body += "Wrong stored content";
           issues.push(issue);
           if (lostResponse) { response.writeHead(500); response.end('{"message":"response lost"}'); return; }
@@ -381,7 +386,6 @@ webhook-secret-file = "${token}"
     assert.deepEqual(f.posted.map((issue) => issue.title), [advisory.title, misconfiguration.title]);
     for (const [index, entry] of [advisory, misconfiguration].entries()) {
       assert.equal(f.posted[index].body, `${issueLogEntry(entry, `Filed by ${identity.name} from owner/repository#17, 2026-09-12`)} ${filingMarker(entry, reviewedRepository)}\n`);
-      assert.equal(f.issues[index].user.login, identity.name);
     }
     assert.deepEqual(await f.deliver([advisory, misconfiguration], "later-head"),
       { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
@@ -390,7 +394,7 @@ webhook-secret-file = "${token}"
   });
   for (const state of ["open", "closed"]) await t.test(`${state} marker on a later capped page suppresses creation`, async (t) => {
     const f = await fixture(t, { existing: [
-      { number: 1, body: "unrelated", state: "open" }, { number: 2, body: null, state: "closed" },
+      { number: 1, body: "unrelated", state: "open" }, { number: 2, body: null, state: "open" },
       { number: 3, body: filingMarker(advisory, reviewedRepository), state },
     ] });
     assert.deepEqual(await f.deliver([advisory]), { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
@@ -417,6 +421,7 @@ webhook-secret-file = "${token}"
     ["wrong service identity", { wrongLogin: true }, /identity does not match/, 0],
     ["malformed marker list", { malformed: true }, /issue markers could not be read/, 0],
     ["stored content mismatch", { corruptWrite: true }, /read-back does not match/, 1],
+    ["read-back author differs from authenticated account", { wrongReadBackAuthor: true }, /read-back does not match/, 1],
     ["repeated non-empty page", { repeatPages: true, existing: [{ body: "unrelated" }] }, /issue markers could not be read/, 0],
   ]) await t.test(name, async (t) => {
     const f = await fixture(t, options);
