@@ -78,9 +78,9 @@ func latestOwnedStatus(snapshot forge.Snapshot, botLogin, statusContext string) 
 
 func continuationPriority(snapshot forge.Snapshot, botLogin, statusContext string) int {
 	latest, found := latestOwnedStatus(snapshot, botLogin, statusContext)
-	if found && (latest.Description == product.Incomplete().Description() ||
-		latest.Description == product.Working().Description() ||
-		latest.Description == product.Continuation().Description()) {
+	state, recognised := product.StateForDescription(latest.Description)
+	if found && recognised && (state == product.Incomplete() ||
+		state == product.Working() || state == product.Continuation()) {
 		return 0
 	}
 	return 1

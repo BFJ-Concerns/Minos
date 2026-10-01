@@ -76,12 +76,18 @@ func (a *Adapter) Claim(ctx context.Context, repository Repository, pullRequest 
 }
 
 func (a *Adapter) SetProductStatus(ctx context.Context, guard Guard, state product.State) WriteResult {
+	return a.SetProductStatusWithDescription(ctx, guard, state, state.Description())
+}
+
+// SetProductStatusWithDescription carries the condition behind a product outcome
+// through the same guarded, read-back-confirmed write as the default description.
+func (a *Adapter) SetProductStatusWithDescription(ctx context.Context, guard Guard, state product.State, description string) WriteResult {
 	if !state.Valid() {
 		return WriteResult{Outcome: WriteRejected, Reason: "invalid product state"}
 	}
 	out, err := a.runner.Run(ctx, RunRequest{
 		Operation: "guarded-set-status",
-		Arguments: append(a.guardArguments(guard), a.statusContext, state.ForgeState(), state.Description()),
+		Arguments: append(a.guardArguments(guard), a.statusContext, state.ForgeState(), description),
 		Env:       map[string]string{"MINOS_STATUS_CONTEXT": a.statusContext},
 	})
 	return decodeWriteResult(out, err)
