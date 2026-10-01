@@ -1175,11 +1175,16 @@ func TestSpawnRunUsesConfiguredRunCeilings(t *testing.T) {
 func TestCaptureStderrRestoresAfterGoexit(t *testing.T) {
 	original := os.Stderr
 	var captured *os.File
+	var pipe string
+	var inspectErr error
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		captureStderr(t, func() {
 			captured = os.Stderr
+			if runtime.GOOS == "linux" {
+				pipe, inspectErr = os.Readlink(fmt.Sprintf("/proc/self/fd/%d", captured.Fd()))
+			}
 			runtime.Goexit()
 		})
 	}()
@@ -1191,5 +1196,27 @@ func TestCaptureStderrRestoresAfterGoexit(t *testing.T) {
 	}
 	if _, err := captured.WriteString("after exit"); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("capture writer after Goexit = %v, want closed pipe", err)
+	}
+	if runtime.GOOS != "linux" {
+		return // Stderr and writer closure remain covered on every platform.
+	}
+	if inspectErr != nil {
+		t.Fatal(inspectErr)
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if os.IsNotExist(err) { // ReadDir's own descriptor may already be closed.
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target == pipe {
+			t.Fatalf("capture pipe %s remains open at descriptor %s after Goexit", pipe, entry.Name())
+		}
 	}
 }
