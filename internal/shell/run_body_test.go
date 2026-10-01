@@ -313,11 +313,11 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 		{
 			name: "lead engine this build cannot run",
 			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
-				fixture.appendConfig(t, map[string]string{"MINOS_LEAD_ENGINE": "codex"})
+				fixture.appendConfig(t, map[string]string{"MINOS_LEAD_ENGINE": "unsupported"})
 				return nil
 			},
 			wantStage: "configuration",
-			wantCause: "MINOS_LEAD_ENGINE must be claude",
+			wantCause: "MINOS_LEAD_ENGINE must be claude or codex; the unsupported lead is not available in this build",
 		},
 		{
 			name: "Claude seed copy",
@@ -1084,6 +1084,7 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 }
 
 type runBodyFixture struct {
+	trace             bool
 	root              string
 	configRoot        string
 	runDir            string
@@ -1383,6 +1384,9 @@ func (f runBodyFixture) executeContext(ctx context.Context, extraEnv map[string]
 	}
 	script := filepath.Join("..", "..", "scripts", "run-body", "run-body")
 	cmd := exec.CommandContext(ctx, script)
+	if f.trace {
+		cmd = exec.CommandContext(ctx, "sh", "-x", script)
+	}
 	cmd.Env = environmentWithOverrides(runEnv)
 	return cmd.CombinedOutput()
 }
@@ -1614,5 +1618,134 @@ func killRecordedProcesses(path string) {
 		if err == nil {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
+	}
+}
+
+// The stub supplies CLI behaviour; assertions read the real run body's
+// arguments, captured output, state mapping and process cleanup.
+func newCodexRunBodyFixture(t *testing.T) runBodyFixture {
+	t.Helper()
+	fixture := newRunBodyFixture(t)
+	codexStub := filepath.Join(fixture.root, "codex")
+	writeScript(t, codexStub, `#!/usr/bin/env sh
+set -eu
+record="${MINOS_TEST_RECORD:?}"
+printf '%s\n' "$@" >"$record.argv"
+env | sort >"$record.worker-env"
+printf '%s\n' "$$" >"$record.pids"
+printf '%s\n' '{"type":"thread.started","thread_id":"stub-thread"}'
+printf 'Codex diagnostic\n' >&2
+if [ "${MINOS_TEST_CODEX_HANG:-}" = 1 ]; then
+  exec sleep 300
+fi
+if [ -n "${MINOS_TEST_COMPLETION_MARKER:-}" ]; then
+  printf '%s\n' "$MINOS_TEST_COMPLETION_MARKER" >"$MINOS_RUN_DIR/lead-complete"
+fi
+exit "${MINOS_TEST_CODEX_EXIT:-0}"
+`)
+	fixture.appendConfig(t, map[string]string{
+		"MINOS_LEAD_ENGINE": "codex", "MINOS_CODEX": codexStub,
+		"MINOS_LEAD_MODEL": "", "MINOS_CLAUDE": "", "MINOS_CLAUDE_CONFIG_SEED": "",
+	})
+	return fixture
+}
+
+func TestRunBodyCodexLaunch(t *testing.T) {
+	for _, model := range []string{"", "configured-codex-model"} {
+		name := model
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture := newCodexRunBodyFixture(t)
+			if model != "" {
+				fixture.appendConfig(t, map[string]string{"MINOS_LEAD_MODEL": model})
+			}
+			fixture.runWithin(t, 10*time.Second, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+			wantModel := model
+			if wantModel == "" {
+				wantModel = "gpt-6-sol"
+			}
+			argv, err := os.ReadFile(fixture.record + ".argv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			instruction, err := os.ReadFile(fixture.instructionPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"exec", "--model", wantModel, "--dangerously-bypass-approvals-and-sandbox", "--cd", fixture.runDir, "--json", strings.TrimRight(string(instruction), "\n")}
+			if got := strings.Split(strings.TrimSuffix(string(argv), "\n"), "\n"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("Codex argv = %q, want %q", got, want)
+			}
+			assertContainsFile(t, fixture.record+".worker-env", "CODEX_HOME="+filepath.Join(fixture.runDir, "home", ".codex"))
+			assertContainsFile(t, fixture.record+".worker-env", "MINOS_PROVISIONED_ENGINES=codex\n")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "codex-lead.jsonl"), `{"type":"thread.started","thread_id":"stub-thread"}`)
+			assertContainsFile(t, filepath.Join(fixture.runDir, "codex-lead.stderr"), "Codex diagnostic")
+			assertRegularFile(t, filepath.Join(fixture.runDir, "home", ".codex", "auth.json"))
+			if _, err := os.Stat(filepath.Join(fixture.runDir, "home", ".claude", ".credentials.json")); !os.IsNotExist(err) {
+				t.Fatalf("Claude seed unexpectedly copied: %v", err)
+			}
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+func TestRunBodyCodexTerminalState(t *testing.T) {
+	for _, test := range []struct{ code, state string }{{"0", "stopped"}, {"23", "failed"}} {
+		t.Run(test.state, func(t *testing.T) {
+			fixture := newCodexRunBodyFixture(t)
+			fixture.trace = true
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			output, err := fixture.executeContext(ctx, map[string]string{"MINOS_TEST_CODEX_EXIT": test.code})
+			if err != nil {
+				t.Fatalf("run-body failed handling terminal Codex: %v\n%s", err, output)
+			}
+			// Shell tracing observes the supervisor's actual state assignment, not
+			// a state invented by the CLI fixture. Terminal state alone retains the
+			// existing supervisor exit contract; it is not lifecycle completion.
+			if !strings.Contains(string(output), "agent_state="+test.state) {
+				t.Fatalf("supervisor did not observe %s\n%s", test.state, output)
+			}
+			assertContainsFile(t, filepath.Join(fixture.runDir, "codex-lead.exit"), test.code+"\n")
+			assertRegularFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"))
+			if _, err := os.Stat(filepath.Join(fixture.runDir, "lead-complete")); !os.IsNotExist(err) {
+				t.Fatalf("terminal CLI exit manufactured completion: %v", err)
+			}
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+func TestRunBodyCodexSilence(t *testing.T) {
+	fixture := newCodexRunBodyFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := fixture.executeContext(ctx, map[string]string{"MINOS_TEST_CODEX_HANG": "1", "MINOS_LEAD_SILENCE_TIMEOUT": "1", "MINOS_CLAUDE_POLL_SECONDS": "0.05"})
+	if ctx.Err() != nil {
+		t.Fatalf("supervisor failed to stop silent Codex: %v\n%s", ctx.Err(), output)
+	}
+	if err == nil {
+		t.Fatalf("silent Codex run succeeded\n%s", output)
+	}
+	assertFailureLine(t, fixture.failureLog, "stage=lead-supervision", "last state: running")
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyCodexRequiresExecutableAndSeed(t *testing.T) {
+	for _, test := range []struct{ variable, cause string }{{"MINOS_CODEX", "MINOS_CODEX is required"}, {"MINOS_CODEX_CONFIG_SEED", "MINOS_CODEX_CONFIG_SEED is required: the lead runs on codex"}} {
+		t.Run(test.variable, func(t *testing.T) {
+			fixture := newCodexRunBodyFixture(t)
+			fixture.appendConfig(t, map[string]string{test.variable: ""})
+			output, err := fixture.execute(nil)
+			if err == nil {
+				t.Fatalf("run-body accepted missing %s\n%s", test.variable, output)
+			}
+			assertFailureLine(t, fixture.failureLog, "stage=configuration", test.cause)
+			if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("Codex launched despite missing configuration: %v", err)
+			}
+		})
 	}
 }
