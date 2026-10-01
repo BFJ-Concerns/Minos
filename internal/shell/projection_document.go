@@ -10,16 +10,16 @@ import (
 
 // publishProjectionDocument replaces operator residue only after the complete
 // document is written and closed. Failed publication preserves the prior record.
-func publishProjectionDocument(path string, document any, rename func(string, string) error) error {
+func publishProjectionDocument(directory, filename string, document any, rename func(string, string) error) error {
 	content, err := json.Marshal(document)
 	if err != nil {
 		return fmt.Errorf("encode projection document: %w", err)
 	}
-	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return fmt.Errorf("create projection directory: %w", err)
 	}
-	prefix := strings.TrimSuffix(filepath.Base(path), ".json")
+	path := filepath.Join(directory, filename)
+	prefix := strings.TrimSuffix(filename, ".json")
 	temporary, err := os.CreateTemp(directory, prefix+"-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create projection temporary file: %w", err)

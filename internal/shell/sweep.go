@@ -140,7 +140,7 @@ var renameSweepDeferrals = os.Rename
 func publishSweepDocument(cfg ServiceConfig, document sweepDeferralDocument) error {
 	document.Kind = sweepDeferralDocumentKind
 	document.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-	return publishProjectionDocument(sweepDeferralsPath(cfg), document, renameSweepDeferrals)
+	return publishProjectionDocument(cfg.Runs.Dir, sweepDeferralsFilename, document, renameSweepDeferrals)
 }
 
 // orderSweepCandidates keeps continuation priority absolute, then within each

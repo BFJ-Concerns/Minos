@@ -54,6 +54,7 @@ type statusDocument struct {
 }
 
 const sweepDeferralDocumentKind = "minos-sweep-deferrals-v1"
+const sweepDeferralsFilename = ".sweep-deferrals.json"
 
 // sweepDeferralDocument is the sweep's one-pass operator record. Its
 // CompletedAt is deliberately written by the sweep, rather than inferred by
@@ -245,7 +246,7 @@ func statusSnapshot(ctx context.Context, cfg ServiceConfig) (statusDocument, err
 }
 
 func sweepDeferralsPath(cfg ServiceConfig) string {
-	return filepath.Join(cfg.Runs.Dir, ".sweep-deferrals.json")
+	return filepath.Join(cfg.Runs.Dir, sweepDeferralsFilename)
 }
 
 // A failed read is intentionally absent from the projection. A stale, whole

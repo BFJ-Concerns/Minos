@@ -87,3 +87,14 @@ func TestProjectionHeartbeatAtomicReplacement(t *testing.T) {
 		t.Fatalf("failed replacement left temporary files: %v", entries)
 	}
 }
+
+func TestProjectionHeartbeatRequiresStateDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := ServiceConfig{}
+	if err := publishReceiverHeartbeat(cfg, "delivery", "local", ""); err == nil {
+		t.Fatal("heartbeat without a state directory succeeded")
+	}
+	if _, err := os.Stat(receiverHeartbeatFilename); !os.IsNotExist(err) {
+		t.Fatalf("heartbeat without a state directory wrote local residue: %v", err)
+	}
+}
