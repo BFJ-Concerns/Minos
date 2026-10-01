@@ -1,4 +1,7 @@
 {
+  "filing": {
+    "issue": true
+  },
   "review-comments": {
     "out-of-hunk-anchoring": true
   }

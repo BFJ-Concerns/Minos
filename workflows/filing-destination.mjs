@@ -6,7 +6,7 @@
 // delivery stays in the run record and never falls back to another surface.
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
@@ -182,6 +182,36 @@ async function deliverToFile({ destination, entries, attribution, reviewedReposi
   return { kind: "file", outcome: "unfiled", reason: `filing to ${location} failed: ${lastFailure}` };
 }
 
+// The forge command owns both marker lookup and the durable write. Temporary
+// payloads stay under the run directory, separate from any guidance clone.
+async function deliverToIssue({ destination, entries, attribution, reviewedRepository, runDir }) {
+  const location = destination.repository;
+  let written = 0;
+  let payloadDir;
+  try {
+    if (!process.env.MINOS_BIN) throw new Error("MINOS_BIN is required for issue filing");
+    mkdirSync(join(runDir, "filing"), { recursive: true });
+    payloadDir = mkdtempSync(join(runDir, "filing", "issue-"));
+    const titleFile = join(payloadDir, "title");
+    const bodyFile = join(payloadDir, "body");
+    for (const entry of entries) {
+      writeFileSync(titleFile, entry.title, { mode: 0o600 });
+      writeFileSync(bodyFile, `${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}\n`, { mode: 0o600 });
+      const result = JSON.parse(execFileSync(process.env.MINOS_BIN,
+        ["forge", "file-issue", location, titleFile, bodyFile],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+      if (result.outcome !== "applied" || ![0, 1].includes(result.written))
+        throw new Error(result.reason || "issue write was not confirmed");
+      written += result.written;
+    }
+    return { kind: "issue", outcome: "filed", written, location };
+  } catch (error) {
+    return { kind: "issue", outcome: "unfiled", written, reason: `filing to ${location} failed: ${describe(error)}` };
+  } finally {
+    if (payloadDir) rmSync(payloadDir, { recursive: true, force: true });
+  }
+}
+
 // Delivers `entries` to `destination`. `source` attributes the material to
 // the run's pull request; `reviewedRepository` is the owner/name the file
 // kind writes to when no repository is named; `identity` signs the commit;
@@ -214,5 +244,6 @@ export async function deliverFilingEntries({
       return { kind, outcome: "unfiled", reason: "filing to the reviewed repository needs the pull-request branch and the push guard (protection)" };
     return deliverToFile({ destination, entries, attribution, reviewedRepository, apiBase, token, runDir, identity, protection });
   }
+  if (kind === "issue") return deliverToIssue({ destination, entries, attribution, reviewedRepository, runDir });
   return { kind, outcome: "unfiled", reason: `the ${kind} filing kind is not implemented in this build; the entries stay in the run record` };
 }

@@ -17,13 +17,30 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|reaction|reaction-remove")
+		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|reaction|reaction-remove|file-issue")
 	}
 	adapter, guard, _, err := leadForge()
 	if err != nil {
 		return err
 	}
 	switch args[0] {
+	case "file-issue":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: minos forge file-issue REPOSITORY TITLE_FILE BODY_FILE")
+		}
+		if !repositoryName.MatchString(args[1]) {
+			return fmt.Errorf("filing repository must be owner/name")
+		}
+		owner, name, _ := strings.Cut(args[1], "/")
+		title, err := os.ReadFile(args[2])
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(args[3])
+		if err != nil {
+			return err
+		}
+		return emitForgeResult(stdout, "file-issue", adapter.FileIssue(ctx, forge.Repository{Owner: owner, Name: name}, string(title), string(body)))
 	case "snapshot":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: minos forge snapshot")
