@@ -258,3 +258,25 @@ defined_label_id() {
 missing_label_reason() {
   printf 'label %s is not defined on %s/%s or its organisation; create it there or configure this marker as a reaction' "$3" "$1" "$2"
 }
+
+# commit_statuses prints the commit's complete normalised status history,
+# newest id first, refusing records whose identity cannot be used by readers.
+commit_statuses() {
+  status_path="/api/v1/repos/$1/$2/commits/$3/statuses"
+  status_all='[]'
+  status_previous=''
+  status_page=1
+  while :; do
+    status_current="$(api GET "${status_path}?limit=50&page=${status_page}")" || return 1
+    ! repeats_previous_page "$status_current" "$status_previous" || break
+    status_count="$(printf '%s' "$status_current" | jq 'if type == "array" then length else error("expected status array") end')" || return 1
+    [ "$status_count" -gt 0 ] || break
+    status_all="$(jq -cn --argjson all "$status_all" --argjson page "$status_current" '$all + $page')" || return 1
+    status_previous="$status_current"
+    status_page=$((status_page + 1))
+  done
+  printf '%s' "$status_all" | jq --arg provider forgejo '[.[] |
+    if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
+      {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // "")}
+    end] | sort_by(.id) | reverse'
+}

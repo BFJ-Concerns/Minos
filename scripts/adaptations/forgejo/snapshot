@@ -46,17 +46,7 @@ if [ -n "$dependency_error" ]; then
   dependencies='[]'
 fi
 
-statuses='[]'
-previous=''
-page=1
-while :; do
-  current="$(api GET "/api/v1/repos/${owner}/${repo}/commits/$(printf '%s' "$pr_json" | jq -r '.head.sha')/statuses?limit=50&page=${page}")"
-  ! repeats_previous_page "$current" "$previous" || break
-  [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
-  statuses="$(jq -cn --argjson all "$statuses" --argjson page "$current" '$all + $page')"
-  previous="$current"
-  page=$((page + 1))
-done
+statuses="$(commit_statuses "$owner" "$repo" "$(printf '%s' "$pr_json" | jq -r '.head.sha')")"
 
 reviews='[]'
 previous=''
@@ -70,21 +60,10 @@ while :; do
   page=$((page + 1))
 done
 
-head_repo="$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name // ""')"
 head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
 case "$head_branch" in
   refs/pull/*/head) head_branch="" ;;
 esac
-source_protected=false
-if [ "$head_repo" = "${owner}/${repo}" ] && [ -n "$head_branch" ]; then
-  if source_json="$(api GET "/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$head_branch")" 2>/dev/null)"; then
-    source_protected="$(printf '%s' "$source_json" | jq '.protected // false')"
-  elif [ "$(printf '%s' "$pr_json" | jq -r '.merged // false')" != "true" ]; then
-    echo "snapshot: current same-repository source branch could not be read" >&2
-    exit 1
-  fi
-fi
-
 jq -nc \
   --argjson user "$user_json" \
   --argjson repository "$repository_json" \
@@ -94,9 +73,7 @@ jq -nc \
   --argjson reviews "$reviews" \
   --argjson dependencies "$dependencies" \
   --arg dependency_error "$dependency_error" \
-  --arg head_branch "$head_branch" \
-  --arg provider "forgejo" \
-  --argjson source_protected "$source_protected" '
+  --arg head_branch "$head_branch" '
   {
     authenticated_user: ($user.login // $user.username // ""),
     repository: $repository.full_name,
@@ -105,29 +82,16 @@ jq -nc \
     merged: ($pr.merged // false),
     draft: ($pr.draft // false),
     author: ($pr.user.login // $pr.user.username // ""),
-    mergeable: ($pr.mergeable // false),
     head_sha: $pr.head.sha,
     head_branch: $head_branch,
     target_sha: ($base.commit.id // $base.commit.sha // ""),
     target_branch: $pr.base.ref,
     target_repository: $pr.base.repo.full_name,
-    source_protected: $source_protected,
-    can_merge: ($base.user_can_merge // false),
-    statuses: [$statuses[] |
-      if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
-        {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // "")}
-      end] | sort_by(.id) | reverse,
+    statuses: $statuses,
     labels: [($pr.labels // [])[] | .name] | sort,
     reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // "")}],
     dependencies_available: ($dependency_error == ""),
     dependency_error: $dependency_error,
     open_dependencies: [$dependencies[] | select(.state == "open") |
-      {repository:.repository.full_name, number:.number}] | sort_by(.repository, .number),
-    allowed_merge_methods: ([
-      if ($repository.allow_merge_commits // false) then "merge" else empty end,
-      if ($repository.allow_rebase // false) then "rebase" else empty end,
-      if ($repository.allow_rebase_explicit // false) then "rebase-merge" else empty end,
-      if ($repository.allow_squash_merge // false) then "squash" else empty end,
-      if ($repository.allow_fast_forward_only_merge // false) then "fast-forward-only" else empty end
-    ])
+      {repository:.repository.full_name, number:.number}] | sort_by(.repository, .number)
   }'

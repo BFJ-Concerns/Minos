@@ -2722,14 +2722,13 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, comment)
 	case r.Method == http.MethodGet && strings.Contains(path, "/branches/") && s.branchHead(path) != "":
 		writeFixtureJSON(s.t, w, map[string]any{
-			"commit": map[string]any{"id": s.branchHead(path)}, "protected": false,
-			"user_can_merge": true, "status_check_contexts": []string{},
+			"commit": map[string]any{"id": s.branchHead(path)},
 		})
 	case r.Method == http.MethodGet && strings.Contains(path, "/branches/"):
 		if strings.Contains(path, "refs/pull/") {
 			s.virtualRefLookups++
 		}
-		writeFixtureJSON(s.t, w, map[string]any{"protected": false})
+		writeFixtureJSON(s.t, w, map[string]any{})
 		if s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])] > 0 {
 			s.runPriorityBoundaryMutation()
 		}
