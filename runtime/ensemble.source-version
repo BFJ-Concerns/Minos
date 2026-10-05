@@ -1,4 +1,4 @@
-repository=the skill canon that then carried the ensemble-workflow bundle
-revision=2ae4adbc39ab2ab0e63c3d5b384126462a9b82f1
+repository=BFJ-Concerns/Ensemble-Workflows
+revision=6957209617e2356655d2632932fdb7ae601a5ac1
 bundle=skills/ensemble-workflow/Base/scripts/ensemble.mjs
-bundle-last-changed=465b94b7c68c5d7f33c737ddb3b237c7a4d1d4b6
+bundle-last-changed=6957209617e2356655d2632932fdb7ae601a5ac1
