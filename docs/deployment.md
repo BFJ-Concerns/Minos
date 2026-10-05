@@ -447,7 +447,7 @@ into the runs directory with a `completed_at` timestamp. The document records:
 
 - **`deferrals`** — pull requests the pass deliberately left unstarted, each
   with a `reason` (the precedence-selected one) and `reasons` (every
-  applicable reason from that snapshot): work-in-progress branch prefix,
+  applicable reason from that snapshot): draft, work-in-progress branch prefix,
   completed review marker, or unresolved dependency.
 - **`suppressed`** — pull requests eligible for a run but blocked by the
   concurrency cap or their own active unit, with the blocking unit and detail.
