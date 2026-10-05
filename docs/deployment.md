@@ -80,7 +80,11 @@ so no repository toolchains are needed.
    (path required; repository optional, defaulting to the reviewed
    repository's default branch), `issue` (repository required — the
    owner/name that takes the issues; no path), `pull-request-comment`, or
-   `none`. Unset at both levels, it defaults to `pull-request-comment`. A
+   `none`. Unset at both levels, it defaults to `pull-request-comment`.
+   The `pull-request-comment` kind posts one comment-review carrying the
+   remaining advisory entries after deduplication against the service
+   account's existing review bodies on the pull request; when no entries
+   remain, nothing is posted. It never posts an all-clear comment. A
    file-kind destination is a separate write path committed as
    `service.commit-author-name` (default: the bot login) and
    `service.commit-author-email` (default: the bot login at
@@ -100,7 +104,13 @@ so no repository toolchains are needed.
 
    Every commit status Minos writes carries `service.status-context`
    (default `Minos`), and the sweep's completion marker is read under
-   that context only.
+   that context only. Status Details links point at the pull request with
+   a target-SHA fragment; `[forges.<key>] web-base` sets their host and
+   optional path prefix as an absolute HTTP(S) URL. Unset for a Forgejo
+   forge, the link derives the web host from `api-base` by stripping a
+   trailing `/api/v1`. GitHub links derive the web host from the API base
+   (`https://github.com` for the public API, the Enterprise host
+   otherwise).
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
@@ -221,6 +231,16 @@ so no repository toolchains are needed.
    `/hooks/forgejo` for the shipped Forgejo table, `/hooks/github` for a
    GitHub App — using the matching secret.
 
+Run units, run directories and continuation handoffs include the configured
+forge key in their names (for example `minos-run-forgejo-owner-repo-pr1`), so
+two forges reviewing the same owner/repository namespace cannot collide. Deploy
+with no live run units and no preserved handoff directories carrying the
+older names without the forge key.
+
+A run that exits cleanly triggers one sweep pass (`OnSuccess=minos-sweep.service`),
+so the freed slot is filled without waiting for the next periodic cycle. A
+failed exit does not trigger a sweep.
+
 Each run launches the lead on the configured engine and model. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has
 begun. A lead blocked before its first run-tree change is stopped and recorded
@@ -244,6 +264,11 @@ recording the failure. When workspace
 setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
+Workspace setup resolves clone URLs and credentials through the forge-neutral
+`minos forge repository-metadata` and `minos forge clone-credential` operations
+rather than reading the forge API directly; each adaptation implements both,
+and the credential reaches git only as a `GIT_CONFIG_*` authorisation header,
+never on argv.
 
 After the lead has finished its forge writes, `run-body` streams its report,
 Claude transcripts, Codex rollout JSONLs and Ensemble run records as a zstd tar
@@ -257,7 +282,10 @@ without extracting anything. This presentation archive and its sidecar are
 best-effort and cannot change the run result. Before each reconciliation pass,
 the sweep also salvages dead run directories into the dedicated Minos annexe
 checkout configured by `runs.failures-repo`, attempts to commit and push the
-digest, archives their transcripts, and removes the scratch tree. Active units
+digest, archives their transcripts, and removes the scratch tree.
+`runs.failures-forge` selects the forge whose credential authenticates
+the ledger push; it defaults to the sole configured forge and is required
+when several forges are configured. Active units
 and directories named by valid pending continuation handoffs are preserved.
 Each digest is limited to 256 KiB and reads only the run-local report and
 failure log, Claude transcripts, Codex rollouts and exact Ensemble record tree.
