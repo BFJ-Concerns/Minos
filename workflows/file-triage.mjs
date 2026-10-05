@@ -14,11 +14,11 @@ import { dirname, join } from "node:path";
 import { deliverFilingEntries, validFilingDestination } from "./filing-destination.mjs";
 
 const argv = process.argv.slice(2);
-if (argv.length !== 2 && argv.length !== 3) {
-  process.stderr.write("usage: node workflows/file-triage.mjs ENTRIES_FILE ORIENTATION [CREDENTIAL_FILE]\n");
+if (argv.length !== 2) {
+  process.stderr.write("usage: node workflows/file-triage.mjs ENTRIES_FILE ORIENTATION\n");
   process.exit(2);
 }
-const [entriesPath, orientationPath, credentialFile = null] = argv;
+const [entriesPath, orientationPath] = argv;
 
 function usageError(message) {
   process.stderr.write(`${message}\n`);
@@ -56,8 +56,6 @@ const outcome = await deliverFilingEntries({
   entries,
   source: orientation && orientation.source,
   reviewedRepository: `${requiredEnvironment("MINOS_OWNER")}/${requiredEnvironment("MINOS_REPO_NAME")}`,
-  apiBase: process.env.MINOS_API_BASE || null,
-  credentialFile,
   runDir: requiredEnvironment("MINOS_RUN_DIR"),
   identity: { name: requiredEnvironment("MINOS_COMMIT_AUTHOR_NAME"), email: requiredEnvironment("MINOS_COMMIT_AUTHOR_EMAIL") },
   // The reviewed repository's own clone carries the workspace's push guard:

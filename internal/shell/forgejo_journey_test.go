@@ -1298,6 +1298,72 @@ func TestForgeStatusReadBackIsScopedToPullRequest(t *testing.T) {
 	}
 }
 
+// A run clones through the protocol: `minos forge repository-metadata` and
+// `minos forge clone-credential` run the real Forgejo adaptation, whose
+// lookup authenticates with the forge's token and whose HTTPS credential is
+// that token.
+func TestForgeRepositoryMetadataAndCloneCredentialServeTheRunsClones(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	configureForgeCommandFixture(t, state)
+	state.setSecondaryCloneURL("https://forge.example/minos-e2e-owner/subject-plans.git")
+
+	var stdout bytes.Buffer
+	if err := ForgeCommand(t.Context(), []string{"repository-metadata", "minos-e2e-owner", "subject-plans"}, &stdout); err != nil {
+		t.Fatalf("repository-metadata: %v", err)
+	}
+	var metadata forge.RepositoryMetadata
+	if err := json.Unmarshal(stdout.Bytes(), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata != (forge.RepositoryMetadata{CloneURL: "https://forge.example/minos-e2e-owner/subject-plans.git", DefaultBranch: "main"}) {
+		t.Fatalf("repository metadata = %#v", metadata)
+	}
+	stdout.Reset()
+	if err := ForgeCommand(t.Context(), []string{"repository-metadata", "minos-e2e-owner", "absent"}, &stdout); err == nil || strings.TrimSpace(stdout.String()) != `{"lookup_status":404}` {
+		t.Fatalf("repository metadata for an absent repository: error %v, output %q; want the forge's 404 as data", err, stdout.String())
+	}
+	if err := ForgeCommand(t.Context(), []string{"repository-metadata", "minos-e2e-owner/subject-plans"}, &bytes.Buffer{}); err == nil {
+		t.Fatalf("repository-metadata accepted one argument")
+	}
+
+	stdout.Reset()
+	if err := ForgeCommand(t.Context(), []string{"clone-credential"}, &stdout); err != nil {
+		t.Fatalf("clone-credential: %v", err)
+	}
+	var credential forge.CloneCredential
+	if err := json.Unmarshal(stdout.Bytes(), &credential); err != nil {
+		t.Fatal("clone-credential output is not a credential object")
+	}
+	if credential.Username == "" || credential.Password != "fixture-token" {
+		t.Fatalf("clone credential username = %q, password is the forge token = %t", credential.Username, credential.Password == "fixture-token")
+	}
+
+	// The token is what authorises the lookup: another one is refused.
+	if err := os.WriteFile(state.tokenPath, []byte("another-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgeCommand(t.Context(), []string{"repository-metadata", "minos-e2e-owner", "subject-plans"}, &bytes.Buffer{}); err == nil {
+		t.Fatalf("repository metadata succeeded with a token the forge does not know")
+	}
+}
+
+func TestSnapshotCarriesTheClonesSourceAndTheAuthorsDeclarations(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["title"] = "Fixture change"
+		pullRequest["body"] = "Not in scope: a concrete transport."
+		pullRequest["head"].(map[string]any)["repo"] = map[string]any{"full_name": "forker/subject"}
+	})
+	cfg, _, facts := state.service(t)
+	snapshot, err := currentSnapshot(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Title != "Fixture change" || snapshot.Body != "Not in scope: a concrete transport." || snapshot.HeadRepository != "forker/subject" {
+		t.Fatalf("snapshot title %q, body %q, head repository %q", snapshot.Title, snapshot.Body, snapshot.HeadRepository)
+	}
+}
+
 func TestSnapshotCarriesSortedLabels(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
@@ -2132,11 +2198,18 @@ func fileComposedTriage(t *testing.T, state *forgejoFixtureState, plan map[strin
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The filing reaches the forge through the run's minos binary and the
+	// service configuration it reads, as the run body exports them.
+	binary := buildMinos(t)
+	cfg, _, _ := state.service(t)
+	writeServiceConfig(t, cfg)
 	entries := plan["triage"].(map[string]any)["entries"].(string)
 	filing := exec.CommandContext(t.Context(), "node", filepath.Join(root, "workflows", "file-triage.mjs"), entries, orientationPath)
 	filing.Env = append(os.Environ(),
 		"MINOS_FILING_DESTINATION="+string(destinationJSON),
-		"MINOS_API_BASE="+state.server.URL,
+		"MINOS_BIN="+binary,
+		"MINOS_CONFIG="+cfg.Root,
+		"MINOS_FORGE=forgejo",
 		"MINOS_OWNER=minos-e2e-owner",
 		"MINOS_REPO_NAME=subject",
 		"MINOS_RUN_DIR="+directory,
@@ -2574,6 +2647,14 @@ func (s *forgejoFixtureState) setDependenciesFailure(status int) {
 
 // setSecondaryCloneURL publishes minos-e2e-owner/subject-plans, the
 // secondary repository a configured guidance source may name.
+// setRepositoryCloneURL is the reviewed repository's clone URL as its
+// repository lookup reports it.
+func (s *forgejoFixtureState) setRepositoryCloneURL(cloneURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repository["clone_url"] = cloneURL
+}
+
 func (s *forgejoFixtureState) setSecondaryCloneURL(cloneURL string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2696,6 +2777,10 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject":
 		writeFixtureJSON(s.t, w, s.repository)
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject-plans":
+		if account == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		if s.secondaryCloneURL == "" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return

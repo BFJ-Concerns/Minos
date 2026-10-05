@@ -416,7 +416,7 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 
 func TestRunBodyRecordsRealSetupTargetRefusal(t *testing.T) {
 	server, head, target, environment := refusedTargetForge(t)
-	fixture := realSetupRunBodyFixture(t, server.URL, head, target, environment)
+	fixture := realSetupRunBodyFixture(t, server.Bin, head, target, environment)
 	output, err := fixture.execute(environment)
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 		t.Fatalf("run-body exit = %v, want refused fetch exit 1; output = %s", err, output)
@@ -434,7 +434,7 @@ func TestRunBodyRecordsRealSetupTargetRefusal(t *testing.T) {
 
 func TestRunBodyRecordsProtocolV2TargetRefusal(t *testing.T) {
 	server, head, target, environment := missingTargetForge(t)
-	fixture := realSetupRunBodyFixture(t, server.URL, head, target, environment)
+	fixture := realSetupRunBodyFixture(t, server.Bin, head, target, environment)
 	output, err := fixture.execute(environment)
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 128 {
 		t.Fatalf("run-body exit = %v, want protocol v2 refusal exit 128; output = %s", err, output)
@@ -512,7 +512,7 @@ func TestRunBodyKeepsGenericCauseForTargetTransportFailure(t *testing.T) {
 	// A missing server repository fails the actual Git transport, without
 	// refusing a particular unadvertised object.
 	writeScript(t, environment["GIT_SSH_COMMAND"], "#!/usr/bin/env sh\nexec git upload-pack '"+filepath.Join(t.TempDir(), "missing-repository")+"'\n")
-	fixture := realSetupRunBodyFixture(t, server.URL, head, target, environment)
+	fixture := realSetupRunBodyFixture(t, server.Bin, head, target, environment)
 	output, err := fixture.execute(environment)
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 128 {
 		t.Fatalf("run-body exit = %v, want transport failure exit 128; output = %s", err, output)
@@ -523,20 +523,15 @@ func TestRunBodyKeepsGenericCauseForTargetTransportFailure(t *testing.T) {
 	}
 }
 
-func realSetupRunBodyFixture(t *testing.T, apiBase string, head, target string, environment map[string]string) runBodyFixture {
+func realSetupRunBodyFixture(t *testing.T, minosBin string, head, target string, environment map[string]string) runBodyFixture {
 	t.Helper()
 	fixture := newRunBodyFixture(t)
 	setup, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "setup-workspace"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.appendConfig(t, map[string]string{"MINOS_SETUP_WORKSPACE": setup})
-	credential := filepath.Join(fixture.root, "forge.token")
-	if err := os.WriteFile(credential, []byte("forge-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	fixture.appendConfig(t, map[string]string{"MINOS_SETUP_WORKSPACE": setup, "MINOS_BIN": minosBin})
 	for key, value := range map[string]string{
-		"MINOS_API_BASE": apiBase, "MINOS_CREDENTIAL_FILE": credential,
 		"MINOS_HEAD_SHA": head, "MINOS_TARGET_SHA": target, "MINOS_HEAD_BRANCH": "feature",
 		"MINOS_GUIDANCE_SOURCES": "[]",
 	} {

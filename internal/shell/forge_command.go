@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,7 +18,50 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|marker|file-issue")
+		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|marker|file-issue|repository-metadata|clone-credential")
+	}
+	// Repository metadata and the clone credential are not about the pull
+	// request, so they need the run's forge but none of its coordinates.
+	switch args[0] {
+	case "repository-metadata":
+		if len(args) != 3 || !repositoryName.MatchString(args[1]+"/"+args[2]) {
+			return fmt.Errorf("usage: minos forge repository-metadata OWNER REPO")
+		}
+		adapter, _, err := runForge()
+		if err != nil {
+			return err
+		}
+		metadata, err := adapter.RepositoryMetadata(ctx, forge.Repository{Owner: args[1], Name: args[2]})
+		// The forge's answer is the caller's to word, so it travels as data.
+		var lookup *forge.RepositoryLookupError
+		if errors.As(err, &lookup) {
+			if encodeErr := json.NewEncoder(stdout).Encode(map[string]int{"lookup_status": lookup.Status}); encodeErr != nil {
+				return encodeErr
+			}
+		}
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(metadata)
+	case "clone-credential":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: minos forge clone-credential")
+		}
+		adapter, _, err := runForge()
+		if errors.Is(err, errEmptyForgeCredential) {
+			if encodeErr := json.NewEncoder(stdout).Encode(map[string]string{"refusal": "empty-credential"}); encodeErr != nil {
+				return encodeErr
+			}
+		}
+		if err != nil {
+			return err
+		}
+		credential, err := adapter.CloneCredential(ctx)
+		if err != nil {
+			return err
+		}
+		// The secret's one destination: the caller's capture of stdout.
+		return json.NewEncoder(stdout).Encode(credential)
 	}
 	adapter, guard, adaptationDirectory, err := leadForge()
 	if err != nil {
@@ -176,12 +220,7 @@ func markersFromEnvironment() (Markers, error) {
 // and returns the adaptation directory so the review boundary can read what
 // that forge declares it can anchor.
 func leadForge() (*forge.Adapter, forge.Guard, string, error) {
-	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
-	if err != nil {
-		return nil, forge.Guard{}, "", err
-	}
-	forgeName := os.Getenv("MINOS_FORGE")
-	adapter, err := newBehaviouralForge(cfg, forgeName)
+	adapter, adaptationDirectory, err := runForge()
 	if err != nil {
 		return nil, forge.Guard{}, "", err
 	}
@@ -196,7 +235,22 @@ func leadForge() (*forge.Adapter, forge.Guard, string, error) {
 	if guard.Repository.Owner == "" || guard.Repository.Name == "" {
 		return nil, forge.Guard{}, "", fmt.Errorf("pull-request environment is incomplete")
 	}
-	return adapter, guard, cfg.Forges[forgeName].Adaptation, nil
+	return adapter, guard, adaptationDirectory, nil
+}
+
+// runForge builds the adapter for the forge this run is configured against
+// and returns its adaptation directory.
+func runForge() (*forge.Adapter, string, error) {
+	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
+	if err != nil {
+		return nil, "", err
+	}
+	forgeName := os.Getenv("MINOS_FORGE")
+	adapter, err := newBehaviouralForge(cfg, forgeName)
+	if err != nil {
+		return nil, "", err
+	}
+	return adapter, cfg.Forges[forgeName].Adaptation, nil
 }
 
 func namedProductState(name string) (product.State, bool) {
