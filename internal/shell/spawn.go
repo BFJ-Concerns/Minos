@@ -277,6 +277,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=RuntimeMaxSec=" + cfg.runDurationCeiling(),
 		"--slice=" + runsSliceName,
 		"--property=MemoryMax=" + fmt.Sprintf("%dG", cfg.runMemoryEnvelopeGiB()),
+		"--property=OnSuccess=minos-sweep.service",
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)
