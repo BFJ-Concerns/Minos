@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
+import { reviewContracts } from "./review-contracts.mjs";
 import { routingFromEnvironment } from "./role-routing.mjs";
 
 const target = process.argv[2];
@@ -59,6 +60,7 @@ if (!target || !head || process.argv.length > 4) {
     routing,
     ...(pullRequest === undefined ? {} : { pullRequest }),
     instructionBriefs,
+    contracts: reviewContracts(),
   }) + "\n");
 } catch (error) {
   // Every input failure is a usage error: the lifecycle reads exit 2 as

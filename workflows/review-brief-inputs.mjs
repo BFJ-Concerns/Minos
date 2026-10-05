@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { briefRecords } from "./brief-dispositions.mjs";
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
+import { reviewContracts } from "./review-contracts.mjs";
 import { routingFromEnvironment } from "./role-routing.mjs";
 
 const [target, head, ...rest] = process.argv.slice(2);
@@ -90,6 +91,7 @@ if (argumentError) {
     guidance,
     routing,
     instructionBriefs,
+    contracts: reviewContracts(),
   };
 
   process.stdout.write(JSON.stringify(workflowInput) + "\n");

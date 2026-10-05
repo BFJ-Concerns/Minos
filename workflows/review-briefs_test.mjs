@@ -16,6 +16,7 @@ import { resolveRouting } from "./role-routing.mjs";
 const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 
 import { briefRecords } from "./brief-dispositions.mjs";
+import { reviewContracts } from "./review-contracts.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
@@ -79,6 +80,7 @@ function args(overrides = {}) {
       { path: "workflows/review-briefs/repository.md", readPath: "/minos/workflows/review-briefs/repository.md", content: "MINOS_REPOSITORY_BRIEF_V1" },
       { path: "workflows/review-briefs/verifier.md", readPath: "/minos/workflows/review-briefs/verifier.md", content: "MINOS_ADVERSARIAL_VERIFIER_V1" },
     ],
+    contracts: reviewContracts(),
     ...overrides,
   };
   return { ...merged, briefs: briefRecords(merged.briefs, merged.occasion || null, merged.changedPaths) };
