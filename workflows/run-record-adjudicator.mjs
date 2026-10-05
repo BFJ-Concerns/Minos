@@ -306,10 +306,6 @@ export async function adjudicate({ envelope, recordDir }) {
   });
 
   const evidenceByLabel = new Map(modelEvidence.map((entry) => [entry.label, entry]));
-  // A run owns exactly one pull request: an envelope still carrying a grouped
-  // members record is malformed, not tolerated.
-  if (envelope.members !== undefined)
-    incomplete.push("envelope carries a members record; grouped runs no longer exist");
   const proposedFindings = Array.isArray(envelope.proposedFindings) ? envelope.proposedFindings : [];
   const adjudicated = proposedFindings.map((proposed, index) => {
     if (!validProposedFinding(proposed)) {
