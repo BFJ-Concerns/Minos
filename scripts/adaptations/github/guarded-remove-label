@@ -1,0 +1,53 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; name="$7"
+
+if [ -z "$name" ]; then
+  write_result rejected "label name is required"
+  exit 0
+fi
+
+if issue_label_id "$owner" "$repo" "$pr" "$name" >/dev/null; then
+  :
+else
+  presence=$?
+  if [ "$presence" -eq 1 ]; then
+    write_result applied "label already absent"
+  else
+    write_result uncertain "label read-back could not be confirmed"
+  fi
+  exit 0
+fi
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ] && guard_merged_pull_request "$owner" "$repo" "$pr" "$head" "$login"; then
+    :
+  else
+    merged_status=$?
+    if [ "$status" -eq 1 ] && [ "$merged_status" -eq 1 ]; then
+      write_result rejected "$guard_reason"
+    else
+      write_result uncertain "forge guard could not be confirmed"
+    fi
+    exit 0
+  fi
+fi
+
+api DELETE "/repos/${owner}/${repo}/issues/${pr}/labels/$(urlencode "$name")" >/dev/null 2>&1 || true
+
+if issue_label_id "$owner" "$repo" "$pr" "$name" >/dev/null; then
+  write_result uncertain "label removal could not be discovered"
+else
+  presence=$?
+  if [ "$presence" -eq 1 ]; then
+    write_result applied
+  else
+    write_result uncertain "label read-back could not be confirmed"
+  fi
+fi

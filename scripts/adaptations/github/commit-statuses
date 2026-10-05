@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+commit_statuses "$1" "$2" "$3"

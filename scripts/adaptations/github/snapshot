@@ -14,7 +14,7 @@ base_ref="$(printf '%s' "$pr_json" | jq -r '.base.ref')"
 base_json="$(api GET "/repos/${owner}/${repo}/branches/$(urlencode "$base_ref")")"
 head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
 
-statuses="$(collect "/repos/${owner}/${repo}/commits/${head_sha}/statuses")"
+statuses="$(commit_statuses "$owner" "$repo" "$head_sha")"
 reviews="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews")"
 
 # head_branch is the source branch's name wherever it lives — the run
@@ -34,7 +34,7 @@ jq -nc \
   --argjson statuses "$statuses" \
   --argjson reviews "$reviews" \
   --arg head_branch "$head_branch" \
-  --arg provider "github" '
+  '
   # GitHub names review states differently from the protocol, whose
   # vocabulary Forgejo happens to share: the sweep recognises a terminal
   # review by APPROVED or REQUEST_CHANGES.
@@ -55,10 +55,7 @@ jq -nc \
     target_sha: ($base.commit.sha // ""),
     target_branch: $pr.base.ref,
     target_repository: $pr.base.repo.full_name,
-    statuses: [$statuses[] |
-      if ((.id | type) != "number" or .id <= 0) then error("GitHub status is missing a positive id") else
-        {id, provider:$provider, context, state, creator:(.creator.login // ""), description:(.description // ""), target_url:(.target_url // "")}
-      end] | sort_by(.id) | reverse,
+    statuses: $statuses,
     labels: [($pr.labels // [])[] | .name] | sort,
     reviews: [$reviews[] | {id, state: (.state | protocol_review_state), commit_id, body:(.body // ""), user:(.user.login // "")}],
     dependencies_available: true,
