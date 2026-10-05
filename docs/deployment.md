@@ -36,13 +36,14 @@ toolchains are needed.
    installed systemd units carry `Documentation=file:/opt/minos/docs/deployment.md`,
    and the runtime installer does not install them. Install
    `deploy/environment.d/50-minos-path.conf` as
-   `~/.config/environment.d/50-minos-path.conf` (replacing the shipped
-   absolute paths with the deployment user's), then run
-   `systemctl --user daemon-reload` and re-login or `systemctl --user
-   import-environment PATH` so the user manager picks up the new PATH.
-   Transient run units inherit PATH from the user manager; without this
-   file, per-user CLI binaries (`~/.local/bin`, `~/.cargo/bin`) are
-   invisible to runs.
+   `~/.config/environment.d/50-minos-path.conf` — the shipped file already
+   uses `${HOME}` for the per-user bin directories, so it is portable
+   without edits. After installing, run `systemctl --user daemon-reload`
+   and re-login (or `systemctl --user import-environment PATH` to apply
+   an existing shell PATH immediately). Transient run units inherit PATH
+   from the user manager; the manager's default PATH omits per-user
+   directories like `~/.local/bin` and `~/.cargo/bin`, where the agent
+   CLIs are commonly installed.
 3. Run `scripts/install-review-runtime /opt/minos`. Before installing
    anything it checks the box's tool versions against
    `scripts/expected-tool-versions` — the set the repository gate runs
@@ -236,10 +237,11 @@ toolchains are needed.
 
    Create the webhook secret and forge credential files separately. For a
    Forgejo forge the credential file holds the service account's access
-   token. The token needs repository read (cloning, branch and status
-   reads), issue read and write (reactions, labels, dependency lookups,
-   alert issues), and — where reviews are published — pull-request read and
-   write (requested reviewers, reviews, statuses). The account named by
+   token. The token needs these Forgejo scopes: `read:user` (identity
+   verification), `write:repository` (cloning, branch reads, commit
+   statuses, requested reviewers, and reviews), and `write:issue`
+   (reactions, labels, dependency lookups, and alert issues). The account
+   named by
    `service.bot-login` must match the token's authenticated identity; the
    claim adapter rejects a mismatch. The Forgejo instance must expose the
    issue-dependencies API (`/api/v1/repos/.../issues/.../dependencies`); a
@@ -332,7 +334,8 @@ best-effort and cannot change the run result. Before each reconciliation pass,
 the sweep also salvages dead run directories into the dedicated checkout
 configured by `runs.failures-repo`, attempts to commit and push the
 digest, archives their transcripts, and removes the scratch tree. The
-checkout must already contain a regular `FAILURES.md` — the provisioner
+checkout must be outside `runs.dir` (the service rejects one inside it)
+and must already contain a regular `FAILURES.md` — the provisioner
 (`provision-failure-checkout`) clones and configures git but does not
 create that file; an empty repository or one without it stops the salvage.
 Residue from a failed salvage is preserved in the run directory.
@@ -496,18 +499,27 @@ Briefs are regular files ending in lowercase `.md` under the `.review/`
 directory, discovered recursively in deterministic path order. Symlinks and
 files with uppercase extensions (`.MD`, `.Md`) are not discovered. A brief's
 containing directory relative to `.review/` becomes its path scope: for
-example, `.review/internal/security.md` scopes to `internal/` — it engages
-only when the diff touches files under that directory. A brief at the root of
-`.review/` (such as `.review/prose.md`) has no path scope and engages by its
-other triggers alone.
+example, `.review/internal/security.md` scopes to `internal/`. A brief at
+the root of `.review/` (such as `.review/prose.md`) has no path scope.
 
 ### Frontmatter
 
-A brief may open with a frontmatter block: LF-delimited lines before the
-body, each a `key: value` pair. The parser is not a general YAML parser;
-it reads scalar pairs only. Familiar YAML features — lists, quoted values,
-CRLF line endings — produce different or default dispositions rather than an
-error.
+A brief may open with a frontmatter block delimited by `---` fences:
+
+```markdown
+---
+relevance: Security-sensitive changes
+occasion: audit
+---
+Review body starts here.
+```
+
+The opening `---` must be the first line of the file, followed by
+LF-delimited `key: value` pairs and a closing `---`. Lines outside the
+fences are body text. The parser is not a general YAML parser; it reads
+scalar pairs only. Familiar YAML features — lists, quoted values, CRLF
+line endings — produce different or default dispositions rather than an
+error. Omitting the fences causes all fields to take their defaults.
 
 Recognised fields:
 
@@ -519,17 +531,26 @@ Recognised fields:
   on a run that names a matching occasion; the ordinary lifecycle invocation
   supplies no occasion, so an occasion-restricted brief is skipped by default.
 - `extent` — `diff` (the default) or `full`. A full-extent brief grounds the
-  review on the whole tree, not just the changed files.
+  review on all tracked files within the brief's directory scope, not just
+  the changed files; it does not escape the scope to the whole tree.
 - `sweep` — `per-file` (the default) or `whole-tree`.
 
 ### Engagement rules
 
 A root brief with no `relevance`, no `occasion`, and no path scope is
 deterministically skipped — it has no trigger to engage on. Add at least one
-of those to make it run. When a brief declares `occasion`, the occasion acts
-as a veto: a brief that names occasions runs only when the run's own occasion
-matches one of them; a brief naming no occasion is unrestricted by occasion.
-A matched occasion is itself a satisfied trigger.
+of those to make it run.
+
+A brief engages when any of its triggers is satisfied: changed files within
+its path scope, a declared `relevance`, or a matched `occasion`. A scoped
+brief whose scope is untouched still engages when its relevance or occasion
+matches — path scope limits the files the review reads, not whether the
+brief runs at all.
+
+When a brief declares `occasion`, the occasion acts as a veto: a brief that
+names occasions runs only when the run's own occasion matches one of them;
+a brief naming no occasion is unrestricted by occasion. A matched occasion
+is itself a satisfied trigger.
 
 A brief whose path scope names a directory that does not exist in the
 workspace is reported as a misconfiguration rather than silently skipped.
@@ -550,8 +571,13 @@ every configured source fails, setup stops the run.
 ## Filing deduplication
 
 Each filed entry — whether to a file, an issue, or a pull-request comment —
-carries a hidden HTML comment marker (`<!-- minos:… -->`) derived from the
-finding's kind, title, and location. Deduplication checks the destination for
+carries a hidden HTML comment marker (`<!-- minos:… -->`). The marker's
+identity depends on the entry kind: a review finding keys on kind, reviewed
+repository, path, line, and title; a review-brief misconfiguration keys on
+kind, reviewed repository, brief path, and title; a guidance-source
+misconfiguration keys on kind, reviewed repository, source repository, path,
+and reason — so changing a misconfiguration's reason changes its marker,
+while changing its title does not. Deduplication checks the destination for
 an existing marker before filing. Removing these markers during editing
 removes the deduplication history: subsequent reviews can then file the same
 finding again.
