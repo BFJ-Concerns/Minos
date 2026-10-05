@@ -7,7 +7,8 @@ review from the bot account (Forgejo) or adding the configured in-flight marker
 (both forges) — clones the repository and invokes the shipped review workflows
 through the installed Ensemble CLI and adjudication wrapper. Independent reviewers cover the
 whole diff, with breadth scaled to the diff and the repository's `.review/`
-briefs honoured; by default, the opposite model family verifies every proposed
+briefs honoured (see [brief authoring rules](docs/deployment.md#repository-review-briefs));
+by default, the opposite model family verifies every proposed
 finding — proposing and planning roles run on Codex (`gpt-6-sol`) while the
 verifier runs on Claude (`claude-opus-5-5`), so a finding is checked by the
 family that did not propose it. `[routing]` in `service.toml` overrides any
@@ -64,7 +65,11 @@ with nothing new to file posts no comment.
 Unverified observations stay in the internal run record. If delivery is
 unavailable, the run report records the failure without posting a fallback
 comment. Configuration diagnostics — brief misconfigurations and unreadable
-guidance sources — take the same destination.
+guidance sources — take the same destination. A review is grounded on the
+per-repository guidance sources configured in `service.toml`; when none are
+configured, the first non-empty `AGENTS.md`, `CLAUDE.md` or `README.md` in
+the reviewed repository is used (see
+[guidance sources](docs/deployment.md#guidance-sources)).
 
 Published review comments carry model provenance: each finding is tagged with
 `Proposed by:` and `Verified by:` lines naming the models that proposed and
