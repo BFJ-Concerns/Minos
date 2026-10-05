@@ -8,7 +8,6 @@ export const meta = {
   ],
 };
 
-const VERIFIER_BATCH_SIZE = 6;
 const MAX_ORIENTATION_PACKET_BYTES = 32 * 1024;
 
 const ROLE_BRIEFS = {
@@ -19,6 +18,33 @@ const ROLE_BRIEFS = {
   design: "workflows/review-briefs/design.md",
   verifier: "workflows/review-briefs/verifier.md",
 };
+
+// The finding, observation and verifier contracts arrive as `contracts`,
+// built once in workflows/review-contracts.mjs by the input builder; this
+// script keeps no copy, and a missing or malformed set fails the workflow
+// before dispatch.
+function contractsFromInput(input) {
+  const contracts = input && input.contracts;
+  if (!contracts || typeof contracts !== "object" || Array.isArray(contracts)) return null;
+  if (!Number.isInteger(contracts.verifierBatchSize) || contracts.verifierBatchSize < 1) return null;
+  for (const name of [
+    "findingShape",
+    "outOfScopeObservationShape",
+    "applicabilityShape",
+    "specialistSchema",
+    "verifierVerdictShape",
+    "verifierSchema",
+  ]) {
+    const shape = contracts[name];
+    if (
+      !shape || typeof shape !== "object" || Array.isArray(shape) ||
+      shape.type !== "object" ||
+      !Array.isArray(shape.required) ||
+      !shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties)
+    ) return null;
+  }
+  return contracts;
+}
 
 function roleBriefsFromInput(input) {
   const entries = Array.isArray(input && input.instructionBriefs) ? input.instructionBriefs : [];
@@ -236,59 +262,12 @@ function orientationPacket(target, head, files, units) {
   return candidate(fileCount, ownershipCount);
 }
 
-const findingShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["title", "severity", "confidence", "path", "line", "explanation"],
-  properties: {
-    title: { type: "string" },
-    severity: { type: "string", enum: ["Critical", "High", "Medium", "Low"] },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    path: { type: "string" },
-    line: { type: "integer", minimum: 1 },
-    explanation: { type: "string" },
-  },
-};
-
-const outOfScopeObservationShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["title", "path", "line", "explanation"],
-  properties: {
-    title: { type: "string" },
-    path: { type: "string" },
-    line: { type: "integer", minimum: 1 },
-    explanation: { type: "string" },
-  },
-};
-
-const applicabilityShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["status", "reason"],
-  properties: {
-    status: { type: "string", enum: ["applicable", "inapplicable"] },
-    reason: { type: "string" },
-  },
-};
-
 const explorationApplicabilityShape = {
   type: "object",
   additionalProperties: false,
   required: ["reason"],
   properties: {
     reason: { type: "string" },
-  },
-};
-
-const specialistSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["applicability", "findings"],
-  properties: {
-    applicability: applicabilityShape,
-    findings: { type: "array", items: findingShape },
-    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
   },
 };
 
@@ -328,34 +307,14 @@ const explorationSchema = {
   },
 };
 
-const verifierVerdictShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["findingId", "verdict", "confidence", "reason"],
-  properties: {
-    findingId: { type: "string" },
-    verdict: { type: "string", enum: ["upheld", "refuted"] },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    reason: { type: "string" },
-  },
-};
-
-const verifierSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdicts"],
-  properties: {
-    verdicts: { type: "array", items: verifierVerdictShape },
-    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
-  },
-};
-
 const input = args && typeof args === "object" && !Array.isArray(args) ? args : null;
 const target = input && typeof input.target === "string" ? input.target : null;
 const head = input && typeof input.head === "string" ? input.head : null;
 const occasion = input && typeof input.occasion === "string" && input.occasion !== "" ? input.occasion : null;
 if (!target || !head)
-  throw new Error("review workflow needs args {target, head, guidance, instructionBriefs}");
+  throw new Error("review workflow needs args {target, head, guidance, instructionBriefs, contracts}");
+const contracts = contractsFromInput(input);
+if (!contracts) throw new Error("deterministic input omitted or malformed the review contracts");
 
 const roleBriefs = roleBriefsFromInput(input);
 const missingBriefs = missingRoleBriefs(roleBriefs);
@@ -456,7 +415,7 @@ const specialistResults = await parallel(
   specialistUnits.map((unit) => () =>
     agent(specialistPrompt(unit), {
       engine: routing.proposer.engine,
-      schema: specialistSchema,
+      schema: contracts.specialistSchema,
       model: routing.proposer.model,
       effort: routing.proposer.effort,
       strip: ["skills", "agents"],
@@ -518,9 +477,9 @@ specialistUnits.forEach((unit, unitIndex) => {
 
 phase("Verify");
 const verifierGroups = [];
-for (let offset = 0; offset < proposed.length; offset += VERIFIER_BATCH_SIZE) {
-  const items = proposed.slice(offset, offset + VERIFIER_BATCH_SIZE);
-  const groupIndex = Math.floor(offset / VERIFIER_BATCH_SIZE) + 1;
+for (let offset = 0; offset < proposed.length; offset += contracts.verifierBatchSize) {
+  const items = proposed.slice(offset, offset + contracts.verifierBatchSize);
+  const groupIndex = Math.floor(offset / contracts.verifierBatchSize) + 1;
   const label = `verify-${groupIndex}-${routing.verifier.engine}`;
   const findingIds = items.map((item) => item.id);
   const group = { items, label, findingIds };
@@ -544,7 +503,7 @@ const verifierResults = await parallel(
       ),
       {
         engine: routing.verifier.engine,
-        schema: verifierSchema,
+        schema: contracts.verifierSchema,
         model: routing.verifier.model,
         effort: routing.verifier.effort,
         strip: ["skills", "agents"],

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixture.mjs";
 import { briefRecords } from "./brief-dispositions.mjs";
+import { reviewContracts } from "./review-contracts.mjs";
 import { resolveRouting } from "./role-routing.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
@@ -66,6 +67,7 @@ function workflowInput(files) {
         content: "PARTITION-VERIFIER-BRIEF-0728",
       },
     ],
+    contracts: reviewContracts(),
   };
 }
 
