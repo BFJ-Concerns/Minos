@@ -506,7 +506,7 @@ write, matching the target rule above.)
        { "key": "DIGEST_FINDING_KEY", "gating": true, "defect": "short-label-you-choose" },
        { "key": "ANOTHER_KEY", "gating": false, "class": "declared-out-of-scope" },
        { "key": "A_BELOW_THRESHOLD_KEY", "gating": true, "undergrade": "why this severity is an undergrade" },
-       { "key": "A_RESTATEMENT_KEY", "gating": true, "defect": "short-label-you-choose" }
+       { "key": "A_RESTATEMENT_KEY", "gating": true, "defect": "short-label-you-choose", "undergrade": "restates the High finding above" }
      ]
    }
    ```
@@ -514,14 +514,16 @@ write, matching the target rule above.)
    Two confirmed findings that describe one defect — the same mistake
    restated at another line, or at one line under another title, in one
    digest or across the main and brief digests — take the same `defect`
-   label on their dispositions: a short slug you choose for this run. Each
-   still gets its own disposition, and they gate alike. The composer
-   publishes a labelled defect once, at its highest-severity site, naming
-   the other sites and the groups that also raised it, and gates it when
-   any of its findings gate; a clean run files it as one entry. Distinct
-   defects at one line take no label — the composer cross-references them.
-   The label is this run's vocabulary only; a later run over a new head
-   names its own.
+   label on their dispositions: a short slug you choose for this run,
+   compared exactly. Each still gets its own disposition, and they gate
+   alike — so a below-threshold restatement of a gating defect gates too,
+   and carries an `undergrade` naming the sibling it restates. The
+   composer publishes a labelled defect once, at its highest-severity
+   site, naming the other sites and the groups that also raised it, and
+   refuses a label whose findings gate differently across the two
+   decisions; a clean run files it as one entry. Distinct defects at one
+   line take no label — the composer cross-references them. The label is
+   this run's vocabulary only; a later run over a new head names its own.
 
    Validate each decision before any forge write:
 
@@ -532,7 +534,8 @@ write, matching the target rule above.)
 
    A decision that fails validation — a missing basis, an unnamed
    declassification, an unnamed undergrade, a finding with no
-   disposition — is corrected and re-validated rather than worked around;
+   disposition, a blank `defect` label or one whose findings gate
+   differently — is corrected and re-validated rather than worked around;
    nothing has touched the forge yet. The run's overall verdict is
    `request-changes` when either validated decision is; `clean` only when
    every validated decision is clean.

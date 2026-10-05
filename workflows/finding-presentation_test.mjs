@@ -204,7 +204,7 @@ for (const surface of ["inline", "filing"]) for (const ranged of [false, true]) 
     assert.equal(comment.line, 41, "normalisation changed the mechanical line");
     assert.equal(comment.end_line, ranged ? 44 : undefined, "normalisation changed the mechanical range");
     if (surface === "filing") assert.equal(issueLogEntry({ ...finding, kind: "advisory-finding" }, attribution),
-      "- **Advisory · High: Lost update in internal/store.go** (`internal/store.go:41`) — " +
+      "- **Advisory · High: Lost update in internal/store.go** (`internal/store.go:41`; also raised by Criterion at docs/rules.md) — " +
       explanation + " " + attribution + ".",
       "filing prose leaked an unrelated citation, lost an exact anchor, or rewrote a URL, port or time");
   });

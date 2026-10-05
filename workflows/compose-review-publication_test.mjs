@@ -246,10 +246,10 @@ test("distinct findings on one line cross-reference each other", (t) => {
   assert.match(comments[1].body, /See also on this line: "Lost update"/);
 });
 
-test("findings the decisions label as one defect merge across groups and sites, gating when any member gates", (t) => {
+test("findings the decisions label as one defect merge across groups and sites into the highest-severity member", (t) => {
   const { result, plan, readJson } = compose(t, {
     main: verdict([finding("a", { severity: "Medium", title: "MinInt64 overflows Split", line: 83 })]),
-    mainDecision: decision("clean", [{ key: "a", gating: false, defect: "minint-overflow" }]),
+    mainDecision: decision("request-changes", [{ key: "a", gating: true, defect: "minint-overflow", undergrade: "the overflow reaches money arithmetic" }]),
     brief: verdict([
       finding("b", { severity: "Low", title: "Split rejects the minimum value", line: 75, source: "Conservation" }),
       finding("c", { severity: "Low", title: "Remainder sign on MinInt64", line: 73, source: "Contracts" }),
@@ -285,8 +285,74 @@ test("a labelled defect at one site under two titles merges where the site-and-t
   assert.equal(comments.length, 1);
   assert.match(comments[0].body, /Blocking · High: Negative total loses pence/);
   assert.match(comments[0].body, /Also raised by: Conservation\./);
-  assert.match(comments[0].body, /Also at: `internal\/review\.go:37`\./);
+  assert.doesNotMatch(comments[0].body, /Also at/);
   assert.doesNotMatch(comments[0].body, /See also on this line/);
+});
+
+test("a label whose findings gate differently across the two decisions stops the composer with nothing written", (t) => {
+  const { result, scratch } = compose(t, {
+    main: verdict([finding("a", { title: "MinInt64 overflows Split", line: 83 })]),
+    mainDecision: decision("request-changes", [{ key: "a", gating: true, defect: "minint-overflow" }]),
+    brief: verdict([finding("b", { severity: "Low", title: "Split rejects the minimum value", line: 75, source: "Conservation" })]),
+    briefDecision: decision("clean", [{ key: "b", gating: false, defect: "minint-overflow" }]),
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /labelled one defect gate differently across the decisions: minint-overflow/);
+  assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
+});
+
+test("a labelled brief twin merged by site and title still pulls its labelled sibling in", (t) => {
+  const { result, plan, readJson } = compose(t, {
+    main: verdict([finding("a", { title: "Lost update", line: 42 })]),
+    mainDecision: decision("request-changes", [{ key: "a", gating: true }]),
+    brief: verdict([
+      finding("b", { title: "lost update", line: 42, source: "Money safety" }),
+      finding("c", { title: "Update dropped under contention", line: 90, source: "Money safety" }),
+    ]),
+    briefDecision: decision("request-changes", [
+      { key: "b", gating: true, defect: "lost-update" },
+      { key: "c", gating: true, defect: "lost-update" },
+    ]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const comments = readJson(plan.posts[0].comments);
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0].line, 42);
+  assert.match(comments[0].body, /Also raised by: Money safety\./);
+  assert.match(comments[0].body, /Also at: `internal\/review\.go:90`\./);
+});
+
+test("site-and-title twins carrying two different labels stop the composer", (t) => {
+  const { result } = compose(t, {
+    main: verdict([finding("a", { title: "Lost update" })]),
+    mainDecision: decision("request-changes", [{ key: "a", gating: true, defect: "one" }]),
+    brief: verdict([finding("b", { title: "Lost update", source: "Money safety" })]),
+    briefDecision: decision("request-changes", [{ key: "b", gating: true, defect: "two" }]),
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /two defect labels across the decisions: one and two/);
+});
+
+test("a distinct defect at an absorbed member's site cross-references the merged defect", (t) => {
+  const { plan, readJson } = compose(t, {
+    main: verdict([
+      finding("d-low", { severity: "Low", title: "Remainder sign on MinInt64", line: 42 }),
+      finding("d-high", { title: "MinInt64 overflows Split", line: 80 }),
+      finding("e", { title: "Unchecked error", line: 42 }),
+    ]),
+    mainDecision: decision("request-changes", [
+      { key: "d-low", gating: true, defect: "minint-overflow", undergrade: "the overflow reaches money arithmetic" },
+      { key: "d-high", gating: true, defect: "minint-overflow" },
+      { key: "e", gating: true },
+    ]),
+  });
+  const comments = readJson(plan.posts[0].comments);
+  assert.equal(comments.length, 2);
+  const merged = comments.find((comment) => comment.line === 80);
+  const distinct = comments.find((comment) => comment.line === 42);
+  assert.match(merged.body, /Also at: `internal\/review\.go:42`\./);
+  assert.doesNotMatch(merged.body, /See also on this line/);
+  assert.match(distinct.body, /See also on this line: "MinInt64 overflows Split"/);
 });
 
 test("a clean run files a labelled defect as one entry naming its other sites", (t) => {
@@ -299,7 +365,7 @@ test("a clean run files a labelled defect as one entry naming its other sites", 
   assert.deepEqual(plan.posts, []);
   const entries = readJson(plan.triage.entries);
   assert.equal(entries.length, 1);
-  assert.match(issueLogEntry(entries[0], "Filed"), /\(`internal\/review\.go:83`, also at `internal\/review\.go:75`\)/);
+  assert.match(issueLogEntry(entries[0], "Filed"), /\(`internal\/review\.go:83`, also at `internal\/review\.go:75`; also raised by Conservation\)/);
 });
 
 test("an id-less verdict uses its content key", (t) => {

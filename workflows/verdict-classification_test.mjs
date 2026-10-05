@@ -124,6 +124,12 @@ test("a defect label is a non-empty string whose members gate alike", () => {
   const refusedBlank = validateVerdictDecision(blank, digest);
   assert.equal(refusedBlank.ok, false);
   assert.match(refusedBlank.reason, /defect must be a non-empty label/);
+  // Labels are compared exactly by the composer, so a padded one is refused
+  // here rather than silently failing to merge there.
+  const padded = decision(digest, {
+    findings: [{ key: first.key, gating: true, defect: "retry-bound " }, { key: second.key, gating: true, defect: "retry-bound" }],
+  });
+  assert.match(validateVerdictDecision(padded, digest).reason, /without surrounding whitespace/);
 
   const split = decision(digest, {
     findings: [{ key: first.key, gating: true, defect: "retry-bound" }, { key: second.key, gating: false, class: "speculative-hardening", defect: "retry-bound" }],
