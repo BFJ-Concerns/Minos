@@ -114,8 +114,12 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 }
 
 func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (ReconcileResult, error) {
-	if snapshot.State != "open" || snapshot.Merged || snapshot.Draft {
+	if snapshot.State != "open" || snapshot.Merged {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
+	}
+	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
+	if snapshot.Draft {
+		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "draft", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
 	}
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
@@ -142,7 +146,6 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	facts.BaseSHA = snapshot.TargetSHA
 	facts.BaseRef = snapshot.TargetBranch
 	facts.HeadRef = snapshot.HeadBranch
-	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
 	if eligibility.workInProgress {
 		reason := fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch)
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason), DeferralReason: reason, DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
@@ -198,6 +201,9 @@ type pullRequestAdmissionEligibility struct {
 
 func assessPullRequestAdmission(cfg ServiceConfig, repo RepoConfig, snapshot forge.Snapshot) pullRequestAdmissionEligibility {
 	eligibility := pullRequestAdmissionEligibility{}
+	if snapshot.Draft {
+		eligibility.reasons = append(eligibility.reasons, "draft")
+	}
 	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
 		eligibility.workInProgress = true
 		eligibility.reasons = append(eligibility.reasons, fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))
