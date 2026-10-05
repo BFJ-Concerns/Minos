@@ -456,6 +456,12 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	}
 
 	fixture.runDir = runDir
+	// The successor's stub lead ends by reporting a terminal state; an
+	// applied attention status makes that a spent head so the run exits 0
+	// (the head-spent rule has its own tests in run_body_test.go).
+	if err := os.WriteFile(filepath.Join(runDir, appliedStatusFile), []byte("attention\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	environment["MINOS_TEST_PENDING_STATE"] = "done"
 	environment["MINOS_TEST_WAIT_POLLS"] = "2"
 	environment["MINOS_TEST_TERMINAL_STATE"] = "failed"

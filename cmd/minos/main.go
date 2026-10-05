@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/BFJ-Concerns/Minos/internal/shell"
 )
@@ -11,8 +13,19 @@ import (
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "minos: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitStatus(err))
 	}
+}
+
+// exitStatus carries a child process's own exit status through: the run
+// unit's status is run-body's (75 when the head is not spent, which the
+// deployment guide and the journal then agree on); every other failure is 1.
+func exitStatus(err error) int {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() > 0 {
+		return exit.ExitCode()
+	}
+	return 1
 }
 
 func run(args []string) error {

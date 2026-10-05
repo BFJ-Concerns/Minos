@@ -166,8 +166,13 @@ func TestRebuildEstateStopsNonCleanLead(t *testing.T) {
 	if ctx.Err() != nil {
 		t.Fatalf("non-clean run body reached the outer timeout: %v\n%s", ctx.Err(), output)
 	}
-	if err != nil {
-		t.Fatalf("non-clean run body failed: %v\n%s", err, output)
+	// An incomplete verdict leaves the head eligible, so the unit must not
+	// succeed: exit 75 keeps its OnSuccess= hook from re-claiming the head.
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 75 {
+		t.Fatalf("non-clean run body exit = %v, want 75 (head not spent)\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "stays eligible") {
+		t.Fatalf("a non-spent head exits without saying so:\n%s", output)
 	}
 
 	assertContainsFile(t, filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete"), "non-clean")
