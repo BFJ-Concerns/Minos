@@ -226,6 +226,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_BASE_REF":                   facts.BaseRef,
 		"MINOS_HEAD_BRANCH":                facts.HeadRef,
 		"MINOS_API_BASE":                   forgeConfig.APIBase,
+		"MINOS_WEB_BASE":                   forgeConfig.WebBase,
 		"MINOS_CREDENTIAL_FILE":            forgeConfig.CredentialFile,
 		"MINOS_RUN_BODY":                   repo.Adaptation.RunBody,
 		"MINOS_REVIEW_THRESHOLD":           repo.Review.Threshold,
