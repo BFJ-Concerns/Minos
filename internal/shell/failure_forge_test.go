@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,5 +67,41 @@ failures-credential-file = %q
 	}
 	if gitServer.authorised() == 0 {
 		t.Fatal("git server authorised no request")
+	}
+}
+
+func TestFailureLedgerRejectsEmptyCredentialWithoutPublishing(t *testing.T) {
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	checkout := filepath.Join(root, "ledger")
+	runGit(t, root, "init", "--bare", remote)
+	runGit(t, root, "init", "-b", "main", checkout)
+	configureTestGit(t, checkout)
+	writeTestFile(t, filepath.Join(checkout, "FAILURES.md"), "# Failures\n")
+	runGit(t, checkout, "add", "FAILURES.md")
+	runGit(t, checkout, "commit", "-m", "seed ledger")
+	runGit(t, checkout, "remote", "add", "origin", remote)
+	runGit(t, checkout, "push", "origin", "main")
+	before := gitOutput(t, ".", "--git-dir", remote, "rev-parse", "main")
+	writeTestFile(t, filepath.Join(checkout, "FAILURES.md"), "# Failures\n\n## retained local evidence\n")
+	credential := filepath.Join(root, "empty-credential")
+	writeTestFile(t, credential, "")
+	var cfg ServiceConfig
+	configureFailureForge(t, &cfg)
+	cfg.Runs.FailuresRepo = checkout
+	cfg.Runs.FailuresCredentialFile = credential
+	cfg.Service.CommitAuthorName = "Review Bot"
+	cfg.Service.CommitAuthorEmail = "bot@example.org"
+	if err := publishFailureDigest(t.Context(), cfg); !errors.Is(err, errEmptyForgeCredential) {
+		t.Fatalf("empty ledger credential error = %v, want errEmptyForgeCredential", err)
+	}
+	if after := gitOutput(t, ".", "--git-dir", remote, "rev-parse", "main"); after != before {
+		t.Fatalf("remote ledger moved from %s to %s after empty credential refusal", before, after)
+	}
+	if after := gitOutput(t, checkout, "rev-parse", "HEAD"); after != before {
+		t.Fatalf("local ledger committed from %s to %s after empty credential refusal", before, after)
+	}
+	if contents, err := os.ReadFile(filepath.Join(checkout, "FAILURES.md")); err != nil || !strings.Contains(string(contents), "## retained local evidence") {
+		t.Fatalf("local evidence lost after credential refusal: contents = %q, error = %v", contents, err)
 	}
 }

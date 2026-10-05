@@ -17,8 +17,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 const salvageTailBytes = 64 * 1024
@@ -470,18 +468,12 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 		return fmt.Errorf("runs.failures-forge %q is not a configured forge; durable local append retained", cfg.Runs.FailuresForge)
 	}
 	forgeConfig.CredentialFile = cfg.Runs.FailuresCredentialFile
-	adaptation, err := NewAdaptation(forgeConfig)
-	if err != nil {
-		return fmt.Errorf("read failure-ledger credential: %w", err)
-	}
-	publishCtx, cancel := context.WithTimeout(ctx, failurePublishTimeout)
-	defer cancel()
-	adapter, err := forge.NewAdapter(forge.ScriptRunner{
-		Directory: adaptation.Dir, APIBase: adaptation.APIBase, WebBase: forgeConfig.WebBase, Credential: adaptation.Credential,
-	}, cfg.Service.BotLogin, cfg.Service.StatusContext)
+	adapter, err := newBehaviouralForgeFromConfig(cfg, forgeConfig)
 	if err != nil {
 		return fmt.Errorf("failure-ledger adapter: %w", err)
 	}
+	publishCtx, cancel := context.WithTimeout(ctx, failurePublishTimeout)
+	defer cancel()
 	credential, err := adapter.CloneCredential(publishCtx)
 	if err != nil {
 		return fmt.Errorf("failure-ledger clone credential: %w", err)
