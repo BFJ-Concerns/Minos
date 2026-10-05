@@ -45,6 +45,20 @@ func handoffPath(runsDir, unit string) string {
 	return filepath.Join(runsDir, ".handoffs", unit+".json")
 }
 
+// factsForHandoff recovers forge identity from the unit-named handoff path.
+// The JSON coordinates identify a pull request within that configured forge.
+func factsForHandoff(cfg ServiceConfig, unit string, handoff *runHandoff) (Facts, bool) {
+	facts := Facts{Owner: handoff.PullRequest.Owner, Repo: handoff.PullRequest.Repo,
+		PR: handoff.PullRequest.Number, HeadSHA: handoff.Head}
+	for key := range cfg.Forges {
+		facts.Forge = key
+		if UnitName(facts) == unit {
+			return facts, true
+		}
+	}
+	return Facts{}, false
+}
+
 func readRunHandoff(path string, facts Facts) (*runHandoff, error) {
 	handoff, err := readRunHandoffStructure(path)
 	if err != nil {

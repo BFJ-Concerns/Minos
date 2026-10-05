@@ -29,12 +29,6 @@ func (state State) Name() string        { return state.name }
 func (state State) ForgeState() string  { return state.forgeState }
 func (state State) Description() string { return state.description }
 
-// SetupFailureDescription identifies a prelaunch failure as an incomplete
-// review while carrying the stage that could not run.
-func SetupFailureDescription(stage string) string {
-	return incomplete.description + ": setup failed at " + stage
-}
-
 // StateForDescription classifies the durable product vocabulary, including
 // incomplete setup failures whose descriptions carry a non-empty stage.
 func StateForDescription(description string) (State, bool) {
@@ -43,7 +37,7 @@ func StateForDescription(description string) (State, bool) {
 			return state, true
 		}
 	}
-	if stage, ok := strings.CutPrefix(description, SetupFailureDescription("")); ok && strings.TrimSpace(stage) != "" {
+	if stage, ok := strings.CutPrefix(description, incomplete.description+": setup failed at "); ok && strings.TrimSpace(stage) != "" {
 		return incomplete, true
 	}
 	return State{}, false

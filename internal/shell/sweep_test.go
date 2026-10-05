@@ -375,7 +375,7 @@ func TestOrderSweepCandidatesInterleavesReposWithinEachPriorityClass(t *testing.
 
 func TestOrderSweepCandidatesYieldsTheLaneToReposHoldingFewerLiveRuns(t *testing.T) {
 	candidate := func(repo, pr string, priority int) sweepCandidate {
-		return sweepCandidate{facts: Facts{Owner: "owner", Repo: repo, PR: pr}, priority: priority}
+		return sweepCandidate{facts: Facts{Forge: "forgejo", Owner: "owner", Repo: repo, PR: pr}, priority: priority}
 	}
 	// The busy repo owns the lowest pull request number, so without live-run
 	// counts it would lead every pass and claim each freed slot; its two
@@ -386,9 +386,9 @@ func TestOrderSweepCandidatesYieldsTheLaneToReposHoldingFewerLiveRuns(t *testing
 		candidate("starved", "8", 1),
 		candidate("quiet", "4", 1),
 	}, []string{
-		"minos-run-owner-busy-pr90.service",
-		"minos-run-owner-busy-pr104.service",
-		"minos-run-other-owner-unrelated-pr7.service",
+		"minos-run-forgejo-owner-busy-pr90.service",
+		"minos-run-forgejo-owner-busy-pr104.service",
+		"minos-run-forgejo-other-owner-unrelated-pr7.service",
 	})
 	var got []string
 	for _, entry := range ordered {
@@ -431,5 +431,50 @@ run-body = "/opt/minos/run-body/run-body"
 	}
 	if !slices.Contains(commands, "systemd-run") {
 		t.Fatalf("healthy repo was not reconciled; commands = %v", commands)
+	}
+}
+
+func TestHandoffExpiryUsesForgeIdentity(t *testing.T) {
+	original := inspectHandoffSnapshot
+	t.Cleanup(func() { inspectHandoffSnapshot = original })
+	inspectHandoffSnapshot = func(_ context.Context, _ ServiceConfig, facts Facts) (forge.Snapshot, error) {
+		if facts.Forge == "forgejo" {
+			return forge.Snapshot{State: "closed"}, nil
+		}
+		return forge.Snapshot{State: "open"}, nil
+	}
+	cfg := scratchTestConfig(t)
+	cfg.Forges["github"] = ForgeConfig{}
+	var paths []string
+	var repos []RepoConfig
+	for _, key := range []string{"forgejo", "github"} {
+		facts := Facts{Forge: key, Owner: "owner", Repo: "repository", PR: "21", HeadSHA: "head"}
+		paths = append(paths, writeTestHandoff(t, cfg, facts, filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved"), facts.HeadSHA))
+		repos = append(repos, RepoConfig{Forge: key, Owner: facts.Owner, Repo: facts.Repo})
+	}
+	if err := expireInactiveRunHandoffs(t.Context(), cfg, repos); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+		t.Fatalf("closed forgejo pull request kept its handoff: %v", err)
+	}
+	if _, err := os.Stat(paths[1]); err != nil {
+		t.Fatalf("open github pull request lost its handoff: %v", err)
+	}
+	// A repository configured only on GitHub must not keep an open
+	// Forgejo handoff with identical owner/repository coordinates.
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "21", HeadSHA: "head"}
+	writeTestHandoff(t, cfg, facts, filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved"), facts.HeadSHA)
+	inspectHandoffSnapshot = func(context.Context, ServiceConfig, Facts) (forge.Snapshot, error) {
+		return forge.Snapshot{State: "open"}, nil
+	}
+	if err := expireInactiveRunHandoffs(t.Context(), cfg, repos[1:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+		t.Fatalf("unconfigured forgejo repository inherited github configuration: %v", err)
+	}
+	if _, err := os.Stat(paths[1]); err != nil {
+		t.Fatalf("configured github repository lost its handoff: %v", err)
 	}
 }

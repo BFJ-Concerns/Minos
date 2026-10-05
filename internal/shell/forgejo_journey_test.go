@@ -3136,9 +3136,9 @@ dir = %q
 	}
 }
 
-func TestForgeStatusCarriesSetupFailureDescription(t *testing.T) {
-	for _, stale := range []bool{false, true} {
-		t.Run(fmt.Sprintf("stale=%t", stale), func(t *testing.T) {
+func TestForgeStatusRejectsDescriptionOverrides(t *testing.T) {
+	for _, extra := range [][]string{{"operator custom description"}, {"--setup-failure", "workspace-setup"}} {
+		t.Run(strings.Join(extra, " "), func(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			cfg, _, facts := state.service(t)
 			writeServiceConfig(t, cfg)
@@ -3147,31 +3147,11 @@ func TestForgeStatusCarriesSetupFailureDescription(t *testing.T) {
 			t.Setenv("MINOS_OWNER", facts.Owner)
 			t.Setenv("MINOS_REPO_NAME", facts.Repo)
 			t.Setenv("MINOS_PR", facts.PR)
-			head, target := state.headSHA(), state.targetSHA()
-			if stale {
-				head = strings.Repeat("a", 40)
-			}
-			description := "Review incomplete: setup failed at workspace-setup"
 			var stdout strings.Builder
-			err := ForgeCommand(t.Context(), []string{"status", head, target, "incomplete", "--setup-failure", "workspace-setup"}, &stdout)
-			posts := state.statusPostFacts()
-			if stale {
-				if err == nil || !strings.Contains(stdout.String(), "rejected") || len(posts) != 0 {
-					t.Fatalf("stale coordinates: err=%v result=%s posts=%#v", err, stdout.String(), posts)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("setup status write failed: %v\n%s", err, stdout.String())
-			}
-			if len(posts) != 1 || posts[0].Head != head || posts[0].Payload["state"] != "error" || posts[0].Payload["description"] != description {
-				t.Fatalf("setup status payload = %#v", posts)
-			}
-			if err := ForgeCommand(t.Context(), []string{"status", head, target, "incomplete", "--setup-failure", "workspace-setup"}, &stdout); err != nil {
-				t.Fatal(err)
-			}
-			if posts := state.statusPostFacts(); len(posts) != 1 {
-				t.Fatalf("read-back duplicated setup status: %#v", posts)
+			args := append([]string{"status", state.headSHA(), state.targetSHA(), "incomplete"}, extra...)
+			err := ForgeCommand(t.Context(), args, &stdout)
+			if err == nil || !strings.Contains(err.Error(), "usage:") || len(state.statusPostFacts()) != 0 {
+				t.Fatalf("description override: err=%v result=%s posts=%#v, want usage refusal without writes", err, stdout.String(), state.statusPostFacts())
 			}
 		})
 	}

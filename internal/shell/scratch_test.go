@@ -56,7 +56,7 @@ func TestSweepRunResidueProtectsOnlyDirectoryNamedByValidHandoff(t *testing.T) {
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 
 	cfg := scratchTestConfig(t)
-	facts := Facts{Owner: "owner", Repo: "repository", PR: "7", HeadSHA: "head"}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "7", HeadSHA: "head"}
 	preserved := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	residue := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-different")
 	for _, runDir := range []string{preserved, residue} {
@@ -83,7 +83,7 @@ func TestSweepRunResidueDoesNotProtectInvalidHandoff(t *testing.T) {
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 
 	cfg := scratchTestConfig(t)
-	facts := Facts{Owner: "owner", Repo: "repository", PR: "8", HeadSHA: "current"}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "8", HeadSHA: "current"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-rejected")
 	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
@@ -422,17 +422,24 @@ func TestSweepRunResiduePreservesStructurallyValidHandoffWithoutCurrentFacts(t *
 	t.Cleanup(func() { commandCombinedOutput = original })
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	cfg := scratchTestConfig(t)
-	facts := Facts{Owner: "owner", Repo: "repository", PR: "15", HeadSHA: "head"}
-	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
-	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
-		t.Fatal(err)
+	cfg.Forges["github"] = ForgeConfig{}
+	var runDirs []string
+	for _, key := range []string{"forgejo", "github"} {
+		facts := Facts{Forge: key, Owner: "owner", Repo: "repository", PR: "15", HeadSHA: "head"}
+		runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
+		if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
+		runDirs = append(runDirs, runDir)
 	}
-	writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(runDir); err != nil {
-		t.Fatalf("structurally valid handoff was not fail-safe without current facts: %v", err)
+	for _, runDir := range runDirs {
+		if _, err := os.Stat(runDir); err != nil {
+			t.Fatalf("structurally valid handoff was not fail-safe without current facts: %s: %v", runDir, err)
+		}
 	}
 }
 
@@ -595,6 +602,7 @@ func scratchTestConfig(t *testing.T) ServiceConfig {
 	t.Helper()
 	root := t.TempDir()
 	var cfg ServiceConfig
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
 	cfg.Runs.FailuresRepo = filepath.Join(root, "Minos-Annexe")
 	cfg.Runs.ArchiveCommand = "/bin/true"

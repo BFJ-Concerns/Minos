@@ -180,13 +180,8 @@ func validHandoffRunDirs(cfg ServiceConfig, factsByUnit map[string]Facts) map[st
 			log.Printf("reject preservation handoff %s: %v", path, err)
 			continue
 		}
-		embeddedFacts := Facts{
-			Owner:   handoff.PullRequest.Owner,
-			Repo:    handoff.PullRequest.Repo,
-			PR:      handoff.PullRequest.Number,
-			HeadSHA: handoff.Head,
-		}
-		if UnitName(embeddedFacts) != unit {
+		embeddedFacts, recognised := factsForHandoff(cfg, unit, handoff)
+		if !recognised {
 			continue
 		}
 		facts, found := factsByUnit[unit]

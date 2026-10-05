@@ -517,7 +517,7 @@ func TestRunBodyKeepsGenericCauseForTargetTransportFailure(t *testing.T) {
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 128 {
 		t.Fatalf("run-body exit = %v, want transport failure exit 128; output = %s", err, output)
 	}
-	assertContainsFile(t, fixture.failureLog, "stage=workspace-setup cause=workspace setup failed status_write=skipped-prerequisites\n")
+	assertContainsFile(t, fixture.failureLog, "stage=workspace-setup cause=workspace setup failed\n")
 	if strings.Contains(string(output), "target fetch refused:") {
 		t.Fatalf("unrelated transport failure reported as target refusal: %s", output)
 	}
@@ -1881,7 +1881,7 @@ func TestRunBodyHonoursConfiguredPressureThreshold(t *testing.T) {
 }
 
 // The recorder observes the real exit trap, not a fixture-generated status.
-func TestRunBodySetupDeathStatus(t *testing.T) {
+func TestRunBodySetupDeathWritesNoStatus(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		stage      string
@@ -1944,24 +1944,20 @@ func TestRunBodySetupDeathStatus(t *testing.T) {
 				t.Fatalf("exit = %v, want %d\n%s", err, wantExit, output)
 			}
 			assertFailureLine(t, fixture.failureLog, "cause=", wantCause)
+			if test.stage != "" {
+				assertFailureLine(t, fixture.failureLog, "stage="+test.stage)
+			}
 			recorded, readErr := os.ReadFile(calls)
-			if test.postlaunch || test.missing != "" {
-				if !os.IsNotExist(readErr) {
-					t.Fatalf("unexpected status call: %q (%v)", recorded, readErr)
-				}
-				if !test.postlaunch {
-					assertFailureLine(t, fixture.failureLog, "status_write=skipped-prerequisites")
-				}
-				return
+			if !os.IsNotExist(readErr) {
+				t.Fatalf("unexpected status call: %q (%v)", recorded, readErr)
 			}
-			if readErr != nil {
-				t.Fatalf("setup death recorded no status call: %v", readErr)
+			failure, err := os.ReadFile(fixture.failureLog)
+			if err != nil {
+				t.Fatal(err)
 			}
-			want := "forge\nstatus\nhead-sha\ntarget-sha\nincomplete\n--setup-failure\n" + test.stage + "\n"
-			if string(recorded) != want {
-				t.Fatalf("status calls = %q, want %q", recorded, want)
+			if strings.Contains(string(failure), "status_write=") {
+				t.Fatalf("failure ledger carries retired status write: %s", failure)
 			}
-			assertFailureLine(t, fixture.failureLog, "stage="+test.stage)
 		})
 	}
 }

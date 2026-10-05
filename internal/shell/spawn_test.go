@@ -133,11 +133,11 @@ func TestSpawnRunAdmitsUpToTheConfiguredConcurrency(t *testing.T) {
 			t.Fatal(err)
 		}
 		outcomes = append(outcomes, result.Outcome)
-		if pr == "3" && result.BlockingUnit != "minos-run-owner-repo-pr1.service" {
+		if pr == "3" && result.BlockingUnit != "minos-run-forgejo-owner-repo-pr1.service" {
 			t.Fatalf("blocking unit = %q, want the lowest-named active unit", result.BlockingUnit)
 		}
 		if pr == "3" {
-			want := "all 2/2 run slots are occupied by active units minos-run-owner-repo-pr1.service, minos-run-owner-repo-pr2.service"
+			want := "all 2/2 run slots are occupied by active units minos-run-forgejo-owner-repo-pr1.service, minos-run-forgejo-owner-repo-pr2.service"
 			if result.Detail != want {
 				t.Fatalf("cap suppression detail = %q, want %q", result.Detail, want)
 			}
@@ -222,7 +222,7 @@ func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
 		if name == "systemctl" {
 			return nil, nil
 		}
-		return []byte("Unit minos-run-owner-repo-pr1.service already exists."), errors.New("exit status 1")
+		return []byte("Unit minos-run-forgejo-owner-repo-pr1.service already exists."), errors.New("exit status 1")
 	}
 
 	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
@@ -237,7 +237,7 @@ func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
 	if result.Outcome != SpawnSuppressed {
 		t.Fatalf("outcome = %q, want %q", result.Outcome, SpawnSuppressed)
 	}
-	if result.BlockingUnit != "minos-run-owner-repo-pr1.service" {
+	if result.BlockingUnit != "minos-run-forgejo-owner-repo-pr1.service" {
 		t.Fatalf("blocking unit = %q", result.BlockingUnit)
 	}
 }
@@ -1261,5 +1261,80 @@ func TestSpawnRunExportsForgeWebBase(t *testing.T) {
 				t.Fatalf("MINOS_WEB_BASE = %q, present = %t; want %q", got, present, webBase)
 			}
 		})
+	}
+}
+
+func TestUnitNameIncludesForge(t *testing.T) {
+	first := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7"}
+	second := first
+	second.Forge = "github"
+	if UnitName(first) == UnitName(second) {
+		t.Fatalf("two forges collide at unit %q", UnitName(first))
+	}
+	if got := UnitName(first); got != "minos-run-forgejo-owner-repo-pr7" {
+		t.Fatalf("unit name = %q, want forge-key prefix", got)
+	}
+}
+
+func TestSpawnRunSeparatesForgeNamespaces(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var active, runDirs, handoffs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "systemctl":
+			var listing strings.Builder
+			for _, unit := range active {
+				matched, err := filepath.Match(args[len(args)-1], unit)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if matched {
+					fmt.Fprintf(&listing, "%s loaded active running Minos lead\n", unit)
+				}
+			}
+			return []byte(listing.String()), nil
+		case "systemd-run":
+			for i, arg := range args {
+				if arg == "--unit" && i+1 < len(args) {
+					active = append(active, args[i+1]+".service")
+				}
+				if strings.HasPrefix(arg, "MINOS_RUN_DIR=") {
+					runDirs = append(runDirs, strings.TrimPrefix(arg, "MINOS_RUN_DIR="))
+				}
+				if strings.HasPrefix(arg, "MINOS_HANDOFF=") {
+					handoffs = append(handoffs, strings.TrimPrefix(arg, "MINOS_HANDOFF="))
+				}
+			}
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command %q", name)
+			return nil, nil
+		}
+	}
+	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}, "github": {}}}
+	setTestRunCeilings(&cfg)
+	cfg.Runs.MaxConcurrent = 2
+	cfg.Runs.Dir = t.TempDir()
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "7"}
+	for _, key := range []string{"forgejo", "github"} {
+		facts.Forge = key
+		result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts)
+		if err != nil || result.Outcome != SpawnStarted {
+			t.Fatalf("spawn on %s = %#v, err=%v, want separate live run", key, result, err)
+		}
+	}
+	if len(runDirs) != 2 || runDirs[0] == runDirs[1] || len(handoffs) != 2 || handoffs[0] == handoffs[1] {
+		t.Fatalf("forge namespaces overlap: run directories=%v handoffs=%v", runDirs, handoffs)
+	}
+	for i, key := range []string{"forgejo", "github"} {
+		prefix := "minos-run-" + key + "-owner-repo-pr7"
+		if !strings.HasPrefix(filepath.Base(runDirs[i]), prefix+"-") || filepath.Base(handoffs[i]) != prefix+".json" {
+			t.Fatalf("run directories=%v handoffs=%v omit forge key %s", runDirs, handoffs, key)
+		}
+	}
+	result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts)
+	if err != nil || result.Outcome != SpawnSuppressed || result.BlockingUnit != active[1] || len(active) != 2 {
+		t.Fatalf("new-name active unit detection = %#v, err=%v, active=%v", result, err, active)
 	}
 }

@@ -136,27 +136,6 @@ archive_run() {
     "${MINOS_OWNER:-unknown}-${MINOS_REPO_NAME:-unknown}-pr${MINOS_PR:-unknown}" || true
 }
 
-# The forge command still owns parsing and guarding the write. Here we only
-# recognise absent bootstrap inputs, so an unpublishable setup death stays
-# silent and its failure log explains the skipped presentation effect.
-publish_setup_failure() {
-  failure_status_write="skipped-prerequisites"
-  [ -n "${MINOS_CONFIG:-}" ] &&
-    [ -f "${MINOS_CONFIG%/}/service.toml" ] &&
-    [ -r "${MINOS_CONFIG%/}/service.toml" ] &&
-    [ -n "${MINOS_BIN:-}" ] && [ -x "$MINOS_BIN" ] &&
-    [ -n "${MINOS_FORGE:-}" ] &&
-    [ -n "${MINOS_OWNER:-}" ] && [ -n "${MINOS_REPO_NAME:-}" ] &&
-    [ -n "${MINOS_HEAD_SHA:-}" ] && [ -n "${MINOS_TARGET_SHA:-}" ] || return 0
-  case "${MINOS_PR:-}" in
-    ''|*[!0-9]*) return 0 ;;
-  esac
-  [ "$MINOS_PR" -gt 0 ] 2>/dev/null || return 0
-  failure_status_write=""
-  "$MINOS_BIN" forge status "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA" incomplete \
-    --setup-failure "$failure_stage" >/dev/null 2>&1 || true
-}
-
 append_failure() {
   [ -n "${MINOS_FAILURE_LOG:-}" ] || return 0
 
@@ -164,9 +143,9 @@ append_failure() {
   mkdir -p "$failure_directory" 2>/dev/null || true
   timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" || timestamp="unknown"
   pull_request="${MINOS_OWNER:-unknown}/${MINOS_REPO_NAME:-unknown}#${MINOS_PR:-unknown}"
-  if ! printf 'timestamp=%s pull_request=%s head=%s stage=%s cause=%s%s\n' \
+  if ! printf 'timestamp=%s pull_request=%s head=%s stage=%s cause=%s\n' \
     "$timestamp" "$pull_request" "${MINOS_HEAD_SHA:-unknown}" \
-    "$failure_stage" "$failure_cause" "${failure_status_write:+ status_write=$failure_status_write}" >>"$MINOS_FAILURE_LOG"; then
+    "$failure_stage" "$failure_cause" >>"$MINOS_FAILURE_LOG"; then
     echo "run-body: MINOS_FAILURE_LOG ($MINOS_FAILURE_LOG) is not writable" >&2
   fi
 }
@@ -197,9 +176,6 @@ on_exit() {
   set +e
   if [ "$status" -ne 0 ] &&
     { [ "$prelaunch" = true ] || [ "$supervisor_failure" = true ]; }; then
-    if [ "$prelaunch" = true ]; then
-      publish_setup_failure
-    fi
     append_failure
   fi
   stop_session
