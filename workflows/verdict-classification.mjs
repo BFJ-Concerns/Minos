@@ -100,8 +100,9 @@ export function verdictDigest(input) {
 // disposes of every confirmed finding exactly once, declassifies an
 // at-or-above-threshold finding only under one of the two never-gating
 // classes (named per finding), gates a below-threshold finding only with an
-// undergrade basis naming it, and earns request-changes exactly when a
-// gating finding exists.
+// undergrade basis naming it, labels restatements of one defect with one
+// non-empty `defect` label whose members gate alike, and earns
+// request-changes exactly when a gating finding exists.
 export function validateVerdictDecision(decision, digest) {
   if (!digest || digest.kind !== DIGEST_KIND || digest.status !== "complete")
     return { ok: false, reason: "verdict decision validation needs a complete verdict digest" };
@@ -133,6 +134,8 @@ export function validateVerdictDecision(decision, digest) {
       return { ok: false, reason: `finding disposition carries an unknown class: ${disposition.key}` };
     if (disposition.undergrade !== undefined && (typeof disposition.undergrade !== "string" || disposition.undergrade.trim() === ""))
       return { ok: false, reason: `finding disposition undergrade must be a non-empty string: ${disposition.key}` };
+    if (disposition.defect !== undefined && (typeof disposition.defect !== "string" || disposition.defect.trim() === ""))
+      return { ok: false, reason: `finding disposition defect must be a non-empty label: ${disposition.key}` };
     if (finding.atOrAboveThreshold && disposition.gating === false) {
       if (!NEVER_GATING_CLASSES.includes(disposition.class))
         return {
@@ -151,6 +154,16 @@ export function validateVerdictDecision(decision, digest) {
   for (const key of digestByKey.keys()) {
     if (!disposed.has(key))
       return { ok: false, reason: `confirmed finding has no disposition: ${key}` };
+  }
+  // Restatements of one defect are one gating call: a label whose members
+  // disagree is a decision that has not decided.
+  const gatingByDefect = new Map();
+  for (const disposition of decision.findings) {
+    if (typeof disposition.defect !== "string") continue;
+    const seen = gatingByDefect.get(disposition.defect);
+    if (seen !== undefined && seen !== disposition.gating)
+      return { ok: false, reason: `findings labelled one defect gate differently: ${disposition.defect}` };
+    gatingByDefect.set(disposition.defect, disposition.gating);
   }
   const anyGating = decision.findings.some((disposition) => disposition.gating === true);
   if (anyGating && decision.verdict !== "request-changes")
