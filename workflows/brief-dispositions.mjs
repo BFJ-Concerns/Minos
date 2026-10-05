@@ -1,7 +1,7 @@
-// Node-side twin of the deterministic brief-disposition logic in
-// workflows/review-briefs.js. The Ensemble sandbox cannot import modules, so
-// the workflow keeps its own copy; the parity test in
-// review-scope_test.mjs pins the two against each other.
+// The deterministic brief pass, computed once by the input builders and
+// handed to the sandboxed workflows as data: the Ensemble sandbox cannot
+// import modules, so what both the scope and the brief workflow need to
+// agree on is decided here and carried in their input.
 
 export function parseFrontmatter(content) {
   const front = { title: null, extent: "diff", sweep: "per-file", occasion: [], relevance: null };
@@ -80,6 +80,22 @@ export function deterministicDisposition(brief, front, occasion, changedPaths) {
   return { status: "skipped", skipKind: "empty", reason: `nothing changed under scope ${brief.scope}/` };
 }
 
+// briefRecords is what the brief workflow consumes: each enumerated brief
+// with its parsed frontmatter, its title and its deterministic disposition
+// attached. The workflow adds the judged relevance and partition legs on
+// top and never re-derives any of these.
+export function briefRecords(briefs, occasion, changedPaths) {
+  return briefs.map((brief) => {
+    const front = parseFrontmatter(brief.content);
+    return {
+      ...brief,
+      front,
+      title: briefTitle(brief.path, front),
+      disposition: deterministicDisposition(brief, front, occasion, changedPaths),
+    };
+  });
+}
+
 // Settles which of a repository's briefs this change engages. A brief is
 // engaged when its deterministic disposition triggers it, or when it carries a
 // relevance condition the deterministic pass cannot settle — the relevance
@@ -89,10 +105,9 @@ export function briefEngagement(briefs, occasion, changedPaths) {
   const dispositions = [];
   const misconfigurations = [];
   let briefsEngage = false;
-  for (const brief of briefs) {
-    const front = parseFrontmatter(brief.content);
-    const base = { brief: brief.path, title: briefTitle(brief.path, front) };
-    const disposition = deterministicDisposition(brief, front, occasion, changedPaths);
+  for (const record of briefRecords(briefs, occasion, changedPaths)) {
+    const { front, title, disposition } = record;
+    const base = { brief: record.path, title };
     const { misconfiguration, ...recorded } = disposition;
     if (misconfiguration)
       misconfigurations.push({ ...base, kind: misconfiguration.skipKind, reason: misconfiguration.reason });

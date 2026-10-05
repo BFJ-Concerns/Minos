@@ -22,16 +22,11 @@ function executableVerdict(t, envelope) {
   return wrapperVerdict(t, envelope, { namespace: "scope", workflow: "review-scope.js" });
 }
 const source = await readFile(scriptPath, "utf8");
-const briefWorkflowSource = await readFile(join(workflowsDir, "review-briefs.js"), "utf8");
 const lifecycle = await readFile(join(workflowsDir, "..", "lifecycle", "lifecycle.md"), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction(
   "agent", "parallel", "pipeline", "phase", "log", "args",
   source.replace(/^export const meta =/m, "const meta ="),
-);
-const briefWorkflow = new AsyncFunction(
-  "agent", "parallel", "pipeline", "phase", "log", "args",
-  briefWorkflowSource.replace(/^export const meta =/m, "const meta ="),
 );
 
 async function runScript(args, respond) {
@@ -199,55 +194,6 @@ test("a matched occasion engages the brief it opted in", () => {
   }]);
 });
 
-// --- disposition parity with the sandboxed brief workflow ---
-
-test("the Node dispositions match the brief workflow's own deterministic pass", async () => {
-  const briefs = [...settledBriefs, touchedScopeBrief].map((brief) => ({
-    ...brief,
-    readPath: `/workspace/${brief.path}`,
-  }));
-  const changedPaths = ["pkg/a.go"];
-  const engagement = briefEngagement(briefs, null, changedPaths);
-
-  const agent = async (_prompt, opts = {}) => {
-    assert.match(String(opts.label), /^repository-/, "only the engaged brief dispatches a specialist");
-    return {
-      applicability: { status: "applicable", reason: "the assigned change exercises the concern" },
-      findings: [],
-      outOfScopeObservations: [],
-    };
-  };
-  const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
-  const envelope = await briefWorkflow(agent, parallel, async (items) => items, () => {}, () => {}, {
-    target: "aaa111",
-    head: "bbb222",
-    workspace: "/workspace",
-    hasReviewDirectory: true,
-    changedPaths,
-    trackedFiles: changedPaths.map((path) => ({ path })),
-    briefs,
-    guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PARITY_GUIDANCE_CORAL" }],
-    routing: pairedRouting,
-    instructionBriefs: [
-      { path: "workflows/review-briefs/repository.md", readPath: "/x/repository.md", content: "R" },
-      { path: "workflows/review-briefs/verifier.md", readPath: "/x/verifier.md", content: "V" },
-    ],
-  });
-
-  const workflowSkips = envelope.briefs
-    .filter((entry) => entry.status === "skipped")
-    .map(({ brief, title, status, skipKind, reason }) => ({ brief, title, status, skipKind, reason }));
-  const moduleSkips = engagement.dispositions.filter((entry) => entry.status === "skipped");
-  assert.deepEqual(
-    workflowSkips.sort((a, b) => a.brief.localeCompare(b.brief)),
-    moduleSkips.sort((a, b) => a.brief.localeCompare(b.brief)),
-  );
-  assert.deepEqual(envelope.misconfigurations, engagement.misconfigurations);
-  assert.deepEqual(
-    envelope.dispatches.map((dispatch) => dispatch.brief),
-    engagement.dispositions.filter((entry) => entry.engaged).map((entry) => entry.brief),
-  );
-});
 
 // --- the gate workflow ---
 
