@@ -196,34 +196,11 @@ func TestContinuationSuccessorSetupDeathKeepsSweepPriority(t *testing.T) {
 	if !ok || exit.ExitCode() != 19 {
 		t.Fatalf("setup successor exit = %v, want 19\n%s", err, output)
 	}
-	recorded, err := os.ReadFile(calls)
-	if err != nil {
-		t.Fatal(err)
+	if recorded, err := os.ReadFile(calls); !os.IsNotExist(err) {
+		t.Fatalf("setup death wrote a forge command: %q (%v)", recorded, err)
 	}
-	args := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
-	if len(args) < 2 || args[0] != "forge" {
-		t.Fatalf("setup death forge command = %q", recorded)
-	}
-	if err := ForgeCommand(t.Context(), args[1:], &stdout); err != nil {
-		t.Fatalf("publish setup successor death: %v\n%s", err, stdout.String())
-	}
-	if posts := state.statusPostFacts(); len(posts) != 2 {
-		t.Fatalf("status posts = %#v, want continuation then setup death", posts)
-	}
-	snapshot, err := currentSnapshot(t.Context(), cfg, facts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	latest, found := latestOwnedStatus(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext)
-	if !found || latest.State != forge.StatusError {
-		t.Fatalf("setup death status = %#v, found=%t", latest, found)
-	}
-	if latest.Description != "Review incomplete: setup failed at workspace-setup" {
-		t.Errorf("setup death description = %q, want stage-bearing incomplete status", latest.Description)
-	}
-	classified, recognised := product.StateForDescription(latest.Description)
-	if !recognised || classified != product.Incomplete() {
-		t.Errorf("setup death classification = %q, recognised=%t, want incomplete", classified.Name(), recognised)
+	if posts := state.statusPostFacts(); len(posts) != 1 {
+		t.Fatalf("status posts = %#v, want only predecessor continuation", posts)
 	}
 	priority, err := currentContinuationPriority(t.Context(), cfg, facts)
 	if err != nil {
@@ -236,5 +213,33 @@ func TestContinuationSuccessorSetupDeathKeepsSweepPriority(t *testing.T) {
 	ordered := orderSweepCandidates([]sweepCandidate{{facts: fresh, priority: 1}, {facts: facts, priority: priority}}, nil)
 	if ordered[0].facts != facts {
 		t.Errorf("front of sweep queue = %s, want setup-dead successor %s", ordered[0].facts.RepoSlug(), facts.RepoSlug())
+	}
+}
+
+func TestDeployedSetupFailureKeepsSweepPriority(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, repo, facts := state.service(t)
+	facts.HeadSHA = state.headSHA()
+	state.setStatuses([]map[string]any{{
+		"id": 9, "context": "Minos", "status": "error",
+		"description": "Review incomplete: setup failed at workspace-setup",
+		"creator":     map[string]any{"login": "Minos"},
+	}})
+	snapshot, err := currentSnapshot(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := assessPullRequestAdmission(cfg, repo, snapshot)
+	if admission.completedRun || admission.workInProgress || admission.dependencyDeferred {
+		t.Fatalf("deployed setup failure changed admission: %#v", admission)
+	}
+	priority, err := currentContinuationPriority(t.Context(), cfg, facts)
+	if err != nil || priority != 0 {
+		t.Fatalf("deployed setup failure priority = %d, err=%v, want 0", priority, err)
+	}
+	fresh := Facts{Forge: facts.Forge, Owner: facts.Owner, Repo: "fresh", PR: facts.PR}
+	ordered := orderSweepCandidates([]sweepCandidate{{facts: fresh, priority: 1}, {facts: facts, priority: priority}}, nil)
+	if ordered[0].facts != facts {
+		t.Fatalf("front of sweep queue = %s, want deployed setup failure %s", ordered[0].facts.RepoSlug(), facts.RepoSlug())
 	}
 }
