@@ -68,7 +68,8 @@ function compose(t, { main, mainDecision, brief, briefDecision, threshold = "Hig
   };
   const args = [cliPath, join(scratch, "out"), write("orientation.json", orientation), threshold, write("main.json", main), write("main-decision.json", mainDecision)];
   if (brief) args.push(write("brief.json", brief), write("brief-decision.json", briefDecision));
-  const result = spawnSync(process.execPath, args, { encoding: "utf8" });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(MINOS_|ENSEMBLE_)/.test(name)));
+  const result = spawnSync(process.execPath, args, { encoding: "utf8", env });
   const plan = result.status === 0 ? JSON.parse(result.stdout) : null;
   return { result, plan, scratch, read: (path) => readFileSync(path, "utf8"), readJson: (path) => JSON.parse(readFileSync(path, "utf8")) };
 }
@@ -224,7 +225,7 @@ test("duplicate findings merge once with the higher severity and either group's 
   const { result, plan, readJson } = compose(t, {
     main: verdict([finding("a", { severity: "Medium", title: "Lost update" })]),
     mainDecision: decision("clean", [{ key: "a", gating: false }]),
-    brief: verdict([finding("b", { title: "Lost update", source: "Money safety" })]),
+    brief: verdict([finding("b", { title: "  LOST   update  ", source: "Money safety" })]),
     briefDecision: decision("request-changes", [{ key: "b", gating: true }]),
   });
   assert.equal(result.status, 0, result.stderr);
