@@ -93,6 +93,10 @@ signature-header = "X-Forgejo-Signature"
 dir = "/var/lib/minos/runs"
 failure-log = "/var/lib/minos/failures.log"
 failures-repo = "/var/lib/minos/failure-ledger"
+# Forge serving the ledger origin; defaults to the sole configured forge.
+# Required with failures-repo when several forges are configured.
+# failures-forge = "REPLACE_WITH_FORGE_KEY"
+# The selected adaptation interprets this credential (token or App registration).
 failures-credential-file = "/etc/minos/forgejo.token"
 archive-command = "/opt/minos/run-body/archive-run"
 # How many review runs may be live at once; unset, one (runs are
