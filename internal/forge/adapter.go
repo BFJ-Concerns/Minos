@@ -50,6 +50,40 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	return snapshot, nil
 }
 
+// RepositoryMetadata reads a repository's clone URL and default branch.
+func (a *Adapter) RepositoryMetadata(ctx context.Context, repository Repository) (RepositoryMetadata, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "repository-metadata", Arguments: []string{repository.Owner, repository.Name}})
+	if err != nil {
+		return RepositoryMetadata{}, err
+	}
+	var metadata RepositoryMetadata
+	if err := json.Unmarshal(out, &metadata); err != nil {
+		return RepositoryMetadata{}, fmt.Errorf("decode repository metadata: %w", err)
+	}
+	if metadata.CloneURL == "" || metadata.DefaultBranch == "" {
+		return RepositoryMetadata{}, fmt.Errorf("repository metadata for %s/%s omitted its clone URL or default branch", repository.Owner, repository.Name)
+	}
+	return metadata, nil
+}
+
+// CloneCredential asks the adaptation for the HTTPS git credential its
+// credential file stands for. Decoding errors never quote the output, which
+// carries the secret.
+func (a *Adapter) CloneCredential(ctx context.Context) (CloneCredential, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "clone-credential"})
+	if err != nil {
+		return CloneCredential{}, err
+	}
+	var credential CloneCredential
+	if json.Unmarshal(out, &credential) != nil {
+		return CloneCredential{}, fmt.Errorf("decode clone credential: output is not a credential object")
+	}
+	if credential.Username == "" || credential.Password == "" {
+		return CloneCredential{}, fmt.Errorf("clone credential omitted its username or password")
+	}
+	return credential, nil
+}
+
 func (a *Adapter) CommitStatuses(ctx context.Context, repository Repository, sha string) ([]Status, error) {
 	out, err := a.runner.Run(ctx, RunRequest{Operation: "commit-statuses", Arguments: []string{repository.Owner, repository.Name, sha}})
 	if err != nil {
