@@ -1,3 +1,4 @@
+import "./isolate-from-live-run.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -166,4 +167,78 @@ test("an issue-log entry is one list item carrying the finding, its site, proven
     /first\n  second/,
   );
   assert.throws(() => issueLogEntry({ kind: "review-finding", title: "x" }, attribution), /unknown entry kind review-finding/);
+});
+
+// Every prose field must obey the same anchor rule; expected text is literal,
+// independent of the renderer, including punctuation and Markdown boundaries.
+for (const surface of ["inline", "filing"]) for (const ranged of [false, true]) {
+  test(`${surface} prose citations cannot leak unrelated lines through inline comments or filing entries (${ranged ? "range" : "single-line"} anchor)`, () => {
+    const finding = {
+      ...confirmed,
+      title: "Lost update in internal/store.go:99",
+      explanation: "Same file `internal/store.go:99`; other file [consumer](cmd/minos/main.go:12); " +
+        "own anchor internal/store.go:41; unrelated range internal/store.go:90-94; " +
+        "partial range internal/store.go:41-42; exact range internal/store.go:41-44; " +
+        "overlapping range internal/store.go:40-44; root file README.md:7; " +
+        "extensionless scripts/run:8; URL https://host:3000/src/code.go:9; " +
+        "port host:3000; time 10:30.",
+      ...(ranged ? { endLine: 44 } : {}),
+      proposingModel: undefined,
+      verifyingModel: undefined,
+      crossReferences: ["Neighbour at internal/store.go:99"],
+      alsoRaisedBy: ["Criterion at docs/rules.md:12"],
+    };
+    const explanation = "Same file `internal/store.go`; other file [consumer](cmd/minos/main.go); " +
+      "own anchor internal/store.go:41; unrelated range internal/store.go; " +
+      "partial range internal/store.go; exact range " + (ranged ? "internal/store.go:41-44" : "internal/store.go") + "; " +
+      "overlapping range internal/store.go; root file README.md; " +
+      "extensionless scripts/run; URL https://host:3000/src/code.go:9; " +
+      "port host:3000; time 10:30.";
+    const comment = findingComment(finding);
+    if (surface === "inline") assert.equal(comment.body,
+      "**Advisory · High: Lost update in internal/store.go**\n\n" + explanation +
+      "\n\nAlso raised by: Criterion at docs/rules.md." +
+      '\n\nSee also on this line: "Neighbour at internal/store.go".',
+      "inline prose leaked an unrelated citation, lost an exact anchor, or rewrote a URL, port or time");
+    assert.equal(comment.path, "internal/store.go", "normalisation changed the mechanical path");
+    assert.equal(comment.line, 41, "normalisation changed the mechanical line");
+    assert.equal(comment.end_line, ranged ? 44 : undefined, "normalisation changed the mechanical range");
+    if (surface === "filing") assert.equal(issueLogEntry({ ...finding, kind: "advisory-finding" }, attribution),
+      "- **Advisory · High: Lost update in internal/store.go** (`internal/store.go:41`) — " +
+      explanation + " " + attribution + ".",
+      "filing prose leaked an unrelated citation, lost an exact anchor, or rewrote a URL, port or time");
+  });
+}
+
+for (const surface of ["inline", "filing"]) test(`${surface}: an extensionless anchored filename distinguishes its citations from a host port`, () => {
+  const finding = {
+    title: "Check Makefile:7", severity: "Low", path: "Makefile", line: 3,
+    explanation: "Makefile:7 differs from Makefile:3; host:3000 and 10:30 stay intact.",
+  };
+  if (surface === "inline") assert.equal(findingComment(finding).body,
+    "**Advisory · Low: Check Makefile**\n\nMakefile differs from Makefile:3; host:3000 and 10:30 stay intact.",
+    "an extensionless file leaked an unrelated line or a non-path colon was rewritten");
+  if (surface === "filing") assert.equal(issueLogEntry({ ...finding, kind: "advisory-finding" }, attribution),
+    "- **Advisory · Low: Check Makefile** (`Makefile:3`) — Makefile differs from Makefile:3; host:3000 and 10:30 stay intact. " + attribution + ".",
+    "filing an extensionless file leaked an unrelated line or a non-path colon was rewritten");
+});
+
+for (const surface of ["inline", "filing"]) test(`${surface}: diagnostic columns cannot become invented line citations`, () => {
+  const finding = {
+    title: "Diagnostic location", severity: "High", path: "ledger/ledger.go", line: 110, endLine: 112,
+    explanation: "go vet: ledger/ledger.go:94:5: unreachable code; " +
+      "other cmd/minos/main.go:110:3; own ledger/ledger.go:110:3; " +
+      "nested ledger/ledger.go:94:5:2; wrong range ledger/ledger.go:110-111:3; " +
+      "own range ledger/ledger.go:110-112:3.",
+  };
+  const explanation = "go vet: ledger/ledger.go: unreachable code; " +
+    "other cmd/minos/main.go; own ledger/ledger.go:110:3; " +
+    "nested ledger/ledger.go; wrong range ledger/ledger.go; " +
+    "own range ledger/ledger.go:110-112:3.";
+  if (surface === "inline") assert.equal(findingComment(finding).body,
+    "**Advisory · High: Diagnostic location**\n\n" + explanation,
+    "stripping a diagnostic location invented a line from its column suffix");
+  if (surface === "filing") assert.equal(issueLogEntry({ ...finding, kind: "advisory-finding" }, attribution),
+    "- **Advisory · High: Diagnostic location** (`ledger/ledger.go:110`) — " + explanation + " " + attribution + ".",
+    "filing a diagnostic location invented a line from its column suffix");
 });

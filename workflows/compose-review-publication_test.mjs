@@ -269,3 +269,22 @@ test("argument errors exit 2 with usage", () => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /^usage: node workflows\/compose-review-publication/);
 });
+
+// Read the producer's actual payload file, not an expected value rendered
+// through the same presentation function as the code under test.
+test("the publication composer writes anchor-normalised finding prose to its comments payload", (t) => {
+  const { result, plan, readJson } = compose(t, {
+    main: verdict([finding("citation", {
+      title: "Invalid state at internal/review.go:99",
+      explanation: "Compare internal/review.go:99 and cmd/minos/main.go:12 with internal/review.go:42.",
+      proposingModel: undefined, verifyingModel: undefined,
+    })]),
+    mainDecision: decision("request-changes", [{ key: "citation", gating: true }]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readJson(plan.posts[0].comments), [{
+    path: "internal/review.go", line: 42,
+    body: "**Blocking · High: Invalid state at internal/review.go**\n\n" +
+      "Compare internal/review.go and cmd/minos/main.go with internal/review.go:42.",
+  }], "the producer's comments file leaked model-written lines unrelated to its mechanical anchor");
+});
