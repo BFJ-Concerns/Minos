@@ -5,6 +5,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { briefRecords } from "./brief-dispositions.mjs";
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
 import { routingFromEnvironment } from "./role-routing.mjs";
 
@@ -85,7 +86,7 @@ if (argumentError) {
     hasReviewDirectory,
     changedPaths,
     trackedFiles,
-    briefs,
+    briefs: briefRecords(briefs, occasion, changedPaths),
     guidance,
     routing,
     instructionBriefs,

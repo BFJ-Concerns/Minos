@@ -15,6 +15,8 @@ import { resolveRouting } from "./role-routing.mjs";
 
 const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 
+import { briefRecords } from "./brief-dispositions.mjs";
+
 const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
 const source = await readFile(scriptPath, "utf8");
@@ -58,8 +60,12 @@ function specialistResult(
   return { applicability, findings, outOfScopeObservations };
 }
 
+// The builder attaches each brief's frontmatter, title and deterministic
+// disposition; the test arguments do the same through the one module, so a
+// case names a brief by path and content and the occasion and changed paths
+// it runs under, exactly as a deployment would.
 function args(overrides = {}) {
-  return {
+  const merged = {
     target: "target111",
     head: "head222",
     occasion: null,
@@ -75,6 +81,7 @@ function args(overrides = {}) {
     ],
     ...overrides,
   };
+  return { ...merged, briefs: briefRecords(merged.briefs, merged.occasion || null, merged.changedPaths) };
 }
 
 function responder({ relevance, partition, specialist, verify } = {}) {
@@ -898,4 +905,12 @@ test("identified null answer keeps reviewer settlement truthful", async () => {
   assert.equal(result.reviewers.find((entry) => entry.label === answeredLabel).status, "done");
   assert.ok(result.incomplete.includes(`agent ${answeredLabel} answered without usable output`));
   assert.ok(!result.incomplete.some((reason) => reason.includes("failed:")));
+});
+
+test("the workflow refuses briefs the builder handed over without their deterministic pass", async () => {
+  const bare = { path: ".review/pkg/errors.md", readPath: "/workspace/.review/pkg/errors.md", content: "Judge errors.", scope: "pkg", scopeExists: true };
+  const input = { ...args(), briefs: [bare] };
+  await assert.rejects(run(input), /deterministic brief enumeration is incomplete/);
+  const half = { ...briefRecords([bare], null, ["pkg/x.go"])[0], disposition: { status: "skipped" } };
+  await assert.rejects(run({ ...args(), briefs: [half] }), /deterministic brief enumeration is incomplete/);
 });
