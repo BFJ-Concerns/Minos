@@ -32,9 +32,9 @@ func newStatusReaderFixture(t *testing.T, pages []string, repeat bool, refuseSou
 		case "/api/v1/user":
 			response = `{"login":"Minos"}`
 		case "/api/v1/repos/owner/repo":
-			response = `{"full_name":"owner/repo","default_branch":"main","allow_merge_commits":true}`
+			response = `{"full_name":"owner/repo"}`
 		case "/api/v1/repos/owner/repo/pulls/17":
-			response = `{"number":17,"state":"open","merged":false,"mergeable":true,"user":{"login":"author"},"head":{"sha":"head","ref":"topic","repo":{"full_name":"owner/repo"}},"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}`
+			response = `{"number":17,"state":"open","merged":false,"user":{"login":"author"},"head":{"sha":"head","ref":"topic","repo":{"full_name":"owner/repo"}},"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}`
 		case "/api/v1/repos/owner/repo/branches/main", "/api/v1/repos/owner/repo/branches/topic":
 			f.mu.Lock()
 			f.branches = append(f.branches, r.URL.Path)
@@ -43,7 +43,7 @@ func newStatusReaderFixture(t *testing.T, pages []string, repeat bool, refuseSou
 				http.Error(w, "source branch unavailable", http.StatusForbidden)
 				return
 			}
-			response = `{"commit":{"id":"target"},"protected":true,"user_can_merge":true,"status_check_contexts":["ci"]}`
+			response = `{"commit":{"id":"target"}}`
 		case "/api/v1/repos/owner/repo/commits/head/statuses":
 			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 			if repeat && page > len(pages) {
