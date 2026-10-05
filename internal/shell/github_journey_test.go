@@ -1405,3 +1405,82 @@ func TestGitHubUnreadableMarkerStateNeverBecomesAbsence(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubStatusOnlyCompletionSurvivesRetarget(t *testing.T) {
+	for _, outcome := range []product.State{product.Clean(), product.Attention()} {
+		t.Run(outcome.Name(), func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			state.pullRequest["draft"] = false
+			state.pullRequest["base"].(map[string]any)["ref"] = "parent"
+			adapter := state.adapter(t)
+			guard := state.guard()
+			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, outcome))
+			marker := forge.Marker{Reaction: "+1"}
+			if outcome == product.Attention() {
+				marker.Reaction = "-1"
+			}
+			githubApplied(t, adapter.AddMarker(t.Context(), guard, marker))
+			cfg := ServiceConfig{Root: t.TempDir()}
+			cfg.Runs.Dir = t.TempDir()
+			setTestRunCeilings(&cfg)
+			cfg.Service.BotLogin = githubFixtureBotLogin
+			cfg.Service.StatusContext = "Minos"
+			cfg.Forges = map[string]ForgeConfig{"github": {Adaptation: state.adaptationPath, APIBase: state.server.URL, CredentialFile: state.credentialPath}}
+			repo := RepoConfig{Forge: "github", Owner: "acme", Repo: "widgets"}
+			repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+			if outcome == product.Clean() {
+				repo.Markers.Clean = &marker
+			} else {
+				repo.Markers.Attention = &marker
+			}
+			facts := Facts{Forge: repo.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: "7"}
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var commands []string
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				commands = append(commands, name)
+				return nil, nil
+			}
+			before := len(state.operationWrites())
+			for _, phase := range []string{"parent", "retargeted"} {
+				if phase == "retargeted" {
+					state.mu.Lock()
+					state.pullRequest["base"].(map[string]any)["ref"] = "main"
+					state.baseTip = "parent-landed"
+					state.mu.Unlock()
+				}
+				result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Decision != ReconcileNothing || result.DeferralReason != "completed-marker" || result.TerminalOutcome != outcome.Name() || len(commands) != 0 || len(state.operationWrites()) != before {
+					t.Fatalf("%s status-only reconciliation = %#v, commands %v, writes %d -> %d; want completed-marker without claim or marker removal", phase, result, commands, before, len(state.operationWrites()))
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubCommitStatusContinuationPriority(t *testing.T) {
+	for _, outcome := range []product.State{product.Incomplete(), product.Working(), product.Continuation()} {
+		t.Run(outcome.Name(), func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			adapter := state.adapter(t)
+			guard := state.guard()
+			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Clean()))
+			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, outcome))
+			cfg := ServiceConfig{}
+			cfg.Service.BotLogin = githubFixtureBotLogin
+			cfg.Service.StatusContext = "Minos"
+			cfg.Forges = map[string]ForgeConfig{"github": {Adaptation: state.adaptationPath, APIBase: state.server.URL, CredentialFile: state.credentialPath}}
+			facts := Facts{Forge: "github", Owner: "acme", Repo: "widgets", HeadSHA: guard.HeadSHA}
+			priority, err := currentContinuationPriority(t.Context(), cfg, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if priority != 0 {
+				t.Fatalf("%s commit-status continuation priority = %d, want 0", outcome.Name(), priority)
+			}
+		})
+	}
+}

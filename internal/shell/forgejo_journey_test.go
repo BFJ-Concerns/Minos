@@ -3309,3 +3309,31 @@ func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
 		})
 	}
 }
+
+func TestForgejoWrittenStatusOnlyCompletion(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, repo, facts := state.service(t)
+	adapter, err := newBehaviouralForge(cfg, facts.Forge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := forge.Guard{Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo}, PullRequest: 1, HeadSHA: state.headSHA(), TargetSHA: state.targetSHA()}
+	result := adapter.SetProductStatus(t.Context(), guard, product.Clean())
+	if result.Outcome != forge.WriteApplied {
+		t.Fatalf("status write = %#v", result)
+	}
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var commands []string
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		commands = append(commands, name)
+		return nil, nil
+	}
+	reconciliation, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciliation.Decision != ReconcileNothing || reconciliation.DeferralReason != "completed-marker" || reconciliation.TerminalOutcome != "clean" || len(commands) != 0 {
+		t.Fatalf("written Forgejo status reconciliation = %#v, commands %v; want completed-marker without claim", reconciliation, commands)
+	}
+}
