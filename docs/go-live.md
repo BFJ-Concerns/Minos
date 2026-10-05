@@ -108,9 +108,10 @@ so no repository toolchains are needed.
    envelope cannot hold kills, taking the biggest consumer. Each unit also
    carries its own `MemoryMax` at the whole envelope as the backstop for a
    box missing the slice unit. Size the cap against the machine's memory
-   and cores. When changing the envelope, manually set the installed slice's
-   `MemoryMax` to the same value and `MemoryHigh` below it; the installer
-   does not update the slice. `runs.duration-ceiling` sets each run's hard
+   and cores. `minos install-units` (step 5) renders the installed slice
+   from this knob — `MemoryMax` at the envelope, `MemoryHigh` two GiB below
+   it — so after changing the envelope re-run it and reload the user
+   manager. `runs.duration-ceiling` sets each run's hard
    duration limit (a Go duration of at least `1us`, default `12h`).
    `runs.pressure-threshold-percent` sets the continuation threshold as a
    percentage of the run ceiling (1–100, default 85); the watch signals after
@@ -204,10 +205,14 @@ so no repository toolchains are needed.
 5. Install `minos-sweep-alert.service` (the sweep's `OnFailure=` hook, which
    files an operator alert issue on the repository named by the `[service]`
    `alert-forge`/`alert-owner`/`alert-repo` keys; the sweep files the same
-   alert itself when a configured repo goes unswept for an hour), then
-   install and enable `minos-receiver.service` and `minos-sweep.timer` from
-   `deploy/systemd/user` for the deployment user, and install
-   `minos-runs.slice` alongside them so runs share the memory envelope.
+   alert itself when a configured repo goes unswept for an hour): run
+   `minos install-units --config /etc/minos ~/.config/systemd/user` as the
+   deployment user, then `systemctl --user daemon-reload` and enable
+   `minos-receiver.service` and `minos-sweep.timer`. The units are embedded
+   in the binary (the sources are `deploy/systemd/user`); the command
+   writes every service with the configuration root it was given and
+   `minos-runs.slice` with the configured memory envelope, so runs share
+   that envelope rather than a copied default.
 6. Configure the forge webhook to post to `/hooks/<forge key>` —
    `/hooks/forgejo` for the shipped Forgejo table, `/hooks/github` for a
    GitHub App — using the matching secret.
