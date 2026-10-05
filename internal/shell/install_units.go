@@ -77,7 +77,11 @@ func installUnits(cfg ServiceConfig, directory string, stdout io.Writer) error {
 // installed half-rendered.
 func renderUnit(name string, content []byte, cfg ServiceConfig) ([]byte, error) {
 	if strings.HasSuffix(name, ".service") {
-		content = bytes.ReplaceAll(content, []byte("--config "+DefaultConfigRoot), []byte("--config "+cfg.Root))
+		marker := []byte("--config " + DefaultConfigRoot)
+		if !bytes.Contains(content, marker) {
+			return nil, fmt.Errorf("shipped %s carries no %q to render", name, string(marker))
+		}
+		content = bytes.ReplaceAll(content, marker, []byte("--config "+cfg.Root))
 	}
 	if name != runsSliceUnit {
 		return content, nil

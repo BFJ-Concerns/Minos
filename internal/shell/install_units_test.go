@@ -111,6 +111,17 @@ func TestInstallUnitsKeepsTheHighWatermarkAboveZeroForATinyEnvelope(t *testing.T
 	}
 }
 
+func TestInstallUnitsRefusesAServiceWithoutTheConfigMarker(t *testing.T) {
+	cfg := unitsTestConfig(t, "8")
+	if _, err := renderUnit("minos-extra.service", []byte("[Service]\nExecStart=/usr/local/bin/minos extra\n"), cfg); err == nil || !strings.Contains(err.Error(), "--config /etc/minos") {
+		t.Fatalf("a service without the configuration root rendered: %v", err)
+	}
+	rendered, err := renderUnit("minos-extra.service", []byte("ExecStart=/usr/local/bin/minos extra --config /etc/minos\n"), cfg)
+	if err != nil || string(rendered) != "ExecStart=/usr/local/bin/minos extra --config "+cfg.Root+"\n" {
+		t.Fatalf("rendered = %q, %v", rendered, err)
+	}
+}
+
 func TestInstallUnitsCommandReadsTheConfigRootAndRefusesBadUsage(t *testing.T) {
 	cfg := unitsTestConfig(t, "12")
 	directory := t.TempDir()

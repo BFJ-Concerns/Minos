@@ -61,6 +61,9 @@ type githubFixtureState struct {
 	// path; a comment outside it is refused with 422 as GitHub refuses it.
 	diffLines    map[string][]int64
 	reviewWrites []map[string]any
+	// refuseReviewPosts, when non-zero, is the HTTP status the fixture
+	// answers every review submission with, recording nothing.
+	refuseReviewPosts int
 }
 
 func newGitHubFixtureState(t *testing.T) *githubFixtureState {
@@ -241,6 +244,10 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(path, "/repos/acme/widgets/pulls/7/reviews/"), "/comments"), "%d", &id)
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.reviewComments[id]))
 	case r.Method == http.MethodPost && path == "/repos/acme/widgets/pulls/7/reviews":
+		if s.refuseReviewPosts != 0 {
+			http.Error(w, `{"message":"API rate limit exceeded"}`, s.refuseReviewPosts)
+			return
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			s.t.Error(err)
@@ -506,6 +513,22 @@ func TestGitHubGuardedPostReviewReportsTheForgesRefusalOfAnAnchor(t *testing.T) 
 	}
 	if !strings.Contains(result.Reason, "HTTP 422") || !strings.Contains(result.Reason, "line 40 is not part of the diff") {
 		t.Fatalf("refusal reason = %q", result.Reason)
+	}
+}
+
+// Only a validation refusal is the forge's verdict on the payload; a rate
+// limit or an expired token is settled by the read-back like any other
+// guarded write, so a transient never ends a run as a rejection.
+func TestGitHubGuardedPostReviewTreatsANonValidationFailureAsUncertain(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	state.mu.Lock()
+	state.refuseReviewPosts = http.StatusForbidden
+	state.mu.Unlock()
+
+	result := adapter.PostReview(t.Context(), state.guard(), forge.ReviewVerdictComment, "Review body.", nil)
+	if result.Outcome != forge.WriteUncertain || result.Reason != "review write could not be discovered" {
+		t.Fatalf("post review = %#v, want uncertain after a 403", result)
 	}
 }
 

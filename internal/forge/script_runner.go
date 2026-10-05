@@ -10,8 +10,9 @@ import (
 	"strings"
 )
 
-// ScriptRunner keeps Forgejo's HTTP and Git mechanics in the existing
-// adaptation substrate while giving the Go protocol a testable process seam.
+// ScriptRunner runs an adaptation's operation scripts as processes, handing
+// each the API base and the forge's credential: the one process seam every
+// forge's adaptation directory sits behind.
 type ScriptRunner struct {
 	Directory  string
 	APIBase    string

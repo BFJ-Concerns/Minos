@@ -1,13 +1,15 @@
 # Deployment
 
 Minos runs on a disposable single-tenant machine with Claude Code, the Codex
-CLI, Node.js, Git, Go, curl and jq installed. The machine itself is the
+CLI, Node.js, Git, Go, curl, jq and openssl installed (openssl signs the
+GitHub App token; `scripts/expected-tool-versions` is the declared set). The machine itself is the
 containment boundary. Reviews never build or test the reviewed repository,
 so no repository toolchains are needed.
 
 1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
-2. Install `scripts/adaptations/forgejo` under
-   `/opt/minos/adaptations/forgejo`; install the whole of `scripts/run-body/`
+2. Install the whole of `scripts/adaptations/` under
+   `/opt/minos/adaptations` — one directory per forge (`forgejo`, `github`),
+   each keeping its basenames and modes; install the whole of `scripts/run-body/`
    under `/opt/minos/run-body`, each file keeping its basename and mode. Copy
    the directory rather than a named list: the scripts source their shared
    pieces — `cgroup-memory.sh`, `archive-transport.sh` — from beside
@@ -337,7 +339,7 @@ credential:
 
 ```sh
 curl -H "Authorization: Bearer $(cat /etc/minos/status.token)" \
-  http://minos.example:8919/status | jq
+  http://localhost:8919/status | jq
 ```
 
 The token is the whole gate, and the projection names repositories, branches
