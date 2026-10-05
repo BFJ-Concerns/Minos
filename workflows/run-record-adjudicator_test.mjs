@@ -1,6 +1,6 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -513,13 +513,9 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
   assert.match(adapterVerdict.incomplete.join("\n"), /proposed finding 1 is absent or malformed/);
 });
 
-test("an envelope carrying a members record makes the run incomplete", async (t) => {
-  const fixtureArchiveDir = fixtureArchive(t);
-  const adapterVerdict = await adjudicate({
-    envelope: { ...envelope, members: [{ id: "primary" }] },
-    recordDir: fixtureArchiveDir,
-  });
-  assertWithheld(adapterVerdict, "envelope carries a members record; grouped runs no longer exist");
+test("the adjudicator carries no grouped-run members reader", () => {
+  const source = readFileSync(new URL("./run-record-adjudicator.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /\bmembers\b/);
 });
 
 test("a finding about a range reaches the verdict with its end line", async (t) => {
