@@ -61,6 +61,40 @@ write_result() {
     '{outcome:$outcome} + (if $reason == "" then {} else {reason:$reason} end)'
 }
 
+# Every review on the pull request as one JSON array of review objects, paged
+# until the empty page or a repeated one; returns 1 when the forge could not
+# be read or answered with something other than an array of objects.
+pull_request_reviews() {
+  reviews_path="/api/v1/repos/$1/$2/pulls/$3/reviews"
+  reviews_all='[]'
+  reviews_previous=''
+  reviews_page=1
+  while :; do
+    reviews_current="$(api GET "${reviews_path}?limit=50&page=${reviews_page}")" || return 1
+    reviews_count="$(printf '%s' "$reviews_current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected reviews array") end')" || return 1
+    ! repeats_previous_page "$reviews_current" "$reviews_previous" || break
+    [ "$reviews_count" -gt 0 ] || break
+    reviews_all="$(jq -cn --argjson all "$reviews_all" --argjson page "$reviews_current" '$all + $page')" || return 1
+    reviews_previous="$reviews_current"
+    reviews_page=$((reviews_page + 1))
+  done
+  printf '%s' "$reviews_all"
+}
+
+# The id of the newest review this login left on the given head — the
+# review a reader of the pull request page reaches as
+# `#pullrequestreview-<id>`: returns 0 and prints the id, 1 when the login
+# has no review on that head, 2 when the reviews could not be read.
+latest_own_review_id() {
+  own_reviews="$(pull_request_reviews "$1" "$2" "$3" 2>/dev/null)" || return 2
+  own_review_id="$(printf '%s' "$own_reviews" | jq -er --arg head "$4" --arg login "$5" '
+    [.[] | select(.commit_id == $head and (.user.login // .user.username // "") == $login)] |
+    if length == 0 then empty else
+      max_by(.id).id | if type == "number" and . > 0 then . else error("review lacks positive id") end
+    end')" || { own_review_status=$?; [ "$own_review_status" -eq 4 ] && return 1; return 2; }
+  printf '%s\n' "$own_review_id"
+}
+
 # Whether the login's reaction with this content is on the pull request:
 # returns 0 present, 1 absent, 2 when the reactions could not be read. Pages
 # until an empty page (array or null), or until the forge repeats the previous page.

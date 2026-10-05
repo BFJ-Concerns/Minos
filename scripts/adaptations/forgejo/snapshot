@@ -48,17 +48,7 @@ fi
 
 statuses="$(commit_statuses "$owner" "$repo" "$(printf '%s' "$pr_json" | jq -r '.head.sha')")"
 
-reviews='[]'
-previous=''
-page=1
-while :; do
-  current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=50&page=${page}")"
-  ! repeats_previous_page "$current" "$previous" || break
-  [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
-  reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')"
-  previous="$current"
-  page=$((page + 1))
-done
+reviews="$(pull_request_reviews "$owner" "$repo" "$pr")"
 
 head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
 case "$head_branch" in

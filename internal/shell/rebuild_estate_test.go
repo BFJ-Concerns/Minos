@@ -14,11 +14,11 @@ import (
 	"time"
 )
 
-// fixtureStatusTargetURL mirrors the URL guarded-set-status writes: the pull
-// request's web URL with the pinned target recorded in the fragment.
-func fixtureStatusTargetURL(apiBase string, facts Facts) string {
+// fixtureStatusDetailsURL mirrors the Details link guarded-set-status writes
+// when Minos has left no review on the head: the pull request's web URL.
+func fixtureStatusDetailsURL(apiBase string, facts Facts) string {
 	webBase := strings.TrimSuffix(strings.TrimSuffix(apiBase, "/"), "/api/v1")
-	return fmt.Sprintf("%s/%s/%s/pulls/%s#minos-target-%s", webBase, facts.Owner, facts.Repo, facts.PR, facts.BaseSHA)
+	return fmt.Sprintf("%s/%s/%s/pulls/%s", webBase, facts.Owner, facts.Repo, facts.PR)
 }
 
 func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
@@ -329,7 +329,7 @@ func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
 	}
 }
 
-func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *testing.T) {
+func TestRebuildEstateIncompleteStatusBindsTheHeadNotTheTarget(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, facts := state.service(t)
 	writeServiceConfig(t, cfg)
@@ -362,9 +362,7 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *t
 	state.mu.Unlock()
 	if writes != 1 || written["state"] != "error" || written["context"] != "Minos" ||
 		written["description"] != "Review incomplete" ||
-		written["target_url"] != fixtureStatusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
-			Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
-		}) {
+		written["target_url"] != fixtureStatusDetailsURL(cfg.Forges[facts.Forge].APIBase, facts) {
 		t.Fatalf("incomplete status writes = %d, payload = %#v", writes, written)
 	}
 	creator, ok := written["creator"].(map[string]any)
@@ -373,8 +371,9 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *t
 	}
 
 	// A status is a head-bound statement: a pinned target the branch has
-	// since left behind still publishes, anchored to that pinned target, so
-	// a mid-run target push cannot end the round.
+	// since left behind still publishes, so a mid-run target push cannot end
+	// the round — and the target is no part of the status, so the write
+	// converges on the one already there.
 	stdout.Reset()
 	if err := ForgeCommand(t.Context(), []string{"status", head, target + "-stale", "incomplete"}, &stdout); err != nil {
 		t.Fatalf("pinned-target status after target moved: %v\n%s", err, stdout.String())
@@ -384,19 +383,9 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *t
 	}
 	state.mu.Lock()
 	writesAfterMove := state.statusWrites
-	var movedAnchor any
-	if len(state.statuses) > 1 {
-		movedAnchor = state.statuses[0]["target_url"]
-	}
 	state.mu.Unlock()
-	if writesAfterMove != 2 {
-		t.Fatalf("pinned-target status write count = %d, want two", writesAfterMove)
-	}
-	wantMovedAnchor := fixtureStatusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
-		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target + "-stale",
-	})
-	if movedAnchor != wantMovedAnchor {
-		t.Fatalf("pinned-target status anchor = %#v, want %q", movedAnchor, wantMovedAnchor)
+	if writesAfterMove != 1 {
+		t.Fatalf("status write count after the target moved = %d, want the one write", writesAfterMove)
 	}
 }
 
@@ -436,26 +425,23 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 		t.Fatalf("status with new head: %v\n%s", err, stdout.String())
 	}
 
+	// The repeated `working` and the `attention` re-pinned to the new target
+	// are identical desired statuses on the same head, so neither posts; the
+	// moved head is a fresh commit with no status, so its write posts.
 	posts := state.statusPostFacts()
-	if len(posts) != 4 {
-		t.Fatalf("forge received %d status posts, want exactly four: %#v", len(posts), posts)
+	if len(posts) != 3 {
+		t.Fatalf("forge received %d status posts, want exactly three: %#v", len(posts), posts)
 	}
-	wantTarget := fixtureStatusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
-		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
-	})
-	wantNewTarget := fixtureStatusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
-		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: newTarget,
-	})
+	details := fixtureStatusDetailsURL(cfg.Forges[facts.Forge].APIBase, facts)
 	for index, want := range []struct {
 		head        string
 		target      string
 		state       string
 		description string
 	}{
-		{head: head, target: wantTarget, state: "pending", description: "Reviewing changes"},
-		{head: head, target: wantTarget, state: "failure", description: "Changes need attention"},
-		{head: head, target: wantNewTarget, state: "failure", description: "Changes need attention"},
-		{head: newHead, target: wantNewTarget, state: "failure", description: "Changes need attention"},
+		{head: head, target: details, state: "pending", description: "Reviewing changes"},
+		{head: head, target: details, state: "failure", description: "Changes need attention"},
+		{head: newHead, target: details, state: "failure", description: "Changes need attention"},
 	} {
 		post := posts[index]
 		if post.Head != want.head || post.Payload["state"] != want.state || post.Payload["description"] != want.description ||

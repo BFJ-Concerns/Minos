@@ -135,8 +135,9 @@ toolchains are needed.
 
    Every commit status Minos writes carries `service.status-context`
    (default `Minos`), and the sweep's completion marker is read under
-   that context only. Status Details links point at the pull request with
-   a target-SHA fragment. For a Forgejo forge, `[forges.<key>] web-base`
+   that context only. A status's Details link lands on the review Minos
+   posted for the reviewed head, or on the pull request itself when it
+   posted none. For a Forgejo forge, `[forges.<key>] web-base`
    sets the link's host and optional path prefix as an absolute HTTP(S)
    URL; unset, the link derives the web host from `api-base` by stripping
    a trailing `/api/v1`. GitHub links always derive the web host from the

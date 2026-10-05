@@ -76,6 +76,10 @@ type githubFixtureState struct {
 	// refuseReviewPosts, when non-zero, is the HTTP status the fixture
 	// answers every review submission with, recording nothing.
 	refuseReviewPosts int
+	// refuseReviewReads, when non-zero, is the HTTP status the fixture
+	// answers every review listing with, so a script's read-back sees an
+	// unreadable forge rather than an empty one.
+	refuseReviewReads int
 	reactions         []map[string]any
 	definedLabels     []map[string]any
 	issues            []map[string]any
@@ -281,6 +285,10 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/commits/") && strings.HasSuffix(path, "/statuses"):
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.statuses))
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets/pulls/7/reviews":
+		if s.refuseReviewReads != 0 {
+			http.Error(w, `{"message":"unavailable"}`, s.refuseReviewReads)
+			return
+		}
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.reviews))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/pulls/7/reviews/") && strings.HasSuffix(path, "/comments"):
 		var id int64
@@ -1056,7 +1064,7 @@ func TestGitHubStatusWritesReadBackAndIgnoreTargetMovement(t *testing.T) {
 			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, stateValue))
 			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, stateValue))
 			writes := state.operationWrites()
-			wantURL := state.server.URL + "/acme/widgets/pull/7#minos-target-" + guard.TargetSHA
+			wantURL := state.server.URL + "/acme/widgets/pull/7"
 			if len(writes) != 1 || writes[0].path != "/repos/acme/widgets/statuses/"+guard.HeadSHA || writes[0].payload["target_url"] != wantURL || writes[0].payload["state"] != string(stateValue.ForgeState()) || writes[0].payload["context"] != "Minos" || writes[0].payload["description"] != stateValue.Description() {
 				t.Fatalf("status writes = %#v", writes)
 			}
@@ -1338,8 +1346,52 @@ func TestGitHubStatusDetailsUseEnterpriseWebBase(t *testing.T) {
 	guard := state.guard()
 	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Clean()))
 	writes := state.operationWrites()
-	if len(writes) != 1 || writes[0].payload["target_url"] != state.server.URL+"/acme/widgets/pull/7#minos-target-"+guard.TargetSHA {
+	if len(writes) != 1 || writes[0].payload["target_url"] != state.server.URL+"/acme/widgets/pull/7" {
 		t.Fatalf("enterprise details URL = %#v", writes)
+	}
+}
+
+// The Details link lands on the newest review the App left on the reviewed
+// head, as GitHub anchors it (`#pullrequestreview-<id>`); the colleague's
+// review the fixture seeds on the head and the App's own review on an
+// earlier head are not it. The link is the status's read-back identity, so
+// a repeat converges, and a forge that cannot list reviews leaves the write
+// uncertain rather than posting a link that may be wrong.
+func TestGitHubStatusDetailsLandOnTheHeadsOwnReview(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	guard := state.guard()
+	state.mu.Lock()
+	state.reviews = append(state.reviews, map[string]any{
+		"id": 502, "state": "CHANGES_REQUESTED", "commit_id": "earlier-head", "body": "Earlier round",
+		"user": map[string]any{"login": githubFixtureBotLogin},
+	})
+	state.mu.Unlock()
+	githubApplied(t, adapter.PostReview(t.Context(), guard, forge.ReviewRequestChanges, "Blocking review", nil))
+	state.mu.Lock()
+	posted := state.reviews[len(state.reviews)-1]
+	state.mu.Unlock()
+	if posted["user"].(map[string]any)["login"] != githubFixtureBotLogin || posted["commit_id"] != guard.HeadSHA {
+		t.Fatalf("posted review = %#v, want the App's review on the head", posted)
+	}
+
+	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Attention()))
+	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Attention()))
+	writes := state.operationWrites()
+	want := fmt.Sprintf("%s/acme/widgets/pull/7#pullrequestreview-%d", state.server.URL, posted["id"])
+	if len(writes) != 1 || writes[0].payload["target_url"] != want {
+		t.Fatalf("status writes = %#v, want one write with Details %s", writes, want)
+	}
+
+	state.mu.Lock()
+	state.refuseReviewReads = http.StatusServiceUnavailable
+	state.mu.Unlock()
+	result := adapter.SetProductStatus(t.Context(), guard, product.Clean())
+	if result.Outcome != forge.WriteUncertain || !strings.Contains(result.Reason, "reviews could not be read") {
+		t.Fatalf("status with unreadable reviews = %#v, want uncertain naming the review listing", result)
+	}
+	if writes := state.operationWrites(); len(writes) != 1 {
+		t.Fatalf("status writes after unreadable reviews = %d, want the earlier 1 alone", len(writes))
 	}
 }
 
