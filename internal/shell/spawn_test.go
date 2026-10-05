@@ -824,6 +824,12 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=43200.000000000s")
 	assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
 	assertArgument(t, systemdArgs, "--property=MemoryMax=22G")
+	assertArgument(t, systemdArgs, "--property=OnSuccess=minos-sweep.service")
+	for _, argument := range systemdArgs {
+		if strings.HasPrefix(argument, "--property=OnFailure=") {
+			t.Fatalf("run unit must not trigger reconciliation on failure: %q", argument)
+		}
+	}
 	environment := systemdEnvironment(t, systemdArgs)
 	for _, value := range []string{
 		"MINOS_CONFIG=/etc/minos",
