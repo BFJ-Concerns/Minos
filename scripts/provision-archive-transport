@@ -49,13 +49,24 @@ case "$mode" in
         exit 1
         ;;
     esac
-    install -d -m 0700 "$(dirname "$authorised_keys")"
-    touch "$authorised_keys"
-    chmod 0600 "$authorised_keys"
     key="$(sed -n '1p' "$public_key")"
     key_material="$(printf '%s\n' "$key" | awk '{print $1 " " $2}')"
     line="restrict,from=\"$client_address\",command=\"$receiver '$destination'\" $key"
-    updated="$(grep -Fv -- "$key_material" "$authorised_keys" || true)"
+    updated=""
+    if [ -e "$authorised_keys" ] || [ -L "$authorised_keys" ]; then
+      read_status=0
+      updated="$(grep -Fv -- "$key_material" "$authorised_keys")" || read_status=$?
+      case "$read_status" in
+        0 | 1) ;;
+        *)
+          echo "provision-archive-transport: could not read authorized_keys" >&2
+          exit 1
+          ;;
+      esac
+    fi
+    install -d -m 0700 "$(dirname "$authorised_keys")"
+    touch "$authorised_keys"
+    chmod 0600 "$authorised_keys"
     printf '%s\n' "$updated" | sed '/^$/d' >"$authorised_keys.next"
     printf '%s\n' "$line" >>"$authorised_keys.next"
     chmod 0600 "$authorised_keys.next"

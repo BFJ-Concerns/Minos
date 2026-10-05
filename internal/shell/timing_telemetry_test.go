@@ -51,6 +51,7 @@ type timingWorker struct {
 		Reason      string  `json:"reason"`
 		BuildMs     *int64  `json:"build_ms"`
 		TestMs      *int64  `json:"test_ms"`
+		OtherMs     *int64  `json:"other_ms"`
 		ReasoningMs *int64  `json:"reasoning_ms"`
 	} `json:"span_breakdown"`
 }
@@ -329,8 +330,8 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 	for _, worker := range analysed.Workers {
 		byRecord[worker.Record] = worker
 	}
-	assertArchivedSpan(t, byRecord["ensemble-records/codex"].SpanBreakdown, "codex-app-server-events", 360000, 0, 240000)
-	assertArchivedSpan(t, byRecord["ensemble-records/claude"].SpanBreakdown, "claude-session-jsonl", 0, 120000, 60000)
+	assertArchivedSpan(t, byRecord["ensemble-records/codex"].SpanBreakdown, "codex-app-server-events", 600000)
+	assertArchivedSpan(t, byRecord["ensemble-records/claude"].SpanBreakdown, "claude-session-jsonl", 180000)
 	unknown := byRecord["ensemble-records/unknown"].SpanBreakdown
 	if unknown == nil || unknown.Status != "unparseable" || unknown.Format == nil || *unknown.Format != "future-session-jsonl" {
 		t.Fatalf("unknown transcript was attributed instead of refused: %+v", unknown)
@@ -378,9 +379,9 @@ func TestArchivedSpanAnalysisMatchesSiblingAgentsByWorkerIdentity(t *testing.T) 
 	if len(byID) != 3 {
 		t.Fatalf("workers by identity = %+v, want three sibling agents", byID)
 	}
-	assertArchivedSpan(t, byID[1].SpanBreakdown, "codex-app-server-events", 120000, 0, 120000)
-	assertArchivedSpan(t, byID[2].SpanBreakdown, "claude-session-jsonl", 0, 300000, 120000)
-	assertArchivedSpan(t, byID[3].SpanBreakdown, "codex-app-server-events", 0, 0, 480000)
+	assertArchivedSpan(t, byID[1].SpanBreakdown, "codex-app-server-events", 240000)
+	assertArchivedSpan(t, byID[2].SpanBreakdown, "claude-session-jsonl", 420000)
+	assertArchivedSpan(t, byID[3].SpanBreakdown, "codex-app-server-events", 480000)
 }
 
 func TestArchivedSpanAnalysisScopesToCollectedRecordRootsAndReportsUnresolvedRecords(t *testing.T) {
@@ -429,8 +430,8 @@ func TestArchivedSpanAnalysisScopesToCollectedRecordRootsAndReportsUnresolvedRec
 	if err := json.Unmarshal(output, &record); err != nil {
 		t.Fatalf("analysis does not produce a timing record: %v\n%s", err, output)
 	}
-	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 0, 0, 60000)
-	assertArchivedSpan(t, record.Workers[1].SpanBreakdown, "codex-app-server-events", 0, 0, 120000)
+	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 60000)
+	assertArchivedSpan(t, record.Workers[1].SpanBreakdown, "codex-app-server-events", 120000)
 	if span := record.Workers[2].SpanBreakdown; span == nil || span.Status != "unparseable" || span.Reason != "unreadable or invalid agent record" {
 		t.Fatalf("broken agent record was not reported as unparseable: %+v", span)
 	}
@@ -509,7 +510,7 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	if err := json.Unmarshal(decoded, &record); err != nil {
 		t.Fatalf("enriched sidecar does not parse: %v\n%s", err, decoded)
 	}
-	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 0, 120000, 60000)
+	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 180000)
 	log, err := os.ReadFile(sshLog)
 	if err != nil {
 		t.Fatal(err)
@@ -547,11 +548,12 @@ func assertArchivedSpan(t *testing.T, span *struct {
 	Reason      string  `json:"reason"`
 	BuildMs     *int64  `json:"build_ms"`
 	TestMs      *int64  `json:"test_ms"`
+	OtherMs     *int64  `json:"other_ms"`
 	ReasoningMs *int64  `json:"reasoning_ms"`
-}, format string, build, test, reasoning int64) {
+}, format string, other int64) {
 	t.Helper()
-	if span == nil || span.Status != "parsed" || span.Format == nil || *span.Format != format || span.BuildMs == nil || *span.BuildMs != build || span.TestMs == nil || *span.TestMs != test || span.ReasoningMs == nil || *span.ReasoningMs != reasoning {
-		t.Fatalf("span = %+v, want parsed %s with %d/%d/%d ms", span, format, build, test, reasoning)
+	if span == nil || span.Status != "parsed" || span.Format == nil || *span.Format != format || span.BuildMs != nil || span.TestMs != nil || span.ReasoningMs != nil || span.OtherMs == nil || *span.OtherMs != other {
+		t.Fatalf("span = %+v, want parsed %s without retired categories and with other_ms=%d", span, format, other)
 	}
 }
 
@@ -1101,7 +1103,7 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	}
 	for _, worker := range record.Workers {
 		if worker.Record == records["record-a"] {
-			assertArchivedSpan(t, worker.SpanBreakdown, "codex-app-server-events", 0, 120000, 120000)
+			assertArchivedSpan(t, worker.SpanBreakdown, "codex-app-server-events", 240000)
 		}
 	}
 	archiveListing, err := exec.Command("tar", "-tf", tarballs[0]).CombinedOutput()

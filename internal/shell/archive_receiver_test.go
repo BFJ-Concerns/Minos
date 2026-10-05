@@ -5,8 +5,11 @@ import (
 	"encoding/base64"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -96,6 +99,14 @@ func TestArchiveReceiverListsSidecarsNewestFirstFromTheCutoff(t *testing.T) {
 	}
 }
 
+func TestArchiveReceiverListsAnEmptyDestination(t *testing.T) {
+	destination := t.TempDir()
+	stdout, stderr, err := runArchiveReceiver(t, destination, "list 20260902T000000Z 1", nil)
+	if err != nil || len(stdout) != 0 || len(stderr) != 0 {
+		t.Fatalf("empty listing: err=%v stdout=%q stderr=%q, want success with no output", err, stdout, stderr)
+	}
+}
+
 func TestArchiveReceiverRefusesUnsupportedRequests(t *testing.T) {
 	destination := t.TempDir()
 	for _, request := range []string{
@@ -124,5 +135,95 @@ func TestArchiveReceiverRefusesUnsupportedRequests(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("refused requests wrote into the destination: %v", entries)
+	}
+}
+
+func TestArchiveReceiverRefusesUnreadableListing(t *testing.T) {
+	root := t.TempDir()
+	// A root runner drops privileges; other runners already have an
+	// unprivileged identity. Keep the script and its parents traversable.
+	var credential *syscall.Credential
+	if os.Geteuid() == 0 {
+		account, err := user.Lookup("nobody")
+		if err != nil {
+			// NSS may have an unprivileged account under another name.
+			passwd, readErr := os.ReadFile("/etc/passwd")
+			if readErr != nil {
+				t.Fatalf("cannot discover unprivileged accounts: %v", readErr)
+			}
+			for _, line := range strings.Split(string(passwd), "\n") {
+				fields := strings.Split(line, ":")
+				if len(fields) < 4 || fields[2] == "0" {
+					continue
+				}
+				account, err = user.Lookup(fields[0])
+				if err == nil {
+					break
+				}
+			}
+			if err != nil {
+				t.Skipf("no unprivileged account available: %v; controlled ls failure is covered separately", err)
+			}
+		}
+		uid, err := strconv.ParseUint(account.Uid, 10, 32)
+		if err != nil || uid == 0 {
+			t.Fatalf("invalid unprivileged UID %q: %v", account.Uid, err)
+		}
+		gid, err := strconv.ParseUint(account.Gid, 10, 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+	}
+	for _, directory := range []string{filepath.Dir(root), root} {
+		if err := os.Chmod(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := os.ReadFile(filepath.Join("..", "..", "scripts", "archive-receiver"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver := filepath.Join(root, "archive-receiver")
+	writeScript(t, receiver, string(source))
+	destination := filepath.Join(root, "archive")
+	if err := os.Mkdir(destination, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(destination, 0o755) })
+	enter := exec.Command("sh", "-c", `cd "$1"`, "sh", destination)
+	enter.SysProcAttr = &syscall.SysProcAttr{Credential: credential}
+	if output, err := enter.CombinedOutput(); err != nil {
+		t.Fatalf("fixture is not enterable by the unprivileged subprocess: %v\n%s", err, output)
+	}
+	cmd := exec.Command(receiver, destination)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: credential}
+	cmd.Env = append(os.Environ(), "SSH_ORIGINAL_COMMAND=list 20260902T000000Z 1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	if err == nil || stdout.Len() != 0 || !strings.Contains(stderr.String(), "could not enumerate destination") {
+		t.Fatalf("unreadable listing was not refused: err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if err := os.Chmod(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("listing changed destination: %v, %v", entries, err)
+	}
+}
+
+func TestArchiveReceiverRefusesEnumerationCommandFailure(t *testing.T) {
+	root := t.TempDir()
+	writeScript(t, filepath.Join(root, "ls"), "#!/usr/bin/env sh\nexit 2\n")
+	t.Setenv("PATH", root+":"+os.Getenv("PATH"))
+	stdout, stderr, err := runArchiveReceiver(t, root, "list 20260902T000000Z 1", nil)
+	if err == nil || len(stdout) != 0 || !strings.Contains(string(stderr), "could not enumerate destination") {
+		t.Fatalf("enumeration failure was not refused: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil || len(entries) != 1 || entries[0].Name() != "ls" {
+		t.Fatalf("listing changed destination: %v, %v", entries, readErr)
 	}
 }
