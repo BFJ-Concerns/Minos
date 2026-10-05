@@ -617,7 +617,9 @@ write, matching the target rule above.)
    Check for `$MINOS_RUN_DIR/memory-pressure` after publication.
 7. End at the earned terminal outcome.
 
-   **Clean:** no review is posted; set
+   **Clean:** post no review of your own (a pull-request-comment filing
+   destination may already have posted the advisory entries as one
+   comment review, which carries no verdict); set
    `"$MINOS_BIN" forge status HEAD TARGET clean`, then add the clean marker with
    `"$MINOS_BIN" forge marker HEAD TARGET clean add`, and remove the
    in-flight marker with
