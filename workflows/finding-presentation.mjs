@@ -66,12 +66,17 @@ export function findingComment(finding, disposition = null) {
   const alsoRaised = Array.isArray(finding.alsoRaisedBy) && finding.alsoRaisedBy.length > 0
     ? `\n\nAlso raised by: ${finding.alsoRaisedBy.map((source) => normaliseProse(source, finding)).join(", ")}.`
     : "";
+  // The other sites of a defect the decision merged here; literal sites,
+  // never normalised to this comment's anchor.
+  const alsoAt = Array.isArray(finding.alsoAt) && finding.alsoAt.length > 0
+    ? `\n\nAlso at: ${finding.alsoAt.map((site) => `\`${site}\``).join(", ")}.`
+    : "";
   const attribution = provenance(finding);
   const comment = {
     path: finding.path,
     body:
       `**${label} · ${finding.severity}: ${normaliseProse(finding.title, finding)}**\n\n` +
-      `${normaliseProse(finding.explanation, finding)}${alsoRaised}${crossReferences}${attribution === "" ? "" : `\n\n${attribution}`}`,
+      `${normaliseProse(finding.explanation, finding)}${alsoRaised}${alsoAt}${crossReferences}${attribution === "" ? "" : `\n\n${attribution}`}`,
     line: finding.line,
   };
   // A finding about a range says so, so the forge boundary can cover the
@@ -135,8 +140,11 @@ function sentence(text) {
 export function issueLogEntry(entry, attribution) {
   if (entry.kind === "advisory-finding") {
     const attributionLine = provenance(entry);
+    const alsoAt = Array.isArray(entry.alsoAt) && entry.alsoAt.length > 0
+      ? `, also at ${entry.alsoAt.map((site) => `\`${site}\``).join(", ")}`
+      : "";
     return (
-      `- **Advisory · ${entry.severity}: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`) — ${sentence(normaliseProse(entry.explanation, entry))}` +
+      `- **Advisory · ${entry.severity}: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`${alsoAt}) — ${sentence(normaliseProse(entry.explanation, entry))}` +
       `${attributionLine === "" ? "" : ` ${attributionLine}`} ${attribution}.`
     );
   }

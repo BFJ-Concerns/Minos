@@ -112,6 +112,32 @@ test("an unknown class or malformed undergrade is refused wherever it appears", 
   assert.match(refusedUndergrade.reason, /undergrade must be a non-empty string/);
 });
 
+test("a defect label is a non-empty string whose members gate alike", () => {
+  const digest = completeDigest([
+    finding(),
+    finding({ id: "specialist-2:1", title: "Retry bound short by one at the loop exit", line: 57 }),
+  ]);
+  const [first, second] = digest.findings;
+  const blank = decision(digest, {
+    findings: [{ key: first.key, gating: true, defect: " " }, { key: second.key, gating: true }],
+  });
+  const refusedBlank = validateVerdictDecision(blank, digest);
+  assert.equal(refusedBlank.ok, false);
+  assert.match(refusedBlank.reason, /defect must be a non-empty label/);
+
+  const split = decision(digest, {
+    findings: [{ key: first.key, gating: true, defect: "retry-bound" }, { key: second.key, gating: false, class: "speculative-hardening", defect: "retry-bound" }],
+  });
+  const refusedSplit = validateVerdictDecision(split, digest);
+  assert.equal(refusedSplit.ok, false);
+  assert.match(refusedSplit.reason, /labelled one defect gate differently: retry-bound/);
+
+  const labelled = decision(digest, {
+    findings: [{ key: first.key, gating: true, defect: "retry-bound" }, { key: second.key, gating: true, defect: "retry-bound" }],
+  });
+  assert.deepEqual(validateVerdictDecision(labelled, digest), { ok: true });
+});
+
 test("a coherent decision validates", () => {
   const digest = completeDigest([finding()]);
   assert.deepEqual(validateVerdictDecision(decision(digest), digest), { ok: true });

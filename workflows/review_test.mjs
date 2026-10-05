@@ -811,6 +811,7 @@ test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);
   assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition — is corrected and re-validated rather than worked around;\s+nothing has touched the forge yet/);
   assert.match(lifecycle, /The run's overall verdict is\s+`request-changes` when either validated decision is; `clean` only when\s+every validated decision is clean/);
+  assert.match(lifecycle, /take the same `defect`\s+label on their dispositions[\s\S]*?they gate alike\. The composer\s+publishes a labelled defect once, at its highest-severity site[\s\S]*?Distinct\s+defects at one line take no label/);
 });
 
 test("worker dispatch options strip capabilities and identify fan-out settlements", async (t) => {

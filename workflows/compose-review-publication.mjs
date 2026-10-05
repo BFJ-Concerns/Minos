@@ -10,7 +10,10 @@
 // A request-changes review carries all confirmed findings, including advisory
 // ones, so the author can address them in the same round. A clean result
 // writes no reviews and routes confirmed findings to the configured filing
-// destination instead.
+// destination instead. One defect leaves the run once: the same site and
+// title raised by both groups merge mechanically, and findings the lead's
+// decisions label as one defect merge on that judgement, whatever their
+// sites and titles.
 // Unverified observations stay in the run record.
 //
 // Usage:
@@ -124,6 +127,39 @@ if (brief) {
 }
 
 const groups = [main, brief].filter(Boolean);
+
+// Restatements the lead judged. Dispositions carrying the same `defect`
+// label — in one decision or across the two — describe one defect, which
+// the composer publishes once at its highest-severity member (the main
+// group's, then the lowest line, on ties), naming the other members' sites
+// and the groups that also raised it, and gating when any member gates.
+// The site-and-title merge above is the floor a decision without labels
+// still gets; this pass is the same-defect judgement that merge cannot make.
+const byDefect = new Map();
+for (const group of groups)
+  for (const finding of group.findings) {
+    const label = group.dispositionOf(finding)?.defect;
+    if (typeof label !== "string") continue;
+    byDefect.set(label, [...(byDefect.get(label) || []), { group, finding }]);
+  }
+for (const members of byDefect.values()) {
+  if (members.length < 2) continue;
+  members.sort((a, b) =>
+    SEVERITY[b.finding.severity] - SEVERITY[a.finding.severity]
+    || groups.indexOf(a.group) - groups.indexOf(b.group)
+    || a.finding.path.localeCompare(b.finding.path)
+    || a.finding.line - b.finding.line);
+  const [{ group: canonicalGroup, finding: canonical }, ...restatements] = members;
+  for (const { group, finding } of restatements) {
+    canonical.alsoAt = [...(canonical.alsoAt || []), `${finding.path}:${finding.line}`];
+    if (finding.source !== canonical.source && !(canonical.alsoRaisedBy || []).includes(finding.source))
+      canonical.alsoRaisedBy = [...(canonical.alsoRaisedBy || []), finding.source];
+    if (group.dispositionOf(finding)?.gating === true)
+      canonicalGroup.dispositions.set(findingKey(canonical), { ...canonicalGroup.dispositionOf(canonical), gating: true });
+    group.findings = group.findings.filter((other) => other !== finding);
+  }
+}
+
 const findings = groups.flatMap((group) => group.findings);
 const dispositionOf = (finding) => groups.find((group) => group.findings.includes(finding)).dispositionOf(finding);
 const blocking = findings.filter((finding) => dispositionOf(finding)?.gating === true);
