@@ -3,7 +3,7 @@ package shell
 import (
 	"fmt"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 func newBehaviouralForge(cfg ServiceConfig, forgeName string) (*forge.Adapter, error) {

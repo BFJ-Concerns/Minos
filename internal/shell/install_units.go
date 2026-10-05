@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"bfj/minos/deploy"
+	"github.com/BFJ-Concerns/Minos/deploy"
 )
 
 const runsSliceUnit = "minos-runs.slice"

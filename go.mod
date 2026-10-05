@@ -1,4 +1,4 @@
-module bfj/minos
+module github.com/BFJ-Concerns/Minos
 
 go 1.26
 

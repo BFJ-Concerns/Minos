@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 func TestSpawnRunRemovesReadOnlyTreeWhenStartFails(t *testing.T) {

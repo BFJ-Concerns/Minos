@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 // ForgeCommand gives the lead a small command surface for reading and updating

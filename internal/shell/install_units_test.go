@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"bfj/minos/deploy"
+	"github.com/BFJ-Concerns/Minos/deploy"
 )
 
 // The installed units are the shipped ones rendered for the deployment:
