@@ -4,7 +4,9 @@
 // configured filing destination. The destination, the run's coordinates and
 // the commit identity arrive in the environment the service exported; an
 // unavailable destination leaves the entries in the run record, and filing
-// never creates a pull-request review or changes the verdict.
+// may post one comment-verdict review for the pull-request-comment kind.
+// Filing never posts an approval or request-changes verdict or changes the
+// run's classification.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

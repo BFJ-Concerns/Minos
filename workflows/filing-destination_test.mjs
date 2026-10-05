@@ -215,17 +215,11 @@ test("the marker keys on repository, kind, site and title so one defect files on
   assert.match(text, /^# Issues\n\n- \*\*Advisory/);
 });
 
-test("the none kind discards, an observation-only batch files nothing, and the unavailable comment kind stays unfiled with the reason", async (t) => {
+test("the none kind discards and an observation-only batch files nothing", async (t) => {
   const fixture = await destinationFixture(t);
   assert.deepEqual(await fixture.deliver({ destination: { kind: "none" } }), { kind: "none", outcome: "discarded", written: 0 });
   assert.deepEqual(await fixture.deliver({ entries: [observation] }), { kind: "file", outcome: "nothing-to-file", written: 0 });
   assert.deepEqual(await fixture.deliver({ entries: [] }), { kind: "file", outcome: "nothing-to-file", written: 0 });
-  for (const destination of [{ kind: "pull-request-comment" }]) {
-    const outcome = await fixture.deliver({ destination });
-    assert.equal(outcome.kind, destination.kind);
-    assert.equal(outcome.outcome, "unfiled");
-    assert.match(outcome.reason, /not implemented in this build/);
-  }
   assert.equal(fixture.lookups.length, 0, "none of these touches the forge");
   assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
 });
@@ -450,5 +444,117 @@ webhook-secret-file = "${token}"
     assert.match(outcome.reason, reason);
     assert.equal(f.posted.length, writes);
     assert.equal(existsSync(join(f.directory, "publication")), false);
+  });
+});
+
+// The stand-in stores a review only when the product invokes forge review;
+// subsequent snapshots read those stored writes, rather than seeded success.
+test("pull-request-comment filing delivers through the module and CLI", async (t) => {
+  async function fixture(t, overrides = {}) {
+    const directory = mkdtempSync(join(tmpdir(), "comment-filing-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const binary = join(directory, "minos");
+    const statePath = join(directory, "state.json");
+    writeFileSync(statePath, JSON.stringify({ reviews: [], calls: [] }));
+    writeFileSync(binary, `#!${process.execPath}
+const fs = require("node:fs");
+const path = process.env.FILING_TEST_STATE;
+const state = JSON.parse(fs.readFileSync(path, "utf8"));
+const args = process.argv.slice(2);
+if (args.join(" ") === "forge snapshot") {
+  if (process.env.FILING_TEST_SNAPSHOT_FAILURE) { console.error("snapshot unavailable"); process.exit(1); }
+  process.stdout.write(JSON.stringify({ authenticated_user: "review-bot", reviews: state.reviews }));
+} else if (args[0] === "forge" && args[1] === "review") {
+  const body = fs.readFileSync(args[5], "utf8");
+  state.calls.push({ args, body });
+  if (!process.env.FILING_TEST_REVIEW_FAILURE && !process.env.FILING_TEST_REVIEW_REJECTED) state.reviews.push({ user: "review-bot", body });
+  fs.writeFileSync(path, JSON.stringify(state));
+  if (process.env.FILING_TEST_REVIEW_FAILURE) { console.error("review refused"); process.exit(1); }
+  process.stdout.write(JSON.stringify(process.env.FILING_TEST_REVIEW_REJECTED ? { outcome: "rejected", reason: "head moved" } : { outcome: "applied", reason: "review posted" }));
+} else { console.error("unexpected forge arguments"); process.exit(2); }
+`, { mode: 0o700 });
+    const entriesPath = join(directory, "entries.json");
+    const orientationPath = join(directory, "orientation.json");
+    writeFileSync(orientationPath, JSON.stringify({ source }));
+    const env = {
+      ...process.env, MINOS_BIN: binary, FILING_TEST_STATE: statePath,
+      MINOS_HEAD_SHA: "a".repeat(40), MINOS_TARGET_SHA: "b".repeat(40),
+      MINOS_FILING_DESTINATION: JSON.stringify({ kind: "pull-request-comment" }),
+      MINOS_OWNER: "owner", MINOS_REPO_NAME: "repository", MINOS_RUN_DIR: directory,
+      MINOS_COMMIT_AUTHOR_NAME: identity.name, MINOS_COMMIT_AUTHOR_EMAIL: identity.email,
+      MINOS_HEAD_BRANCH: "feature", MINOS_SETUP_WORKSPACE: join(dirname(pushGuard), "setup-workspace"),
+      ...overrides,
+    };
+    return {
+      env, directory,
+      state: () => JSON.parse(readFileSync(statePath, "utf8")),
+      seedForeignMarker() {
+        writeFileSync(statePath, JSON.stringify({ reviews: [{ user: "someone-else", body: filingMarker(advisory, reviewedRepository) }], calls: [] }));
+      },
+      async deliver(entries = [advisory, misconfiguration], module = false) {
+        if (module) {
+          const previous = process.env;
+          process.env = env;
+          try {
+            return await deliverFilingEntries({ destination: { kind: "pull-request-comment" }, entries, source, reviewedRepository, runDir: directory, identity });
+          } finally { process.env = previous; }
+        }
+        writeFileSync(entriesPath, JSON.stringify(entries));
+        const result = await runCli([entriesPath, orientationPath], env);
+        assert.equal(result.status, 0, result.stderr);
+        return JSON.parse(result.stdout);
+      },
+    };
+  }
+
+  await t.test("first delivery posts both marked renderings once and repeat delivery posts nothing", async (t) => {
+    const f = await fixture(t);
+    const first = await f.deliver([advisory, misconfiguration, advisory, observation], true);
+    assert.equal(first.outcome, "filed");
+    assert.equal(first.kind, "pull-request-comment");
+    assert.equal(first.written, 2);
+    const calls = f.state().calls;
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args.slice(0, 5), ["forge", "review", f.env.MINOS_HEAD_SHA, f.env.MINOS_TARGET_SHA, "comment"]);
+    assert.equal(calls[0].args.length, 6, "there is no comments file");
+    assert.ok(calls[0].args[5].startsWith(`${f.directory}/`));
+    const attribution = `Filed by ${identity.name} from owner/repository#17, 2026-09-12`;
+    for (const entry of [advisory, misconfiguration]) {
+      assert.ok(calls[0].body.includes(`${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}`));
+      assert.equal(calls[0].body.split(filingMarker(entry, reviewedRepository)).length - 1, 1);
+    }
+    assert.doesNotMatch(calls[0].body, /Unrelated nil deref|all.clear/i);
+    const again = await f.deliver();
+    assert.equal(again.outcome, "nothing-to-file");
+    assert.equal(again.written, 0);
+    assert.equal(f.state().calls.length, 1);
+  });
+  await t.test("another author's marker does not suppress delivery", async (t) => {
+    const f = await fixture(t);
+    f.seedForeignMarker();
+    assert.equal((await f.deliver([advisory])).outcome, "filed");
+    assert.equal(f.state().calls.length, 1);
+  });
+  for (const name of ["MINOS_HEAD_SHA", "MINOS_TARGET_SHA"]) {
+    for (const value of ["", "invalid sha"]) await t.test(`${name}=${JSON.stringify(value)} refuses with a coordinate reason`, async (t) => {
+      const f = await fixture(t, { [name]: value });
+      const result = await f.deliver();
+      assert.equal(result.outcome, "unfiled");
+      assert.match(result.reason, new RegExp(name));
+      assert.equal(f.state().calls.length, 0);
+    });
+  }
+  for (const [flag, reason, writes] of [
+    ["FILING_TEST_SNAPSHOT_FAILURE", /snapshot unavailable/, 0],
+    ["FILING_TEST_REVIEW_FAILURE", /review refused/, 1],
+    ["FILING_TEST_REVIEW_REJECTED", /head moved/, 1],
+  ]) await t.test(`${flag} records the delivery failure without fallback`, async (t) => {
+    const f = await fixture(t, { [flag]: "1" });
+    const result = await f.deliver();
+    assert.equal(result.kind, "pull-request-comment");
+    assert.equal(result.outcome, "unfiled");
+    assert.match(result.reason, reason);
+    assert.equal(f.state().calls.length, writes);
+    assert.equal(f.state().reviews.length, 0);
   });
 });

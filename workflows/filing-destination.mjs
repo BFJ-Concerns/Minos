@@ -213,6 +213,51 @@ async function deliverToIssue({ destination, entries, attribution, reviewedRepos
   }
 }
 
+// Reviews are this destination's marker store. Read every service review,
+// including older heads, so the same entry is filed once across pushes.
+async function deliverToPullRequestComment({ entries, attribution, reviewedRepository, runDir }) {
+  const kind = "pull-request-comment";
+  let payloadDir;
+  try {
+    const binary = process.env.MINOS_BIN;
+    if (!binary) throw new Error("MINOS_BIN is required for pull-request-comment filing");
+    const head = process.env.MINOS_HEAD_SHA;
+    const target = process.env.MINOS_TARGET_SHA;
+    for (const [name, value] of [["MINOS_HEAD_SHA", head], ["MINOS_TARGET_SHA", target]]) {
+      if (typeof value !== "string" || !/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(value))
+        throw new Error(`${name} must contain a full commit SHA for pull-request-comment filing`);
+    }
+    const command = (...args) => JSON.parse(execFileSync(binary, ["forge", ...args],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+    const snapshot = command("snapshot");
+    if (!snapshot || typeof snapshot.authenticated_user !== "string" || snapshot.authenticated_user === "" ||
+        !Array.isArray(snapshot.reviews) || snapshot.reviews.some((review) =>
+          !review || typeof review.user !== "string" || typeof review.body !== "string"))
+      throw new Error("forge snapshot omitted the service identity or readable reviews");
+    const bodies = snapshot.reviews.filter((review) => review.user === snapshot.authenticated_user).map((review) => review.body);
+    const markers = new Set();
+    const remaining = entries.filter((entry) => {
+      const marker = filingMarker(entry, reviewedRepository);
+      if (markers.has(marker) || bodies.some((body) => body.includes(marker))) return false;
+      markers.add(marker);
+      return true;
+    });
+    if (remaining.length === 0) return { kind, outcome: "nothing-to-file", written: 0 };
+    mkdirSync(join(runDir, "filing"), { recursive: true });
+    payloadDir = mkdtempSync(join(runDir, "filing", "pull-request-comment-"));
+    const bodyFile = join(payloadDir, "body.md");
+    writeFileSync(bodyFile, remaining.map((entry) =>
+      `${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}\n`).join("\n"), { mode: 0o600 });
+    const result = command("review", head, target, "comment", bodyFile);
+    if (!result || result.outcome !== "applied") throw new Error(result?.reason || "comment review write was not confirmed");
+    return { kind, outcome: "filed", written: remaining.length };
+  } catch (error) {
+    return { kind, outcome: "unfiled", reason: `pull-request-comment filing failed: ${describe(error)}` };
+  } finally {
+    if (payloadDir) rmSync(payloadDir, { recursive: true, force: true });
+  }
+}
+
 // Delivers `entries` to `destination`. `source` attributes the material to
 // the run's pull request; `reviewedRepository` is the owner/name the file
 // kind writes to when no repository is named; `identity` signs the commit;
@@ -246,5 +291,5 @@ export async function deliverFilingEntries({
     return deliverToFile({ destination, entries, attribution, reviewedRepository, apiBase, token, runDir, identity, protection });
   }
   if (kind === "issue") return deliverToIssue({ destination, entries, attribution, reviewedRepository, runDir });
-  return { kind, outcome: "unfiled", reason: `the ${kind} filing kind is not implemented in this build; the entries stay in the run record` };
+  if (kind === "pull-request-comment") return deliverToPullRequestComment({ entries, attribution, reviewedRepository, runDir });
 }

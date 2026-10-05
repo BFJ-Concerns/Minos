@@ -1467,6 +1467,69 @@ func TestForgeReviewCommentsUseForgejo14ShapeAndForgeReadBackIdempotency(t *test
 	})
 }
 
+// The default destination is resolved by the real configuration loader;
+// review state comes only from writes through the compiled forge command.
+func TestForgeReviewFilesCleanRoundToDefaultCommentDestination(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7, 42)
+	configureForgeCommandFixture(t, state)
+	_, repo, _ := state.service(t)
+	binary := filepath.Join(t.TempDir(), "minos")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "./cmd/minos")
+	build.Dir = filepath.Join("..", "..")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fixture command: %v\n%s", err, output)
+	}
+	t.Setenv("MINOS_BIN", binary)
+	t.Setenv("MINOS_HEAD_SHA", head)
+	t.Setenv("MINOS_TARGET_SHA", target)
+	verdict := adjudicatedReviewPayload(t, []map[string]any{
+		adjudicatedFinding("specialist-1:1", "Medium", "Advisory state transition", 42, "The transition is difficult to identify."),
+		adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
+	})
+	plan := postComposedReview(t, head, target, verdict)
+	outcome := fileComposedTriage(t, state, plan, repo.FilingDestination)
+	if outcome["outcome"] != "filed" || outcome["written"] != float64(2) {
+		t.Fatalf("default comment delivery = %#v, want filed with two entries", outcome)
+	}
+	writes, payload := state.reviewWriteFacts()
+	if writes != 1 || payload["event"] != "COMMENT" || payload["commit_id"] != head {
+		t.Fatalf("default filing review writes = %d, payload = %#v", writes, payload)
+	}
+	body := payload["body"].(string)
+	for _, title := range []string{"Advisory state transition", "Advisory recovery wording"} {
+		if !strings.Contains(body, title) {
+			t.Fatalf("filed body %q lacks %q", body, title)
+		}
+	}
+	if strings.Count(body, "<!-- minos:") != 2 {
+		t.Fatalf("filed body = %q, want two filing markers", body)
+	}
+	if comments, _ := payload["comments"].([]any); len(comments) != 0 {
+		t.Fatalf("filing created inline comments: %#v", comments)
+	}
+	again := fileComposedTriage(t, state, plan, repo.FilingDestination)
+	if again["outcome"] != "nothing-to-file" {
+		t.Fatalf("repeat filing = %#v", again)
+	}
+	if writes, _ := state.reviewWriteFacts(); writes != 1 {
+		t.Fatalf("repeat filing posted %d reviews", writes)
+	}
+	var snapshotOutput bytes.Buffer
+	if err := ForgeCommand(t.Context(), []string{"snapshot"}, &snapshotOutput); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot forge.Snapshot
+	if err := json.Unmarshal(snapshotOutput.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, review := range snapshot.Reviews {
+		if _, terminal := terminalState(review); terminal {
+			t.Fatalf("filing review became a terminal verdict: %#v", review)
+		}
+	}
+}
+
 func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
 	t.Run("a blocking round posts verified High and Low findings together", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
