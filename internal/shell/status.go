@@ -351,7 +351,7 @@ func identityFromUnit(repos []RepoConfig, unit string) (forge, owner, repo, pr s
 		return "", "", "", ""
 	}
 	for _, configured := range repos {
-		facts := Facts{Owner: configured.Owner, Repo: configured.Repo, PR: number}
+		facts := Facts{Forge: configured.Forge, Owner: configured.Owner, Repo: configured.Repo, PR: number}
 		if UnitName(facts) == unit {
 			return configured.Forge, configured.Owner, configured.Repo, number
 		}
