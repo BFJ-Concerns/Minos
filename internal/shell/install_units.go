@@ -71,10 +71,20 @@ func installUnits(cfg ServiceConfig, directory string, stdout io.Writer) error {
 }
 
 // shippedBinary is the path the shipped units run the service from. A
-// service that runs it passes the configuration root, which the render
-// substitutes; a shipped unit that runs something else (the sweep-after-run
-// template runs systemctl) carries no root and installs verbatim.
+// service whose Exec line runs it passes the configuration root, which the
+// render substitutes; a shipped unit that runs something else (the
+// sweep-after-run template runs systemctl) carries no root and installs
+// verbatim, whatever its comments mention.
 const shippedBinary = "/usr/local/bin/minos"
+
+func runsShippedBinary(content []byte) bool {
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, "Exec") && strings.Contains(line, shippedBinary) {
+			return true
+		}
+	}
+	return false
+}
 
 // renderUnit substitutes this deployment's values into a shipped unit: the
 // configuration root every service running the binary passes to it, and
@@ -82,7 +92,7 @@ const shippedBinary = "/usr/local/bin/minos"
 // render expects is a template that drifted from this code, reported rather
 // than installed half-rendered.
 func renderUnit(name string, content []byte, cfg ServiceConfig) ([]byte, error) {
-	if strings.HasSuffix(name, ".service") && bytes.Contains(content, []byte(shippedBinary)) {
+	if strings.HasSuffix(name, ".service") && runsShippedBinary(content) {
 		marker := []byte("--config " + DefaultConfigRoot)
 		if !bytes.Contains(content, marker) {
 			return nil, fmt.Errorf("shipped %s carries no %q to render", name, string(marker))

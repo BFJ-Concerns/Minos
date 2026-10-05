@@ -1002,10 +1002,11 @@ func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
 	}
 }
 
-// The exit hook names an instance of a template the binary ships, and that
-// template declares no dependency of its own: the user manager collects an
-// exited run unit only while nothing it keeps loaded depends on it, and a
-// template bound to a long-lived unit (the alert service, say) would be.
+// The exit hook names an instance of a template the binary ships. The user
+// manager keeps a unit loaded while it is active or failed, and while an
+// exit hook it fired names a unit that stays loaded; the exited run unit is
+// collected only once the instance is, so the template must unload when it
+// fails and must fire no exit hook of its own.
 func TestSpawnRunExitHookNamesTheShippedSweepTemplate(t *testing.T) {
 	hook := sweepAfterRunUnit("minos-run-forgejo-owner-repo-pr7")
 	template, instance, found := strings.Cut(hook, "@")
@@ -1019,9 +1020,12 @@ func TestSpawnRunExitHookNamesTheShippedSweepTemplate(t *testing.T) {
 	if !strings.Contains(string(content), "\nExecStart=/usr/bin/systemctl --user start --no-block minos-sweep.service\n") {
 		t.Fatalf("the shipped template does not enqueue the canonical sweep and return:\n%s", content)
 	}
-	for _, directive := range []string{"OnSuccess=", "OnFailure=", "Wants=", "Requires=", "BindsTo=", "PartOf=", "After=", "Before="} {
+	if !strings.Contains(string(content), "\nCollectMode=inactive-or-failed\n") {
+		t.Fatalf("the shipped template keeps a failed instance loaded, and the exited run unit with it:\n%s", content)
+	}
+	for _, directive := range []string{"OnSuccess=", "OnFailure="} {
 		if strings.Contains(string(content), "\n"+directive) {
-			t.Fatalf("the shipped template declares %s; it must declare no dependency, so nothing long-lived can keep an exited run unit loaded:\n%s", directive, content)
+			t.Fatalf("the shipped template declares %s; a fired exit hook naming a unit that stays loaded keeps the instance, and through it the exited run unit, loaded:\n%s", directive, content)
 		}
 	}
 }

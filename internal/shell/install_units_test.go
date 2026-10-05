@@ -62,7 +62,7 @@ func TestInstallUnitsRendersTheRunsSliceFromTheConfiguredEnvelope(t *testing.T) 
 			if strings.Contains(string(installed), "22G") {
 				t.Fatalf("installed slice still carries the shipped default:\n%s", installed)
 			}
-		case strings.HasSuffix(entry.Name(), ".service") && bytes.Contains(original, []byte(shippedBinary)):
+		case strings.HasSuffix(entry.Name(), ".service") && runsShippedBinary(original):
 			if !strings.Contains(string(installed), "--config "+cfg.Root) || strings.Contains(string(installed), "--config /etc/minos") {
 				t.Fatalf("installed %s does not name the configuration root %s:\n%s", entry.Name(), cfg.Root, installed)
 			}
@@ -125,7 +125,7 @@ func TestInstallUnitsRefusesAServiceWithoutTheConfigMarker(t *testing.T) {
 
 func TestInstallUnitsInstallsAServiceThatDoesNotRunTheBinaryVerbatim(t *testing.T) {
 	cfg := unitsTestConfig(t, "8")
-	verbatim := []byte("[Service]\nType=oneshot\nExecStart=/usr/bin/systemctl --user start --no-block minos-sweep.service\n")
+	verbatim := []byte("# Enqueues the sweep; never runs /usr/local/bin/minos itself.\n[Service]\nType=oneshot\nExecStart=/usr/bin/systemctl --user start --no-block minos-sweep.service\n")
 	rendered, err := renderUnit("minos-sweep-after-run@.service", verbatim, cfg)
 	if err != nil {
 		t.Fatalf("a service that runs no minos command was refused: %v", err)
