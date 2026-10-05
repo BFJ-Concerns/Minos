@@ -43,9 +43,54 @@ function runCli(args, env) {
   });
 }
 
-// A destination repository with a bare origin, plus a fixture forge whose
-// repository lookup names that origin as the clone URL.
-async function destinationFixture(t, { issues = "# Issues\n\n- An existing entry.\n", branch = "main", repositories = ["owner/plans"] } = {}) {
+// The filing reaches the forge through the run's minos binary, which runs
+// the real Forgejo adaptation against the fixture forge; it is built once.
+let builtMinos = null;
+function minosBinary() {
+  if (builtMinos) return builtMinos;
+  const directory = mkdtempSync(join(tmpdir(), "filing-minos-"));
+  process.on("exit", () => rmSync(directory, { recursive: true, force: true }));
+  builtMinos = join(directory, "minos");
+  execFileSync("go", ["build", "-o", builtMinos, "./cmd/minos"], { cwd: fileURLToPath(new URL("../", import.meta.url)) });
+  return builtMinos;
+}
+
+// The authenticated origin runs in its own process: the filing's git runs
+// synchronously, so a server on this process's loop could never answer it.
+const gitServerFixture = fileURLToPath(new URL("./authenticated-git-server-fixture.mjs", import.meta.url));
+function authenticatedGitServer(t, root, credential) {
+  const log = join(root, "git-requests.log");
+  writeFileSync(log, "");
+  const child = spawn(process.execPath, [gitServerFixture, root, credential.username, credential.password, log], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => child.kill());
+  return new Promise((resolve, reject) => {
+    let announced = "";
+    child.on("exit", (code) => reject(new Error(`git server fixture exited with ${code}`)));
+    child.stdout.on("data", (chunk) => {
+      announced += chunk;
+      if (!announced.includes("\n")) return;
+      resolve({
+        url: announced.trim(),
+        requests: () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),
+      });
+    });
+  });
+}
+
+function listen(server) {
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`)));
+}
+
+// A destination repository with a bare origin served over authenticated
+// HTTP, and a fixture forge whose repository lookup names that origin as
+// the clone URL. The run's forge is configured as the service exports it:
+// the compiled minos binary, a service.toml naming the Forgejo adaptation
+// and the fixture forge, and the forge's token. gitCredential is what the
+// origin accepts; by default the token the Forgejo adaptation reports.
+async function destinationFixture(t, {
+  issues = "# Issues\n\n- An existing entry.\n", branch = "main", repositories = ["owner/plans"],
+  token = "forge-token", gitCredential = { username: "minos", password: token },
+} = {}) {
   const scratch = mkdtempSync(join(tmpdir(), "filing-destination-"));
   const origin = join(scratch, "origin.git");
   const seed = join(scratch, "seed");
@@ -58,6 +103,8 @@ async function destinationFixture(t, { issues = "# Issues\n\n- An existing entry
   git(seed, "add", ".");
   git(seed, "commit", "--quiet", "-m", "seed");
   git(seed, "push", "--quiet", origin, branch);
+  const gitServer = await authenticatedGitServer(t, scratch, gitCredential);
+  const cloneURL = `${gitServer.url}/origin.git`;
   const lookups = [];
   const forge = createServer((request, response) => {
     lookups.push({ url: request.url, authorization: request.headers.authorization || null });
@@ -68,23 +115,44 @@ async function destinationFixture(t, { issues = "# Issues\n\n- An existing entry
       return;
     }
     response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({ clone_url: origin, default_branch: branch }));
+    response.end(JSON.stringify({ clone_url: cloneURL, default_branch: branch }));
   });
-  await new Promise((resolve) => forge.listen(0, "127.0.0.1", resolve));
+  const apiBase = await listen(forge);
+  const tokenFile = join(scratch, "forge.token");
+  writeFileSync(tokenFile, token === "" ? "\n" : `${token}\n`, { mode: 0o600 });
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  writeFileSync(join(scratch, "service.toml"), `
+[service]
+bot-login = "Review Bot"
+[listener]
+bind = "127.0.0.1:0"
+[runs]
+dir = "${scratch}"
+[forges.forgejo]
+adaptation = "${join(root, "scripts", "adaptations", "forgejo")}"
+api-base = "${apiBase}"
+credential-file = "${tokenFile}"
+webhook-secret-file = "${tokenFile}"
+`);
+  const forgeEnvironment = { MINOS_BIN: minosBinary(), MINOS_CONFIG: scratch, MINOS_FORGE: "forgejo" };
+  const previous = Object.fromEntries(Object.keys(forgeEnvironment).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, forgeEnvironment);
   t.after(() => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     forge.close();
     rmSync(scratch, { recursive: true, force: true });
   });
   const runDir = join(scratch, "run");
   return {
-    scratch, origin, seed, lookups, runDir,
-    apiBase: `http://127.0.0.1:${forge.address().port}`,
+    scratch, origin, seed, lookups, runDir, forgeEnvironment, gitRequests: gitServer.requests,
     originFile: (path = "ISSUES.md") => git(seed, "--git-dir", origin, "show", `${branch}:${path}`),
     deliver: (overrides) => deliverFilingEntries({
       destination: { kind: "file", repository: "owner/plans", path: "ISSUES.md" },
       entries: [advisory],
       source, reviewedRepository, runDir, identity, protection,
-      apiBase: `http://127.0.0.1:${forge.address().port}`,
       ...overrides,
     }),
   };
@@ -224,7 +292,7 @@ test("the none kind discards and an observation-only batch files nothing", async
   assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
 });
 
-test("a refused push, an unknown repository, an empty credential or missing attribution leaves the material unfiled", async (t) => {
+test("a refused push, an unknown repository, missing attribution or an unreachable forge leaves the material unfiled", async (t) => {
   const fixture = await destinationFixture(t);
   writeFileSync(join(fixture.origin, "hooks", "pre-receive"), "#!/bin/sh\necho 'refused by policy' >&2\nexit 1\n", { mode: 0o755 });
   const refused = await fixture.deliver();
@@ -235,19 +303,41 @@ test("a refused push, an unknown repository, an empty credential or missing attr
   const unknown = await fixture.deliver({ destination: { kind: "file", repository: "owner/absent", path: "ISSUES.md" } });
   assert.deepEqual(unknown, { kind: "file", outcome: "unfiled", reason: "filing to owner/absent:ISSUES.md failed: repository lookup for owner/absent returned HTTP 404" });
 
-  const credential = join(fixture.scratch, "empty.token");
-  writeFileSync(credential, "\n");
-  assert.deepEqual(await fixture.deliver({ credentialFile: credential }), { kind: "file", outcome: "unfiled", reason: "forge credential file is empty" });
   assert.deepEqual(await fixture.deliver({ source: { owner: "owner" } }), { kind: "file", outcome: "unfiled", reason: "the orientation record carries no source attribution" });
-  assert.deepEqual(await fixture.deliver({ apiBase: null }), { kind: "file", outcome: "unfiled", reason: "filing to owner/plans:ISSUES.md failed: MINOS_API_BASE is required to locate the filing repository" });
+  delete process.env.MINOS_BIN;
+  try {
+    assert.deepEqual(await fixture.deliver(), { kind: "file", outcome: "unfiled", reason: "filing to owner/plans:ISSUES.md failed: MINOS_BIN is required to reach the forge" });
+  } finally {
+    process.env.MINOS_BIN = fixture.forgeEnvironment.MINOS_BIN;
+  }
+  assert.doesNotMatch(fixture.originFile(), /Lost update/);
 });
 
-test("a configured credential reaches the forge lookup and the clone", async (t) => {
-  const fixture = await destinationFixture(t);
-  const credential = join(fixture.scratch, "forge.token");
-  writeFileSync(credential, "forge-token-719\n");
-  assert.equal((await fixture.deliver({ credentialFile: credential })).outcome, "filed");
+test("an empty forge credential leaves the material unfiled", async (t) => {
+  const fixture = await destinationFixture(t, { token: "" });
+  assert.deepEqual(await fixture.deliver(), { kind: "file", outcome: "unfiled", reason: "forge credential file is empty" });
+  assert.equal(fixture.lookups.length, 0, "no lookup is made without a credential");
+  assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
+});
+
+// The forge's credential reaches the lookup through the adaptation and the
+// clone and push as the HTTPS credential clone-credential reports; an origin
+// that accepts another credential refuses the filing.
+test("the clone credential the forge reports authorises the destination clone and push", async (t) => {
+  const fixture = await destinationFixture(t, { token: "forge-token-719" });
+  assert.equal((await fixture.deliver()).outcome, "filed");
   assert.deepEqual(fixture.lookups.map((lookup) => lookup.authorization), ["token forge-token-719"]);
+  assert.ok(fixture.gitRequests().some((request) => request.authorised && /git-receive-pack/.test(request.url)), "the push was authorised");
+  assert.match(fixture.originFile(), /Lost update on concurrent write/);
+  const clone = join(fixture.runDir, "filing", "owner", "plans");
+  assert.doesNotMatch(readFileSync(join(clone, ".git", "config"), "utf8"), /Authorization|forge-token-719/, "no credential is persisted in the clone");
+
+  const refused = await destinationFixture(t, { token: "forge-token-719", gitCredential: { username: "minos", password: "another-token" } });
+  const outcome = await refused.deliver();
+  assert.equal(outcome.outcome, "unfiled");
+  assert.match(outcome.reason, /^filing to owner\/plans:ISSUES\.md failed: /);
+  assert.ok(refused.gitRequests().length > 0 && refused.gitRequests().every((request) => !request.authorised), "the origin saw only unauthorised requests");
+  assert.match(refused.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
 });
 
 test("the destination validator admits exactly the configured shapes", () => {
@@ -272,7 +362,7 @@ test("the file-triage CLI delivers to the destination the environment names and 
   const env = {
     ...process.env,
     MINOS_FILING_DESTINATION: JSON.stringify({ kind: "file", repository: "owner/plans", path: "ISSUES.md" }),
-    MINOS_API_BASE: fixture.apiBase,
+    ...fixture.forgeEnvironment,
     MINOS_OWNER: "owner",
     MINOS_REPO_NAME: "repository",
     MINOS_RUN_DIR: fixture.runDir,

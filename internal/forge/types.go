@@ -66,6 +66,9 @@ type Snapshot struct {
 	Author                string       `json:"author"`
 	HeadSHA               string       `json:"head_sha"`
 	HeadBranch            string       `json:"head_branch"`
+	HeadRepository        string       `json:"head_repository"`
+	Title                 string       `json:"title"`
+	Body                  string       `json:"body"`
 	TargetSHA             string       `json:"target_sha"`
 	TargetBranch          string       `json:"target_branch"`
 	TargetRepository      string       `json:"target_repository"`
@@ -75,6 +78,21 @@ type Snapshot struct {
 	DependenciesAvailable bool         `json:"dependencies_available"`
 	DependencyError       string       `json:"dependency_error,omitempty"`
 	OpenDependencies      []Dependency `json:"open_dependencies"`
+}
+
+// RepositoryMetadata is what a forge says about a repository a run clones:
+// where it clones from and which branch is its default.
+type RepositoryMetadata struct {
+	CloneURL      string `json:"clone_url"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+// CloneCredential is the HTTPS git credential the forge's adaptation derives
+// from its credential file. The password is a secret: callers hand it to git
+// through the environment and never print, log or persist it.
+type CloneCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type ReviewVerdict string

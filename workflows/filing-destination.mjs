@@ -5,16 +5,16 @@
 // nowhere. One entry files once, deduplicated by a marker. A failed
 // delivery stays in the run record and never falls back to another surface.
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { normalisedTitle } from "./verdict-classification.mjs";
 import { issueLogEntry } from "./finding-presentation.mjs";
 
 const PUSH_ATTEMPTS = 2;
+const execFileAsync = promisify(execFile);
 
 export const FILING_KINDS = ["file", "issue", "pull-request-comment", "none"];
 
@@ -68,20 +68,54 @@ export function validFilingDestination(destination) {
   }
 }
 
-function readToken(credentialFile) {
-  const token = readFileSync(credentialFile, "utf8").split("\n")[0].trim();
-  if (token === "") throw new Error("forge credential file is empty");
-  return token;
+// The forge's adaptation answers for the forge: the run's minos binary is
+// asked asynchronously, because a forge answering from this process's own
+// loop (a test's fixture) must not be blocked while it is asked.
+async function askForge(...args) {
+  if (!process.env.MINOS_BIN) throw new Error("MINOS_BIN is required to reach the forge");
+  const { stdout } = await execFileAsync(process.env.MINOS_BIN, ["forge", ...args], { encoding: "utf8", maxBuffer: 1 << 20 });
+  return stdout;
 }
 
-function gitEnvironment(token) {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
-  if (token) {
-    env.GIT_CONFIG_COUNT = "1";
-    env.GIT_CONFIG_KEY_0 = "http.extraHeader";
-    env.GIT_CONFIG_VALUE_0 = `Authorization: token ${token}`;
+// The forge command's structured answer on a failed exit (its stdout), or
+// null: the reason a reader acts on is worded here from that outcome, never
+// passed through from the subprocess's error text.
+function forgeOutcome(error) {
+  try {
+    const outcome = JSON.parse(String(error && error.stdout || ""));
+    return outcome && typeof outcome === "object" ? outcome : null;
+  } catch {
+    return null;
   }
-  return env;
+}
+
+class EmptyCredential extends Error {}
+
+// The HTTPS git credential the forge's adaptation derives from its own
+// credential. The secret reaches git only as a Basic authorisation header
+// in the GIT_CONFIG_* environment; no error built here quotes it.
+async function cloneCredential() {
+  if (!process.env.MINOS_BIN) throw new Error("MINOS_BIN is required to reach the forge");
+  let credential;
+  try {
+    credential = JSON.parse(await askForge("clone-credential"));
+  } catch (error) {
+    const outcome = forgeOutcome(error);
+    if (outcome && outcome.refusal === "empty-credential") throw new EmptyCredential("forge credential file is empty");
+    throw new Error("the forge supplied no clone credential");
+  }
+  if (!credential || typeof credential.username !== "string" || credential.username === "" ||
+      typeof credential.password !== "string" || credential.password === "")
+    throw new Error("the forge's clone credential is not a credential object");
+  return credential;
+}
+
+function gitEnvironment(credential) {
+  const authorisation = Buffer.from(`${credential.username}:${credential.password}`).toString("base64");
+  return {
+    ...process.env, GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Basic ${authorisation}`,
+  };
 }
 
 function git(directory, env, ...args) {
@@ -95,42 +129,22 @@ function describe(error) {
 
 // The forge names a repository's clone URL and default branch; deriving
 // either from a naming convention is what the configured destination exists
-// to replace. One plain request, no connection reuse: the filing runs once
-// per run and holds nothing open afterwards.
-function lookupRepository(apiBase, repository, token) {
-  if (!apiBase) return Promise.reject(new Error("MINOS_API_BASE is required to locate the filing repository"));
-  const url = new URL(`${apiBase.replace(/\/$/, "")}/api/v1/repos/${repository}`);
-  const headers = { Accept: "application/json" };
-  if (token) headers.Authorization = `token ${token}`;
-  const request = url.protocol === "https:" ? httpsRequest : httpRequest;
-  return new Promise((resolve, reject) => {
-    const outgoing = request(url, { method: "GET", headers, agent: false }, (response) => {
-      const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
-      response.on("error", reject);
-      response.on("end", () => {
-        if (response.statusCode !== 200) {
-          reject(new Error(`repository lookup for ${repository} returned HTTP ${response.statusCode}`));
-          return;
-        }
-        let metadata;
-        try {
-          metadata = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        } catch {
-          reject(new Error(`repository metadata for ${repository} is not JSON`));
-          return;
-        }
-        if (typeof metadata.clone_url !== "string" || metadata.clone_url === "" ||
-            typeof metadata.default_branch !== "string" || metadata.default_branch === "") {
-          reject(new Error(`repository metadata for ${repository} omitted its clone URL or default branch`));
-          return;
-        }
-        resolve({ cloneURL: metadata.clone_url, branch: metadata.default_branch });
-      });
-    });
-    outgoing.on("error", (error) => reject(new Error(`repository lookup for ${repository} failed: ${error.message}`)));
-    outgoing.end();
-  });
+// to replace.
+async function lookupRepository(repository) {
+  const [owner, name] = repository.split("/");
+  let metadata;
+  try {
+    metadata = JSON.parse(await askForge("repository-metadata", owner, name));
+  } catch (error) {
+    const outcome = forgeOutcome(error);
+    if (outcome && Number.isInteger(outcome.lookup_status))
+      throw new Error(`repository lookup for ${repository} returned HTTP ${outcome.lookup_status}`);
+    throw new Error(`repository lookup for ${repository} failed: the forge could not be asked`);
+  }
+  if (!metadata || typeof metadata.clone_url !== "string" || metadata.clone_url === "" ||
+      typeof metadata.default_branch !== "string" || metadata.default_branch === "")
+    throw new Error(`repository metadata for ${repository} omitted its clone URL or default branch`);
+  return { cloneURL: metadata.clone_url, branch: metadata.default_branch };
 }
 
 // A fresh single-branch clone of the destination's default branch under the
@@ -153,14 +167,20 @@ function cloneForFiling(runDir, repository, target, env, protection) {
   return directory;
 }
 
-async function deliverToFile({ destination, entries, attribution, reviewedRepository, apiBase, token, runDir, identity, protection }) {
+async function deliverToFile({ destination, entries, attribution, reviewedRepository, runDir, identity, protection }) {
   const repository = destination.repository || reviewedRepository;
   const location = `${repository}:${destination.path}`;
   let lastFailure = "";
+  let env;
+  try {
+    env = gitEnvironment(await cloneCredential());
+  } catch (error) {
+    if (error instanceof EmptyCredential) return { kind: "file", outcome: "unfiled", reason: error.message };
+    return { kind: "file", outcome: "unfiled", reason: `filing to ${location} failed: ${error.message}` };
+  }
   for (let attempt = 1; attempt <= PUSH_ATTEMPTS; attempt += 1) {
     try {
-      const env = gitEnvironment(token);
-      const target = await lookupRepository(apiBase, repository, token);
+      const target = await lookupRepository(repository);
       const reviewed = repository === reviewedRepository;
       if (reviewed && protection && target.branch === protection.headBranch)
         return { kind: "file", outcome: "unfiled", reason: `filing to ${location} refused: the repository's default branch ${target.branch} is the pull-request branch, which Minos never writes` };
@@ -266,7 +286,7 @@ async function deliverToPullRequestComment({ entries, attribution, reviewedRepos
 // the kind and one of: filed, nothing-to-file, discarded (the none kind),
 // unfiled (with the reason).
 export async function deliverFilingEntries({
-  destination, entries, source, reviewedRepository, apiBase, credentialFile = null, runDir, identity, protection = null,
+  destination, entries, source, reviewedRepository, runDir, identity, protection = null,
 }) {
   if (!validFilingDestination(destination)) throw new Error("filing destination is malformed");
   entries = entries.filter((entry) => entry.kind !== "out-of-scope-observation");
@@ -277,18 +297,10 @@ export async function deliverFilingEntries({
     .some((value) => typeof value !== "string" || value === ""))
     return { kind, outcome: "unfiled", reason: "the orientation record carries no source attribution" };
   const attribution = `Filed by ${identity.name} from ${source.owner}/${source.repo}#${source.pr}, ${source.date}`;
-  let token = null;
-  if (credentialFile) {
-    try {
-      token = readToken(credentialFile);
-    } catch (error) {
-      return { kind, outcome: "unfiled", reason: describe(error) };
-    }
-  }
   if (kind === "file") {
     if ((!destination.repository || destination.repository === reviewedRepository) && !protection)
       return { kind, outcome: "unfiled", reason: "filing to the reviewed repository needs the pull-request branch and the push guard (protection)" };
-    return deliverToFile({ destination, entries, attribution, reviewedRepository, apiBase, token, runDir, identity, protection });
+    return deliverToFile({ destination, entries, attribution, reviewedRepository, runDir, identity, protection });
   }
   if (kind === "issue") return deliverToIssue({ destination, entries, attribution, reviewedRepository, runDir });
   if (kind === "pull-request-comment") return deliverToPullRequestComment({ entries, attribution, reviewedRepository, runDir });

@@ -1,8 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-: "${MINOS_API_BASE:?MINOS_API_BASE is required}"
-: "${MINOS_CREDENTIAL_FILE:?MINOS_CREDENTIAL_FILE is required}"
+: "${MINOS_BIN:?MINOS_BIN is required}"
 : "${MINOS_OWNER:?MINOS_OWNER is required}"
 : "${MINOS_REPO_NAME:?MINOS_REPO_NAME is required}"
 : "${MINOS_PR:?MINOS_PR is required}"
@@ -21,25 +20,9 @@ elif [ -e "$MINOS_WORKSPACE" ]; then
   exit 1
 fi
 
-if ! IFS= read -r forge_token <"$MINOS_CREDENTIAL_FILE" || [ -z "$forge_token" ]; then
-  echo "setup-workspace: forge credential file is empty" >&2
-  exit 1
-fi
-
-response_file="${MINOS_ORIENTATION}.response"
+snapshot_file="${MINOS_ORIENTATION}.snapshot"
 protected_refs_tmp=""
-trap 'rm -f "$response_file" ${protected_refs_tmp:+"$protected_refs_tmp"}' 0
-
-forge_get() {
-  api_path="$1"
-  if ! response_status="$(curl -sS -o "$response_file" -w '%{http_code}' \
-    -H "Authorization: token ${forge_token}" \
-    -H "Accept: application/json" \
-    "${MINOS_API_BASE%/}${api_path}")"; then
-    echo "setup-workspace: forge request failed: $api_path" >&2
-    exit 1
-  fi
-}
+trap 'rm -f "$snapshot_file" ${protected_refs_tmp:+"$protected_refs_tmp"}' 0
 
 guidance_has_content() {
   [ -f "$1" ] && grep -q '[^[:space:]]' "$1"
@@ -49,35 +32,63 @@ workspace_is_git_repository() {
   git -C "$MINOS_WORKSPACE" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
-forge_get "/api/v1/repos/${MINOS_OWNER}/${MINOS_REPO_NAME}/pulls/${MINOS_PR}"
-if [ "$response_status" != "200" ]; then
-  echo "setup-workspace: pull request lookup returned HTTP $response_status" >&2
+# The forge's adaptation answers every forge question, so nothing here names
+# a forge's routes or reads its credential file.
+# clone_url prints the clone URL the forge reports for owner/name.
+clone_url() {
+  "$MINOS_BIN" forge repository-metadata "${1%%/*}" "${1#*/}" | jq -er '.clone_url'
+}
+
+# The adaptation turns its credential into an HTTPS git username and secret.
+# The secret reaches git only as a preemptive Basic authorisation header in
+# the GIT_CONFIG_* environment: never an argument, never a file, never output.
+if ! clone_credential="$("$MINOS_BIN" forge clone-credential)"; then
+  echo "setup-workspace: the forge supplied no clone credential" >&2
+  exit 1
+fi
+if ! git_authorisation="$(printf '%s' "$clone_credential" | jq -er '
+  if (.username | type) == "string" and .username != "" and (.password | type) == "string" and .password != ""
+  then "Authorization: Basic " + ((.username + ":" + .password) | @base64) else error("malformed") end' 2>/dev/null)"; then
+  echo "setup-workspace: the forge's clone credential is malformed" >&2
+  exit 1
+fi
+clone_credential=""
+export GIT_TERMINAL_PROMPT=0
+# Appended after any configuration the environment already carries.
+git_config_index="${GIT_CONFIG_COUNT:-0}"
+export "GIT_CONFIG_KEY_${git_config_index}=http.extraHeader"
+export "GIT_CONFIG_VALUE_${git_config_index}=${git_authorisation}"
+export GIT_CONFIG_COUNT="$((git_config_index + 1))"
+git_authorisation=""
+
+if ! "$MINOS_BIN" forge snapshot >"$snapshot_file"; then
+  echo "setup-workspace: pull request snapshot failed" >&2
   exit 1
 fi
 
 # Minos authors no commits, so every head movement is the author's: the
 # admitted head no longer exists as the thing to review, and the sweep will
 # claim the new head fresh.
-observed_head="$(jq -r '.head.sha // ""' "$response_file")"
+observed_head="$(jq -r '.head_sha // ""' "$snapshot_file")"
 if [ "$observed_head" != "$MINOS_HEAD_SHA" ]; then
   echo "setup-workspace: pull-request head moved from $MINOS_HEAD_SHA to ${observed_head:-unknown}" >&2
   exit 1
 fi
-repository_url="$(jq -r '.head.repo.clone_url // ""' "$response_file")"
-if [ -z "$repository_url" ]; then
-  echo "setup-workspace: pull request omitted the source repository clone URL" >&2
+head_repository="$(jq -r '.head_repository // ""' "$snapshot_file")"
+if [ -z "$head_repository" ] || ! repository_url="$(clone_url "$head_repository")"; then
+  echo "setup-workspace: the forge named no clone URL for the source repository ${head_repository:-<unknown>}" >&2
   exit 1
 fi
-target_repository_url="$(jq -r '.base.repo.clone_url // ""' "$response_file")"
-if [ -z "$target_repository_url" ]; then
-  echo "setup-workspace: pull request omitted the target repository clone URL" >&2
+target_repository="$(jq -r '.target_repository // ""' "$snapshot_file")"
+if [ -z "$target_repository" ] || ! target_repository_url="$(clone_url "$target_repository")"; then
+  echo "setup-workspace: the forge named no clone URL for the target repository ${target_repository:-<unknown>}" >&2
   exit 1
 fi
 # The author's declared intent and scope travel with the run so the review
 # workflow can weigh explicit out-of-scope declarations.
 pull_request_record="${MINOS_RUN_DIR}/pull-request.json"
-jq '{number: (.number // null), title: (.title // ""), body: (.body // "")}' \
-  "$response_file" >"$pull_request_record"
+jq '{number: (.pull_request // null), title: (.title // ""), body: (.body // "")}' \
+  "$snapshot_file" >"$pull_request_record"
 
 reuse_workspace="$resume"
 if [ "$reuse_workspace" = true ]; then
@@ -91,7 +102,7 @@ if [ "$reuse_workspace" = true ]; then
   fi
 fi
 if [ "$reuse_workspace" = false ]; then
-  git -c "http.extraHeader=Authorization: token ${forge_token}" clone --no-checkout "$repository_url" "$MINOS_WORKSPACE"
+  git clone --no-checkout "$repository_url" "$MINOS_WORKSPACE"
   git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
 fi
 checked_out_head="$(git -C "$MINOS_WORKSPACE" rev-parse HEAD)"
@@ -104,7 +115,7 @@ fi
 # remote, refspec, FETCH_HEAD, or workspace state transition.
 target_fetch_status=0
 # Match Git's refusal text in a stable locale; other failures stay unchanged.
-target_fetch_output="$(LC_ALL=C git -C "$MINOS_WORKSPACE" -c "http.extraHeader=Authorization: token ${forge_token}" \
+target_fetch_output="$(LC_ALL=C git -C "$MINOS_WORKSPACE" \
   fetch --no-write-fetch-head --no-tags "$target_repository_url" "$MINOS_TARGET_SHA" 2>&1)" || target_fetch_status=$?
 if [ -n "$target_fetch_output" ]; then
   printf '%s\n' "$target_fetch_output" >&2
@@ -199,18 +210,18 @@ for guidance_repository in $(printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq -r '[.[]
     continue
   fi
   rm -rf -- "$clone_path"
-  forge_get "/api/v1/repos/${guidance_repository}"
-  if [ "$response_status" != "200" ]; then
-    clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository lookup returned HTTP $response_status" '.[$name] = $reason')"
-    continue
-  fi
-  guidance_url="$(jq -r '.clone_url // ""' "$response_file")"
-  if [ -z "$guidance_url" ]; then
-    clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository metadata omitted its clone URL" '.[$name] = $reason')"
+  guidance_metadata=""
+  if ! guidance_metadata="$("$MINOS_BIN" forge repository-metadata "${guidance_repository%%/*}" "${guidance_repository#*/}")" \
+    || ! guidance_url="$(printf '%s' "$guidance_metadata" | jq -er '.clone_url')"; then
+    # The forge's own answer, when it gave one, is the reason recorded.
+    lookup_status="$(printf '%s' "${guidance_metadata:-}" | jq -r '.lookup_status // empty' 2>/dev/null)" || lookup_status=""
+    clone_failure="the forge could not report the repository's clone URL"
+    [ -z "$lookup_status" ] || clone_failure="repository lookup returned HTTP $lookup_status"
+    clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "$clone_failure" '.[$name] = $reason')"
     continue
   fi
   mkdir -p "$(dirname "$clone_path")"
-  if ! git -c "http.extraHeader=Authorization: token ${forge_token}" clone --quiet "$guidance_url" "$clone_path"; then
+  if ! git clone --quiet "$guidance_url" "$clone_path"; then
     rm -rf -- "$clone_path"
     clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository could not be cloned" '.[$name] = $reason')"
     continue

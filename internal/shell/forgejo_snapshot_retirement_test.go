@@ -21,12 +21,12 @@ func TestForgejoSnapshotRetiresMergeMetadataAndSourceProtection(t *testing.T) {
 			if err := json.Unmarshal(out, &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			for _, key := range []string{"mergeable", "source_protected", "can_merge", "allowed_merge_methods", "head_repository", "default_branch", "protection_satisfied"} {
+			for _, key := range []string{"mergeable", "source_protected", "can_merge", "allowed_merge_methods", "default_branch", "protection_satisfied"} {
 				if _, present := snapshot[key]; present {
 					t.Errorf("snapshot still emits retired field %q: %s", key, out)
 				}
 			}
-			for key, want := range map[string]string{"target_sha": `"target"`, "head_branch": `"topic"`, "merged": "false"} {
+			for key, want := range map[string]string{"target_sha": `"target"`, "head_branch": `"topic"`, "head_repository": `"owner/repo"`, "merged": "false"} {
 				if string(snapshot[key]) != want {
 					t.Errorf("snapshot %s = %s, want %s", key, snapshot[key], want)
 				}

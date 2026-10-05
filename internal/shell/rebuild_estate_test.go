@@ -27,10 +27,9 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = head
-		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 		pullRequest["base"].(map[string]any)["sha"] = head
-		pullRequest["base"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
+	state.setRepositoryCloneURL(codeRepository)
 	state.setSecondaryCloneURL(secondaryRepository)
 
 	cfg, repo, facts := state.service(t)
@@ -221,10 +220,9 @@ func startEstateRunBody(t *testing.T) (string, string, map[string]string) {
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = head
-		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 		pullRequest["base"].(map[string]any)["sha"] = head
-		pullRequest["base"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
+	state.setRepositoryCloneURL(codeRepository)
 	state.setSecondaryCloneURL(secondaryRepository)
 
 	cfg, repo, facts := state.service(t)
@@ -275,8 +273,8 @@ func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = admittedHead
-		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
+	state.setRepositoryCloneURL(codeRepository)
 	cfg, repo, facts := state.service(t)
 	runBody, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
 	if err != nil {
@@ -284,6 +282,7 @@ func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
 	}
 	repo.Adaptation.RunBody = runBody
 	record := writeEstateRunBodyConfig(t, cfg.Root)
+	writeServiceConfig(t, cfg)
 
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
@@ -566,7 +565,7 @@ esac
 		"MINOS_LIFECYCLE_INSTRUCTION": instruction,
 		"MINOS_REVIEW_WORKFLOW":       "/opt/minos/workflows/adjudicated-review",
 		"MINOS_SETUP_WORKSPACE":       setup,
-		"MINOS_BIN":                   "/usr/local/bin/minos",
+		"MINOS_BIN":                   buildMinos(t),
 		"MINOS_LEAD_POLL_SECONDS":     "0",
 		"MINOS_TEST_RECORD":           record,
 	}

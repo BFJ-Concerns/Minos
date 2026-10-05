@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/cgi"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -22,7 +23,7 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspaceWithGuidance(t, server.URL, runDir, workspace, orientation, head, secondaryGuidance)
+	runSetupWorkspaceWithGuidance(t, server.Bin, runDir, workspace, orientation, head, secondaryGuidance)
 
 	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("workspace head = %q, want %q", got, head)
@@ -65,6 +66,115 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 
 }
 
+// The forge's clone credential is the only thing that authorises the clones:
+// a git server demanding HTTPS Basic authorisation serves the reviewed and
+// guidance repositories, and the credential the forge reports — GitHub's
+// x-access-token form here — is what setup must present.
+func TestSetupWorkspaceClonesWithTheForgesCloneCredential(t *testing.T) {
+	repository, head := createGitRepository(t, "AGENTS.md", "reviewed guidance\n")
+	secondary := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
+	git := newAuthenticatedGitServer(t, func(username, password string) bool {
+		return username == "x-access-token" && password == "installation-token"
+	})
+	server := newSetupForge(t, head, git.URL+"/"+filepath.Base(filepath.Dir(repository))+"/source", git.URL+"/"+filepath.Base(filepath.Dir(secondary))+"/source")
+	git.serve(t, repository)
+	git.serve(t, secondary)
+
+	for _, test := range []struct {
+		name               string
+		username, password string
+		succeeds           bool
+	}{
+		{name: "the forge's credential", username: "x-access-token", password: "installation-token", succeeds: true},
+		{name: "another credential", username: "x-access-token", password: "stale-token"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server.credential(t, test.username, test.password)
+			runDir := t.TempDir()
+			workspace := filepath.Join(runDir, "workspace")
+			cmd := setupWorkspaceCommand(t, server.Bin, runDir, workspace, filepath.Join(runDir, "orientation.json"), head)
+			cmd.Env = append(cmd.Env, "MINOS_GUIDANCE_SOURCES="+secondaryGuidance)
+			output, err := cmd.CombinedOutput()
+			if !test.succeeds {
+				// Git answers the server's 401 by asking for a credential it
+				// may not prompt for, or by reporting the rejected one.
+				refused := strings.Contains(string(output), "Authentication failed") || strings.Contains(string(output), "terminal prompts disabled")
+				if err == nil || !strings.Contains(string(output), "Cloning into") || !refused {
+					t.Fatalf("setup-workspace error = %v without the forge's credential; want the clone refused: %s", err, output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("setup-workspace failed: %v\n%s", err, output)
+			}
+			if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("workspace head = %q, want %q", got, head)
+			}
+			assertContainsFile(t, filepath.Join(runDir, "guidance", "owner", "repository-plans", "README.md"), "# Commission")
+			// The secret is never output, and never persisted in a clone.
+			if strings.Contains(string(output), test.password) {
+				t.Fatalf("setup-workspace output carries the clone secret")
+			}
+			for _, clone := range []string{workspace, filepath.Join(runDir, "guidance", "owner", "repository-plans")} {
+				if config, err := os.ReadFile(filepath.Join(clone, ".git", "config")); err != nil || strings.Contains(string(config), "Authorization") {
+					t.Fatalf("%s config read error %v or carries an authorisation header", clone, err)
+				}
+			}
+			if got := git.authorised(); got == 0 {
+				t.Fatalf("git server saw no authorised request")
+			}
+		})
+	}
+}
+
+// authenticatedGitServer serves bare copies of fixture repositories over
+// Git's smart HTTP protocol, answering 401 to any request whose Basic
+// authorisation accept refuses.
+type authenticatedGitServer struct {
+	*httptest.Server
+	root  string
+	count chan int
+}
+
+func newAuthenticatedGitServer(t *testing.T, accept func(username, password string) bool) *authenticatedGitServer {
+	t.Helper()
+	execPath := strings.TrimSpace(gitOutput(t, ".", "--exec-path"))
+	server := &authenticatedGitServer{root: t.TempDir(), count: make(chan int, 1)}
+	server.count <- 0
+	backend := &cgi.Handler{
+		Path: filepath.Join(execPath, "git-http-backend"),
+		Env:  []string{"GIT_PROJECT_ROOT=" + server.root, "GIT_HTTP_EXPORT_ALL=1"},
+	}
+	server.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || !accept(username, password) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
+			http.Error(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		server.count <- <-server.count + 1
+		backend.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// serve publishes repository at <its parent directory's name>/source.
+func (s *authenticatedGitServer) serve(t *testing.T, repository string) {
+	t.Helper()
+	target := filepath.Join(s.root, filepath.Base(filepath.Dir(repository)), "source")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ".", "clone", "--quiet", "--bare", repository, target)
+}
+
+func (s *authenticatedGitServer) authorised() int {
+	count := <-s.count
+	s.count <- count
+	return count
+}
+
 func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 	repository, head := createGitRepository(t, "code.txt", "reviewed code\n")
 	secondary := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
@@ -72,7 +182,7 @@ func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspaceWithGuidance(t, server.URL, runDir, workspace, orientation, head, secondaryGuidance)
+	runSetupWorkspaceWithGuidance(t, server.Bin, runDir, workspace, orientation, head, secondaryGuidance)
 	clonePath := filepath.Join(runDir, "guidance", "owner", "repository-plans")
 	if err := os.WriteFile(filepath.Join(clonePath, "resumed-marker"), []byte("kept\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -89,7 +199,7 @@ func TestSetupWorkspaceWarmResumeReestablishesSafetyState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := setupWorkspaceCommand(t, server.URL, runDir, workspace, orientation, head)
+	cmd := setupWorkspaceCommand(t, server.Bin, runDir, workspace, orientation, head)
 	cmd.Env = append(cmd.Env, "MINOS_RESUME=true", "MINOS_GUIDANCE_SOURCES="+secondaryGuidance)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("warm setup-workspace failed: %v\n%s", err, output)
@@ -120,7 +230,7 @@ func TestSetupWorkspaceResumeReclonesInvalidGitWorkspaceAndReestablishesSafetySt
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspace(t, server.URL, runDir, workspace, orientation, head)
+	runSetupWorkspace(t, server.Bin, runDir, workspace, orientation, head)
 	if err := os.RemoveAll(filepath.Join(workspace, ".git")); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +241,7 @@ func TestSetupWorkspaceResumeReclonesInvalidGitWorkspaceAndReestablishesSafetySt
 		t.Fatal(err)
 	}
 
-	cmd := setupWorkspaceCommand(t, server.URL, runDir, workspace, orientation, head)
+	cmd := setupWorkspaceCommand(t, server.Bin, runDir, workspace, orientation, head)
 	cmd.Env = append(cmd.Env, "MINOS_RESUME=true")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("resume with invalid workspace failed: %v\n%s", err, output)
@@ -167,7 +277,7 @@ func TestSetupWorkspaceRefusesMovedHead(t *testing.T) {
 	observed := gitOutput(t, repository, "rev-parse", "HEAD")
 	server := newSetupForge(t, observed, repository, "")
 	runDir := t.TempDir()
-	cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), admitted)
+	cmd := setupWorkspaceCommand(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), admitted)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "pull-request head moved from") {
 		t.Fatalf("error = %v, output = %q", err, output)
@@ -180,7 +290,7 @@ func TestSetupWorkspaceGroundsOnCheckedInGuidanceWhenNoSourceIsConfigured(t *tes
 
 	runDir := t.TempDir()
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspace(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head)
+	runSetupWorkspace(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), orientation, head)
 
 	state := readOrientation(t, orientation)
 	want := []orientationGuidance{{
@@ -202,7 +312,7 @@ func TestSetupWorkspaceReadsConfiguredSourcesInOrderFromBothRepositories(t *test
 
 	runDir := t.TempDir()
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspaceWithGuidance(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head,
+	runSetupWorkspaceWithGuidance(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), orientation, head,
 		`[{"path":"docs/intent.md"},{"repository":"owner/repository-plans","path":"README.md"}]`)
 
 	state := readOrientation(t, orientation)
@@ -230,7 +340,7 @@ func TestSetupWorkspaceRecordsAnUnreadableConfiguredSourceAsMisconfiguration(t *
 			server := newSetupForge(t, head, repository, test.secondary(t))
 			runDir := t.TempDir()
 			orientation := filepath.Join(runDir, "orientation.json")
-			runSetupWorkspaceWithGuidance(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head,
+			runSetupWorkspaceWithGuidance(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), orientation, head,
 				`[{"repository":"owner/repository-plans","path":"README.md"},{"path":"AGENTS.md"}]`)
 
 			state := readOrientation(t, orientation)
@@ -251,7 +361,7 @@ func TestSetupWorkspaceRefusesWhenNoConfiguredSourceIsReadable(t *testing.T) {
 	repository, head := createGitRepository(t, "AGENTS.md", "unconfigured guidance\n")
 	server := newSetupForge(t, head, repository, "")
 	runDir := t.TempDir()
-	cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
+	cmd := setupWorkspaceCommand(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
 	cmd.Env = append(cmd.Env, `MINOS_GUIDANCE_SOURCES=[{"path":"docs/absent.md"}]`)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "no configured guidance source is readable") {
@@ -265,7 +375,7 @@ func TestSetupWorkspaceRejectsMalformedGuidanceSources(t *testing.T) {
 	for _, sources := range []string{`not json`, `{"path":"x"}`, `[{"path":""}]`, `[{"path":"/etc/x"}]`, `[{"path":"../x"}]`, `[{"repository":"http://x/y","path":"a"}]`} {
 		t.Run(sources, func(t *testing.T) {
 			runDir := t.TempDir()
-			cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
+			cmd := setupWorkspaceCommand(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
 			cmd.Env = append(cmd.Env, "MINOS_GUIDANCE_SOURCES="+sources)
 			output, err := cmd.CombinedOutput()
 			if err == nil || !strings.Contains(string(output), "MINOS_GUIDANCE_SOURCES must be a JSON array") {
@@ -287,7 +397,7 @@ func TestSetupWorkspaceSkipsBlankRepositoryGuidanceFallback(t *testing.T) {
 
 	runDir := t.TempDir()
 	orientation := filepath.Join(runDir, "orientation.json")
-	runSetupWorkspace(t, server.URL, runDir, filepath.Join(runDir, "workspace"), orientation, head)
+	runSetupWorkspace(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), orientation, head)
 
 	state := readOrientation(t, orientation)
 	if len(state.Guidance) != 1 || state.Guidance[0].Location != filepath.Join(runDir, "workspace", "CLAUDE.md") {
@@ -300,7 +410,7 @@ func TestSetupWorkspaceRejectsEmptyRepositoryGuidanceFallback(t *testing.T) {
 	repository, head := createGitRepository(t, "AGENTS.md", " \n\t")
 	server := newSetupForge(t, head, repository, "")
 	runDir := t.TempDir()
-	cmd := setupWorkspaceCommand(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
+	cmd := setupWorkspaceCommand(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "no guidance source is configured and the repository has no non-empty checked-in guidance") {
 		t.Fatalf("setup-workspace error = %v, output = %q", err, output)
@@ -312,7 +422,7 @@ func TestSetupWorkspaceLeavesOnlyCloneAndGuardState(t *testing.T) {
 	server := newSetupForge(t, head, repository, "")
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
-	runSetupWorkspace(t, server.URL, runDir, workspace, filepath.Join(runDir, "orientation.json"), head)
+	runSetupWorkspace(t, server.Bin, runDir, workspace, filepath.Join(runDir, "orientation.json"), head)
 
 	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("workspace head after clone-only setup = %q, want %q", got, head)
@@ -354,7 +464,7 @@ func TestSetupWorkspaceFetchesForkTargetObjectWithoutChangingWorkspaceState(t *t
 		t.Fatal(err)
 	}
 
-	runSetupWorkspaceWithTarget(t, server.URL, runDir, workspace, filepath.Join(runDir, "orientation.json"), head, target)
+	runSetupWorkspaceWithTarget(t, server.Bin, runDir, workspace, filepath.Join(runDir, "orientation.json"), head, target)
 
 	if got := gitOutput(t, workspace, "cat-file", "-e", target+"^{commit}"); got != "" {
 		t.Fatalf("target object lookup output = %q, want empty", got)
@@ -383,7 +493,7 @@ func TestSetupWorkspaceFetchesForkTargetObjectWithoutChangingWorkspaceState(t *t
 func TestSetupWorkspaceExplainsRefusedTargetFetch(t *testing.T) {
 	server, head, target, transportEnv := refusedTargetForge(t)
 	runDir := t.TempDir()
-	cmd := setupWorkspaceCommandWithTarget(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head, target)
+	cmd := setupWorkspaceCommandWithTarget(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head, target)
 	for key, value := range transportEnv {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
@@ -401,7 +511,7 @@ func TestSetupWorkspaceExplainsRefusedTargetFetch(t *testing.T) {
 func TestSetupWorkspaceExplainsProtocolV2TargetRefusal(t *testing.T) {
 	server, head, target, transportEnv := missingTargetForge(t)
 	runDir := t.TempDir()
-	cmd := setupWorkspaceCommandWithTarget(t, server.URL, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head, target)
+	cmd := setupWorkspaceCommandWithTarget(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), filepath.Join(runDir, "orientation.json"), head, target)
 	for key, value := range transportEnv {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
@@ -418,7 +528,7 @@ func TestSetupWorkspaceExplainsProtocolV2TargetRefusal(t *testing.T) {
 
 // Real protocol v2 upload-pack rejects a SHA absent from its object store.
 // The unserved repository supplies only the requested SHA, never error text.
-func missingTargetForge(t *testing.T) (*httptest.Server, string, string, map[string]string) {
+func missingTargetForge(t *testing.T) (*setupForge, string, string, map[string]string) {
 	t.Helper()
 	targetRepository, _ := createGitRepository(t, "AGENTS.md", "served target guidance\n")
 	_, target := createGitRepository(t, "AGENTS.md", "unserved target guidance\n")
@@ -434,7 +544,7 @@ func missingTargetForge(t *testing.T) (*httptest.Server, string, string, map[str
 // The SSH stand-in replaces only sshd: both client and upload-pack are real
 // Git. Protocol v0 exposes the server's refusal to accept unadvertised wants;
 // the admitted target remains in the server's object store after main moves.
-func refusedTargetForge(t *testing.T) (*httptest.Server, string, string, map[string]string) {
+func refusedTargetForge(t *testing.T) (*setupForge, string, string, map[string]string) {
 	t.Helper()
 	targetRepository, target := createGitRepository(t, "AGENTS.md", "target guidance\n")
 	if err := os.WriteFile(filepath.Join(targetRepository, "AGENTS.md"), []byte("moved guidance\n"), 0o644); err != nil {
@@ -494,88 +604,120 @@ func readOrientation(t *testing.T, path string) orientationState {
 	return state
 }
 
+// setupForge is a stand-in for the minos binary's forge surface: the
+// snapshot, repository-metadata and clone-credential answers a configured
+// forge's adaptation would give, written as files the stub script serves.
+type setupForge struct {
+	Bin string
+	dir string
+}
+
 // newSetupForge serves the fixture pull request and, when secondary is a
 // clone URL, the secondary repository owner/repository-plans that configured
 // guidance sources may name.
-func newSetupForge(t *testing.T, head, repository, secondary string) *httptest.Server {
+func newSetupForge(t *testing.T, head, repository, secondary string) *setupForge {
 	t.Helper()
 	return newSetupForgeForTarget(t, head, repository, head, repository, secondary)
 }
 
-func newSetupForgeForTarget(t *testing.T, head, repository, target, targetRepository, secondary string) *httptest.Server {
+// A head repository other than the target is a fork, named fork/repository.
+func newSetupForgeForTarget(t *testing.T, head, repository, target, targetRepository, secondary string) *setupForge {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "token forge-token" {
-			http.Error(w, "unauthorised", http.StatusUnauthorized)
-			return
-		}
-		switch r.URL.Path {
-		case "/api/v1/repos/owner/repository/pulls/17":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{
-				"number":17,
-				"title":"Fixture change",
-				"body":"Not in scope: a concrete transport.",
-				"head":{"sha":%q,"ref":"feature","repo":{"clone_url":%q,"full_name":"owner/repository"}},
-				"base":{"sha":%q,"ref":"main","repo":{"clone_url":%q,"full_name":"owner/repository"}}
-			}`, head, repository, target, targetRepository)
-		case "/api/v1/repos/owner/repository-plans":
-			if secondary == "" {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"clone_url":%q}`, secondary)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	return server
+	stub := &setupForge{dir: t.TempDir()}
+	headRepository := "owner/repository"
+	if repository != targetRepository {
+		headRepository = "fork/repository"
+	}
+	stub.write(t, "snapshot.json", fmt.Sprintf(`{
+		"pull_request":17,
+		"title":"Fixture change",
+		"body":"Not in scope: a concrete transport.",
+		"head_sha":%q,"head_branch":"feature","head_repository":%q,
+		"target_sha":%q,"target_branch":"main","target_repository":"owner/repository"
+	}`, head, headRepository, target))
+	stub.repository(t, "owner/repository", targetRepository)
+	if headRepository != "owner/repository" {
+		stub.repository(t, headRepository, repository)
+	}
+	if secondary != "" {
+		stub.repository(t, "owner/repository-plans", secondary)
+	}
+	stub.credential(t, "minos", "forge-token")
+	stub.Bin = filepath.Join(stub.dir, "minos")
+	writeScript(t, stub.Bin, `#!/usr/bin/env sh
+set -eu
+stub="$(dirname "$0")"
+[ "$1" = forge ] || exit 2
+case "$2" in
+  snapshot) cat "$stub/snapshot.json" ;;
+  clone-credential) cat "$stub/credential.json" ;;
+  repository-metadata)
+    [ -f "$stub/metadata/$3/$4.json" ] || { echo '{"lookup_status":404}'; exit 1; }
+    cat "$stub/metadata/$3/$4.json" ;;
+  *) exit 2 ;;
+esac
+`)
+	return stub
 }
 
-func runSetupWorkspace(t *testing.T, apiBase, runDir, workspace, orientation, head string) {
+func (s *setupForge) write(t *testing.T, name, contents string) {
 	t.Helper()
-	runSetupWorkspaceWithTarget(t, apiBase, runDir, workspace, orientation, head, head)
+	path := filepath.Join(s.dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (s *setupForge) repository(t *testing.T, name, cloneURL string) {
+	t.Helper()
+	s.write(t, filepath.Join("metadata", name+".json"), fmt.Sprintf(`{"clone_url":%q,"default_branch":"main"}`, cloneURL))
+}
+
+func (s *setupForge) credential(t *testing.T, username, password string) {
+	t.Helper()
+	s.write(t, "credential.json", fmt.Sprintf(`{"username":%q,"password":%q}`, username, password))
+}
+
+func runSetupWorkspace(t *testing.T, minosBin, runDir, workspace, orientation, head string) {
+	t.Helper()
+	runSetupWorkspaceWithTarget(t, minosBin, runDir, workspace, orientation, head, head)
 }
 
 // secondaryGuidance is the configured source most tests use: README.md in
 // the secondary repository the fixture forge serves.
 const secondaryGuidance = `[{"repository":"owner/repository-plans","path":"README.md"}]`
 
-func runSetupWorkspaceWithGuidance(t *testing.T, apiBase, runDir, workspace, orientation, head, sources string) {
+func runSetupWorkspaceWithGuidance(t *testing.T, minosBin, runDir, workspace, orientation, head, sources string) {
 	t.Helper()
-	cmd := setupWorkspaceCommand(t, apiBase, runDir, workspace, orientation, head)
+	cmd := setupWorkspaceCommand(t, minosBin, runDir, workspace, orientation, head)
 	cmd.Env = append(cmd.Env, "MINOS_GUIDANCE_SOURCES="+sources)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("setup-workspace failed: %v\n%s", err, output)
 	}
 }
 
-func runSetupWorkspaceWithTarget(t *testing.T, apiBase, runDir, workspace, orientation, head, target string) {
+func runSetupWorkspaceWithTarget(t *testing.T, minosBin, runDir, workspace, orientation, head, target string) {
 	t.Helper()
-	cmd := setupWorkspaceCommandWithTarget(t, apiBase, runDir, workspace, orientation, head, target)
+	cmd := setupWorkspaceCommandWithTarget(t, minosBin, runDir, workspace, orientation, head, target)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("setup-workspace failed: %v\n%s", err, output)
 	}
 }
 
-func setupWorkspaceCommand(t *testing.T, apiBase, runDir, workspace, orientation, head string) *exec.Cmd {
+func setupWorkspaceCommand(t *testing.T, minosBin, runDir, workspace, orientation, head string) *exec.Cmd {
 	t.Helper()
-	return setupWorkspaceCommandWithTarget(t, apiBase, runDir, workspace, orientation, head, head)
+	return setupWorkspaceCommandWithTarget(t, minosBin, runDir, workspace, orientation, head, head)
 }
 
-func setupWorkspaceCommandWithTarget(t *testing.T, apiBase, runDir, workspace, orientation, head, target string) *exec.Cmd {
+func setupWorkspaceCommandWithTarget(t *testing.T, minosBin, runDir, workspace, orientation, head, target string) *exec.Cmd {
 	t.Helper()
-	credential := filepath.Join(runDir, "forge.token")
-	if err := os.WriteFile(credential, []byte("forge-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	script := filepath.Join("..", "..", "scripts", "run-body", "setup-workspace")
 	cmd := exec.Command(script)
 	cmd.Env = append(os.Environ(),
-		"MINOS_API_BASE="+apiBase,
-		"MINOS_CREDENTIAL_FILE="+credential,
+		"MINOS_BIN="+minosBin,
 		"MINOS_OWNER=owner",
 		"MINOS_REPO_NAME=repository",
 		"MINOS_PR=17",
