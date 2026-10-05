@@ -91,7 +91,8 @@ case "$1" in
     cd "$destination"
     # Archive names begin with a UTC timestamp in ISO basic form, which sorts
     # lexically in time order, so the cutoff is a string comparison.
-    ls -1 2>/dev/null |
+    names="$(ls -1 2>/dev/null)" || refuse "could not enumerate destination"
+    printf '%s\n' "$names" |
       grep -e '\.timings\.json$' |
       awk -v cutoff="$cutoff" '$0 >= cutoff' |
       sort -r |
