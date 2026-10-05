@@ -3239,6 +3239,33 @@ dir = %q
 	}
 }
 
+// run-body reads the last applied status at exit to decide whether the
+// head is spent, so each applied write replaces the record and a refused
+// write leaves it alone.
+func TestForgeStatusRecordsTheLastAppliedStateInTheRunDirectory(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	configureForgeCommandFixture(t, state)
+	runDir := t.TempDir()
+	t.Setenv("MINOS_RUN_DIR", runDir)
+	head, target := state.headSHA(), state.targetSHA()
+	record := filepath.Join(runDir, appliedStatusFile)
+	for _, written := range []string{"working", "incomplete", "attention"} {
+		var stdout strings.Builder
+		if err := ForgeCommand(t.Context(), []string{"status", head, target, written}, &stdout); err != nil {
+			t.Fatalf("%s status write: %v\n%s", written, err, stdout.String())
+		}
+		assertContainsFile(t, record, written+"\n")
+	}
+	var stdout strings.Builder
+	if err := ForgeCommand(t.Context(), []string{"status", "not-the-head", target, "clean"}, &stdout); err == nil {
+		t.Fatalf("a status write for another head applied:\n%s", stdout.String())
+	}
+	assertContainsFile(t, record, "attention\n")
+	if _, err := os.Stat(record + ".next"); !os.IsNotExist(err) {
+		t.Fatalf("staging file survived: %v", err)
+	}
+}
+
 func TestForgeStatusRejectsDescriptionOverrides(t *testing.T) {
 	for _, extra := range [][]string{{"operator custom description"}, {"--setup-failure", "workspace-setup"}} {
 		t.Run(strings.Join(extra, " "), func(t *testing.T) {

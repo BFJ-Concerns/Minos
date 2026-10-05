@@ -627,6 +627,58 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 	}
 }
 
+// The unit's exit status says whether the head is spent: only a clean or
+// attention outcome (or a continuation) may succeed and so trigger the
+// sweep pass; an incomplete outcome or a stop without a recorded status
+// exits 75 and waits for the timer, so a head that keeps ending incomplete
+// never re-runs at run pace.
+func TestRunBodyExitStatusSaysWhetherTheHeadIsSpent(t *testing.T) {
+	for _, tc := range []struct {
+		marker, applied string
+		exit            int
+	}{
+		{"clean", "", 0},
+		{"non-clean", "attention", 0},
+		{"non-clean", "clean", 0},
+		{"continuation", "", 0},
+		{"non-clean", "incomplete", 75},
+		{"non-clean", "", 75},
+		{"non-clean", "working", 75},
+	} {
+		t.Run(tc.marker+"/"+tc.applied, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			record := filepath.Join(fixture.runDir, appliedStatusFile)
+			if tc.applied == "" {
+				if err := os.Remove(record); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(record, []byte(tc.applied+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, err := fixture.execute(map[string]string{
+				"MINOS_TEST_TERMINAL_STATE":    "done",
+				"MINOS_TEST_COMPLETION_MARKER": tc.marker,
+				"MINOS_LEAD_SILENCE_TIMEOUT":   "1",
+				"MINOS_LEAD_POLL_SECONDS":      "0",
+			})
+			exit := 0
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exit = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatalf("run-body: %v\n%s", err, output)
+			}
+			if exit != tc.exit {
+				t.Fatalf("run-body exit = %d, want %d\n%s", exit, tc.exit, output)
+			}
+			if tc.exit == 75 && !strings.Contains(string(output), "stays eligible") {
+				t.Fatalf("a non-spent head exits without saying so:\n%s", output)
+			}
+			assertFileEmpty(t, fixture.failureLog)
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
 func TestRunBodySignalsSustainedMemoryPressureAtLeadReadSurface(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, 900_000_000, 0)
@@ -788,12 +840,18 @@ func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(cgroup, "memory.pressure"), []byte("some avg10=0.01 avg60=0.02 avg300=0.03 total=456\nfull avg10=0.00 avg60=0.01 avg300=0.02 total=123\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Remove(filepath.Join(fixture.runDir, appliedStatusFile)); err != nil {
+				t.Fatal(err)
+			}
 			output, err := fixture.execute(map[string]string{
 				"MINOS_CGROUP_DIR":          cgroup,
 				"MINOS_TEST_TERMINAL_STATE": state,
 			})
-			if err != nil {
-				t.Fatalf("run-body failed after recording terminal lead evidence: %v\n%s", err, output)
+			// A lead that died before its marker, with no clean or attention
+			// status applied, leaves the head eligible, so the unit must not
+			// succeed and trigger a pass that re-claims it.
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 75 {
+				t.Fatalf("run-body exit = %v after a %s lead, want 75 (head not spent)\n%s", err, state, output)
 			}
 			assertContainsFile(t, fixture.record+".terminal", `"state":"`+state+`"`)
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.events]")
@@ -1242,6 +1300,16 @@ func newRunBodyFixtureAtRoot(t *testing.T, root string) runBodyFixture {
 		}
 	}
 	fixture.ambientHomeBefore = snapshotDirectory(t, fixture.ambientHome)
+	// The stub lead ends by reporting a terminal state and writes no marker
+	// unless a test asks for one; a recorded attention status makes that a
+	// spent head, so tests about other behaviour keep a zero exit. The
+	// head-spent tests remove or replace this file.
+	if err := os.MkdirAll(fixture.runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.runDir, appliedStatusFile), []byte("attention\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	claudeSeed := filepath.Join(root, "claude-seed")
 	codexSeed := filepath.Join(root, "codex-seed")
 	if err := os.MkdirAll(claudeSeed, 0o700); err != nil {
