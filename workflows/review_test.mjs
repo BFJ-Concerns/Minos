@@ -666,7 +666,8 @@ test("specialist and verifier briefs pin the review-stage discipline", async () 
   }
   const verifierBrief = await readFile(fileURLToPath(new URL("./review-briefs/verifier.md", import.meta.url)), "utf8");
   assert.match(verifierBrief, /return exactly one verdict keyed by\s+finding id for every/i);
-  assert.match(verifierBrief, /run the focused\s+confirming experiment described by the specialist/i);
+  assert.match(verifierBrief, /Never build, test or run the reviewed\s+change, and never write an experiment of your own/);
+  assert.doesNotMatch(verifierBrief, /confirming experiment/i);
   assert.match(verifierBrief, /Return one structured verdict with an\s+independent confidence integer from 0 to 100\./);
 });
 
@@ -788,7 +789,7 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /memory-pressure[\s\S]*Check for it only at the\s+named boundaries below[\s\S]*do not interrupt a workflow or leave a forge write half-finished/);
   assert.match(lifecycle, /append one line to `\$MINOS_FAILURE_LOG`[\s\S]*every failed\*\* non-clean exit[\s\S]*lead-complete/);
   assert.match(lifecycle, /Whenever you stop after a clean, converged pass[\s\S]*`printf 'clean\\n' > "\$MINOS_RUN_DIR\/lead-complete"`/);
-  assert.match(lifecycle, /Minos authors no commits, so every head movement is the author's[\s\S]*stop without publishing a review or\s+setting a status/);
+  assert.match(lifecycle, /Minos authors no commits on the pull-request branch, so every head movement is the\s+author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
   assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a\s+review, the filing destination, a classification digest, or a run\s+outcome/);
   assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);

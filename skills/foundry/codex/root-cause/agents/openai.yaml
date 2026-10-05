@@ -1,4 +1,0 @@
-interface:
-  display_name: "Root Cause"
-  short_description: "Disciplined diagnosis of hard-to-isolate failures"
-  default_prompt: "Use $root-cause when a failure resists isolation — intermittent symptoms, a fix that did not hold, or a supplied diagnosis to act on — to drive a disciplined diagnosis: prove the cause where the evidence allows, and report an honest suspected or stopped result where it does not."

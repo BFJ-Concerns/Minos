@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +17,20 @@ import (
 	"testing"
 	"time"
 )
+
+// The run contract carries no skill provisioning: a deployment sets no
+// MINOS_SKILLS_DIR and the run body has no vendored-skills stage to fail at.
+func TestRunBodyCarriesNoSkillProvisioningStage(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, retired := range []string{"MINOS_SKILLS_DIR", "vendored-skills"} {
+		if strings.Contains(string(script), retired) {
+			t.Fatalf("run body still carries %q; skill provisioning was retired from the run contract", retired)
+		}
+	}
+}
 
 func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	fixture := newRunBodyFixture(t)
@@ -33,8 +48,13 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if info.Mode().Perm() != 0o700 {
 		t.Fatalf("CLAUDE_CONFIG_DIR mode = %o, want 700", info.Mode().Perm())
 	}
-	assertContainsFile(t, filepath.Join(configDir, "skills", "playwright", "SKILL.md"), "casting: claude-code")
-	assertContainsFile(t, filepath.Join(codexConfigDir, "skills", "playwright", "SKILL.md"), "casting: codex")
+	// The lead needs no skills and the workers run with theirs stripped, so
+	// the run body installs none into either home.
+	for _, skills := range []string{filepath.Join(configDir, "skills"), filepath.Join(codexConfigDir, "skills")} {
+		if _, err := os.Stat(skills); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("run body created %s (err=%v); no skills belong in a run-private home", skills, err)
+		}
+	}
 	assertContainsFile(t, filepath.Join(configDir, ".claude.json"), `"hasCompletedOnboarding":true`)
 	assertContainsFile(t, filepath.Join(configDir, ".claude.json"), `"bypassPermissionsModeAccepted":true`)
 	assertRegularFile(t, filepath.Join(configDir, ".credentials.json"))
@@ -341,17 +361,6 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 			},
 			wantStage: "runtime-home",
 			wantCause: "could not create isolated runtime home and state directories",
-		},
-		{
-			name: "vendored skills copy",
-			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
-				fixture.appendConfig(t, map[string]string{
-					"MINOS_SKILLS_DIR": filepath.Join(fixture.root, "missing-skills"),
-				})
-				return nil
-			},
-			wantStage: "vendored-skills",
-			wantCause: "could not copy the vendored Claude Code skills",
 		},
 		{
 			name: "workspace setup",
@@ -1109,7 +1118,7 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(installed)); got != "2cd6bc68835708db1728931550143d57fb197ae5e65f2284d31672e4900f6d47" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(installed)); got != "d7e0676ce98ca82033dc3d91fd84c8c04632a30fa5eb1409b2768613e2d06356" {
 		t.Fatalf("installed Ensemble digest = %s", got)
 	}
 }
@@ -1252,22 +1261,6 @@ func newRunBodyFixtureAtRoot(t *testing.T, root string) runBodyFixture {
 	if err := os.WriteFile(filepath.Join(codexSeed, "auth.json"), []byte("fixture Codex ChatGPT state\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	skillsDir := filepath.Join(root, "skills")
-	for _, casting := range []string{"claude-code", "codex"} {
-		for _, skill := range []string{"playwright"} {
-			skillSource := filepath.Join(skillsDir, casting, skill)
-			if err := os.MkdirAll(filepath.Join(skillSource, "references"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			content := fmt.Sprintf("# %s\ncasting: %s\n", skill, casting)
-			if err := os.WriteFile(filepath.Join(skillSource, "SKILL.md"), []byte(content), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(skillSource, "references", "proof.md"), []byte("proof\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
 	if err := os.WriteFile(fixture.instructionPath, []byte("Follow the Minos lifecycle exactly.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1387,7 +1380,6 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 		"MINOS_CODEX_CONFIG_SEED":        codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION":    fixture.instructionPath,
 		"MINOS_REVIEW_WORKFLOW":          "/opt/minos/workflows/adjudicated-review",
-		"MINOS_SKILLS_DIR":               skillsDir,
 		"MINOS_SETUP_WORKSPACE":          fixture.setupStub,
 		"MINOS_BIN":                      "/usr/local/bin/minos",
 		"MINOS_FAILURE_LOG":              fixture.failureLog,

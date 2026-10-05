@@ -291,8 +291,6 @@ export MINOS_PROVISIONED_ENGINES
 failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
 : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
 instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
-failure_cause="MINOS_SKILLS_DIR is required"
-: "${MINOS_SKILLS_DIR:?MINOS_SKILLS_DIR is required}"
 failure_cause="MINOS_SETUP_WORKSPACE is required"
 : "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required}"
 failure_cause="MINOS_ORIENTATION is required"
@@ -372,20 +370,6 @@ printf '%s\n' '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":tr
   >"$CLAUDE_CONFIG_DIR/.claude.json"
 failure_cause="could not secure Claude onboarding acceptance"
 chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
-# The vendored skill tree holds one copy per agent tool; each session gets
-# the casting made for the tool it runs on.
-failure_stage="vendored-skills"
-failure_cause="could not create the vendored skill directories"
-mkdir -p "$CLAUDE_CONFIG_DIR/skills" "$CODEX_HOME/skills"
-if [ -n "${MINOS_CLAUDE_CONFIG_SEED:-}" ]; then
-  failure_cause="could not copy the vendored Claude Code skills from $MINOS_SKILLS_DIR/claude-code"
-  cp -R "${MINOS_SKILLS_DIR%/}/claude-code/." "$CLAUDE_CONFIG_DIR/skills/"
-fi
-if [ -n "${MINOS_CODEX_CONFIG_SEED:-}" ]; then
-  failure_cause="could not copy the vendored Codex skills from $MINOS_SKILLS_DIR/codex"
-  cp -R "${MINOS_SKILLS_DIR%/}/codex/." "$CODEX_HOME/skills/"
-fi
-
 failure_stage="workspace-setup"
 failure_cause="workspace setup failed"
 setup_status=0

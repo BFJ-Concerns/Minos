@@ -120,8 +120,8 @@ admitted head arrive in the preserved run directory.
 
 ## Head movement, run-wide
 
-Minos authors no commits, so every head movement is the author's: the head
-this run claimed no longer exists as the thing to review, and runs are
+Minos authors no commits on the pull-request branch, so every head movement is the
+author's: the head this run claimed no longer exists as the thing to review, and runs are
 cheap enough to restart. Whenever a snapshot shows a head other than the
 one this run is reviewing, end the run for a fresh successor at the new
 head: append the observation to `$MINOS_FAILURE_LOG`, remove the in-flight marker with
@@ -270,7 +270,8 @@ write, matching the target rule above.)
    it as the infrastructure failure it is rather than waiting out the
    silence. Keep the interval comfortably below
    `MINOS_LEAD_SILENCE_TIMEOUT` (3600 seconds by default): the supervisor
-   treats a lead with no observed turn activity for that long as ended, so
+   treats a lead whose run tree has shown no change for that long as ended
+   (it watches the run directory, not your turns), so
    a fallback at or beyond it would let a live waiting lead be stopped. If
    that configured timeout is ever low enough to conflict with the
    1200-second floor, the ceiling wins — arm the timer at roughly half the
