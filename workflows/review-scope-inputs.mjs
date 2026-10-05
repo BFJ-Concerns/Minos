@@ -37,21 +37,21 @@ if (argumentError) {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: Infinity,
   });
-  const changedPaths = git("diff", "--name-only", "-z", target, head).split("\0").filter(Boolean);
+  const changedPaths = git("diff", "--no-renames", "--name-only", "-z", target, head).split("\0").filter(Boolean);
   const lineCounts = new Map();
-  for (const line of git("diff", "--numstat", "-z", target, head).split("\0").filter(Boolean)) {
+  for (const line of git("diff", "--no-renames", "--numstat", "-z", target, head).split("\0").filter(Boolean)) {
     const match = line.match(/^(\d+|-)\t(\d+|-)\t([\s\S]+)$/);
-    if (!match) continue;
+    if (!match) throw new Error("unparseable git numstat record");
     lineCounts.set(match[3], {
       added: match[1] === "-" ? 0 : Number(match[1]),
       deleted: match[2] === "-" ? 0 : Number(match[2]),
     });
   }
-  const changedFiles = changedPaths.map((path) => ({
-    path,
-    added: lineCounts.get(path) ? lineCounts.get(path).added : 0,
-    deleted: lineCounts.get(path) ? lineCounts.get(path).deleted : 0,
-  }));
+  const changedFiles = changedPaths.map((path) => {
+    const counts = lineCounts.get(path);
+    if (!counts) throw new Error(`git numstat omitted counts for ${path}`);
+    return { path, ...counts };
+  });
 
   const engagement = briefEngagement(briefs, occasion, changedPaths);
 

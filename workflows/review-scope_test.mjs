@@ -1,7 +1,7 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -81,15 +81,18 @@ function scopeResult(decision = "nothing-engages", reason = "documentation wordi
 
 // --- input builder ---
 
-function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true } = {}) {
+function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true, rename = false, numstatFault = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "minos-scope-inputs-"));
   try {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
+    const env = rename || numstatFault
+      ? Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(MINOS_|ENSEMBLE_)/.test(name)))
+      : process.env;
     const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...env,
         GIT_AUTHOR_NAME: "Scope Fixture",
         GIT_AUTHOR_EMAIL: "scope@example.invalid",
         GIT_COMMITTER_NAME: "Scope Fixture",
@@ -99,14 +102,16 @@ function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true } = {}) 
     });
     git("init", "--quiet", "--initial-branch=main");
     mkdirSync(join(workspace, "pkg"));
-    writeFileSync(join(workspace, "pkg", "a.go"), "package a\n");
+    const before = rename ? "package a\n" + "// retained line\n".repeat(19) : "package a\n";
+    writeFileSync(join(workspace, "pkg", "a.go"), before);
     mkdirSync(join(workspace, "deploy"));
     writeFileSync(join(workspace, "deploy", "notes.txt"), "untouched\n");
     writeFileSync(join(workspace, "README.md"), "MINOS_SCOPE_COMMISSION_CORAL");
     git("add", "--all");
     git("commit", "--quiet", "-m", "base");
     const target = git("rev-parse", "HEAD").trim();
-    writeFileSync(join(workspace, "pkg", "a.go"), "package a\n\nfunc A() {}\n");
+    if (rename) renameSync(join(workspace, "pkg", "a.go"), join(workspace, "pkg", "renamed.go"));
+    writeFileSync(join(workspace, "pkg", rename ? "renamed.go" : "a.go"), before + "\nfunc A() {}\n");
     git("add", "--all");
     git("commit", "--quiet", "-m", "change");
     const head = git("rev-parse", "HEAD").trim();
@@ -127,9 +132,24 @@ function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true } = {}) 
     }));
     const cliArgs = [inputScriptPath, target, head];
     if (occasion !== undefined) cliArgs.push(occasion);
+    const cliEnvironment = { ...env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: workspace, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
+    if (numstatFault) {
+      // Corrupt the real Git transport at its boundary; the builder must
+      // refuse the response instead of publishing a zero-count inventory.
+      const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8", env }).trim();
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      const quotedGit = "'" + realGit.replaceAll("'", "'\\''") + "'";
+      const fault = numstatFault === "malformed"
+        ? `${quotedGit} "$@" || exit $?\nprintf 'unparseable\\0'`
+        : `${quotedGit} "$@" >/dev/null`;
+      writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in\n  *" --numstat "*) ${fault} ;;\n  *) exec ${quotedGit} "$@" ;;\nesac\n`, { mode: 0o755 });
+      cliEnvironment.PATH = `${bin}:${env.PATH}`;
+      return spawnSync(process.execPath, cliArgs, { encoding: "utf8", env: cliEnvironment });
+    }
     const output = JSON.parse(execFileSync(process.execPath, cliArgs, {
       encoding: "utf8",
-      env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: workspace, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" },
+      env: cliEnvironment,
       stdio: ["ignore", "pipe", "pipe"],
     }));
     return output;
@@ -192,6 +212,29 @@ test("a matched occasion engages the brief it opted in", () => {
     engaged: true,
     via: "occasion",
   }]);
+});
+
+
+test("the scope inventory counts both sides of a renamed file", () => {
+  const input = enumeratedArgs({ rename: true, reviewDirectory: false });
+  assert.deepEqual(input.changedFiles, [
+    { path: "pkg/a.go", added: 0, deleted: 20 },
+    { path: "pkg/renamed.go", added: 22, deleted: 0 },
+  ]);
+});
+
+test("the scope builder refuses an unparseable numstat record with usage exit 2", () => {
+  const result = enumeratedArgs({ numstatFault: "malformed" });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /unparseable git numstat record/);
+  assert.equal(result.stdout, "");
+});
+
+test("the scope builder refuses an inventory path without numstat counts", () => {
+  const result = enumeratedArgs({ numstatFault: "missing" });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /git numstat omitted counts for pkg\/a.go/);
+  assert.equal(result.stdout, "");
 });
 
 
