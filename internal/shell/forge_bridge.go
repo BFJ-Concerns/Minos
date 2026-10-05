@@ -16,6 +16,10 @@ func newBehaviouralForge(cfg ServiceConfig, forgeName string) (*forge.Adapter, e
 	if !ok {
 		return nil, fmt.Errorf("unknown forge %q", forgeName)
 	}
+	return newBehaviouralForgeFromConfig(cfg, configuration)
+}
+
+func newBehaviouralForgeFromConfig(cfg ServiceConfig, configuration ForgeConfig) (*forge.Adapter, error) {
 	credential, err := ReadSecret(configuration.CredentialFile)
 	if err != nil {
 		return nil, err
