@@ -1,0 +1,20 @@
+# The target of every run unit's OnSuccess= hook; SpawnRun names the instance
+# after the run unit. The instance only enqueues the canonical sweep and
+# exits. A hook pointing straight at minos-sweep.service would make each
+# exited run unit a dependency of a unit the timer keeps loaded, so the user
+# manager would never collect it and the pull request's next run would be
+# refused as already loaded. A per-run instance is referenced by nothing
+# long-lived, so the run unit, the instance and the link between them are
+# collected the moment the enqueue returns. For the same reason this unit
+# declares no dependency of its own: an OnFailure= on the alert service, say,
+# would pin the instance, and through it the run unit, all over again. An
+# instance that ran the sweep itself would stay active for the whole pass and
+# keep the run unit loaded until it ended, refusing that pull request's
+# respawn within the very pass meant to start it.
+[Unit]
+Description=Enqueue a Minos reconciliation sweep after run unit %i exited cleanly
+Documentation=file:/opt/minos/docs/deployment.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user start --no-block minos-sweep.service
