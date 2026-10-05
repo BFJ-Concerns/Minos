@@ -95,7 +95,10 @@ failure-log = "/var/lib/minos/failures.log"
 failures-repo = "/var/lib/minos/failure-ledger"
 failures-credential-file = "/etc/minos/forgejo.token"
 archive-command = "/opt/minos/run-body/archive-run"
-max-concurrent = 6
+# How many review runs may be live at once; unset, one (runs are
+# serialised). Raising it reviews more pull requests in parallel, each run
+# taking its share of the memory envelope below.
+# max-concurrent = 1
 # Service-only limits; omitted values take these defaults. The concurrency
 # cap must not exceed the envelope in GiB. Keep the installed runs slice's
 # MemoryMax at this envelope and MemoryHigh below it.
@@ -106,8 +109,14 @@ max-concurrent = 6
 # pressure-threshold-percent = 85
 
 [ensemble]
-concurrency-claude = 10
-concurrency-codex = 6
-# Caps a workflow's live agents across both engines together; unset leaves
-# the runtime's default.
-agent-ceiling = 12
+# Live agents a review workflow may run at once on each engine. Set both or
+# neither: with both unset each defaults to 2. Raising one finishes a run
+# sooner at the cost of more concurrent load on that engine's allowance and
+# on the box's memory.
+# concurrency-claude = 2
+# concurrency-codex = 2
+# Caps a workflow's live agents across both engines together. Unset, there
+# is no combined cap: only the per-engine limits above apply. Setting it
+# bounds a run's total agents; raising it lets more run at once across both
+# engines, up to the per-engine limits.
+# agent-ceiling = 4

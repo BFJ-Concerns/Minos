@@ -1854,7 +1854,7 @@ func TestForgeReviewConvergesWhenTheForgeStoresACommentUnanchored(t *testing.T) 
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	stored := state.reviewComments[1][0]
-	if stored["position"] != widgetUnanchoredPosition || stored["diff_hunk"] != "" {
+	if stored["position"] != fixtureUnanchoredPosition || stored["diff_hunk"] != "" {
 		t.Fatalf("stored unanchored comment = %#v", stored)
 	}
 }
@@ -2379,7 +2379,7 @@ type statusPostRequest struct {
 }
 
 // Unanchored comments carry a coordinate outside the fixture diff intervals.
-const widgetUnanchoredPosition int64 = 3691
+const fixtureUnanchoredPosition int64 = 3691
 
 func newForgejoFixtureState(t *testing.T) *forgejoFixtureState {
 	t.Helper()
@@ -2881,7 +2881,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 					comment["position"] = storedLine
 					comment["diff_hunk"] = fmt.Sprintf("@@ -%d,3 +%d,3 @@", requestedLine, requestedLine)
 				} else {
-					comment["position"] = widgetUnanchoredPosition
+					comment["position"] = fixtureUnanchoredPosition
 					comment["diff_hunk"] = ""
 				}
 				comment["original_position"] = float64(0)
