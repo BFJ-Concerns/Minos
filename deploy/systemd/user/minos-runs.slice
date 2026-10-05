@@ -1,9 +1,10 @@
 # Shared memory envelope for Minos run units. Runs land here via the
 # --slice systemd-run flag in SpawnRun; nothing throttles any run until the
 # runs together approach the envelope, reclaim then pushes them back, and
-# only combined demand the envelope cannot hold kills. Keep the ceilings in
-# step with runs.memory-envelope-gib in service.toml (MemoryMax at the
-# envelope, MemoryHigh below it).
+# only combined demand the envelope cannot hold kills. `minos install-units`
+# renders the two ceilings from runs.memory-envelope-gib in service.toml
+# (MemoryMax at the envelope, MemoryHigh two GiB below it); the values here
+# are the shipped default a hand copy would install.
 [Unit]
 Description=Minos run memory envelope
 
