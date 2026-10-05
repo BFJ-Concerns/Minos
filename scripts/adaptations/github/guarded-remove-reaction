@@ -1,0 +1,54 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; content="$7"
+
+if [ -z "$content" ]; then
+  write_result rejected "reaction content is required"
+  exit 0
+fi
+
+if reaction_id="$(reaction_id "$owner" "$repo" "$pr" "$content" "$login")"; then
+  :
+else
+  presence=$?
+  if [ "$presence" -eq 1 ]; then
+    write_result applied "reaction already absent"
+  else
+    write_result uncertain "reaction read-back could not be confirmed"
+  fi
+  exit 0
+fi
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ] && guard_merged_pull_request "$owner" "$repo" "$pr" "$head" "$login"; then
+    :
+  else
+    merged_status=$?
+    if [ "$status" -eq 1 ] && [ "$merged_status" -eq 1 ]; then
+      write_result rejected "$guard_reason"
+    else
+      write_result uncertain "forge guard could not be confirmed"
+    fi
+    exit 0
+  fi
+fi
+
+reactions_path="/repos/${owner}/${repo}/issues/${pr}/reactions"
+api DELETE "${reactions_path}/${reaction_id}" >/dev/null 2>&1 || true
+
+if reaction_present "$owner" "$repo" "$pr" "$content" "$login"; then
+  write_result uncertain "reaction removal could not be discovered"
+else
+  presence=$?
+  if [ "$presence" -eq 1 ]; then
+    write_result applied
+  else
+    write_result uncertain "reaction read-back could not be confirmed"
+  fi
+fi

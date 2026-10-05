@@ -1,0 +1,92 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+login="$4"
+
+actual_login="$MINOS_GITHUB_LOGIN"
+if [ "$actual_login" != "$login" ]; then
+  write_result rejected "authenticated forge identity is ${actual_login:-missing}, expected $login"
+  exit 0
+fi
+
+pr_json="$(api GET "/repos/${owner}/${repo}/pulls/${pr}")" || {
+  write_result uncertain "pull request state could not be read"
+  exit 0
+}
+if ! printf '%s' "$pr_json" | jq -e \
+  --arg repository "${owner}/${repo}" \
+  --argjson pr "$pr" '
+  .number == $pr and
+  .base.repo.full_name == $repository and
+  .state == "open" and
+  (.merged // false | not)
+' >/dev/null; then
+  write_result rejected "pull request is no longer open"
+  exit 0
+fi
+
+issue_path="/repos/${owner}/${repo}/issues/${pr}"
+
+# The in-flight marker takes the form the run's configuration exported:
+# a reaction this account adds, or a label the repository defines.
+in_flight_reaction="$(printf '%s' "${MINOS_MARKERS:-}" | jq -r '.["in-flight"].reaction // ""' 2>/dev/null)" || in_flight_reaction=""
+in_flight_label="$(printf '%s' "${MINOS_MARKERS:-}" | jq -r '.["in-flight"].label // ""' 2>/dev/null)" || in_flight_label=""
+if [ -z "$in_flight_reaction" ] && [ -z "$in_flight_label" ]; then
+  write_result rejected "MINOS_MARKERS names no in-flight marker"
+  exit 0
+fi
+
+reactions_path="${issue_path}/reactions"
+in_flight_present() {
+  if [ -n "$in_flight_label" ]; then
+    issue_label_id "$owner" "$repo" "$pr" "$in_flight_label" >/dev/null
+    return
+  fi
+  reaction_present "$owner" "$repo" "$pr" "$in_flight_reaction" "$login"
+}
+
+if in_flight_present; then
+  :
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "in-flight marker could not be read"
+    exit 0
+  fi
+  if [ -n "$in_flight_label" ]; then
+    if defined_label_id "$owner" "$repo" "$in_flight_label" >/dev/null; then
+      :
+    else
+      definition=$?
+      if [ "$definition" -eq 1 ]; then
+        write_result rejected "$(missing_label_reason "$owner" "$repo" "$in_flight_label")"
+      else
+        write_result uncertain "in-flight label definition could not be read"
+      fi
+      exit 0
+    fi
+    payload="$(jq -nc --arg name "$in_flight_label" '{labels:[$name]}')"
+    api POST "${issue_path}/labels" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+      write_result uncertain "in-flight label could not be written"
+      exit 0
+    }
+  else
+    payload="$(jq -nc --arg content "$in_flight_reaction" '{content:$content}')"
+    api POST "$reactions_path" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+      write_result uncertain "in-flight reaction could not be written"
+      exit 0
+    }
+  fi
+fi
+
+if ! in_flight_present; then
+  write_result uncertain "in-flight marker was not confirmed"
+  exit 0
+fi
+
+write_result applied

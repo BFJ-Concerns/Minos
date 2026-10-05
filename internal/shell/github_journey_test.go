@@ -14,11 +14,13 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +45,11 @@ const (
 	githubFixtureBotLogin       = githubFixtureAppSlug + "[bot]"
 )
 
+type githubFixtureWrite struct {
+	method, path string
+	payload      map[string]any
+}
+
 type githubFixtureState struct {
 	t      *testing.T
 	mu     sync.Mutex
@@ -66,6 +73,13 @@ type githubFixtureState struct {
 	// refuseReviewPosts, when non-zero, is the HTTP status the fixture
 	// answers every review submission with, recording nothing.
 	refuseReviewPosts int
+	reactions         []map[string]any
+	definedLabels     []map[string]any
+	issues            []map[string]any
+	pullRequests      []map[string]any
+	writes            []githubFixtureWrite
+	unreadablePath    string
+	refuseMutation    bool
 }
 
 func newGitHubFixtureState(t *testing.T) *githubFixtureState {
@@ -225,12 +239,16 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	path := r.URL.Path
+	path := strings.TrimPrefix(r.URL.Path, "/api/v3")
 	authorization := r.Header.Get("Authorization")
 	if r.Header.Get("Accept") != "application/vnd.github+json" || r.Header.Get("X-GitHub-Api-Version") == "" {
 		http.Error(w, `{"message":"missing GitHub API headers"}`, http.StatusBadRequest)
 		return
 	}
+	if s.installationAuthorised(authorization) && s.handleOperations(w, r, path) {
+		return
+	}
+
 	switch {
 	case r.Method == http.MethodGet && path == "/app":
 		if !s.verifyAppJWT(authorization) {
@@ -251,7 +269,7 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets/pulls/7":
 		writeFixtureJSON(s.t, w, s.pullRequest)
-	case r.Method == http.MethodGet && path == "/repos/acme/widgets/branches/main":
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/branches/"):
 		writeFixtureJSON(s.t, w, map[string]any{"name": "main", "commit": map[string]any{"sha": s.baseTip}})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/commits/") && strings.HasSuffix(path, "/statuses"):
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.statuses))
@@ -625,5 +643,612 @@ func TestGitHubAdaptationDeclaresNoOutOfHunkAnchoring(t *testing.T) {
 	capabilities := readAnchoringCapabilities(adaptation)
 	if capabilities.ReviewComments.OutOfHunkAnchoring {
 		t.Fatal("the GitHub adaptation declares out-of-hunk anchoring GitHub does not offer")
+	}
+}
+
+// These routes follow GitHub's REST documentation for pulls, commit statuses,
+// reactions and issues/labels. Writes alone change the state read back by scripts.
+func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Request, path string) bool {
+	if path == "/repos/acme/widgets/pulls/7/reviews" {
+		return false
+	}
+	if r.Method == http.MethodGet && s.unreadablePath != "" && path == s.unreadablePath {
+		http.Error(w, `{"message":"unavailable"}`, http.StatusServiceUnavailable)
+		return true
+	}
+	if r.Method != http.MethodGet {
+		var payload map[string]any
+		if r.Body != nil && r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				s.t.Error(err)
+				http.Error(w, "bad JSON", 400)
+				return true
+			}
+		}
+		// Review writes are handled by the original fixture route.
+		if path != "/repos/acme/widgets/pulls/7/reviews" {
+			s.writes = append(s.writes, githubFixtureWrite{r.Method, path, payload})
+			if s.refuseMutation {
+				http.Error(w, `{"message":"write unavailable"}`, 503)
+				return true
+			}
+		}
+		switch {
+		case r.Method == http.MethodPost && path == "/repos/acme/widgets/statuses/"+s.pullRequest["head"].(map[string]any)["sha"].(string):
+			state, _ := payload["state"].(string)
+			if !slices.Contains([]string{"pending", "success", "failure", "error"}, state) {
+				http.Error(w, "invalid state", 422)
+				return true
+			}
+			record := map[string]any{"id": 1000 + len(s.writes), "creator": map[string]any{"login": githubFixtureBotLogin}}
+			for key, value := range payload {
+				record[key] = value
+			}
+			s.statuses = append(s.statuses, record)
+			w.WriteHeader(201)
+			writeFixtureJSON(s.t, w, record)
+			return true
+		case r.Method == http.MethodPost && path == "/repos/acme/widgets/issues/7/reactions":
+			content, _ := payload["content"].(string)
+			if !slices.Contains([]string{"+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"}, content) {
+				http.Error(w, "invalid reaction", 422)
+				return true
+			}
+			record := map[string]any{"id": 700 + len(s.writes), "content": content, "user": map[string]any{"login": githubFixtureBotLogin}}
+			s.reactions = append(s.reactions, record)
+			w.WriteHeader(201)
+			writeFixtureJSON(s.t, w, record)
+			return true
+		case r.Method == http.MethodDelete && strings.HasPrefix(path, "/repos/acme/widgets/issues/7/reactions/"):
+			id, err := strconv.Atoi(strings.TrimPrefix(path, "/repos/acme/widgets/issues/7/reactions/"))
+			if err != nil {
+				http.Error(w, "bad reaction id", 422)
+				return true
+			}
+			s.reactions = slices.DeleteFunc(s.reactions, func(record map[string]any) bool {
+				return record["id"] == id && record["user"].(map[string]any)["login"] == githubFixtureBotLogin
+			})
+			w.WriteHeader(204)
+			return true
+		case r.Method == http.MethodPost && path == "/repos/acme/widgets/issues/7/labels":
+			names, ok := payload["labels"].([]any)
+			if !ok {
+				http.Error(w, "bad labels", 422)
+				return true
+			}
+			for _, raw := range names {
+				name, ok := raw.(string)
+				if !ok {
+					http.Error(w, "label must be a name", 422)
+					return true
+				}
+				found := false
+				for _, label := range s.definedLabels {
+					if label["name"] == name {
+						s.pullRequest["labels"] = append(s.pullRequest["labels"].([]map[string]any), label)
+						found = true
+						break
+					}
+				}
+				if !found {
+					http.Error(w, "label undefined", 422)
+					return true
+				}
+			}
+			writeFixtureArray(s.t, w, s.pullRequest["labels"].([]map[string]any))
+			return true
+		case r.Method == http.MethodDelete && strings.HasPrefix(path, "/repos/acme/widgets/issues/7/labels/"):
+			name := strings.TrimPrefix(path, "/repos/acme/widgets/issues/7/labels/")
+			s.pullRequest["labels"] = slices.DeleteFunc(s.pullRequest["labels"].([]map[string]any), func(label map[string]any) bool { return label["name"] == name })
+			writeFixtureArray(s.t, w, s.pullRequest["labels"].([]map[string]any))
+			return true
+		case r.Method == http.MethodPost && path == "/repos/acme/widgets/issues":
+			record := map[string]any{"number": 100 + len(s.writes), "state": "open", "user": map[string]any{"login": githubFixtureBotLogin}}
+			for key, value := range payload {
+				record[key] = value
+			}
+			s.issues = append(s.issues, record)
+			w.WriteHeader(201)
+			writeFixtureJSON(s.t, w, record)
+			return true
+		case r.Method == http.MethodPost && strings.HasPrefix(path, "/repos/acme/widgets/issues/") && strings.HasSuffix(path, "/comments"):
+			w.WriteHeader(201)
+			writeFixtureJSON(s.t, w, map[string]any{"id": 800 + len(s.writes), "body": payload["body"]})
+			return true
+		}
+	}
+	if r.Method != http.MethodGet {
+		return false
+	}
+	var records []map[string]any
+	switch path {
+	case "/repos/acme/widgets/pulls":
+		if r.URL.Query().Get("state") != "open" {
+			s.t.Error("pull listing must select open")
+		}
+		records = s.pullRequests
+	case "/repos/acme/widgets/issues/7/reactions":
+		records = s.reactions
+	case "/repos/acme/widgets/labels":
+		records = s.definedLabels
+	case "/repos/acme/widgets/issues/7/labels":
+		records = s.pullRequest["labels"].([]map[string]any)
+	case "/repos/acme/widgets/issues":
+		state := r.URL.Query().Get("state")
+		if state != "all" && state != "open" {
+			s.t.Error("issue listing needs explicit state")
+		}
+		for _, issue := range s.issues {
+			if state == "all" || issue["state"] == "open" {
+				records = append(records, issue)
+			}
+		}
+	default:
+		return false
+	}
+	writeFixtureArray(s.t, w, s.pagedCollection(r, records))
+	return true
+}
+
+func (s *githubFixtureState) operationWrites() []githubFixtureWrite {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.writes)
+}
+
+func githubApplied(t *testing.T, result forge.WriteResult) {
+	t.Helper()
+	if result.Outcome != forge.WriteApplied {
+		t.Fatalf("operation = %#v, want applied", result)
+	}
+}
+
+func TestGitHubClaimWritesOnlyTheConfiguredMarker(t *testing.T) {
+	for _, marker := range []forge.Marker{{Reaction: "eyes"}, {Label: "review active"}} {
+		name := marker.Reaction + marker.Label
+		t.Run(name, func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			state.mu.Lock()
+			state.pullRequest["draft"] = false
+			state.mu.Unlock()
+			state.mu.Lock()
+			state.definedLabels = []map[string]any{{"id": 42, "name": "review active"}}
+			state.mu.Unlock()
+			data, _ := json.Marshal(map[string]forge.Marker{"in-flight": marker})
+			t.Setenv("MINOS_MARKERS", string(data))
+			adapter := state.adapter(t)
+			githubApplied(t, adapter.Claim(t.Context(), state.guard().Repository, 7))
+			githubApplied(t, adapter.Claim(t.Context(), state.guard().Repository, 7))
+			writes := state.operationWrites()
+			wantPath := "/repos/acme/widgets/issues/7/reactions"
+			wantPayload := map[string]any{"content": "eyes"}
+			if marker.Label != "" {
+				wantPath = "/repos/acme/widgets/issues/7/labels"
+				wantPayload = map[string]any{"labels": []any{"review active"}}
+			}
+			if len(writes) != 1 || writes[0].path != wantPath || !reflect.DeepEqual(writes[0].payload, wantPayload) {
+				t.Fatalf("claim writes = %#v", writes)
+			}
+		})
+	}
+}
+
+func TestGitHubClaimRefusesMissingLabelAndWrongIdentity(t *testing.T) {
+	for _, name := range []string{"missing label", "wrong identity"} {
+		t.Run(name, func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			t.Setenv("MINOS_MARKERS", `{"in-flight":{"label":"missing"}}`)
+			adapter := state.adapter(t)
+			if name == "wrong identity" {
+				adapter, _ = forge.NewAdapter(state.runner(), "wrong[bot]", "Minos")
+			}
+			result := adapter.Claim(t.Context(), state.guard().Repository, 7)
+			reason := "not defined"
+			if name == "wrong identity" {
+				reason = "authenticated forge identity"
+			}
+			if result.Outcome != forge.WriteRejected || !strings.Contains(result.Reason, reason) {
+				t.Fatalf("claim = %#v", result)
+			}
+			if writes := state.operationWrites(); len(writes) != 0 {
+				t.Fatalf("refused claim wrote %#v", writes)
+			}
+		})
+	}
+}
+
+func TestGitHubListOpenPullRequestsPagesFacts(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	for i := 1; i <= 101; i++ {
+		state.mu.Lock()
+		state.pullRequests = append(state.pullRequests, map[string]any{"number": i, "head": map[string]any{"sha": fmt.Sprintf("head-%d", i)}, "base": map[string]any{"ref": "parent"}})
+		state.mu.Unlock()
+	}
+	// Exercise the service consumer as well as the protocol runner.
+	adaptation := Adaptation{Dir: state.adaptationPath, APIBase: state.server.URL, Credential: state.credential}
+	facts, err := adaptation.ListOpenPRs(t.Context(), "github", "acme", "widgets")
+	if err != nil {
+		t.Fatalf("list open PRs: %v", err)
+	}
+	if len(facts) != 101 || facts[100].PR != "101" || facts[100].HeadSHA != "head-101" || facts[100].BaseRef != "parent" || facts[100].Occasion != "reconcile" || facts[100].Forge != "github" {
+		t.Fatalf("open PR facts = %#v", facts)
+	}
+}
+
+func TestGitHubCommitStatusesMatchesSnapshotProjection(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	statuses, err := adapter.CommitStatuses(t.Context(), state.guard().Repository, state.guard().HeadSHA)
+	if err != nil {
+		t.Fatalf("commit statuses: %v", err)
+	}
+	snapshot, err := adapter.Snapshot(t.Context(), state.guard().Repository, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 101 || statuses[0].ID != 131 || statuses[100].Creator != "ci-bot" || !reflect.DeepEqual(statuses, snapshot.Statuses) {
+		t.Fatalf("status projection = %#v", statuses)
+	}
+}
+
+func TestGitHubStatusWritesReadBackAndIgnoreTargetMovement(t *testing.T) {
+	for _, stateValue := range []product.State{product.Working(), product.Incomplete(), product.Clean(), product.Attention()} {
+		t.Run(stateValue.Name(), func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			adapter := state.adapter(t)
+			guard := state.guard()
+			state.mu.Lock()
+			state.baseTip = "advanced-target"
+			state.mu.Unlock()
+			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, stateValue))
+			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, stateValue))
+			writes := state.operationWrites()
+			wantURL := state.server.URL + "/acme/widgets/pull/7#minos-target-" + guard.TargetSHA
+			if len(writes) != 1 || writes[0].path != "/repos/acme/widgets/statuses/"+guard.HeadSHA || writes[0].payload["target_url"] != wantURL || writes[0].payload["state"] != string(stateValue.ForgeState()) || writes[0].payload["context"] != "Minos" || writes[0].payload["description"] != stateValue.Description() {
+				t.Fatalf("status writes = %#v", writes)
+			}
+			statuses, err := adapter.CommitStatuses(t.Context(), guard.Repository, guard.HeadSHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if statuses[0].Creator != githubFixtureBotLogin || statuses[0].State != forge.StatusState(stateValue.ForgeState()) {
+				t.Fatalf("status read-back = %#v", statuses[0])
+			}
+		})
+	}
+}
+
+func TestGitHubMarkersWriteAndRemoveTheirOwnState(t *testing.T) {
+	for _, marker := range []forge.Marker{{Reaction: "+1"}, {Label: "review done"}} {
+		t.Run(marker.Reaction+marker.Label, func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			state.mu.Lock()
+			state.definedLabels = []map[string]any{{"id": 43, "name": "review done"}}
+			state.mu.Unlock()
+			// A colleague's reaction must neither satisfy the bot's write nor be removed.
+			state.mu.Lock()
+			state.reactions = []map[string]any{{"id": 22, "content": "+1", "user": map[string]any{"login": "colleague"}}}
+			state.mu.Unlock()
+			adapter := state.adapter(t)
+			guard := state.guard()
+			githubApplied(t, adapter.AddMarker(t.Context(), guard, marker))
+			githubApplied(t, adapter.AddMarker(t.Context(), guard, marker))
+			githubApplied(t, adapter.RemoveMarker(t.Context(), guard, marker))
+			githubApplied(t, adapter.RemoveMarker(t.Context(), guard, marker))
+			writes := state.operationWrites()
+			if len(writes) != 2 || writes[0].method != "POST" || writes[1].method != "DELETE" {
+				t.Fatalf("marker writes = %#v", writes)
+			}
+			if marker.Reaction != "" {
+				state.mu.Lock()
+				reactions := slices.Clone(state.reactions)
+				state.mu.Unlock()
+				if len(reactions) != 1 || reactions[0]["id"] != 22 || writes[1].path != "/repos/acme/widgets/issues/7/reactions/701" {
+					t.Fatalf("reaction cleanup = %#v, writes %#v", reactions, writes)
+				}
+			} else {
+				snapshot, err := adapter.Snapshot(t.Context(), guard.Repository, 7)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if slices.Contains(snapshot.Labels, marker.Label) || writes[1].path != "/repos/acme/widgets/issues/7/labels/review done" {
+					t.Fatalf("label cleanup = %#v, writes %#v", snapshot.Labels, writes)
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubHeadBoundWritesRefuseMovedHeads(t *testing.T) {
+	for _, op := range []string{"status", "add reaction", "remove reaction", "add label", "remove label"} {
+		t.Run(op, func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			adapter := state.adapter(t)
+			guard := state.guard()
+			marker := forge.Marker{Reaction: "eyes"}
+			if strings.Contains(op, "label") {
+				marker = forge.Marker{Label: "review active"}
+				state.mu.Lock()
+				state.definedLabels = []map[string]any{{"id": 42, "name": marker.Label}}
+				state.mu.Unlock()
+			}
+			if strings.HasPrefix(op, "remove") {
+				githubApplied(t, adapter.AddMarker(t.Context(), guard, marker))
+			}
+			before := len(state.operationWrites())
+			state.moveHead("moved")
+			var result forge.WriteResult
+			switch {
+			case op == "status":
+				result = adapter.SetProductStatus(t.Context(), guard, product.Clean())
+			case strings.HasPrefix(op, "remove"):
+				result = adapter.RemoveMarker(t.Context(), guard, marker)
+			default:
+				result = adapter.AddMarker(t.Context(), guard, marker)
+			}
+			if result.Outcome != forge.WriteRejected {
+				t.Fatalf("moved-head write = %#v, want rejected", result)
+			}
+			if len(state.operationWrites()) != before {
+				t.Fatal("moved-head write mutated the forge")
+			}
+		})
+	}
+}
+
+func TestGitHubMarkerCleanupAcceptsOnlyMatchingMergedHeads(t *testing.T) {
+	for _, marker := range []forge.Marker{{Reaction: "eyes"}, {Label: "review active"}} {
+		for _, moved := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s%s/moved=%t", marker.Reaction, marker.Label, moved), func(t *testing.T) {
+				state := newGitHubFixtureState(t)
+				state.mu.Lock()
+				state.definedLabels = []map[string]any{{"id": 42, "name": "review active"}}
+				state.mu.Unlock()
+				adapter := state.adapter(t)
+				guard := state.guard()
+				githubApplied(t, adapter.AddMarker(t.Context(), guard, marker))
+				state.mu.Lock()
+				state.pullRequest["state"] = "closed"
+				state.pullRequest["merged"] = true
+				state.baseTip = "landed-parent"
+				state.mu.Unlock()
+				if moved {
+					state.moveHead("moved")
+				}
+				result := adapter.RemoveMarker(t.Context(), guard, marker)
+				if moved {
+					if result.Outcome != forge.WriteRejected || len(state.operationWrites()) != 1 {
+						t.Fatalf("merged moved-head cleanup = %#v", result)
+					}
+				} else {
+					githubApplied(t, result)
+					if len(state.operationWrites()) != 2 {
+						t.Fatal("matching merged marker was not removed")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestGitHubFilingDeduplicatesOpenAndClosedIssuesButNotPullRequests(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	repository := state.guard().Repository
+	body := "Finding. <!-- minos:entry_1 -->"
+	// A pull request with the same marker is not a filed issue.
+	state.mu.Lock()
+	state.issues = []map[string]any{{"number": 7, "state": "open", "title": "Finding", "body": body, "pull_request": map[string]any{"url": "pull"}}}
+	state.mu.Unlock()
+	result := adapter.FileIssue(t.Context(), repository, "Finding", body)
+	githubApplied(t, result)
+	if result.Written == nil || *result.Written != 1 {
+		t.Fatalf("first filing = %#v", result)
+	}
+	for _, closed := range []bool{false, true} {
+		if closed {
+			state.mu.Lock()
+			state.issues[1]["state"] = "closed"
+			state.mu.Unlock()
+			state.moveHead("changed-after-filing")
+		}
+		result = adapter.FileIssue(t.Context(), repository, "Changed title", body)
+		githubApplied(t, result)
+		if result.Written == nil || *result.Written != 0 || len(state.operationWrites()) != 1 {
+			t.Fatalf("repeated filing = %#v, writes %#v", result, state.operationWrites())
+		}
+	}
+	writes := state.operationWrites()
+	if writes[0].path != "/repos/acme/widgets/issues" || writes[0].payload["body"] != body {
+		t.Fatalf("filing writes = %#v", writes)
+	}
+}
+
+func TestGitHubFilingRefusesWrongIdentity(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter, _ := forge.NewAdapter(state.runner(), "wrong[bot]", "Minos")
+	result := adapter.FileIssue(t.Context(), state.guard().Repository, "Finding", "Body <!-- minos:entry_1 -->")
+	if result.Outcome != forge.WriteRejected || !strings.Contains(result.Reason, "identity") || len(state.operationWrites()) != 0 {
+		t.Fatalf("identity refusal = %#v", result)
+	}
+}
+
+func TestGitHubAlertsUseIssuesAndRepeatAsComments(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	repository := state.guard().Repository
+	state.mu.Lock()
+	state.issues = []map[string]any{{"number": 7, "state": "open", "title": "Sweep failed", "pull_request": map[string]any{"url": "pull"}}}
+	state.mu.Unlock()
+	githubApplied(t, adapter.Alert(t.Context(), repository, "Sweep failed", "First alert"))
+	githubApplied(t, adapter.Alert(t.Context(), repository, "Sweep failed", "Repeat alert"))
+	writes := state.operationWrites()
+	if len(writes) != 2 || writes[0].path != "/repos/acme/widgets/issues" || writes[0].payload["body"] != "First alert" || writes[1].path != "/repos/acme/widgets/issues/101/comments" || writes[1].payload["body"] != "Repeat alert" {
+		t.Fatalf("alert writes = %#v", writes)
+	}
+}
+
+func TestGitHubStackedChildClaimSurvivesRetarget(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	state.mu.Lock()
+	state.pullRequest["draft"] = false
+	state.mu.Unlock()
+	state.mu.Lock()
+	state.pullRequest["base"].(map[string]any)["ref"] = "parent"
+	state.mu.Unlock()
+	t.Setenv("MINOS_MARKERS", `{"in-flight":{"reaction":"eyes"}}`)
+	adapter := state.adapter(t)
+	guard := state.guard()
+	repository := guard.Repository
+	githubApplied(t, adapter.Claim(t.Context(), repository, 7))
+	snapshot, err := adapter.Snapshot(t.Context(), repository, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ServiceConfig{}
+	cfg.Service.BotLogin = githubFixtureBotLogin
+	cfg.Service.StatusContext = "Minos"
+	eligibility := assessPullRequestAdmission(cfg, RepoConfig{}, snapshot)
+	if snapshot.TargetBranch != "parent" || snapshot.TargetSHA != guard.TargetSHA || eligibility.dependencyDeferred || eligibility.completedRun {
+		t.Fatalf("stacked child snapshot %#v, admission %#v", snapshot, eligibility)
+	}
+	// The lead's real writes establish completion; the fixture does not seed it.
+	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Clean()))
+	githubApplied(t, adapter.PostReview(t.Context(), guard, forge.ReviewApprove, "Child reviewed against parent.", nil))
+	githubApplied(t, adapter.AddMarker(t.Context(), guard, forge.Marker{Reaction: "+1"}))
+	before := len(state.operationWrites())
+	// GitHub retargets the child when the parent lands; its head is unchanged.
+	state.mu.Lock()
+	state.pullRequest["base"].(map[string]any)["ref"] = "main"
+	state.baseTip = "parent-landed"
+	state.mu.Unlock()
+	snapshot, err = adapter.Snapshot(t.Context(), repository, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eligibility = assessPullRequestAdmission(cfg, RepoConfig{}, snapshot)
+	if !eligibility.completedRun {
+		t.Fatalf("retarget lost completion: %#v", eligibility)
+	}
+	result, err := reconcilePullRequestSnapshot(t.Context(), cfg, RepoConfig{}, Facts{Owner: "acme", Repo: "widgets", PR: "7"}, adapter, snapshot)
+	if err != nil || result.Decision != ReconcileNothing || result.DeferralReason != "completed-marker" || snapshot.HeadSHA != guard.HeadSHA || len(state.operationWrites()) != before {
+		t.Fatalf("retarget reconciliation = %#v, error %v, head %s target %s", result, err, snapshot.HeadSHA, snapshot.TargetSHA)
+	}
+	state.mu.Lock()
+	reactions := slices.Clone(state.reactions)
+	state.mu.Unlock()
+	if len(reactions) != 2 {
+		t.Fatalf("retarget spent markers: %#v", reactions)
+	}
+}
+
+func TestGitHubWritesPreserveUncertainty(t *testing.T) {
+	for _, op := range []string{"status", "reaction", "label", "file", "alert"} {
+		t.Run(op, func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			adapter := state.adapter(t)
+			guard := state.guard()
+			state.mu.Lock()
+			state.refuseMutation = true
+			state.mu.Unlock()
+			state.mu.Lock()
+			state.definedLabels = []map[string]any{{"id": 42, "name": "review active"}}
+			state.mu.Unlock()
+			var result forge.WriteResult
+			switch op {
+			case "status":
+				result = adapter.SetProductStatus(t.Context(), guard, product.Clean())
+			case "reaction":
+				result = adapter.AddMarker(t.Context(), guard, forge.Marker{Reaction: "eyes"})
+			case "label":
+				result = adapter.AddMarker(t.Context(), guard, forge.Marker{Label: "review active"})
+			case "file":
+				result = adapter.FileIssue(t.Context(), guard.Repository, "Finding", "Body <!-- minos:entry_1 -->")
+			default:
+				result = adapter.Alert(t.Context(), guard.Repository, "Alert", "Body")
+			}
+			if result.Outcome != forge.WriteUncertain || len(state.operationWrites()) != 1 {
+				t.Fatalf("failed write = %#v, writes %#v", result, state.operationWrites())
+			}
+		})
+	}
+}
+
+func TestGitHubStatusDetailsUseEnterpriseWebBase(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	runner := state.runner()
+	runner.APIBase += "/api/v3"
+	adapter, err := forge.NewAdapter(runner, githubFixtureBotLogin, "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := state.guard()
+	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Clean()))
+	writes := state.operationWrites()
+	if len(writes) != 1 || writes[0].payload["target_url"] != state.server.URL+"/acme/widgets/pull/7#minos-target-"+guard.TargetSHA {
+		t.Fatalf("enterprise details URL = %#v", writes)
+	}
+}
+
+func TestGitHubWebBaseMapsPublicAndEnterpriseHosts(t *testing.T) {
+	for _, apiBase := range []string{"https://api.github.com/", "https://forge.example/api/v3/"} {
+		t.Run(apiBase, func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			cmd := exec.Command("sh", "-c", `. "$1"; MINOS_API_BASE="$2"; web_base`, "web-base", filepath.Join(state.adaptationPath, "common.sh"), apiBase)
+			cmd.Env = append(os.Environ(), "MINOS_API_BASE="+state.server.URL, "MINOS_FORGE_CREDENTIAL="+state.credential)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("web base execution: %v: %s", err, out)
+			}
+			want := "https://github.com"
+			if strings.Contains(apiBase, "forge.example") {
+				want = "https://forge.example"
+			}
+			if string(out) != want {
+				t.Fatalf("web base = %q, want %q", out, want)
+			}
+		})
+	}
+}
+
+func TestGitHubMissingMarkerLabelsAreRefused(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	result := adapter.AddMarker(t.Context(), state.guard(), forge.Marker{Label: "undefined"})
+	if result.Outcome != forge.WriteRejected || !strings.Contains(result.Reason, "not defined on acme/widgets") || len(state.operationWrites()) != 0 {
+		t.Fatalf("undefined label write = %#v", result)
+	}
+}
+
+func TestGitHubUnreadableMarkerStateNeverBecomesAbsence(t *testing.T) {
+	for _, op := range []string{"claim", "add reaction", "remove reaction", "add label", "remove label"} {
+		t.Run(op, func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			adapter := state.adapter(t)
+			guard := state.guard()
+			marker := forge.Marker{Reaction: "eyes"}
+			t.Setenv("MINOS_MARKERS", `{"in-flight":{"reaction":"eyes"}}`)
+			state.mu.Lock()
+			state.unreadablePath = "/repos/acme/widgets/issues/7/reactions"
+			state.mu.Unlock()
+			if strings.Contains(op, "label") {
+				marker = forge.Marker{Label: "review active"}
+				state.mu.Lock()
+				state.unreadablePath = "/repos/acme/widgets/issues/7/labels"
+				state.mu.Unlock()
+			}
+			var result forge.WriteResult
+			switch {
+			case op == "claim":
+				result = adapter.Claim(t.Context(), guard.Repository, 7)
+			case strings.HasPrefix(op, "remove"):
+				result = adapter.RemoveMarker(t.Context(), guard, marker)
+			default:
+				result = adapter.AddMarker(t.Context(), guard, marker)
+			}
+			if result.Outcome != forge.WriteUncertain || !strings.Contains(result.Reason, "marker") && !strings.Contains(result.Reason, "read-back") || len(state.operationWrites()) != 0 {
+				t.Fatalf("unreadable marker = %#v, writes %#v", result, state.operationWrites())
+			}
+		})
 	}
 }

@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+owner="$1"; repo="$2"
+prs="$(collect "/repos/${owner}/${repo}/pulls" "state=open")"
+printf '%s' "$prs" | jq -r --arg owner "$owner" --arg repo "$repo" '.[] | [
+  "OCCASION=reconcile", "FORGE=", ("OWNER=" + $owner), ("REPO=" + $repo),
+  ("PR=" + (.number | tostring)), ("HEAD_SHA=" + .head.sha), ("BASE_REF=" + .base.ref)
+] | .[], ""'

@@ -240,3 +240,84 @@ guard_open_pull_request() {
   fi
   return 0
 }
+
+# The same projection serves snapshots and commit-status readers.
+commit_statuses() {
+  status_records="$(collect "/repos/$1/$2/commits/$3/statuses")" || return 1
+  printf '%s' "$status_records" | jq --arg provider github '[.[] |
+    if ((.id | type) != "number" or .id <= 0) then error("GitHub status is missing a positive id") else
+      {id, provider:$provider, context, state, creator:(.creator.login // ""), description:(.description // ""), target_url:(.target_url // "")}
+    end] | sort_by(.id) | reverse'
+}
+
+web_base() {
+  case "${MINOS_API_BASE%/}" in
+    https://api.github.com) printf '%s' https://github.com ;;
+    http://api.github.com) printf '%s' http://github.com ;;
+    *) printf '%s' "${MINOS_API_BASE%/}" | sed 's|/api/v3$||' ;;
+  esac
+}
+
+# Lookup helpers distinguish absence (1) from an unreadable forge (2).
+reaction_id() {
+  reaction_records="$(collect "/repos/$1/$2/issues/$3/reactions" 2>/dev/null)" || return 2
+  reaction_found="$(printf '%s' "$reaction_records" | jq -er --arg content "$4" --arg login "$5" '
+    if any(.[]; type != "object") then error("expected reaction objects") else
+      [.[] | select(.content == $content and .user.login == $login)] |
+      if length == 0 then empty else
+        .[0].id | if type == "number" and . > 0 then . else error("reaction lacks positive id") end
+      end
+    end')" || { reaction_status=$?; [ "$reaction_status" -eq 4 ] && return 1; return 2; }
+  printf '%s\n' "$reaction_found"
+}
+
+reaction_present() {
+  reaction_id "$@" >/dev/null
+}
+
+label_id() {
+  label_records="$(collect "$1" 2>/dev/null)" || return 2
+  label_found="$(printf '%s' "$label_records" | jq -er --arg name "$2" '
+    if any(.[]; type != "object") then error("expected label objects") else
+      [.[] | select(.name == $name)] |
+      if length == 0 then empty else
+        .[0].id | if type == "number" and . > 0 then . else error("label lacks positive id") end
+      end
+    end')" || { label_status=$?; [ "$label_status" -eq 4 ] && return 1; return 2; }
+  printf '%s\n' "$label_found"
+}
+
+issue_label_id() {
+  label_id "/repos/$1/$2/issues/$3/labels" "$4"
+}
+
+defined_label_id() {
+  label_id "/repos/$1/$2/labels" "$3"
+}
+
+missing_label_reason() {
+  printf 'label %s is not defined on %s/%s; create it there or configure this marker as a reaction' "$3" "$1" "$2"
+}
+
+# Only marker removal accepts a merged PR, with the same head and writer.
+guard_merged_pull_request() {
+  guard_reason=""
+  if [ "$MINOS_GITHUB_LOGIN" != "$5" ]; then
+    guard_reason="authenticated forge identity is ${MINOS_GITHUB_LOGIN:-missing}, expected $5"
+    return 1
+  fi
+  guard_pr_json="$(api GET "/repos/$1/$2/pulls/$3")" || return 2
+  if printf '%s' "$guard_pr_json" | json_match --arg repository "$1/$2" --argjson pr "$3" --arg head "$4" '
+    if type != "object" then error("expected pull request object") else
+      .number == $pr and .base.repo.full_name == $repository and .head.sha == $head and (.merged // false)
+    end'; then
+    return 0
+  else
+    guard_status=$?
+    [ "$guard_status" -eq 1 ] || return 2
+    # The calling marker script reports this sourced helper's reason.
+    # shellcheck disable=SC2034
+    guard_reason="merged pull request identity no longer matches"
+    return 1
+  fi
+}

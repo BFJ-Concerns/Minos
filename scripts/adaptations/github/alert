@@ -1,0 +1,45 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+# Files an operator alert as a repository issue: one open issue per title,
+# with repeat alerts arriving as comments on it. Reads {"title","body"} JSON
+# from stdin so bodies may be multiline.
+owner="$1"; repo="$2"
+
+payload="$(cat)"
+title="$(printf '%s' "$payload" | jq -r '.title // ""')"
+body="$(printf '%s' "$payload" | jq -r '.body // ""')"
+if [ -z "$title" ] || [ -z "$body" ]; then
+  write_result rejected "alert needs a title and a body"
+  exit 0
+fi
+
+issues="$(collect "/repos/${owner}/${repo}/issues" "state=open" 2>/dev/null)" || {
+  write_result uncertain "open issues could not be read"
+  exit 0
+}
+existing="$(printf '%s' "$issues" | jq -r --arg title "$title" 'if any(.[]; type != "object") then error("expected issue objects") else [.[] | select(.pull_request == null and .title == $title)] | max_by(.number) | .number // "" end')" || {
+  write_result uncertain "open issue titles could not be decoded"
+  exit 0
+}
+
+if [ -n "$existing" ]; then
+  comment_payload="$(jq -nc --arg body "$body" '{body:$body}')"
+  if api POST "/repos/${owner}/${repo}/issues/${existing}/comments" \
+    -H "Content-Type: application/json" --data "$comment_payload" >/dev/null 2>&1; then
+    write_result applied "commented on issue ${existing}"
+  else
+    write_result uncertain "alert comment could not be confirmed"
+  fi
+  exit 0
+fi
+
+issue_payload="$(jq -nc --arg title "$title" --arg body "$body" '{title:$title,body:$body}')"
+if api POST "/repos/${owner}/${repo}/issues" \
+  -H "Content-Type: application/json" --data "$issue_payload" >/dev/null 2>&1; then
+  write_result applied "opened alert issue"
+else
+  write_result uncertain "alert issue could not be confirmed"
+fi
