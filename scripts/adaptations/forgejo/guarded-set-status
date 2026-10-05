@@ -25,7 +25,7 @@ else
   exit 0
 fi
 
-web_base="${MINOS_API_BASE%/api/v1}"
+web_base="${MINOS_WEB_BASE:-${MINOS_API_BASE%/api/v1}}"
 target_url="${web_base%/}/${owner}/${repo}/pulls/${pr}#minos-target-${target}"
 # The details link names the target the status was written against.
 payload="$(jq -nc --arg state "$state" --arg context "$context" --arg description "$description" --arg target_url "$target_url" '{state:$state,context:$context,description:$description,target_url:$target_url}')"

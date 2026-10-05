@@ -3059,11 +3059,12 @@ bind = ":0"
 [forges.forgejo]
 adaptation = %q
 api-base = %q
+web-base = %q
 webhook-secret-file = %q
 credential-file = %q
 [runs]
 dir = %q
-`, cfg.Service.BotLogin, cfg.Forges["forgejo"].Adaptation, cfg.Forges["forgejo"].APIBase,
+`, cfg.Service.BotLogin, cfg.Forges["forgejo"].Adaptation, cfg.Forges["forgejo"].APIBase, cfg.Forges["forgejo"].WebBase,
 		cfg.Forges["forgejo"].WebhookSecretFile, cfg.Forges["forgejo"].CredentialFile, cfg.Runs.Dir)
 	if cfg.Service.StatusContext != "" {
 		body = strings.Replace(body, "[listener]\n", fmt.Sprintf("status-context = %q\n[listener]\n", cfg.Service.StatusContext), 1)
@@ -3127,5 +3128,57 @@ func TestForgeStatusRejectsFreeFormDescription(t *testing.T) {
 	err := ForgeCommand(t.Context(), []string{"status", state.headSHA(), state.targetSHA(), "incomplete", "operator custom description"}, &stdout)
 	if err == nil || !strings.Contains(err.Error(), "usage:") || len(state.statusPostFacts()) != 0 {
 		t.Fatalf("free-form description: err=%v result=%s posts=%#v, want usage refusal without writes", err, stdout.String(), state.statusPostFacts())
+	}
+}
+
+func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
+	for _, test := range []struct{ name, webBase string }{
+		{name: "configured", webBase: "https://forge.example/forge/"},
+		{name: "unset"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg, _, facts := state.service(t)
+			forge := cfg.Forges[facts.Forge]
+			forge.WebBase = test.webBase
+			cfg.Forges[facts.Forge] = forge
+			writeServiceConfig(t, cfg)
+			t.Setenv("MINOS_CONFIG", cfg.Root)
+			t.Setenv("MINOS_FORGE", facts.Forge)
+			t.Setenv("MINOS_OWNER", facts.Owner)
+			t.Setenv("MINOS_REPO_NAME", facts.Repo)
+			t.Setenv("MINOS_PR", facts.PR)
+			// Configuration must win over an inherited run's web host, even unset.
+			t.Setenv("MINOS_WEB_BASE", "https://ambient.example")
+			var stdout strings.Builder
+			args := []string{"status", state.headSHA(), state.targetSHA(), "working"}
+			if err := ForgeCommand(t.Context(), args, &stdout); err != nil {
+				t.Fatalf("status write: %v\n%s", err, stdout.String())
+			}
+			posts := state.statusPostFacts()
+			if len(posts) != 1 {
+				t.Fatalf("status posts = %d, want 1", len(posts))
+			}
+			wantBase := state.server.URL
+			if test.webBase != "" {
+				wantBase = "https://forge.example/forge"
+			}
+			want := wantBase + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA()
+			got := posts[0].Payload["target_url"]
+			t.Logf("recorded target_url = %v", got)
+			if got != want {
+				t.Fatalf("target_url = %v, want %s", got, want)
+			}
+			if !strings.Contains(stdout.String(), `"outcome":"applied"`) {
+				t.Fatalf("status read-back = %s, want applied", stdout.String())
+			}
+			stdout.Reset()
+			if err := ForgeCommand(t.Context(), args, &stdout); err != nil {
+				t.Fatalf("repeated status: %v\n%s", err, stdout.String())
+			}
+			if posts := state.statusPostFacts(); len(posts) != 1 {
+				t.Fatalf("repeated status posts = %d, want 1", len(posts))
+			}
+		})
 	}
 }
