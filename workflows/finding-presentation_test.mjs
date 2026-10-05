@@ -222,3 +222,23 @@ for (const surface of ["inline", "filing"]) test(`${surface}: an extensionless a
     "- **Advisory · Low: Check Makefile** (`Makefile:3`) — Makefile differs from Makefile:3; host:3000 and 10:30 stay intact. " + attribution + ".",
     "filing an extensionless file leaked an unrelated line or a non-path colon was rewritten");
 });
+
+for (const surface of ["inline", "filing"]) test(`${surface}: diagnostic columns cannot become invented line citations`, () => {
+  const finding = {
+    title: "Diagnostic location", severity: "High", path: "ledger/ledger.go", line: 110, endLine: 112,
+    explanation: "go vet: ledger/ledger.go:94:5: unreachable code; " +
+      "other cmd/minos/main.go:110:3; own ledger/ledger.go:110:3; " +
+      "nested ledger/ledger.go:94:5:2; wrong range ledger/ledger.go:110-111:3; " +
+      "own range ledger/ledger.go:110-112:3.",
+  };
+  const explanation = "go vet: ledger/ledger.go: unreachable code; " +
+    "other cmd/minos/main.go; own ledger/ledger.go:110:3; " +
+    "nested ledger/ledger.go; wrong range ledger/ledger.go; " +
+    "own range ledger/ledger.go:110-112:3.";
+  if (surface === "inline") assert.equal(findingComment(finding).body,
+    "**Advisory · High: Diagnostic location**\n\n" + explanation,
+    "stripping a diagnostic location invented a line from its column suffix");
+  if (surface === "filing") assert.equal(issueLogEntry({ ...finding, kind: "advisory-finding" }, attribution),
+    "- **Advisory · High: Diagnostic location** (`ledger/ledger.go:110`) — " + explanation + " " + attribution + ".",
+    "filing a diagnostic location invented a line from its column suffix");
+});

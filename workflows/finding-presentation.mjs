@@ -15,10 +15,12 @@
 // Path syntax is repository-relative (a directory or filename extension), or
 // the exact anchored path for extensionless root files. URL tokens are kept
 // whole so neither their port nor a path inside them becomes a citation.
+// Numeric diagnostic columns belong to the location token: stripping a line
+// consumes them too, so a column never becomes a new line citation.
 // This is lexical normalisation: it never reads files or guesses a new line.
 function normaliseProse(text, finding) {
   return String(text).replace(
-    /(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)[^\s`"'()[\]{}<>]+|([^\s`"'()[\]{}<>:;,!?*]+):(\d+)(?:-(\d+))?/gi,
+    /(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)[^\s`"'()[\]{}<>]+|([^\s`"'()[\]{}<>:;,!?*]+):(\d+)(?:-(\d+))?(?::\d+)*/gi,
     (citation, path, line, endLine) => {
       if (path === undefined) return citation;
       const isPath = path === finding.path || path.includes("/") || /\.[a-z][a-z0-9]*$/i.test(path);
