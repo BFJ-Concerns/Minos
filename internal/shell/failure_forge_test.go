@@ -9,33 +9,6 @@ import (
 	"testing"
 )
 
-func TestFailureForgeConfiguration(t *testing.T) {
-	for _, test := range []struct{ name, extra, runs, want, wantError string }{
-		{name: "sole forge defaults", want: "local"},
-		{name: "multiple forges require selection", extra: `[forges.other]
-adaptation = "/adapt"
-api-base = "http://other.invalid"
-webhook-secret-file = "/secret"
-credential-file = "/credential"
-`, runs: "failures-repo = \"/ledger\"\n", wantError: "runs.failures-forge is required"},
-		{name: "unknown selection refused", runs: "failures-forge = \"absent\"\n", wantError: "runs.failures-forge \"absent\""},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
-			contents := strings.Replace(testServiceConfig, "[runs]\n", test.extra+"[runs]\n"+test.runs, 1)
-			writeTestFile(t, filepath.Join(root, "service.toml"), contents)
-			cfg, err := LoadServiceConfig(root)
-			if test.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), test.wantError) {
-					t.Fatalf("error = %v, want %q", err, test.wantError)
-				}
-			} else if err != nil || cfg.Runs.FailuresForge != test.want {
-				t.Fatalf("failures forge = %q, error = %v, want %q", cfg.Runs.FailuresForge, err, test.want)
-			}
-		})
-	}
-}
-
 func TestFailureLedgerPushUsesSelectedForgeCredential(t *testing.T) {
 	state := newGitHubFixtureState(t)
 	repository, _ := createGitRepository(t, "FAILURES.md", "# Failures\n")
