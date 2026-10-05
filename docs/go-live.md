@@ -24,10 +24,7 @@ so no repository toolchains are needed.
    committing it there once the box's own pipeline has succeeded, and
    listing the timing sidecars — from the box's address alone. Re-running it replaces
    an earlier line for the same key. Install `lifecycle`
-   under `/opt/minos/lifecycle`, and `skills/foundry` under
-   `/opt/minos/skills/foundry`. That tree holds the vendored skills one
-   directory per agent tool — `codex/` and `claude-code/` — so a spawned
-   session is handed the copy cast for the tool it runs on.
+   under `/opt/minos/lifecycle`.
 3. Run `scripts/install-review-runtime /opt/minos`. Before installing
    anything it checks the box's tool versions against
    `scripts/expected-tool-versions` — the set the repository gate runs
@@ -57,7 +54,7 @@ so no repository toolchains are needed.
      pins; unset roles pair the families when both are provisioned and
      run on the one engine otherwise); and
    - check that `MINOS_LIFECYCLE_INSTRUCTION`, `MINOS_REVIEW_WORKFLOW`,
-   `MINOS_SKILLS_DIR`, `MINOS_ARCHIVE_RUN` and the
+   `MINOS_ARCHIVE_RUN` and the
    other installed paths match the deployment. Configure `archive.env` with
    the archive SSH host, identity and pinned known-hosts file; the
    destination lives on the archive host, bound into the key's forced
@@ -169,11 +166,9 @@ so no repository toolchains are needed.
 
    Provision the seed directory of every engine the deployment runs when the disposable box is launched — the lead's engine at least. Each
    run copies their contents into its private `HOME`: Claude state goes to
-   `$HOME/.claude` and Codex state to `$HOME/.codex`. `run-body` then copies
-   the vendored skill tree named by `MINOS_SKILLS_DIR` into both homes —
-   `claude-code/` skills to `$HOME/.claude/skills` and `codex/` skills to
-   `$HOME/.codex/skills` — so every spawned session finds the casting made for
-   its tool. Each run also gets a private disk-backed `TMPDIR` beneath the
+   `$HOME/.claude` and Codex state to `$HOME/.codex`; no skills are
+   installed into either home — the lead needs none, and review workers run
+   with their skill surfaces stripped. Each run also gets a private disk-backed `TMPDIR` beneath the
    storage root's `tmp/` directory, alongside `runs/` (the shared tmpfs `/tmp`
    cannot hold concurrent runs' artefacts). The lead and Ensemble workers
    therefore inherit both

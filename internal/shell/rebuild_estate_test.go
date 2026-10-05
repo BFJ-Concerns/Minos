@@ -550,12 +550,6 @@ esac
 	if err := os.WriteFile(filepath.Join(codexSeed, "auth.json"), []byte("fixture Codex ChatGPT state\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	skills := filepath.Join(root, "skills")
-	for _, casting := range []string{"claude-code", "codex"} {
-		if err := os.MkdirAll(filepath.Join(skills, casting), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
 	setup, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "setup-workspace"))
 	if err != nil {
 		t.Fatal(err)
@@ -571,7 +565,6 @@ esac
 		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION": instruction,
 		"MINOS_REVIEW_WORKFLOW":       "/opt/minos/workflows/adjudicated-review",
-		"MINOS_SKILLS_DIR":            skills,
 		"MINOS_SETUP_WORKSPACE":       setup,
 		"MINOS_BIN":                   "/usr/local/bin/minos",
 		"MINOS_LEAD_POLL_SECONDS":     "0",
