@@ -600,7 +600,7 @@ write, matching the target rule above.)
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/file-triage.mjs" \
      "$MINOS_RUN_DIR/publication/triage-entries.json" \
-     "$MINOS_ORIENTATION" "$MINOS_CREDENTIAL_FILE" \
+     "$MINOS_ORIENTATION" \
      > "$MINOS_RUN_DIR/triage-result.json"
    ```
 

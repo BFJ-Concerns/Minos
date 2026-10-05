@@ -3,10 +3,24 @@ package shell
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// buildMinos compiles the minos binary into the test's own directory, for
+// scripts that reach the forge through it as a run does.
+func buildMinos(t *testing.T) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "minos")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/minos")
+	build.Dir = filepath.Join("..", "..")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build minos: %v\n%s", err, output)
+	}
+	return binary
+}
 
 func writeScript(t *testing.T, path, body string) {
 	t.Helper()

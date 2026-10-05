@@ -73,7 +73,9 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 func TestSetupWorkspaceClonesWithTheForgesCloneCredential(t *testing.T) {
 	repository, head := createGitRepository(t, "AGENTS.md", "reviewed guidance\n")
 	secondary := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
-	git := newAuthenticatedGitServer(t, "x-access-token", "installation-token")
+	git := newAuthenticatedGitServer(t, func(username, password string) bool {
+		return username == "x-access-token" && password == "installation-token"
+	})
 	server := newSetupForge(t, head, git.URL+"/"+filepath.Base(filepath.Dir(repository))+"/source", git.URL+"/"+filepath.Base(filepath.Dir(secondary))+"/source")
 	git.serve(t, repository)
 	git.serve(t, secondary)
@@ -127,14 +129,14 @@ func TestSetupWorkspaceClonesWithTheForgesCloneCredential(t *testing.T) {
 
 // authenticatedGitServer serves bare copies of fixture repositories over
 // Git's smart HTTP protocol, answering 401 to any request whose Basic
-// authorisation is not the one credential it accepts.
+// authorisation accept refuses.
 type authenticatedGitServer struct {
 	*httptest.Server
 	root  string
 	count chan int
 }
 
-func newAuthenticatedGitServer(t *testing.T, username, password string) *authenticatedGitServer {
+func newAuthenticatedGitServer(t *testing.T, accept func(username, password string) bool) *authenticatedGitServer {
 	t.Helper()
 	execPath := strings.TrimSpace(gitOutput(t, ".", "--exec-path"))
 	server := &authenticatedGitServer{root: t.TempDir(), count: make(chan int, 1)}
@@ -144,8 +146,8 @@ func newAuthenticatedGitServer(t *testing.T, username, password string) *authent
 		Env:  []string{"GIT_PROJECT_ROOT=" + server.root, "GIT_HTTP_EXPORT_ALL=1"},
 	}
 	server.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, secret, ok := r.BasicAuth()
-		if !ok || user != username || secret != password {
+		username, password, ok := r.BasicAuth()
+		if !ok || !accept(username, password) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
 			http.Error(w, "unauthorised", http.StatusUnauthorized)
 			return
