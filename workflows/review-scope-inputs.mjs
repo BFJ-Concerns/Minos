@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
 import { routingFromEnvironment } from "./role-routing.mjs";
 
+import { reviewBriefsFromWorkspace } from "./review-brief-files.mjs";
 import { briefEngagement } from "./brief-dispositions.mjs";
 
 const [target, head, ...rest] = process.argv.slice(2);
@@ -29,31 +30,7 @@ if (argumentError) {
 
   const workspace = resolve(process.env.MINOS_WORKSPACE || orientation.repository);
 
-  const reviewDirectory = resolve(workspace, ".review");
-  const hasReviewDirectory = existsSync(reviewDirectory) && statSync(reviewDirectory).isDirectory();
-  const markdownPaths = [];
-  if (hasReviewDirectory) {
-    const visit = (directory) => {
-      for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-        const path = resolve(directory, entry.name);
-        if (entry.isDirectory()) visit(path);
-        else if (entry.isFile() && entry.name.endsWith(".md")) markdownPaths.push(path);
-      }
-    };
-    visit(reviewDirectory);
-  }
-  const briefs = markdownPaths.map((absolute) => {
-    const path = relative(workspace, absolute).split(sep).join("/");
-    const inner = path.replace(/^\.review\//, "");
-    const scope = inner.includes("/") ? inner.replace(/\/[^/]*$/, "") : null;
-    const scopePath = scope ? resolve(workspace, scope) : null;
-    return {
-      path,
-      content: readFileSync(absolute, "utf8"),
-      scope,
-      scopeExists: !scopePath || (existsSync(scopePath) && statSync(scopePath).isDirectory()),
-    };
-  });
+  const { hasReviewDirectory, briefs } = reviewBriefsFromWorkspace(workspace);
 
   const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
     encoding: "utf8",
