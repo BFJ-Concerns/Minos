@@ -99,6 +99,14 @@ func TestArchiveReceiverListsSidecarsNewestFirstFromTheCutoff(t *testing.T) {
 	}
 }
 
+func TestArchiveReceiverListsAnEmptyDestination(t *testing.T) {
+	destination := t.TempDir()
+	stdout, stderr, err := runArchiveReceiver(t, destination, "list 20260902T000000Z 1", nil)
+	if err != nil || len(stdout) != 0 || len(stderr) != 0 {
+		t.Fatalf("empty listing: err=%v stdout=%q stderr=%q, want success with no output", err, stdout, stderr)
+	}
+}
+
 func TestArchiveReceiverRefusesUnsupportedRequests(t *testing.T) {
 	destination := t.TempDir()
 	for _, request := range []string{
