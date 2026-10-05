@@ -51,6 +51,7 @@ type timingWorker struct {
 		Reason      string  `json:"reason"`
 		BuildMs     *int64  `json:"build_ms"`
 		TestMs      *int64  `json:"test_ms"`
+		OtherMs     *int64  `json:"other_ms"`
 		ReasoningMs *int64  `json:"reasoning_ms"`
 	} `json:"span_breakdown"`
 }
@@ -547,11 +548,12 @@ func assertArchivedSpan(t *testing.T, span *struct {
 	Reason      string  `json:"reason"`
 	BuildMs     *int64  `json:"build_ms"`
 	TestMs      *int64  `json:"test_ms"`
+	OtherMs     *int64  `json:"other_ms"`
 	ReasoningMs *int64  `json:"reasoning_ms"`
-}, format string, reasoning int64) {
+}, format string, other int64) {
 	t.Helper()
-	if span == nil || span.Status != "parsed" || span.Format == nil || *span.Format != format || span.BuildMs != nil || span.TestMs != nil || span.ReasoningMs == nil || *span.ReasoningMs != reasoning {
-		t.Fatalf("span = %+v, want parsed %s without build/test categories and with %d ms", span, format, reasoning)
+	if span == nil || span.Status != "parsed" || span.Format == nil || *span.Format != format || span.BuildMs != nil || span.TestMs != nil || span.ReasoningMs != nil || span.OtherMs == nil || *span.OtherMs != other {
+		t.Fatalf("span = %+v, want parsed %s without retired categories and with other_ms=%d", span, format, other)
 	}
 }
 

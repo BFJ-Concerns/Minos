@@ -19,7 +19,7 @@ function ms(value) {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
-function empty(format) { return { status: 'parsed', format, reasoning_ms: 0 }; }
+function empty(format) { return { status: 'parsed', format, other_ms: 0 }; }
 function unparseable(format, reason) { return { status: 'unparseable', format, reason }; }
 function addIntervals(entries, format) {
   const result = empty(format);
@@ -30,7 +30,7 @@ function addIntervals(entries, format) {
     // They carry no interval boundary, so retain the surrounding timed events
     // rather than refusing an otherwise readable archived session.
     if (now === null) continue;
-    if (previous !== null && now >= previous) result.reasoning_ms += now - previous;
+    if (previous !== null && now >= previous) result.other_ms += now - previous;
     previous = now;
   }
   return previous === null ? unparseable(format, 'no timestamped events') : result;
@@ -77,7 +77,7 @@ function analyseTranscripts(transcripts, recordRoot) {
     // A parsed total must cover every recorded attempt.  Refusing a malformed
     // attempt is safer than presenting only the successful-looking remainder.
     if (span.status !== 'parsed') return span;
-    total.reasoning_ms += span.reasoning_ms;
+    total.other_ms += span.other_ms;
   }
   return total;
 }
