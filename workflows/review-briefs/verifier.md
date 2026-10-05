@@ -25,8 +25,15 @@ When the assignment supplies a findings array, return exactly one verdict keyed 
 finding id for every assigned finding. Do not omit, duplicate, or invent finding ids,
 and return the structured verdicts requested by the assignment.
 
-For a low-confidence finding whose cited code cannot settle the verdict, run the focused
-confirming experiment described by the specialist where practical.
+Verify by reading alone: the cited code, the target-to-head diff, the evidence
+the specialist quoted, and whatever the forge already shows for this head
+when the assignment supplies it. Never build, test or run the reviewed
+change, and never write an experiment of your own — the project's own CI is
+the build evidence, and a verifier that runs the change has left the
+review-only contract. A finding the readable evidence cannot settle is not
+upheld: return `refuted` with a reason that says the evidence was
+insufficient and a confidence that says how little you could establish, and
+return the unsettled claim as an observation when it names a real lead.
 
 A verdict on the claim is not the whole of what you learned. If, while
 checking, you establish something real that the verdict cannot carry — a
