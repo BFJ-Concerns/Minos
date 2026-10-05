@@ -1318,8 +1318,9 @@ func TestForgeRepositoryMetadataAndCloneCredentialServeTheRunsClones(t *testing.
 	if metadata != (forge.RepositoryMetadata{CloneURL: "https://forge.example/minos-e2e-owner/subject-plans.git", DefaultBranch: "main"}) {
 		t.Fatalf("repository metadata = %#v", metadata)
 	}
-	if err := ForgeCommand(t.Context(), []string{"repository-metadata", "minos-e2e-owner", "absent"}, &bytes.Buffer{}); err == nil {
-		t.Fatalf("repository metadata for an absent repository succeeded")
+	stdout.Reset()
+	if err := ForgeCommand(t.Context(), []string{"repository-metadata", "minos-e2e-owner", "absent"}, &stdout); err == nil || strings.TrimSpace(stdout.String()) != `{"lookup_status":404}` {
+		t.Fatalf("repository metadata for an absent repository: error %v, output %q; want the forge's 404 as data", err, stdout.String())
 	}
 	if err := ForgeCommand(t.Context(), []string{"repository-metadata", "minos-e2e-owner/subject-plans"}, &bytes.Buffer{}); err == nil {
 		t.Fatalf("repository-metadata accepted one argument")

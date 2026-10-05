@@ -307,13 +307,12 @@ test("a refused push, an unknown repository, missing attribution or an unreachab
   assert.doesNotMatch(fixture.originFile(), /Lost update/);
 
   const unknown = await fixture.deliver({ destination: { kind: "file", repository: "owner/absent", path: "ISSUES.md" } });
-  assert.equal(unknown.outcome, "unfiled");
-  assert.match(unknown.reason, /^filing to owner\/absent:ISSUES\.md failed: repository lookup for owner\/absent failed: .*404/);
+  assert.deepEqual(unknown, { kind: "file", outcome: "unfiled", reason: "filing to owner/absent:ISSUES.md failed: repository lookup for owner/absent returned HTTP 404" });
 
   assert.deepEqual(await fixture.deliver({ source: { owner: "owner" } }), { kind: "file", outcome: "unfiled", reason: "the orientation record carries no source attribution" });
   delete process.env.MINOS_BIN;
   try {
-    assert.deepEqual(await fixture.deliver(), { kind: "file", outcome: "unfiled", reason: "filing to owner/plans:ISSUES.md failed: the forge supplied no clone credential: MINOS_BIN is required to reach the forge" });
+    assert.deepEqual(await fixture.deliver(), { kind: "file", outcome: "unfiled", reason: "filing to owner/plans:ISSUES.md failed: MINOS_BIN is required to reach the forge" });
   } finally {
     process.env.MINOS_BIN = fixture.forgeEnvironment.MINOS_BIN;
   }
@@ -322,9 +321,7 @@ test("a refused push, an unknown repository, missing attribution or an unreachab
 
 test("an empty forge credential leaves the material unfiled", async (t) => {
   const fixture = await destinationFixture(t, { token: "" });
-  const outcome = await fixture.deliver();
-  assert.equal(outcome.outcome, "unfiled");
-  assert.match(outcome.reason, /^filing to owner\/plans:ISSUES\.md failed: the forge supplied no clone credential: /);
+  assert.deepEqual(await fixture.deliver(), { kind: "file", outcome: "unfiled", reason: "forge credential file is empty" });
   assert.equal(fixture.lookups.length, 0, "no lookup is made without a credential");
   assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
 });

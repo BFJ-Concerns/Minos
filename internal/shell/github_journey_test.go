@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -509,8 +510,9 @@ func TestGitHubRepositoryMetadataAndCloneCredentialServeTheRunsClones(t *testing
 	if metadata != (forge.RepositoryMetadata{CloneURL: "https://github.example/acme/widgets.git", DefaultBranch: "trunk"}) {
 		t.Fatalf("repository metadata = %#v", metadata)
 	}
-	if _, err := adapter.RepositoryMetadata(t.Context(), forge.Repository{Owner: "acme", Name: "absent"}); err == nil {
-		t.Fatalf("repository metadata for an absent repository succeeded")
+	var lookup *forge.RepositoryLookupError
+	if _, err := adapter.RepositoryMetadata(t.Context(), forge.Repository{Owner: "acme", Name: "absent"}); !errors.As(err, &lookup) || lookup.Status != http.StatusNotFound {
+		t.Fatalf("repository metadata for an absent repository = %v, want the forge's 404 as the lookup's outcome", err)
 	}
 
 	credential, err := adapter.CloneCredential(t.Context())
@@ -580,6 +582,62 @@ dir = %q
 		t.Fatalf("the git server authorised no request")
 	}
 	assertContainsFile(t, filepath.Join(runDir, "pull-request.json"), `"title": "Widget change"`)
+}
+
+// clone-credential hands its secret to jq through the environment: a jq
+// stand-in on PATH records every argument vector either adaptation gives
+// it, and neither forge's secret may appear in one.
+func TestCloneCredentialKeepsTheSecretOutOfEveryArgv(t *testing.T) {
+	realJQ, err := exec.LookPath("jq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stand := t.TempDir()
+	argvLog := filepath.Join(stand, "argv.log")
+	writeScript(t, filepath.Join(stand, "jq"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'"+argvLog+"'\nexec '"+realJQ+"' \"$@\"\n")
+	path := stand + string(os.PathListSeparator) + os.Getenv("PATH")
+
+	forgejoAdaptation, err := filepath.Abs(filepath.Join("..", "..", "scripts", "adaptations", "forgejo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := newGitHubFixtureState(t)
+	for _, test := range []struct {
+		name   string
+		runner forge.ScriptRunner
+		secret func() string
+	}{
+		{name: "forgejo", runner: forge.ScriptRunner{Directory: forgejoAdaptation, APIBase: "http://forge.invalid", Credential: "forgejo-secret-719"}, secret: func() string { return "forgejo-secret-719" }},
+		{name: "github", runner: github.runner(), secret: func() string {
+			github.mu.Lock()
+			defer github.mu.Unlock()
+			return github.mintedTokens[len(github.mintedTokens)-1]
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(argvLog, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, err := test.runner.Run(t.Context(), forge.RunRequest{Operation: "clone-credential", Env: map[string]string{"PATH": path}})
+			if err != nil {
+				t.Fatalf("clone-credential: %v", err)
+			}
+			secret := test.secret()
+			if !strings.Contains(string(out), secret) {
+				t.Fatalf("clone-credential output does not carry the forge's secret")
+			}
+			recorded, err := os.ReadFile(argvLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(recorded) == 0 {
+				t.Fatalf("the jq stand-in recorded no invocation")
+			}
+			if strings.Contains(string(recorded), secret) {
+				t.Fatalf("a recorded jq argv carries the secret")
+			}
+		})
+	}
 }
 
 func TestGitHubGuardedPostReviewAnchorsByLineAndSideAndReadsBack(t *testing.T) {

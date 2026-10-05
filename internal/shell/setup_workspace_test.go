@@ -331,7 +331,7 @@ func TestSetupWorkspaceRecordsAnUnreadableConfiguredSourceAsMisconfiguration(t *
 		secondary func(t *testing.T) string
 		reason    string
 	}{
-		{name: "secondary repository not on the forge", secondary: func(*testing.T) string { return "" }, reason: "the forge could not report the repository's clone URL"},
+		{name: "secondary repository not on the forge", secondary: func(*testing.T) string { return "" }, reason: "repository lookup returned HTTP 404"},
 		{name: "named file missing", secondary: func(t *testing.T) string { return createGitRepositoryAtHead(t, "NOTES.md", "# Notes\n") }, reason: "is missing or empty"},
 		{name: "named file blank", secondary: func(t *testing.T) string { return createGitRepositoryAtHead(t, "README.md", " \n\t") }, reason: "is missing or empty"},
 	} {
@@ -652,7 +652,7 @@ case "$2" in
   snapshot) cat "$stub/snapshot.json" ;;
   clone-credential) cat "$stub/credential.json" ;;
   repository-metadata)
-    [ -f "$stub/metadata/$3/$4.json" ] || { echo "repository-metadata: $3/$4 not found" >&2; exit 1; }
+    [ -f "$stub/metadata/$3/$4.json" ] || { echo '{"lookup_status":404}'; exit 1; }
     cat "$stub/metadata/$3/$4.json" ;;
   *) exit 2 ;;
 esac

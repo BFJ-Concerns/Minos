@@ -76,16 +76,32 @@ async function askForge(...args) {
   return stdout;
 }
 
+// The forge command's structured answer on a failed exit (its stdout), or
+// null: the reason a reader acts on is worded here from that outcome, never
+// passed through from the subprocess's error text.
+function forgeOutcome(error) {
+  try {
+    const outcome = JSON.parse(String(error && error.stdout || ""));
+    return outcome && typeof outcome === "object" ? outcome : null;
+  } catch {
+    return null;
+  }
+}
+
+class EmptyCredential extends Error {}
+
 // The HTTPS git credential the forge's adaptation derives from its own
 // credential. The secret reaches git only as a Basic authorisation header
 // in the GIT_CONFIG_* environment; no error built here quotes it.
 async function cloneCredential() {
+  if (!process.env.MINOS_BIN) throw new Error("MINOS_BIN is required to reach the forge");
   let credential;
   try {
     credential = JSON.parse(await askForge("clone-credential"));
   } catch (error) {
-    if (error instanceof SyntaxError) throw new Error("the forge's clone credential is not a credential object");
-    throw new Error(`the forge supplied no clone credential: ${describe(error)}`);
+    const outcome = forgeOutcome(error);
+    if (outcome && outcome.refusal === "empty-credential") throw new EmptyCredential("forge credential file is empty");
+    throw new Error("the forge supplied no clone credential");
   }
   if (!credential || typeof credential.username !== "string" || credential.username === "" ||
       typeof credential.password !== "string" || credential.password === "")
@@ -119,7 +135,10 @@ async function lookupRepository(repository) {
   try {
     metadata = JSON.parse(await askForge("repository-metadata", owner, name));
   } catch (error) {
-    throw new Error(`repository lookup for ${repository} failed: ${describe(error)}`);
+    const outcome = forgeOutcome(error);
+    if (outcome && Number.isInteger(outcome.lookup_status))
+      throw new Error(`repository lookup for ${repository} returned HTTP ${outcome.lookup_status}`);
+    throw new Error(`repository lookup for ${repository} failed: the forge could not be asked`);
   }
   if (!metadata || typeof metadata.clone_url !== "string" || metadata.clone_url === "" ||
       typeof metadata.default_branch !== "string" || metadata.default_branch === "")
@@ -151,9 +170,15 @@ async function deliverToFile({ destination, entries, attribution, reviewedReposi
   const repository = destination.repository || reviewedRepository;
   const location = `${repository}:${destination.path}`;
   let lastFailure = "";
+  let env;
+  try {
+    env = gitEnvironment(await cloneCredential());
+  } catch (error) {
+    if (error instanceof EmptyCredential) return { kind: "file", outcome: "unfiled", reason: error.message };
+    return { kind: "file", outcome: "unfiled", reason: `filing to ${location} failed: ${error.message}` };
+  }
   for (let attempt = 1; attempt <= PUSH_ATTEMPTS; attempt += 1) {
     try {
-      const env = gitEnvironment(await cloneCredential());
       const target = await lookupRepository(repository);
       const reviewed = repository === reviewedRepository;
       if (reviewed && protection && target.branch === protection.headBranch)

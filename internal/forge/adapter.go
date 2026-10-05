@@ -56,14 +56,31 @@ func (a *Adapter) RepositoryMetadata(ctx context.Context, repository Repository)
 	if err != nil {
 		return RepositoryMetadata{}, err
 	}
-	var metadata RepositoryMetadata
+	var metadata struct {
+		RepositoryMetadata
+		LookupStatus int `json:"lookup_status"`
+	}
 	if err := json.Unmarshal(out, &metadata); err != nil {
 		return RepositoryMetadata{}, fmt.Errorf("decode repository metadata: %w", err)
+	}
+	if metadata.LookupStatus != 0 {
+		return RepositoryMetadata{}, &RepositoryLookupError{Repository: repository, Status: metadata.LookupStatus}
 	}
 	if metadata.CloneURL == "" || metadata.DefaultBranch == "" {
 		return RepositoryMetadata{}, fmt.Errorf("repository metadata for %s/%s omitted its clone URL or default branch", repository.Owner, repository.Name)
 	}
-	return metadata, nil
+	return metadata.RepositoryMetadata, nil
+}
+
+// RepositoryLookupError is the forge's own answer to a repository lookup
+// other than success: the HTTP status it gave.
+type RepositoryLookupError struct {
+	Repository Repository
+	Status     int
+}
+
+func (e *RepositoryLookupError) Error() string {
+	return fmt.Sprintf("repository lookup for %s/%s returned HTTP %d", e.Repository.Owner, e.Repository.Name, e.Status)
 }
 
 // CloneCredential asks the adaptation for the HTTPS git credential its

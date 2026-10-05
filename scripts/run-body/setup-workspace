@@ -210,8 +210,14 @@ for guidance_repository in $(printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq -r '[.[]
     continue
   fi
   rm -rf -- "$clone_path"
-  if ! guidance_url="$(clone_url "$guidance_repository")"; then
-    clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "the forge could not report the repository's clone URL" '.[$name] = $reason')"
+  guidance_metadata=""
+  if ! guidance_metadata="$("$MINOS_BIN" forge repository-metadata "${guidance_repository%%/*}" "${guidance_repository#*/}")" \
+    || ! guidance_url="$(printf '%s' "$guidance_metadata" | jq -er '.clone_url')"; then
+    # The forge's own answer, when it gave one, is the reason recorded.
+    lookup_status="$(printf '%s' "${guidance_metadata:-}" | jq -r '.lookup_status // empty' 2>/dev/null)" || lookup_status=""
+    clone_failure="the forge could not report the repository's clone URL"
+    [ -z "$lookup_status" ] || clone_failure="repository lookup returned HTTP $lookup_status"
+    clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "$clone_failure" '.[$name] = $reason')"
     continue
   fi
   mkdir -p "$(dirname "$clone_path")"

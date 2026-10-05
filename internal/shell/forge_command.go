@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +32,13 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		metadata, err := adapter.RepositoryMetadata(ctx, forge.Repository{Owner: args[1], Name: args[2]})
+		// The forge's answer is the caller's to word, so it travels as data.
+		var lookup *forge.RepositoryLookupError
+		if errors.As(err, &lookup) {
+			if encodeErr := json.NewEncoder(stdout).Encode(map[string]int{"lookup_status": lookup.Status}); encodeErr != nil {
+				return encodeErr
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -40,6 +48,11 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("usage: minos forge clone-credential")
 		}
 		adapter, _, err := runForge()
+		if errors.Is(err, errEmptyForgeCredential) {
+			if encodeErr := json.NewEncoder(stdout).Encode(map[string]string{"refusal": "empty-credential"}); encodeErr != nil {
+				return encodeErr
+			}
+		}
 		if err != nil {
 			return err
 		}
