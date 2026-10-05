@@ -81,7 +81,7 @@ func renderUnit(name string, content []byte, cfg ServiceConfig) ([]byte, error) 
 		if !bytes.Contains(content, marker) {
 			return nil, fmt.Errorf("shipped %s carries no %q to render", name, string(marker))
 		}
-		content = bytes.ReplaceAll(content, marker, []byte("--config "+cfg.Root))
+		content = bytes.ReplaceAll(content, marker, []byte("--config "+systemdArgument(cfg.Root)))
 	}
 	if name != runsSliceUnit {
 		return content, nil
@@ -112,4 +112,15 @@ func renderRunsSlice(content []byte, envelopeGiB int) ([]byte, error) {
 		lines[index] = replacement
 	}
 	return []byte(strings.Join(lines, "\n")), nil
+}
+
+// systemdArgument renders a path as one ExecStart argument: bare when it
+// carries none of the characters systemd's command-line parser splits or
+// unescapes on, double-quoted with backslash escapes otherwise.
+func systemdArgument(value string) string {
+	if !strings.ContainsAny(value, " \t\n\"'\\") {
+		return value
+	}
+	escaped := strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(value)
+	return "\"" + escaped + "\""
 }

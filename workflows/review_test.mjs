@@ -668,7 +668,7 @@ test("specialist and verifier briefs pin the review-stage discipline", async () 
   assert.match(verifierBrief, /return exactly one verdict keyed by\s+finding id for every/i);
   assert.match(verifierBrief, /Never build, test or run the reviewed\s+change, and never write an experiment of your own/);
   assert.doesNotMatch(verifierBrief, /confirming experiment/i);
-  assert.match(verifierBrief, /Return one structured verdict with an\s+independent confidence integer from 0 to 100\./);
+  assert.match(verifierBrief, /Return the requested `verdicts` array:\s+exactly one structured verdict per assigned finding, each with its own\s+independent confidence integer from 0 to 100\./);
 });
 
 test("the deterministic input binds shipped role prose and project guidance into every judgement leg", async () => {

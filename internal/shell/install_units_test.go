@@ -122,6 +122,22 @@ func TestInstallUnitsRefusesAServiceWithoutTheConfigMarker(t *testing.T) {
 	}
 }
 
+func TestInstallUnitsQuotesAConfigurationRootSystemdWouldSplit(t *testing.T) {
+	cfg := unitsTestConfig(t, "8")
+	cfg.Root = `/srv/minos "config" dir`
+	rendered, err := renderUnit("minos-sweep.service", []byte("ExecStart=/usr/local/bin/minos sweep --config /etc/minos\n"), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "ExecStart=/usr/local/bin/minos sweep --config \"/srv/minos \\\"config\\\" dir\"\n"
+	if string(rendered) != want {
+		t.Fatalf("rendered = %q, want %q", rendered, want)
+	}
+	if systemdArgument("/etc/minos") != "/etc/minos" {
+		t.Fatal("a plain path was quoted")
+	}
+}
+
 func TestInstallUnitsCommandReadsTheConfigRootAndRefusesBadUsage(t *testing.T) {
 	cfg := unitsTestConfig(t, "12")
 	directory := t.TempDir()

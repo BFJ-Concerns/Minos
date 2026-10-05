@@ -56,5 +56,6 @@ hypothetical hardening lead with no defect behind it, is not an
 observation: leave it out.
 
 Do not load skills, start another workflow, consult historical sessions, search the
-web, or inspect unrelated worktrees. Return one structured verdict with an
+web, or inspect unrelated worktrees. Return the requested `verdicts` array:
+exactly one structured verdict per assigned finding, each with its own
 independent confidence integer from 0 to 100.
