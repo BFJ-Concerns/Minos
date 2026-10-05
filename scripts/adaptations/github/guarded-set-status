@@ -1,0 +1,58 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
+context="$7"; state="$8"; description="$9"
+
+# The caller exports the service's configured context; with none exported
+# the script owns no context and refuses every write.
+if [ -z "${MINOS_STATUS_CONTEXT:-}" ] || [ "$context" != "$MINOS_STATUS_CONTEXT" ]; then
+  write_result rejected "status context is not the service's configured context"
+  exit 0
+fi
+case "$state" in
+  pending|success|failure|error) ;;
+  *) write_result rejected "unsupported GitHub status state: $state"; exit 0 ;;
+esac
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+status_web_base="$(web_base)"
+target_url="${status_web_base%/}/${owner}/${repo}/pull/${pr}#minos-target-${target}"
+# The details link names the target the status was written against.
+payload="$(jq -nc --arg state "$state" --arg context "$context" --arg description "$description" --arg target_url "$target_url" '{state:$state,context:$context,description:$description,target_url:$target_url}')"
+
+status_present() {
+  statuses="$(commit_statuses "$owner" "$repo" "$head" 2>/dev/null)" || return 2
+  printf '%s' "$statuses" | json_match --arg context "$context" --arg state "$state" --arg description "$description" --arg target_url "$target_url" --arg login "$login" '
+    if type != "array" or any(.[]; type != "object") then error("expected statuses array") else
+    [.[] | select(.context == $context and (.target_url // "") == $target_url and (.creator // "") == $login)] | max_by(.id) |
+    (.status // .state) == $state and (.description // "") == $description end' >/dev/null
+}
+
+if status_present; then
+  write_result applied "status already present"
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "status read-back could not be confirmed"
+    exit 0
+  fi
+fi
+
+api POST "/repos/${owner}/${repo}/statuses/${head}" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+
+if status_present; then
+  write_result applied
+else
+  write_result uncertain "status write could not be discovered"
+fi
