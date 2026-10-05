@@ -2958,9 +2958,13 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			s.t.Error(err)
 		}
 		nextID := int64(len(s.reviews) + 1)
+		// Forgejo anchors a review's timeline entry by its header comment's
+		// id, not the review's, and reports the forge's own web host — a
+		// reader of html_url must take the fragment and nothing else.
 		review := map[string]any{
 			"id": nextID, "state": payload["event"], "commit_id": payload["commit_id"],
 			"body": payload["body"], "user": map[string]any{"login": "Minos"},
+			"html_url": fmt.Sprintf("http://forge-canonical.example/minos-e2e-owner/subject/pulls/1#issuecomment-%d", 1000+nextID),
 		}
 		var comments []map[string]any
 		if requestedComments, ok := payload["comments"].([]any); ok {
@@ -3325,18 +3329,23 @@ func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
 }
 
 // The Details link lands on the newest review Minos left on the reviewed
-// head, as the forge anchors it (`#pullrequestreview-<id>`); a colleague's
-// review on the head and Minos's own review on an earlier head are not it.
-// The link is the status's read-back identity, so a repeat converges, and
-// a forge that cannot list reviews leaves the write uncertain rather than
-// posting a link that may be wrong.
+// head, at the anchor the forge reports in that review's html_url (on
+// Forgejo the header comment's `issuecomment-<id>`, a different number
+// from the review id, on the forge's own host — only the fragment is
+// taken); Minos's earlier review on the same head, a colleague's review on
+// the head, and Minos's review on an earlier head are not it. The link is
+// the status's read-back identity, so a repeat converges, and a forge that
+// cannot list reviews leaves the write uncertain rather than posting a link
+// that may be wrong.
 func TestForgeStatusDetailsLandOnTheHeadsOwnReview(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	configureForgeCommandFixture(t, state)
 	head, target := state.headSHA(), state.targetSHA()
+	page := "http://forge-canonical.example/minos-e2e-owner/subject/pulls/1"
 	state.setReviews([]map[string]any{
-		{"id": 1, "state": "REQUEST_CHANGES", "commit_id": "earlier-head", "body": "Earlier round", "user": map[string]any{"login": "Minos"}},
-		{"id": 2, "state": "COMMENT", "commit_id": head, "body": "A colleague's note", "user": map[string]any{"login": "colleague"}},
+		{"id": 1, "state": "REQUEST_CHANGES", "commit_id": "earlier-head", "body": "Earlier round", "user": map[string]any{"login": "Minos"}, "html_url": page + "#issuecomment-1001"},
+		{"id": 2, "state": "COMMENT", "commit_id": head, "body": "Minos's earlier note on this head", "user": map[string]any{"login": "Minos"}, "html_url": page + "#issuecomment-1002"},
+		{"id": 3, "state": "COMMENT", "commit_id": head, "body": "A colleague's note", "user": map[string]any{"login": "colleague"}, "html_url": page + "#issuecomment-1003"},
 	})
 	body := filepath.Join(t.TempDir(), "body.md")
 	if err := os.WriteFile(body, []byte("Blocking review"), 0o600); err != nil {
@@ -3364,7 +3373,8 @@ func TestForgeStatusDetailsLandOnTheHeadsOwnReview(t *testing.T) {
 	if len(posts) != 1 {
 		t.Fatalf("status posts = %d, want 1: %#v", len(posts), posts)
 	}
-	want := state.server.URL + "/minos-e2e-owner/subject/pulls/1#pullrequestreview-3"
+	// The posted review is the fixture's fourth, anchored issuecomment-1004.
+	want := state.server.URL + "/minos-e2e-owner/subject/pulls/1#issuecomment-1004"
 	if got := posts[0].Payload["target_url"]; got != want {
 		t.Fatalf("target_url = %v, want %s", got, want)
 	}

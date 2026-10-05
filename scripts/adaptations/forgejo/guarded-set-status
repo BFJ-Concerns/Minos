@@ -27,13 +27,13 @@ fi
 
 web_base="${MINOS_WEB_BASE:-${MINOS_API_BASE%/api/v1}}"
 # The details link lands on the newest review this identity left on the
-# reviewed head — the forge anchors a review on the pull-request page as
-# `#pullrequestreview-<id>` — and on the pull request itself when there is
-# none. The read-back below matches on this same URL, so the lookup settles
-# the status's identity before either read.
+# reviewed head, at the page anchor the forge reports for it, and on the
+# pull request itself when there is none. The read-back below matches on
+# this same URL, so the lookup settles the status's identity before either
+# read.
 target_url="${web_base%/}/${owner}/${repo}/pulls/${pr}"
-if review_id="$(latest_own_review_id "$owner" "$repo" "$pr" "$head" "$login")"; then
-  target_url="${target_url}#pullrequestreview-${review_id}"
+if review_anchor="$(latest_own_review_anchor "$owner" "$repo" "$pr" "$head" "$login")"; then
+  target_url="${target_url}#${review_anchor}"
 else
   lookup=$?
   if [ "$lookup" -eq 2 ]; then

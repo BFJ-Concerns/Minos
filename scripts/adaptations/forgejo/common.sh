@@ -63,7 +63,9 @@ write_result() {
 
 # Every review on the pull request as one JSON array of review objects, paged
 # until the empty page or a repeated one; returns 1 when the forge could not
-# be read or answered with something other than an array of objects.
+# be read or answered with something other than an array of objects — a
+# `null` listing is a malformed read here, not emptiness (only the reaction
+# endpoint answers an empty collection with null).
 pull_request_reviews() {
   reviews_path="/api/v1/repos/$1/$2/pulls/$3/reviews"
   reviews_all='[]'
@@ -81,18 +83,22 @@ pull_request_reviews() {
   printf '%s' "$reviews_all"
 }
 
-# The id of the newest review this login left on the given head — the
-# review a reader of the pull request page reaches as
-# `#pullrequestreview-<id>`: returns 0 and prints the id, 1 when the login
-# has no review on that head, 2 when the reviews could not be read.
-latest_own_review_id() {
+# The page anchor of the newest review this login left on the given head,
+# as the forge itself reports it — the fragment of the review's `html_url`
+# (Forgejo anchors a review's timeline entry as `issuecomment-<comment id>`,
+# a different number from the review id; a review-request row carries no
+# `commit_id` and no anchor and is never selected): returns 0 and prints the
+# fragment without its `#`, 1 when the login has no anchored review on that
+# head, 2 when the reviews could not be read.
+latest_own_review_anchor() {
   own_reviews="$(pull_request_reviews "$1" "$2" "$3" 2>/dev/null)" || return 2
-  own_review_id="$(printf '%s' "$own_reviews" | jq -er --arg head "$4" --arg login "$5" '
+  own_review_anchor="$(printf '%s' "$own_reviews" | jq -er --arg head "$4" --arg login "$5" '
     [.[] | select(.commit_id == $head and (.user.login // .user.username // "") == $login)] |
     if length == 0 then empty else
-      max_by(.id).id | if type == "number" and . > 0 then . else error("review lacks positive id") end
+      max_by(.id) | (.html_url // "" | if type == "string" then . else error("review html_url is not a string") end) |
+      split("#") | .[1:] | join("#") | if . == "" then empty else . end
     end')" || { own_review_status=$?; [ "$own_review_status" -eq 4 ] && return 1; return 2; }
-  printf '%s\n' "$own_review_id"
+  printf '%s\n' "$own_review_anchor"
 }
 
 # Whether the login's reaction with this content is on the pull request:

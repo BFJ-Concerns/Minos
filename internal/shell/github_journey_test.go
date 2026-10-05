@@ -321,9 +321,12 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		state := map[string]string{"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}[payload["event"].(string)]
 		id := int64(600 + len(s.reviews))
+		// GitHub reports the review's page anchor on its own web host — a
+		// reader of html_url must take the fragment and nothing else.
 		s.reviews = append(s.reviews, map[string]any{
 			"id": id, "state": state, "commit_id": payload["commit_id"], "body": payload["body"],
-			"user": map[string]any{"login": githubFixtureBotLogin},
+			"user":     map[string]any{"login": githubFixtureBotLogin},
+			"html_url": fmt.Sprintf("https://github.example/acme/widgets/pull/7#pullrequestreview-%d", id),
 		})
 		for _, raw := range comments {
 			comment := raw.(map[string]any)
@@ -1352,20 +1355,29 @@ func TestGitHubStatusDetailsUseEnterpriseWebBase(t *testing.T) {
 }
 
 // The Details link lands on the newest review the App left on the reviewed
-// head, as GitHub anchors it (`#pullrequestreview-<id>`); the colleague's
-// review the fixture seeds on the head and the App's own review on an
-// earlier head are not it. The link is the status's read-back identity, so
-// a repeat converges, and a forge that cannot list reviews leaves the write
+// head, at the anchor GitHub reports in that review's html_url
+// (`pullrequestreview-<id>`, on GitHub's own host — only the fragment is
+// taken); the App's earlier review on the same head, the colleague's review
+// the fixture seeds on the head, and the App's review on an earlier head
+// are not it. The link is the status's read-back identity, so a repeat
+// converges, and a forge that cannot list reviews leaves the write
 // uncertain rather than posting a link that may be wrong.
 func TestGitHubStatusDetailsLandOnTheHeadsOwnReview(t *testing.T) {
 	state := newGitHubFixtureState(t)
 	adapter := state.adapter(t)
 	guard := state.guard()
 	state.mu.Lock()
-	state.reviews = append(state.reviews, map[string]any{
-		"id": 502, "state": "CHANGES_REQUESTED", "commit_id": "earlier-head", "body": "Earlier round",
-		"user": map[string]any{"login": githubFixtureBotLogin},
-	})
+	state.reviews = append(state.reviews,
+		map[string]any{
+			"id": 502, "state": "CHANGES_REQUESTED", "commit_id": "earlier-head", "body": "Earlier round",
+			"user":     map[string]any{"login": githubFixtureBotLogin},
+			"html_url": "https://github.example/acme/widgets/pull/7#pullrequestreview-502",
+		},
+		map[string]any{
+			"id": 503, "state": "COMMENTED", "commit_id": guard.HeadSHA, "body": "The App's earlier note on this head",
+			"user":     map[string]any{"login": githubFixtureBotLogin},
+			"html_url": "https://github.example/acme/widgets/pull/7#pullrequestreview-503",
+		})
 	state.mu.Unlock()
 	githubApplied(t, adapter.PostReview(t.Context(), guard, forge.ReviewRequestChanges, "Blocking review", nil))
 	state.mu.Lock()
