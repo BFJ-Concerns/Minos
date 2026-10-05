@@ -105,7 +105,7 @@ func TestClosedOrMergedDraftHasNoDeferral(t *testing.T) {
 			t.Fatal(err)
 		}
 		if result.Decision != ReconcileNothing || result.DeferralReason != "" || len(result.DeferralReasons) != 0 {
-			t.Fatalf("closed/merged draft result = %#v, want nothing without deferral", result)
+			t.Errorf("closed/merged draft result = %#v, want nothing without deferral", result)
 		}
 	}
 }
