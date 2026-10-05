@@ -32,8 +32,9 @@ change, and never write an experiment of your own — the project's own CI is
 the build evidence, and a verifier that runs the change has left the
 review-only contract. A finding the readable evidence cannot settle is not
 upheld: return `refuted` with a reason that says the evidence was
-insufficient and a confidence that says how little you could establish, and
-return the unsettled claim as an observation when it names a real lead.
+insufficient and a low confidence — you are not sure the defect is absent,
+only that the evidence did not show it — and return the unsettled claim as
+an observation where the observation rules below admit it.
 
 A verdict on the claim is not the whole of what you learned. If, while
 checking, you establish something real that the verdict cannot carry — a
@@ -55,5 +56,6 @@ hypothetical hardening lead with no defect behind it, is not an
 observation: leave it out.
 
 Do not load skills, start another workflow, consult historical sessions, search the
-web, or inspect unrelated worktrees. Return one structured verdict with an
+web, or inspect unrelated worktrees. Return the requested `verdicts` array:
+exactly one structured verdict per assigned finding, each with its own
 independent confidence integer from 0 to 100.

@@ -17,10 +17,12 @@ head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
 statuses="$(collect "/repos/${owner}/${repo}/commits/${head_sha}/statuses")"
 reviews="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews")"
 
-# head_branch names a same-repository source branch; a fork's branch is
-# not a branch of the reviewed repository and stays blank, as on Forgejo.
-head_branch="$(printf '%s' "$pr_json" | jq -r --arg repository "${owner}/${repo}" \
-  'if (.head.repo.full_name // "") == $repository then (.head.ref // "") else "" end')"
+# head_branch is the source branch's name wherever it lives — the run
+# contract requires it, and a fork's branch is still the head's name.
+head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
+case "$head_branch" in
+  refs/pull/*/head) head_branch="" ;;
+esac
 
 # GitHub has no dependency link between pull requests: a stack is a child
 # based on its parent's branch, reviewed as its own increment, so the

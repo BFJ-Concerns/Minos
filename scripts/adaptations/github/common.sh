@@ -50,7 +50,8 @@ base64url() {
 app_jwt() {
   jwt_now="$(date +%s)"
   jwt_header="$(printf '{"alg":"RS256","typ":"JWT"}' | base64url)"
-  jwt_claims="$(jq -nc --argjson iat "$((jwt_now - 60))" --argjson exp "$((jwt_now + 540))" --arg iss "$app_id" \
+  # -j: no trailing newline, so both segments are built the same way.
+  jwt_claims="$(jq -ncj --argjson iat "$((jwt_now - 60))" --argjson exp "$((jwt_now + 540))" --arg iss "$app_id" \
     '{iat:$iat, exp:$exp, iss:$iss}' | base64url)"
   jwt_signature="$(printf '%s.%s' "$jwt_header" "$jwt_claims" | openssl dgst -sha256 -sign "$private_key_file" -binary | base64url)"
   printf '%s.%s.%s' "$jwt_header" "$jwt_claims" "$jwt_signature"

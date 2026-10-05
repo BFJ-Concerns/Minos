@@ -79,14 +79,15 @@ else
 fi
 
 # GitHub validates every anchor on submission and refuses the whole review
-# when one comment names a line outside the diff. The declared capability
-# (no out-of-hunk anchoring) keeps such a line from reaching here; a
-# refusal that arrives anyway is the forge's verdict on this payload, not
-# an uncertainty, and its message is what the lead needs to see.
+# with 422 when one comment names a line outside the diff. The declared
+# capability (no out-of-hunk anchoring) keeps such a line from reaching
+# here; a validation refusal that arrives anyway is the forge's verdict on
+# this payload, not an uncertainty, and its message is what the lead needs
+# to see. Any other failure — an expired token, a rate limit, a transport
+# error — is settled by the read-back below like every other guarded write.
 if api_with_status POST "/repos/${owner}/${repo}/pulls/${pr}/reviews" -H "Content-Type: application/json" --data "$payload"; then
   case "$api_status_code" in
-    2??) ;;
-    4??)
+    400|422)
       refusal="$(printf '%s' "$api_status_body" | jq -r '[.message // "", ((.errors // [])[] | if type == "string" then . else (.message // tojson) end)] | map(select(. != "")) | join("; ")' 2>/dev/null)" || refusal=""
       write_result rejected "GitHub refused the review (HTTP ${api_status_code})${refusal:+: $refusal}"
       exit 0

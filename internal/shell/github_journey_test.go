@@ -19,6 +19,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +63,9 @@ type githubFixtureState struct {
 	// path; a comment outside it is refused with 422 as GitHub refuses it.
 	diffLines    map[string][]int64
 	reviewWrites []map[string]any
+	// refuseReviewPosts, when non-zero, is the HTTP status the fixture
+	// answers every review submission with, recording nothing.
+	refuseReviewPosts int
 }
 
 func newGitHubFixtureState(t *testing.T) *githubFixtureState {
@@ -99,9 +104,7 @@ func newGitHubFixtureState(t *testing.T) *githubFixtureState {
 			"base":   map[string]any{"ref": "main", "sha": "0ld0ld0ld0ld0ld0ld0ld0ld0ld0ld0ld0ld0ld0", "repo": map[string]any{"full_name": "acme/widgets"}},
 			"labels": []map[string]any{{"name": "needs-review"}},
 		},
-		statuses: []map[string]any{
-			{"id": 31, "state": "success", "context": "ci/build", "description": "built", "target_url": "https://ci.example/31", "creator": map[string]any{"login": "ci-bot"}},
-		},
+		statuses: manyStatuses(101),
 		reviews: []map[string]any{
 			{"id": 501, "state": "CHANGES_REQUESTED", "commit_id": "feedfacefeedfacefeedfacefeedfacefeedface", "body": "Earlier review", "user": map[string]any{"login": "colleague"}},
 		},
@@ -111,6 +114,24 @@ func newGitHubFixtureState(t *testing.T) *githubFixtureState {
 	state.server = httptest.NewServer(http.HandlerFunc(state.handle))
 	t.Cleanup(state.server.Close)
 	return state
+}
+
+// manyStatuses is a commit's status history of the given length, newest
+// first as GitHub lists them, ids 31 upwards, the oldest written by ci-bot.
+func manyStatuses(count int) []map[string]any {
+	statuses := make([]map[string]any, 0, count)
+	for index := count - 1; index >= 0; index-- {
+		id := 31 + index
+		creator := "status-writer"
+		if index == 0 {
+			creator = "ci-bot"
+		}
+		statuses = append(statuses, map[string]any{
+			"id": id, "state": "success", "context": fmt.Sprintf("ci/check-%d", index), "description": "built",
+			"target_url": fmt.Sprintf("https://ci.example/%d", id), "creator": map[string]any{"login": creator},
+		})
+	}
+	return statuses
 }
 
 func (s *githubFixtureState) runner() forge.ScriptRunner {
@@ -241,6 +262,10 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(path, "/repos/acme/widgets/pulls/7/reviews/"), "/comments"), "%d", &id)
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.reviewComments[id]))
 	case r.Method == http.MethodPost && path == "/repos/acme/widgets/pulls/7/reviews":
+		if s.refuseReviewPosts != 0 {
+			http.Error(w, `{"message":"API rate limit exceeded"}`, s.refuseReviewPosts)
+			return
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			s.t.Error(err)
@@ -252,7 +277,7 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		for _, raw := range comments {
 			comment := raw.(map[string]any)
 			line := int64(comment["line"].(float64))
-			if !lineInIntervals(line, [][2]int64{{s.diffLines[comment["path"].(string)][0], s.diffLines[comment["path"].(string)][len(s.diffLines[comment["path"].(string)])-1]}}) {
+			if !slices.Contains(s.diffLines[comment["path"].(string)], line) {
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				writeFixtureJSON(s.t, w, map[string]any{
 					"message": "Validation Failed",
@@ -278,13 +303,22 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// pagedCollection answers page 1 with the whole collection and every later
-// page empty, as GitHub does past the last page.
+// pagedCollection slices a collection by per_page and page as GitHub does,
+// answering [] past the last page, so a sibling case holding more records
+// than one page proves the adaptation's paging rather than its first read.
 func (s *githubFixtureState) pagedCollection(r *http.Request, values []map[string]any) []map[string]any {
-	if page := r.URL.Query().Get("page"); page != "" && page != "1" {
+	perPage, page := 30, 1
+	if n, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && n > 0 {
+		perPage = min(n, 100)
+	}
+	if n, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && n > 0 {
+		page = n
+	}
+	start := (page - 1) * perPage
+	if start >= len(values) {
 		return nil
 	}
-	return values
+	return values[start:min(start+perPage, len(values))]
 }
 
 func githubWebhook(event string, payload map[string]any) (string, []byte) {
@@ -421,11 +455,14 @@ func TestGitHubSnapshotMintsOneInstallationTokenAndSpeaksTheProtocolVocabulary(t
 	if snapshot.HeadBranch != "topic" || snapshot.TargetBranch != "main" {
 		t.Fatalf("branches = %q -> %q", snapshot.HeadBranch, snapshot.TargetBranch)
 	}
+	if len(snapshot.Statuses) != 101 || snapshot.Statuses[0].ID != 131 || snapshot.Statuses[100].ID != 31 {
+		t.Fatalf("statuses = %d (first %d, last %d), want all 101 across two pages newest first", len(snapshot.Statuses), snapshot.Statuses[0].ID, snapshot.Statuses[len(snapshot.Statuses)-1].ID)
+	}
 	if len(snapshot.Reviews) != 1 || snapshot.Reviews[0].State != "REQUEST_CHANGES" || snapshot.Reviews[0].User != "colleague" {
 		t.Fatalf("reviews = %#v, want CHANGES_REQUESTED mapped to the protocol's REQUEST_CHANGES", snapshot.Reviews)
 	}
-	if len(snapshot.Statuses) != 1 || snapshot.Statuses[0].Provider != "github" || snapshot.Statuses[0].Creator != "ci-bot" || snapshot.Statuses[0].State != forge.StatusSuccess {
-		t.Fatalf("statuses = %#v", snapshot.Statuses)
+	if snapshot.Statuses[100].Provider != "github" || snapshot.Statuses[100].Creator != "ci-bot" || snapshot.Statuses[100].State != forge.StatusSuccess {
+		t.Fatalf("status = %#v", snapshot.Statuses[100])
 	}
 	if !snapshot.DependenciesAvailable || snapshot.DependencyError != "" || len(snapshot.OpenDependencies) != 0 {
 		t.Fatalf("dependency facts = %#v; GitHub has no dependency link, so none are ever pending", snapshot)
@@ -434,8 +471,16 @@ func TestGitHubSnapshotMintsOneInstallationTokenAndSpeaksTheProtocolVocabulary(t
 		t.Fatalf("labels = %#v", snapshot.Labels)
 	}
 
-	if _, err := adapter.Snapshot(t.Context(), repository, 7); err != nil {
+	// A fork's branch is still the head's name: the run contract requires it.
+	state.mu.Lock()
+	state.pullRequest["head"].(map[string]any)["repo"] = map[string]any{"full_name": "forker/widgets"}
+	state.mu.Unlock()
+	forked, err := adapter.Snapshot(t.Context(), repository, 7)
+	if err != nil {
 		t.Fatalf("second snapshot: %v", err)
+	}
+	if forked.HeadBranch != "topic" {
+		t.Fatalf("fork head branch = %q, want topic", forked.HeadBranch)
 	}
 	if mints := state.mints(); mints != 1 {
 		t.Fatalf("installation tokens minted = %d, want one reused from the cache across invocations", mints)
@@ -506,6 +551,22 @@ func TestGitHubGuardedPostReviewReportsTheForgesRefusalOfAnAnchor(t *testing.T) 
 	}
 	if !strings.Contains(result.Reason, "HTTP 422") || !strings.Contains(result.Reason, "line 40 is not part of the diff") {
 		t.Fatalf("refusal reason = %q", result.Reason)
+	}
+}
+
+// Only a validation refusal is the forge's verdict on the payload; a rate
+// limit or an expired token is settled by the read-back like any other
+// guarded write, so a transient never ends a run as a rejection.
+func TestGitHubGuardedPostReviewTreatsANonValidationFailureAsUncertain(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	state.mu.Lock()
+	state.refuseReviewPosts = http.StatusForbidden
+	state.mu.Unlock()
+
+	result := adapter.PostReview(t.Context(), state.guard(), forge.ReviewVerdictComment, "Review body.", nil)
+	if result.Outcome != forge.WriteUncertain || result.Reason != "review write could not be discovered" {
+		t.Fatalf("post review = %#v, want uncertain after a 403", result)
 	}
 }
 
