@@ -4,9 +4,8 @@ Minos reviews pull requests on Forgejo and GitHub. A webhook or periodic sweep
 starts one lead session on a disposable box — Claude Code on `claude-opus-5-5` by
 default, or Codex on `gpt-6-sol`. The lead claims the pull request — requesting a
 review from the bot account (Forgejo) or adding the configured in-flight marker
-(both forges) — clones the repository through the forge-neutral
-`repository-metadata` and `clone-credential` operations, and invokes the shipped
-review workflows through the installed Ensemble CLI and adjudication wrapper. Independent reviewers cover the
+(both forges) — clones the repository and invokes the shipped review workflows
+through the installed Ensemble CLI and adjudication wrapper. Independent reviewers cover the
 whole diff, with breadth scaled to the diff and the repository's `.review/`
 briefs honoured; by default, the opposite model family verifies every proposed
 finding — proposing and planning roles run on Codex (`gpt-6-sol`) while the
@@ -41,7 +40,7 @@ minos sweep --config /etc/minos
 ```
 
 The lead uses `minos forge claim`, `snapshot`, `status`, `review`,
-`marker`, `file-issue`, `repository-metadata` and `clone-credential`.
+`marker` and `file-issue`.
 Forge adaptations live in `scripts/adaptations/`, one directory per forge. The review entry point
 is `workflows/adjudicated-review`; it runs `workflows/review.js` through the
 vendored Ensemble launcher and passes the result to
@@ -54,14 +53,14 @@ adjudication are exercised by `node --test workflows/*_test.mjs`.
 
 A review that requests changes includes all confirmed findings, with Medium
 and Low findings labelled advisory so the author can address them in the same
-round. A clean result posts no review or comments: Minos adds the configured
+round. A clean result posts no request-changes review: Minos adds the configured
 clean marker and a clean status, and delivers the confirmed advisory findings
 to the repository's
 configured filing destination — a file in a repository's default branch, an
 issue filed on a named repository, a comment on the pull request, or nowhere.
 The default is `pull-request-comment`: one comment-review carrying the advisory
-entries with deduplication markers, posted only when entries remain after
-deduplication — a clean run with nothing new to file posts no comment.
+entries, posted only when new entries remain after deduplication — a clean run
+with nothing new to file posts no comment.
 Unverified observations stay in the internal run record. If delivery is
 unavailable, the run report records the failure without posting a fallback
 comment. Configuration diagnostics — brief misconfigurations and unreadable
