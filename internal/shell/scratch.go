@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -462,21 +463,27 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 	if cfg.Runs.FailuresRepo == "" || cfg.Runs.FailuresCredentialFile == "" {
 		return fmt.Errorf("Minos annexe push is not fully configured; durable local append retained")
 	}
-	tokenBytes, err := os.ReadFile(cfg.Runs.FailuresCredentialFile)
-	if err != nil {
-		return fmt.Errorf("read Minos annexe credential: %w", err)
+	forgeConfig, ok := cfg.Forges[cfg.Runs.FailuresForge]
+	if !ok {
+		return fmt.Errorf("runs.failures-forge %q is not a configured forge; durable local append retained", cfg.Runs.FailuresForge)
 	}
-	token := strings.TrimSpace(string(tokenBytes))
-	if token == "" {
-		return fmt.Errorf("Minos annexe credential is empty")
+	forgeConfig.CredentialFile = cfg.Runs.FailuresCredentialFile
+	adapter, err := newBehaviouralForgeFromConfig(cfg, forgeConfig)
+	if err != nil {
+		return fmt.Errorf("failure-ledger adapter: %w", err)
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, failurePublishTimeout)
 	defer cancel()
+	credential, err := adapter.CloneCredential(publishCtx)
+	if err != nil {
+		return fmt.Errorf("failure-ledger clone credential: %w", err)
+	}
+	authorisation := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(credential.Username+":"+credential.Password))
 	env := append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=http.extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: token "+token,
+		"GIT_CONFIG_VALUE_0="+authorisation,
 		"GIT_AUTHOR_NAME="+cfg.Service.CommitAuthorName,
 		"GIT_AUTHOR_EMAIL="+cfg.Service.CommitAuthorEmail,
 		"GIT_COMMITTER_NAME="+cfg.Service.CommitAuthorName,

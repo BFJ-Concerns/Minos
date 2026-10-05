@@ -333,6 +333,7 @@ exec %q "$@"
 	var cfg ServiceConfig
 	cfg.Runs.FailuresRepo = checkout
 	cfg.Runs.FailuresCredentialFile = credential
+	configureFailureForge(t, &cfg)
 	cfg.Service.CommitAuthorName = "Minos"
 	cfg.Service.CommitAuthorEmail = "Minos@minos.invalid"
 
@@ -543,6 +544,7 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 	var cfg ServiceConfig
 	cfg.Runs.FailuresRepo = checkout
 	cfg.Runs.FailuresCredentialFile = credential
+	configureFailureForge(t, &cfg)
 	cfg.Service.CommitAuthorName = "Review Bot"
 	cfg.Service.CommitAuthorEmail = "bot@example.org"
 	if err := publishFailureDigest(t.Context(), cfg); err != nil {
@@ -616,4 +618,16 @@ func scratchTestConfig(t *testing.T) ServiceConfig {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func configureFailureForge(t *testing.T, cfg *ServiceConfig) {
+	t.Helper()
+	adaptation, err := filepath.Abs(filepath.Join("..", "..", "scripts", "adaptations", "forgejo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Runs.FailuresForge = "ledger"
+	cfg.Forges = map[string]ForgeConfig{"ledger": {Adaptation: adaptation, APIBase: "http://forge.invalid"}}
+	cfg.Service.BotLogin = "Review Bot"
+	cfg.Service.StatusContext = "Minos"
 }

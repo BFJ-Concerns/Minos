@@ -60,6 +60,7 @@ type ServiceConfig struct {
 		Dir                    string `toml:"dir"`
 		FailureLog             string `toml:"failure-log"`
 		FailuresRepo           string `toml:"failures-repo"`
+		FailuresForge          string `toml:"failures-forge"`
 		FailuresCredentialFile string `toml:"failures-credential-file"`
 		ArchiveCommand         string `toml:"archive-command"`
 		// TimingsCommand assembles a run's timing record from the residue
@@ -329,6 +330,18 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		if forge.Adaptation == "" || forge.APIBase == "" || forge.WebhookSecretFile == "" || forge.CredentialFile == "" {
 			return ServiceConfig{}, fmt.Errorf("service.toml: forge %s is incomplete", name)
 		}
+	}
+	if cfg.Runs.FailuresForge == "" && len(cfg.Forges) == 1 {
+		for name := range cfg.Forges {
+			cfg.Runs.FailuresForge = name
+		}
+	}
+	if cfg.Runs.FailuresForge != "" {
+		if _, ok := cfg.Forges[cfg.Runs.FailuresForge]; !ok {
+			return ServiceConfig{}, fmt.Errorf("service.toml: runs.failures-forge %q is not a configured forge", cfg.Runs.FailuresForge)
+		}
+	} else if cfg.Runs.FailuresRepo != "" {
+		return ServiceConfig{}, fmt.Errorf("service.toml: runs.failures-forge is required when runs.failures-repo is set and several forges are configured")
 	}
 	if !metadata.IsDefined("runs", "memory-envelope-gib") {
 		cfg.Runs.MemoryEnvelopeGiB = defaultRunMemoryEnvelopeGiB
