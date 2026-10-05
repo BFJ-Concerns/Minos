@@ -184,8 +184,9 @@ func repoRunCounts(candidates []sweepCandidate, activeUnits []string) map[string
 			continue
 		}
 		counts[slug] = 0
-		prefix := unitSafe.ReplaceAllString(
-			fmt.Sprintf("minos-run-%s-%s-pr", candidate.facts.Owner, candidate.facts.Repo), "-")
+		prefixFacts := candidate.facts
+		prefixFacts.PR = ""
+		prefix := UnitName(prefixFacts)
 		for _, unit := range activeUnits {
 			if strings.HasPrefix(unit, prefix) {
 				counts[slug]++
@@ -229,7 +230,7 @@ func interleaveByRepo(candidates []sweepCandidate, activeUnits []string) []sweep
 func expireInactiveRunHandoffs(ctx context.Context, cfg ServiceConfig, repos []RepoConfig) error {
 	configured := make(map[string]RepoConfig, len(repos))
 	for _, repo := range repos {
-		configured[repo.Owner+"\x00"+repo.Repo] = repo
+		configured[repo.Forge+"\x00"+repo.Owner+"\x00"+repo.Repo] = repo
 	}
 	paths, err := filepath.Glob(filepath.Join(cfg.Runs.Dir, ".handoffs", "*.json"))
 	if err != nil {
@@ -247,14 +248,13 @@ func expireInactiveRunHandoffs(ctx context.Context, cfg ServiceConfig, repos []R
 			expiryErrors = append(expiryErrors, fmt.Errorf("validate continuation handoff %s: %w", path, err))
 			continue
 		}
-		facts := Facts{Owner: handoff.PullRequest.Owner, Repo: handoff.PullRequest.Repo, PR: handoff.PullRequest.Number, HeadSHA: handoff.Head}
-		if UnitName(facts) != strings.TrimSuffix(filepath.Base(path), ".json") {
+		facts, recognised := factsForHandoff(cfg, strings.TrimSuffix(filepath.Base(path), ".json"), handoff)
+		if !recognised {
 			continue
 		}
-		repo, isConfigured := configured[facts.Owner+"\x00"+facts.Repo]
+		_, isConfigured := configured[facts.Forge+"\x00"+facts.Owner+"\x00"+facts.Repo]
 		shouldExpire := !isConfigured
 		if isConfigured {
-			facts.Forge = repo.Forge
 			snapshot, snapshotErr := inspectHandoffSnapshot(ctx, cfg, facts)
 			if snapshotErr != nil {
 				expiryErrors = append(expiryErrors, fmt.Errorf("inspect continuation handoff %s: %w", filepath.Base(path), snapshotErr))

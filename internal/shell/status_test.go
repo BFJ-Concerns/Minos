@@ -21,7 +21,7 @@ import (
 // and a run's reported stage follows the lifecycle's own args/flag/result
 // convention rather than a guess.
 
-const statusRunUnit = "minos-run-example-Relay-pr96"
+const statusRunUnit = "minos-run-forgejo-example-Relay-pr96"
 
 func TestStatusRouteIsAbsentUntilATokenIsConfigured(t *testing.T) {
 	cfg := statusTestConfig(t)

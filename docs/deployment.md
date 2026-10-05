@@ -237,16 +237,10 @@ background session and stops it at one of those terminal conditions. The
 transient systemd unit bounds a wedged run at `runs.duration-ceiling`.
 
 A run that fails before the lead launches — workspace setup, configuration
-loading, lifecycle instruction — attempts to write an incomplete status to the
-forge naming the stage that failed (`minos forge status … incomplete
---setup-failure STAGE`). The write is best-effort: when bootstrap prerequisites
-(configuration, binary, forge identity, PR coordinates) are missing the status
-write is skipped, and the failure log carries a `status_write=skipped-prerequisites`
-marker. The run body tolerates a refused or uncertain status write (the forge
-command itself errors on a non-applied outcome).
-The run body then attempts to append the failure to `runs.failure-log`; when
-the log path is unset or unwritable, stderr carries the evidence instead. The
-run exits after both attempts. When workspace
+loading, lifecycle instruction — writes no status to the forge. The run body
+attempts to append the failure to `runs.failure-log`; when the log path is
+unset or unwritable, stderr carries the evidence instead. The run exits after
+recording the failure. When workspace
 setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
