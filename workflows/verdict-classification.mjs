@@ -134,8 +134,8 @@ export function validateVerdictDecision(decision, digest) {
       return { ok: false, reason: `finding disposition carries an unknown class: ${disposition.key}` };
     if (disposition.undergrade !== undefined && (typeof disposition.undergrade !== "string" || disposition.undergrade.trim() === ""))
       return { ok: false, reason: `finding disposition undergrade must be a non-empty string: ${disposition.key}` };
-    if (disposition.defect !== undefined && (typeof disposition.defect !== "string" || disposition.defect.trim() === ""))
-      return { ok: false, reason: `finding disposition defect must be a non-empty label: ${disposition.key}` };
+    if (disposition.defect !== undefined && (typeof disposition.defect !== "string" || disposition.defect.trim() === "" || disposition.defect !== disposition.defect.trim()))
+      return { ok: false, reason: `finding disposition defect must be a non-empty label without surrounding whitespace: ${disposition.key}` };
     if (finding.atOrAboveThreshold && disposition.gating === false) {
       if (!NEVER_GATING_CLASSES.includes(disposition.class))
         return {

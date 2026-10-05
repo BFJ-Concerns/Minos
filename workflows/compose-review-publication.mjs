@@ -109,19 +109,37 @@ function siteAndTitle(finding) {
   return JSON.stringify([finding.path, finding.line, normalisedTitle(finding)]);
 }
 
+function refuse(reason) {
+  process.stderr.write(`${reason}\n`);
+  process.exit(1);
+}
+
+function nameSource(finding, source) {
+  if (source === finding.source || (finding.alsoRaisedBy || []).includes(source)) return;
+  finding.alsoRaisedBy = [...(finding.alsoRaisedBy || []), source];
+}
+
 // Deduplication across the two groups. The same defect raised by both is
 // one finding: same site and same title merge into the main group's
 // finding, which gates if either disposition gates, carries the higher
-// severity, and names the brief that also raised it.
+// severity, names the brief that also raised it, and keeps the twin's
+// `defect` label so the labelled merge below still sees it.
 if (brief) {
   const mainBySiteAndTitle = new Map(main.findings.map((finding) => [siteAndTitle(finding), finding]));
   brief.findings = brief.findings.filter((finding) => {
     const twin = mainBySiteAndTitle.get(siteAndTitle(finding));
     if (!twin) return true;
     if (SEVERITY[finding.severity] > SEVERITY[twin.severity]) twin.severity = finding.severity;
-    twin.alsoRaisedBy = [...(twin.alsoRaisedBy || []), finding.source];
-    if (brief.dispositionOf(finding)?.gating === true)
-      main.dispositions.set(findingKey(twin), { ...main.dispositionOf(twin), gating: true });
+    nameSource(twin, finding.source);
+    const disposition = brief.dispositionOf(finding) || {};
+    const twinDisposition = main.dispositionOf(twin) || {};
+    if (typeof disposition.defect === "string" && typeof twinDisposition.defect === "string" && disposition.defect !== twinDisposition.defect)
+      refuse(`one finding at ${finding.path}:${finding.line} carries two defect labels across the decisions: ${twinDisposition.defect} and ${disposition.defect}`);
+    main.dispositions.set(findingKey(twin), {
+      ...twinDisposition,
+      ...(disposition.gating === true ? { gating: true } : {}),
+      ...(typeof disposition.defect === "string" && typeof twinDisposition.defect !== "string" ? { defect: disposition.defect } : {}),
+    });
     return false;
   });
 }
@@ -131,10 +149,13 @@ const groups = [main, brief].filter(Boolean);
 // Restatements the lead judged. Dispositions carrying the same `defect`
 // label — in one decision or across the two — describe one defect, which
 // the composer publishes once at its highest-severity member (the main
-// group's, then the lowest line, on ties), naming the other members' sites
-// and the groups that also raised it, and gating when any member gates.
-// The site-and-title merge above is the floor a decision without labels
-// still gets; this pass is the same-defect judgement that merge cannot make.
+// group's, then the first path, then the lowest line, on ties), naming the
+// other members' sites and the groups that also raised it. Members gate
+// alike: the validator holds that within one decision, and the composer
+// refuses a label split across the two, so the canonical member's own
+// disposition is the defect's. The site-and-title merge above is the floor
+// a decision without labels still gets; this pass is the same-defect
+// judgement that merge cannot make.
 const byDefect = new Map();
 for (const group of groups)
   for (const finding of group.findings) {
@@ -142,20 +163,21 @@ for (const group of groups)
     if (typeof label !== "string") continue;
     byDefect.set(label, [...(byDefect.get(label) || []), { group, finding }]);
   }
-for (const members of byDefect.values()) {
+for (const [label, members] of byDefect) {
   if (members.length < 2) continue;
+  const gatings = new Set(members.map(({ group, finding }) => group.dispositionOf(finding)?.gating === true));
+  if (gatings.size > 1) refuse(`findings labelled one defect gate differently across the decisions: ${label}`);
   members.sort((a, b) =>
     SEVERITY[b.finding.severity] - SEVERITY[a.finding.severity]
     || groups.indexOf(a.group) - groups.indexOf(b.group)
     || a.finding.path.localeCompare(b.finding.path)
     || a.finding.line - b.finding.line);
-  const [{ group: canonicalGroup, finding: canonical }, ...restatements] = members;
+  const [{ finding: canonical }, ...restatements] = members;
   for (const { group, finding } of restatements) {
-    canonical.alsoAt = [...(canonical.alsoAt || []), `${finding.path}:${finding.line}`];
-    if (finding.source !== canonical.source && !(canonical.alsoRaisedBy || []).includes(finding.source))
-      canonical.alsoRaisedBy = [...(canonical.alsoRaisedBy || []), finding.source];
-    if (group.dispositionOf(finding)?.gating === true)
-      canonicalGroup.dispositions.set(findingKey(canonical), { ...canonicalGroup.dispositionOf(canonical), gating: true });
+    const at = `${finding.path}:${finding.line}`;
+    if (at !== `${canonical.path}:${canonical.line}` && !(canonical.alsoAt || []).includes(at))
+      canonical.alsoAt = [...(canonical.alsoAt || []), at];
+    for (const source of [finding.source, ...(finding.alsoRaisedBy || [])]) nameSource(canonical, source);
     group.findings = group.findings.filter((other) => other !== finding);
   }
 }
@@ -166,13 +188,16 @@ const blocking = findings.filter((finding) => dispositionOf(finding)?.gating ===
 const verdict = blocking.length > 0 ? "request-changes" : "clean";
 
 // Distinct findings at one site name their neighbours; duplicates were
-// merged above before either publication surface is composed.
+// merged above before either publication surface is composed. A merged
+// defect is present at every site it was raised at, so a finding anchored
+// where one of its restatements was names it too.
+const sitesOf = (finding) => [site(finding), ...(finding.alsoAt || []).map((at) => {
+  const separator = at.lastIndexOf(":");
+  return JSON.stringify([at.slice(0, separator), Number(at.slice(separator + 1))]);
+})];
 const bySite = new Map();
-for (const finding of findings) {
-  const neighbours = bySite.get(site(finding)) || [];
-  neighbours.push(finding);
-  bySite.set(site(finding), neighbours);
-}
+for (const finding of findings)
+  for (const key of sitesOf(finding)) bySite.set(key, [...(bySite.get(key) || []), finding]);
 for (const finding of findings) {
   const neighbours = bySite.get(site(finding)).filter((other) => other !== finding);
   if (neighbours.length > 0) finding.crossReferences = neighbours.map((other) => other.title);

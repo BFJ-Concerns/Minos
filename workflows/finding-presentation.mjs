@@ -143,8 +143,11 @@ export function issueLogEntry(entry, attribution) {
     const alsoAt = Array.isArray(entry.alsoAt) && entry.alsoAt.length > 0
       ? `, also at ${entry.alsoAt.map((site) => `\`${site}\``).join(", ")}`
       : "";
+    const alsoRaised = Array.isArray(entry.alsoRaisedBy) && entry.alsoRaisedBy.length > 0
+      ? `; also raised by ${entry.alsoRaisedBy.map((source) => normaliseProse(source, entry)).join(", ")}`
+      : "";
     return (
-      `- **Advisory · ${entry.severity}: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`${alsoAt}) — ${sentence(normaliseProse(entry.explanation, entry))}` +
+      `- **Advisory · ${entry.severity}: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`${alsoAt}${alsoRaised}) — ${sentence(normaliseProse(entry.explanation, entry))}` +
       `${attributionLine === "" ? "" : ` ${attributionLine}`} ${attribution}.`
     );
   }

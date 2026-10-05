@@ -809,9 +809,9 @@ test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /The one upward exception\s+is judging a below-threshold finding's severity an undergrade that\s+genuinely belongs at or above the threshold, named as such/);
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/verdict-decision\.json` \(`verdict-decision-brief\.json`\s+for the brief verdict\)[\s\S]*?"kind": "minos-verdict-decision-v1"[\s\S]*?"basis":[\s\S]*?"gating": false, "class": "declared-out-of-scope"[\s\S]*?"gating": true, "undergrade":/);
   assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);
-  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition — is corrected and re-validated rather than worked around;\s+nothing has touched the forge yet/);
+  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a blank `defect` label or one whose findings gate\s+differently — is corrected and re-validated rather than worked around;\s+nothing has touched the forge yet/);
   assert.match(lifecycle, /The run's overall verdict is\s+`request-changes` when either validated decision is; `clean` only when\s+every validated decision is clean/);
-  assert.match(lifecycle, /take the same `defect`\s+label on their dispositions[\s\S]*?they gate alike\. The composer\s+publishes a labelled defect once, at its highest-severity site[\s\S]*?Distinct\s+defects at one line take no label/);
+  assert.match(lifecycle, /take the same `defect`\s+label on their dispositions[\s\S]*?they gate\s+alike — so a below-threshold restatement of a gating defect gates too,\s+and carries an `undergrade`[\s\S]*?publishes a labelled defect once, at its highest-severity\s+site[\s\S]*?Distinct\s+defects at one\s+line take no label/);
 });
 
 test("worker dispatch options strip capabilities and identify fan-out settlements", async (t) => {
