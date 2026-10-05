@@ -467,10 +467,10 @@ if (args.join(" ") === "forge snapshot") {
 } else if (args[0] === "forge" && args[1] === "review") {
   const body = fs.readFileSync(args[5], "utf8");
   state.calls.push({ args, body });
-  if (!process.env.FILING_TEST_REVIEW_FAILURE) state.reviews.push({ user: "review-bot", body });
+  if (!process.env.FILING_TEST_REVIEW_FAILURE && !process.env.FILING_TEST_REVIEW_REJECTED) state.reviews.push({ user: "review-bot", body });
   fs.writeFileSync(path, JSON.stringify(state));
   if (process.env.FILING_TEST_REVIEW_FAILURE) { console.error("review refused"); process.exit(1); }
-  process.stdout.write(JSON.stringify({ outcome: "applied", reason: "review posted" }));
+  process.stdout.write(JSON.stringify(process.env.FILING_TEST_REVIEW_REJECTED ? { outcome: "rejected", reason: "head moved" } : { outcome: "applied", reason: "review posted" }));
 } else { console.error("unexpected forge arguments"); process.exit(2); }
 `, { mode: 0o700 });
     const entriesPath = join(directory, "entries.json");
@@ -547,6 +547,7 @@ if (args.join(" ") === "forge snapshot") {
   for (const [flag, reason, writes] of [
     ["FILING_TEST_SNAPSHOT_FAILURE", /snapshot unavailable/, 0],
     ["FILING_TEST_REVIEW_FAILURE", /review refused/, 1],
+    ["FILING_TEST_REVIEW_REJECTED", /head moved/, 1],
   ]) await t.test(`${flag} records the delivery failure without fallback`, async (t) => {
     const f = await fixture(t, { [flag]: "1" });
     const result = await f.deliver();
