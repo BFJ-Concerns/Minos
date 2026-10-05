@@ -9,7 +9,6 @@ export const meta = {
   ],
 };
 
-const VERIFIER_BATCH_SIZE = 6;
 
 function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
@@ -21,6 +20,33 @@ function slug(value) {
 // source the scope workflow's engagement reads too. This workflow adds the
 // judged legs and re-derives nothing; a brief missing any of it fails the
 // workflow before dispatch.
+// The finding, observation and verifier contracts arrive as `contracts`,
+// built once in workflows/review-contracts.mjs by the input builder; this
+// script keeps no copy, and a missing or malformed set fails the workflow
+// before dispatch.
+function contractsFromInput(input) {
+  const contracts = input && input.contracts;
+  if (!contracts || typeof contracts !== "object" || Array.isArray(contracts)) return null;
+  if (!Number.isInteger(contracts.verifierBatchSize) || contracts.verifierBatchSize < 1) return null;
+  for (const name of [
+    "findingShape",
+    "outOfScopeObservationShape",
+    "applicabilityShape",
+    "specialistSchema",
+    "verifierVerdictShape",
+    "verifierSchema",
+  ]) {
+    const shape = contracts[name];
+    if (
+      !shape || typeof shape !== "object" || Array.isArray(shape) ||
+      shape.type !== "object" ||
+      !Array.isArray(shape.required) ||
+      !shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties)
+    ) return null;
+  }
+  return contracts;
+}
+
 function briefsFromInput(input) {
   const briefs = input && input.briefs;
   if (!Array.isArray(briefs)) return null;
@@ -128,73 +154,6 @@ function emptyEnvelope(input) {
   };
 }
 
-const findingShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["title", "severity", "confidence", "path", "line", "explanation"],
-  properties: {
-    title: { type: "string" },
-    severity: { type: "string", enum: ["Critical", "High", "Medium", "Low"] },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    path: { type: "string" },
-    line: { type: "integer", minimum: 1 },
-    explanation: { type: "string" },
-  },
-};
-
-const outOfScopeObservationShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["title", "path", "line", "explanation"],
-  properties: {
-    title: { type: "string" },
-    path: { type: "string" },
-    line: { type: "integer", minimum: 1 },
-    explanation: { type: "string" },
-  },
-};
-
-const specialistSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["applicability", "findings"],
-  properties: {
-    applicability: {
-      type: "object",
-      additionalProperties: false,
-      required: ["status", "reason"],
-      properties: {
-        status: { type: "string", enum: ["applicable", "inapplicable"] },
-        reason: { type: "string" },
-      },
-    },
-    findings: { type: "array", items: findingShape },
-    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
-  },
-};
-
-const verifierVerdictShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["findingId", "verdict", "confidence", "reason"],
-  properties: {
-    findingId: { type: "string" },
-    verdict: { type: "string", enum: ["upheld", "refuted"] },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    reason: { type: "string" },
-  },
-};
-
-const verifierSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdicts"],
-  properties: {
-    verdicts: { type: "array", items: verifierVerdictShape },
-    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
-  },
-};
-
 const relevanceSchema = {
   type: "object",
   additionalProperties: false,
@@ -265,7 +224,9 @@ function normalisePartition(plan, inventory) {
 
 const input = args && typeof args === "object" && !Array.isArray(args) ? args : null;
 if (!input || typeof input.target !== "string" || typeof input.head !== "string")
-  throw new Error("brief workflow needs args {target, head, briefs, changedPaths, trackedFiles, guidance, instructionBriefs}");
+  throw new Error("brief workflow needs args {target, head, briefs, changedPaths, trackedFiles, guidance, instructionBriefs, contracts}");
+const contracts = contractsFromInput(input);
+if (!contracts) throw new Error("deterministic input omitted or malformed the review contracts");
 if (input.hasReviewDirectory === false) return emptyEnvelope(input);
 const briefs = briefsFromInput(input);
 if (!briefs || !Array.isArray(input.changedPaths) || !Array.isArray(input.trackedFiles))
@@ -463,7 +424,7 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
       (unit.extent === "full" ? "Audit the assigned scope regardless of what the diff changed." : `Judge only what ${input.target}...${input.head} changed in the assigned scope.`),
   ), {
     engine: routing.proposer.engine,
-    schema: specialistSchema,
+    schema: contracts.specialistSchema,
     model: routing.proposer.model,
     effort: routing.proposer.effort,
     strip: ["skills", "agents"],
@@ -556,9 +517,9 @@ for (const [brief, inapplicable] of inapplicableByBrief) {
 
 phase("Verify");
 const verifierGroups = [];
-for (let offset = 0; offset < proposed.length; offset += VERIFIER_BATCH_SIZE) {
-  const items = proposed.slice(offset, offset + VERIFIER_BATCH_SIZE);
-  const groupIndex = Math.floor(offset / VERIFIER_BATCH_SIZE) + 1;
+for (let offset = 0; offset < proposed.length; offset += contracts.verifierBatchSize) {
+  const items = proposed.slice(offset, offset + contracts.verifierBatchSize);
+  const groupIndex = Math.floor(offset / contracts.verifierBatchSize) + 1;
   const label = `verify-brief-${groupIndex}-${routing.verifier.engine}`;
   const findingIds = items.map(findingId);
   const group = { items, label, findingIds };
@@ -581,7 +542,7 @@ const verifierResults = await parallel(verifierGroups.map((group) => () => agent
   ),
   {
     engine: routing.verifier.engine,
-    schema: verifierSchema,
+    schema: contracts.verifierSchema,
     model: routing.verifier.model,
     effort: routing.verifier.effort,
     strip: ["skills", "agents"],
