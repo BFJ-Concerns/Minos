@@ -56,12 +56,13 @@ func currentReview(snapshot forge.Snapshot, botLogin string) (forge.Review, bool
 	return latest, found
 }
 
+// latestOwnedStatus reads commit statuses normalised by the configured adaptation.
+// Provider records their origin; ownership is the configured context and creator.
 func latestOwnedStatus(snapshot forge.Snapshot, botLogin, statusContext string) (forge.Status, bool) {
 	var latest forge.Status
 	found := false
 	for _, status := range snapshot.Statuses {
-		if status.Provider == forge.ForgejoProvider &&
-			status.Context == statusContext &&
+		if status.Context == statusContext &&
 			status.Creator == botLogin &&
 			(!found || status.ID > latest.ID) {
 			latest = status

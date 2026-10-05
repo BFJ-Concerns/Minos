@@ -60,7 +60,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "incomplete current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: "Minos",
+				Provider: "forgejo", Context: "Minos",
 				Creator: "Minos", Description: product.Incomplete().Description(),
 			}},
 			want: 0,
@@ -68,7 +68,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "working current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: "Minos",
+				Provider: "forgejo", Context: "Minos",
 				Creator: "Minos", Description: product.Working().Description(),
 			}},
 			want: 0,
@@ -76,7 +76,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "continued current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: "Minos",
+				Provider: "forgejo", Context: "Minos",
 				Creator: "Minos", Description: product.Continuation().Description(),
 			}},
 			want: 0,
@@ -84,7 +84,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "other account does not claim continuation",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: "Minos",
+				Provider: "forgejo", Context: "Minos",
 				Creator: "SomeBot", Description: product.Incomplete().Description(),
 			}},
 			want: 1,
@@ -92,7 +92,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "clean terminal status is not unfinished",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: "Minos",
+				Provider: "forgejo", Context: "Minos",
 				Creator: "Minos", Description: product.Clean().Description(),
 			}},
 			want: 1,
@@ -112,7 +112,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 func TestAdmissionCompletionStatuses(t *testing.T) {
 	ownedStatus := func(id int64, state forge.StatusState, description string) forge.Status {
 		return forge.Status{
-			ID: id, Provider: forge.ForgejoProvider, Context: "Minos",
+			ID: id, Provider: "forgejo", Context: "Minos",
 			Creator: "Minos", State: state, Description: description,
 		}
 	}
@@ -138,7 +138,7 @@ func TestAdmissionCompletionStatuses(t *testing.T) {
 		{
 			name: "another account's clean status is not a marker",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: "Minos",
+				Provider: "forgejo", Context: "Minos",
 				Creator: "SomeBot", State: forge.StatusSuccess, Description: product.Clean().Description(),
 			}},
 		},

@@ -46,7 +46,6 @@ if (argumentError) {
     trackedFiles.push({ path });
   }
 
-
   const instructionPaths = [
     "workflows/review-briefs/repository.md",
     "workflows/review-briefs/verifier.md",
