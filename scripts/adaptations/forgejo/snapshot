@@ -46,17 +46,7 @@ if [ -n "$dependency_error" ]; then
   dependencies='[]'
 fi
 
-statuses='[]'
-previous=''
-page=1
-while :; do
-  current="$(api GET "/api/v1/repos/${owner}/${repo}/commits/$(printf '%s' "$pr_json" | jq -r '.head.sha')/statuses?limit=50&page=${page}")"
-  ! repeats_previous_page "$current" "$previous" || break
-  [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
-  statuses="$(jq -cn --argjson all "$statuses" --argjson page "$current" '$all + $page')"
-  previous="$current"
-  page=$((page + 1))
-done
+statuses="$(commit_statuses "$owner" "$repo" "$(printf '%s' "$pr_json" | jq -r '.head.sha')")"
 
 reviews='[]'
 previous=''
@@ -95,7 +85,6 @@ jq -nc \
   --argjson dependencies "$dependencies" \
   --arg dependency_error "$dependency_error" \
   --arg head_branch "$head_branch" \
-  --arg provider "forgejo" \
   --argjson source_protected "$source_protected" '
   {
     authenticated_user: ($user.login // $user.username // ""),
@@ -113,10 +102,7 @@ jq -nc \
     target_repository: $pr.base.repo.full_name,
     source_protected: $source_protected,
     can_merge: ($base.user_can_merge // false),
-    statuses: [$statuses[] |
-      if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
-        {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // "")}
-      end] | sort_by(.id) | reverse,
+    statuses: $statuses,
     labels: [($pr.labels // [])[] | .name] | sort,
     reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // "")}],
     dependencies_available: ($dependency_error == ""),
