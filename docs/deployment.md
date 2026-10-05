@@ -1,10 +1,16 @@
 # Deployment
 
-Minos runs on a disposable single-tenant machine with Claude Code, the Codex
-CLI, Node.js, Git, Go, curl, jq and openssl installed (openssl signs the
-GitHub App token; `scripts/expected-tool-versions` is the declared set). The machine itself is the
-containment boundary. Reviews never build or test the reviewed repository,
-so no repository toolchains are needed.
+Minos runs on a disposable single-tenant Linux machine under a functioning
+systemd user manager. The machine needs Claude Code, the Codex CLI, Node.js,
+Git, Go, Bash, curl, jq, openssl, OpenSSH client utilities, ssh-keygen, tar,
+zstd, sha256sum and GNU find installed (openssl signs the GitHub App token;
+`scripts/expected-tool-versions` is the declared set for the versioned tools).
+The lead and its workers need access to both `claude-opus-5-5` and `gpt-6-sol`:
+a Claude Code subscription or gateway credential for the Claude engine, and a
+Codex (ChatGPT) account for the Codex engine — or a single engine with both
+roles routed to it via `[routing]`. The machine itself is the containment
+boundary. Reviews never build or test the reviewed repository, so no repository
+toolchains are needed.
 
 1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
 2. Install the whole of `scripts/adaptations/` under
@@ -26,7 +32,18 @@ so no repository toolchains are needed.
    committing it there once the box's own pipeline has succeeded, and
    listing the timing sidecars — from the box's address alone. Re-running it replaces
    an earlier line for the same key. Install `lifecycle`
-   under `/opt/minos/lifecycle`.
+   under `/opt/minos/lifecycle`. Copy `docs/` to `/opt/minos/docs` — the
+   installed systemd units carry `Documentation=file:/opt/minos/docs/deployment.md`,
+   and the runtime installer does not install them. Install
+   `deploy/environment.d/50-minos-path.conf` as
+   `~/.config/environment.d/50-minos-path.conf` — the shipped file already
+   uses `${HOME}` for the per-user bin directories, so it is portable
+   without edits. After installing, run `systemctl --user daemon-reload`
+   and re-login (or `systemctl --user import-environment PATH` to apply
+   an existing shell PATH immediately). Transient run units inherit PATH
+   from the user manager; the manager's default PATH omits per-user
+   directories like `~/.local/bin` and `~/.cargo/bin`, where the agent
+   CLIs are commonly installed.
 3. Run `scripts/install-review-runtime /opt/minos`. Before installing
    anything it checks the box's tool versions against
    `scripts/expected-tool-versions` — the set the repository gate runs
@@ -38,11 +55,25 @@ so no repository toolchains are needed.
    non-test workflow file. It also verifies the launcher against
    `ensemble.mjs.sha256`.
 4. Copy `deploy/etc/minos` to `/etc/minos`, replace the placeholder values,
-   and add one repository TOML file per opted-in repository. In `run-body.env`:
+   and add one repository TOML file per opted-in repository under
+   `repos/`. The service discovers repositories by globbing `repos/*.toml`:
+   the shipped `owner--repository.toml.example` is a template, not a loaded
+   file — copy and rename it to end in `.toml`. The filename itself carries
+   no identity; `forge`, `owner` and `repo` inside the file do.
 
-   - set `MINOS_CLAUDE` to the installed Claude executable — install Claude
-     Code natively, not as an npm package, whose shim a lead can migrate
-     away from mid-run;
+   The `.env` files (`run-body.env`, `archive.env`) are sourced as shell
+   programs with `set -a` (automatic export), not parsed as generic dotenv
+   files. Shell expansion and commands execute during loading; values must
+   obey shell quoting rules.
+
+   In `run-body.env`:
+
+   - set `MINOS_CLAUDE` to the absolute path of the installed Claude
+     executable — install Claude Code natively, not as an npm package,
+     whose shim a lead can migrate away from mid-run. The lead uses this
+     path directly; Ensemble workers resolve `claude` and `codex` by
+     command name through the inherited PATH (the `environment.d` file
+     from step 2), so both the absolute variable and PATH must be correct;
    - set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
      and `MINOS_LEAD_MODEL` to the model the lead runs on — `claude-opus-5-5`
      by default for Claude, `gpt-6-sol` for Codex; a Codex lead needs
@@ -80,7 +111,11 @@ so no repository toolchains are needed.
    (path required; repository optional, defaulting to the reviewed
    repository's default branch), `issue` (repository required — the
    owner/name that takes the issues; no path), `pull-request-comment`, or
-   `none`. Unset at both levels, it defaults to `pull-request-comment`. A
+   `none`. Unset at both levels, it defaults to `pull-request-comment`.
+   The `pull-request-comment` kind deduplicates against the service
+   account's existing review bodies on the pull request, then posts one
+   comment-review with the remaining advisory entries; when none remain,
+   nothing is posted — there is no all-clear comment. A
    file-kind destination is a separate write path committed as
    `service.commit-author-name` (default: the bot login) and
    `service.commit-author-email` (default: the bot login at
@@ -100,7 +135,13 @@ so no repository toolchains are needed.
 
    Every commit status Minos writes carries `service.status-context`
    (default `Minos`), and the sweep's completion marker is read under
-   that context only.
+   that context only. Status Details links point at the pull request with
+   a target-SHA fragment. For a Forgejo forge, `[forges.<key>] web-base`
+   sets the link's host and optional path prefix as an absolute HTTP(S)
+   URL; unset, the link derives the web host from `api-base` by stripping
+   a trailing `/api/v1`. GitHub links always derive the web host from the
+   API base (`https://github.com` for the public API, the Enterprise host
+   otherwise) and ignore `web-base`.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
@@ -123,10 +164,10 @@ so no repository toolchains are needed.
    A healthy run's unreclaimable footprint is around 1.2 GiB,
    but each run also paces `ensemble.concurrency-claude` and
    `concurrency-codex` workers of its own (the loader defaults both to 2
-   when neither is set; the shipped example sets 10 and 6).
+   when neither is set; the shipped example comments both at 2).
    `ensemble.agent-ceiling` optionally caps a workflow's agents across
    both engines together; unset, the runtime applies no combined cap (the
-   shipped example sets 12).
+   shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
    `verifier`, `engagement-gate`, `brief-planner` — to an engine, model
@@ -169,11 +210,16 @@ so no repository toolchains are needed.
      `ANTHROPIC_AUTH_TOKEN`; a missing base URL or missing, unreadable or empty
      credential file stops the run before Claude launches.
 
-   Provision the seed directory of every engine the deployment runs when the disposable box is launched — the lead's engine at least. Each
-   run copies their contents into its private `HOME`: Claude state goes to
+   Provision the seed directory of every engine the deployment runs when the
+   disposable box is launched — the lead's engine at least. Each run copies
+   their contents into its private `HOME`: Claude state goes to
    `$HOME/.claude` and Codex state to `$HOME/.codex`; no skills are
    installed into either home — the lead needs none, and review workers run
-   with their skill surfaces stripped. Each run also gets a private disk-backed `TMPDIR` beneath the
+   with their skill surfaces stripped. After copying, `run-body` overwrites
+   `$HOME/.claude/.claude.json` with an onboarding-acceptance stub
+   (`hasCompletedOnboarding` and `bypassPermissionsModeAccepted`), so any
+   seed content in that file is not preserved — put seed configuration in
+   other files within the seed directory. Each run also gets a private disk-backed `TMPDIR` beneath the
    storage root's `tmp/` directory, alongside `runs/` (the shared tmpfs `/tmp`
    cannot hold concurrent runs' artefacts). The lead and Ensemble workers
    therefore inherit both
@@ -191,7 +237,18 @@ so no repository toolchains are needed.
 
    Create the webhook secret and forge credential files separately. For a
    Forgejo forge the credential file holds the service account's access
-   token. For a GitHub forge, register a GitHub App (permissions: pull
+   token. The token needs these Forgejo scopes: `read:user` (identity
+   verification), `write:repository` (cloning, branch reads, commit
+   statuses, requested reviewers, and reviews), and `write:issue`
+   (reactions, labels, dependency lookups, and alert issues). The account
+   named by
+   `service.bot-login` must match the token's authenticated identity; the
+   claim adapter rejects a mismatch. The Forgejo instance must expose the
+   issue-dependencies API (`/api/v1/repos/.../issues/.../dependencies`); a
+   missing or disabled endpoint produces "dependency state unavailable" and
+   defers review until the next sweep pass.
+
+   For a GitHub forge, register a GitHub App (permissions: pull
    requests and commit statuses read and write, contents read, issues read
    and write where a filing destination or alert needs them; subscribe it
    to pull request, pull request review and issue comment events; one
@@ -209,7 +266,9 @@ so no repository toolchains are needed.
 5. Install `minos-sweep-alert.service` (the sweep's `OnFailure=` hook, which
    files an operator alert issue on the repository named by the `[service]`
    `alert-forge`/`alert-owner`/`alert-repo` keys; the sweep files the same
-   alert itself when a configured repo goes unswept for an hour): run
+   alert itself when a configured repo is skipped for six consecutive
+   sweep passes — roughly an hour at the default ten-minute cadence, but
+   pass-count-based, not time-based): run
    `minos install-units --config /etc/minos ~/.config/systemd/user` as the
    deployment user, then `systemctl --user daemon-reload` and enable
    `minos-receiver.service` and `minos-sweep.timer`. The units are embedded
@@ -219,7 +278,19 @@ so no repository toolchains are needed.
    that envelope rather than a copied default.
 6. Configure the forge webhook to post to `/hooks/<forge key>` —
    `/hooks/forgejo` for the shipped Forgejo table, `/hooks/github` for a
-   GitHub App — using the matching secret.
+   GitHub App — using the matching secret. The path suffix after `/hooks/`
+   must match the key used in `[forges.<key>]` in `service.toml`; a
+   mismatch returns "unknown forge".
+
+Run units, run directories and continuation handoffs include the configured
+forge key in their names (for example `minos-run-forgejo-owner-repo-pr1`), so
+two forges reviewing the same owner/repository namespace cannot collide. Deploy
+with no live run units and no preserved handoff directories carrying the
+older names without the forge key.
+
+A run that exits cleanly triggers one sweep pass (`OnSuccess=minos-sweep.service`),
+so the freed slot is filled without waiting for the next periodic cycle. A
+failed exit does not trigger a sweep.
 
 Each run launches the lead on the configured engine and model. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has
@@ -244,6 +315,11 @@ recording the failure. When workspace
 setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
+Workspace setup resolves clone URLs and credentials through the forge-neutral
+`minos forge repository-metadata` and `minos forge clone-credential` operations
+rather than reading the forge API directly; each adaptation implements both,
+and the credential reaches git only as a `GIT_CONFIG_*` authorisation header,
+never on argv.
 
 After the lead has finished its forge writes, `run-body` streams its report,
 Claude transcripts, Codex rollout JSONLs and Ensemble run records as a zstd tar
@@ -255,14 +331,25 @@ is promoted it delivers that record a second time as a sidecar beside it —
 the tarball's name with `.tar.zst` replaced by `.timings.json` — readable
 without extracting anything. This presentation archive and its sidecar are
 best-effort and cannot change the run result. Before each reconciliation pass,
-the sweep also salvages dead run directories into the dedicated Minos annexe
-checkout configured by `runs.failures-repo`, attempts to commit and push the
-digest, archives their transcripts, and removes the scratch tree. Active units
+the sweep also salvages dead run directories into the dedicated checkout
+configured by `runs.failures-repo`, attempts to commit and push the
+digest, archives their transcripts, and removes the scratch tree. The
+checkout must be outside `runs.dir` (the service rejects one inside it)
+and must already contain a regular `FAILURES.md` — the provisioner
+(`provision-failure-checkout`) clones and configures git but does not
+create that file; an empty repository or one without it stops the salvage.
+Residue from a failed salvage is preserved in the run directory.
+`runs.failures-forge` selects the forge whose credential authenticates
+the ledger push; it defaults to the sole configured forge and is required
+when several forges are configured. Active units
 and directories named by valid pending continuation handoffs are preserved.
 Each digest is limited to 256 KiB and reads only the run-local report and
 failure log, Claude transcripts, Codex rollouts and exact Ensemble record tree.
 The sweep fetches and rebases its append-only commit onto `origin/main` before
-pushing with the configured Forgejo token header.
+pushing. The push authenticates through the selected forge adaptation's
+`clone-credential` operation using `runs.failures-credential-file` — a
+separate credential from the reviewed-forge file — and reaches git as a
+Basic authorisation header via `GIT_CONFIG_*`, never on argv.
 
 The receiver handles new events immediately. The sweep periodically starts any
 open, non-draft pull request whose current head carries no completion marker.
@@ -399,3 +486,98 @@ The calls that do reach the archive host share a connection where they can.
 login between them and a steady listing caller holds one session open rather
 than authenticating on each poll. Neither directory being available costs only
 the sharing: each call falls back to its own connection.
+
+## Repository review briefs
+
+A reviewed repository can carry `.review/` briefs — Markdown files that tell
+the review what to look for. The discovery rules and frontmatter syntax are
+specific to Minos.
+
+### Discovery
+
+Briefs are regular files ending in lowercase `.md` under the `.review/`
+directory, discovered recursively in deterministic path order. Symlinks and
+files with uppercase extensions (`.MD`, `.Md`) are not discovered. A brief's
+containing directory relative to `.review/` becomes its path scope: for
+example, `.review/internal/security.md` scopes to `internal/`. A brief at
+the root of `.review/` (such as `.review/prose.md`) has no path scope.
+
+### Frontmatter
+
+A brief may open with a frontmatter block delimited by `---` fences:
+
+```markdown
+---
+relevance: Security-sensitive changes
+occasion: audit
+---
+Review body starts here.
+```
+
+The opening `---` must be the first line of the file, followed by
+LF-delimited `key: value` pairs and a closing `---`. Lines outside the
+fences are body text. The parser is not a general YAML parser; it reads
+scalar pairs only. Familiar YAML features — lists, quoted values, CRLF
+line endings — produce different or default dispositions rather than an
+error. Omitting the fences causes all fields to take their defaults.
+
+Recognised fields:
+
+- `title` — a display title for the brief.
+- `relevance` — a prose description of when the brief applies; the review
+  uses it as a trigger alongside path scope.
+- `occasion` — a comma-separated list of occasion tags (for example
+  `occasion: release, security-audit`). When declared, the brief runs only
+  on a run that names a matching occasion; the ordinary lifecycle invocation
+  supplies no occasion, so an occasion-restricted brief is skipped by default.
+- `extent` — `diff` (the default) or `full`. A full-extent brief grounds the
+  review on all tracked files within the brief's directory scope, not just
+  the changed files; it does not escape the scope to the whole tree.
+- `sweep` — `per-file` (the default) or `whole-tree`.
+
+### Engagement rules
+
+A root brief with no `relevance`, no `occasion`, and no path scope is
+deterministically skipped — it has no trigger to engage on. Add at least one
+of those to make it run.
+
+A brief engages when any of its triggers is satisfied: changed files within
+its path scope, a declared `relevance`, or a matched `occasion`. A scoped
+brief whose scope is untouched still engages when its relevance or occasion
+matches — path scope limits the files the review reads, not whether the
+brief runs at all.
+
+When a brief declares `occasion`, the occasion acts as a veto: a brief that
+names occasions runs only when the run's own occasion matches one of them;
+a brief naming no occasion is unrestricted by occasion. A matched occasion
+is itself a satisfied trigger.
+
+A brief whose path scope names a directory that does not exist in the
+workspace is reported as a misconfiguration rather than silently skipped.
+
+### Guidance sources
+
+The review is grounded on the guidance sources configured per repository:
+a `[[guidance-sources]]` array in the repository's TOML file, each entry
+naming a `path` and an optional `repository` (owner/name on the same forge).
+When no sources are configured, the fallback reads the first non-empty file
+from `AGENTS.md`, `CLAUDE.md`, `README.md` in the reviewed repository — the
+first hit wins and later candidates are not combined. A configured source in a
+secondary repository is cloned read-only beside the workspace; the clone's
+push URL is disabled. A configured source that is missing or empty is recorded
+as a misconfiguration and reported to the lead, never silently skipped; when
+every configured source fails, setup stops the run.
+
+## Filing deduplication
+
+Each filed entry — whether to a file, an issue, or a pull-request comment —
+carries a hidden HTML comment marker (`<!-- minos:… -->`). The marker's
+identity depends on the entry kind: a review finding keys on kind, reviewed
+repository, path, line, and title; a review-brief misconfiguration keys on
+kind, reviewed repository, brief path, and title; a guidance-source
+misconfiguration keys on kind, reviewed repository, source repository, path,
+and reason — so changing a misconfiguration's reason changes its marker,
+while changing its title does not. Deduplication checks the destination for
+an existing marker before filing. Removing these markers during editing
+removes the deduplication history: subsequent reviews can then file the same
+finding again.
