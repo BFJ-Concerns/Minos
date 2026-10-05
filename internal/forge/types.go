@@ -8,10 +8,6 @@ import (
 	"io"
 )
 
-const (
-	ForgejoProvider = "forgejo"
-)
-
 type Repository struct {
 	Owner string
 	Name  string
